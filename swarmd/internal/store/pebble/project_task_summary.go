@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -67,6 +69,7 @@ func taskSummaryMedia(task ProjectTaskRecord, id, field, value string) string {
 }
 
 func compactProjectTask(task ProjectTaskRecord) ProjectTaskRecord {
+	task.Attempts = append([]ProjectTaskAttempt(nil), task.Attempts...)
 	task.EnsureTaskAttempts()
 	var active []ProjectTaskAttempt
 	if a := task.ActiveAttempt(); a != nil {
@@ -143,9 +146,9 @@ func setTaskSummariesInBatch(batch *pebble.Batch, reader pebble.Reader, m *proje
 	return batch.Set([]byte(prefix+"state"), raw, nil)
 }
 
-// BackfillProjectTaskSummaries advances at most 32 records / 16 MiB per call.
-// Oversized single legacy records fail explicitly rather than exceeding the work
-// budget. The cursor and rows commit together; canonical writes share projectsMu.
+// BackfillProjectTaskSummaries advances 32 records / 16 MiB, allowing one
+// oversized record up to the configured media envelope limit (default 256 MiB).
+// The cursor and rows commit together; canonical writes share projectsMu.
 func (s *SessionStore) BackfillProjectTaskSummaries(account, project string) (ProjectTaskReadStats, error) {
 	var stats ProjectTaskReadStats
 	if s == nil || s.store == nil || s.store.db == nil { return stats, errors.New("database not available") }
@@ -176,8 +179,15 @@ func (s *SessionStore) BackfillProjectTaskSummaries(account, project string) (Pr
 	mutation := &projectRealtimeMutation{accountScopeID: account, projectID: project}
 	valid := iter.First()
 	if state.Cursor != "" { valid = iter.SeekGE([]byte(state.Cursor)); if valid && string(iter.Key()) == state.Cursor { valid = iter.Next() } }
+	maxRecord := int64(256 << 20)
+	if value := strings.TrimSpace(os.Getenv("SWARM_PROJECT_MEDIA_MAX_REQUEST_BYTES")); value != "" {
+		configured, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || configured <= 0 { return stats, errors.New("SWARM_PROJECT_MEDIA_MAX_REQUEST_BYTES must be a positive byte count") }
+		maxRecord = configured
+	}
 	for valid {
-		if stats.BackfillRows >= taskSummaryBackfillRows || stats.BackfillBytes+int64(len(iter.Value())) > taskSummaryBackfillBytes { break }
+		if int64(len(iter.Value())) > maxRecord { return stats, fmt.Errorf("legacy task exceeds configured migration record limit of %d bytes", maxRecord) }
+		if stats.BackfillRows >= taskSummaryBackfillRows || (stats.BackfillRows > 0 && stats.BackfillBytes+int64(len(iter.Value())) > taskSummaryBackfillBytes) { break }
 		state.Cursor = string(iter.Key())
 		mutation.putBytes(state.Cursor, append([]byte(nil), iter.Value()...))
 		stats.BackfillRows++
@@ -215,6 +225,10 @@ func (s *SessionStore) ListProjectTaskSummaries(account, project string, archive
 }
 
 func (s *SessionStore) ListProjectTaskSummariesWithRelated(account, project string, archived bool) ([]ProjectTaskRecord, map[string]ProjectTaskRelatedSummary, ProjectTaskReadStats, error) {
+	return s.readProjectTaskSummaries(account, project, archived, nil)
+}
+
+func (s *SessionStore) readProjectTaskSummaries(account, project string, archived bool, consume func([]ProjectTaskRecord, *ProjectTaskBoardReader)) ([]ProjectTaskRecord, map[string]ProjectTaskRelatedSummary, ProjectTaskReadStats, error) {
 	account, project = strings.TrimSpace(account), strings.TrimSpace(project)
 	stats, err := s.BackfillProjectTaskSummaries(account, project)
 	if err != nil { return nil, nil, stats, err }
@@ -242,6 +256,11 @@ func (s *SessionStore) ListProjectTaskSummariesWithRelated(account, project stri
 	if err != nil { return nil, nil, stats, err }
 	if len(rows) != state.Counts[partition] { return nil, nil, stats, ErrProjectTaskSummaryCorrupt }
 	start = time.Now()
+	if consume != nil {
+		reader := newProjectTaskBoardReader(snapshot, account, rows, &stats)
+		consume(rows, reader)
+		return rows, nil, stats, reader.err
+	}
 	related, err := readProjectTaskRelated(snapshot, account, rows, &stats)
 	stats.RelatedElapsed = time.Since(start)
 	if err != nil { return nil, nil, stats, err }

@@ -319,7 +319,16 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 // syncTaskSessionState checks the live V3 session and plan for a task and transitions
 // in_progress tasks to needs_review when the agent finishes execution, ensuring tasks
 // never just flip to complete without review/integration, and allowing reopening.
-func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) {
+type projectTaskLifecycleReader interface {
+	pebblestore.ProjectTaskExecutionReader
+	CurrentTaskProgram(*pebblestore.ProjectTaskRecord) (pebblestore.TaskProgramRecord, bool)
+	ProjectTaskExecuting(*pebblestore.ProjectTaskRecord) bool
+	ProjectTaskPlanUnfinished(*pebblestore.ProjectTaskRecord) bool
+	ListRunIntents(string, int) ([]pebblestore.V3SessionRunIntent, error)
+	ListPlans(string, int) ([]pebblestore.SessionPlanSnapshot, error)
+}
+
+func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db projectTaskLifecycleReader) {
 	if task == nil || db == nil || task.Archived {
 		return
 	}
@@ -2221,9 +2230,28 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, errors.New("unsupported task view"))
 				return
 			}
-			tasks, err := db.ListProjectTasksByArchive(p.AccountScopeID, projectID, archiveView == "archived")
+			started := time.Now()
+			var reconcileElapsed time.Duration
+			var summaries = make(map[string]projectTaskBoardRelated)
+			tasks, stats, err := db.ReadProjectTaskBoard(p.AccountScopeID, projectID, archiveView == "archived", func(rows []pebblestore.ProjectTaskRecord, reader *pebblestore.ProjectTaskBoardReader) {
+				reconcileStart := time.Now()
+				for i := range rows {
+					// Delivery is deliberately unassessed on collection reads.
+					rows[i].IsIntegrated, rows[i].UnintegratedCommits = false, 0
+					reader.BindTask(&rows[i])
+					syncTaskSessionState(&rows[i], reader)
+					summaries[rows[i].ID] = projectTaskBoardSummary(&rows[i], reader)
+					rows[i].TaskProgramStatus, rows[i].PlanDocument = nil, nil
+				}
+				reconcileElapsed = time.Since(reconcileStart)
+			})
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
+				if errors.Is(err, pebblestore.ErrProjectTaskSummariesNotReady) {
+					w.Header().Set("Retry-After", "1")
+					writeError(w, http.StatusServiceUnavailable, err)
+				} else {
+					writeError(w, http.StatusInternalServerError, err)
+				}
 				return
 			}
 			workerOnly := r.URL.Query().Get("worker_only") == "true"
@@ -2266,18 +2294,17 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						tasks[i].GitStatus = "stale"
 					}
 				}
-				syncTaskSessionState(&tasks[i], db)
-				hydrateTaskProgramStatus(&tasks[i], db)
-				hydrateTaskPlanDocument(&tasks[i], db)
+				// Lifecycle was reconciled from the same snapshot as these rows.
 			}
 			sanitizedTasks := make([]pebblestore.ProjectTaskRecord, len(tasks))
 			for i := range tasks {
 				sanitizedTasks[i] = *sanitizeProjectTaskForClient(&tasks[i])
 			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"tasks": sanitizedTasks,
-				"count": len(sanitizedTasks),
-			})
+			board := make([]projectTaskBoardRow, len(sanitizedTasks))
+			for i := range sanitizedTasks {
+				board[i] = projectTaskBoardRow{ProjectTaskRecord: sanitizedTasks[i], BoardSummary: summaries[sanitizedTasks[i].ID]}
+			}
+			writeProjectTaskBoard(w, board, stats, started, reconcileElapsed)
 			return
 		}
 

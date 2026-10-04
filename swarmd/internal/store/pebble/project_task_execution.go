@@ -2,7 +2,18 @@ package pebblestore
 
 // CurrentTaskProgram rejects program evidence from another session or an older
 // owning run. Program workflow state is not evidence that execution has stopped.
+type ProjectTaskExecutionReader interface {
+	GetSession(string) (SessionSnapshot, bool, error)
+	GetV3SessionRunState(string) (V3SessionRunState, bool, error)
+	GetTaskProgram(string, string) (TaskProgramRecord, bool, error)
+	GetPlan(string, string) (SessionPlanSnapshot, bool, error)
+}
+
 func (s *SessionStore) CurrentTaskProgram(t *ProjectTaskRecord) (TaskProgramRecord, bool) {
+	return CurrentProjectTaskProgram(s, t)
+}
+
+func CurrentProjectTaskProgram(s ProjectTaskExecutionReader, t *ProjectTaskRecord) (TaskProgramRecord, bool) {
 	if t == nil || t.SessionID == "" {
 		return TaskProgramRecord{}, false
 	}
@@ -31,6 +42,10 @@ func (s *SessionStore) CurrentTaskProgram(t *ProjectTaskRecord) (TaskProgramReco
 // ProjectTaskExecuting uses only canonical, account-bound current run evidence.
 // Queue ownership, old job generations, and historical attempts are not execution.
 func (s *SessionStore) ProjectTaskExecuting(t *ProjectTaskRecord) bool {
+	return ProjectTaskExecutingFrom(s, t)
+}
+
+func ProjectTaskExecutingFrom(s ProjectTaskExecutionReader, t *ProjectTaskRecord) bool {
 	if t == nil || t.Archived || t.Status == "rejected" || t.Status == "pending_approval" || t.Status == "planning" || (t.Status == "queued" && t.WorkerID == "") {
 		return false
 	}
@@ -51,7 +66,7 @@ func (s *SessionStore) ProjectTaskExecuting(t *ProjectTaskRecord) bool {
 	if running(t.SessionID, "") {
 		return true
 	}
-	if prog, ok := s.CurrentTaskProgram(t); ok {
+	if prog, ok := CurrentProjectTaskProgram(s, t); ok {
 		for _, job := range prog.Jobs {
 			sid := job.CurrentSessionID
 			if sid == "" {
@@ -68,6 +83,10 @@ func (s *SessionStore) ProjectTaskExecuting(t *ProjectTaskRecord) bool {
 // ProjectTaskPlanUnfinished prevents a nested program from completing its owning
 // approved checkpoint plan. Missing plan hydration is not completion evidence.
 func (s *SessionStore) ProjectTaskPlanUnfinished(t *ProjectTaskRecord) bool {
+	return ProjectTaskPlanUnfinishedFrom(s, t)
+}
+
+func ProjectTaskPlanUnfinishedFrom(s ProjectTaskExecutionReader, t *ProjectTaskRecord) bool {
 	if t.PlanBinding == nil || t.PlanBinding.PlanID == "" {
 		return false
 	}

@@ -17,16 +17,28 @@ type ProjectTaskPlanSummary struct {
 	Status string `json:"status"`
 	ApprovalState string `json:"approval_state"`
 	AcceptedDefinitionReceipt string `json:"accepted_definition_receipt"`
-	Document *struct {
-		ActiveCheckpointID string `json:"active_checkpoint_id"`
-		ExecutionState *struct {
-			Status string `json:"status"`
-		} `json:"execution_state"`
-		Checkpoints []struct {
-			ID string `json:"id"`
-			Status string `json:"status"`
-		} `json:"checkpoints"`
-	} `json:"document"`
+	Document *ProjectTaskPlanDocumentSummary `json:"document"`
+}
+
+type ProjectTaskPlanDocumentSummary struct {
+	ActiveCheckpointID string `json:"active_checkpoint_id"`
+	ExecutionState *ProjectTaskPlanExecutionSummary `json:"execution_state,omitempty"`
+	Checkpoints []ProjectTaskCheckpointSummary `json:"checkpoints"`
+}
+type ProjectTaskPlanExecutionSummary struct { Status string `json:"status"` }
+type ProjectTaskCheckpointSummary struct {
+	ID string `json:"id"`
+	Status string `json:"status"`
+}
+
+func SummarizeProjectTaskPlan(plan SessionPlanSnapshot) ProjectTaskPlanSummary {
+	out := ProjectTaskPlanSummary{ID: plan.ID, SessionID: plan.SessionID, AccountScopeID: plan.AccountScopeID, Version: plan.Version, Status: plan.Status, ApprovalState: plan.ApprovalState, AcceptedDefinitionReceipt: plan.AcceptedDefinitionReceipt}
+	if plan.Document != nil {
+		out.Document = &ProjectTaskPlanDocumentSummary{ActiveCheckpointID: plan.Document.ActiveCheckpointID}
+		if plan.Document.ExecutionState != nil { out.Document.ExecutionState = &ProjectTaskPlanExecutionSummary{Status: plan.Document.ExecutionState.Status} }
+		for _, cp := range plan.Document.Checkpoints { out.Document.Checkpoints = append(out.Document.Checkpoints, ProjectTaskCheckpointSummary{ID: cp.ID, Status: cp.Status}) }
+	}
+	return out
 }
 
 // Related summaries are keyed by task ID. Missing records remain nil; a stale
