@@ -1399,11 +1399,12 @@ func sessionsV3SyncHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resou
 		return pebblestore.V3SyncSnapshotHistoryOptions{}, errors.New("sync snapshot max_events_per_session cannot exceed 200")
 	}
 	return pebblestore.V3SyncSnapshotHistoryOptions{
-		Mode:                  mode,
-		MaxMessagesPerSession: maxMessages,
-		MaxEventsPerSession:   maxEvents,
-		ManifestPolicy:        req.ManifestPolicy,
-		IncludeMessages:       mode == pebblestore.V3SyncSnapshotHistoryModeTail || mode == pebblestore.V3SyncSnapshotHistoryModeFull,
-		IncludeEvents:         includeEvents,
+		Mode:                      mode,
+		MaxMessagesPerSession:     maxMessages,
+		MaxMessageBytesPerSession: pebblestore.V3RecentMessageByteBudget,
+		MaxEventsPerSession:       maxEvents,
+		ManifestPolicy:            req.ManifestPolicy,
+		IncludeMessages:           mode == pebblestore.V3SyncSnapshotHistoryModeTail || mode == pebblestore.V3SyncSnapshotHistoryModeFull,
+		IncludeEvents:             includeEvents,
 	}, nil
 }

@@ -87,6 +87,7 @@ export function taskGitIdentity(task: RunningTask): string {
     task.workspacePath, task.sourceWorkspacePath, task.sourceWorkspaceId,
     task.sourceWorkspaceGeneration, task.sourceWorkspaceProvenance,
     task.worktreeBranch, task.baseBranch, task.baseCommit, task.integration, task.taskProgramStatus,
+    task.boardSummary?.program,
     task.attempts?.map(attempt => [attempt.id, attempt.session_id, attempt.integration])])
 }
 
@@ -95,13 +96,32 @@ function retainNewerTasks(incoming: RunningTask[], previous: RunningTask[]): Run
   const byId = new Map(previous.map(task => [task.id, task]))
   return incoming.map(task => {
     const prior = byId.get(task.id)
-    return prior && (prior.revision ?? 0) > (task.revision ?? 0) ? prior : task
+    if (prior && (prior.revision ?? 0) > (task.revision ?? 0)) return prior
+    // Only reuse detail for the exact task/plan identity. Summary membership and
+    // lifecycle stay fresh even when the omitted definition is retained.
+    if (!prior?.detailLoaded || !task.boardSummary || prior.revision !== task.revision ||
+      prior.sessionId !== task.sessionId || prior.activeAttemptId !== task.activeAttemptId ||
+      JSON.stringify(prior.planBinding) !== JSON.stringify(task.planBinding) || task.boardSummary.plan_binding_stale ||
+      (task.status === 'pending_approval' && task.boardSummary.plan &&
+        task.boardSummary.plan.version !== task.planBinding?.definitionRevision)) return task
+    return { ...task, detailLoaded: true,
+      fullPlanMarkdown: prior.fullPlanMarkdown, planDocument: prior.planDocument, plan_document: prior.plan_document,
+      taskProgram: prior.taskProgram, task_program: prior.task_program,
+      taskProgramStatus: prior.taskProgramStatus, task_program_status: prior.task_program_status,
+      attempts: prior.attempts, scenes: prior.scenes, soundtrack: prior.soundtrack,
+      attachedMedia: prior.attachedMedia, feedbackHistory: prior.feedbackHistory,
+      deliverables: task.deliverables?.map(deliverable => {
+        const detail = prior.deliverables?.find(item => item.id === deliverable.id)
+        return detail ? { ...deliverable, prompt: detail.prompt } : deliverable
+      }) }
   })
 }
 
 export function mapBackendTask(t: any): RunningTask {
   return {
     id: t.id,
+    boardSummary: t.board_summary,
+    detailLoaded: t.board_summary === undefined,
     title: t.title,
     subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
     agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' || t.agent === 'swarm' || t.agent === 'image' || t.agent === 'plan' || t.agent === 'sound' || t.agent === 'audio' ? t.agent : 'coder') as any,

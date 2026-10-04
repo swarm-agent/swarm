@@ -317,6 +317,9 @@ func setPlanAcceptancePlanInBatch(batch *pebble.Batch, plan SessionPlanSnapshot,
 	if err != nil {
 		return err
 	}
+	if err := setTaskRelatedInBatch(batch, KeySessionPlan(plan.SessionID, plan.ID), plan); err != nil {
+		return err
+	}
 	for _, key := range []string{KeySessionPlan(plan.SessionID, plan.ID), KeySessionPlanRevision(plan.SessionID, plan.ID, plan.Version)} {
 		if err := batch.Set([]byte(key), payload, nil); err != nil {
 			return err

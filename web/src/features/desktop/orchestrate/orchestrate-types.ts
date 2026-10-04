@@ -316,7 +316,33 @@ export interface TaskAttempt {
   integration?: TaskIntegrationReceipt
 }
 
+// Collection-only DTO: never a PlanDocument or TaskProgramRecord.
+export interface ProjectTaskBoardSummary {
+  plan_binding_stale?: boolean
+  plan?: {
+    id: string
+    session_id: string
+    account_scope_id: string
+    version: number
+    status: string
+    approval_state: string
+    accepted_definition_receipt: string
+    document?: {
+      active_checkpoint_id: string
+      execution_state?: { status: string }
+      checkpoints?: Array<{ id: string; status: string }> | null
+    } | null
+  }
+  program?: {
+    program_id: string
+    state: string
+    jobs: Array<{ job_id: string; current_session_id?: string; current_run_id?: string; excluded_session_ids?: string[] }>
+  }
+}
+
 export interface RunningTask {
+  boardSummary?: ProjectTaskBoardSummary
+  detailLoaded?: boolean
   currentRunId?: string
   currentRunStatus?: string
   activeAttemptId?: string

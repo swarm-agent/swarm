@@ -297,6 +297,7 @@ type ProjectTaskDeliverable struct {
 	Status              string           `json:"status"` // "ready" | "accepted" | "in_progress"
 	Duration            string           `json:"duration,omitempty"`
 	Thumbnail           string           `json:"thumbnail,omitempty"`
+	PreviewSource       string           `json:"preview_source,omitempty"` // display-only pinned source, never authority
 	Description         string           `json:"description,omitempty"`
 	ArtifactRef         string           `json:"artifact_ref,omitempty"`
 	CodeDiff            string           `json:"code_diff,omitempty"`

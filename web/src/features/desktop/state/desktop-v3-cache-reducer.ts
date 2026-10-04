@@ -181,6 +181,15 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
         ...action.patch,
       }
       return state
+    case 'projectConversations.applyArchiveSummaries':
+      // Archive display rows are not canonical hydrated tombstones or sessions.
+      state.projectArchiveSummaries = { ...state.projectArchiveSummaries, [action.projectId]: action.tombstones }
+      return state
+    case 'projectConversations.applySummaries':
+      // Display-only membership: never mark a partial session or transcript fully hydrated.
+      state.projectConversationSummaries = { ...state.projectConversationSummaries, [action.projectId]: action.sessions }
+      if (action.attention) applySessionViews(state, action.attention, new Set(action.sessions.map(session => session.id)), { clearMissing: false })
+      return state
     case 'session.select':
       state.selectedSessionId = action.sessionId?.trim() || undefined
       touchSessionTranscript(state, state.selectedSessionId)
@@ -2213,7 +2222,7 @@ function mergeHistoricalMessagesForSession(
   const merged = buildMessageListCache(mergedItems, {
     knownTail: existing?.knownTail,
     knownFull: existing?.knownFull,
-    sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, incoming.length, mergedItems.length),
+    sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, incoming.length),
     sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
     sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
     oldestLoadedSeq: minPositiveSeq(mergedItems),
@@ -2250,7 +2259,7 @@ function prependHistoricalMessagesForSession(
   const merged = buildMessageListCache(mergedItems, {
     knownTail: existing?.knownTail,
     knownFull: options.knownFull || existing?.knownFull,
-    sourceMessageCount: Math.max(options.sourceMessageCount ?? 0, existing?.sourceMessageCount ?? 0, incoming.length, mergedItems.length),
+    sourceMessageCount: Math.max(options.sourceMessageCount ?? 0, existing?.sourceMessageCount ?? 0, incoming.length),
     sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
     sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
     oldestLoadedSeq: minPositiveSeq(mergedItems),
@@ -2330,7 +2339,7 @@ export function buildMessageListCache(messages: MessageSnapshot[], options: Buil
     byGlobalSeq,
     knownTail: options.knownTail,
     knownFull: options.knownFull,
-    sourceMessageCount: options.sourceMessageCount,
+    sourceMessageCount: options.sourceMessageCount === undefined ? undefined : Math.max(options.sourceMessageCount, items.length),
     sourceLastMessageAt: options.sourceLastMessageAt,
     sourceProjectionHighWatermarkSeq: options.sourceProjectionHighWatermarkSeq,
     oldestLoadedSeq: options.oldestLoadedSeq ?? minPositiveSeq(items),

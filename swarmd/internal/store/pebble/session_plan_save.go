@@ -46,6 +46,9 @@ func setV3PlanSaveInBatch(batch *pebble.Batch, sessionID string, save V3PlanSave
 	if err := batch.Set([]byte(KeySessionPlanRevision(plan.SessionID, plan.ID, plan.Version)), planPayload, nil); err != nil {
 		return err
 	}
+	if err := setTaskRelatedInBatch(batch, KeySessionPlan(plan.SessionID, plan.ID), plan); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), planPayload, nil); err != nil {
 		return err
 	}

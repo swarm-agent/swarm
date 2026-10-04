@@ -49,3 +49,37 @@ test('rapid return to a session replaces aborted hydration without deleting its 
     globalThis.fetch = originalFetch
   }
 })
+
+// Purpose: account reset must retire selected hydration as well as child queues.
+// The production selectAndHydrateDesktopV3Session boundary is exercised with a
+// deferred transport to prove old-account requests cannot be reused or published.
+test('account reset aborts selected hydration and permits a fresh same-ID read', { timeout: 5000 }, async () => {
+  const originalFetch = globalThis.fetch
+  const requests: Array<{ signal: AbortSignal; reject: (error: Error) => void }> = []
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('/auth/desktop/session')) return new Response(JSON.stringify({ user_id: 'test-user', account_scope_id: 'test-account' }))
+    return new Promise<Response>((_resolve, reject) => { requests.push({ signal: init!.signal as AbortSignal, reject }) })
+  }
+  const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve() }
+  try {
+    await ensureDesktopSession(true)
+    const old = selectAndHydrateDesktopV3Session('reset-session')
+    await flush()
+    await ensureDesktopSession(true)
+    assert.equal(requests[0].signal.aborted, true)
+    const current = selectAndHydrateDesktopV3Session('reset-session')
+    const failure = assert.rejects(current, /current failure/)
+    await flush()
+    assert.notEqual(old, current)
+    assert.equal(requests.length, 2)
+    requests[0].reject(new DOMException('Aborted', 'AbortError'))
+    await old
+    assert.equal(selectAndHydrateDesktopV3Session('reset-session'), current)
+    requests[1].reject(new Error('current failure'))
+    await failure
+    assert.equal(getDesktopV3CacheSnapshot().messagesBySession['reset-session'], undefined)
+  } finally {
+    for (const request of requests) request.reject(new DOMException('Aborted', 'AbortError'))
+    globalThis.fetch = originalFetch
+  }
+})

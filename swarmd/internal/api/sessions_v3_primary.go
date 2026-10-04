@@ -1101,6 +1101,31 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 		if sessionsV3SystemSidechat(item) {
 			continue
 		}
+		if projectID != "" && r.URL.Query().Get("view") == "summary" {
+			view := sessionsV3SessionView{PendingPermissions: []pebblestore.PermissionRecord{}}
+			state, found, err := s.sessions.Store().GetV3SessionRunState(item.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if found && state.AccountScopeID == principal.AccountScopeID && state.UserID == principal.UserID {
+				view.CurrentRunState = &state
+			}
+			if s.perm != nil {
+				pending, err := s.perm.ListPending(item.ID, 200)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				for _, permission := range pending {
+					if permission.SessionID == item.ID {
+						view.PendingPermissions = append(view.PendingPermissions, permission)
+					}
+				}
+			}
+			items = append(items, map[string]any{"session": item, "attention": view})
+			continue
+		}
 		projection, projectionOK, err := s.sessions.GetSessionProjection(item.ID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -1616,7 +1641,9 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 		var messages []pebblestore.MessageSnapshot
 		var err error
 		fetchLimit := query.Limit + 1
-		if query.Tail {
+		if query.MaxBytes > 0 {
+			messages, query.MoreOlder, err = s.sessions.ListSessionMessagesBeforeByteBudget(sessionID, query.BeforeSeq, query.Limit, query.MaxBytes)
+		} else if query.Tail {
 			messages, err = s.sessions.ListSessionMessageTail(sessionID, fetchLimit)
 		} else if query.HasBeforeSeq {
 			messages, err = s.sessions.ListSessionMessagesBefore(sessionID, query.BeforeSeq, fetchLimit)
@@ -3405,6 +3432,8 @@ type sessionsV3MessagesPageQuery struct {
 	AfterSeq     uint64
 	BeforeSeq    uint64
 	HasBeforeSeq bool
+	MaxBytes     int
+	MoreOlder    bool
 	Tail         bool
 	Limit        int
 }
@@ -3457,11 +3486,19 @@ func parseSessionsV3MessagesPageQuery(w http.ResponseWriter, r *http.Request) (s
 	if query.Limit > sessionsV3MessagesPageMaxLimit {
 		query.Limit = sessionsV3MessagesPageMaxLimit
 	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("max_bytes")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > pebblestore.V3RecentMessageByteBudget || (!query.Tail && !query.HasBeforeSeq) {
+			writeError(w, http.StatusBadRequest, errors.New("max_bytes requires tail or before_seq and must be between 1 and 262144; one oversized whole record may exceed it"))
+			return sessionsV3MessagesPageQuery{}, false
+		}
+		query.MaxBytes = parsed
+	}
 	return query, true
 }
 
 func sessionsV3MessagesPageResponse(sessionID string, messages []pebblestore.MessageSnapshot, query sessionsV3MessagesPageQuery) map[string]any {
-	hasMoreOlder := false
+	hasMoreOlder := query.MoreOlder
 	hasMoreNewer := false
 	if query.Tail || query.HasBeforeSeq {
 		if len(messages) > query.Limit {

@@ -832,6 +832,8 @@ export function aggregateTaskLiveState(
   const primaryIntent = primaryData?.intent
   const primaryPlanRecord = primaryData?.planRecord as any
   const primaryPlanDoc = selectTaskPlanDocument(task, primaryPlanRecord)
+  const boardPlan = task.boardSummary?.plan_binding_stale ? undefined : task.boardSummary?.plan
+  const primaryPlanWorkflow = boardPlan?.document || primaryPlanDoc
   const primaryLifecycle = primarySess?.lifecycle as any
 
   const primaryRunStatus = preferRunEvidence(primaryView?.current_run_state, primaryIntent)?.status?.trim().toLowerCase()
@@ -842,32 +844,33 @@ export function aggregateTaskLiveState(
     !primaryTerminal && (primaryRunStatus === 'running' || (!primaryRunStatus && primaryLifecycle?.active === true && primaryPhase === 'running'))
   )
   const isPrimaryReview = Boolean(
-    primaryPlanRecord?.status === 'waiting_review' ||
+    (boardPlan?.status || primaryPlanRecord?.status) === 'waiting_review' ||
     (primaryPhase === 'needs_review' && !isPrimaryActive) ||
     primaryPlanDoc?.executionState?.status === 'waiting_review' ||
-    primaryPlanDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
+    primaryPlanWorkflow?.execution_state?.status === 'waiting_review' ||
+    primaryPlanWorkflow?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
   )
   const isPrimaryFailed = Boolean(
     ['failed', 'cancelled', 'interrupted', 'expired'].includes(primaryRunStatus || '') ||
     (!primaryRunStatus && (primaryPhase === 'failed' || primaryPhase === 'cancelled'))
   )
 
-  const programRecord = task.taskProgramStatus || (task as any).task_program_status
+  const programRecord = task.boardSummary ? task.boardSummary.program : task.taskProgramStatus || (task as any).task_program_status
   const ownerRunId = preferRunEvidence(primaryView?.current_run_state, primaryIntent)?.run_id
   const programIsCurrent = !programRecord?.reservation_run_id || !ownerRunId || programRecord.reservation_run_id === ownerRunId
-  const programJobs =
+  const programJobs = task.boardSummary ? (task.boardSummary.program?.jobs || []) :
     task.taskProgramStatus?.jobs ||
     (task as any).task_program_status?.jobs ||
     task.taskProgram?.jobs ||
     (task as any).task_program?.jobs ||
     []
-  const hasTaskProgram = Boolean(
+  const hasTaskProgram = Boolean(task.boardSummary ? task.boardSummary.program : (
     task.taskProgramStatus ||
     (task as any).task_program_status ||
     task.taskProgram ||
     (task as any).task_program ||
     programJobs.length > 0
-  )
+  ))
 
   // Historical child generations must not supply current execution evidence.
   const currentSids = associatedSids.filter((sid) => sid === primarySessionId || !hasTaskProgram ||
@@ -890,7 +893,7 @@ export function aggregateTaskLiveState(
       ((task as any).plan_binding?.session_id && (task as any).plan_binding.session_id === sid) ||
       (!hasTaskProgram && primarySessionId === sid)
     )
-    const sPlanDoc = isPlanOwner ? selectTaskPlanDocument(task, sPlan) : sPlan?.document
+    const sPlanDoc = isPlanOwner ? (boardPlan?.document || selectTaskPlanDocument(task, sPlan)) : sPlan?.document
 
     const intentStatus = sIntent?.status?.trim().toLowerCase()
     const currentRunId = sView?.current_run_state?.run_id
@@ -912,6 +915,7 @@ export function aggregateTaskLiveState(
     const isRev = Boolean(
       sPlan?.status === 'waiting_review' ||
       (lifecyclePhase === 'needs_review' && !isAct) ||
+      sPlanDoc?.execution_state?.status === 'waiting_review' ||
       sPlanDoc?.executionState?.status === 'waiting_review' ||
       sPlanDoc?.checkpoints?.some((cp: any) => cp.status === 'needs_review')
     )
@@ -1078,7 +1082,7 @@ export function aggregateTaskLiveState(
     status = 'pending_approval'
   } else if (task.status === 'planning') {
     const hasAuthoredPlan = Boolean(
-      (primaryPlanDoc?.checkpoints && primaryPlanDoc.checkpoints.length > 0) ||
+      (primaryPlanWorkflow?.checkpoints && primaryPlanWorkflow.checkpoints.length > 0) ||
       (primaryPlanRecord?.document?.checkpoints && primaryPlanRecord.document.checkpoints.length > 0) ||
       primaryPlanRecord?.status === 'waiting_review'
     )
@@ -1110,7 +1114,7 @@ export function aggregateTaskLiveState(
       } else if (primaryRunStatus === 'pending_executor' && runningSessions === 0) {
         status = 'queued'
       } else if (tpRecordState === 'completed') {
-        const unfinishedPlan = primaryPlanDoc?.checkpoints?.some((cp: any) => cp.status !== 'completed')
+        const unfinishedPlan = primaryPlanWorkflow?.checkpoints?.some((cp: any) => cp.status !== 'completed')
         status = unfinishedPlan ? 'blocked' : task.isIntegrated ? 'completed' : 'needs_review'
       } else if (tpRecordState === 'failed' || tpRecordState === 'cancelled') {
         status = 'failed'

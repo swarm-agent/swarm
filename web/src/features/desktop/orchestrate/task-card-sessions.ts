@@ -1,5 +1,5 @@
 import type { DesktopV3CacheState } from '../state/desktop-v3-cache-types'
-import { extractTaskSessionIds } from '../runtime/desktop-projects-membership'
+import { extractTaskSessionIds, taskExcludedSessionIds } from '../runtime/desktop-projects-membership'
 import type { RunningTask, TaskSessionStateItem } from './orchestrate-types'
 
 /** Discover delegated children from canonical metadata, never transcript contents.
@@ -7,10 +7,10 @@ import type { RunningTask, TaskSessionStateItem } from './orchestrate-types'
  */
 export function taskWithCurrentSessions(task: RunningTask, state: DesktopV3CacheState): RunningTask {
   const parent = task.sessionId || task.planBinding?.sessionId || task.planBinding?.session_id
-  const jobs = task.taskProgramStatus?.jobs
+  const jobs = task.boardSummary ? task.boardSummary.program?.jobs : task.taskProgramStatus?.jobs
   const ids = new Set(extractTaskSessionIds(task))
-  const historical = new Set(jobs?.flatMap(job => job.generation_history?.map(item => item.session_id) || []))
-  const currentJobs = new Set(jobs?.map(job => job.current_session_id || job.child_session_id).filter(Boolean))
+  const historical = taskExcludedSessionIds(task)
+  const currentJobs = new Set(jobs?.map(job => job.current_session_id || ('child_session_id' in job ? job.child_session_id : undefined)).filter(Boolean))
   for (const id of historical) if (!currentJobs.has(id)) ids.delete(id)
   const parentRun = parent ? state.sessionViewsById[parent]?.current_run_state?.run_id : undefined
   if (parent) for (const [id, record] of Object.entries(state.sessionsById)) {
@@ -32,8 +32,8 @@ export function taskWithCurrentSessions(task: RunningTask, state: DesktopV3Cache
 /** Presentation only: runtime aggregation owns statuses; queued is not working. */
 export function taskCardSessions(task: RunningTask): TaskSessionStateItem[] {
   const parent = task.sessionId || task.planBinding?.sessionId || task.planBinding?.session_id
-  const jobs = task.taskProgramStatus?.jobs
-  const currentJobs = jobs ? new Set(jobs.map(job => job.current_session_id || job.child_session_id)) : null
+  const jobs = task.boardSummary ? task.boardSummary.program?.jobs : task.taskProgramStatus?.jobs
+  const currentJobs = jobs ? new Set(jobs.map(job => job.current_session_id || ('child_session_id' in job ? job.child_session_id : undefined))) : null
   const unique = new Map<string, TaskSessionStateItem>()
   for (const session of task.sessionSummary?.sessionStates || []) {
     if (!session.sessionId || (currentJobs && !currentJobs.has(session.sessionId))) continue

@@ -771,7 +771,7 @@ export function MinimalTaskCard({
   const detailsId = useId()
   useEffect(() => {
     if (expanded && projectId) desktopProjects.inspectTask(projectId, task.id)
-  }, [expanded, projectId, task.id])
+  }, [expanded, projectId, task.id, task.revision])
   const handleToggleExpand = () => {
     if (expanded) {
       requestAnimationFrame(() => {
@@ -893,11 +893,14 @@ export function MinimalTaskCard({
   const hasTaskProgramSpec = Boolean(taskProgramDef && ((taskProgramDef.stages && taskProgramDef.stages.length > 0) || (taskProgramDef.jobs && taskProgramDef.jobs.length > 0)))
   const hasStructuredPlan = planCheckpointsToRender.length > 0 || hasTaskProgramSpec
   const isPlanRejected = Boolean(
+    task.boardSummary?.plan?.approval_state === 'rejected' ||
+    task.boardSummary?.plan?.status === 'rejected' ||
     planDoc?.status === 'rejected' ||
     planDoc?.approval_state === 'rejected' ||
     planDoc?.approvalState === 'rejected'
   )
   const isPlanTaskWithoutStructuredPlan = Boolean(
+    task.boardSummary?.plan_binding_stale ||
     (task.agentType === 'plan' || task.outcomeType === 'plan_spec' || Boolean(task.planBinding || (task as any).plan_binding || rawPlanDoc)) && !isTaskPlanReviewable(planDoc)
   )
   const bindingRevision =
@@ -1644,12 +1647,13 @@ export function MinimalTaskCard({
 
           </>}
           {/* Technical execution details remain available on demand. */}
-          {(!isPlanCard || expanded) && (hasStructuredPlan || task.fullPlanMarkdown) && (
+          {(!isPlanCard || expanded) && (hasStructuredPlan || task.fullPlanMarkdown || task.boardSummary?.plan || task.boardSummary?.program) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
+                  if (!isFullPlanOpen && projectId && !task.detailLoaded) desktopProjects.inspectTask(projectId, task.id)
                   setIsFullPlanOpen(!isFullPlanOpen)
                 }}
                 className="w-full flex items-center justify-between px-2.5 py-1.5 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
@@ -3091,7 +3095,7 @@ export function OrchestrateView({
 
   const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string; swarmSection?: string } }) ?? {}
   const routeConversationId = projectRouteParams.sessionId || ''
-  const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string } | null>(null)
+  const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string; accountScopeId?: string } | null>(null)
   const createProjectIntent = useRouterState({ select: state => (state.location.search as { createProject?: boolean }).createProject === true })
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
@@ -3104,7 +3108,7 @@ export function OrchestrateView({
   const selectedProjectId = resolvedProject?.id || ''
   const selectedProjectSegment = resolvedProject ? projectRouteSegment(resolvedProject, projects) : ''
   const projectRouteError = projectsLoaded && routeProjectSegment && !resolvedProject ? 'Project not found or name is ambiguous. Choose a project.' : ''
-  const admittedParentId = admittedConversationId(conversationAdmission, selectedProjectId, routeConversationId)
+  const admittedParentId = admittedConversationId(conversationAdmission, selectedProjectId, routeConversationId, getDesktopSessionIdentitySnapshot()?.accountScopeId)
   const conversationRouteScope = `${selectedProjectId}:${routeConversationId}`
   const appliedConversationRouteScope = useRef(conversationRouteScope)
   const currentConversationRouteScope = useRef(conversationRouteScope)
@@ -4118,18 +4122,18 @@ export function OrchestrateView({
     if (selectedProject) {
       try { localStorage.setItem(`swarm:last-project:${accountScopeId || ''}`, selectedProject.id) } catch { /* Optional navigation preference; route remains authoritative. */ }
     }
-    if (selectedProject && routeConversationId) {
+    if (accountScopeId && selectedProject && routeConversationId) {
       const cached = cachedProjectConversation(getDesktopV3CacheSnapshot(), selectedProject.id, routeConversationId)
       if (cached) {
-        setConversationAdmission({ projectId: selectedProject.id, sessionId: cached.id })
+        setConversationAdmission({ projectId: selectedProject.id, sessionId: cached.id, accountScopeId })
         setActiveSessionId(cached.id)
         return () => { active = false }
       }
       void requestStartupJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
         requireProjectConversation(selectedProject.id, session)
         if (session.id !== routeConversationId) throw new Error('Session identity mismatch')
-        if (active) {
-          setConversationAdmission({ projectId: selectedProject.id, sessionId: session.id })
+        if (active && getDesktopSessionIdentitySnapshot()?.accountScopeId === accountScopeId) {
+          setConversationAdmission({ projectId: selectedProject.id, sessionId: session.id, accountScopeId })
           setActiveSessionId(session.id)
         }
       }).catch(cause => { if (active) setConversationError(cause instanceof Error ? cause.message : 'Unable to open conversation') })
@@ -4978,6 +4982,11 @@ export function OrchestrateView({
       return
     }
 
+    if (targetTask.boardSummary?.plan_binding_stale || (targetTask.boardSummary?.plan && !isTaskPlanReviewable(planDoc))) {
+      desktopProjects.inspectTask(selectedProject.id, taskId)
+      setTaskActionErrors(prev => ({ ...prev, [taskId]: 'Open and review the full current plan before approving. Retry after detail loads.' }))
+      return
+    }
     const acceptanceBody = buildTaskAcceptancePayload(targetTask)
     const isPlanTask = Boolean(
       targetTask.agentType === 'plan' ||
@@ -6472,7 +6481,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <div className="flex-1 overflow-hidden flex flex-col">
               {projectState?.mediaError && <div role="alert">Failed to load project media: {projectState.mediaError} <button type="button" onClick={() => void desktopProjects.refresh(selectedProjectId, false)}>Retry media</button></div>}
               {projectTasksError && (
-                <div className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
+                <div role="alert" className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
                   <span>Failed to load project tasks: {projectTasksError}</span>
                   <button
                     type="button"

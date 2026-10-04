@@ -1,9 +1,7 @@
 package pebblestore
 
 import (
-	"encoding/json"
 	"errors"
-	"sort"
 	"strings"
 )
 
@@ -41,16 +39,13 @@ func (s *SessionStore) ValidateProjectConversation(session SessionSnapshot, acco
 	return nil
 }
 
-// ListProjectConversations filters the account index before applying the result
-// limit. Legacy project-bound Orchestrator conversations remain discoverable;
-// the primary-session pointer is not the membership authority.
+// ListProjectConversations reads only compact project/user ordered summaries.
+// Membership is maintained by canonical session batches, not a primary pointer.
 func (s *SessionStore) ListProjectConversations(accountID, userID, projectID string, limit int) ([]SessionSnapshot, error) {
 	if accountID == "" || userID == "" || projectID == "" {
 		return nil, errors.New("project conversation listing requires account, user, and project")
 	}
-	return s.listSessionsForAccount(accountID, limit, func(session SessionSnapshot) bool {
-		return session.UserID == userID && session.Metadata["project_id"] == projectID && session.Metadata["agent_name"] == "system-orchestrator"
-	})
+	return s.listProjectConversationSummaries(accountID, userID, projectID, limit)
 }
 
 // validateProjectPermissionTransitionLocked runs while the session mutation lock
@@ -94,35 +89,10 @@ func (s *PermissionStore) validateProjectPermissionTransitionLocked(record Permi
 	return nil
 }
 
-// ListArchivedProjectConversations filters before limiting; unrelated tombstones
-// must not hide a project's restorable history. Scan only the account index.
+// ListArchivedProjectConversations reads only compact scoped archive rows.
 func (s *SessionStore) ListArchivedProjectConversations(accountID, userID, projectID string, limit int) ([]V3SessionTombstone, error) {
 	if accountID == "" || userID == "" || projectID == "" {
 		return nil, errors.New("project archive listing requires account, user, and project")
 	}
-	if limit <= 0 || limit > 200 {
-		limit = 200
-	}
-	out := make([]V3SessionTombstone, 0)
-	err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: V3SessionTombstoneByAccountPrefix(accountID)}, func(_ string, value []byte) (bool, error) {
-		var item V3SessionTombstone
-		if err := json.Unmarshal(value, &item); err != nil {
-			return false, err
-		}
-		session := item.Session
-		if item.Archived && !item.Deleted && item.AccountScopeID == accountID && item.UserID == userID && session.AccountScopeID == accountID && session.UserID == userID && session.Metadata["project_id"] == projectID && session.Metadata["agent_name"] == "system-orchestrator" && session.Metadata["task_id"] == nil && session.Metadata["parent_session_id"] == nil {
-			out = append(out, item)
-			sort.Slice(out, func(i, j int) bool {
-				if out[i].UpdatedAt != out[j].UpdatedAt {
-					return out[i].UpdatedAt > out[j].UpdatedAt
-				}
-				return out[i].SessionID < out[j].SessionID
-			})
-			if len(out) > limit {
-				out = out[:limit]
-			}
-		}
-		return true, nil
-	})
-	return out, err
+	return s.listArchivedProjectConversationSummaries(accountID, userID, projectID, limit)
 }
