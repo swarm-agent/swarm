@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add headless worker control, runtime journaling, verified-host SSH transport probe, and GCP compute target registration. Support fenced runtime claims, command acknowledgement, and target capacity reservations in store, runtime execution service, and TypeScript SDK (`WorkerControl`). Docs impact: none.
+
 - Add typed SDK permission views and explicit structured/custom answers, confirmed browser/bridge resolution with recoverable errors, duplicate guards and durable pending-request reconciliation. Never auto-answer ask-user, and remove bypass/model configuration from chat quickstarts. Docs impact: explicit-decision examples and permission protocol migration guidance in `packages/sdk/README.md` and SDK quickstarts.
 
 - Reject missing or malformed browser SDK subscription session IDs before opening a connection or changing the selected conversation. Docs impact: none.
@@ -13,6 +15,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Keep SDK chat subscriptions usable across repeated turns, conversation switching and reconnects; add canonical project conversation helpers and a browser-only entry point, reject foreign-origin bridge upgrades, and disconnect failed upstream watches. Docs impact: SDK conversation lifecycle and browser bridge usage in `packages/sdk/README.md`.
 
 - Add native WebSocket streaming bridge (`SwarmWebSocketBridge`, `client.chat.attachWebSocket`) and universal browser WebSocket client (`SwarmBrowserChat`) to `@swarm-agent/sdk`, allowing web frontends to hook directly into Swarm's bidirectional WebSocket stream for realtime assistant tokens, model reasoning deltas, live tool execution events, and permission approvals. Docs impact: none.
+- Add high-level interactive Chat namespace (`client.chat`), permissions and permissionless mode namespace (`client.permissions`), automatic environment and Codex credential auto-configuration (`client.auth.autoConfigure`), verified provider fleet recommendations and router assignment (`applyProviderFleet`, `restoreDefaults`), auto-permission approval during session runs (`autoApprovePermissions`), and comprehensive 0->1 quickstart examples (`chat-quickstart.ts`, `orchestrator-quickstart.ts`) to `@swarm-agent/sdk`. Docs impact: none.
 
 - Require test-only mint suppression before native qualification installation, reject ineffective service suppression at startup, and verify the daemon environment after installation, reinstallation, and restart for root/sudo scenarios. Add hermetic guard and repeated reporter-suppression regressions without changing real-user defaults; keep the publication path check limited to the exact test-only systemd drop-in statement. Docs impact: mandatory no-mint qualification requirements and evidence limits in `docs/main-deploy-checklist.md`.
 

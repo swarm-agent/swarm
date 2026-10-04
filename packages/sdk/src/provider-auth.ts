@@ -42,6 +42,23 @@ export class SwarmCredentialsNamespace {
     return (await this.transport.request<{ ok: boolean; deleted: boolean; provider: string; id: string; cleanup: Record<string, unknown> }>('/v1/auth/credentials/delete', { method: 'POST', body: { provider, id } })).data;
   }
 }
+export interface CodexDeviceCode {
+  verification_url: string;
+  user_code: string;
+  session_id: string;
+  expires_at?: number;
+}
+
+export interface CodexDeviceLoginOptions {
+  label?: string;
+  active?: boolean;
+  intervalMs?: number;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onCode?: (code: CodexDeviceCode) => void;
+  onStatus?: (status: CodexLogin) => void;
+}
+
 export class SwarmCodexAuthNamespace {
   constructor(private readonly transport: SwarmTransport) {}
   async start(input: { method: 'browser' | 'manual' | 'device'; label?: string; active?: boolean }): Promise<CodexLogin> {
@@ -52,6 +69,72 @@ export class SwarmCodexAuthNamespace {
   }
   async complete(session_id: string, callback_input: string): Promise<CodexLogin> {
     return (await this.transport.request<CodexLogin>('/v1/auth/codex/oauth/complete', { method: 'POST', body: { session_id, callback_input } })).data;
+  }
+  /**
+   * High-level Codex device login flow.
+   * Starts the OAuth device authorization session, invokes onCode with verification URL
+   * and user code, and polls status until completion, timeout, or abort.
+   */
+  async loginDevice(options: CodexDeviceLoginOptions = {}): Promise<CodexLogin> {
+    const startRes = await this.start({
+      method: 'device',
+      label: options.label ?? 'Codex Device Login',
+      active: options.active ?? true,
+    });
+    if (options.onCode && startRes.verification_url && startRes.user_code) {
+      options.onCode({
+        verification_url: startRes.verification_url,
+        user_code: startRes.user_code,
+        session_id: startRes.session_id,
+        expires_at: startRes.expires_at,
+      });
+    }
+    const intervalMs = Math.max(500, options.intervalMs ?? 2000);
+    const timeoutMs = options.timeoutMs ?? 15 * 60 * 1000;
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (options.signal?.aborted) {
+        throw new Error('Codex device login aborted by caller');
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, intervalMs));
+      if (options.signal?.aborted) {
+        throw new Error('Codex device login aborted by caller');
+      }
+      const current = await this.status(startRes.session_id);
+      options.onStatus?.(current);
+      if (current.status === 'success') {
+        return current;
+      }
+      if (current.status === 'error' || current.status === 'failed' || current.status === 'expired') {
+        throw new Error(current.error || `Codex login failed with status: ${current.status}`);
+      }
+    }
+    throw new Error(`Codex device login timed out after ${timeoutMs}ms`);
+  }
+  /**
+   * Checks whether Codex is already connected and active.
+   */
+  async isAuthenticated(): Promise<boolean> {
+    try {
+      const res = await (await this.transport.request<CredentialList>('/v1/auth/credentials?provider=codex')).data;
+      if (!res?.records?.length) return false;
+      return res.records.some((r) => r.provider === 'codex' && r.active && r.connection?.connected !== false);
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Retrieves the active Codex credential status if one exists.
+   */
+  async getCredential(): Promise<CredentialStatus | null> {
+    try {
+      const res = await (await this.transport.request<CredentialList>('/v1/auth/credentials?provider=codex')).data;
+      const match = res?.records?.find((r) => r.provider === 'codex' && r.active);
+      return match ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 export interface OnboardingStatus {
@@ -70,6 +153,25 @@ export class SwarmOnboardingNamespace {
   async get(): Promise<OnboardingStatus> { return (await this.transport.request<OnboardingStatus>('/v1/onboarding')).data; }
   async update(body: OnboardingUpdate): Promise<OnboardingStatus> {
     return (await this.transport.request<OnboardingStatus>('/v1/onboarding', { method: 'POST', body })).data;
+  }
+  /**
+   * Ensures the headless daemon identity is bootstrapped.
+   * If the daemon requires onboarding, it automatically sets default identity parameters
+   * so provider authentication and sessions can immediately proceed without manual wizard steps.
+   */
+  async ensureBootstrapped(options: { username?: string; swarm_name?: string } = {}): Promise<OnboardingStatus> {
+    const status = await this.get();
+    if (!status.needs_onboarding && status.identity?.bootstrapped) {
+      return status;
+    }
+    if (status.identity?.bootstrapped) {
+      return this.update({ desktop_onboarding_complete: true });
+    }
+    return this.update({
+      username: options.username ?? 'owner',
+      swarm_name: options.swarm_name ?? 'Headless Swarm',
+      desktop_onboarding_complete: true,
+    });
   }
   /** First credential only. Use auth.credentials.save for subsequent credentials. */
   async credential(body: Omit<CredentialInput, 'id'>): Promise<CredentialStatus> {

@@ -25,6 +25,7 @@ test('worker control wire contracts and negative envelopes', async () => {
   const job = {worker_revision: 2, deployment_revision: 2, context_revision: 1, idempotency_key: 'job-key', input: {prompt: 'review'}};
   const cases: {method: string; tail: string; field: string; array?: boolean; body?: unknown; invoke: () => Promise<unknown>}[] = [
     {method:'POST',tail:'ssh-targets',field:'target',body:registration,invoke:()=>control.registerSSHTarget('worker-1',registration)},
+    {method:'POST',tail:'gcp-targets',field:'target',body:{name:'gcp-target',runtime_id:'rt-1',idempotency_key:'gcp-key'},invoke:()=>control.registerGCPTarget('worker-1',{name:'gcp-target',runtime_id:'rt-1',idempotency_key:'gcp-key'})},
     {method:'POST',tail:'target-reference',field:'target',body:target,invoke:()=>control.resolveTarget('worker-1',target)},
     {method:'GET',tail:'context?revision=1',field:'context',invoke:()=>control.getContext('worker-1',1)},
     {method:'PUT',tail:'context',field:'context',body:context,invoke:()=>control.updateContext('worker-1',context)},
@@ -34,6 +35,7 @@ test('worker control wire contracts and negative envelopes', async () => {
     {method:'POST',tail:'deployments/deployment-1/approve',field:'deployment',body:{expected_revision:1,approval_digest:'digest'},invoke:()=>control.approveDeployment('worker-1','deployment-1',1,'digest')},
     {method:'POST',tail:'deployments/deployment-1/jobs',field:'run',body:job,invoke:()=>control.queueJob('worker-1','deployment-1',job)},
     {method:'POST',tail:'deployments/deployment-1/commands',field:'command',body:command,invoke:()=>control.command('worker-1','deployment-1',command)},
+    {method:'POST',tail:'deployments/deployment-1/commands/cmd-1/ack',field:'command',body:{generation:1,status:'acknowledged',evidence_digest:'a'.repeat(64)},invoke:()=>control.acknowledgeCommand('worker-1','deployment-1','cmd-1',{generation:1,status:'acknowledged',evidence_digest:'a'.repeat(64)})},
     {method:'GET',tail:'deployments/deployment-1/commands',field:'commands',array:true,invoke:()=>control.commands('worker-1','deployment-1')},
   ];
   for (const c of cases) {

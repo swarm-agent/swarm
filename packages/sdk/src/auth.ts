@@ -1,4 +1,5 @@
 import { SwarmCredentialsNamespace, SwarmCodexAuthNamespace } from './provider-auth.js';
+import { SwarmSettingsNamespace } from './settings.js';
 import type { SwarmTransport } from './transport.js';
 import type {
   CreateScopedTokenParams,
@@ -106,4 +107,102 @@ export class SwarmAuthNamespace {
     });
     return res.data;
   }
+
+  /**
+   * Automatically configures provider credentials and the AI fleet from environment variables or existing credentials.
+   * Checks for:
+   * - OPENAI_API_KEY -> provider 'openai'
+   * - ANTHROPIC_API_KEY -> provider 'anthropic'
+   * - GEMINI_API_KEY / GOOGLE_API_KEY -> provider 'google'
+   * - DEEPSEEK_API_KEY -> provider 'deepseek'
+   * - GROQ_API_KEY -> provider 'groq'
+   * - MISTRAL_API_KEY -> provider 'mistral'
+   * Also verifies if Codex is authenticated via OAuth.
+   * When credentials are found or active, automatically configures the whole fleet (Swarm Core & System Agents)
+   * with verified catalog recommendations.
+   */
+  async autoConfigure(options: AutoConfigureAuthOptions = {}): Promise<AutoConfigureAuthResult> {
+    const env: Record<string, string | undefined> =
+      options.env || (typeof process !== 'undefined' && (process as any)?.env ? (process as any).env : {});
+
+    const configuredProviders: string[] = [];
+
+    const providerKeyMap: Array<{ provider: string; envVar: string; fallbackEnv?: string }> = [
+      { provider: 'openai', envVar: 'OPENAI_API_KEY' },
+      { provider: 'anthropic', envVar: 'ANTHROPIC_API_KEY' },
+      { provider: 'google', envVar: 'GEMINI_API_KEY', fallbackEnv: 'GOOGLE_API_KEY' },
+      { provider: 'deepseek', envVar: 'DEEPSEEK_API_KEY' },
+      { provider: 'groq', envVar: 'GROQ_API_KEY' },
+      { provider: 'mistral', envVar: 'MISTRAL_API_KEY' },
+    ];
+
+    for (const mapping of providerKeyMap) {
+      const key = env[mapping.envVar] || (mapping.fallbackEnv ? env[mapping.fallbackEnv] : undefined);
+      if (key && key.trim()) {
+        try {
+          await this.credentials.save({
+            provider: mapping.provider,
+            type: 'api',
+            api_key: key.trim(),
+            active: true,
+          });
+          configuredProviders.push(mapping.provider);
+        } catch {
+          // Continue if already registered or error
+        }
+      }
+    }
+
+    let source: 'env' | 'existing_credential' | 'none' = configuredProviders.length > 0 ? 'env' : 'none';
+    let primaryProvider: string | undefined = configuredProviders[0];
+
+    // Check if Codex is authenticated via OAuth
+    const codexAuthed = await this.codex.isAuthenticated();
+    if (codexAuthed) {
+      primaryProvider = 'codex';
+      if (source === 'none') source = 'existing_credential';
+    } else if (!primaryProvider) {
+      // Check if existing credentials exist in daemon
+      try {
+        const creds = await this.credentials.list();
+        const activeCred = creds.records.find((r) => r.active);
+        if (activeCred) {
+          primaryProvider = activeCred.provider;
+          source = 'existing_credential';
+        }
+      } catch {}
+    }
+
+    let fleetApplied = false;
+    if (primaryProvider && options.applyFleetRecommendations !== false) {
+      try {
+        const settings = new SwarmSettingsNamespace(this.transport);
+        await settings.applyProviderFleet(primaryProvider);
+        fleetApplied = true;
+      } catch {
+        // Fallback or retry
+      }
+    }
+
+    return {
+      configuredProviders,
+      primaryProvider,
+      source,
+      fleetApplied,
+    };
+  }
+}
+
+export interface AutoConfigureAuthOptions {
+  /** If true (default), automatically applies verified catalog recommendations to the fleet */
+  applyFleetRecommendations?: boolean;
+  /** Custom env map (defaults to process.env) */
+  env?: Record<string, string | undefined>;
+}
+
+export interface AutoConfigureAuthResult {
+  configuredProviders: string[];
+  primaryProvider?: string;
+  source: 'env' | 'existing_credential' | 'none';
+  fleetApplied: boolean;
 }

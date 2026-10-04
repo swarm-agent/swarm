@@ -4,6 +4,11 @@ import { SwarmValidationError } from './errors.js';
 
 export interface WorkerSSHRegistration {
   workspace_id: string; name: string; host: string; user: string; port: number; idempotency_key: string;
+  /** Absolute hub-side trust-store reference; never key contents or automatic trust enrollment. */
+  known_hosts_file?: string;
+}
+export interface WorkerGCPRegistration {
+  name: string; runtime_id: string; desktop_url?: string; idempotency_key: string;
 }
 export interface WorkerTargetReference {
   kind: 'ssh' | 'gcp'; workspace_id?: string; reference_id: string;
@@ -38,8 +43,11 @@ export interface WorkerCommandRequest {
   expected_revision: number; generation: number; kind: 'stop' | 'start'; idempotency_key: string;
 }
 export interface WorkerCommandRecord {
-  id: string; deployment_id: string; generation: number; kind: 'stop'; status: 'pending';
+  id: string; deployment_id: string; generation: number; kind: 'stop'; status: 'pending' | 'acknowledged' | 'rejected';
   requested_by: string; created_at: number;
+}
+export interface WorkerCommandAcknowledgement {
+  generation: number; status: 'acknowledged' | 'rejected'; evidence_digest: string;
 }
 export interface QueueWorkerDeploymentJob {
   worker_revision: number; deployment_revision: number; context_revision: number;
@@ -68,6 +76,10 @@ export class SwarmWorkerControlNamespace {
   registerSSHTarget(worker: string, request: WorkerSSHRegistration): Promise<WorkerTargetReference> {
     key(request.idempotency_key);
     return this.call(this.path(worker, 'ssh-targets'), 'POST', 'target', request);
+  }
+  registerGCPTarget(worker: string, request: WorkerGCPRegistration): Promise<WorkerTargetReference> {
+    key(request.idempotency_key);
+    return this.call(this.path(worker, 'gcp-targets'), 'POST', 'target', request);
   }
   resolveTarget(worker: string, target: WorkerTargetReference): Promise<WorkerTargetReference> {
     if (!['ssh', 'gcp'].includes(target.kind) || !Number.isInteger(target.capacity) || target.capacity < 1 || target.capacity > 100) throw new SwarmValidationError('Invalid target capability');
@@ -104,4 +116,10 @@ export class SwarmWorkerControlNamespace {
     return this.call(this.path(worker, `deployments/${id(deployment)}/commands`), 'POST', 'command', request);
   }
   commands(worker: string, deployment: string): Promise<WorkerCommandRecord[]> { return this.call(this.path(worker, `deployments/${id(deployment)}/commands`), 'GET', 'commands', undefined, true); }
+  acknowledgeCommand(worker: string, deployment: string, commandId: string, ack: WorkerCommandAcknowledgement): Promise<WorkerCommandRecord> {
+    revision(ack.generation);
+    if (!['acknowledged', 'rejected'].includes(ack.status)) throw new SwarmValidationError('Invalid command status');
+    if (!ack.evidence_digest || ack.evidence_digest.length !== 64) throw new SwarmValidationError('Invalid evidence digest');
+    return this.call(this.path(worker, `deployments/${id(deployment)}/commands/${id(commandId)}/ack`), 'POST', 'command', ack);
+  }
 }

@@ -21,8 +21,8 @@ func TestWorkerControlRouteAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 	routes := []struct{ method, path string }{
-		{"GET", "context"}, {"PUT", "context"}, {"POST", "ssh-targets"}, {"POST", "target-reference"}, {"GET", "deployments"}, {"POST", "deployments"},
-		{"GET", "deployments/deployment-1"}, {"POST", "deployments/deployment-1/approve"}, {"GET", "deployments/deployment-1/commands"}, {"POST", "deployments/deployment-1/commands"}, {"POST", "deployments/deployment-1/jobs"},
+		{"GET", "context"}, {"PUT", "context"}, {"POST", "ssh-targets"}, {"POST", "gcp-targets"}, {"POST", "target-reference"}, {"GET", "deployments"}, {"POST", "deployments"},
+		{"GET", "deployments/deployment-1"}, {"POST", "deployments/deployment-1/approve"}, {"GET", "deployments/deployment-1/commands"}, {"POST", "deployments/deployment-1/commands"}, {"POST", "deployments/deployment-1/commands/cmd-1/ack"}, {"POST", "deployments/deployment-1/jobs"},
 	}
 	for _, route := range routes {
 		t.Run(route.method+route.path, func(t *testing.T) {
@@ -128,7 +128,15 @@ func TestWorkerControlAPIIntent(t *testing.T) {
 	call("GET", "deployments", nil, 200)
 	call("GET", "deployments/"+d.ID, nil, 200)
 	call("GET", "context?revision=1", nil, 200)
-	call("POST", "deployments/"+d.ID+"/commands", store.WorkerCommandRequest{ExpectedRevision: d.Revision, Generation: d.Generation, Kind: "stop", IdempotencyKey: "stop-key"}, 202)
+	gcpReg := store.WorkerGCPRegistration{Name: "gcp-api-target", RuntimeID: "target-gcp-api", IdempotencyKey: "gcp-idemp-1"}
+	call("POST", "gcp-targets", gcpReg, 201)
+	cmdOut := call("POST", "deployments/"+d.ID+"/commands", store.WorkerCommandRequest{ExpectedRevision: d.Revision, Generation: d.Generation, Kind: "stop", IdempotencyKey: "stop-key"}, 202)
+	var cmd store.WorkerCommandRecord
+	if err = json.Unmarshal(cmdOut["command"], &cmd); err != nil {
+		t.Fatal(err)
+	}
+	ackDigest := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	call("POST", "deployments/"+d.ID+"/commands/"+cmd.ID+"/ack", store.WorkerCommandAcknowledgement{Generation: d.Generation, Status: "acknowledged", EvidenceDigest: ackDigest}, 200)
 	call("GET", "deployments/"+d.ID+"/commands", nil, 200)
 	call("POST", fmt.Sprintf("runs/%s/cancel", r.ID), map[string]any{}, 200)
 	latest, _, err := ws.GetWorkerRun("acct-test", worker.ID, r.ID)

@@ -69,23 +69,67 @@ Swarm supports two distinct modes of execution depending on your application goa
 
 ---
 
-### 1. Initialize Client
+### 1. Initialize Client & Auto-Configure Credentials
 
-Connect to an already configured, authenticated daemon. Creating a chat UI must not
-change provider credentials, model assignments or permission policy.
+The SDK can automatically discover credentials from your environment or Codex OAuth:
 
 ```typescript
 import { SwarmClient } from '@swarm-agent/sdk';
 
 const client = new SwarmClient({
-  baseUrl: process.env.SWARM_API_URL,
-  socketPath: process.env.SWARM_SOCKET_PATH,
+  baseUrl: process.env.SWARM_API_URL || 'http://127.0.0.1:5555',
+  socketPath: process.env.SWARM_SOCKET_PATH, // e.g. /var/lib/swarmd/local-transport/api.sock
 });
+
+// 1. Ensure headless identity is bootstrapped
+await client.onboarding.ensureBootstrapped({ username: 'developer', swarm_name: 'My Swarm' });
+
+// 2. Auto-configure credentials from environment variables:
+// (checks OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY/GOOGLE_API_KEY, DEEPSEEK_API_KEY, etc.)
+// When found, automatically applies verified provider model recommendations to the fleet & router!
+const auth = await client.auth.autoConfigure();
+console.log(`Provider: ${auth.primaryProvider} (Fleet configured: ${auth.fleetApplied})`);
+
+// Or if using OpenAI Codex OAuth device flow:
+if (!auth.primaryProvider) {
+  await client.auth.codex.loginDevice({
+    onCode: (code) => console.log(`Open ${code.verification_url} and enter ${code.user_code}`),
+  });
+  await client.settings.applyProviderFleet('codex');
+}
 ```
 
 ---
 
-### 2. Explicit permission decisions
+### 2. Fleet & Router Model Settings
+
+Swarm automatically optimizes models for each specific role in the agent fleet. You can customize them or apply verified recommendations in a single call:
+
+```typescript
+// Apply verified recommendations for a provider across the fleet:
+// Sets Swarm Action (auto), Swarm Plan (plan), Coder, Finder, Designer, Router, and Compact.
+await client.settings.applyProviderFleet('codex');
+
+// Inspect current fleet configuration
+const settings = await client.settings.agentModels();
+console.log('Action Model:', settings.agent_model_settings.swarm.action.model);
+console.log('Router Model:', settings.agent_model_settings.system_agents.router.model);
+console.log('Coder Model:', settings.agent_model_settings.system_agents.coder.model);
+
+// Customize individual slots:
+await client.settings.setSystemAgentModel('router', {
+  provider: 'codex',
+  model: 'gpt-6-luna',
+  thinking: 'low',
+});
+
+// Restore system defaults at any time:
+await client.settings.restoreDefaults();
+```
+
+---
+
+### 3. Explicit permission decisions
 
 Use `describePermission(record)` to render tool details, conservative per-request `actions`,
 question IDs, options and custom-response fields. Treat all text/arguments as untrusted text,
@@ -126,7 +170,7 @@ always requires actual user input.
 
 ---
 
-### 3. Interactive Chat & Live Tool Stream
+### 4. Interactive Chat & Live Tool Stream
 
 Build responsive chat UIs that stream model text, reasoning, and live tool execution cards like Swarm Desktop:
 
@@ -175,7 +219,7 @@ console.log(response.reply);
 
 ---
 
-### 4. Native WebSocket Streaming Bridge & Browser Client
+### 5. Native WebSocket Streaming Bridge & Browser Client
 
 Swarmagent communicates in real-time over bidirectional WebSockets (`/v3/realtime/stream`). The SDK provides an out-of-the-box WebSocket Bridge for Node.js backends and a universal browser client for web frontends (React, Vue, Svelte, or Vanilla JS):
 

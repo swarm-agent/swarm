@@ -235,7 +235,7 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 
 	sub := parts[1]
 	switch sub {
-	case "context", "deployments", "target-reference", "ssh-targets":
+	case "context", "deployments", "target-reference", "ssh-targets", "gcp-targets":
 		s.handleWorkerControl(w, r, p, workerID, parts[1:])
 	case "accept":
 		if len(parts) != 2 {

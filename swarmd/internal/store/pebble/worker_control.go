@@ -510,6 +510,63 @@ func (ws *WorkerStore) ListWorkerCommands(account, worker, id string) ([]WorkerC
 	return out, err
 }
 
+type WorkerCommandAcknowledgement struct {
+	CommandID      string `json:"command_id"`
+	Generation     uint64 `json:"generation"`
+	Status         string `json:"status"`
+	EvidenceDigest string `json:"evidence_digest"`
+}
+
+// AcknowledgeWorkerCommand commits an adapter's explicit receipt or rejection of a pending command.
+func (ws *WorkerStore) AcknowledgeWorkerCommand(account, user, worker, id string, ack WorkerCommandAcknowledgement) (WorkerCommandRecord, error) {
+	if !validWorkerControlKey(ack.CommandID) || !validWorkerRuntimeDigest(ack.EvidenceDigest) || ack.Generation == 0 {
+		return WorkerCommandRecord{}, ErrWorkerInvalid
+	}
+	if ack.Status != "acknowledged" && ack.Status != "rejected" {
+		return WorkerCommandRecord{}, ErrWorkerInvalid
+	}
+	ws.store.workersMu.Lock()
+	var m *workerRealtimeMutation
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if m != nil {
+			ws.store.publishWorkerRealtime(m)
+		}
+	}()
+	d, err := ws.GetWorkerDeployment(account, worker, id)
+	if err != nil {
+		return WorkerCommandRecord{}, err
+	}
+	if d.Generation != ack.Generation {
+		return WorkerCommandRecord{}, ErrWorkerConflict
+	}
+	var cmd WorkerCommandRecord
+	key := workerControlKey(account, worker, "command-"+id, ack.CommandID)
+	ok, err := ws.store.GetJSON(key, &cmd)
+	if err != nil {
+		return WorkerCommandRecord{}, err
+	}
+	if !ok || cmd.DeploymentID != id || cmd.Generation != ack.Generation {
+		return WorkerCommandRecord{}, ErrWorkerNotFound
+	}
+	if cmd.Status == ack.Status {
+		return cmd, nil
+	}
+	if cmd.Status != "pending" {
+		return WorkerCommandRecord{}, ErrWorkerConflict
+	}
+	cmd.Status = ack.Status
+	candidate := &workerRealtimeMutation{accountScopeID: account, userID: user, workerID: worker}
+	if err = candidate.put(key, cmd); err != nil {
+		return WorkerCommandRecord{}, err
+	}
+	if err = ws.store.commitWorkerRealtime(candidate); err != nil {
+		return WorkerCommandRecord{}, err
+	}
+	m = candidate
+	return cmd, nil
+}
+
 // Capacity policy references the canonical target identity and is shared across
 // worker deployments. A later proposal cannot silently increase an existing
 // target's capacity. No credential/topology data is duplicated here.

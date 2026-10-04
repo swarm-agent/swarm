@@ -130,6 +130,20 @@ func (s *Server) handleWorkerControl(w http.ResponseWriter, r *http.Request, p i
 		writeJSON(w, http.StatusCreated, map[string]any{"target": target, "execution_available": false})
 		return
 	}
+	if len(parts) == 1 && parts[0] == "gcp-targets" {
+		var req store.WorkerGCPRegistration
+		if err = decodeJSONStrict(w, r, 8192, &req); err != nil {
+			workerHTTPError(w, err)
+			return
+		}
+		target, err := execution.RegisterGCPTarget(ctx, req)
+		if err != nil {
+			workerHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"target": target, "execution_available": false})
+		return
+	}
 	if len(parts) == 1 && parts[0] == "target-reference" {
 		var req store.WorkerTargetReference
 		if err = decodeJSONStrict(w, r, 8192, &req); err != nil {
@@ -210,6 +224,23 @@ func (s *Server) handleWorkerControl(w http.ResponseWriter, r *http.Request, p i
 			writeJSON(w, http.StatusAccepted, map[string]any{"run": run, "execution_available": false})
 			return
 		}
+	}
+	if len(parts) == 5 && parts[0] == "deployments" && parts[2] == "commands" && parts[4] == "ack" {
+		id := parts[1]
+		cmdID := parts[3]
+		var req store.WorkerCommandAcknowledgement
+		if err = decodeJSONStrict(w, r, 8192, &req); err != nil {
+			workerHTTPError(w, err)
+			return
+		}
+		req.CommandID = cmdID
+		c, err := execution.AcknowledgeDeploymentCommand(ctx, worker, id, req)
+		if err != nil {
+			workerHTTPError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"command": c})
+		return
 	}
 	writeError(w, http.StatusNotFound, errors.New("worker control route not found"))
 }

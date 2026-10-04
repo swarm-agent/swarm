@@ -242,3 +242,33 @@ func (s *WorkerExecutionService) RegisterSSHTarget(ctx context.Context, req stor
 	}
 	return s.ResolveWorkerTarget(ctx, store.WorkerTargetReference{Kind: "ssh", WorkspaceID: req.WorkspaceID, ReferenceID: conn.ID, Capacity: 1})
 }
+
+// RegisterGCPTarget registers an authorized GCP compute runtime target reference.
+func (s *WorkerExecutionService) RegisterGCPTarget(ctx context.Context, req store.WorkerGCPRegistration) (store.WorkerTargetReference, error) {
+	account, user, err := s.authorizeWorkerControl(ctx, true)
+	if err != nil {
+		return store.WorkerTargetReference{}, err
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return store.WorkerTargetReference{}, err
+	}
+	runtime, err := ws.RegisterWorkerGCPRuntime(account, user, req)
+	if err != nil {
+		return store.WorkerTargetReference{}, err
+	}
+	return s.ResolveWorkerTarget(ctx, store.WorkerTargetReference{Kind: "gcp", ReferenceID: runtime.SwarmID, Capacity: 1})
+}
+
+// AcknowledgeDeploymentCommand commits an adapter's explicit acknowledgement of a pending command.
+func (s *WorkerExecutionService) AcknowledgeDeploymentCommand(ctx context.Context, worker, id string, ack store.WorkerCommandAcknowledgement) (store.WorkerCommandRecord, error) {
+	account, user, err := s.authorizeWorkerControl(ctx, false)
+	if err != nil {
+		return store.WorkerCommandRecord{}, err
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return store.WorkerCommandRecord{}, err
+	}
+	return ws.AcknowledgeWorkerCommand(account, user, worker, id, ack)
+}
