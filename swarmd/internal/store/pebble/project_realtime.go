@@ -133,6 +133,11 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 			return err
 		}
 	}
+	if len(repositories) > 0 {
+		if err := setTaskSummariesInBatch(batch, repositories[0].store.db, m); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
