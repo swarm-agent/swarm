@@ -1024,6 +1024,7 @@ export interface DesktopV3CacheState {
   desktopSidebarBootstrap: DesktopSidebarBootstrapState
   desktopInitialHydrate: DesktopInitialHydrateState
   sessionsById: Record<string, SessionCacheRecord>
+  projectConversationSummaries?: Record<string, SessionSnapshot[]>
   projectionsBySession: Record<string, V3SessionProjection>
   sessionOrderByScope: Record<string, string[]>
   sessionViewsById: Record<string, DesktopV3SessionView>
@@ -1082,6 +1083,7 @@ export type DesktopV3CacheAction =
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
   | { type: 'desktopInitialHydrate.update'; patch: Partial<DesktopInitialHydrateState> }
   | { type: 'session.select'; sessionId?: string }
+  | { type: 'projectConversations.applySummaries'; projectId: string; sessions: SessionSnapshot[]; attention?: Record<string, DesktopV3SessionView> }
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
   | { type: 'messages.prependHistoryResult'; sessionId: string; messages: MessageSnapshot[]; sourceMessageCount?: number; knownFull?: boolean }

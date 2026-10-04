@@ -41,16 +41,13 @@ func (s *SessionStore) ValidateProjectConversation(session SessionSnapshot, acco
 	return nil
 }
 
-// ListProjectConversations filters the account index before applying the result
-// limit. Legacy project-bound Orchestrator conversations remain discoverable;
-// the primary-session pointer is not the membership authority.
+// ListProjectConversations reads only compact project/user ordered summaries.
+// Membership is maintained by canonical session batches, not a primary pointer.
 func (s *SessionStore) ListProjectConversations(accountID, userID, projectID string, limit int) ([]SessionSnapshot, error) {
 	if accountID == "" || userID == "" || projectID == "" {
 		return nil, errors.New("project conversation listing requires account, user, and project")
 	}
-	return s.listSessionsForAccount(accountID, limit, func(session SessionSnapshot) bool {
-		return session.UserID == userID && session.Metadata["project_id"] == projectID && session.Metadata["agent_name"] == "system-orchestrator"
-	})
+	return s.listProjectConversationSummaries(accountID, userID, projectID, limit)
 }
 
 // validateProjectPermissionTransitionLocked runs while the session mutation lock

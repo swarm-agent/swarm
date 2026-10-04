@@ -101,8 +101,11 @@ func TestProjectTaskSummariesBackfillRestart(t *testing.T) {
 		}
 	}
 	rows, stats, err := s.ListProjectTaskSummaries("account", "project", false)
-	if !errors.Is(err, ErrProjectTaskSummariesNotReady) || rows != nil || stats.BackfillRows != 32 {
+	if !errors.Is(err, ErrProjectTaskSummariesNotReady) || rows != nil || stats.BackfillRows != 0 {
 		t.Fatalf("partial success: %v %+v %v", rows, stats, err)
+	}
+	if stats, err := s.BackfillProjectTaskSummaries("account", "project"); !errors.Is(err, ErrProjectTaskSummariesNotReady) || stats.BackfillRows != 32 {
+		t.Fatalf("preparation chunk: %+v %v", stats, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -114,7 +117,7 @@ func TestProjectTaskSummariesBackfillRestart(t *testing.T) {
 	defer db.Close()
 	s = NewSessionStore(db)
 	rows, stats, err = s.ListProjectTaskSummaries("account", "project", false)
-	if err != nil || len(rows) != 35 || stats.BackfillRows != 3 || rows[34].Revision != 35 {
+	if err != nil || len(rows) != 35 || stats.BackfillRows != 0 || rows[34].Revision != 35 {
 		t.Fatalf("restart: %d %+v %v", len(rows), stats, err)
 	}
 	if err := db.db.Delete([]byte(taskSummaryRowKey(rows[0])), pebble.Sync); err != nil {
@@ -127,8 +130,8 @@ func TestProjectTaskSummariesBackfillRestart(t *testing.T) {
 	if err := db.PutJSON(KeyProjectTask("account", "other", "bad"), bad); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _, err := s.ListProjectTaskSummaries("account", "other", false); !errors.Is(err, ErrProjectTaskSummaryCorrupt) || rows != nil {
-		t.Fatalf("foreign legacy identity accepted: %v %v", rows, err)
+	if _, err := s.BackfillProjectTaskSummaries("account", "other"); !errors.Is(err, ErrProjectTaskSummaryCorrupt) {
+		t.Fatalf("foreign legacy identity accepted: %v", err)
 	}
 	var state taskSummaryState
 	if ok, err := db.GetJSON(taskSummaryPrefix("account", "other")+"state", &state); err != nil || ok {

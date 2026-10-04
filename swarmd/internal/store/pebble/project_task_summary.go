@@ -15,13 +15,13 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-const taskSummaryVersion = 1
+const taskSummaryVersion = 2
 const taskSummaryMaxBytes = 256 << 10
 const taskSummaryBackfillRows = 32
 const taskSummaryBackfillBytes = 16 << 20
 
-// ErrProjectTaskSummariesNotReady never means an empty board. Retry advances one
-// durable bounded migration chunk; callers must surface unavailable, not [].
+// ErrProjectTaskSummariesNotReady never means an empty board. Startup owns
+// preparation; readers surface unavailable without advancing migration.
 var ErrProjectTaskSummariesNotReady = errors.New("project task summaries not ready")
 var ErrProjectTaskSummaryCorrupt = errors.New("project task summary consistency failure")
 
@@ -49,7 +49,7 @@ type taskSummaryRow struct {
 }
 
 func taskSummaryPrefix(account, project string) string {
-	return "project_task_summary/v1/" + keyPart(account) + "/" + keyPart(project) + "/"
+	return "project_task_summary/v2/" + keyPart(account) + "/" + keyPart(project) + "/"
 }
 func taskSummaryPartition(archived bool) int {
 	if archived {
@@ -87,7 +87,25 @@ func compactProjectTask(task ProjectTaskRecord) ProjectTaskRecord {
 		copy.Summary, copy.LastError = taskSummaryBrief(copy.Summary), taskSummaryBrief(copy.LastError)
 		active = []ProjectTaskAttempt{copy}
 	}
-	task.Attempts = active
+	// Explicit card allowlist: new detail fields must not silently enter the index.
+	task = ProjectTaskRecord{
+		ID: task.ID, ProjectID: task.ProjectID, AccountID: task.AccountID,
+		Title: task.Title, Description: task.Description, Status: task.Status,
+		SessionID: task.SessionID, OriginSessionID: task.OriginSessionID, ActiveAttemptID: task.ActiveAttemptID, Attempts: active,
+		Agent: task.Agent, WorkerID: task.WorkerID, WorkerName: task.WorkerName, WorkerRunID: task.WorkerRunID, AutomationID: task.AutomationID,
+		OutcomeType: task.OutcomeType, WorkspacePath: task.WorkspacePath, SourceWorkspace: task.SourceWorkspace,
+		WorktreeBranch: task.WorktreeBranch, WorktreeName: task.WorktreeName, BaseBranch: task.BaseBranch, BaseCommit: task.BaseCommit,
+		GitStatus: task.GitStatus, UnintegratedCommits: task.UnintegratedCommits, BehindCommits: task.BehindCommits,
+		IsIntegrated: task.IsIntegrated, Integration: task.Integration, IsDirty: task.IsDirty, DirtyCount: task.DirtyCount,
+		SyncWarning: taskSummaryBrief(task.SyncWarning), ActionNeeded: taskSummaryBrief(task.ActionNeeded),
+		PipelineStages: task.PipelineStages, CurrentStageIndex: task.CurrentStageIndex, Deliverables: task.Deliverables,
+		PlanSummary: task.PlanSummary, Tier: task.Tier, FeatureSize: task.FeatureSize, Revision: task.Revision,
+		Priority: task.Priority, Group: task.Group, Order: task.Order, Archived: task.Archived, LastError: task.LastError,
+		AspectRatio: task.AspectRatio, Resolution: task.Resolution, VariantCount: task.VariantCount, DurationSeconds: task.DurationSeconds,
+		Model: task.Model, Provider: task.Provider, Thinking: task.Thinking, ServiceTier: task.ServiceTier, ContextMode: task.ContextMode,
+		Operation: task.Operation, RouterAlert: taskSummaryBrief(task.RouterAlert), PlanBinding: task.PlanBinding,
+		TaskProgramID: task.TaskProgramID, TaskProgram: task.TaskProgram, CreatedAt: task.CreatedAt, UpdatedAt: task.UpdatedAt,
+	}
 	task.Description, task.LastError = taskSummaryBrief(task.Description), taskSummaryBrief(task.LastError)
 	task.PlanSummary, task.ContextPoolSummary = taskSummaryBrief(task.PlanSummary), taskSummaryBrief(task.ContextPoolSummary)
 	task.FullPlanMarkdown, task.DiffSummary = "", ""
@@ -126,7 +144,20 @@ func setTaskSummariesInBatch(batch *pebble.Batch, reader pebble.Reader, m *proje
 		return ErrProjectTaskSummaryCorrupt
 	}
 	state.Version = taskSummaryVersion
-	changed := false
+	if !found {
+		canonical := ProjectTaskPrefix(m.accountScopeID, m.projectID)
+		iter, err := reader.NewIter(&pebble.IterOptions{LowerBound: []byte(canonical), UpperBound: []byte(canonical + "\xff")})
+		if err != nil {
+			return err
+		}
+		state.Ready = !iter.First()
+		err = iter.Error()
+		iter.Close()
+		if err != nil {
+			return err
+		}
+	}
+	changed := !found
 	apply := func(key string, data []byte) error {
 		if !strings.HasPrefix(key, ProjectTaskPrefix(m.accountScopeID, m.projectID)) {
 			return nil
@@ -336,9 +367,9 @@ func (s *SessionStore) ListProjectTaskSummariesWithRelated(account, project stri
 
 func (s *SessionStore) readProjectTaskSummaries(account, project string, archived bool, consume func([]ProjectTaskRecord, *ProjectTaskBoardReader)) ([]ProjectTaskRecord, map[string]ProjectTaskRelatedSummary, ProjectTaskReadStats, error) {
 	account, project = strings.TrimSpace(account), strings.TrimSpace(project)
-	stats, err := s.BackfillProjectTaskSummaries(account, project)
-	if err != nil {
-		return nil, nil, stats, err
+	var stats ProjectTaskReadStats
+	if account == "" || project == "" {
+		return nil, nil, stats, ErrProjectInvalid
 	}
 	snapshot := s.store.db.NewSnapshot()
 	defer snapshot.Close()
@@ -349,7 +380,23 @@ func (s *SessionStore) readProjectTaskSummaries(account, project string, archive
 	if err != nil {
 		return nil, nil, stats, err
 	}
-	if !ok || !state.Ready || state.Version != taskSummaryVersion {
+	if !ok {
+		canonical := ProjectTaskPrefix(account, project)
+		iter, err := snapshot.NewIter(&pebble.IterOptions{LowerBound: []byte(canonical), UpperBound: []byte(canonical + "\xff")})
+		if err != nil {
+			return nil, nil, stats, err
+		}
+		empty := !iter.First()
+		err = iter.Error()
+		iter.Close()
+		if err != nil {
+			return nil, nil, stats, err
+		}
+		if empty {
+			state = taskSummaryState{Version: taskSummaryVersion, Ready: true}
+		}
+	}
+	if !state.Ready || state.Version != taskSummaryVersion {
 		return nil, nil, stats, ErrProjectTaskSummariesNotReady
 	}
 	partition := taskSummaryPartition(archived)
@@ -384,8 +431,7 @@ func (s *SessionStore) readProjectTaskSummaries(account, project string, archive
 		return nil, nil, stats, reader.err
 	}
 	if len(reader.missing) > 0 {
-		err := s.backfillTaskRelated(reader.missing, &stats)
-		return nil, nil, stats, err
+		return nil, nil, stats, ErrProjectTaskSummariesNotReady
 	}
 	for i := range rows {
 		reader.hydrateAttempt(&rows[i])

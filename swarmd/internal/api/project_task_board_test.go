@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -128,30 +127,18 @@ func TestProjectTaskBoardChildExecution(t *testing.T) {
 	}
 }
 
-// Legacy fixtures intentionally bypass canonical writers. Migration must return
-// unavailable with no rows and never call reconciliation until all dependencies
-// are projected; bounded retries exercise that contract rather than bypass it.
+// Legacy fixtures intentionally bypass canonical writers. Complete backend
+// preparation before the first read; no browser retries may drive migration.
 func readMigratedTaskBoard(t *testing.T, s *pebblestore.SessionStore, consume func([]pebblestore.ProjectTaskRecord, *pebblestore.ProjectTaskBoardReader)) ([]pebblestore.ProjectTaskRecord, pebblestore.ProjectTaskReadStats, error) {
 	t.Helper()
-	for attempt := 0; attempt < 5; attempt++ {
-		called := false
-		rows, stats, err := s.ReadProjectTaskBoard("account", "project", false, func(rows []pebblestore.ProjectTaskRecord, reader *pebblestore.ProjectTaskBoardReader) {
-			called = true
-			consume(rows, reader)
-		})
-		if !errors.Is(err, pebblestore.ErrProjectTaskSummariesNotReady) {
-			return rows, stats, err
-		}
-		if called || rows != nil {
-			t.Fatal("migration exposed partial board")
-		}
+	if err := s.PrepareProjectTaskIndex(context.Background(), "account", "project"); err != nil {
+		t.Fatal(err)
 	}
-	t.Fatal("migration did not finish within fixture bound")
-	return nil, pebblestore.ProjectTaskReadStats{}, nil
+	return s.ReadProjectTaskBoard("account", "project", false, consume)
 }
 
-// Purpose: handleProjects must expose bounded migration as retryable 503, never
-// an empty successful board, and subsequent active reads must exclude archives
+// Purpose: handleProjects must succeed on its first read after backend preparation,
+// never depending on client retries. Active reads must exclude archives
 // and carry exact review identity and numeric attribution. This real handler and
 // temporary store prove HTTP postconditions, not live latency performance.
 func TestProjectTaskBoardHTTPMigration(t *testing.T) {
@@ -178,13 +165,12 @@ func TestProjectTaskBoardHTTPMigration(t *testing.T) {
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("scope rejection=%d", denied.Code)
 	}
-	first := request("projects:read")
-	if first.Code != 503 || first.Header().Get("Retry-After") != "1" || strings.Contains(first.Body.String(), `"tasks"`) {
-		t.Fatalf("partial migration response=%d %s", first.Code, first.Body.String())
+	if err := store.PrepareProjectTaskIndexes(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	ready := request("projects:read")
 	if ready.Code != 200 {
-		t.Fatalf("retry=%d %s", ready.Code, ready.Body.String())
+		t.Fatalf("first read=%d %s", ready.Code, ready.Body.String())
 	}
 	var body struct {
 		Tasks []projectTaskBoardRow `json:"tasks"`

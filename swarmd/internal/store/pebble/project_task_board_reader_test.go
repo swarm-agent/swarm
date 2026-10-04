@@ -68,12 +68,15 @@ func TestProjectTaskBoardLargeLegacyMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("SWARM_PROJECT_MEDIA_MAX_REQUEST_BYTES", "1024")
-	if _, _, err := s.ListProjectTaskSummaries("account", "project", false); err == nil {
+	if _, err := s.BackfillProjectTaskSummaries("account", "project"); err == nil {
 		t.Fatal("oversized record accepted")
 	}
 	t.Setenv("SWARM_PROJECT_MEDIA_MAX_REQUEST_BYTES", "33554432")
+	if _, err := s.BackfillProjectTaskSummaries("account", "project"); err != nil {
+		t.Fatal(err)
+	}
 	rows, stats, err := s.ListProjectTaskSummaries("account", "project", false)
-	if err != nil || len(rows) != 1 || stats.BackfillRows != 1 || stats.DecodedBytes > 10000 {
+	if err != nil || len(rows) != 1 || stats.BackfillRows != 0 || stats.DecodedBytes > 10000 {
 		t.Fatalf("migration did not recover: rows=%d stats=%+v err=%v", len(rows), stats, err)
 	}
 	_, stats, err = s.ListProjectTaskSummaries("account", "project", false)

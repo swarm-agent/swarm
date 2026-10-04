@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { VisiblePreview } from '../../../components/ui/visible-preview'
+import { taskPreviewURL } from './task-preview-url'
 import { DesignArchiveButton } from '../tools/media-library/design-archive-button'
 import { DesignThumbnail } from '../tools/media-library/design-thumbnail'
 import { creativeThreads } from '../tools/media-library/creative-thread'
@@ -74,9 +74,10 @@ function artifactTurn(task: RunningTask, actions: MediaTaskActions): CreativeCar
     outputs: (task.deliverables ?? []).map(output => {
       const url = output.mediaUrl || output.previewUrl
       const available = ['ready', 'accepted'].includes(output.status) && Boolean(url)
+      const thumbnail = taskPreviewURL(output.previewUrl || (output.type !== 'audio' ? output.mediaUrl : undefined))
       return {
         id: output.id, title: output.title, status: output.status, ready: available,
-        preview: available ? output.type === 'video' ? <VisiblePreview label="Video ready"><video src={url} muted playsInline preload="metadata" /></VisiblePreview> : output.type === 'audio' ? <span>Audio ready</span> : <img src={url} alt={output.title} loading="lazy" decoding="async" /> : null,
+        preview: available ? thumbnail ? <img src={thumbnail} alt={output.title} loading="lazy" decoding="async" /> : <span>{output.type} ready · open preview</span> : null,
         open: () => actions.onPreview?.(output),
         actions: <>
           <button type="button" disabled={!available} onClick={() => actions.onPreview?.(output)}>Preview / save</button>

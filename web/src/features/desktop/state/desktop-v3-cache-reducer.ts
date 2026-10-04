@@ -181,6 +181,11 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
         ...action.patch,
       }
       return state
+    case 'projectConversations.applySummaries':
+      // Display-only membership: never mark a partial session or transcript fully hydrated.
+      state.projectConversationSummaries = { ...state.projectConversationSummaries, [action.projectId]: action.sessions }
+      if (action.attention) applySessionViews(state, action.attention, new Set(action.sessions.map(session => session.id)), { clearMissing: false })
+      return state
     case 'session.select':
       state.selectedSessionId = action.sessionId?.trim() || undefined
       touchSessionTranscript(state, state.selectedSessionId)

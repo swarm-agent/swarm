@@ -58,6 +58,14 @@ func (s *Server) handleProjectDeliverableContent(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusNotFound, errors.New("project not found"))
 		return
 	}
+	if r.URL.Query().Get("preview") == "1" {
+		if field := r.URL.Query().Get("field"); field != "thumbnail" && field != "media" {
+			writeError(w, http.StatusBadRequest, errors.New("invalid content field"))
+			return
+		}
+		s.handleProjectTaskPreview(w, r, p, projectID, taskID, deliverableID)
+		return
+	}
 	task, found, err := db.GetProjectTask(p.AccountScopeID, projectID, taskID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

@@ -3,7 +3,7 @@ import { TaskSessionLeaseManager } from './desktop-projects-membership'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { requestStartupJson } from '../../../app/api'
 import { compareProjectSessionRows, projectSessionRow } from '../state/project-session-rows'
-import type { SessionSnapshot, V3SessionTombstone } from '../state/desktop-v3-cache-types'
+import type { SessionSnapshot, V3SessionTombstone, DesktopV3SessionView } from '../state/desktop-v3-cache-types'
 import { useDesktopV3CacheSelector, subscribeDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { hydrateProjectConversationRows } from './project-conversation-hydration'
 import { hydrateResponseToAction } from '../state/desktop-v3-cache-wire'
@@ -11,8 +11,8 @@ import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
 import { requireProjectConversation, conversationProjectId } from '../orchestrate/project-conversations'
 import { desktopProjects } from './desktop-projects'
 
-// The list endpoint discovers IDs only. Titles, permissions and conversations remain
-// owned by the canonical cache, hydrated through the existing session boundary.
+// Ordered display summaries publish immediately; attention hydration is independent
+// and selected conversation history remains owned by the canonical session cache.
 export function useProjectConversations(projectId: string) {
   const [archiveProject, setArchiveProject] = useState('')
   const includeArchived = Boolean(projectId) && archiveProject === projectId
@@ -37,17 +37,18 @@ export function useProjectConversations(projectId: string) {
         do {
           dirty = false
           const [response, archived] = await Promise.all([
-            requestStartupJson<{ sessions: Array<{ session: SessionSnapshot }> }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200`, { signal: controller.signal }),
+            requestStartupJson<{ sessions: Array<{ session: SessionSnapshot; attention?: DesktopV3SessionView }> }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200&view=summary`, { signal: controller.signal }),
             includeArchived ? requestStartupJson<{ tombstones: V3SessionTombstone[] }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200&archived_mode=only`, { signal: controller.signal }) : Promise.resolve({ tombstones: [] }),
           ])
           if (!active) return
-          const ids = (response.sessions || []).flatMap(({ session }) => {
-            if (conversationProjectId(session) !== projectId) return []
-            requireProjectConversation(projectId, session)
-            return [session.id]
-          })
-          ids.push(...(archived.tombstones || []).flatMap(item => item.session && conversationProjectId(item.session) === projectId ? [item.session_id] : []))
-          await hydrateProjectConversationRows(ids, controller.signal, (hydrated, batch) => {
+          for (const { session } of response.sessions || []) requireProjectConversation(projectId, session)
+          dispatchDesktopV3Cache({ type: 'projectConversations.applySummaries', projectId, sessions: (response.sessions || []).map(item => item.session), attention: Object.fromEntries((response.sessions || []).flatMap(item => item.attention ? [[item.session.id, item.attention]] : [])) })
+          setLoadedProject(projectId)
+          setLoadingProject('')
+          const archivedIds = (archived.tombstones || []).flatMap(item => item.session && conversationProjectId(item.session) === projectId ? [item.session_id] : [])
+          // Active rows already include scoped attention; only requested archive
+          // details need the compatibility hydrate boundary.
+          await hydrateProjectConversationRows(archivedIds, controller.signal, (hydrated, batch) => {
             if (active) dispatchDesktopV3Cache(hydrateResponseToAction(hydrated, batch))
           })
           if (active) { setError(''); setLoadedProject(projectId) }
@@ -63,8 +64,11 @@ export function useProjectConversations(projectId: string) {
     })
     return () => { active = false; controller.abort(); unsubscribe(); unsubscribeCache() }
   }, [projectId, revision, includeArchived])
-  const sessions = useDesktopV3CacheSelector(state => Object.values(state.sessionsById).flatMap(record =>
-    projectId && record.kind === 'full' && !state.tombstonesBySession[record.session.id] && !record.session.navigation_hidden && conversationProjectId(record.session) === projectId ? [record.session] : [])
+  const sessions = useDesktopV3CacheSelector(state => (state.projectConversationSummaries?.[projectId] || []).flatMap(summary => {
+    const record = state.sessionsById[summary.id]
+    const session = record?.kind === 'full' && record.session.updated_at >= summary.updated_at ? record.session : summary
+    return !state.tombstonesBySession[session.id] && !session.navigation_hidden && conversationProjectId(session) === projectId ? [session] : []
+  })
     .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id)),
   (a, b) => a.length === b.length && a.every((item, index) => item === b[index]))
   // Session metadata (including Router titles) needs scoped durable delivery even

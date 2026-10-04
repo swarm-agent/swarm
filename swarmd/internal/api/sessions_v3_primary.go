@@ -1101,6 +1101,31 @@ func (s *Server) handleSessionsV3PrimaryList(w http.ResponseWriter, r *http.Requ
 		if sessionsV3SystemSidechat(item) {
 			continue
 		}
+		if projectID != "" && r.URL.Query().Get("view") == "summary" {
+			view := sessionsV3SessionView{PendingPermissions: []pebblestore.PermissionRecord{}}
+			state, found, err := s.sessions.Store().GetV3SessionRunState(item.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if found && state.AccountScopeID == principal.AccountScopeID && state.UserID == principal.UserID {
+				view.CurrentRunState = &state
+			}
+			if s.perm != nil {
+				pending, err := s.perm.ListPending(item.ID, 200)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, err)
+					return
+				}
+				for _, permission := range pending {
+					if permission.SessionID == item.ID {
+						view.PendingPermissions = append(view.PendingPermissions, permission)
+					}
+				}
+			}
+			items = append(items, map[string]any{"session": item, "attention": view})
+			continue
+		}
 		projection, projectionOK, err := s.sessions.GetSessionProjection(item.ID)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
