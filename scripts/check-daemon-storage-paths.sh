@@ -59,6 +59,8 @@ filter_allowed() {
   # migrate storage nor choose storage paths. Exempt only these complete lines.
   # Search broad-root rejection reads the home path only to refuse indexing it;
   # exempt the exact lookup, not other home defaults or appended operations.
+  # Git recovery uses a disposable private alternate index, removed on return;
+  # permit only this exact temporary allocation, never a daemon storage root.
   # Setup recovery atomically publishes a synced record in the same trusted
   # directory; this exact call is not a storage migration.
   grep -vFx -f <(printf '%s\n' \
@@ -68,6 +70,7 @@ filter_allowed() {
     'swarmd/internal/run/worker_execution.go:	if !found || !workerRunAdmissionOpen(w, r) || len(w.RequestedCapabilities) != 0 || r.SessionID != "worker-execution-"+r.ID || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {' \
     'internal/launcher/system_paths.go:	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")' \
     'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go|swarmd\/internal\/run\/worker_execution\.go|swarmd\/internal\/tool\/search_coordinator\.go):[0-9]+:/\1:/') | grep -Ev \
+    -e '^swarmd/internal/tool/runtime_git_recovery\.go:[0-9]+:[[:blank:]]*tmp, err := os\.MkdirTemp\("", "swarm-recovery-index-"\)$' \
     -e '^internal/launcher/onboarding_recovery\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(f\.Name\(\), filepath\.Join\(dir, "onboarding\.json"\)\); err != nil \{$' \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
@@ -156,6 +159,14 @@ if [[ "${self_test}" == "1" ]]; then
     echo "[storage-path-check] FAIL: exact-message or changed-predicate exception" >&2
     exit 1
   fi
+  # Requirement: the private Git index scratch allocation is disposable, not
+  # daemon storage. Keep different allocations, files and appended code blocked.
+  # filter_allowed owns the exception; exact-line tests are its narrow boundary.
+  index_hit='swarmd/internal/tool/runtime_git_recovery.go:204: tmp, err := os.MkdirTemp("", "swarm-recovery-index-")'
+  [[ -z "$(printf '%s\n' "${index_hit}" | filter_allowed)" ]] || exit 1
+  for rejected_hit in "${index_hit/swarm-recovery-index-/daemon-state-}" "${index_hit} ; use(tmp)" "${index_hit/runtime_git_recovery.go/other.go}"; do
+    [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+  done
   # Requirement: Dispatch, startLocked, and validateWorkerExecution provenance rejection is
   # not filesystem migration. The lexical gate must still reject changed
   # predicates, appended storage operations, and the same text in other files.

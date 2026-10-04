@@ -114,7 +114,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		resolutionReference := reference
 		if actionName == "release" {
 			// Cleanup must remain possible after validation generates files or the
-			// task advances. Release still uses canonical account/workspace and
+			// task advances. Release still uses canonical account and workspace
 			// parent-owned lease admission; it cannot execute against a tree.
 			resolutionReference = map[string]any{"project_id": reference["project_id"], "workspace_id": reference["workspace_id"], "workspace_path": reference["workspace_path"], "workspace_generation": reference["workspace_generation"]}
 		}
