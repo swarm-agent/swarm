@@ -5177,6 +5177,9 @@ func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.
 	}
 	resolved, err := e.server.model.ResolvePreference(pref)
 	if err != nil {
+		// ResolvePreference permits unknown models; errors here represent failed
+		// catalog authority reads, not an unsupported model. Propagate them for
+		// both execution and capability reads rather than masking storage failure.
 		return pebblestore.ModelPreference{}, 0, err
 	}
 	resolvedPref := normalizeSessionsV3ModelPreference(resolved.Preference)
