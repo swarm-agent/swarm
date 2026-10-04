@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,11 +22,14 @@ func (r *Runtime) recoveryRepository(scope WorkspaceScope, path string) (string,
 	if r == nil || r.workspace == nil || scope.Principal.AccountScopeID == "" || scope.Principal.UserID == "" {
 		return "", errors.New("explicit Git recovery requires account workspace authority")
 	}
-	if scope.RejectScopeExpansion || scope.TaskHistoryOnly || len(scope.MutationScopes) != 0 {
+	if (scope.RejectScopeExpansion && !scope.ExplicitRepositoryRecovery) || scope.TaskHistoryOnly || len(scope.MutationScopes) != 0 || len(scope.ReadOnlyRoots) != 0 {
 		return "", errors.New("explicit Git recovery is unavailable in a restricted delegated scope")
 	}
 	if !filepath.IsAbs(path) {
 		return "", errors.New("recovery workspace_path must be absolute")
+	}
+	if err := recoveryEnvironment(); err != nil {
+		return "", err
 	}
 	canonical, err := canonicalExistingPath(path)
 	if err != nil || canonical != filepath.Clean(path) {
@@ -90,7 +94,7 @@ func recoveryCommit(ctx context.Context, repo string, args map[string]any, princ
 	}
 	binding, _ := json.Marshal(struct {
 		Repo, Branch, Head, Message, Principal string
-		Files []string
+		Files                                  []string
 	}{repo, branch, head, message, principal, paths})
 	digest := fmt.Sprintf("%x", sha256.Sum256(binding))
 	ref := fmt.Sprintf("refs/swarm/recovery/commit/%x", sha256.Sum256([]byte(principal+"\x00"+key)))
@@ -125,11 +129,27 @@ func recoveryCommit(ctx context.Context, repo string, args map[string]any, princ
 		_ = indexLock.Close()
 		_ = os.Remove(indexPath + ".lock")
 	}()
+	for _, marker := range []string{"rebase-merge", "rebase-apply", "sequencer"} {
+		path, err := manageSessionsGitOutput(ctx, repo, "rev-parse", "--path-format=absolute", "--git-path", marker)
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			return "", errors.New("finish the active Git operation before recovery")
+		}
+	}
 	for _, marker := range []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"} {
 		if _, err := manageSessionsGitOutput(ctx, repo, "rev-parse", "--verify", marker); err == nil {
 			return "", errors.New("finish the active Git operation before recovery")
 		}
 	}
+	root, err := os.OpenRoot(repo)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	entries := make([]string, 0, len(paths))
+	var totalBytes int64
 	seen := map[string]bool{}
 	for _, path := range paths {
 		if path == "" || path == "." || filepath.IsAbs(path) || filepath.ToSlash(filepath.Clean(path)) != path || strings.ContainsAny(path, ":*?[\\\x00\r\n") || strings.HasPrefix(path, "../") || path == ".." || path == ".git" || strings.HasPrefix(path, ".git/") || seen[path] {
@@ -150,15 +170,46 @@ func recoveryCommit(ctx context.Context, repo string, args map[string]any, princ
 				return "", fmt.Errorf("recovery selection %q is not a regular file", path)
 			}
 		}
+		// Freeze bytes through an OS-rooted descriptor, never reopen mutable paths
+		// through Git filters or follow an escaping symlink after inspection.
+		file, err := openRecoverySourceFile(root, path)
+		if os.IsNotExist(err) {
+			entries = append(entries, "0 "+strings.Repeat("0", len(head))+"\t"+path+"\x00")
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 32<<20 {
+			file.Close()
+			return "", errors.New("recovery file is not regular or exceeds 32 MiB")
+		}
+		contents, err := io.ReadAll(io.LimitReader(file, (32<<20)+1))
+		file.Close()
+		totalBytes += int64(len(contents))
+		if err != nil || len(contents) > 32<<20 || totalBytes > 64<<20 {
+			return "", errors.New("recovery file capture failed or exceeds 64 MiB total")
+		}
+		blob, err := runManageSessionsGitInput(ctx, repo, contents, "hash-object", "-w", "--stdin")
+		if err != nil {
+			return "", err
+		}
+		mode := "100644"
+		if info.Mode()&0111 != 0 {
+			mode = "100755"
+		}
+		entries = append(entries, mode+" "+strings.TrimSpace(string(blob))+"\t"+path+"\x00")
 	}
 	tmp, err := os.MkdirTemp("", "swarm-recovery-index-")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(tmp)
-	git := func(argv ...string) (string, error) {
+	gitInput := func(input string, argv ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "git", append([]string{"--literal-pathspecs"}, argv...)...)
 		cmd.Dir = repo
+		cmd.Stdin = strings.NewReader(input)
 		cmd.Env = append(gitenv.FilterIdentityOverrides(os.Environ()), "GIT_INDEX_FILE="+filepath.Join(tmp, "index"))
 		out := newCappedBuffer(maxCommandOutput)
 		cmd.Stdout, cmd.Stderr = out, out
@@ -168,10 +219,11 @@ func recoveryCommit(ctx context.Context, repo string, args map[string]any, princ
 		}
 		return strings.TrimSpace(out.String()), nil
 	}
+	git := func(argv ...string) (string, error) { return gitInput("", argv...) }
 	if _, err := git("read-tree", head); err != nil {
 		return "", err
 	}
-	if _, err := git(append([]string{"add", "--"}, paths...)...); err != nil {
+	if _, err := gitInput(strings.Join(entries, ""), "update-index", "-z", "--index-info"); err != nil {
 		return "", err
 	}
 	changed, err := git("diff", "--cached", "--name-only", "--no-renames", "-z", head)
@@ -229,8 +281,15 @@ func (r *Runtime) recoveryIntegrate(scope WorkspaceScope, args map[string]any) (
 	sourceHead, targetHead := stringValue(args["source_head"]), stringValue(args["target_head"])
 	sourceBranch, targetBranch := stringValue(args["source_branch"]), stringValue(args["target_branch"])
 	commits := stringSliceValue(args["commits"])
+	key := stringValue(args["request_id"])
+	if key == "" || len(key) > 200 {
+		return "", errors.New("integration recovery requires a stable request_id")
+	}
 	if len(commits) == 0 || len(commits) > 100 || sourceHead == targetHead || !recoveryOID(targetHead) {
 		return "", errors.New("recovery requires 1..100 reviewed commits and distinct full source/destination HEADs")
+	}
+	if !recoveryOID(sourceHead) {
+		return "", errors.New("invalid full source HEAD")
 	}
 	if err := recoveryGuard(ctx, source, sourceBranch, sourceHead); err != nil {
 		return "", err
@@ -252,13 +311,30 @@ func (r *Runtime) recoveryIntegrate(scope WorkspaceScope, args map[string]any) (
 	if err != nil || strings.Join(strings.Fields(rangeText), "\n") != strings.Join(commits, "\n") {
 		return "", errors.New("reviewed commits do not exactly match the bounded integration range")
 	}
+	binding, _ := json.Marshal([]any{source, target, sourceBranch, targetBranch, sourceHead, targetHead, commits})
+	ref := fmt.Sprintf("refs/swarm/recovery/integrate/%x", sha256.Sum256([]byte(scope.Principal.AccountScopeID+"/"+scope.Principal.UserID+"\x00"+key)))
+	if prior, err := manageSessionsGitOutput(ctx, target, "cat-file", "blob", ref); err == nil {
+		if prior != string(binding) {
+			return "", errors.New("request_id was already used for a different integration request")
+		}
+	} else {
+		blob, err := runManageSessionsGitInput(ctx, target, binding, "hash-object", "-w", "--stdin")
+		if err != nil {
+			return "", err
+		}
+		transaction := fmt.Sprintf("create %s %s\n", ref, strings.TrimSpace(string(blob)))
+		if _, err := runManageSessionsGitInput(ctx, target, []byte(transaction), "update-ref", "--stdin"); err != nil {
+			return "", err
+		}
+	}
 	actual, err := manageSessionsGitOutput(ctx, target, "rev-parse", "HEAD")
 	if err != nil {
 		return "", err
 	}
-	retry := actual == sourceHead
+	_, ancestorErr := runManageSessionsGit(ctx, target, "merge-base", "--is-ancestor", sourceHead, actual)
+	retry := ancestorErr == nil
 	if retry {
-		err = recoveryGuard(ctx, target, targetBranch, sourceHead)
+		err = recoveryGuard(ctx, target, targetBranch, actual)
 	} else {
 		err = recoveryGuard(ctx, target, targetBranch, targetHead)
 	}
@@ -270,12 +346,28 @@ func (r *Runtime) recoveryIntegrate(scope WorkspaceScope, args map[string]any) (
 		return "", errors.New("recovery destination must be clean; unrelated work is never overwritten")
 	}
 	if !retry {
-		if _, err := runManageSessionsGit(ctx, target, "merge", "--ff-only", "--no-edit", sourceHead); err != nil {
+		if err := recoveryGuard(ctx, target, targetBranch, targetHead); err != nil {
+			return "", err
+		}
+		if _, err := runManageSessionsGit(ctx, target, "-c", "core.hooksPath="+os.DevNull, "merge", "--ff-only", "--no-autostash", "--no-edit", sourceHead); err != nil {
 			return "", fmt.Errorf("fast-forward failed; inspect destination HEAD before retry: %w", err)
 		}
 	}
-	if err := recoveryGuard(ctx, target, targetBranch, sourceHead); err != nil {
+	if !retry {
+		actual = sourceHead
+	}
+	if err := recoveryGuard(ctx, target, targetBranch, actual); err != nil {
 		return "", fmt.Errorf("integration postcondition requires inspection: %w", err)
 	}
-	return marshalManageSessions(map[string]any{"git_success": true, "integrated": true, "source_repository": source, "destination_repository": target, "destination_branch": targetBranch, "before_head": targetHead, "after_head": sourceHead, "commits": commits, "replayed": retry, "session_state_unchanged": true})
+	return r.recoveryEvidence(ctx, scope, args, target, map[string]any{"git_success": true, "integrated": true, "source_repository": source, "destination_repository": target, "destination_branch": targetBranch, "before_head": targetHead, "after_head": actual, "integrated_head": sourceHead, "commits": commits, "replayed": retry, "session_state_unchanged": true})
+}
+
+// An inherited Git selector must not redirect an explicitly authorized target.
+func recoveryEnvironment() error {
+	for _, key := range []string{"GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_NAMESPACE", "GIT_SHALLOW_FILE", "GIT_REPLACE_REF_BASE"} {
+		if os.Getenv(key) != "" {
+			return fmt.Errorf("explicit recovery refuses inherited %s", key)
+		}
+	}
+	return nil
 }

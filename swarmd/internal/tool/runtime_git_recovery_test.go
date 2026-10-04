@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 )
 
@@ -80,7 +82,7 @@ func TestGitRecoveryCommitPreservesIndexAndRetries(t *testing.T) {
 	r, scope := recoveryTestRuntime(repo) // no ambient checkout or session service
 	args := map[string]any{"workspace_path": repo, "expected_branch": "dev", "expected_head": head, "request_id": "retry-key", "message": "recover", "files": []string{"selected"}}
 	raw, _ := json.Marshal(args)
-	out, err := r.executeOne(context.Background(), scope, Call{Name: "git_commit", Arguments: string(raw)}, nil)
+	out, err := r.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{Name: "git_commit", Arguments: string(raw)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +99,7 @@ func TestGitRecoveryCommitPreservesIndexAndRetries(t *testing.T) {
 	}
 	// A new Runtime models lost in-memory/bookkeeping state after Git success.
 	r, scope = recoveryTestRuntime(repo)
-	out, err = r.executeOne(context.Background(), scope, Call{Name: "git_commit", Arguments: string(raw)}, nil)
+	out, err = r.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{Name: "git_commit", Arguments: string(raw)})
 	if err != nil || !strings.Contains(out, `"replayed":true`) || recoveryTestGit(t, repo, "rev-parse", "HEAD") != newHead {
 		t.Fatalf("retry duplicated/lost success: %s %v", out, err)
 	}
@@ -158,7 +160,7 @@ func TestGitRecoveryIntegrationAndBashWithoutCheckout(t *testing.T) {
 	recoveryTestGit(t, source, "commit", "-am", "feature")
 	head := recoveryTestGit(t, source, "rev-parse", "HEAD")
 	r, scope := recoveryTestRuntime(source, target)
-	args := map[string]any{"workspace_path": source, "source_branch": "feature", "source_head": head, "target_workspace_path": target, "target_branch": "dev", "target_head": base, "commits": []string{head}}
+	args := map[string]any{"workspace_path": source, "source_branch": "feature", "source_head": head, "target_workspace_path": target, "target_branch": "dev", "target_head": base, "commits": []string{head}, "request_id": "integrate-key"}
 	for i := 0; i < 2; i++ {
 		out, err := r.recoveryIntegrate(scope, args)
 		if err != nil || !strings.Contains(out, `"integrated":true`) || recoveryTestGit(t, target, "rev-parse", "HEAD") != head {
@@ -181,9 +183,174 @@ func TestGitRecoveryIntegrationAndBashWithoutCheckout(t *testing.T) {
 	if recoveryTestGit(t, source, "rev-parse", "HEAD") != head || recoveryTestGit(t, target, "rev-parse", "HEAD") != diverged {
 		t.Fatal("divergence rejection modified source/destination")
 	}
+	scope.RejectScopeExpansion = true
+	scope.ExplicitRepositoryRecovery = true
 	bash, _ := json.Marshal(map[string]any{"workspace_path": source, "command": "git rev-parse HEAD", "explanation": []string{"Inspect recovery source."}, "category": "read", "critical": false})
-	out, err := r.executeOne(context.Background(), scope, Call{Name: "bash", Arguments: string(bash)}, nil)
+	out, err := r.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{Name: "bash", Arguments: string(bash)})
 	if err != nil || !strings.Contains(out, head) {
 		t.Fatalf("explicit Bash cwd failed: %s %v", out, err)
+	}
+}
+
+// Purpose: the public runtime manage-sessions dispatch must work with missing
+// attribution and retain one Git commit across concurrent retries and failed
+// bookkeeping. Real Git plus unavailable session storage isolates that boundary.
+func TestGitRecoveryManagedCommitConcurrentRetryAndBookkeepingFailure(t *testing.T) {
+	repo, head := recoveryTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "selected"), []byte("recover\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, scope := recoveryTestRuntime(repo)
+	scope.RejectScopeExpansion, scope.ExplicitRepositoryRecovery = true, true
+	args := map[string]any{"action": "commit", "recovery": true, "workspace_path": repo, "expected_branch": "dev", "expected_head": head, "request_id": "concurrent", "message": "recover", "files": []string{"selected"}, "session_id": "missing-attribution"}
+	raw, _ := json.Marshal(args)
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			out, err := r.ExecuteForWorkspaceScopeWithRuntime(context.Background(), scope, Call{Name: "manage-sessions", Arguments: string(raw)})
+			if err == nil && (!strings.Contains(out, `"git_success":true`) || !strings.Contains(out, `"reconciliation":"pending"`) || !strings.Contains(out, `"git_status":`)) {
+				err = fmt.Errorf("missing Git success or pending bookkeeping: %s", out)
+			}
+			results <- err
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := recoveryTestGit(t, repo, "rev-list", "--count", head+"..HEAD"); got != "1" {
+		t.Fatalf("duplicate commits: %s", got)
+	}
+	// A restricted Coder cannot obtain the project recovery exception from args.
+	restricted := scope
+	restricted.ExplicitRepositoryRecovery = false
+	out, err := r.ExecuteForWorkspaceScopeWithRuntime(context.Background(), restricted, Call{Name: "manage-sessions", Arguments: string(raw)})
+	if err == nil {
+		t.Fatalf("restricted recovery accepted: %s", out)
+	}
+	if got := recoveryTestGit(t, repo, "rev-list", "--count", head+"..HEAD"); got != "1" {
+		t.Fatal("rejected call mutated Git")
+	}
+}
+
+// Purpose: recoveryRepository rejects inherited Git target redirection before
+// invoking Git, preventing an authorized cwd from mutating another repository.
+func TestGitRecoveryRejectsInheritedGitTarget(t *testing.T) {
+	repo, head := recoveryTestRepo(t)
+	r, scope := recoveryTestRuntime(repo)
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "foreign"))
+	if _, err := r.recoveryRepository(scope, repo); err == nil {
+		t.Fatal("inherited Git target accepted")
+	}
+	if err := os.Unsetenv("GIT_DIR"); err != nil {
+		t.Fatal(err)
+	}
+	if recoveryTestGit(t, repo, "rev-parse", "HEAD") != head {
+		t.Fatal("rejected target changed HEAD")
+	}
+}
+
+type recoveryBookkeeping struct {
+	manageSessionService
+	session pebblestore.SessionSnapshot
+	fail    bool
+	writes  int
+}
+
+func (s *recoveryBookkeeping) GetSession(id string) (pebblestore.SessionSnapshot, bool, error) {
+	return s.session, id == s.session.ID, nil
+}
+func (s *recoveryBookkeeping) ListSessionEventsBefore(string, uint64, int) ([]pebblestore.V3SessionEvent, error) {
+	return []pebblestore.V3SessionEvent{{Seq: 1}}, nil
+}
+func (s *recoveryBookkeeping) ApplySessionMutation(in pebblestore.V3SessionMutationInput) (pebblestore.V3SessionMutationResult, error) {
+	s.writes++
+	if s.fail {
+		return pebblestore.V3SessionMutationResult{}, fmt.Errorf("injected bookkeeping failure")
+	}
+	if in.ExpectedLastEventSeq == nil || *in.ExpectedLastEventSeq != 1 || in.Kind != pebblestore.V3SessionMutationUpdateMetadata {
+		return pebblestore.V3SessionMutationResult{}, fmt.Errorf("missing canonical evidence fence")
+	}
+	s.session = *in.Session
+	return pebblestore.V3SessionMutationResult{}, nil
+}
+
+// Purpose: recoveryEvidence must never reinterpret a post-commit bookkeeping
+// failure as Git failure. A fault-injected canonical mutation proves retry repairs
+// evidence without duplicate commits, lifecycle completion, or cross-account writes.
+func TestGitRecoveryRepairsBookkeepingAfterGitSuccess(t *testing.T) {
+	repo, head := recoveryTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "selected"), []byte("recover\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, scope := recoveryTestRuntime(repo)
+	service := &recoveryBookkeeping{fail: true, session: pebblestore.SessionSnapshot{ID: "stranded", AccountScopeID: "owner", UserID: "user", WorkspacePath: repo, Lifecycle: &pebblestore.SessionLifecycleSnapshot{Phase: "needs_review"}}}
+	r.sessions = service
+	args := map[string]any{"action": "commit", "recovery": true, "workspace_path": repo, "expected_branch": "dev", "expected_head": head, "files": []string{"selected"}, "message": "recovery", "request_id": "receipt", "session_id": "stranded"}
+	out, err := r.executeManageSessions(context.Background(), scope, args)
+	if err != nil || !strings.Contains(out, `"git_success":true`) || !strings.Contains(out, `"reconciliation":"pending"`) || service.writes != 1 {
+		t.Fatalf("failure hid success: %s %v", out, err)
+	}
+	committed := recoveryTestGit(t, repo, "rev-parse", "HEAD")
+	service.fail = false
+	out, err = r.executeManageSessions(context.Background(), scope, args)
+	if err != nil || !strings.Contains(out, `"reconciliation":"recorded"`) || recoveryTestGit(t, repo, "rev-parse", "HEAD") != committed {
+		t.Fatalf("retry: %s %v", out, err)
+	}
+	if service.session.Metadata["git_recovery_evidence"] == nil || service.session.Lifecycle.Phase != "needs_review" {
+		t.Fatal("evidence absent or lifecycle falsely completed")
+	}
+	service.session.AccountScopeID = "foreign"
+	writes := service.writes
+	out, err = r.executeManageSessions(context.Background(), scope, args)
+	if err != nil || !strings.Contains(out, `"reconciliation":"pending"`) || service.writes != writes {
+		t.Fatalf("foreign bookkeeping mutated: %s %v", out, err)
+	}
+}
+
+// Purpose: recoveryIntegrate must refuse true divergent/conflicting histories,
+// stale destinations and dirty target files without losing either side. Real
+// linked worktrees are the narrowest proof of source/destination preservation.
+func TestGitRecoveryIntegrationRejectsConflictingAndDirtyDestination(t *testing.T) {
+	target, base := recoveryTestRepo(t)
+	source := filepath.Join(t.TempDir(), "source")
+	recoveryTestGit(t, target, "worktree", "add", "-b", "feature", source)
+	if err := os.WriteFile(filepath.Join(source, "selected"), []byte("source\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	recoveryTestGit(t, source, "commit", "-am", "source")
+	head := recoveryTestGit(t, source, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(source, "untracked"), []byte("preserve\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, scope := recoveryTestRuntime(source, target)
+	args := map[string]any{"workspace_path": source, "source_branch": "feature", "source_head": head, "target_workspace_path": target, "target_branch": "dev", "target_head": base, "commits": []string{head}, "request_id": "integration"}
+	if err := os.WriteFile(filepath.Join(target, "selected"), []byte("target\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.recoveryIntegrate(scope, args); err == nil {
+		t.Fatal("dirty target accepted")
+	}
+	if recoveryTestGit(t, target, "rev-parse", "HEAD") != base {
+		t.Fatal("dirty rejection advanced target")
+	}
+	recoveryTestGit(t, target, "commit", "-am", "conflicting target")
+	diverged := recoveryTestGit(t, target, "rev-parse", "HEAD")
+	if _, err := r.recoveryIntegrate(scope, args); err == nil {
+		t.Fatal("stale target accepted")
+	}
+	args["target_head"] = diverged
+	if _, err := r.recoveryIntegrate(scope, args); err == nil {
+		t.Fatal("true divergence accepted")
+	}
+	if recoveryTestGit(t, target, "rev-parse", "HEAD") != diverged || recoveryTestGit(t, source, "rev-parse", "HEAD") != head {
+		t.Fatal("conflict altered history")
+	}
+	if got, err := os.ReadFile(filepath.Join(source, "untracked")); err != nil || string(got) != "preserve\n" {
+		t.Fatal("source dirty work lost")
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "selected")); err != nil || string(got) != "target\n" {
+		t.Fatal("target conflicting content lost")
 	}
 }

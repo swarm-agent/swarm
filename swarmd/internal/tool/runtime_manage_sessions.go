@@ -55,6 +55,12 @@ func manageSessionsDefinition() Definition {
 			"search_mode":               map[string]any{"type": "string", "enum": []string{"visible", "durable_log"}},
 			"state":                     map[string]any{"type": "string"},
 			"workspace_path":            map[string]any{"type": "string"},
+			"recovery":                  map[string]any{"type": "boolean", "description": "commit or git_status: explicit account-authorized repository recovery, independent of target session attribution. commit requires workspace_path, files, expected_branch, expected_head, message and stable request_id. Optional session_id records inspected Git evidence afterward, never completes a task."},
+			"files":                     map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
+			"expected_branch":           map[string]any{"type": "string"},
+			"expected_head":             map[string]any{"type": "string"},
+			"message":                   map[string]any{"type": "string"},
+			"request_id":                map[string]any{"type": "string"},
 			"cursor":                    map[string]any{"type": "string"},
 			"limit":                     map[string]any{"type": "integer"},
 			"expected_updated_at_by_id": map[string]any{"type": "object", "maxProperties": manageSessionsMaxMutationBatch, "additionalProperties": map[string]any{"type": "integer"}},
@@ -63,6 +69,9 @@ func manageSessionsDefinition() Definition {
 }
 
 func (r *Runtime) executeManageSessions(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	if boolValue(args["recovery"]) {
+		return r.manageSessionsRecovery(ctx, scope, args)
+	}
 	if r == nil || r.sessions == nil {
 		return "", errors.New("manage-sessions service is not configured")
 	}

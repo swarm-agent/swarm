@@ -244,15 +244,18 @@ type WorkspaceScope struct {
 	// are immutable for the run. Calls outside those roots fail before the
 	// workspace permission subsystem can create a user-facing request.
 	RejectScopeExpansion bool
-	TaskHistoryOnly      bool
-	SessionID            string
-	Principal            identity.Principal
-	WorktreeEnabled      bool
-	WorktreeRootPath     string
-	WorktreeBranch       string
-	WorktreeBaseBranch   string
-	WorktreeBaseCommit   string
-	SourceWorkspacePath  string
+	// ExplicitRepositoryRecovery permits only independently catalog-authorized
+	// Git/Bash targets in a validated project conversation; ambient roots stay empty.
+	ExplicitRepositoryRecovery bool
+	TaskHistoryOnly            bool
+	SessionID                  string
+	Principal                  identity.Principal
+	WorktreeEnabled            bool
+	WorktreeRootPath           string
+	WorktreeBranch             string
+	WorktreeBaseBranch         string
+	WorktreeBaseCommit         string
+	SourceWorkspacePath        string
 }
 
 type manageSessionService interface {
@@ -459,6 +462,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
 	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
 	normalized.RejectScopeExpansion = scope.RejectScopeExpansion
+	normalized.ExplicitRepositoryRecovery = scope.ExplicitRepositoryRecovery
 	normalized.SessionID = strings.TrimSpace(scope.SessionID)
 	normalized.Principal = scope.Principal
 	normalized.WorktreeEnabled = scope.WorktreeEnabled
@@ -524,6 +528,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
 	normalized.TaskHistoryOnly = override.TaskHistoryOnly
 	normalized.RejectScopeExpansion = override.RejectScopeExpansion
+	normalized.ExplicitRepositoryRecovery = override.ExplicitRepositoryRecovery
 	normalized.SessionID = strings.TrimSpace(override.SessionID)
 	normalized.Principal = override.Principal
 	normalized.WorktreeEnabled = override.WorktreeEnabled
@@ -1059,7 +1064,7 @@ func (r *Runtime) Definitions() []Definition {
 				"type": "object",
 				"properties": map[string]any{
 					"workspace_path": map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
-					"command": map[string]any{"type": "string", "description": "Shell command to execute"},
+					"command":        map[string]any{"type": "string", "description": "Shell command to execute"},
 					"explanation": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -1130,13 +1135,13 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"workspace_path": map[string]any{"type": "string", "description": "Explicit account-authorized repository root for attribution-independent recovery. Requires files, expected_branch, expected_head and request_id; preserves the original index."},
-					"files": map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
+					"workspace_path":  map[string]any{"type": "string", "description": "Explicit account-authorized repository root for attribution-independent recovery. Requires files, expected_branch, expected_head and request_id; preserves the original index."},
+					"files":           map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
 					"expected_branch": map[string]any{"type": "string"},
-					"expected_head": map[string]any{"type": "string"},
-					"request_id": map[string]any{"type": "string", "description": "Stable exact-request retry identity"},
-					"message": map[string]any{"type": "string", "description": "Commit message"},
-					"all":     map[string]any{"type": "boolean", "description": "Stage tracked modifications before committing"},
+					"expected_head":   map[string]any{"type": "string"},
+					"request_id":      map[string]any{"type": "string", "description": "Stable exact-request retry identity"},
+					"message":         map[string]any{"type": "string", "description": "Commit message"},
+					"all":             map[string]any{"type": "boolean", "description": "Stage tracked modifications before committing"},
 				},
 				"required":             []string{"message"},
 				"additionalProperties": false,
@@ -1499,8 +1504,10 @@ func (r *Runtime) Definitions() []Definition {
 				"type": "object",
 				"properties": map[string]any{
 					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote|help"},
-					"recovery": map[string]any{"type": "boolean", "description": "integrate: attribution-independent fast-forward of exact reviewed commits between account-authorized worktrees. Requires workspace_path, source_branch/head, target_workspace_path, target_branch/head and commits."},
-					"commits": map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
+					"recovery":              map[string]any{"type": "boolean", "description": "integrate: attribution-independent fast-forward of exact reviewed commits between account-authorized worktrees. Requires workspace_path, source_branch/head, target_workspace_path, target_branch/head and commits."},
+					"commits":               map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
+					"request_id":            map[string]any{"type": "string", "description": "Stable exact-request identity for recovery integration"},
+					"session_id":            map[string]any{"type": "string", "description": "Optional recovery evidence destination; bookkeeping failure never reverses Git success"},
 					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session IDs"},
 					"child_session_id":      map[string]any{"type": "string"},
 					"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},

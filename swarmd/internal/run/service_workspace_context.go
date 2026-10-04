@@ -44,7 +44,7 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 		if err := s.sessions.Store().ValidateProjectConversation(session, principal.AccountScopeID, principal.UserID); err != nil {
 			return tool.WorkspaceScope{}, err
 		}
-		return tool.WorkspaceScope{Principal: principal, SessionID: session.ID, RejectScopeExpansion: true}, nil
+		return tool.WorkspaceScope{Principal: principal, SessionID: session.ID, RejectScopeExpansion: true, ExplicitRepositoryRecovery: true}, nil
 	}
 	if sessionMetadataBool(session.Metadata, "workspace_onboarding") {
 		return s.resolveWorkspaceOnboardingRunScope(session, principal)
