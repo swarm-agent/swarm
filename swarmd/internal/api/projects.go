@@ -1348,9 +1348,22 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			if !ok {
 				return errors.New("durable follow-up allocator unavailable")
 			}
+			if source := task.ActiveAttempt().Recovery; source != nil {
+				if err := s.validateProjectTaskRecovery(p, task, source); err != nil {
+					return fmt.Errorf("follow-up source validation: %w", err)
+				}
+			}
 			head := task.ActiveAttempt().AllocationHead
 			if head == "" {
+				// Historical reservations may predate AllocationHead. A retained
+				// source pins allocation independently of the integration delta base.
 				head = task.BaseCommit
+				if source := task.ActiveAttempt().Recovery; source != nil {
+					head = source.HeadCommit
+					if source.PreparedHead != "" {
+						head = source.PreparedHead
+					}
+				}
 			}
 			alloc, err = allocator.AllocateProjectTaskFollowup(p, wsPath, sessionID, worktreeBranch, head, task.BaseBranch)
 			if err == nil && task.ActiveAttempt().Recovery != nil {

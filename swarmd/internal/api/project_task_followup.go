@@ -34,7 +34,11 @@ func projectTaskFollowupContext(task *pebblestore.ProjectTaskRecord) string {
 		refs = append(refs, map[string]any{"attempt_id": prior.ID, "session_id": prior.SessionID, "run_id": prior.RunID, "created_at": prior.CreatedAt, "status": prior.Status, "outcome_summary": summary, "summary_run_id": prior.SummaryRunID, "plan_binding": prior.PlanBinding})
 	}
 	if a.Recovery != nil {
-		refs = append(refs, map[string]any{"authenticated_repair_source": a.Recovery})
+		key := "authenticated_repair_source"
+		if a.Recovery.Kind == "retained_continuation" {
+			key = "authenticated_continuation_source"
+		}
+		refs = append(refs, map[string]any{key: a.Recovery})
 		for _, prior := range task.Attempts {
 			if prior.SessionID == a.Recovery.SessionID && prior.Integration != nil {
 				receipt := *prior.Integration
@@ -203,10 +207,17 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	if err != nil || !state.Clean || state.HeadCommit == "" {
 		return nil, &projectTaskFollowupError{409, errors.New("follow-up source must be clean and committed")}
 	}
-	// A new ordinary follow-up may not strand committed work in a retained lane.
-	// Retries already own a pinned reservation; repairs validate exact provenance below.
+	// Retained committed work is a source, not an integration prerequisite.
+	// Retries reuse durable provenance rather than inspecting a new source HEAD.
+	var recovery *pebblestore.ProjectTaskRecoverySource
 	active := task.ActiveAttempt()
 	retry := active != nil && active.ClientRequestID == req.ClientRequestID
+	if retry {
+		recovery = active.Recovery
+		if req.Repair != (recovery != nil && recovery.Kind != "retained_continuation") {
+			return nil, &projectTaskFollowupError{409, errors.New("retry repair flag mismatch")}
+		}
+	}
 	if !req.Repair && !retry && task.WorkspacePath != "" && task.WorkspacePath != task.SourceWorkspace.Path {
 		origin, inspectErr := s.worktrees.InspectTaskWorkspace(task.WorkspacePath)
 		if inspectErr != nil || !origin.Clean {
@@ -217,11 +228,23 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			assessment := inspectTaskGitStateContext(ctx, *task, db).deliveryAssessment
 			deltaDelivered = assessment != nil && (assessment.State == "recovered" || assessment.State == "equivalent")
 		}
-		if !deltaDelivered && origin.HeadCommit != task.BaseCommit && (task.Integration == nil || (task.Integration.State != "integrated" && task.Integration.State != "already_integrated") || task.Integration.SessionID != task.SessionID || task.Integration.SourceHead != origin.HeadCommit) {
-			return nil, &projectTaskFollowupError{409, errors.New("retained task has unintegrated commits; integrate its current owned attempt first, or use repair=true for an originating failed integration receipt")}
+		if origin.HeadCommit != task.BaseCommit {
+			candidate := &pebblestore.ProjectTaskRecoverySource{Kind: "retained_continuation", SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, HeadCommit: origin.HeadCommit, TargetBranch: task.BaseBranch, TargetHead: state.HeadCommit}
+			if err := s.validateProjectTaskRecovery(p, task, candidate); err != nil {
+				return nil, &projectTaskFollowupError{403, err}
+			}
+			validator := s.worktrees.(interface {
+				TaskCommitDescendsFrom(string, string, string) (bool, error)
+			})
+			delivered, err := validator.TaskCommitDescendsFrom(task.SourceWorkspace.Path, origin.HeadCommit, state.HeadCommit)
+			if err != nil {
+				return nil, &projectTaskFollowupError{409, err}
+			}
+			if !delivered && !deltaDelivered {
+				recovery = candidate
+			}
 		}
 	}
-	var recovery *pebblestore.ProjectTaskRecoverySource
 	if req.Repair {
 		// A retry uses its retained exact source, not the now-active coordinator.
 		if active := task.ActiveAttempt(); active != nil && active.ClientRequestID == req.ClientRequestID {
@@ -254,11 +277,12 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, &projectTaskFollowupError{403, err}
 		}
 	}
-	if active := task.ActiveAttempt(); !req.Repair && active != nil && active.Recovery != nil && active.ClientRequestID == req.ClientRequestID {
-		return nil, &projectTaskFollowupError{409, errors.New("retry repair flag mismatch")}
+	if recovery != nil && !req.Repair {
+		if err := s.validateProjectTaskRecovery(p, task, recovery); err != nil {
+			return nil, &projectTaskFollowupError{403, err}
+		}
 	}
-	// A repair grants exactly the originating retained committed source. Ordinary
-	// follow-ups use the current clean catalog checkout, not another session's lane.
+	// Source provenance is backend-only and persisted before external effects.
 	task, err = db.ReserveTaskFollowupWithRecovery(p.AccountScopeID, projectID, taskID, p.UserID, req.ClientRequestID, req.Feedback, req.Revision, time.Now().UnixMilli(), recovery, origin)
 	if err != nil {
 		return nil, &projectTaskFollowupError{409, err}

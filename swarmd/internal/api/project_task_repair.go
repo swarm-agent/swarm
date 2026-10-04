@@ -18,6 +18,16 @@ func (s *Server) validateProjectTaskRecovery(p identity.Principal, task *pebbles
 	if !p.Valid() || p.Type != "user" || task == nil || source == nil || task.AccountID != p.AccountScopeID || source.HeadCommit == "" || source.BaseCommit == "" || source.HeadCommit == source.BaseCommit {
 		return errors.New("incomplete task repair identity")
 	}
+	if source.Kind != "" && source.Kind != "retained_continuation" {
+		return errors.New("unknown task source provenance")
+	}
+	if source.Kind == "retained_continuation" && (source.PreparedHead != "" || source.PreparedRef != "") {
+		return errors.New("continuation cannot carry prepared integration evidence")
+	}
+	pinnedContinuation := false
+	if a := task.ActiveAttempt(); source.Kind == "retained_continuation" && a != nil && a.Recovery != nil && *a.Recovery == *source {
+		pinnedContinuation = true
+	}
 	task.EnsureTaskAttempts()
 	associated := false
 	for _, attempt := range task.Attempts {
@@ -43,6 +53,10 @@ func (s *Server) validateProjectTaskRecovery(p identity.Principal, task *pebbles
 	if !found || owned.ID != source.SessionID || owned.UserID != p.UserID || owned.AccountScopeID != p.AccountScopeID || owned.Metadata["project_id"] != task.ProjectID || owned.Metadata["task_id"] != task.ID || owned.Metadata["swarm_v3_source_workspace_path"] != binding.Path || owned.Metadata["swarm_v3_source_workspace_id"] != binding.WorkspaceID || fmt.Sprint(owned.Metadata["swarm_v3_source_workspace_generation"]) != fmt.Sprint(binding.WorkspaceGeneration) || !owned.WorktreeEnabled || owned.WorktreeRootPath != source.WorkspacePath || owned.WorktreeBranch != source.Branch || owned.WorktreeBaseBranch != source.TargetBranch || owned.Metadata["swarm_v3_worktree_owner_session_id"] != owned.ID || owned.Metadata["base_commit"] != source.BaseCommit {
 		return errors.New("repair originating session ownership/source mismatch")
 	}
+	run, running, err := s.sessions.Store().GetV3SessionActiveRunIntent(source.SessionID)
+	if err != nil || (running && (run.Status == pebblestore.V3RunIntentPendingExecutor || run.Status == pebblestore.V3RunIntentRunning)) {
+		return errors.New("retained source still has an active writer")
+	}
 	claims, err := s.sessions.Store().InspectWorktreeOwnership(p.AccountScopeID, p.UserID, []string{source.WorkspacePath})
 	if err != nil || len(claims) != 1 || claims[0].OwnerSessionID != source.SessionID || claims[0].ClaimantSessionID != "" {
 		return errors.New("repair source ownership is missing, changed or reserved")
@@ -58,7 +72,7 @@ func (s *Server) validateProjectTaskRecovery(p identity.Principal, task *pebbles
 		return err
 	}
 	state, err := s.worktrees.InspectTaskWorkspace(source.WorkspacePath)
-	if err != nil || !state.Clean || state.HeadCommit != source.HeadCommit || state.BranchName != source.Branch {
+	if err != nil || !state.Clean || (!pinnedContinuation && state.HeadCommit != source.HeadCommit) || state.BranchName != source.Branch {
 		return errors.New("repair committed source changed or dirty")
 	}
 	descends, err := validator.TaskCommitDescendsFrom(source.WorkspacePath, source.BaseCommit, source.HeadCommit)
@@ -66,7 +80,7 @@ func (s *Server) validateProjectTaskRecovery(p identity.Principal, task *pebbles
 		return errors.New("repair source does not descend from captured base")
 	}
 	target, err := s.worktrees.InspectTaskWorkspace(binding.Path)
-	if err != nil || !target.Clean || target.BranchName != source.TargetBranch || target.HeadCommit != source.TargetHead {
+	if err != nil || !target.Clean || target.BranchName != source.TargetBranch || (!pinnedContinuation && target.HeadCommit != source.TargetHead) {
 		return errors.New("repair captured target changed or dirty")
 	}
 	if source.PreparedHead != "" {

@@ -41,6 +41,8 @@ type ProjectTaskAttempt struct {
 
 // ProjectTaskRecoverySource is backend-inspected Git evidence, never UI grants.
 type ProjectTaskRecoverySource struct {
+	// Empty kind is the historical failed-integration repair contract.
+	Kind          string `json:"kind,omitempty"`
 	SessionID     string `json:"session_id"`
 	WorkspacePath string `json:"workspace_path"`
 	Branch        string `json:"branch"`
@@ -125,7 +127,7 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 			return nil, err
 		}
 	}
-	values := []any{user, request, revision, recovery != nil}
+	values := []any{user, request, revision, recovery != nil && recovery.Kind != "retained_continuation"}
 	if origin != "" {
 		values = append(values, origin)
 	}
@@ -225,6 +227,9 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 		if recovery != nil && (recovery.SessionID != t.SessionID || recovery.WorkspacePath != t.WorkspacePath || recovery.Branch != t.WorktreeBranch || recovery.BaseCommit != t.BaseCommit || recovery.TargetBranch != t.BaseBranch || recovery.HeadCommit == "" || recovery.HeadCommit == recovery.BaseCommit || recovery.TargetHead == "") {
 			return errors.New("repair evidence does not match originating task attempt")
 		}
+		if recovery != nil && recovery.Kind != "" && recovery.Kind != "retained_continuation" {
+			return errors.New("unknown follow-up source provenance")
+		}
 		t.CaptureActiveAttempt()
 		if origin != "" {
 			t.OriginSessionID = origin
@@ -234,6 +239,16 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", "swarm"
 		t.WorkspacePath = t.SourceWorkspace.Path
 		t.WorktreeBranch, t.WorktreeName, t.BaseBranch, t.BaseCommit = "agent/followup-"+id, "followup-"+id, "", ""
+		if recovery != nil {
+			// Persist source and destination atomically with the reservation, before
+			// allocation. BaseCommit remains the integration delta base, not HEAD.
+			t.BaseBranch, t.BaseCommit = recovery.TargetBranch, recovery.BaseCommit
+			t.ActiveAttempt().AllocationHead = recovery.HeadCommit
+			if recovery.PreparedHead != "" {
+				t.BaseCommit = recovery.TargetHead
+				t.ActiveAttempt().AllocationHead = recovery.PreparedHead
+			}
+		}
 		t.PlanBinding, t.PlanDocument, t.TaskProgram, t.TaskProgramStatus = nil, nil, nil, nil
 		t.TaskProgramID, t.FullPlanMarkdown, t.PlanSummary, t.FeatureSize = "", "", "", "small"
 		t.OutcomeType, t.Tier = "general", "direct"
