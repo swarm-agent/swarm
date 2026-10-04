@@ -190,6 +190,19 @@ type mockProjectTaskLifecycleService struct {
 	store           *mockProjectStore
 }
 
+// Tool-boundary fixture only: provider execution is tested at the API boundary.
+func (m *mockProjectTaskLifecycleService) CreateProject(ctx context.Context, p identity.Principal, input pebblestore.ProjectRecord, requestID string) (*pebblestore.ProjectRecord, error) {
+	if requestID == "" {
+		return nil, errors.New("client_request_id required")
+	}
+	m.lastContext, m.lastPrincipal = ctx, p
+	input.ProjectContext = ""
+	if err := m.store.PutProject(p.AccountScopeID, &input); err != nil {
+		return nil, err
+	}
+	return &input, nil
+}
+
 func newMockProjectTaskLifecycleService(store *mockProjectStore) *mockProjectTaskLifecycleService {
 	return &mockProjectTaskLifecycleService{
 		store: store,
@@ -404,7 +417,8 @@ func (m *mockProjectTaskLifecycleService) SubmitProjectTaskPlan(ctx context.Cont
 
 func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 	// Purpose:
-	// - Invariant: manage_projects tool must support list/get/create/update/delete/synthesize_context,
+	// - Invariant: manage_projects delegates creation to the lifecycle, rejects retired
+	//   deterministic synthesis, and supports list/get/update/delete,
 	//   and be strictly isolated: available to orchestrator, excluded from primary swarm agent.
 	// - Boundary/authority: Runtime.executeManageProjects in runtime_manage_projects.go.
 	// - Threat/regression: Primary swarm agent getting bloated with raw project management tools,
@@ -443,6 +457,7 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 	createArgs := `{
 		"action": "create",
 		"name": "Test Platform",
+		"client_request_id": "create-project",
 		"description": "Orchestrated test platform",
 		"workspaces": [
 			{"path": "/path/to/test", "role": "primary_code", "label": "Engine"}
@@ -475,21 +490,16 @@ func TestManageProjectsToolExecutionAndIsolation(t *testing.T) {
 	}
 
 	// 4. Synthesize context
-	synthOut, err := execTool(scope, "call-4", `{
+	_, err = execTool(scope, "call-4", `{
 		"action": "synthesize_context",
 		"name": "Synthesized Project",
 		"workspaces": [{"path": "/nonexistent/repo"}]
 	}`)
-	if err != nil {
-		t.Fatalf("synthesize_context failed: %v", err)
+	if err == nil {
+		t.Fatal("retired deterministic synthesis must fail without filesystem reads")
 	}
-	var synthResp map[string]any
-	if err := json.Unmarshal([]byte(synthOut), &synthResp); err != nil {
-		t.Fatal(err)
-	}
-	ctxText, _ := synthResp["synthesized_context"].(string)
-	if ctxText == "" {
-		t.Fatal("expected non-empty synthesized_context")
+	if len(mockStore.projects) != 1 {
+		t.Fatal("retired synthesis mutated project state")
 	}
 
 	// 5. Create task for project

@@ -15,7 +15,7 @@ import (
 )
 
 // Requirement: entering the workspace step after provider setup must re-read the
-// launch repository through authenticated daemon inspection, not local disk.
+// explicitly selected repository through authenticated daemon inspection, not local disk.
 // Threat: identity bootstrap initially builds a model before local auth exists, so
 // stale unknown readiness can leave a committed launch repository permanently
 // blocked in the locked TUI onboarding flow. This app/UI boundary is the narrowest
@@ -35,6 +35,8 @@ func TestRefreshOnboardingWorkspaceGitReadinessUsesCurrentLaunchRepository(t *te
 	}
 	home := ui.NewHomePage(homeModel)
 	home.ShowOnboardingProvider("Provider ready")
+	// Selection is explicit; launch CWD is no longer an onboarding selection.
+	home.SetOnboardingRepository(client.OnboardingRepository{Path: repo, State: "unknown"})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/workspace/repository" || r.URL.Query().Get("path") != repo {
 			t.Error("wrong inspection")
@@ -61,9 +63,9 @@ func TestRefreshOnboardingWorkspaceGitReadinessUsesCurrentLaunchRepository(t *te
 	}
 }
 
-// Requirement: the final workspace confirmation must revalidate the launch
-// repository through daemon inspection rather than a local Enter recheck; a reload can
-// replace the provider-transition refresh with a stale pre-auth model.
+// Requirement: final workspace confirmation must inspect the explicitly selected
+// repository through the daemon rather than trust stale local readiness. Enter
+// dispatch owns inspection and must preserve the user's selection.
 // Threat: a valid committed repository remains blocked despite a correct earlier
 // refresh. The app key-dispatch boundary is the narrowest layer that proves stale
 // UI state cannot win the race while non-ready repositories remain rejected.
@@ -81,6 +83,7 @@ func TestOnboardingWorkspaceSubmitRevalidatesStaleReadiness(t *testing.T) {
 	}
 	home := ui.NewHomePage(homeModel)
 	home.ShowOnboardingWorkspace("Confirm workspace")
+	home.SetOnboardingRepository(client.OnboardingRepository{Path: repo, State: "unknown"})
 	app := &App{
 		startupCWD: repo,
 		home:       home,

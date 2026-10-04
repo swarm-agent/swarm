@@ -2017,6 +2017,7 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		ThemeID              string `json:"theme_id"`
 		MakeCurrent          *bool  `json:"make_current"`
 		ConfirmCommittedOnly bool   `json:"confirm_committed_only"`
+		ContextOnly          bool   `json:"context_only"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -2032,6 +2033,22 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.topology == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("topology service not configured"))
+		return
+	}
+	if req.ContextOnly {
+		if !s.requireScopeAny(w, r, "workspaces:write", "sessions:write") {
+			return
+		}
+		if req.MakeCurrent != nil && *req.MakeCurrent {
+			writeError(w, 400, errors.New("context folder registration cannot select a coding workspace"))
+			return
+		}
+		resolution, err := s.workspace.RegisterContextFolderForPrincipal(principal, req.Path, req.Name, req.ThemeID)
+		if err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": resolution, "workspace_id": resolution.WorkspaceID})
 		return
 	}
 	// Repository readiness is a filesystem prerequisite. Check it before any

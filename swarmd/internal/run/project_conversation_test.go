@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -296,5 +297,55 @@ func TestProjectConversationProviderToolWorkspaceRefresh(t *testing.T) {
 	}
 	if err := store.ValidateProjectConversation(persisted, p.AccountScopeID, p.UserID); err != nil {
 		t.Fatalf("refresh changed durable authority: %v", err)
+	}
+}
+
+// Purpose: project context injection must use durable project ownership, not
+// filesystem readiness or the first project. resolveRunExecutionContext and
+// composeInstructionsForScope are the narrowest service boundaries proving
+// missing source paths do not suppress context or grant filesystem authority.
+func TestProjectConversationContextSurvivesMissingSources(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "context.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := pebblestore.NewSessionStore(db)
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}
+	for _, project := range []*pebblestore.ProjectRecord{
+		{ID: "other", Name: "Other", ProjectContext: "wrong-project-context"},
+		{ID: "project", Name: "Project", ProjectContext: "stored-context-marker", Workspaces: []pebblestore.ProjectWorkspaceRef{{Path: filepath.Join(t.TempDir(), "missing")}}},
+	} {
+		if err := store.PutProject(p.AccountScopeID, project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := &Service{sessions: sessionruntime.NewService(store, nil)}
+	snapshot := pebblestore.SessionSnapshot{ID: "context-conversation", AccountScopeID: p.AccountScopeID, UserID: p.UserID, Metadata: map[string]any{"project_id": "project", "swarm_v3_project_id": "project", "agent_name": "system-orchestrator", "resolved_agent_name": "system-orchestrator"}}
+	result, err := svc.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{SessionID: snapshot.ID, AccountScopeID: p.AccountScopeID, UserID: p.UserID, Kind: sessionruntime.SessionMutationCreateSession, Session: &snapshot, ClientRequestID: "create", IdempotencyKey: "create", PayloadHash: "create", RequestHash: "create"})
+	if err != nil || result.Session == nil || result.Error != nil || result.Conflict != nil {
+		t.Fatalf("create: %+v %v", result, err)
+	}
+	for i := 0; i < 2; i++ {
+		saved, found, err := svc.sessions.GetSession(snapshot.ID)
+		if err != nil || !found {
+			t.Fatalf("reopen: %v", err)
+		}
+		execution, err := svc.resolveRunExecutionContext(saved, RunExecutionContext{}, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		instructions := svc.composeInstructionsForScope(execution.Scope, pebblestore.AgentProfile{Name: "system-orchestrator", Mode: "primary"}, "")
+		if !strings.Contains(instructions, "stored-context-marker") || strings.Contains(instructions, "wrong-project-context") {
+			t.Fatalf("incorrect project context: %s", instructions)
+		}
+		if execution.Scope.PrimaryPath != "" || len(execution.Scope.Roots) != 0 || !execution.Scope.RejectScopeExpansion {
+			t.Fatalf("authority widened: %+v", execution.Scope)
+		}
+	}
+	foreign := p
+	foreign.AccountScopeID = "other-account"
+	if _, err := svc.resolveRunExecutionContext(*result.Session, RunExecutionContext{}, foreign); err == nil {
+		t.Fatal("foreign context accepted")
 	}
 }

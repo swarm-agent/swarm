@@ -832,78 +832,6 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// SynthesizeProjectContext reads AGENTS.md and README.md from the provided workspace paths
-// and synthesizes an authoritative project.md document.
-func SynthesizeProjectContext(projectName string, wsPaths []string) string {
-	projectName = strings.TrimSpace(projectName)
-	if projectName == "" {
-		projectName = "Project"
-	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s Architecture & Project Charter\n\n", projectName))
-	sb.WriteString("## Bound Workspaces & Architecture\n")
-
-	for _, p := range wsPaths {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		base := filepath.Base(p)
-		sb.WriteString(fmt.Sprintf("- **`%s`** (`%s`)\n", base, p))
-
-		// Scan for AGENTS.md and README.md
-		var docFound bool
-		for _, docName := range []string{"AGENTS.md", "README.md"} {
-			docPath := filepath.Join(p, docName)
-			if fi, err := os.Stat(docPath); err == nil && !fi.IsDir() {
-				if data, err := os.ReadFile(docPath); err == nil {
-					lines := strings.Split(string(data), "\n")
-					var extracted []string
-					for _, l := range lines {
-						trimmed := strings.TrimSpace(l)
-						if trimmed == "" {
-							continue
-						}
-						// Skip markdown headers
-						if strings.HasPrefix(trimmed, "#") {
-							continue
-						}
-						// Collect relevant instruction / architecture lines
-						if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || len(trimmed) > 20 {
-							extracted = append(extracted, trimmed)
-							if len(extracted) >= 4 {
-								break
-							}
-						}
-					}
-					if len(extracted) > 0 {
-						docFound = true
-						sb.WriteString(fmt.Sprintf("  - *Source (%s)*:\n", docName))
-						for _, ex := range extracted {
-							sb.WriteString(fmt.Sprintf("    > %s\n", ex))
-						}
-						break
-					}
-				}
-			}
-		}
-		if !docFound {
-			sb.WriteString("  - *Role*: General repository module.\n")
-		}
-	}
-
-	sb.WriteString("\n## System Architecture & Integration Boundary\n")
-	sb.WriteString("- Coordinated by Swarm Project Orchestrator (`system-orchestrator`).\n")
-	sb.WriteString("- Delegated execution runs on isolated worktrees via `coder`, `designer`, `finder`, and `swarm` waves.\n")
-	sb.WriteString("- Durable V3 session contracts and Pebble persistence.\n\n")
-	sb.WriteString("## Operational Invariants\n")
-	sb.WriteString("- Local-first operation; zero external credential leaks.\n")
-	sb.WriteString("- Minimal high-craft diffs with automated parent verification.\n")
-	sb.WriteString("- Review-first delivery: finished tasks transition to `needs_review` before completion.\n")
-
-	return sb.String()
-}
-
 // isDirectMediaTask checks whether a task is handled via direct media execution rather than an agent chat session.
 func isDirectMediaTask(task *pebblestore.ProjectTaskRecord) bool {
 	if task == nil {
@@ -1584,13 +1512,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			if err := db.PutProject(p.AccountScopeID, &rec); err != nil {
-				writeError(w, http.StatusBadRequest, err)
+			var creation struct {
+				ClientRequestID string `json:"client_request_id"`
+			}
+			if err := json.Unmarshal(body, &creation); err != nil {
+				writeError(w, 400, err)
+				return
+			}
+			created, err := s.CreateProject(r.Context(), p, rec, creation.ClientRequestID)
+			if err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, pebblestore.ErrProjectCreationConflict) {
+					status = http.StatusConflict
+				}
+				writeError(w, status, err)
 				return
 			}
 
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"project": rec,
+				"project": created,
 			})
 			return
 		}
@@ -1614,26 +1554,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if !s.requireScopeAny(w, r, "projects:read", "sessions:read", "projects:write", "sessions:write") {
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
-			return
-		}
-		var req struct {
-			Name       string   `json:"name"`
-			Workspaces []string `json:"workspaces"`
-		}
-		if len(body) > 0 {
-			_ = json.Unmarshal(body, &req)
-		}
-		ctxText := SynthesizeProjectContext(req.Name, req.Workspaces)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"project_context": ctxText,
-		})
+		writeError(w, http.StatusGone, errors.New("create a project to generate durable AI context; retry through /v3/projects/{id}/context:retry"))
 		return
 	}
 
 	projectID := segments[0]
+	if len(segments) == 2 && segments[1] == "context:retry" {
+		s.handleProjectContextRetry(w, r, p, projectID)
+		return
+	}
 	if len(segments) >= 2 && segments[1] == "sessions" {
 		s.handleProjectConversations(w, r, p, projectID, segments[2:])
 		return
@@ -1694,7 +1623,27 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			var authorizedRefs []pebblestore.ProjectWorkspaceRef
+			if raw, present := patch["workspaces"]; present {
+				data, _ := json.Marshal(raw)
+				if err := json.Unmarshal(data, &authorizedRefs); err != nil {
+					writeError(w, 400, err)
+					return
+				}
+				authorizedRefs, err = s.authorizeProjectWorkspaces(p, authorizedRefs)
+				if err != nil {
+					writeError(w, 400, err)
+					return
+				}
+			}
 			updated, err := db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+				if p.ContextGeneration != nil && p.ContextGeneration.Status != "ready" {
+					for _, key := range []string{"workspaces", "name", "description", "project_context"} {
+						if _, ok := patch[key]; ok {
+							return errors.New("finish or retry project context before editing its inputs")
+						}
+					}
+				}
 				if icon, present := patch["icon_png_data_url"].(string); present {
 					p.IconPNGDataURL = icon
 				}
@@ -1718,7 +1667,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					if err == nil {
 						var ws []pebblestore.ProjectWorkspaceRef
 						if err := json.Unmarshal(rawBytes, &ws); err == nil {
-							p.Workspaces = ws
+							p.Workspaces = authorizedRefs
 						}
 					}
 				}

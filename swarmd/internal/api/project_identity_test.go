@@ -45,10 +45,11 @@ func projectIdentityRequest(t *testing.T, s *Server, p identity.Principal, metho
 // accidental clearing or cross-account writes. HTTP-to-store assertions prove the
 // request contract at its narrowest boundary, including rejected payload postconditions.
 func TestProjectIconHTTPContract(t *testing.T) {
-	s, _, _ := newWorkspaceOverviewTopologyTestServer(t)
+	fixture, _, _ := newWorkspaceOverviewTopologyTestServer(t)
+	s := &Server{sessions: fixture.sessions}
 	p := testPrincipal()
 	icon := projectIdentityPNG(t)
-	w := projectIdentityRequest(t, s, p, http.MethodPost, "", map[string]any{"name": "Icon", "icon_png_data_url": icon})
+	w := projectIdentityRequest(t, s, p, http.MethodPost, "", map[string]any{"name": "Icon", "icon_png_data_url": icon, "client_request_id": "icon-create"})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
@@ -59,6 +60,12 @@ func TestProjectIconHTTPContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := response.Project.ID
+	s.runWG.Wait()
+	// Identity edits are tested on an existing project; generation is exercised
+	// separately by TestProjectContextCreationHTTP with a recording provider.
+	if _, err := s.sessions.Store().UpdateProject(p.AccountScopeID, id, func(p *pebblestore.ProjectRecord) error { p.ContextGeneration = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
 	if id == "" || response.Project.IconPNGDataURL != icon {
 		t.Fatal("create response lost icon")
 	}

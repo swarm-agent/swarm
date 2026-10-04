@@ -41,20 +41,23 @@ type ProjectTaskMediaRef struct {
 
 // ProjectRecord represents a top-level Project aggregating workspaces, context, and tasks.
 type ProjectRecord struct {
-	ID               string                `json:"id"`
-	AccountID        string                `json:"account_id"`
-	Name             string                `json:"name"`
-	Description      string                `json:"description,omitempty"`
-	IconPNGDataURL   string                `json:"icon_png_data_url,omitempty"`
-	ThemeID          string                `json:"theme_id,omitempty"` // account catalog reference; empty uses the Swarm default
-	Workspaces       []ProjectWorkspaceRef `json:"workspaces,omitempty"`
-	ProjectContext   string                `json:"project_context,omitempty"` // synthesized project.md
-	ActiveTaskIDs    []string              `json:"active_task_ids,omitempty"`
-	AutomationIDs    []string              `json:"automation_ids,omitempty"`
-	PrimarySessionID string                `json:"primary_session_id,omitempty"`
-	UploadedMedia    []ProjectTaskMediaRef `json:"uploaded_media,omitempty"`
-	CreatedAt        int64                 `json:"created_at"`
-	UpdatedAt        int64                 `json:"updated_at"`
+	ID                string                    `json:"id"`
+	AccountID         string                    `json:"account_id"`
+	Name              string                    `json:"name"`
+	Description       string                    `json:"description,omitempty"`
+	IconPNGDataURL    string                    `json:"icon_png_data_url,omitempty"`
+	ThemeID           string                    `json:"theme_id,omitempty"` // account catalog reference; empty uses the Swarm default
+	Workspaces        []ProjectWorkspaceRef     `json:"workspaces,omitempty"`
+	ProjectContext    string                    `json:"project_context,omitempty"` // synthesized project.md
+	CreationRequestID string                    `json:"creation_request_id,omitempty"`
+	CreationHash      string                    `json:"creation_hash,omitempty"`
+	ContextGeneration *ProjectContextGeneration `json:"context_generation,omitempty"`
+	ActiveTaskIDs     []string                  `json:"active_task_ids,omitempty"`
+	AutomationIDs     []string                  `json:"automation_ids,omitempty"`
+	PrimarySessionID  string                    `json:"primary_session_id,omitempty"`
+	UploadedMedia     []ProjectTaskMediaRef     `json:"uploaded_media,omitempty"`
+	CreatedAt         int64                     `json:"created_at"`
+	UpdatedAt         int64                     `json:"updated_at"`
 }
 
 // Validate checks that the project has valid required fields.
