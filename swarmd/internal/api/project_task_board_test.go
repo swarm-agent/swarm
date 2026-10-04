@@ -1,7 +1,11 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -144,4 +148,61 @@ func readMigratedTaskBoard(t *testing.T, s *pebblestore.SessionStore, consume fu
 	}
 	t.Fatal("migration did not finish within fixture bound")
 	return nil, pebblestore.ProjectTaskReadStats{}, nil
+}
+
+// Purpose: handleProjects must expose bounded migration as retryable 503, never
+// an empty successful board, and subsequent active reads must exclude archives
+// and carry exact review identity and numeric attribution. This real handler and
+// temporary store prove HTTP postconditions, not live latency performance.
+func TestProjectTaskBoardHTTPMigration(t *testing.T) {
+	server, store, p := setupDirectMediaTestServer(t)
+	project := &pebblestore.ProjectRecord{ID: "board-project", Name: "Board", AccountID: p.AccountScopeID}
+	if err := store.PutProject(p.AccountScopeID, project); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 35; i++ {
+		task := &pebblestore.ProjectTaskRecord{ID: fmt.Sprintf("task-%02d", i), ProjectID: project.ID, AccountID: p.AccountScopeID, Title: "Task", Agent: "swarm", Status: "pending_approval", Archived: i == 34, Revision: 7, PlanBinding: &pebblestore.ProjectTaskPlanBinding{PlanID: "review", DefinitionRevision: 3, Receipt: "exact"}, FullPlanMarkdown: strings.Repeat("detail", 1000)}
+		if err := store.PutProjectTask(p.AccountScopeID, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := func(scope string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v3/projects/"+project.ID+"/tasks", nil)
+		req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, p))
+		req = req.WithContext(context.WithValue(req.Context(), productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, Scopes: []string{scope}}))
+		w := httptest.NewRecorder()
+		server.handleProjects(w, req)
+		return w
+	}
+	denied := request("unrelated:read")
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("scope rejection=%d", denied.Code)
+	}
+	first := request("projects:read")
+	if first.Code != 503 || first.Header().Get("Retry-After") != "1" || strings.Contains(first.Body.String(), `"tasks"`) {
+		t.Fatalf("partial migration response=%d %s", first.Code, first.Body.String())
+	}
+	ready := request("projects:read")
+	if ready.Code != 200 {
+		t.Fatalf("retry=%d %s", ready.Code, ready.Body.String())
+	}
+	var body struct {
+		Tasks []projectTaskBoardRow `json:"tasks"`
+		Count int                   `json:"count"`
+	}
+	if err := json.Unmarshal(ready.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Count != 34 || len(body.Tasks) != 34 || ready.Header().Get("X-Task-Scanned-Rows") != "34" {
+		t.Fatalf("archive/index count=%d", body.Count)
+	}
+	for _, task := range body.Tasks {
+		if task.Archived || task.FullPlanMarkdown != "" || task.Revision != 7 || task.Status != "pending_approval" || task.PlanBinding.Receipt != "exact" {
+			t.Fatalf("lost review identity: %+v", task)
+		}
+	}
+	warm := request("projects:read")
+	if warm.Code != 200 || warm.Header().Get("X-Task-Backfill-Bytes") != "0" || warm.Header().Get("X-Task-Response-Bytes") != strconv.Itoa(warm.Body.Len()) {
+		t.Fatal("warm read repeated migration or lost byte evidence")
+	}
 }

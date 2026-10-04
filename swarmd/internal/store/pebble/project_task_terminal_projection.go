@@ -14,10 +14,10 @@ import (
 // The event address and payload provenance remain necessary even for negatives.
 type taskTerminalSummary struct {
 	SessionID string `json:"session_id"`
-	EventSeq uint64 `json:"event_seq"`
+	EventSeq  uint64 `json:"event_seq"`
 	AccountID string `json:"account_id"`
-	RunID string `json:"run_id"`
-	Summary string `json:"summary"`
+	RunID     string `json:"run_id"`
+	Summary   string `json:"summary"`
 }
 
 func setTaskTerminalInBatch(batch *pebble.Batch, event V3SessionEvent) error {
