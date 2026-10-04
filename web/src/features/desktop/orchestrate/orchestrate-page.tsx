@@ -1,4 +1,3 @@
-import { useRouterState } from '@tanstack/react-router'
 import { OrchestrateView } from './OrchestrateView'
 
 export function OrchestratePage({
@@ -8,14 +7,11 @@ export function OrchestratePage({
   workspaceSlug?: string
   onNavigateHome?: () => void
 }) {
-  const identity = useRouterState({ select: state => {
-    const params = state.matches[state.matches.length - 1]?.params as { projectId?: string }
-    // Session navigation replaces the conversation, not the project shell.
-    return params?.projectId || ''
-  } })
+  // OrchestrateView derives readiness and runtime demand from the resolved project
+  // ID. Keying by the URL alias remounts on ID-to-name canonicalization, aborting
+  // and duplicating the same initial collection request.
   return (
     <OrchestrateView
-      key={identity}
       workspaceSlug={workspaceSlug}
       onNavigateHome={onNavigateHome}
       initialThemeId="apple_peach"

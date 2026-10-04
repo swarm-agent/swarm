@@ -148,3 +148,26 @@ test('postDesktopV3SyncHydrate posts exact selected-session bounded tail payload
     include_active: true,
   })
 })
+
+// Purpose: project history navigation must abort bootstrap transport through
+// postDesktopV3SyncBootstrap/withRequestDeadline. The API layer is the narrowest
+// boundary proving cancellation settles even if a transport ignores the signal;
+// no late successful snapshot may escape to a caller after cancellation.
+test('bootstrap propagates caller cancellation and rejects late transport success', async t => {
+  const originalFetch = globalThis.fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+  let finish!: (response: Response) => void
+  let transportSignal: AbortSignal | null | undefined
+  globalThis.fetch = (async (_input, init) => {
+    transportSignal = init?.signal
+    return new Promise<Response>(resolve => { finish = resolve })
+  }) as typeof fetch
+  const caller = new AbortController()
+  const request = postDesktopV3SyncBootstrap({}, caller.signal)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  caller.abort()
+  await assert.rejects(request, { name: 'AbortError' })
+  assert.equal(transportSignal?.aborted, true)
+  finish(new Response(JSON.stringify(snapshotFixture())))
+  await new Promise<void>(resolve => setImmediate(resolve))
+})

@@ -39,9 +39,12 @@ function harness() {
     get tasks() { return tasks }, set tasks(value) { tasks = value },
     get collections() { return collections }, set holdList(value: boolean) { holdList = value } }
 }
+// Initialize inspected facts through explicit detail disclosure, not acquisition.
 async function hydrate(h: ReturnType<typeof harness>) {
   const lease = h.runtime.acquire('project')
   await lease.ready
+  assert.equal(h.reads.length, 0, 'entry is collection-only')
+  for (const task of h.tasks) h.runtime.inspectTask('project', task.id)
   h.reads[0].resolve({ task: { ...h.tasks[0], git_status: 'clean', is_integrated: true, status: 'completed' } })
   h.reads[1].resolve({ task: { ...h.tasks[1], git_status: 'diverged', unintegrated_commits: 3 } })
   await flush()
@@ -71,6 +74,8 @@ test('collection and membership refreshes retain inspected labels without all-ca
   h.runtime.acceptFrame({ kind: 'project.updated', project_id: 'project', event: { payload: { action: 'task_created' } } })
   await flush()
   assert.equal(h.collections, 3)
+  assert.equal(h.reads.length, 2, 'membership alone must not inspect new cards')
+  h.runtime.inspectTask('project', 'new')
   assert.deepEqual(h.reads.map(read => read.id), ['integrated', 'pending', 'new'])
   h.reads[2].resolve({ task: { ...h.tasks[2], git_status: 'dirty', is_dirty: true, dirty_count: 2 } })
   await flush()
@@ -146,6 +151,8 @@ test('in-flight list updates stay scoped and execution identity replacement requ
   h.tasks = [h.tasks[0], { ...h.tasks[1], revision: 3, session_id: 'replacement', base_commit: 'new-fork' }]
   h.runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
   await flush()
+  assert.equal(h.reads.length, 3, 'replacement remains uninspected until explicitly requested')
+  h.runtime.inspectTask('project', 'pending')
   assert.equal(h.reads.length, 4)
   assert.equal(h.reads[3].id, 'pending')
   assert.equal(h.state.project.tasks[1].isIntegrated, false)
@@ -223,6 +230,8 @@ test('identity replacement during inspection rejects old ancestry and bounded qu
   h.tasks = Array.from({ length: 7 }, (_, i) => record(`card-${i}`))
   const lease = h.runtime.acquire('project')
   await lease.ready
+  assert.equal(h.reads.length, 0)
+  for (const task of h.tasks) h.runtime.inspectTask('project', task.id)
   assert.equal(h.reads.length, 4)
   h.tasks = h.tasks.map((task, i) => i === 0 ? { ...task, revision: 2, session_id: 'new-owner' } : task)
   h.runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
@@ -249,7 +258,7 @@ test('identity replacement during inspection rejects old ancestry and bounded qu
 })
 
 // Requirement: card remount hydration is cache enrichment, not a repository change.
-// DesktopProjectsRuntime owns initial Git reads and durable invalidations; exercising
+// DesktopProjectsRuntime owns explicit Git reads and durable invalidations; exercising
 // its mutation boundary proves filter-driven card mounts cannot fan out detail GETs.
 test('card hydration does not invalidate inspected project Git', { timeout: 5000 }, async () => {
   const h = harness()
