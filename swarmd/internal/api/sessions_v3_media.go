@@ -38,6 +38,7 @@ type sessionsV3MediaCapability struct {
 	SnapshotVersion   string                           `json:"snapshot_version,omitempty"`
 	SnapshotSource    string                           `json:"snapshot_source,omitempty"`
 	DenialReasons     []string                         `json:"denial_reasons,omitempty"`
+	ResolutionError   string                           `json:"resolution_error,omitempty"`
 	Capabilities      []sessionsV3MediaCapabilityEntry `json:"capabilities"`
 }
 

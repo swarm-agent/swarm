@@ -112,6 +112,10 @@ func (s *Server) buildSessionsV3SessionView(principal identity.Principal, sessio
 	mediaCapability := sessionsV3MediaCapability{Status: "unavailable", Capabilities: []sessionsV3MediaCapabilityEntry{}}
 	if contract, contractErr := s.sessionsV3MediaContract(principal, session); contractErr == nil {
 		mediaCapability = projectSessionsV3MediaCapability(contract)
+	} else {
+		// Optional media must not suppress the transcript or pending controls,
+		// but a resolution failure must remain distinguishable from a denial.
+		mediaCapability.ResolutionError = contractErr.Error()
 	}
 
 	var currentExecutionEpoch *sessionsV3ExecutionEpochView

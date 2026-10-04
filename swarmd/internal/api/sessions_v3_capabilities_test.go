@@ -409,3 +409,24 @@ func TestSessionsV3CapabilitiesStoredContractValidation(t *testing.T) {
 		t.Fatalf("validation mutated session: %v", err)
 	}
 }
+
+// Requirement: optional capability failures remain visible without withholding
+// session/permission views. buildSessionsV3SessionView is the narrowest read
+// boundary proving no compiler invocation and no silent media error fallback.
+func TestSessionsV3CapabilitiesViewFailureDoesNotBlockControls(t *testing.T) {
+	server, created, _ := capabilityReadFixture(t)
+	base := server.runner
+	scope := base.(interface {
+		ResolveRuntimeWorkspaceScope(pebblestore.SessionSnapshot, identity.Principal) (tool.WorkspaceScope, error)
+	})
+	server.runner = capabilityPoisonExecution{capabilityScopeOnly{runService: base, resolve: scope.ResolveRuntimeWorkspaceScope}}
+	view, err := server.buildSessionsV3SessionView(testPrincipal(), created, pebblestore.V3SessionProjection{}, nil, false)
+	if err != nil || view.MediaCapability.Status != "available" || view.PendingPermissions == nil {
+		t.Fatalf("read-only view failed: %+v %v", view, err)
+	}
+	server.runner = nil
+	view, err = server.buildSessionsV3SessionView(testPrincipal(), created, pebblestore.V3SessionProjection{}, nil, false)
+	if err != nil || view.PendingPermissions == nil || view.MediaCapability.ResolutionError == "" || view.MediaCapability.ContractToken != "" || len(view.MediaCapability.Capabilities) != 0 {
+		t.Fatalf("optional failure hidden or blocked controls: %+v %v", view, err)
+	}
+}

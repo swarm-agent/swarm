@@ -133,6 +133,7 @@ export interface DesktopV3MediaCapability {
   snapshot_version?: string
   snapshot_source?: string
   denial_reasons?: string[]
+  resolution_error?: string
   capabilities: DesktopV3MediaCapabilityEntry[]
 }
 

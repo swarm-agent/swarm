@@ -40,7 +40,7 @@ export class SessionMediaCapabilityReader {
     this.initialized = true
     const generation = ++this.generation
     if (!authorityChanged && !reconnected && input.hydrated) {
-      publish(input.hydrated)
+      publish(input.hydrated.resolution_error ? null : input.hydrated, input.hydrated.resolution_error)
       return
     }
     publish(null)

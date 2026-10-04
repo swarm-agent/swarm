@@ -1403,8 +1403,8 @@ func sessionsV3SyncHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resou
 		MaxMessagesPerSession:     maxMessages,
 		MaxMessageBytesPerSession: pebblestore.V3RecentMessageByteBudget,
 		MaxEventsPerSession:       maxEvents,
-		ManifestPolicy:           req.ManifestPolicy,
-		IncludeMessages:          mode == pebblestore.V3SyncSnapshotHistoryModeTail || mode == pebblestore.V3SyncSnapshotHistoryModeFull,
-		IncludeEvents:            includeEvents,
+		ManifestPolicy:            req.ManifestPolicy,
+		IncludeMessages:           mode == pebblestore.V3SyncSnapshotHistoryModeTail || mode == pebblestore.V3SyncSnapshotHistoryModeFull,
+		IncludeEvents:             includeEvents,
 	}, nil
 }

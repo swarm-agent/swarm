@@ -75,3 +75,17 @@ test('initial credential discovery is optional but later credential changes reau
   assert.equal(reads, 1)
   assert.equal(values.at(-1), null, 'unchanged hydrated data must not revive denied capability')
 })
+
+// Requirement: optional hydrate resolution errors stay visible without a duplicate
+// capability GET or stale authority. The mounted-consumer coordinator owns this.
+test('hydrated resolution failure is visible without another request', async () => {
+  const reader = new SessionMediaCapabilityReader()
+  let calls = 0
+  let actual: unknown
+  await reader.update({ scope: 'account/session', authority: 'model', ready: true, connected: true,
+    hydrated: { status: 'unavailable', capabilities: [], resolution_error: 'scope resolver unavailable' } },
+    async () => { calls++; throw new Error('unexpected duplicate') },
+    (value, error) => { actual = { value, error } })
+  assert.equal(calls, 0)
+  assert.deepEqual(actual, { value: null, error: 'scope resolver unavailable' })
+})
