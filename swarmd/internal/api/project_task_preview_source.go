@@ -19,6 +19,9 @@ import (
 func (s *Server) projectPreviewSource(p identity.Principal, value string) (*artifact.Authority, artifact.Principal, pebblestore.SessionArtifactSelectionReference, error) {
 	var ref pebblestore.SessionArtifactSelectionReference
 	principal := artifact.Principal{AccountScopeID: p.AccountScopeID, UserID: p.UserID}
+	if len(value) > 4096 {
+		return nil, principal, ref, errors.New("preview source exceeds limit")
+	}
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || u.Fragment != "" || u.RawPath != "" || !strings.HasPrefix(value, "/v3/sessions/") {
 		return nil, principal, ref, errors.New("unsupported preview source")

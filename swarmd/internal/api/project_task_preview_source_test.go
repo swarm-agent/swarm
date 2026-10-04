@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,7 +91,7 @@ func TestProjectPreviewPinnedArtifact(t *testing.T) {
 // services configured proves these strings cannot trigger network/file access.
 func TestProjectPreviewRejectsUnsafeSources(t *testing.T) {
 	s := &Server{}
-	for _, value := range []string{"https://example.invalid/v3/sessions/s/artifacts/a?event_seq=1", "//example.invalid/v3/sessions/s/artifacts/a?event_seq=1", "file:///etc/passwd", "/v3/sessions/../artifacts/a?event_seq=1", "/v3/sessions/s/artifacts/%2e%2e?event_seq=1", "/v3/sessions/s/artifacts/a", "/v3/sessions/s/artifacts/a?event_seq=1&event_seq=2", "/v3/media-staging/stg_untrusted"} {
+	for _, value := range []string{strings.Repeat("x", 4097), "https://example.invalid/v3/sessions/s/artifacts/a?event_seq=1", "//example.invalid/v3/sessions/s/artifacts/a?event_seq=1", "file:///etc/passwd", "/v3/sessions/../artifacts/a?event_seq=1", "/v3/sessions/s/artifacts/%2e%2e?event_seq=1", "/v3/sessions/s/artifacts/a", "/v3/sessions/s/artifacts/a?event_seq=1&event_seq=2", "/v3/media-staging/stg_untrusted"} {
 		if authority, _, _, err := s.projectPreviewSource(testPrincipal(), value); err == nil || authority != nil {
 			t.Fatalf("unsafe preview accepted %q", value)
 		}
