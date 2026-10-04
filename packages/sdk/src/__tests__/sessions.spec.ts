@@ -50,12 +50,14 @@ test('SwarmSessionsNamespace: creates session with generated client_request_id a
     const session = await sessions.create({
       title: 'Analyze Code Reliability',
       workspace_path: '/test/workspaces/swarm-go',
+      project_id: 'proj_test_123',
     });
 
     assert.equal(session.id, 'sess_created_9999');
     assert.equal(session.title, 'Analyze Code Reliability');
     assert.equal(requestBody.agent_name, 'swarm');
     assert.equal(requestBody.mode, 'auto');
+    assert.equal(requestBody.project_id, 'proj_test_123');
     assert.ok(requestBody.client_request_id.startsWith('sdk-session-'));
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -143,11 +145,12 @@ test('SwarmSessionsNamespace: list, get, archive, unarchive, delete, sendMessage
     const sessions = new SwarmSessionsNamespace(transport);
 
     // List
-    const list = await sessions.list({ limit: 10, category: 'active_chats' });
+    const list = await sessions.list({ limit: 10, category: 'active_chats', project_id: 'proj_test_123' });
     assert.equal(list.length, 1);
     assert.equal(list[0].id, 'sess_1');
     assert.ok(lastUrl.includes('limit=10'));
     assert.ok(lastUrl.includes('category=active_chats'));
+    assert.ok(lastUrl.includes('project_id=proj_test_123'));
 
     // Get
     const session = await sessions.get('sess_1');
@@ -181,11 +184,17 @@ test('SwarmSessionsNamespace: list, get, archive, unarchive, delete, sendMessage
   }
 });
 
+// Requirement: completion requires both an idle run and no pending human input.
+// Threat: idle-with-question is reported as success. Authority: waitForRun + permission list;
+// loopback fixture is the narrowest HTTP wire regression, not live execution.
 test('SwarmSessionsNamespace: waitForRun polls until completion', async () => {
   let pollCount = 0;
 
   const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/v3/sessions/sess_running') {
+    if (req.method === 'GET' && req.url?.startsWith('/v3/sessions/sess_running/permissions?')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, count: 0, permissions: null }));
+    } else if (req.method === 'GET' && req.url === '/v3/sessions/sess_running') {
       pollCount++;
       const state = pollCount < 3 ? 'in_progress' : 'completed';
       res.writeHead(200, { 'Content-Type': 'application/json' });

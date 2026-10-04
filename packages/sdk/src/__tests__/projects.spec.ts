@@ -1041,3 +1041,99 @@ test('SwarmProjectsNamespace: AbortSignal cancellation, waitForTask polling, and
     await closeTestServer(ctx);
   }
 });
+
+test('SwarmProjectsNamespace: ensureProject and getOrchestratorSession helpers', async () => {
+  let createdProjectBody: any = null;
+  let createdSessionBody: any = null;
+  const ctx = await createTestServer((req, res, body) => {
+    if (req.method === 'GET' && req.url === '/v3/projects?limit=50') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          projects: [
+            {
+              id: 'proj_existing_1',
+              name: 'existing-project',
+              created_at: 1000,
+              updated_at: 1000,
+            },
+          ],
+        })
+      );
+    } else if (req.method === 'POST' && req.url === '/v3/projects') {
+      createdProjectBody = body;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          project: {
+            id: 'proj_new_swarmtest',
+            name: body.name,
+            description: body.description,
+            workspaces: body.workspaces,
+            created_at: 2000,
+            updated_at: 2000,
+          },
+        })
+      );
+    } else if (req.method === 'GET' && req.url === '/v3/projects/proj_existing_1/sessions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          sessions: [
+            {
+              id: 'sess_orch_existing',
+              title: 'Orchestrator AI',
+              agent_name: 'system-orchestrator',
+              created_at: 1000,
+              updated_at: 1000,
+            },
+          ],
+        })
+      );
+    } else if (req.method === 'GET' && req.url === '/v3/projects/proj_new_swarmtest/sessions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions: [] }));
+    } else if (req.method === 'POST' && req.url === '/v3/projects/proj_new_swarmtest/sessions') {
+      createdSessionBody = body;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          session: {
+            id: 'sess_orch_new',
+            title: body.title,
+            agent_name: body.agent_name,
+            created_at: 2000,
+            updated_at: 2000,
+          },
+        })
+      );
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    // 1. ensureProject returns existing if found
+    const existing = await ctx.projects.ensureProject('existing-project');
+    assert.equal(existing.id, 'proj_existing_1');
+    assert.equal(createdProjectBody, null);
+
+    // 2. ensureProject creates new project if not found
+    const created = await ctx.projects.ensureProject('swarmtest', { workspacePath: '/project/swarmtest' });
+    assert.equal(created.id, 'proj_new_swarmtest');
+    assert.equal(createdProjectBody?.name, 'swarmtest');
+    assert.deepEqual(createdProjectBody?.workspaces, [{ path: '/project/swarmtest' }]);
+
+    // 3. getOrchestratorSession returns existing session
+    const existingSess = await ctx.projects.getOrchestratorSession('proj_existing_1');
+    assert.equal(existingSess.id, 'sess_orch_existing');
+
+    // 4. getOrchestratorSession provisions new session if none exists
+    const newSess = await ctx.projects.getOrchestratorSession('proj_new_swarmtest');
+    assert.equal(newSess.id, 'sess_orch_new');
+    assert.equal(createdSessionBody?.agent_name, 'system-orchestrator');
+  } finally {
+    await closeTestServer(ctx);
+  }
+});

@@ -25,12 +25,14 @@ import type {
   ProjectTaskModelPreviewResult,
   ProjectTaskPreviewResult,
   ProjectTaskRecord,
+  ProjectWorkspaceRef,
   RedeployProjectTaskJobResult,
   RefineProjectTaskParams,
   RefineProjectTaskResult,
   RejectProjectTaskResult,
   ReopenProjectTaskResult,
   RequestOptions,
+  SessionRecord,
   SyncStreamParams,
   SyncStreamResult,
   SynthesizeProjectContextParams,
@@ -110,6 +112,107 @@ export class SwarmProjectsNamespace {
       return data as ProjectRecord;
     }
     throw new SwarmApiError('Malformed response: missing project record', { status: res.status, details: data });
+  }
+
+  /**
+   * Ensures a project exists by name. If found, returns the existing record;
+   * otherwise creates a new project with the specified name and optional workspace binding.
+   */
+  async ensureProject(
+    name: string,
+    options: { description?: string; workspacePath?: string; workspaceId?: string } = {},
+    reqOptions?: RequestOptions
+  ): Promise<ProjectRecord> {
+    const trimmed = name.trim();
+    const existingList = await this.list({ limit: 50 }, reqOptions);
+    const existing = existingList.find((p) => p.name === trimmed);
+    if (existing) return existing;
+
+    const workspaces: ProjectWorkspaceRef[] | undefined = options.workspacePath
+      ? [{ path: options.workspacePath, workspace_id: options.workspaceId }]
+      : undefined;
+
+    return this.create(
+      {
+        name: trimmed,
+        description: options.description ?? `Project ${trimmed}`,
+        workspaces,
+      },
+      reqOptions
+    );
+  }
+
+  /**
+   * Retrieves an active orchestrator session for this project, or creates one if none exists.
+   */
+  async getOrchestratorSession(
+    projectId: string,
+    options: { title?: string; mode?: 'auto' | 'plan'; agentName?: string } = {},
+    reqOptions?: RequestOptions
+  ): Promise<SessionRecord> {
+    const sessions = await this.listConversations(projectId, {}, reqOptions);
+    const active = sessions.find((s) => !s.archived_at && !s.archived);
+    if (active) return active;
+    return this.createConversation(projectId, options, reqOptions);
+  }
+
+  /** Project orchestrator conversations, not delegated task sessions or workspace chats. */
+  async listConversations(
+    projectId: string,
+    params: { limit?: number } = {},
+    reqOptions?: RequestOptions
+  ): Promise<SessionRecord[]> {
+    if (!projectId.trim()) throw new Error('projectId is required');
+    const q = new URLSearchParams();
+    if (params.limit) q.set('limit', String(params.limit));
+    const suffix = q.size ? `?${q}` : '';
+    const res = await this.transport.request<any>(
+      `/v3/projects/${encodeURIComponent(projectId.trim())}/sessions${suffix}`,
+      { method: 'GET', ...reqOptions }
+    );
+    const items = Array.isArray(res.data) ? res.data : res.data?.sessions;
+    if (!Array.isArray(items)) throw new SwarmApiError('Malformed conversation list', { status: res.status });
+    return items.map((item) => {
+      const session = item.session ? { ...item.session, projection: item.projection } : item;
+      if (!session?.id) throw new SwarmApiError('Conversation is missing session identity', { status: res.status });
+      return session;
+    });
+  }
+
+  /** Create an independent project conversation without archiving existing conversations.
+   * Models/context resolve on the daemon. Project conversations never bind a workspace.
+   * Reuse clientRequestId when retrying an uncertain creation result.
+   */
+  async createConversation(
+    projectId: string,
+    options: { title?: string; mode?: 'auto' | 'plan'; agentName?: string; clientRequestId?: string } = {},
+    reqOptions?: RequestOptions
+  ): Promise<SessionRecord> {
+    const id = projectId.trim();
+    if (!id) throw new Error('projectId is required');
+    if (options.agentName && options.agentName !== 'system-orchestrator') {
+      throw new Error('Project conversations require system-orchestrator; use chat.createSession for standalone chat');
+    }
+    const encId = encodeURIComponent(id);
+    const createRes = await this.transport.request<{ ok: boolean; session?: SessionRecord } | SessionRecord>(
+      `/v3/projects/${encId}/sessions`,
+      {
+        method: 'POST',
+        body: {
+          client_request_id: options.clientRequestId ?? `proj-orch-${globalThis.crypto.randomUUID()}`,
+          agent_name: options.agentName ?? 'system-orchestrator',
+          title: options.title ?? 'Orchestrator AI',
+          mode: options.mode ?? 'auto',
+        },
+        ...reqOptions,
+      }
+    );
+    const data = createRes.data;
+    if (data && typeof data === 'object' && 'session' in data && data.session) {
+      return data.session;
+    }
+    if (data && 'id' in data && data.id) return data as SessionRecord;
+    throw new SwarmApiError('Malformed conversation creation response', { status: createRes.status });
   }
 
   /**

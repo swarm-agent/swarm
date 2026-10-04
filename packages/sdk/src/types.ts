@@ -321,6 +321,7 @@ export interface SessionRecord {
 
 export interface CreateSessionParams {
   title?: string;
+  project_id?: string;
   workspace_id?: string;
   workspace_path?: string;
   agent_name?: string;
@@ -333,6 +334,7 @@ export interface CreateSessionParams {
 export interface ListSessionsParams {
   limit?: number;
   state?: string;
+  project_id?: string;
   workspace_id?: string;
   category?: 'video' | 'needs_review' | 'blocked' | 'in_progress' | 'active_chats' | 'archived';
   cursor?: string;

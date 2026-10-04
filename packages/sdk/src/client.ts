@@ -1,4 +1,6 @@
 import { SwarmAppsNamespace } from './apps.js';
+import { SwarmChatNamespace } from './chat.js';
+import { SwarmPermissionsNamespace } from './permissions.js';
 import { SwarmSettingsNamespace } from './settings.js';
 import { SwarmOnboardingNamespace } from './provider-auth.js';
 import { SwarmRealtimeNamespace } from './realtime.js';
@@ -43,6 +45,10 @@ export class SwarmClient {
   readonly workspaces: SwarmWorkspacesNamespace;
   readonly projects: SwarmProjectsNamespace;
   readonly sessions: SwarmSessionsNamespace;
+  /** High-level interactive chat, response streaming, live tool events, and permission handling */
+  readonly chat: SwarmChatNamespace;
+  /** Account and session permission policy, bypass/permissionless mode, and pending approvals */
+  readonly permissions: SwarmPermissionsNamespace;
   readonly apps: SwarmAppsNamespace;
   readonly system: SwarmSystemNamespace;
   readonly deploy: SwarmDeployNamespace;
@@ -91,6 +97,8 @@ export class SwarmClient {
     this.workspaces = new SwarmWorkspacesNamespace(this.transport);
     this.projects = new SwarmProjectsNamespace(this.transport);
     this.sessions = new SwarmSessionsNamespace(this.transport);
+    this.chat = new SwarmChatNamespace(this.transport);
+    this.permissions = new SwarmPermissionsNamespace(this.transport);
     this.apps = new SwarmAppsNamespace(this.transport);
     this.system = new SwarmSystemNamespace(this.transport);
     this.deploy = new SwarmDeployNamespace(this.transport);

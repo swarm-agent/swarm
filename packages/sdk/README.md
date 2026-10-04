@@ -49,19 +49,238 @@ explicit refresh, not timer polling. Live agent verification is a separate step.
 
 ## Quick Start
 
+### Chat Flow vs. Autonomous Orchestration Flow
+
+Swarm supports two distinct modes of execution depending on your application goals:
+
+1. **Interactive Chat Flow (`client.chat` / `client.sessions`)**:
+   - Best for conversational assistants, interactive Q&A, and direct tool calling.
+   - A standalone session has one primary workspace, can use additional authorized workspaces, and follows normal worktree/permission/plan rules. It does not carry a project's high-level Markdown context.
+   - Use `client.chat.createSession()`, `client.chat.run()`, and `client.chat.stream()`.
+
+2. **Autonomous Orchestration Flow (`client.projects` / `client.workers` / `client.deploy`)**:
+   - Best for multi-agent background tasks, codebase modifications, and durable pipelines.
+   - Deploys specialized subagent fleets (Coder, Finder, Designer, Router, Compact) across bounded repository worktrees with structured checkpoint contracts.
+   - **Project → orchestrator conversations → delegated tasks → task sessions.** Project Markdown and linked workspaces provide high-level context; each deployed task resolves its own authorized execution workspace.
+   - Use `client.projects.listConversations(projectId)` and `createConversation(projectId)` for the session picker and New Conversation button. These call canonical `/v3/projects/{id}/sessions`, not generic workspace session creation. `getOrchestratorSession` reuses an existing conversation or creates one; it does not mean there can only be one.
+   - Use `client.projects.createTask()` / `listTasks()` for custom task organization. Task-linked sessions must be continued through `reopenTask` with exact revision guards, not ordinary chat messages.
+   - Naming a workspace session “Orchestrator” does not grant orchestration authority. Use the project conversation helper; do not supply a workspace path or spoof task metadata.
+   - Models and thinking resolve from daemon account settings. Conversation creation must not overwrite provider/model preferences.
+
+---
+
 ### 1. Initialize Client
 
-```typescript
-import { createSwarmClient } from '@swarm-agent/sdk';
+Connect to an already configured, authenticated daemon. Creating a chat UI must not
+change provider credentials, model assignments or permission policy.
 
-// Connect to local Swarm daemon (defaults to http://127.0.0.1:18080 or SWARM_API_URL)
-const client = createSwarmClient({
-  baseUrl: process.env.SWARM_API_URL || 'http://127.0.0.1:18080',
-  token: process.env.SWARM_DEPLOY_TOKEN, // Optional: scoped deploy token
+```typescript
+import { SwarmClient } from '@swarm-agent/sdk';
+
+const client = new SwarmClient({
+  baseUrl: process.env.SWARM_API_URL,
+  socketPath: process.env.SWARM_SOCKET_PATH,
 });
 ```
 
-### 2. Local Desktop Bootstrap & Scoped Tokens
+---
+
+### 2. Explicit permission decisions
+
+Use `describePermission(record)` to render tool details, conservative per-request `actions`,
+question IDs, options and custom-response fields. Treat all text/arguments as untrusted text,
+not HTML. `parseError` leaves malformed questions deny-only. These helpers do not grant authority:
+the backend enforces policy, project scope and specialized plan/proposal acceptance.
+
+```typescript
+import { describePermission, answerPermission } from '@swarm-agent/sdk';
+
+const pending = await client.permissions.listSessionPending(sessionId);
+for (const permission of pending) {
+  renderPermission(describePermission(permission)); // Your UI; does not approve anything.
+}
+
+// Call from a user submit handler, with actual user-entered input:
+async function submitAnswer(permission, userInput) {
+  const options = answerPermission(permission, userInput);
+  return await client.permissions.resolve(sessionId, permission.id, 'allow_once', options);
+}
+// Single question: userInput is a string (choice value or custom text).
+// Structured questions: { questionId: 'actual answer', q_2: 'custom text' }.
+// answerPermission serializes the backend reason/answers-map contract, not approved_arguments.answer.
+// Ordinary tools: resolve(..., 'allow_once') or resolve(..., 'deny') only after a user click.
+```
+
+`resolve` returns the confirmed permission record. Transport failures and mismatched/stale
+results reject; `PermissionResolutionError.result` retains a conflicting authoritative record.
+A cancelled request or a prior different answer is not success. Backend sanitization can also
+change returned text; review the returned record instead of blindly resubmitting. Duplicate
+in-flight resolutions are rejected. `approvedArguments` supports an explicitly reviewed JSON
+object where the backend supports it; it is not a question-answer channel.
+
+Persistent actions and policy methods are advanced account-policy operations, not default UI
+buttons. Project conversations require individual one-time decisions. Avoid `resolveAll` for
+interactive forms: it can partially mutate on failure. Never enable bypass or change models
+as incidental chat setup. Explicit auto-approval options affect ordinary tools only; ask-user
+always requires actual user input.
+
+---
+
+### 3. Interactive Chat & Live Tool Stream
+
+Build responsive chat UIs that stream model text, reasoning, and live tool execution cards like Swarm Desktop:
+
+```typescript
+// 1. Create a chat session
+const session = await client.chat.createSession({
+  title: 'Repository Exploration',
+  workspace_path: '/path/to/project',
+});
+
+// 2. Stream live text, reasoning, and tool calls
+const stream = await client.chat.stream(session.id, {
+  onText: (delta, fullText) => process.stdout.write(delta),
+  onReasoning: (delta) => console.log('[Thinking]', delta),
+  onToolStarted: (tool) => console.log(`[Tool Started] ${tool.name}`),
+  onToolDelta: (tool, delta) => console.log(`[Tool Output] ${delta}`),
+  onToolCompleted: (tool) => console.log(`[Tool Done] ${tool.name} in ${tool.durationMs}ms`),
+  onPermissionRequested: async (perm, resolve) => {
+    // Your UI must wait for a real user gesture. Keep errors visible and retain the form.
+    renderPermissionForm(describePermission(perm), async (action, userInput) => {
+      try {
+        const result = await resolve(action, action === 'allow_once' && describePermission(perm).kind === 'ask-user'
+          ? answerPermission(perm, userInput) : {});
+        showConfirmedDecision(result.permission);
+      } catch (error) { showPermissionError(perm.id, error); }
+    });
+  },
+  onPermissionRemoved: id => removePermissionForm(id), // No longer pending; not necessarily approved.
+  onPermissionError: (error, perm) => showPermissionError(perm.id, error),
+  onState: (state) => renderConversation(state.messages, state.live, state.snapshot),
+  onComplete: () => console.log('Turn finished; stream remains open'),
+});
+
+await stream.ready; // Hydration and replay MUST finish before dispatch.
+await client.chat.sendMessage(session.id, 'Find all configuration files and summarize them.');
+// Keep this watch for subsequent messages. Dispose only on switch/unmount/shutdown.
+// stream.done means the watch ended, not that a single assistant turn finished.
+
+// 3. Or use chat.run while the watch above serves the explicit permission UI
+const response = await client.chat.run(session.id, {
+  message: 'What is the git status of this repository?',
+  timeoutMs: 120_000,
+});
+console.log(response.reply);
+```
+
+---
+
+### 4. Native WebSocket Streaming Bridge & Browser Client
+
+Swarmagent communicates in real-time over bidirectional WebSockets (`/v3/realtime/stream`). The SDK provides an out-of-the-box WebSocket Bridge for Node.js backends and a universal browser client for web frontends (React, Vue, Svelte, or Vanilla JS):
+
+#### Backend (Node.js): Mount WebSocket Bridge
+```typescript
+import http from 'node:http';
+import { SwarmClient } from '@swarm-agent/sdk';
+
+const server = http.createServer((req, res) => { /* app routes */ });
+const client = new SwarmClient();
+
+// Mounts bidirectional WebSocket bridge on /ws:
+// Hooks directly into Swarm daemon's realtime WebSocket outbox, multiplexing tokens, reasoning, and tool calls.
+client.chat.attachWebSocket(server, {
+  path: '/ws',
+  autoApprovePermissions: false, // Explicit server policy; browser cannot enable it
+});
+
+server.listen(3456, '127.0.0.1');
+```
+
+#### Frontend (Browser): Real-Time WebSocket Hooking
+```typescript
+import { SwarmBrowserChat, describePermission, answerPermission } from '@swarm-agent/sdk/browser';
+
+const chat = new SwarmBrowserChat(); // same-origin ws/wss selected automatically
+chat.on('state', state => {
+  // Replace durable history and transient streams separately; never append fullText to history.
+  renderConversation(state.messages, state.live, state.snapshot);
+  // snapshot.current_run_state_by_session[state.sessionId] owns busy/waiting/failed status.
+});
+chat.on('error', showError);
+chat.on('disconnected', disableComposer);
+
+// 1. Hook into live tool execution and token streams
+chat.on('text', (delta, fullText) => renderLiveMarkdown(fullText));
+chat.on('reasoning', (delta, fullText) => renderModelThinking(fullText));
+chat.on('tool_start', (tool) => renderToolStartedCard(tool.id, tool.name, tool.arguments));
+chat.on('tool_delta', (tool, delta) => appendToolOutput(tool.id, delta));
+chat.on('tool_done', (tool) => markToolCompleted(tool.id, tool.durationMs));
+// Replace pending cards on hydration/live updates/reconnect, keyed by permission.id.
+// Preserve unsent input for unchanged requests; do not submit during render.
+chat.on('permissions', pending => renderPendingForms(pending.map(describePermission)));
+chat.on('permission_error', (id, error) => showPermissionError(id, error));
+chat.on('permission_removed', id => removePermissionForm(id));
+
+// Wire to your form's explicit user-submit handler. Never remove a card on send alone.
+async function onPermissionSubmit(permission, action, userInput) {
+  try {
+    const result = await chat.resolvePermission(permission.id, action,
+      action === 'allow_once' && describePermission(permission).kind === 'ask-user'
+        ? answerPermission(permission, userInput) : {});
+    showConfirmedDecision(result.permission);
+  } catch (error) { showPermissionError(permission.id, error); }
+}
+
+// 2. Connect & subscribe to session
+await chat.connect();
+await chat.subscribe('session_123');
+
+// 3. Send messages directly over WebSocket
+const requestId = chat.sendMessage('Inspect the git repository and list modified files.');
+// `accepted` acknowledges durable dispatch. Never blindly resend an uncertain message.
+// Retain requestId if your UI offers an explicit retry, and pass it as argument 4.
+// Switching: await chat.subscribe(otherSession.id). Reconnect rehydrates selected history.
+// Unmount: chat.dispose(). Disconnected sends throw instead of silently disappearing.
+```
+
+Backend conversation routes should use the same project identity for listing and creation:
+```typescript
+const project = await client.projects.ensureProject('Social content');
+const conversations = await client.projects.listConversations(project.id, { limit: 100 });
+const created = await client.projects.createConversation(project.id, {
+  title: 'New campaign', clientRequestId: crypto.randomUUID(),
+});
+// Return created.id to the browser; await chat.subscribe(created.id) before sending.
+```
+
+Use `state` as the conversation rendering authority, including initial history, failed/empty
+turns and durable reconnect recovery. `text`/tool callbacks are convenience notifications.
+History is a bounded 200-message tail; use canonical sync hydration for additional history.
+The browser bridge requires an explicit selected session and never guesses a recent account
+session. Keep it on host loopback; network/multi-user apps must supply `authorize` and their
+own per-session authorization. Foreign browser origins are rejected. Auto approval never
+chooses an `ask-user` answer: render the question and send the operator's reply explicitly.
+
+`resolvePermission` now returns a promise: await it and handle rejection. Browser and bridge
+must be upgraded together; resolution frames require `requestId` and acknowledgements carry
+`result`. `permission_removed` means no longer pending, not approval. `permissions` is a
+rendering projection of the canonical session view, not a second durable authority. Timeout,
+disconnect, disposal or session switch rejects uncertain submissions; reconnect rehydrates
+without replaying decisions. To explicitly rehydrate after an acknowledgement timeout, retain
+`chat.sessionId`, call `chat.unsubscribe()`, then `await chat.subscribe(retainedId)`; never resend
+the decision automatically. Review refreshed state before manually retrying. No UI can infer
+exactly-once application from a lost acknowledgement. `onPermissionError` is recoverable and
+does not close the watch; `onError` reports stream failures. Existing string-reason resolver
+calls remain supported, while options objects carry structured replies and reviewed arguments.
+
+Runnable terminal examples: `examples/chat-quickstart.ts`, `examples/orchestrator-quickstart.ts`
+and their shared `examples/interactive-permissions.ts`. They require a preconfigured daemon,
+ask for actual terminal input, and never configure credentials, model fleets or bypass.
+
+---
+
+### 5. Local Desktop Bootstrap & Scoped Tokens
 
 ```typescript
 // Bootstrap local session credentials from Desktop

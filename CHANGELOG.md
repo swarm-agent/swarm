@@ -6,6 +6,14 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add typed SDK permission views and explicit structured/custom answers, confirmed browser/bridge resolution with recoverable errors, duplicate guards and durable pending-request reconciliation. Never auto-answer ask-user, and remove bypass/model configuration from chat quickstarts. Docs impact: explicit-decision examples and permission protocol migration guidance in `packages/sdk/README.md` and SDK quickstarts.
+
+- Reject missing or malformed browser SDK subscription session IDs before opening a connection or changing the selected conversation. Docs impact: none.
+
+- Keep SDK chat subscriptions usable across repeated turns, conversation switching and reconnects; add canonical project conversation helpers and a browser-only entry point, reject foreign-origin bridge upgrades, and disconnect failed upstream watches. Docs impact: SDK conversation lifecycle and browser bridge usage in `packages/sdk/README.md`.
+
+- Add native WebSocket streaming bridge (`SwarmWebSocketBridge`, `client.chat.attachWebSocket`) and universal browser WebSocket client (`SwarmBrowserChat`) to `@swarm-agent/sdk`, allowing web frontends to hook directly into Swarm's bidirectional WebSocket stream for realtime assistant tokens, model reasoning deltas, live tool execution events, and permission approvals. Docs impact: none.
+
 - Require test-only mint suppression before native qualification installation, reject ineffective service suppression at startup, and verify the daemon environment after installation, reinstallation, and restart for root/sudo scenarios. Add hermetic guard and repeated reporter-suppression regressions without changing real-user defaults; keep the publication path check limited to the exact test-only systemd drop-in statement. Docs impact: mandatory no-mint qualification requirements and evidence limits in `docs/main-deploy-checklist.md`.
 
 - Document a five-step headless application SDK roadmap covering incremental non-production testing, sessions and orchestration, safe tools/media, durable state and parallel-workload qualification. Docs impact: add `packages/sdk/HEADLESS_PLAN.md` and link it from the headless UI guide; no new runtime capabilities are claimed.
