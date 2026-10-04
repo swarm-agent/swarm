@@ -11,7 +11,7 @@ import type { DesktopPermissionRecord } from '../types/realtime'
 // is the narrowest layer proving visible labels/actions without modal side effects.
 test('attention panel shows every question and command with explicit actions, without auto-opening dialogs', () => {
   const base: DesktopPermissionRecord = { id: 'question', sessionId: 'grandchild', runId: 'run', callId: 'call', toolName: 'ask_user', toolArguments: '{"questions":[{"id":"q","question":"Which direction?","options":[{"label":"One"},{"label":"Two"}]}]}', status: 'pending', decision: '', reason: '', requirement: '', mode: 'auto', createdAt: 1, updatedAt: 1, resolvedAt: 0, permissionRequestedAt: 1 }
-  const html = renderToStaticMarkup(<TaskAttention attention={{ permissions: [base, { ...base, id: 'command', toolName: 'bash', toolArguments: '{"command":"git status"}' }], unresolvedCount: 2, error: '', retry: () => {} }} />)
+  const html = renderToStaticMarkup(<TaskAttention attention={{ permissions: [base, { ...base, id: 'command', toolName: 'bash', toolArguments: JSON.stringify({ command: 'git status', explanation: ['Inspect repository state'], category: 'read', critical: false }) }], unresolvedCount: 2, error: '', retry: () => {} }} />)
   assert.match(html, /Waiting for you/)
   assert.match(html, /2 pending/)
   assert.match(html, /Which direction/)

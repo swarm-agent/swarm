@@ -1196,6 +1196,8 @@ export function MinimalTaskCard({
         {expanded ? 'Hide details' : 'Show details'}
       </button>
       </TaskUsageFooter>
+      {/* Pending decisions must remain actionable independently of details disclosure. */}
+      <TaskAttention attention={attention} />
       <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
       {expanded && <>
       {(isPlanCard || task.agentType === 'coder') && <section aria-label={isPlanCard ? 'Full current plan' : 'Full proposed task'} className="min-w-0 space-y-3">
@@ -1248,7 +1250,6 @@ export function MinimalTaskCard({
           )}
         </div>
       )}
-      <TaskAttention attention={attention} />
       {/* ROUTER AGENT FAILURE ALERT BANNER */}
       {expanded && (task.routerAlert || (task as any).router_alert) && (
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">
