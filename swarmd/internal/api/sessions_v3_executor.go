@@ -4807,7 +4807,8 @@ func sessionsV3ProviderRequestHasTool(tools []provideriface.ToolDefinition, name
 	return false
 }
 
-func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
+// resolveSessionV3Capabilities resolves current authority without constructing execution.
+func (e *sessionV3Executor) resolveSessionV3Capabilities(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return sessionV3ResolvedRuntime{}, errors.New("v3 executor is not configured")
 	}
@@ -4818,7 +4819,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if !ok {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("session %q not found", job.SessionID)
 	}
-	if strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(job.Principal.AccountScopeID) {
+	if strings.TrimSpace(job.Principal.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(job.Principal.AccountScopeID) {
 		return sessionV3ResolvedRuntime{}, errors.New("session principal account mismatch")
 	}
 	agentProfile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
@@ -4835,21 +4836,14 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(agentProfile.Name) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("stored v3 agent profile is missing name")
 	}
-	if strings.TrimSpace(agentProfile.Mode) == "" {
-		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing mode", strings.TrimSpace(agentProfile.Name))
+	if agentProfile.Mode != "primary" && agentProfile.Mode != "subagent" {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q has invalid mode", strings.TrimSpace(agentProfile.Name))
 	}
-	if strings.TrimSpace(agentProfile.RuntimeMode) == "" {
+	if pebblestore.NormalizeAgentRuntimeMode(agentProfile.RuntimeMode) == "" {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing runtime_mode", strings.TrimSpace(agentProfile.Name))
 	}
 	if agentProfile.ExitPlanModeEnabled == nil {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing exit_plan_mode_enabled", strings.TrimSpace(agentProfile.Name))
-	}
-	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
-	if !ok || compiler == nil {
-		return sessionV3ResolvedRuntime{}, errors.New("v3 tool contract compiler is not configured")
-	}
-	if _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
-		return sessionV3ResolvedRuntime{}, err
 	}
 	effectivePreference, err := resolveSessionV3EffectivePreference(session, agentProfile)
 	if err != nil {
@@ -4873,6 +4867,17 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(scope.PrimaryPath) == "" && pebblestore.ProjectConversationID(session) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
+	resolved := sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, Scope: scope}
+	resolved.MediaContract, err = e.compileSessionV3MediaContract(job.Principal, resolved)
+	return resolved, err
+}
+
+func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
+	resolved, err := e.resolveSessionV3Capabilities(job)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	session, agentProfile, pref, scope := resolved.Session, resolved.AgentProfile, resolved.Preference, resolved.Scope
 	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
@@ -4894,18 +4899,11 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
 	}
-	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
-	providerRunner, _ := e.server.providers.GetRunner(providerID)
-	var catalog *pebblestore.ModelCatalogRecord
-	if record, ok := catalogRecord.(pebblestore.ModelCatalogRecord); ok {
-		catalog = &record
+	// Task-history overlays may add task tools, but must not change media authority.
+	if runruntime.AgentProfileAuthorizesMedia(agentProfile) != runruntime.AgentProfileAuthorizesMedia(resolved.AgentProfile) {
+		return sessionV3ResolvedRuntime{}, errors.New("task history overlay changed media authorization")
 	}
-	mediaContract := runruntime.CompileSessionMediaContract(runruntime.SessionMediaContractInput{
-		ProviderID: providerID, Model: pref.Model, Catalog: catalog, CatalogMeta: catalogMeta,
-		Adapter:         runruntime.ResolveMediaAdapterDeclaration(identity.ContextWithPrincipal(context.Background(), job.Principal), providerID, providerRunner),
-		AgentAuthorized: runruntime.AgentProfileAuthorizesMedia(agentProfile), ExecutionMode: session.Mode,
-		WorkspaceScope: scope.PrimaryPath, SessionScope: session.ID,
-	})
+	mediaContract := resolved.MediaContract
 	instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
 	tools = runruntime.MaterializeSessionMediaTool(tools, mediaContract)
 	toolChoice := "none"
@@ -4931,7 +4929,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		}
 		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
 	}
-	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: resolved.ContextWindow, ModelCatalog: resolved.ModelCatalog, CatalogMeta: resolved.CatalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, metadata map[string]any, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
@@ -4987,18 +4985,17 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 	}
 
 	accountScopeID = strings.TrimSpace(accountScopeID)
-	// Built-in tool additions are backfilled per account. Existing accounts are
-	// not covered by the daemon's legacy unscoped startup reconciliation, so do
-	// the account-scoped reconciliation before resolving the mutable contract.
-	if err := e.server.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
-		return pebblestore.AgentProfile{}, fmt.Errorf("reconcile agent defaults for account: %w", err)
-	}
+	// Resolution is read-only. Default reconciliation belongs to profile setup,
+	// not capability reads or run admission.
 	current, ok, err := e.server.agents.GetProfileForAccount(accountScopeID, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
 	if !ok {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
+	}
+	if !current.Enabled {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is disabled", name)
 	}
 	if current.ToolContract == nil {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q tool_contract is not configured", name)
@@ -5033,11 +5030,7 @@ func (e *sessionV3Executor) resolveSessionV3WorkspaceScope(session pebblestore.S
 	}); ok && hydrator != nil {
 		return hydrator.ResolveRuntimeWorkspaceScope(session, principal)
 	}
-	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, nil, e.server.agents, e.server.discovery, e.server.events)
-	if e.server.workspace != nil {
-		hydrator.SetWorkspaceService(e.server.workspace)
-	}
-	return hydrator.ResolveRuntimeWorkspaceScope(session, principal)
+	return tool.WorkspaceScope{}, errors.New("v3 workspace scope resolver is not configured")
 }
 
 func (e *sessionV3Executor) composeSessionV3Instructions(scope tool.WorkspaceScope, mode string, agentProfile pebblestore.AgentProfile) string {
@@ -5098,7 +5091,7 @@ func (e *sessionV3Executor) resolveSessionV3TaskHistoryTools(scope tool.Workspac
 
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {
 	if e == nil || e.server == nil || e.server.runner == nil {
-		return nil, nil
+		return nil, errors.New("v3 tool contract compiler is not configured")
 	}
 	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
 	if !ok || compiler == nil {
@@ -5184,13 +5177,7 @@ func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.
 	}
 	resolved, err := e.server.model.ResolvePreference(pref)
 	if err != nil {
-		pref.ServiceTier = modelruntime.NormalizeServiceTierForProvider(pref.Provider, pref.ServiceTier)
-		if pref.Provider == "codex" {
-			pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
-		} else {
-			pref.ContextMode = ""
-		}
-		return pref, 0, nil
+		return pebblestore.ModelPreference{}, 0, err
 	}
 	resolvedPref := normalizeSessionsV3ModelPreference(resolved.Preference)
 	if resolvedPref.Provider == "" && pref.Provider != "" {
