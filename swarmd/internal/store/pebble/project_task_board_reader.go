@@ -10,7 +10,7 @@ import (
 
 // ProjectTaskBoardReader is request-local, read-only and valid only inside the
 // ReadProjectTaskBoard callback. All records share the compact rows' snapshot.
-// Full related records remain a bounded migration gap; never serialize them.
+// Session, plan and program records are durable compact derived projections.
 type ProjectTaskBoardReader struct {
 	reader pebble.Reader
 	account string
@@ -18,10 +18,12 @@ type ProjectTaskBoardReader struct {
 	cache map[string]any
 	err error
 	task *ProjectTaskRecord
+	missing []string
+	missingSet map[string]bool
 }
 
 func newProjectTaskBoardReader(reader pebble.Reader, account string, rows []ProjectTaskRecord, stats *ProjectTaskReadStats) *ProjectTaskBoardReader {
-	return &ProjectTaskBoardReader{reader: reader, account: account, stats: stats, cache: make(map[string]any)}
+	return &ProjectTaskBoardReader{reader: reader, account: account, stats: stats, cache: make(map[string]any), missingSet: make(map[string]bool)}
 }
 
 func (s *SessionStore) ReadProjectTaskBoard(account, project string, archived bool, consume func([]ProjectTaskRecord, *ProjectTaskBoardReader)) ([]ProjectTaskRecord, ProjectTaskReadStats, error) {
@@ -57,10 +59,13 @@ func boardRead[T any](r *ProjectTaskBoardReader, key string) (T, bool, error) {
 }
 
 func (r *ProjectTaskBoardReader) GetSession(id string) (SessionSnapshot, bool, error) {
-	v, ok, err := boardRead[SessionSnapshot](r, KeySession(id))
+	v, ok, err := boardRelatedRead[SessionSnapshot](r, KeySession(id))
 	if err != nil || !ok || v.ID != id || v.AccountScopeID != r.account { return SessionSnapshot{}, false, err }
+	v = compactBoardSession(v)
 	lifecycle, found, err := boardRead[SessionLifecycleSnapshot](r, KeySessionLifecycle(id))
-	if found { v.Lifecycle = &lifecycle }
+	if found && lifecycle.SessionID == id && lifecycle.AccountScopeID == r.account {
+		if r.task == nil || r.task.SessionID != id || r.task.ExecutionRunID() == "" || lifecycle.RunID == r.task.ExecutionRunID() { v.Lifecycle = &lifecycle }
+	}
 	return v, err == nil, err
 }
 
@@ -77,20 +82,20 @@ func (r *ProjectTaskBoardReader) GetV3SessionRunState(id string) (V3SessionRunSt
 
 func (r *ProjectTaskBoardReader) GetTaskProgram(session, id string) (TaskProgramRecord, bool, error) {
 	if _, ok, err := r.GetSession(session); err != nil || !ok { return TaskProgramRecord{}, false, err }
-	v, ok, err := boardRead[TaskProgramRecord](r, KeyTaskProgram(session, id))
+	v, ok, err := boardRelatedRead[TaskProgramRecord](r, KeyTaskProgram(session, id))
 	if err != nil || !ok || v.ParentSessionID != session || v.ProgramID != id { return TaskProgramRecord{}, false, err }
-	return v, true, nil
+	return compactBoardProgram(v), true, nil
 }
 
 func (r *ProjectTaskBoardReader) GetPlan(session, id string) (SessionPlanSnapshot, bool, error) {
 	if r.task == nil || r.task.PlanBinding == nil { return SessionPlanSnapshot{}, false, nil }
 	b := r.task.PlanBinding
 	if b.PlanID != id || session != r.task.SessionID || (b.SessionID != "" && b.SessionID != session) { return SessionPlanSnapshot{}, false, nil }
-	v, ok, err := boardRead[SessionPlanSnapshot](r, KeySessionPlan(session, id))
+	v, ok, err := boardRelatedRead[SessionPlanSnapshot](r, KeySessionPlan(session, id))
 	if err != nil || !ok || v.SessionID != session || v.ID != id || v.AccountScopeID != r.account { return SessionPlanSnapshot{}, false, err }
 	if b.Receipt != "" && v.ApprovalState == "approved" && b.Receipt != v.AcceptedDefinitionReceipt { return SessionPlanSnapshot{}, false, nil }
 	if v.ApprovalState != "approved" && b.DefinitionRevision > 0 && v.Version != b.DefinitionRevision { return SessionPlanSnapshot{}, false, nil }
-	return v, true, nil
+	return compactBoardPlan(v), true, nil
 }
 
 func (r *ProjectTaskBoardReader) ListPlans(session string, limit int) ([]SessionPlanSnapshot, error) {
@@ -112,3 +117,31 @@ func (r *ProjectTaskBoardReader) ListRunIntents(session string, limit int) ([]V3
 func (r *ProjectTaskBoardReader) CurrentTaskProgram(t *ProjectTaskRecord) (TaskProgramRecord, bool) { return CurrentProjectTaskProgram(r, t) }
 func (r *ProjectTaskBoardReader) ProjectTaskExecuting(t *ProjectTaskRecord) bool { return ProjectTaskExecutingFrom(r, t) }
 func (r *ProjectTaskBoardReader) ProjectTaskPlanUnfinished(t *ProjectTaskRecord) bool { return ProjectTaskPlanUnfinishedFrom(r, t) }
+
+// Hydrate only exact active-attempt evidence from the compact snapshot. Full
+// assistant messages and terminal event payloads remain detail-only reads.
+func (r *ProjectTaskBoardReader) hydrateAttempt(task *ProjectTaskRecord) {
+	a := task.ActiveAttempt()
+	if a == nil || a.SessionID != task.SessionID { return }
+	if a.SummaryRunID != a.RunID { a.Summary, a.SummaryRunID = "", "" }
+	r.BindTask(task)
+	state, ok, err := r.GetV3SessionRunState(a.SessionID)
+	if err != nil || !ok || state.AccountScopeID != task.AccountID { return }
+	if a.RunID != "" && a.RunID != state.RunID { a.Summary, a.SummaryRunID = "", ""; return }
+	a.RunID = state.RunID
+	if state.Active { a.Summary, a.SummaryRunID = "", ""; return }
+	session, ok, err := r.GetSession(a.SessionID)
+	if err != nil || !ok { return }
+	if task.PlanBinding != nil {
+		if plan, ok, _ := r.GetPlan(a.SessionID, task.PlanBinding.PlanID); ok && plan.Document != nil {
+			for _, cp := range plan.Document.Checkpoints {
+				if cp.Status == "completed" && cp.SessionID == a.SessionID && cp.RunID == state.RunID && cp.Handoff != nil {
+					a.Summary, a.SummaryRunID = cp.Handoff.Overview, state.RunID
+				}
+			}
+		}
+	}
+	if session.Metadata["lifecycle_summary_run_id"] == state.RunID && session.Metadata["lifecycle_signal"] == "needs_review" {
+		if summary, ok := session.Metadata["lifecycle_summary"].(string); ok { a.Summary, a.SummaryRunID = summary, state.RunID }
+	}
+}

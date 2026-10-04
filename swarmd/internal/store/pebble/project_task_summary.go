@@ -256,10 +256,20 @@ func (s *SessionStore) readProjectTaskSummaries(account, project string, archive
 	if err != nil { return nil, nil, stats, err }
 	if len(rows) != state.Counts[partition] { return nil, nil, stats, ErrProjectTaskSummaryCorrupt }
 	start = time.Now()
+	reader := newProjectTaskBoardReader(snapshot, account, rows, &stats)
+	reader.prepare(rows)
+	if reader.err != nil { return nil, nil, stats, reader.err }
+	if len(reader.missing) > 0 {
+		err := s.backfillTaskRelated(reader.missing, &stats)
+		return nil, nil, stats, err
+	}
+	for i := range rows { reader.hydrateAttempt(&rows[i]) }
+	if reader.err != nil { return nil, nil, stats, reader.err }
 	if consume != nil {
-		reader := newProjectTaskBoardReader(snapshot, account, rows, &stats)
 		consume(rows, reader)
-		return rows, nil, stats, reader.err
+		if reader.err != nil { return nil, nil, stats, reader.err }
+		if len(reader.missing) > 0 { return nil, nil, stats, ErrProjectTaskSummariesNotReady }
+		return rows, nil, stats, nil
 	}
 	related, err := readProjectTaskRelated(snapshot, account, rows, &stats)
 	stats.RelatedElapsed = time.Since(start)

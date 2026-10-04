@@ -520,6 +520,7 @@ func (s *SessionStore) putTaskProgramHistory(record TaskProgramRecord) error {
 	if err != nil {
 		return err
 	}
+	if err := setTaskRelatedInBatch(batch, KeyTaskProgram(record.ParentSessionID, record.ProgramID), record); err != nil { return err }
 	if err := batch.Set([]byte(KeyTaskProgram(record.ParentSessionID, record.ProgramID)), payload, nil); err != nil {
 		return err
 	}

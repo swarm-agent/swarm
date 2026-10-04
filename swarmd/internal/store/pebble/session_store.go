@@ -473,6 +473,8 @@ func (s *SessionStore) WorkerStore() *WorkerStore {
 }
 
 func (s *SessionStore) CreateSession(session SessionSnapshot) error {
+	unlock := s.store.sessionMutations.lockSessions(session.ID)
+	defer unlock()
 	session = normalizeSessionOwnership(session)
 	if err := validateCanonicalSessionID(session.ID); err != nil {
 		return err
@@ -483,6 +485,7 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil { return err }
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
 		return err
 	}
@@ -525,6 +528,8 @@ func (s *SessionStore) UpdateSessionForAccount(session SessionSnapshot, userID, 
 }
 
 func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
+	unlock := s.store.sessionMutations.lockSessions(session.ID)
+	defer unlock()
 	session = normalizeSessionOwnership(session)
 	if err := validateCanonicalSessionID(session.ID); err != nil {
 		return err
@@ -546,6 +551,7 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 			}
 		}
 	}
+	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil { return err }
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
 		return err
 	}
@@ -943,6 +949,7 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				}
 			}
 		}
+		if err := deleteTaskRelatedSessionInBatch(batch, sessionID, kind == "deleted"); err != nil { return err }
 		if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
 		}
@@ -2029,6 +2036,8 @@ func (s *SessionStore) PutPlanWithArchivedRevision(plan, archived SessionPlanSna
 }
 
 func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, archived *SessionPlanSnapshot) error {
+	unlock := s.store.sessionMutations.lockSessions(plan.SessionID)
+	defer unlock()
 	plan.UserID = strings.TrimSpace(plan.UserID)
 	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
 	payload, err := json.Marshal(plan)
@@ -2060,6 +2069,7 @@ func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, arc
 		return err
 	}
 	payload = planRevisionPayload
+	if err := setTaskRelatedInBatch(batch, KeySessionPlan(plan.SessionID, plan.ID), plan); err != nil { return err }
 	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), payload, nil); err != nil {
 		return err
 	}

@@ -90,7 +90,7 @@ func TestProjectTaskSummariesRelatedIdentity(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer db.Close()
 	if err := db.PutJSON(KeyV3SessionRunIntentActive("session"), V3SessionRunState{SessionID: "session", AccountScopeID: "foreign", RunID: "run", Active: true}); err != nil { t.Fatal(err) }
-	if err := db.PutJSON(KeySessionPlan("session", "plan"), SessionPlanSnapshot{ID: "plan", SessionID: "session", AccountScopeID: "account", Version: 2, ApprovalState: "approved", AcceptedDefinitionReceipt: "accepted"}); err != nil { t.Fatal(err) }
+	if err := NewSessionStore(db).PutPlan(SessionPlanSnapshot{ID: "plan", SessionID: "session", AccountScopeID: "account", Version: 2, ApprovalState: "approved", AcceptedDefinitionReceipt: "accepted"}); err != nil { t.Fatal(err) }
 	rows := []ProjectTaskRecord{
 		{ID: "one", SessionID: "session", PlanBinding: &ProjectTaskPlanBinding{PlanID: "plan", DefinitionRevision: 2, Receipt: "accepted"}},
 		{ID: "two", SessionID: "session", PlanBinding: &ProjectTaskPlanBinding{PlanID: "plan", DefinitionRevision: 2, Receipt: "stale"}},
@@ -98,7 +98,7 @@ func TestProjectTaskSummariesRelatedIdentity(t *testing.T) {
 	snapshot := db.db.NewSnapshot()
 	defer snapshot.Close()
 	// A later update must not alter the captured related view.
-	if err := db.PutJSON(KeySessionPlan("session", "plan"), SessionPlanSnapshot{ID: "plan", SessionID: "session", AccountScopeID: "foreign"}); err != nil { t.Fatal(err) }
+	if err := NewSessionStore(db).PutPlan(SessionPlanSnapshot{ID: "plan", SessionID: "session", AccountScopeID: "foreign"}); err != nil { t.Fatal(err) }
 	var stats ProjectTaskReadStats
 	related, err := readProjectTaskRelated(snapshot, "account", rows, &stats)
 	if err != nil { t.Fatal(err) }

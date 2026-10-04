@@ -84,7 +84,7 @@ func readProjectTaskRelated(reader pebble.Reader, account string, rows []Project
 			if session == "" { session = task.SessionID }
 			related.PlanBindingStale = true
 			if session != "" && (task.SessionID == "" || session == task.SessionID) {
-				key := KeySessionPlan(session, binding.PlanID)
+				key := taskRelatedKey(KeySessionPlan(session, binding.PlanID))
 				plan, cached := plans[key]
 				if !cached {
 					var summary ProjectTaskPlanSummary
@@ -95,11 +95,9 @@ func readProjectTaskRelated(reader pebble.Reader, account string, rows []Project
 				}
 				if plan != nil {
 					valid := true
-					if binding.DefinitionRevision > 0 {
-						if plan.ApprovalState == "approved" {
-							valid = binding.Receipt == "" || plan.AcceptedDefinitionReceipt == "" || binding.Receipt == plan.AcceptedDefinitionReceipt
-						} else { valid = plan.Version <= 0 || plan.Version == binding.DefinitionRevision }
-					}
+					if plan.ApprovalState == "approved" {
+						valid = binding.Receipt == "" || binding.Receipt == plan.AcceptedDefinitionReceipt
+					} else if binding.DefinitionRevision > 0 { valid = plan.Version == binding.DefinitionRevision }
 					if valid { related.Plan, related.PlanBindingStale = plan, false }
 				}
 			}
