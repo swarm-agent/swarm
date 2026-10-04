@@ -22,13 +22,13 @@ function SessionTimer({ model }: { model: NonNullable<ProjectSessionRow['timer']
 export function ProjectConversationSidebar(props: {
   projectId: string; projectName?: string; selectedId: string; sessions: SessionSnapshot[]; rows?: ProjectSessionRow[]
   loading: boolean; creating: boolean; error: string
-  onCreate: () => void; onRetry: () => void; onSelect: () => void
+  onCreate: () => void; onRetry: () => void; onSelect: () => void; onLoadArchived?: () => void
 }) {
   // Project identity resets selection, pending feedback and archive view atomically.
   return <ProjectSessionList key={props.projectId} {...props} />
 }
 
-function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows, loading, creating, error, onCreate, onRetry, onSelect }: Parameters<typeof ProjectConversationSidebar>[0]) {
+function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows, loading, creating, error, onCreate, onRetry, onSelect, onLoadArchived }: Parameters<typeof ProjectConversationSidebar>[0]) {
   const navigate = useNavigate()
   const [archived, setArchived] = useState(false)
   const [selecting, setSelecting] = useState(false)
@@ -140,7 +140,7 @@ function ProjectSessionList({ projectId, projectName, selectedId, sessions, rows
       {selecting ? selected.length > 0 && <button type="button" className="swarm-session-bulk" disabled={busy} onClick={() => void mutate(selected)}
         aria-label={`${archived ? 'Restore' : 'Archive'} selected`}>{busy ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Archive size={14} aria-hidden="true" />}{archived ? 'Restore' : 'Archive'} <span>{selected.length}</span></button> : <>
       {projectName && <button type="button" className="swarm-session-icon" disabled={busy} aria-label={archived ? 'Back to sessions' : 'Archived'} title={archived ? 'Back to sessions' : 'Archived sessions'}
-        onClick={() => { setArchived(!archived); setSelection(new Set()); setFailures([]); setFeedback('') }}>{archived ? <ArrowLeft size={16} aria-hidden="true" /> : <ArchiveRestore size={16} aria-hidden="true" />}</button>}
+        onClick={() => { if (!archived) onLoadArchived?.(); setArchived(!archived); setSelection(new Set()); setFailures([]); setFeedback('') }}>{archived ? <ArrowLeft size={16} aria-hidden="true" /> : <ArchiveRestore size={16} aria-hidden="true" />}</button>}
       <button type="button" disabled={!projectName || creating} onClick={onCreate}
         aria-label={creating ? 'Creating…' : 'New session'} title="New session" className="swarm-new-session">
         {creating ? <LoaderCircle size={16} aria-hidden="true" className="animate-spin" /> : <MessageSquarePlus size={16} aria-hidden="true" />}

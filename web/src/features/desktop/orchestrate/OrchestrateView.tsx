@@ -77,7 +77,12 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { requestJson, getDesktopSessionIdentitySnapshot, updateDesktopSessionUsername } from '../../../app/api'
+import { requestJson, requestStartupJson, ensureDesktopSession, getDesktopSessionIdentitySnapshot, updateDesktopSessionUsername } from '../../../app/api'
+import { backgroundRead } from '../../../app/background-read'
+import { projectStartupState } from './project-startup'
+import { StartupScreen } from '../../../app/startup-recovery'
+import { StartupLoading, useStartupPalette } from '../../../app/startup-loading'
+import { readProjectCatalog, invalidateProjectCatalog } from '../runtime/project-catalog'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
 import { ProjectWorkerSidebar } from '../layout/project-worker-sidebar'
@@ -564,7 +569,7 @@ function DeliverableThumbnail({
         onClick={onPlay}
         className="group/thumb relative aspect-video w-full cursor-pointer overflow-hidden rounded-lg border border-slate-800/80 bg-[#090d16] transition-all hover:border-blue-500/40"
       >
-        <img src={src} alt="Deliverable" className="w-full h-full object-cover transition-transform group-hover/thumb:scale-105 duration-300" />
+        <img src={src} loading="lazy" decoding="async" alt="Deliverable" className="w-full h-full object-cover transition-transform group-hover/thumb:scale-105 duration-300" />
         {duration && (
           <span className="absolute bottom-1 right-1 z-20 rounded bg-black/80 px-1 py-0.5 font-mono text-[9px] font-semibold text-slate-300 backdrop-blur-sm border border-white/10">
             {duration}
@@ -764,6 +769,9 @@ export function MinimalTaskCard({
   const expanded = isExpanded !== undefined ? isExpanded : internalExpanded
   const detailsToggleRef = useRef<HTMLButtonElement>(null)
   const detailsId = useId()
+  useEffect(() => {
+    if (expanded && projectId) desktopProjects.inspectTask(projectId, task.id)
+  }, [expanded, projectId, task.id])
   const handleToggleExpand = () => {
     if (expanded) {
       requestAnimationFrame(() => {
@@ -797,13 +805,13 @@ export function MinimalTaskCard({
 
   const modelPreviewQuery = useQuery({
     queryKey: ['projects', projectId, 'tasks', task.id, 'model-preview'],
-    queryFn: async () => {
-      const res = await requestJson<{ task: any; model_preview: BackendTaskModelPreview }>(
-        `/v3/projects/${projectId}/tasks/${task.id}/model-preview`
-      )
+    queryFn: async ({ signal }) => {
+      const res = await backgroundRead(() => requestStartupJson<{ task: any; model_preview: BackendTaskModelPreview }>(
+        `/v3/projects/${projectId}/tasks/${task.id}/model-preview`, { signal }
+      ), signal)
       return res.model_preview
     },
-    enabled: Boolean(projectId && task.id && isPendingApproval),
+    enabled: Boolean(projectId && task.id && isPendingApproval && (expanded || isModelChangerOpen)),
     staleTime: 60_000,
   })
   const [isRefineOpen, setIsRefineOpen] = useState(false)
@@ -3087,6 +3095,9 @@ export function OrchestrateView({
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [projectsLoaded, setProjectsLoaded] = useState(false)
+  const [projectLoadError, setProjectLoadError] = useState('')
+  const [projectLoadAttempt, setProjectLoadAttempt] = useState(0)
+  const [themeCatalogReady, setThemeCatalogReady] = useState(false)
   const routeProjectSegment = projectRouteParams.projectId || ''
   const resolvedProject = resolveProjectRoute(routeProjectSegment, projects)
   const selectedProjectId = resolvedProject?.id || ''
@@ -3108,7 +3119,6 @@ export function OrchestrateView({
   const conversationRequest = useRef('')
   const conversationCreating = useRef(false)
   const [admissionAttempt, setAdmissionAttempt] = useState(0)
-  const [, setIsLoadingProjects] = useState<boolean>(true)
   const selectedProject = useMemo(() => {
     const project = projects.find(p => p.id === selectedProjectId)
     return project ? { ...project, primarySessionId: admittedParentId || undefined } : undefined
@@ -3735,16 +3745,25 @@ export function OrchestrateView({
     setActiveSessionId('')
   }, [selectedProjectId])
 
-  // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
+  // Independent reads begin together; only the project catalog and task snapshot
+  // own first-screen readiness. Auth remains owned by the canonical API boundary.
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
+    const stopOnReset = subscribeDesktopSessionReset(() => {
+      cancelled = true
+      controller.abort()
+      setProjects([])
+      setProjectsLoaded(false)
+      setProjectLoadError('Your desktop authentication changed. Reload to reconnect securely.')
+    })
 
-    async function bootstrap() {
-      // 1. User Session
+    async function loadProfile() {
+      // Reuse the canonical identity rather than issuing a second auth read.
       try {
-        const auth = await requestJson<{ ok: boolean; user_id?: string; account_scope_id?: string; username?: string }>('/v1/auth/desktop/session')
-        if (auth?.user_id && !cancelled) {
-          const rawId = auth.user_id
+        const auth = await ensureDesktopSession()
+        if (auth?.userId && !cancelled) {
+          const rawId = auth.userId
           const displayName = auth.username || (rawId.startsWith('user_') ? `Operator (${rawId.slice(5, 11)})` : rawId)
           setUserProfile({
             id: rawId,
@@ -3753,7 +3772,7 @@ export function OrchestrateView({
         }
       } catch {}
       try {
-        const me = await requestJson<{ userID?: string; username?: string }>('/v1/me')
+        const me = await requestStartupJson<{ userID?: string; username?: string }>('/v1/me', { signal: controller.signal })
         if (me?.username && !cancelled) {
           setUserProfile((prev) => ({
             ...prev,
@@ -3762,9 +3781,11 @@ export function OrchestrateView({
         }
       } catch {}
 
-      // 2. Discover Registered Workspaces
+    }
+    async function loadWorkspaces() {
+      // Workspace discovery enriches creation controls, not project readiness.
       try {
-        const wsRes = await requestJson<{ workspaces?: Array<{ path: string; name?: string; id?: string }> }>('/v1/workspace/list?limit=200')
+        const wsRes = await requestStartupJson<{ workspaces?: Array<{ path: string; name?: string; id?: string }> }>('/v1/workspace/list?limit=200', { signal: controller.signal })
         if (wsRes?.workspaces && wsRes.workspaces.length > 0 && !cancelled) {
           const detected = wsRes.workspaces.map((w, idx) => ({
             id: w.id || '',
@@ -3777,9 +3798,12 @@ export function OrchestrateView({
         }
       } catch {}
 
-      // 4. Projects from Pebble
+    }
+    async function loadProjects() {
+      setProjectLoadError('')
+      // Account-scoped catalog is shared with the entry route.
       try {
-        const res = await requestJson<{ projects?: any[] }>('/v3/projects')
+        const res = await readProjectCatalog()
         if (cancelled) return
 
         if (res?.projects && res.projects.length > 0) {
@@ -3812,20 +3836,27 @@ export function OrchestrateView({
           }
         }
       } catch (err) {
-        if (!cancelled) setConversationError(err instanceof Error ? err.message : 'Unable to load projects')
+        if (!cancelled) setProjectLoadError(err instanceof Error ? err.message : 'Unable to load projects')
       } finally {
         if (!cancelled) setProjectsLoaded(true)
       }
 
-      // 5. Image, Video & Audio Models Catalog and UI Defaults
+    }
+    async function loadMediaCatalog() {
+      // Media and model defaults are optional enrichment.
       try {
         const [settingsRes, catalogRes] = await Promise.all([
-          getUISettings(),
-          requestJson<{ image_models?: any[]; video_generation_models?: any[]; video_models?: any[]; audio_models?: any[]; default_image_model?: string; default_video_model?: string; default_audio_model?: string }>('/v1/media/settings/catalog').catch(() => null),
+          getUISettings().then(settings => {
+            if (!cancelled) {
+              setWorkspaceThemeCatalog(settings.theme)
+              setThemeCatalogRevision(revision => revision + 1)
+              setThemeCatalogReady(true)
+            }
+            return settings
+          }),
+          requestStartupJson<{ image_models?: any[]; video_generation_models?: any[]; video_models?: any[]; audio_models?: any[]; default_image_model?: string; default_video_model?: string; default_audio_model?: string }>('/v1/media/settings/catalog', { signal: controller.signal }).catch(() => null),
         ])
         if (!cancelled) {
-          setWorkspaceThemeCatalog(settingsRes?.theme)
-          setThemeCatalogRevision((revision) => revision + 1)
           const configuredImage = settingsRes?.tools?.image?.default_model || ''
           const configuredAudio = settingsRes?.tools?.audio?.default_model || ''
 
@@ -3871,16 +3902,21 @@ export function OrchestrateView({
         console.warn('Failed to load media catalog in OrchestrateView:', err)
       } finally {
         if (!cancelled) {
-          setIsLoadingProjects(false)
+          setThemeCatalogReady(true)
         }
       }
     }
 
-    void bootstrap()
+    void loadProfile()
+    void loadWorkspaces()
+    void loadProjects()
+    void loadMediaCatalog()
     return () => {
       cancelled = true
+      controller.abort()
+      stopOnReset()
     }
-  }, [])
+  }, [projectLoadAttempt])
 
   // Reconcile task selection against live project tasks:
   // Invariant: Never implicitly auto-selects tasks. Prunes stale selections if task was deleted.
@@ -4088,7 +4124,7 @@ export function OrchestrateView({
         setActiveSessionId(cached.id)
         return () => { active = false }
       }
-      void requestJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
+      void requestStartupJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
         requireProjectConversation(selectedProject.id, session)
         if (session.id !== routeConversationId) throw new Error('Session identity mismatch')
         if (active) {
@@ -5583,6 +5619,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       primarySessionId: undefined,
     }
 
+    void invalidateProjectCatalog()
     setProjects((prev) => [newProject, ...prev])
     void navigate(projectConversationLink(projectRouteSegment(newProject, [newProject, ...projects]), orchSessionId || undefined))
     if (orchSessionId) {
@@ -5597,8 +5634,31 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
     if (activeTask || workerChatOpen) responsiveLayout.setPanel('chat')
   }, [activeTask?.id, workerChatOpen])
 
+  const startup = projectStartupState({
+    catalogLoaded: projectsLoaded, catalogError: projectLoadError, routeError: projectRouteError,
+    projectId: selectedProjectId, tasksObserved: projectState?.lastObservedAt !== undefined,
+    tasksError: projectTasksError,
+  })
+  const screenTheme = useMemo(() => ({ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style,
+    ...(projectTheme.state === 'missing' && !themeCatalogReady ? {
+      '--swarm-background': 'var(--startup-background)', '--swarm-text': 'var(--startup-text)', '--swarm-accent': 'var(--startup-accent)',
+    } : {}),
+    ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) }) as React.CSSProperties,
+  [theme, initialThemeId, selectedProject?.themeId, themeCatalogRevision, themeCatalogReady])
+  useStartupPalette(screenTheme, Boolean(selectedProjectId) && (projectTheme.state !== 'missing' || themeCatalogReady))
+  if (startup.phase === 'loading') return <StartupLoading />
+  if (startup.phase === 'error') return <StartupScreen><main className="swarm-startup-loading">
+    <h1>Unable to open project</h1><p role="alert">{startup.message}</p>
+    <button type="button" onClick={() => {
+      if (startup.retry === 'tasks') void desktopProjects.refresh(selectedProjectId, false)
+      else { void invalidateProjectCatalog(); setProjectsLoaded(false); setProjectLoadAttempt(value => value + 1) }
+    }}>Try again</button>
+    <Link to="/projects">Choose a project</Link>
+    <button type="button" onClick={() => window.location.reload()}>Reload page</button>
+  </main></StartupScreen>
+
   return (
-    <div
+    <StartupScreen><div
       ref={setThemeRoot}
       className="swarm-section swarm-responsive-shell relative font-sans"
       data-layout={responsiveLayout.mode}
@@ -5606,7 +5666,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       data-panel={responsiveLayout.panel}
       data-navigation-open={responsiveLayout.navigationOpen}
       data-project-theme={projectTheme.state}
-      style={{ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
+      style={screenTheme}
     >
       <SwarmLayoutControls layout={responsiveLayout} />
       {/* ─────────────────────────────────────────────────────────────
@@ -5635,7 +5695,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         <ProjectConversationSidebar projectId={selectedProjectSegment} projectName={selectedProject?.name}
           selectedId={routeConversationId} sessions={conversations.sessions} rows={conversations.rows} loading={conversations.loading}
           creating={creatingConversation} error={projectRouteError || conversationError || conversations.error}
-          onCreate={() => void newConversation()}
+          onCreate={() => void newConversation()} onLoadArchived={conversations.loadArchived}
           onRetry={() => { conversations.refresh(); if (routeConversationId && !admittedParentId) setAdmissionAttempt(value => value + 1) }}
           onSelect={() => { setActiveTaskId(null); setActiveSessionId(admittedParentId); responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false) }} />
 
@@ -7859,6 +7919,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         onApplyTaskModel={handleApplyTaskModelFromControl}
         onResetTaskModel={handleResetTaskModelFromControl}
       />
-    </div>
+    </div></StartupScreen>
   )
 }

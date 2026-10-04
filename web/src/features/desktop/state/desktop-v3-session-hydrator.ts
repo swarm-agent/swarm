@@ -1,3 +1,5 @@
+import { backgroundRead } from '../../../app/background-read'
+import { subscribeDesktopSessionReset } from '../../../app/api'
 import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from './desktop-v3-cache-store'
 import { buildDesktopV3ChildCardHydrateInput, buildDesktopV3SelectedSessionHydrateInput, postDesktopV3SyncHydrate } from './desktop-v3-sync-api'
 import { hydrateResponseToAction, selectSession } from './desktop-v3-cache-wire'
@@ -6,6 +8,12 @@ import { isDesktopV3SessionTailReady, isDesktopV3SessionViewReady } from './desk
 const inFlight = new Map<string, { promise: Promise<void>; abort: AbortController }>()
 const childCardInFlight = new Map<string, Promise<void>>()
 let selectedAbort: AbortController | null = null
+let childAbort = new AbortController()
+subscribeDesktopSessionReset(() => {
+  childAbort.abort()
+  childAbort = new AbortController()
+  childCardInFlight.clear()
+})
 
 export function hydrateDesktopV3ChildCard(
   rawSessionId: string,
@@ -28,11 +36,13 @@ export function hydrateDesktopV3ChildCard(
     sessionIds: [sessionId],
     inFlight: true,
   })
-  const promise = postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([sessionId], options))
+  const signal = childAbort.signal
+  const promise = backgroundRead(() => postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput([sessionId], options), signal), signal)
     .then((response) => {
-      dispatchDesktopV3Cache(hydrateResponseToAction(response, [sessionId]))
+      if (!signal.aborted) dispatchDesktopV3Cache(hydrateResponseToAction(response, [sessionId]))
     })
     .finally(() => {
+      if (childCardInFlight.get(key) !== promise) return
       dispatchDesktopV3Cache({
         type: 'desktopV3Cache.markHydrateInFlight',
         sessionIds: [sessionId],

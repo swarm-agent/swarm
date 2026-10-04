@@ -7,7 +7,7 @@ import { DesktopVaultShell } from '../features/desktop/vault/components/desktop-
 import { useWorkspaceLauncher } from '../features/workspaces/launcher/state/use-workspace-launcher'
 import { workspaceRouteSlugBase } from '../features/workspaces/launcher/services/workspace-route'
 
-const ProjectEntryPage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/project-entry-page').then(module => ({ default: module.ProjectEntryPage }))))
+const ProjectEntryPage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/project-entry-page').then(module => ({ default: module.ProjectEntryPage }))), true)
 const importDesktopAppPage = () => import('../features/desktop/layout/desktop-app-page')
 const DesktopAppPage = withStartupScreen(lazy(() => importDesktopAppPage().then((module) => ({ default: module.DesktopAppPage }))))
 const DesktopSettingsPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then((module) => ({ default: module.DesktopSettingsPage }))))
@@ -17,7 +17,7 @@ const ImageToolPage = withStartupScreen(lazy(() => import('../features/desktop/t
 const AutomationToolPage = withStartupScreen(lazy(() => import('../features/desktop/tools/pages/automation-tool-page').then((module) => ({ default: module.AutomationToolPage }))))
 const EnvironmentsPage = withStartupScreen(lazy(() => import('../features/desktop/environments/pages/environments-page').then((module) => ({ default: module.EnvironmentsPage }))))
 const UsagePage = withStartupScreen(lazy(() => import('../features/desktop/usage/pages/usage-page').then((module) => ({ default: module.UsagePage }))))
-const OrchestratePage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/orchestrate-page').then((module) => ({ default: module.OrchestratePage }))))
+const OrchestratePage = withStartupScreen(lazy(() => import('../features/desktop/orchestrate/orchestrate-page').then((module) => ({ default: module.OrchestratePage }))), true)
 const ROOT_RESERVED_ROUTE_SEGMENTS = new Set(['memory', 'settings', 'integrations', 'tools', 'agents', 'studio', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects', 'history'])
 const WORKSPACE_RESERVED_ROUTE_SEGMENTS = new Set(['settings', 'tools', 'task', 'worktree', 'video', 'studio', 'automations', 'environments', 'usage', 'media', 'swarm', 'orchestrate', 'projects', 'history'])
 const MemoryPage = withStartupScreen(lazy(() => import('../features/desktop/settings/components/desktop-settings-page').then(module => ({ default: () => <module.DesktopSettingsPage initialMemoryOpen /> }))))

@@ -1,4 +1,5 @@
 import { Suspense, useEffect, type ComponentType, type ReactNode } from 'react'
+import { StartupLoading } from './startup-loading'
 
 declare global {
   interface Window {
@@ -14,12 +15,14 @@ function StartupReady() {
 }
 
 export function StartupScreen({ children }: { children: ReactNode }) {
-  return <Suspense fallback={null}>{children}<StartupReady /></Suspense>
+  return <Suspense fallback={<StartupLoading />}>{children}<StartupReady /></Suspense>
 }
 
-export function withStartupScreen(Component: ComponentType) {
+export function withStartupScreen(Component: ComponentType, ownsReadiness = false) {
   return function StartupRouteScreen() {
-    return <StartupScreen><Component /></StartupScreen>
+    return ownsReadiness
+      ? <Suspense fallback={<StartupLoading />}><Component /></Suspense>
+      : <StartupScreen><Component /></StartupScreen>
   }
 }
 

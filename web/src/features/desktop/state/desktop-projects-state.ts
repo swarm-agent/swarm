@@ -249,6 +249,7 @@ export function reduceDesktopProjectsState(
       [action.projectId]: {
         projectId: action.projectId,
         tasks: previous?.tasks ?? [],
+        lastObservedAt: previous?.lastObservedAt,
         media: previous?.media ?? [],
         gitObservations: previous?.gitObservations,
         archivedRevisions: previous?.archivedRevisions,

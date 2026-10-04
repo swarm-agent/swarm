@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { VisiblePreview } from '../../../components/ui/visible-preview'
 import { DesignArchiveButton } from '../tools/media-library/design-archive-button'
 import { DesignThumbnail } from '../tools/media-library/design-thumbnail'
 import { creativeThreads } from '../tools/media-library/creative-thread'
@@ -75,7 +76,7 @@ function artifactTurn(task: RunningTask, actions: MediaTaskActions): CreativeCar
       const available = ['ready', 'accepted'].includes(output.status) && Boolean(url)
       return {
         id: output.id, title: output.title, status: output.status, ready: available,
-        preview: available ? output.type === 'video' ? <video src={url} muted playsInline preload="metadata" /> : output.type === 'audio' ? <span>Audio ready</span> : <img src={url} alt={output.title} /> : null,
+        preview: available ? output.type === 'video' ? <VisiblePreview label="Video ready"><video src={url} muted playsInline preload="metadata" /></VisiblePreview> : output.type === 'audio' ? <span>Audio ready</span> : <img src={url} alt={output.title} loading="lazy" decoding="async" /> : null,
         open: () => actions.onPreview?.(output),
         actions: <>
           <button type="button" disabled={!available} onClick={() => actions.onPreview?.(output)}>Preview / save</button>

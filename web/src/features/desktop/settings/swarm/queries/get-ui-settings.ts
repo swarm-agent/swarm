@@ -1,8 +1,16 @@
-import { requestJson } from '../../../../../app/api'
+import { requestJson, requestStartupJson, subscribeDesktopSessionReset } from '../../../../../app/api'
 import type { UISettingsWire } from '../types/swarm-settings'
 
-export async function getUISettings(): Promise<UISettingsWire> {
-  return requestJson<UISettingsWire>('/v1/ui/settings')
+let pending: Promise<UISettingsWire> | undefined
+let controller = new AbortController()
+subscribeDesktopSessionReset(() => { controller.abort(); controller = new AbortController(); pending = undefined })
+export function getUISettings(): Promise<UISettingsWire> {
+  if (pending) return pending
+  const request = requestStartupJson<UISettingsWire>('/v1/ui/settings', { signal: controller.signal }).finally(() => {
+    if (pending === request) pending = undefined
+  })
+  pending = request
+  return request
 }
 
 export async function patchUISettings(patch: Partial<UISettingsWire>): Promise<UISettingsWire> {

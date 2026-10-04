@@ -17,6 +17,14 @@
       // Must precede build-injected CSS/modules: a stalled stylesheet must not
       // prevent the watchdog from starting. This code has no external imports.
       (() => {
+        // Restore only validated cosmetic colors for this project before first paint.
+        try {
+          const palette = JSON.parse(sessionStorage.getItem('swarm:startup-palette') || 'null')
+          const route = location.pathname.match(/^\/projects\/[^/]+/)?.[0] || location.pathname
+          if (palette?.route === route) for (const key of ['background', 'text', 'accent']) {
+            if (typeof palette[key] === 'string' && CSS.supports('color', palette[key])) document.documentElement.style.setProperty(`--startup-${key}`, palette[key])
+          }
+        } catch { /* Browser storage is optional. */ }
         let phase = 'bundle'
         let ready = false
         let screenCommitted = false
@@ -30,6 +38,7 @@
           shell.hidden = ready && !fatal
           root.hidden = !ready || fatal
           if (shell.hidden && retryFocused) { root.tabIndex = -1; root.focus() }
+          shell.dataset.recovery = String(fatal || expired)
           if (fatal || expired) {
             document.getElementById('swarm-startup-title').textContent = fatal ? 'Swarm could not load' : 'Swarm is taking longer than expected'
             document.getElementById('swarm-startup-message').textContent = fatal
@@ -87,26 +96,39 @@
   </head>
   <body>
     <style>
-      #swarm-startup { position: fixed; inset: 0; z-index: 2147483647; overflow: auto; box-sizing: border-box; display: grid; place-items: center; padding: 24px; background: #08111f; color: #e7edf6; font: 16px/1.6 system-ui, sans-serif; color-scheme: dark; }
+      :root { --startup-background: #08111f; --startup-text: #e7edf6; --startup-accent: #85caff; }
+      @media (prefers-color-scheme: light) { :root { --startup-background: #f8fafc; --startup-text: #172033; --startup-accent: #2563eb; } }
+      #swarm-startup, .swarm-startup-loading { position: fixed; inset: 0; overflow: auto; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; background: var(--startup-background); color: var(--startup-text); font: 16px/1.6 system-ui, sans-serif; }
+      #swarm-startup { z-index: 2147483647; }
+      .swarm-startup-mark { width: 72px; height: 72px; color: var(--startup-accent); animation: swarm-startup-pulse 1.6s ease-in-out infinite alternate; }
+      @keyframes swarm-startup-pulse { to { opacity: .5; } }
+      @media (prefers-reduced-motion: reduce) { .swarm-startup-mark { animation: none; } }
+      #swarm-startup:not([data-recovery="true"]) .startup-recovery { display: none; }
+      #swarm-startup section { display: flex; flex-direction: column; align-items: center; gap: 16px; text-align: center; }
       #swarm-startup[hidden], #root[hidden] { display: none !important; }
       #swarm-startup section { width: 100%; max-width: 440px; }
-      #swarm-startup h1 { margin: 12px 0; font-size: 28px; line-height: 1.25; color: #f4f7fc; }
+      #swarm-startup h1 { margin: 12px 0; font-size: 28px; line-height: 1.25; color: var(--startup-text); }
       #swarm-startup p { margin: 12px 0; }
-      #swarm-startup .startup-brand { color: #85caff; font-size: 13px; font-weight: 700; letter-spacing: .16em; }
-      #swarm-startup .startup-note { color: #a8b8cc; font-size: 14px; }
-      #swarm-startup a { display: inline-block; margin: 12px 0; padding: 10px 18px; border: 1px solid #85caff; border-radius: 8px; color: #08111f; background: #85caff; text-decoration: none; font-weight: 650; }
+      #swarm-startup:not([data-recovery="true"]) h1 { font-size: 16px; font-weight: 400; line-height: 1.6; margin: 0; }
+      #swarm-startup .startup-note { color: var(--startup-text); font-size: 14px; }
+      #swarm-startup a { display: inline-block; margin: 12px 0; padding: 10px 18px; border: 1px solid currentColor; border-radius: 8px; color: var(--startup-text); background: var(--startup-background); text-decoration: none; font-weight: 650; }
       #swarm-startup a:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
     </style>
     <div id="swarm-startup" aria-labelledby="swarm-startup-title">
       <section>
-        <p class="startup-brand">SWARM DESKTOP</p>
+        <svg viewBox="0 0 400 400" class="swarm-startup-mark" aria-hidden="true">
+          <rect x="20" y="20" width="360" height="360" rx="90" ry="90" fill="currentColor" opacity="0.15" />
+          <rect x="60" y="60" width="280" height="280" rx="65" ry="65" fill="currentColor" opacity="0.35" />
+          <rect x="100" y="100" width="200" height="200" rx="45" ry="45" fill="currentColor" opacity="0.60" />
+          <rect x="140" y="140" width="120" height="120" rx="25" ry="25" fill="currentColor" opacity="0.85" />
+        </svg>
         <div role="status" aria-live="polite" aria-atomic="true">
-          <h1 id="swarm-startup-title">Starting Swarm…</h1>
-          <p id="swarm-startup-message">Loading the app. Recovery will appear within 20 seconds if startup does not finish.</p>
+          <h1 id="swarm-startup-title">Loading Swarm…</h1>
+          <p id="swarm-startup-message" class="startup-recovery">Loading the app. Recovery will appear within 20 seconds if startup does not finish.</p>
         </div>
-        <a id="swarm-startup-retry" href="">Reload page</a>
-        <p class="startup-note">Reloading does not clear your sessions, credentials, or browser storage.</p>
-        <noscript><p>Swarm needs JavaScript. Enable it for this address, then reload the page.</p></noscript>
+        <a id="swarm-startup-retry" class="startup-recovery" href="">Reload page</a>
+        <p class="startup-note startup-recovery">Reloading does not clear your sessions, credentials, or browser storage.</p>
+        <noscript><style>#swarm-startup .startup-recovery { display: block !important; }</style><p>Swarm needs JavaScript. Enable it for this address, then reload the page.</p></noscript>
       </section>
     </div>
     <div id="root" hidden></div>

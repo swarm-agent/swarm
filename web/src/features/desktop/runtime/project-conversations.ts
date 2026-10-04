@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { TaskSessionLeaseManager } from './desktop-projects-membership'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
-import { requestJson } from '../../../app/api'
+import { requestStartupJson } from '../../../app/api'
 import { compareProjectSessionRows, projectSessionRow } from '../state/project-session-rows'
 import type { SessionSnapshot, V3SessionTombstone } from '../state/desktop-v3-cache-types'
 import { useDesktopV3CacheSelector, subscribeDesktopV3Cache } from '../state/desktop-v3-cache-store'
@@ -15,6 +15,8 @@ import { projectConversationBatches } from '../orchestrate/project-entry-policy'
 // The list endpoint discovers IDs only. Titles, permissions and conversations remain
 // owned by the canonical cache, hydrated through the existing session boundary.
 export function useProjectConversations(projectId: string) {
+  const [archiveProject, setArchiveProject] = useState('')
+  const includeArchived = Boolean(projectId) && archiveProject === projectId
   const [error, setError] = useState('')
   const [loadingProject, setLoadingProject] = useState('')
   const [revision, refresh] = useState(0)
@@ -24,6 +26,7 @@ export function useProjectConversations(projectId: string) {
     setLoadedProject('')
     if (!projectId) { setLoadingProject(''); return }
     let active = true
+    const controller = new AbortController()
     let running = false
     let dirty = false
     const load = async () => {
@@ -34,8 +37,11 @@ export function useProjectConversations(projectId: string) {
       try {
         do {
           dirty = false
-          const response = await requestJson<{ sessions: Array<{ session: SessionSnapshot }> }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200`)
-          const archived = await requestJson<{ tombstones: V3SessionTombstone[] }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200&archived_mode=only`)
+          const [response, archived] = await Promise.all([
+            requestStartupJson<{ sessions: Array<{ session: SessionSnapshot }> }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200`, { signal: controller.signal }),
+            includeArchived ? requestStartupJson<{ tombstones: V3SessionTombstone[] }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200&archived_mode=only`, { signal: controller.signal }) : Promise.resolve({ tombstones: [] }),
+          ])
+          if (!active) return
           const ids = (response.sessions || []).flatMap(({ session }) => {
             if (conversationProjectId(session) !== projectId) return []
             requireProjectConversation(projectId, session)
@@ -44,7 +50,7 @@ export function useProjectConversations(projectId: string) {
           ids.push(...(archived.tombstones || []).flatMap(item => item.session && conversationProjectId(item.session) === projectId ? [item.session_id] : []))
           for (const batch of projectConversationBatches(ids)) {
             if (!active) return
-            const hydrated = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput(batch, { permissionSummary: true, activePlan: true }))
+            const hydrated = await postDesktopV3SyncHydrate(buildDesktopV3ChildCardHydrateInput(batch, { permissionSummary: true, activePlan: false }), controller.signal)
             if (active) dispatchDesktopV3Cache(hydrateResponseToAction(hydrated, batch))
           }
           if (active) { setError(''); setLoadedProject(projectId) }
@@ -58,8 +64,8 @@ export function useProjectConversations(projectId: string) {
       // Reconnect repair may reveal conversations created in another window.
       if (!mutation || mutation.action.type === 'reconnect.applySnapshot') void load()
     })
-    return () => { active = false; unsubscribe(); unsubscribeCache() }
-  }, [projectId, revision])
+    return () => { active = false; controller.abort(); unsubscribe(); unsubscribeCache() }
+  }, [projectId, revision, includeArchived])
   const sessions = useDesktopV3CacheSelector(state => Object.values(state.sessionsById).flatMap(record =>
     projectId && record.kind === 'full' && !state.tombstonesBySession[record.session.id] && !record.session.navigation_hidden && conversationProjectId(record.session) === projectId ? [record.session] : [])
     .sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id)),
@@ -81,5 +87,5 @@ export function useProjectConversations(projectId: string) {
     const acquisition = leases.reconcile(JSON.parse(idsKey) as string[])
     return acquisition.cancel
   }, [leases, idsKey])
-  return { sessions, rows, error, ready: Boolean(projectId) && loadedProject === projectId, loading: loadingProject === projectId && Boolean(projectId), refresh: () => refresh(value => value + 1) }
+  return { loadArchived: () => setArchiveProject(projectId), sessions, rows, error, ready: Boolean(projectId) && loadedProject === projectId, loading: loadingProject === projectId && Boolean(projectId), refresh: () => refresh(value => value + 1) }
 }
