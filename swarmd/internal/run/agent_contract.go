@@ -152,8 +152,24 @@ func (s *Service) ResolveAgentToolContractForAccount(accountScopeID string, prof
 	return s.resolveAgentToolContractForAccount(strings.TrimSpace(accountScopeID), strings.TrimSpace(profile.Name))
 }
 
-func (s *Service) CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, map[string]bool, error) {
-	accountScopeID = strings.TrimSpace(accountScopeID)
+// The built-in registry is code-owned and Definitions is independent of runtime
+// configuration. Retain names only; schema construction never occurs on reads.
+var storedV3BuiltinToolNames = func() []string {
+	var names []string
+	for _, definition := range (*tool.Runtime)(nil).Definitions() {
+		names = append(names, canonicalToolName(definition.Name))
+	}
+	return names
+}()
+
+// ValidateStoredV3AgentToolContract checks the same stored contract and resolved
+// states as execution, without compiling policy, schemas or instructions.
+func (s *Service) ValidateStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) error {
+	_, _, err := s.resolveValidatedStoredV3AgentToolStates(accountScopeID, profile)
+	return err
+}
+
+func (s *Service) resolveValidatedStoredV3AgentToolStates(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, map[string]struct{}, error) {
 	name := strings.TrimSpace(profile.Name)
 	if name == "" {
 		return ResolvedAgentToolContract{}, nil, fmt.Errorf("stored v3 agent profile is missing name")
@@ -161,18 +177,51 @@ func (s *Service) CompileStoredV3AgentToolContract(accountScopeID string, profil
 	if profile.ToolContract == nil {
 		return ResolvedAgentToolContract{}, nil, fmt.Errorf("stored v3 agent profile %q tool_contract is not configured", name)
 	}
-	knownTools := s.knownRunToolNamesForAccount(accountScopeID)
-	if len(knownTools) == 0 {
-		return ResolvedAgentToolContract{}, nil, fmt.Errorf("tool runtime is not configured")
-	}
-	if err := validateStoredV3AgentToolContractRuntime(name, profile.ToolContract, knownTools); err != nil {
-		return ResolvedAgentToolContract{}, nil, err
-	}
-	resolved, _, disabled, err := s.compileResolvedAgentToolContract(accountScopeID, profile)
+	known, err := s.storedV3ToolNamesForAccount(accountScopeID)
 	if err != nil {
 		return ResolvedAgentToolContract{}, nil, err
 	}
-	if err := validateResolvedV3AgentToolRuntime(name, resolved, knownTools); err != nil {
+	if err := validateStoredV3AgentToolContractRuntime(name, profile.ToolContract, known); err != nil {
+		return ResolvedAgentToolContract{}, nil, err
+	}
+	resolved, err := resolveAgentToolStates(profile, known)
+	if err != nil {
+		return ResolvedAgentToolContract{}, nil, err
+	}
+	if err := validateResolvedV3AgentToolRuntime(name, resolved, known); err != nil {
+		return ResolvedAgentToolContract{}, nil, err
+	}
+	return resolved, known, nil
+}
+
+func (s *Service) storedV3ToolNamesForAccount(accountScopeID string) (map[string]struct{}, error) {
+	known := map[string]struct{}{"ask_user": {}, "exit_plan_mode": {}, "plan_manage": {}, "task": {}}
+	if s != nil && s.tools != nil {
+		for _, name := range storedV3BuiltinToolNames {
+			known[name] = struct{}{}
+		}
+		known[mediaInspectToolName] = struct{}{}
+	}
+	customTools, err := s.listCustomAgentToolsForRun(strings.TrimSpace(accountScopeID))
+	if err != nil {
+		return nil, err
+	}
+	for _, customTool := range customTools {
+		if name := canonicalToolName(customTool.Name); name != "" {
+			known[name] = struct{}{}
+		}
+	}
+	return known, nil
+}
+
+func (s *Service) CompileStoredV3AgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, map[string]bool, error) {
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	states, knownTools, err := s.resolveValidatedStoredV3AgentToolStates(accountScopeID, profile)
+	if err != nil {
+		return ResolvedAgentToolContract{}, nil, err
+	}
+	resolved, _, disabled, err := s.compileAgentToolPolicy(accountScopeID, profile, states, knownTools)
+	if err != nil {
 		return ResolvedAgentToolContract{}, nil, err
 	}
 	return resolved, disabled, nil
@@ -191,14 +240,24 @@ func (s *Service) resolveAgentToolContractForAccount(accountScopeID, name string
 }
 
 func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profile pebblestore.AgentProfile) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
-	knownTools := s.knownRunToolNamesForAccount(accountScopeID)
-	if len(knownTools) == 0 {
-		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("tool runtime is not configured")
+	knownTools, err := s.storedV3ToolNamesForAccount(accountScopeID)
+	if err != nil {
+		return ResolvedAgentToolContract{}, nil, nil, err
 	}
 	if profile.ToolContract == nil {
 		return ResolvedAgentToolContract{}, nil, nil, fmt.Errorf("agent %q tool_contract is not configured", strings.TrimSpace(profile.Name))
 	}
 
+	resolved, err := resolveAgentToolStates(profile, knownTools)
+	if err != nil {
+		return ResolvedAgentToolContract{}, nil, nil, err
+	}
+	return s.compileAgentToolPolicy(accountScopeID, profile, resolved, knownTools)
+}
+
+// resolveAgentToolStates is shared by cheap validation and execution compilation.
+// It does not load permissions, build schemas, or compose instructions.
+func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[string]struct{}) (ResolvedAgentToolContract, error) {
 	contract := profile.ToolContract
 	activePreset := strings.TrimSpace(contract.Preset)
 	inheritPolicy := contract.InheritPolicy
@@ -212,7 +271,7 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "tool_contract.default"}
 	}
 	if err := applyNamedAgentPreset(resolved.Tools, knownTools, activePreset); err != nil {
-		return ResolvedAgentToolContract{}, nil, nil, err
+		return ResolvedAgentToolContract{}, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
 	if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
@@ -225,7 +284,6 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 	if workspaceOnboarding {
 		// This compiled agent must never inherit account allow rules: its
 		// mutation approvals and denials below are the complete authority.
-		inheritPolicy = false
 		resolved.InheritPolicy = false
 		for _, name := range []string{"write", "edit", "git_init", "git_add", "git_commit", "git_commit_initial"} {
 			if state, ok := resolved.Tools[name]; ok && state.Enabled {
@@ -248,6 +306,12 @@ func (s *Service) compileResolvedAgentToolContract(accountScopeID string, profil
 		resolved.Tools["task"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
 	}
 
+	return resolved, nil
+}
+
+func (s *Service) compileAgentToolPolicy(accountScopeID string, profile pebblestore.AgentProfile, resolved ResolvedAgentToolContract, knownTools map[string]struct{}) (ResolvedAgentToolContract, *permission.Policy, map[string]bool, error) {
+	inheritPolicy := resolved.InheritPolicy
+	workspaceOnboarding := strings.EqualFold(strings.TrimSpace(profile.Name), "system-workspace-onboarding")
 	policyRules := make([]permission.PolicyRule, 0, len(knownTools)+8)
 	disabled := make(map[string]bool, len(knownTools))
 	for name, state := range resolved.Tools {

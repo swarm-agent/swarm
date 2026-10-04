@@ -15,6 +15,15 @@ import (
 // It consumes resolved authority only; tool compilation and instruction
 // composition must remain downstream in resolveSessionV3Runtime.
 func (e *sessionV3Executor) compileSessionV3MediaContract(principal identity.Principal, resolved sessionV3ResolvedRuntime) (provideriface.SessionMediaContract, error) {
+	validator, ok := e.server.runner.(interface {
+		ValidateStoredV3AgentToolContract(string, pebblestore.AgentProfile) error
+	})
+	if !ok {
+		return provideriface.SessionMediaContract{}, errors.New("v3 agent tool contract validator is not configured")
+	}
+	if err := validator.ValidateStoredV3AgentToolContract(principal.AccountScopeID, resolved.AgentProfile); err != nil {
+		return provideriface.SessionMediaContract{}, err
+	}
 	if e.server.providers == nil {
 		return provideriface.SessionMediaContract{}, errors.New("v3 provider registry is not configured")
 	}

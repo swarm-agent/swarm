@@ -19,7 +19,7 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Only the scope authority is exposed, deliberately not the tool compiler.
+// Only scope and cheap validation are exposed, not the execution compiler.
 type capabilityScopeOnly struct {
 	runService
 	resolve func(pebblestore.SessionSnapshot, identity.Principal) (tool.WorkspaceScope, error)
@@ -27,6 +27,12 @@ type capabilityScopeOnly struct {
 
 func (r capabilityScopeOnly) ResolveRuntimeWorkspaceScope(s pebblestore.SessionSnapshot, p identity.Principal) (tool.WorkspaceScope, error) {
 	return r.resolve(s, p)
+}
+
+func (r capabilityScopeOnly) ValidateStoredV3AgentToolContract(account string, profile pebblestore.AgentProfile) error {
+	return r.runService.(interface {
+		ValidateStoredV3AgentToolContract(string, pebblestore.AgentProfile) error
+	}).ValidateStoredV3AgentToolContract(account, profile)
 }
 
 type capabilityPoisonExecution struct{ capabilityScopeOnly }
@@ -342,5 +348,64 @@ func TestSessionsV3CapabilitiesModeScopeAndBypassParity(t *testing.T) {
 				t.Fatalf("resolvers mutated canonical state: %v", err)
 			}
 		}
+	}
+}
+
+// Requirement: malformed tool contracts cannot expose media even when explicitly
+// opted in. compileSessionV3MediaContract must reject them before provider use;
+// poison execution methods and unchanged store/profile prove the read boundary
+// neither constructs execution nor partially mutates authority on failure.
+func TestSessionsV3CapabilitiesStoredContractValidation(t *testing.T) {
+	server, created, _ := capabilityReadFixture(t)
+	exec := &sessionV3Executor{server: server}
+	resolved, err := exec.resolveSessionV3Capabilities(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: created.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := server.runner
+	compiler := base.(interface {
+		CompileStoredV3AgentToolContract(string, pebblestore.AgentProfile) (runruntime.ResolvedAgentToolContract, map[string]bool, error)
+	})
+	server.runner = capabilityPoisonExecution{capabilityScopeOnly{runService: base}}
+	before, _, _ := server.sessions.GetSession(created.ID)
+	for _, preset := range []string{"custom", "read_only", "read_write", "bash_git_only", "background_commit", "invalid"} {
+		for _, variant := range []string{"enabled", "disabled", "implicit", "unknown", "empty", "alias", "prefix"} {
+			t.Run(preset+"/"+variant, func(t *testing.T) {
+				input := resolved
+				tools := map[string]pebblestore.AgentToolConfig{"media_inspect": {Enabled: pebblestore.BoolPtr(true)}}
+				switch variant {
+				case "disabled":
+					tools["media_inspect"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
+				case "implicit":
+					delete(tools, "media_inspect")
+				case "unknown":
+					tools["not_a_runtime"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
+				case "empty":
+					tools[" "] = pebblestore.AgentToolConfig{}
+				case "alias":
+					delete(tools, "media_inspect")
+					tools["media-inspect"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+				case "prefix":
+					tools["media_inspect"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false), BashPrefixes: []string{"git status"}}
+				}
+				input.AgentProfile.ToolContract = &pebblestore.AgentToolContract{Preset: preset, Tools: tools}
+				_, _, executionErr := compiler.CompileStoredV3AgentToolContract(created.AccountScopeID, input.AgentProfile)
+				got, readErr := exec.compileSessionV3MediaContract(testPrincipal(), input)
+				if (readErr == nil) != (executionErr == nil) {
+					t.Fatalf("validation parity: read=%v execution=%v", readErr, executionErr)
+				}
+				if readErr != nil {
+					if !reflect.DeepEqual(got, provideriface.SessionMediaContract{}) {
+						t.Fatalf("malformed contract exposed authority: %+v", got)
+					}
+				} else if runruntime.SessionMediaContractAllows(got, "image", "image/png", "") != runruntime.AgentProfileAuthorizesMedia(input.AgentProfile) {
+					t.Fatalf("media opt-in semantics changed: %+v", got)
+				}
+			})
+		}
+	}
+	after, _, err := server.sessions.GetSession(created.ID)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("validation mutated session: %v", err)
 	}
 }
