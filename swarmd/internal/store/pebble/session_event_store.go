@@ -1377,6 +1377,9 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := batch.Set([]byte(KeyV3SessionEvent(input.SessionID, seq)), eventPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if err := setTaskTerminalInBatch(batch, event); err != nil {
+		return V3SessionMutationResult{}, err
+	}
 	if err := batch.Set([]byte(KeyV3RealtimeOutbox(endpointSeq)), realtimeOutboxPayload, nil); err != nil {
 		return V3SessionMutationResult{}, err
 	}

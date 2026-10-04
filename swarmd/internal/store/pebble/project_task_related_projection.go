@@ -109,6 +109,9 @@ func (s *SessionStore) backfillTaskRelated(keys []string, stats *ProjectTaskRead
 }
 
 func (s *SessionStore) backfillTaskRelatedKey(key string, stats *ProjectTaskReadStats) error {
+	if strings.HasPrefix(key, V3SessionEventPrefix("")) {
+		return s.backfillTaskTerminal(key, stats)
+	}
 	parts := strings.Split(key, "/")
 	if len(parts) < 2 {
 		return ErrProjectTaskSummaryCorrupt
@@ -197,7 +200,11 @@ func (r *ProjectTaskBoardReader) prepare(rows []ProjectTaskRecord) {
 		if t.SessionID == "" {
 			continue
 		}
-		r.GetSession(t.SessionID)
+		if _, ok, _ := r.GetSession(t.SessionID); ok {
+			if state, ok, _ := r.GetV3SessionRunState(t.SessionID); ok {
+				r.completedRunSummary(state)
+			}
+		}
 		if t.PlanBinding != nil {
 			r.GetPlan(t.SessionID, t.PlanBinding.PlanID)
 		}
@@ -251,7 +258,7 @@ func deleteTaskRelatedSessionInBatch(batch *pebble.Batch, session string, delete
 	if !deleted {
 		return nil
 	}
-	for _, prefix := range []string{SessionPlanPrefix(session), TaskProgramSessionPrefix(session)} {
+	for _, prefix := range []string{SessionPlanPrefix(session), TaskProgramSessionPrefix(session), V3SessionEventPrefix(session)} {
 		prefix = taskRelatedKey(prefix)
 		if err := batch.DeleteRange([]byte(prefix), []byte(prefix+"\xff"), nil); err != nil {
 			return err

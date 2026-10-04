@@ -202,6 +202,10 @@ func (r *ProjectTaskBoardReader) hydrateAttempt(task *ProjectTaskRecord) {
 			}
 		}
 	}
+	if summary, ok := r.completedRunSummary(state); ok {
+		a.Summary, a.SummaryRunID = summary, state.RunID
+		return
+	}
 	if session.Metadata["lifecycle_summary_run_id"] == state.RunID && session.Metadata["lifecycle_signal"] == "needs_review" {
 		if summary, ok := session.Metadata["lifecycle_summary"].(string); ok {
 			a.Summary, a.SummaryRunID = summary, state.RunID
