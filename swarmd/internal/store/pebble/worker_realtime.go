@@ -84,7 +84,8 @@ func isAllowedWorkerKey(accountScopeID string, key string) bool {
 	runPrefix := KeyWorkerRunAccountPrefix + accountPart + "/"
 	runOccPrefix := KeyWorkerRunOccAccountPrefix + accountPart + "/"
 	idempPrefix := KeyWorkerIdempotencyAccountPrefix + accountPart + "/"
-	return strings.HasPrefix(key, workerPrefix) ||
+	return strings.HasPrefix(key, workerControlPrefix+accountPart+"/") ||
+		strings.HasPrefix(key, workerPrefix) ||
 		strings.HasPrefix(key, historyPrefix) ||
 		strings.HasPrefix(key, automationPrefix) ||
 		strings.HasPrefix(key, runPrefix) ||

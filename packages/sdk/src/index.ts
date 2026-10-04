@@ -2,6 +2,7 @@ export * from './client.js';
 export * from './auth.js';
 export * from './automations.js';
 export * from './workers.js';
+export * from './worker-control.js';
 export * from './deliverables.js';
 export * from './deploy/index.js';
 export * from './notifications.js';

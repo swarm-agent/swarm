@@ -110,14 +110,9 @@ func (s *Service) automationV2ToolSession(id string) (store.SessionSnapshot, str
 			return current, strings.TrimSpace(scope.WorkspaceID), nil
 		}
 	}
-	if s.workspace != nil {
-		if binding, ok, err := s.workspace.CurrentBindingForPrincipal(principal); err == nil && ok && strings.TrimSpace(binding.WorkspaceID) != "" {
-			return current, strings.TrimSpace(binding.WorkspaceID), nil
-		}
-		if entries, err := s.workspace.ListKnownForPrincipal(principal, 1); err == nil && len(entries) > 0 && strings.TrimSpace(entries[0].WorkspaceID) != "" {
-			return current, strings.TrimSpace(entries[0].WorkspaceID), nil
-		}
-	}
+	// An account's current/first workspace is not an explicit session target.
+	// Unbound headless sessions must supply workspace_id rather than silently
+	// selecting an unrelated authorized repository.
 	return current, "", nil
 }
 

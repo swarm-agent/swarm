@@ -1064,6 +1064,7 @@ export interface WorkerRevisionRecord {
 }
 
 export interface WorkerRunRecord {
+  placement?: import('./worker-control.js').WorkerRunPlacement;
   cancel_requested?: boolean;
   id: string;
   account_scope_id: string;

@@ -167,6 +167,9 @@ func (s *WorkerExecutionService) Accept(account, user, id string, revision uint6
 // retried with the same key. Dispatch of a newly created receipt is not allowed
 // to bypass workspace, capability or legacy-cutover checks.
 func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user string, req store.WorkerRunAdmission) (store.WorkerRunRecord, error) {
+	if req.Placement != nil {
+		return store.WorkerRunRecord{}, store.ErrWorkerRemoteUnavailable
+	}
 	ws, err := s.workerStore()
 	if err != nil {
 		return store.WorkerRunRecord{}, err
@@ -261,6 +264,9 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	}
 	if !found || actual.SessionID != receipt.SessionID || actual.UserID != receipt.UserID {
 		return store.ErrWorkerConflict
+	}
+	if actual.Placement != nil {
+		return store.ErrWorkerRemoteUnavailable
 	}
 	if receipt.WorkerRevision != actual.WorkerRevision || receipt.AutomationRevision != actual.AutomationRevision {
 		return store.ErrWorkerConflict
@@ -755,6 +761,10 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 	if err != nil {
 		return err
 	}
+	if r.Placement != nil {
+		_, err := ws.CancelPendingWorkerJob(r.AccountScopeID, r.UserID, r.WorkerID, r.ID, r.Placement.Generation)
+		return err
+	}
 	r.CancelRequested = true
 	r.Error = reason
 	if _, err = ws.RecordWorkerRun(r.AccountScopeID, r); err != nil {
@@ -989,6 +999,9 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 	}
 	var failures []error
 	for _, r := range pending {
+		if r.Placement != nil {
+			return store.ErrWorkerRemoteUnavailable
+		}
 		if err = ctx.Err(); err != nil {
 			return err
 		}
@@ -1331,6 +1344,12 @@ func (s *WorkerExecutionService) CancelRun(ctx context.Context, account, id, run
 	}
 	if !found {
 		return r, store.ErrWorkerNotFound
+	}
+	if r.Placement != nil {
+		if err := s.authorizeWorkerOwner(account, r.UserID); err != nil {
+			return store.WorkerRunRecord{}, err
+		}
+		return ws.CancelPendingWorkerJob(account, r.UserID, id, runID, r.Placement.Generation)
 	}
 	if store.AutomationV2Terminal(r.Status) {
 		return r, store.ErrWorkerConflict

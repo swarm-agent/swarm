@@ -18,6 +18,8 @@
   "files": [
     "dist",
     "examples/headless-session.ts",
+    "examples/headless-worker-control.ts",
+    "WORKER_CONTROL.md",
     "README.md",
     "APPLICATIONS.md",
     "HEADLESS_UI.md",
