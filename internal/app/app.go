@@ -2090,7 +2090,7 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 	}
 
 	prompt := strings.TrimSpace(a.home.PromptValue())
-	if prompt == "" {
+	if a.home.TaskBoxFocused() {
 		if task, ok := a.home.SelectedTask(); ok {
 			a.home.ClearCommandOverlay()
 			if strings.TrimSpace(task.SessionID) != "" {
@@ -2104,6 +2104,8 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 			}
 			return true
 		}
+	}
+	if prompt == "" {
 		if a.homeModel.ActiveProjectID != "" {
 			a.home.ClearCommandOverlay()
 			if err := a.openOrchestratorChat(""); err != nil {
@@ -2629,6 +2631,18 @@ func (a *App) handleNewCommand(raw string) {
 		a.home.SetStatus("usage: /new [plan] [<prompt>]")
 		return
 	}
+	if a.homeModel.ActiveProjectID != "" {
+		a.home.ClearCommandOverlay()
+		mode := map[bool]string{true: "plan", false: "auto"}[command.PlanModeRequested]
+		initialPrompt := strings.TrimSpace(command.Prompt)
+		if err := a.createNewProjectSession(a.homeModel.ActiveProjectID, mode, initialPrompt); err != nil {
+			a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
+			if a.route == "chat" && a.chat != nil {
+				a.chat.SetStatus(fmt.Sprintf("/new failed: %v", err))
+			}
+		}
+		return
+	}
 	intent := a.home.SessionIntent()
 	intent.InitialPrompt = strings.TrimSpace(command.Prompt)
 	intent.Mode = map[bool]string{true: "plan", false: "auto"}[command.PlanModeRequested]
@@ -2637,6 +2651,74 @@ func (a *App) handleNewCommand(raw string) {
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
 	}
+}
+
+func (a *App) createNewProjectSession(projectID string, mode string, initialPrompt string) error {
+	if a == nil || a.api == nil {
+		return errors.New("api client is not configured")
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return errors.New("project id is required")
+	}
+	if mode != "plan" {
+		mode = "auto"
+	}
+	title := "Orchestrator"
+	if initialPrompt != "" {
+		title = chatTitleFromPrompt(initialPrompt)
+	} else if a.homeModel.ActiveProjectName != "" {
+		title = fmt.Sprintf("Orchestrator · %s", a.homeModel.ActiveProjectName)
+	}
+
+	intent := a.home.SessionIntent()
+	pref := intent.Preference
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	created, err := a.api.CreateSessionV3WithOptions(ctx, client.SessionCreateOptions{
+		ProjectID:  projectID,
+		Title:      title,
+		Mode:       mode,
+		AgentName:  "system-orchestrator",
+		Preference: pref,
+	})
+	if err != nil {
+		return fmt.Errorf("create project session: %w", err)
+	}
+
+	sessionID := strings.TrimSpace(created.Session.ID)
+	if sessionID == "" {
+		return errors.New("created session has no id")
+	}
+
+	a.homeModel.ActiveProjectPrimarySessionID = sessionID
+	go func() {
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer bgCancel()
+		_, _ = a.api.UpdateProject(bgCtx, projectID, map[string]any{"primary_session_id": sessionID})
+	}()
+
+	if a.v3Chat != nil {
+		a.closeV3Chat()
+	}
+
+	if err := a.openSessionSummary(model.SessionSummary{
+		ID:        sessionID,
+		Title:     title,
+		Mode:      mode,
+		Metadata: map[string]any{
+			"project_id":          projectID,
+			"swarm_v3_project_id": projectID,
+			"agent_name":          "system-orchestrator",
+		},
+	}, initialPrompt); err != nil {
+		return err
+	}
+
+	a.home.ClearPrompt()
+	return nil
 }
 
 func (a *App) handlePlanCommand(args []string) {

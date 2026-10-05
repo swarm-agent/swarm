@@ -144,30 +144,14 @@ func (p *HomePage) drawProjectInfoBox(s tcell.Screen, rect Rect) {
 	if innerW < 8 {
 		innerW = rect.W - 2
 	}
-	leftW := innerW / 2
-	if leftW < 12 {
-		leftW = 12
-	}
-	if leftW > innerW-12 {
-		leftW = innerW - 12
-	}
-	if leftW < 12 {
-		leftW = innerW
-	}
-	rightW := innerW - leftW - 1
-	if rightW < 0 {
-		rightW = 0
-	}
 
 	lineY := rect.Y + 1
-	wsLine = clampEllipsis(wsLine, leftW)
+	wsLine = clampEllipsis(wsLine, innerW)
 
 	d := p.primaryDirectory()
-	gitSummary := p.homeGitSummarySpans(d)
-
 	DrawBox(s, rect, p.theme.BorderActive)
 	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, projectLabel)
-	DrawText(s, rect.X+2, lineY, leftW, p.theme.Text, wsLine)
+	DrawText(s, rect.X+2, lineY, innerW, p.theme.Text, wsLine)
 
 	if rect.H > 3 {
 		subLine := ""
@@ -184,12 +168,6 @@ func (p *HomePage) drawProjectInfoBox(s tcell.Screen, rect Rect) {
 		if subLine != "" {
 			DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.Secondary, clampEllipsis(subLine, rect.W-4))
 		}
-	}
-
-	if rightW > 0 {
-		gitX := rect.X + 2 + leftW + 1
-		p.drawRightAlignedHomeSpans(s, gitX+rightW-1, lineY, rightW, gitSummary)
-		p.registerTopTarget(Rect{X: gitX, Y: lineY, W: rightW, H: 1}, "open-git", 0)
 	}
 }
 

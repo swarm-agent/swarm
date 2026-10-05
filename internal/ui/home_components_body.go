@@ -15,6 +15,14 @@ func (p *HomePage) drawMeta(s tcell.Screen, rect Rect, variant layoutVariant) {
 	if rect.H < 1 {
 		return
 	}
+	if strings.TrimSpace(p.model.ActiveProjectID) != "" {
+		hintLine := "Ctrl+Up: Tasks Box  •  Ctrl+X: Orchestrator  •  Alt+W: Switch Project  •  /new: New Session"
+		if p.taskBoxFocused {
+			hintLine = "Ctrl+Down / Esc: Prompt Box  •  Up/Down: Select Task  •  Enter: Open Task"
+		}
+		DrawText(s, rect.X, rect.Y, rect.W, p.theme.Secondary, clampEllipsis(hintLine, rect.W))
+		return
+	}
 	d := p.primaryDirectory()
 	if variant.ShowWorkspaceList {
 		x := rect.X
@@ -74,7 +82,11 @@ func (p *HomePage) drawInputBar(s tcell.Screen, rect Rect, centered bool) {
 		return
 	}
 
-	DrawOpenBox(s, rect, p.theme.BorderActive)
+	boxBorder := p.theme.BorderActive
+	if p.taskBoxFocused {
+		boxBorder = p.theme.Border
+	}
+	DrawOpenBox(s, rect, boxBorder)
 	if strings.TrimSpace(p.model.ActiveProjectName) != "" {
 		inputTitle := fmt.Sprintf(" Plan with Orchestrator · %s ", p.model.ActiveProjectName)
 		DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Secondary.Bold(true), clampEllipsis(inputTitle, rect.W-4))
@@ -108,7 +120,7 @@ func (p *HomePage) drawInputBar(s tcell.Screen, rect Rect, centered bool) {
 			DrawText(s, lineStart+len(prefix), contentY, availW, p.theme.TextMuted, clampEllipsis(placeholder, availW))
 		}
 	}
-	if ok {
+	if ok && !p.taskBoxFocused {
 		s.SetContent(cursorX, cursorY, inputCursorRune, nil, p.theme.Primary)
 	}
 }

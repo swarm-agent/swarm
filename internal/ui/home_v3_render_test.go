@@ -257,6 +257,83 @@ func TestV3HomepageRendersEmptyProjectTasksBoard(t *testing.T) {
 	}
 }
 
+func TestV3HomepageTaskBoxFocusNavigation(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	home := model.EmptyHome()
+	home.ActiveProjectID = "proj-1"
+	home.ActiveProjectName = "SuperApp"
+	home.ProjectTasks = []client.ProjectTaskRecord{
+		{ID: "task-1", Title: "Task 1", Status: "queued", Agent: "coder"},
+		{ID: "task-2", Title: "Task 2", Status: "in_progress", Agent: "finder"},
+	}
+
+	page := NewHomePage(home)
+
+	// 1. Focus starts on prompt box
+	if page.TaskBoxFocused() {
+		t.Fatal("expected initial focus to be on prompt box, not task box")
+	}
+
+	// When on prompt box, Up/Down does not change task selection
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if page.SelectedTaskIndex() != 0 {
+		t.Fatalf("expected task index 0 while on prompt, got %d", page.SelectedTaskIndex())
+	}
+
+	// Verify header does NOT contain any branch
+	page.Draw(screen)
+	text := dumpHomeTestScreen(screen, 100, 30)
+	if strings.Contains(text, "git ") || strings.Contains(text, "branch ") {
+		t.Fatalf("header unexpectedly contains git/branch text:\n%s", text)
+	}
+	if !strings.Contains(text, "Ctrl+Up: Navigate Tasks") {
+		t.Fatalf("expected hint to show Ctrl+Up: Navigate Tasks:\n%s", text)
+	}
+
+	// 2. Press Ctrl+Up to navigate up into the task box
+	page.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl))
+	if !page.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Up to focus the task box")
+	}
+
+	// When task box is focused, Up/Down changes task selection
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if page.SelectedTaskIndex() != 1 {
+		t.Fatalf("expected task index 1 after Down in task box, got %d", page.SelectedTaskIndex())
+	}
+
+	page.Draw(screen)
+	textFocused := dumpHomeTestScreen(screen, 100, 30)
+	if !strings.Contains(textFocused, "Ctrl+Down / Esc: Back to Prompt") {
+		t.Fatalf("expected hint to show Ctrl+Down / Esc when task box is focused:\n%s", textFocused)
+	}
+
+	// 3. Press Ctrl+Down to return to prompt box
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModCtrl))
+	if page.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Down to return focus to prompt box")
+	}
+
+	// 4. Pressing Ctrl+Up then typing a printable character immediately refocuses prompt box
+	page.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl))
+	if !page.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Up to focus the task box")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone))
+	if page.TaskBoxFocused() {
+		t.Fatal("expected typing character to return focus to prompt box")
+	}
+	if page.PromptValue() != "h" {
+		t.Fatalf("expected prompt to receive character 'h', got %q", page.PromptValue())
+	}
+}
+
 func dumpHomeTestScreen(screen tcell.Screen, width, height int) string {
 	var out strings.Builder
 	for y := 0; y < height; y++ {

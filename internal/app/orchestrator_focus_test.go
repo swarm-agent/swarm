@@ -90,6 +90,15 @@ func TestOrchestratorTUIFocusMode(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(client.SessionV3Hydrated{
 				Session: client.SessionSummary{ID: "sess-task-1", Title: "Deploy backend", SessionAPI: "v3"},
 			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions":
+			_ = json.NewEncoder(w).Encode(client.SessionV3Hydrated{
+				Session: client.SessionSummary{ID: "new-sess-1", Title: "New Session", SessionAPI: "v3"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/tui/sessions/new-sess-1":
+			openedSessionID = "new-sess-1"
+			_ = json.NewEncoder(w).Encode(client.SessionV3Hydrated{
+				Session: client.SessionSummary{ID: "new-sess-1", Title: "New Session", SessionAPI: "v3"},
+			})
 		default:
 			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 		}
@@ -169,16 +178,61 @@ func TestOrchestratorTUIFocusMode(t *testing.T) {
 	// Return to home again
 	app.handleGlobalKey(ctrlXEv)
 
-	// 5. Selecting task and pressing Enter when prompt is empty opens that task's session
+	// 5. Focus starts on prompt: pressing Enter when prompt is empty opens orchestrator, NOT the top task
 	openedSessionID = ""
 	app.home.ClearPrompt()
 	app.home.SetSelectedTaskIndex(0) // task-1 has SessionID = "sess-task-1"
+	if app.home.TaskBoxFocused() {
+		t.Fatal("expected focus to start on the prompt, not task box")
+	}
 	if !app.handleHomeKey(enterEv) {
-		t.Fatal("expected Enter on selected task to open task session")
+		t.Fatal("expected Enter on empty prompt to open orchestrator chat")
+	}
+	if openedSessionID != "orch-sess-1" {
+		t.Fatalf("expected Enter on prompt to open orchestrator 'orch-sess-1', got %q", openedSessionID)
+	}
+
+	// Return to home again
+	app.handleGlobalKey(ctrlXEv)
+
+	// Press Ctrl+Up to navigate up into the task box
+	ctrlUpEv := tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl)
+	app.home.HandleKey(ctrlUpEv)
+	if !app.home.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Up to focus the task box")
+	}
+
+	// Pressing Enter when task box is focused opens the selected task's session
+	openedSessionID = ""
+	if !app.handleHomeKey(enterEv) {
+		t.Fatal("expected Enter on focused task box to open task session")
 	}
 	if openedSessionID != "sess-task-1" {
 		t.Fatalf("expected Enter on task-1 to open session 'sess-task-1', got %q", openedSessionID)
 	}
+
+	// Return to home again
+	app.handleGlobalKey(ctrlXEv)
+
+	// Press Ctrl+Down to return focus to prompt box
+	ctrlDownEv := tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModCtrl)
+	app.home.HandleKey(ctrlDownEv)
+	if app.home.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Down to return focus to prompt box")
+	}
+
+	// 5b. /new creates a canonical new session
+	openedSessionID = ""
+	app.home.SetPrompt("/new Start next release milestone")
+	if !app.handleHomeKey(enterEv) {
+		t.Fatal("expected Enter on /new command to execute")
+	}
+	if openedSessionID != "new-sess-1" {
+		t.Fatalf("expected /new to create and open 'new-sess-1', got %q", openedSessionID)
+	}
+
+	// Return to home again
+	app.handleGlobalKey(ctrlXEv)
 
 	// 6. Project switching via workspace switcher:
 	// Select "proj-beta" (path "project:proj-beta") via WorkspaceModalActionSelect

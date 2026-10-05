@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Remove Git branch from TUI header and project info box, wire canonical new project session creation via /new command, start initial focus on prompt box with Enter not capturing top task, and enable Ctrl+Up / Ctrl+Down navigation between prompt and task box. Docs impact: none.
+
 - Resolve TUI message dispatch to project orchestrator and checkout-free sessions by allowing project-scoped and unscoped sessions through TUI path visibility and workset filtering. Dock prompt box at bottom of TUI screen, remove Git workspace setup warning, default workspace selection to first workspace, and upgrade top header to Project Box with workspace display (or count if > 4) and project switcher integration. Docs impact: none.
 
 - Implement TUI orchestration focus mode with active project task board display on initial load, keyboard task selection and session launching, direct prompt submission to project orchestrator, Ctrl+X project orchestrator toggling, automatic primary orchestrator resolution, empty-task board guidance, and project switching integration via workspace switcher modal. Docs impact: none.

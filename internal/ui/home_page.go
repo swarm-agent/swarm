@@ -88,6 +88,7 @@ type HomePage struct {
 	commandPaletteOptionIndex       int
 	commandPaletteOptionOwner       string
 	taskCursorIndex                 int
+	taskBoxFocused                  bool
 	statusLine                      string
 	sessionMode                     string
 	showHomeTips                    bool
@@ -353,19 +354,62 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 		return
 	}
 
+	isCtrlUp := p.keybinds.Match(ev, KeybindHomeFocusTasks) || (ev.Key() == tcell.KeyUp && ev.Modifiers()&tcell.ModCtrl != 0) || ev.Key() == tcell.KeyCtrlK
+	isCtrlDown := p.keybinds.Match(ev, KeybindHomeFocusPrompt) || (ev.Key() == tcell.KeyDown && ev.Modifiers()&tcell.ModCtrl != 0)
+
+	if isCtrlUp {
+		if len(p.model.ProjectTasks) > 0 {
+			p.taskBoxFocused = true
+			return
+		}
+	}
+
+	if p.taskBoxFocused {
+		if isCtrlDown || ev.Key() == tcell.KeyEsc {
+			p.taskBoxFocused = false
+			return
+		}
+		switch {
+		case p.keybinds.Match(ev, KeybindHomePaletteMoveUp) || ev.Key() == tcell.KeyUp:
+			p.MoveTaskSelection(-1)
+			return
+		case p.keybinds.Match(ev, KeybindHomePaletteMoveDown) || ev.Key() == tcell.KeyDown:
+			p.MoveTaskSelection(1)
+			return
+		case ev.Key() == tcell.KeyPgUp:
+			p.MoveTaskSelection(-5)
+			return
+		case ev.Key() == tcell.KeyPgDn:
+			p.MoveTaskSelection(5)
+			return
+		case ev.Key() == tcell.KeyHome:
+			p.SetSelectedTaskIndex(0)
+			return
+		case ev.Key() == tcell.KeyEnd:
+			if len(p.model.ProjectTasks) > 0 {
+				p.SetSelectedTaskIndex(len(p.model.ProjectTasks) - 1)
+			}
+			return
+		case ev.Key() == tcell.KeyEnter:
+			return
+		default:
+			if ev.Key() == tcell.KeyRune && unicode.IsPrint(ev.Rune()) {
+				p.taskBoxFocused = false
+			} else {
+				return
+			}
+		}
+	}
+
 	switch {
 	case p.keybinds.Match(ev, KeybindHomePaletteMoveUp):
 		if p.commandPaletteActive() {
 			p.moveCommandPaletteSelection(-1)
-		} else if len(p.model.ProjectTasks) > 0 {
-			p.MoveTaskSelection(-1)
 		}
 		return
 	case p.keybinds.Match(ev, KeybindHomePaletteMoveDown):
 		if p.commandPaletteActive() {
 			p.moveCommandPaletteSelection(1)
-		} else if len(p.model.ProjectTasks) > 0 {
-			p.MoveTaskSelection(1)
 		}
 		return
 	case ev.Key() == tcell.KeyLeft:

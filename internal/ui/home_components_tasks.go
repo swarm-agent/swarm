@@ -66,7 +66,11 @@ func (p *HomePage) drawProjectTasks(s tcell.Screen, rect Rect, centered bool) {
 	}
 
 	boxRect := Rect{X: startX, Y: rect.Y, W: innerW, H: rect.H}
-	DrawBox(s, boxRect, p.theme.Border)
+	boxBorder := p.theme.Border
+	if p.taskBoxFocused {
+		boxBorder = p.theme.BorderActive
+	}
+	DrawBox(s, boxRect, boxBorder)
 
 	// Title on top border
 	title := " Project Tasks "
@@ -137,8 +141,12 @@ func (p *HomePage) drawProjectTasks(s tcell.Screen, rect Rect, centered bool) {
 		prefix := "  "
 		if isSelected {
 			prefix = "› "
-			rowStyle = p.theme.Primary.Bold(true)
-			FillRect(s, Rect{X: boxRect.X + 1, Y: y, W: boxRect.W - 2, H: 1}, p.theme.Element)
+			if p.taskBoxFocused {
+				rowStyle = p.theme.Primary.Bold(true)
+				FillRect(s, Rect{X: boxRect.X + 1, Y: y, W: boxRect.W - 2, H: 1}, p.theme.Element)
+			} else {
+				rowStyle = p.theme.Secondary
+			}
 		}
 
 		curX := boxRect.X + 2
@@ -167,6 +175,16 @@ func (p *HomePage) drawProjectTasks(s tcell.Screen, rect Rect, centered bool) {
 
 		if agentTag != "" && curX < boxRect.X+boxRect.W-2 {
 			DrawText(s, curX, y, agentW, p.theme.TextMuted, agentTag)
+		}
+	}
+
+	if boxRect.H >= 4 {
+		if p.taskBoxFocused {
+			bottomHint := " [Ctrl+Down / Esc: Back to Prompt • Enter: Open Task] "
+			DrawText(s, boxRect.X+2, boxRect.Y+boxRect.H-1, innerW-4, p.theme.Secondary, clampEllipsis(bottomHint, innerW-4))
+		} else {
+			bottomHint := " [Ctrl+Up: Navigate Tasks] "
+			DrawText(s, boxRect.X+2, boxRect.Y+boxRect.H-1, innerW-4, p.theme.TextMuted, clampEllipsis(bottomHint, innerW-4))
 		}
 	}
 }

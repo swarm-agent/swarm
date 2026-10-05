@@ -106,6 +106,16 @@ func (p *HomePage) SetModel(next model.HomeModel) {
 	}
 }
 
+func (p *HomePage) TaskBoxFocused() bool {
+	return p != nil && p.taskBoxFocused
+}
+
+func (p *HomePage) SetTaskBoxFocused(focused bool) {
+	if p != nil {
+		p.taskBoxFocused = focused
+	}
+}
+
 func (p *HomePage) SetStatus(status string) {
 	p.statusLine = strings.TrimSpace(status)
 }
