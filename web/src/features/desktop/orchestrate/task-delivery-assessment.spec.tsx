@@ -72,3 +72,22 @@ test('dirty lanes retain committed integration and block actions independently',
     assert.equal(taskDelivery({ ...task, gitStatus: 'stale' })?.integrated, false)
   }
 })
+
+// Requirement: initial summaries are transient, while real assessment failures
+// remain visible and non-actionable. The canonical card selector is the narrowest
+// rendering boundary; native automatic hydration is exercised by the board fixture.
+test('initial checking is replaced by observed Git and genuine errors stay explicit', () => {
+  const initial = mapBackendTask({ ...backend, git_status: 'stale', delivery_assessment: {
+    ...backend.delivery_assessment, state: 'unavailable', reason_code: 'not_assessed', freshness: 'stale',
+  } })
+  assert.equal(taskCardFacts(initial).git, 'Checking Git…')
+  assert.equal(taskDelivery(initial)?.actionable, false)
+  const failed = mapBackendTask({ ...backend, git_status: 'unknown', delivery_assessment: {
+    ...backend.delivery_assessment, state: 'unavailable', reason_code: 'inspection_failed', reason: 'Git inspection failed', freshness: 'unknown',
+  } })
+  assert.equal(taskCardFacts(failed).git, 'Git assessment unavailable — Git inspection failed')
+  const ready = mapBackendTask({ ...backend, git_status: 'clean', delivery_assessment: {
+    ...backend.delivery_assessment, state: 'integrated', reason_code: 'source_ancestor',
+  } })
+  assert.equal(taskCardFacts(ready).git, 'Integrated')
+})

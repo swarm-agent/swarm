@@ -24,7 +24,8 @@ export function taskDelivery(task: RunningTask) {
     : recoverable ? `Recover recorded task delta (${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'})`
     : a.state === 'history_rewritten' ? 'History rewritten — review task'
     : a.state === 'history_equivalent' ? 'Matching tree; integration not verified — review task'
-    : !observed ? task.syncWarning || (task.isDirty ? 'Changes pending commit' : 'Git assessment unavailable — review task')
+    : !observed ? task.syncWarning || (a.reason_code === 'not_assessed' ? 'Checking Git…'
+      : a.state === 'unavailable' && a.reason ? `Git assessment unavailable — ${a.reason}` : 'Git assessment stale — checking changes')
     : integrated ? 'Integrated'
     : actionable ? `${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'} to integrate`
     : a.reason || 'Integration needs review'

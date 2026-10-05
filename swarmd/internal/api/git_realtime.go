@@ -67,6 +67,7 @@ type gitRealtimeManager struct {
 	repos          map[string]*gitRealtimeRepo
 	backendFactory gitRealtimeBackendFactory
 	runtime        gitRealtimeRuntimeConfig
+	subscriptions  *gitwatch.Subscriptions
 }
 
 type gitRealtimeRepo struct {
@@ -89,8 +90,9 @@ type gitRealtimeRepo struct {
 
 func newGitRealtimeManager(server *Server) *gitRealtimeManager {
 	return &gitRealtimeManager{
-		server: server,
-		repos:  make(map[string]*gitRealtimeRepo),
+		server:        server,
+		repos:         make(map[string]*gitRealtimeRepo),
+		subscriptions: gitwatch.NewSubscriptions(),
 		backendFactory: func(paths gitstatus.WatchPaths) (gitwatch.Backend, error) {
 			return gitwatch.NewFSNotify(gitwatch.Config{WorktreeRoot: paths.RepoRoot, GitDir: paths.GitDir, CommonDir: paths.CommonDir})
 		},
@@ -172,6 +174,9 @@ func (m *gitRealtimeManager) signal(workspacePath string) {
 func (m *gitRealtimeManager) stopAll() {
 	if m == nil {
 		return
+	}
+	if m.subscriptions != nil {
+		m.subscriptions.Close()
 	}
 	m.mu.Lock()
 	repos := make([]*gitRealtimeRepo, 0, len(m.repos))
