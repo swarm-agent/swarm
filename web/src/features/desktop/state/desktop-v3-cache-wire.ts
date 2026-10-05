@@ -38,6 +38,7 @@ const SUPPORTED_REALTIME_KINDS = new Set([
   'usage.scope.updated',
   'auth.credentials.updated',
   'project.updated',
+  'environment.updated',
 ])
 
 export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
@@ -55,6 +56,13 @@ export function assertDesktopV3RealtimeFrame(frame: RealtimeMessage): void {
   if (kind === 'usage.scope.updated') {
     const payload = frame.event ? eventPayloadRecord(frame.event) : undefined
     if (!stringValue(frame.endpoint_cursor) || frame.session || frame.session_id || frame.event?.session_id || frame.event?.event_type !== 'usage.scope.updated' || !Array.isArray(payload?.scope_totals) || payload.scope_totals.length > 320) throw new Error('protocol invalid: usage update requires bounded scope snapshots and endpoint cursor')
+    return
+  }
+  if (kind === 'environment.updated') {
+    const payload = frame.event ? eventPayloadRecord(frame.event) : undefined
+    if (!stringValue(frame.endpoint_cursor) || frame.session || frame.event?.event_type !== kind || !stringValue(payload?.workspace_id)) {
+      throw new Error('protocol invalid: environment update requires workspace identity and endpoint cursor')
+    }
     return
   }
   if (kind === 'worker.updated') {
@@ -253,6 +261,7 @@ export function realtimeFrameToActions(frame: RealtimeMessage): DesktopV3CacheAc
     case 'worker.updated':
     case 'workspace.catalog.updated':
     case 'auth.credentials.updated':
+    case 'environment.updated':
     case 'project.updated':
       return [{ type: 'realtime.control', frame }]
 

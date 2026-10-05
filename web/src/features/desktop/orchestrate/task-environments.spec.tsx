@@ -28,3 +28,15 @@ test('all attachment states render without inventing browser readiness', () => {
   assert.equal((render([attachment, { ...attachment, id: 'b' }]).match(/Test app/g) || []).length, 2)
   assert.doesNotMatch(render([]), /Test app|Deployment details/)
 })
+
+// Purpose: the card rendering boundary must expose bounded text, not executable
+// markup, and must not render empty chrome or waive project/task identity.
+test('empty attachments omit chrome and error text is escaped and bounded', () => {
+  assert.equal(render([]), '')
+  const html = render([{ ...attachment, error_message: '<script>bad</script>\u0000' + 'x'.repeat(900) }])
+  assert.match(html, /&lt;script&gt;bad/)
+  assert.doesNotMatch(html, /<script>|\u0000|x{513}/)
+  const mismatch = render([{ ...attachment, project_id: 'foreign' }])
+  assert.match(mismatch, /stale/)
+  assert.match(mismatch, /disabled=""/)
+})

@@ -3202,7 +3202,7 @@ export function OrchestrateView({
   }
 
   // Canonical Desktop Projects runtime state
-  const projectState = useDesktopProject(selectedProjectId)
+  const projectState = useDesktopProject(selectedProjectId, selectedProject?.workspaces)
   const tasks = projectState?.tasks ?? []
   const uploadedMedia = projectState?.media ?? []
   const projectTasksError = projectState?.error
@@ -6241,7 +6241,7 @@ export function OrchestrateView({
                           onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                           onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                          projectId={selectedProject?.id}
+                          projectId={selectedProjectId || undefined}
                           isApproving={approvingTaskIds.has(t.id)}
                           previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                           taskError={taskActionErrors[t.id]}
@@ -6349,7 +6349,7 @@ export function OrchestrateView({
                               onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                               onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                               onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                              projectId={selectedProject?.id}
+                              projectId={selectedProjectId || undefined}
                               isApproving={approvingTaskIds.has(t.id)}
                               previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                               taskError={taskActionErrors[t.id]}
@@ -6467,7 +6467,7 @@ export function OrchestrateView({
                           onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                           onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                          projectId={selectedProject?.id}
+                          projectId={selectedProjectId || undefined}
                           isApproving={approvingTaskIds.has(task.id)}
                           previousRuns={renderPreviousRuns(task)} integrationRecovery={renderIntegrationRecovery(task)}
                           taskError={taskActionErrors[task.id]}
@@ -6575,7 +6575,7 @@ export function OrchestrateView({
                         onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                         onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                         onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                        projectId={selectedProject?.id}
+                        projectId={selectedProjectId || undefined}
                         isApproving={approvingTaskIds.has(selectedTaskForSplit.id)}
                         previousRuns={renderPreviousRuns(selectedTaskForSplit)} integrationRecovery={renderIntegrationRecovery(selectedTaskForSplit)}
                         taskError={taskActionErrors[selectedTaskForSplit.id]}
@@ -6626,7 +6626,7 @@ export function OrchestrateView({
                       onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                       onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                       onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                      projectId={selectedProject?.id}
+                      projectId={selectedProjectId || undefined}
                       isApproving={approvingTaskIds.has(t.id)}
                       previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                       taskError={taskActionErrors[t.id]}

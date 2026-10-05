@@ -55,3 +55,22 @@ func TestFrontendEndpointClone(t *testing.T) {
 		t.Fatal("clone aliases frontend metadata")
 	}
 }
+
+// Purpose: deployed frontend intent must survive environment edits and cloning.
+// SnapshotDeploymentFrontend and Deployment.Clone are the narrow ownership
+// boundary; changing either source or returned clone must not change the receipt.
+func TestDeploymentFrontendSnapshot(t *testing.T) {
+	e := &Environment{FrontendEndpoints: []FrontendEndpoint{{ID: "web", Path: "/app"}}, Container: ContainerDefinition{ExposedPorts: []PortMapping{{ContainerPort: 8080}}}}
+	d := &Deployment{Frontend: SnapshotDeploymentFrontend(e)}
+	e.FrontendEndpoints[0].Path = "/edited"
+	e.Container.ExposedPorts[0].ContainerPort = 9090
+	clone := d.Clone()
+	clone.Frontend.Endpoints[0].Path = "/clone"
+	clone.Frontend.Ports[0].ContainerPort = 9000
+	if d.Frontend.Endpoints[0].Path != "/app" || d.Frontend.Ports[0].ContainerPort != 8080 {
+		t.Fatal("deployment frontend intent was aliased")
+	}
+	if (&Deployment{}).Clone().Frontend != nil {
+		t.Fatal("legacy deployment acquired fabricated browser intent")
+	}
+}

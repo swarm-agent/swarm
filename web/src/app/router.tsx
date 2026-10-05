@@ -1,5 +1,6 @@
 import { createRootRoute, createRoute, createRouter, redirect, notFound, useNavigate } from '@tanstack/react-router'
 import { lazy, useEffect } from 'react'
+import { validateEnvironmentsSearch } from '../features/desktop/environments/pages/environments-search'
 import { isSwarmSection } from '../features/desktop/orchestrate/swarm-navigation'
 import { StartupRouteError, withStartupScreen } from './startup-recovery'
 import { DesktopDocumentTitleController } from '../features/desktop/runtime/desktop-document-title-controller'
@@ -381,10 +382,7 @@ const workspaceSettingsRoute = createRoute({
 const environmentsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/environments',
-  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
-    const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
-    return tab ? { tab } : {}
-  },
+  validateSearch: validateEnvironmentsSearch,
   component: EnvironmentsPage,
 })
 
@@ -405,10 +403,7 @@ const workspaceEnvironmentsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/$workspaceSlug/environments',
   parseParams: validateWorkspaceParams,
-  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
-    const tab = typeof search.tab === 'string' ? search.tab.trim() : ''
-    return tab ? { tab } : {}
-  },
+  validateSearch: validateEnvironmentsSearch,
   component: EnvironmentsPage,
 })
 

@@ -192,8 +192,16 @@ func (s *Server) taskEnvironmentProjection(ctx context.Context, p identity.Princ
 	for i := range out {
 		out[i].ErrorMessage = ""
 		switch out[i].State {
-		case "failed", "stopped", "stale":
-			out[i].ErrorMessage = "Environment unavailable; inspect preparation, rebuild if source changed, and explicitly reattach."
+		case "stale":
+			out[i].ErrorMessage = "Attachment source, attempt, expiry or deployment changed. Refresh, rebuild if needed, and explicitly reattach."
+		case "failed":
+			if out[i].Source.DeploymentID == "" {
+				out[i].ErrorMessage = "Preparation did not succeed. Inspect the attached operation, correct its configuration, and prepare again."
+			} else {
+				out[i].ErrorMessage = "Deployment failed. Open deployment details, correct the runtime failure, and prepare again."
+			}
+		case "stopped":
+			out[i].ErrorMessage = "Deployment is stopped or terminated. Open deployment details to start or replace it explicitly."
 		}
 	}
 	return out
