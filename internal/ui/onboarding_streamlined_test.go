@@ -313,3 +313,133 @@ func TestStreamlinedStep4WithWorkspaceGuidanceDoesNotShowLegacyControls(t *testi
 		t.Fatalf("rendered output must not contain legacy 'Use home folder':\n%s", rendered)
 	}
 }
+
+func TestStreamlinedStep4PersonalizingRendersCoolAnimation(t *testing.T) {
+	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
+	page.ShowOnboardingWorkspace("Set up project")
+	page.onboarding.ProjectName = "nebula-gateway"
+	page.onboarding.Personalizing = true
+	page.onboarding.Tick = 8
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	page.Draw(screen)
+	rendered := dumpHomeTestScreen(screen, 80, 24)
+
+	if !strings.Contains(rendered, "PERSONALIZING NEBULA-GATEWAY") {
+		t.Fatalf("expected 'PERSONALIZING NEBULA-GATEWAY' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "%") {
+		t.Fatalf("expected percentage progress in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Linked workspaces indexed & mapped") {
+		t.Fatalf("expected workspace indexing step in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "AGENTS.md guidelines and rules extracted") {
+		t.Fatalf("expected AGENTS.md extraction step in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Synthesizing PROJECT.md with AI Router") {
+		t.Fatalf("expected PROJECT.md synthesis step in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Priming autonomous agent orchestrator") {
+		t.Fatalf("expected agent priming step in rendered output:\n%s", rendered)
+	}
+}
+
+func TestStreamlinedStep4PreFinishScreenRendersAndLaunches(t *testing.T) {
+	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
+	page.ShowOnboardingPreFinish("proj_nebula", "nebula-gateway", []string{"/home/developer/code/repo"})
+
+	if !page.OnboardingPreFinishActive() {
+		t.Fatal("expected PreFinish to be active")
+	}
+
+	controls := page.repositoryControls()
+	if len(controls) != 1 || controls[0].action != "finish_prefinish" {
+		t.Fatalf("expected finish_prefinish control, got %+v", controls)
+	}
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	page.Draw(screen)
+	rendered := dumpHomeTestScreen(screen, 80, 24)
+
+	if !strings.Contains(rendered, "ALL SYSTEMS ONLINE · PROJECT READY") {
+		t.Fatalf("expected header 'ALL SYSTEMS ONLINE · PROJECT READY' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Project    :") || !strings.Contains(rendered, "nebula-gateway") {
+		t.Fatalf("expected project name 'nebula-gateway' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Workspaces :") || !strings.Contains(rendered, "repo") {
+		t.Fatalf("expected workspace 'repo' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Guidelines :") || !strings.Contains(rendered, "PROJECT.md configured & rules primed") {
+		t.Fatalf("expected guidelines status in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Agent      :") || !strings.Contains(rendered, "Swarm orchestrator ready for commands") {
+		t.Fatalf("expected agent orchestrator status in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Launch nebula-gateway & Talk to Swarm →") {
+		t.Fatalf("expected launch button in rendered output:\n%s", rendered)
+	}
+
+	// Pressing Enter must trigger HomeActionFinishOnboardingProject
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	action, ok := page.PopHomeAction()
+	if !ok || action.Kind != HomeActionFinishOnboardingProject {
+		t.Fatalf("expected HomeActionFinishOnboardingProject action, got %+v", action)
+	}
+	if action.ProjectID != "proj_nebula" {
+		t.Fatalf("expected project ID 'proj_nebula', got %q", action.ProjectID)
+	}
+	if action.ProjectName != "nebula-gateway" {
+		t.Fatalf("expected project name 'nebula-gateway', got %q", action.ProjectName)
+	}
+}
+
+func TestStreamlinedStep4PreFinishAutoAdvancesOnTicks(t *testing.T) {
+	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
+	page.ShowOnboardingPreFinish("proj_auto", "auto-project", nil)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	page.Draw(screen)
+	rendered := dumpHomeTestScreen(screen, 80, 24)
+
+	if !strings.Contains(rendered, "Standalone (No workspaces attached)") {
+		t.Fatalf("expected standalone text for nil workspaces in rendered output:\n%s", rendered)
+	}
+
+	// Tick 19 times: must not yet auto-advance
+	for i := 0; i < 19; i++ {
+		page.HandleTick()
+	}
+	if _, ok := page.PopHomeAction(); ok {
+		t.Fatal("must not auto-advance before 20 ticks")
+	}
+
+	// 20th tick: must auto-advance and emit HomeActionFinishOnboardingProject
+	page.HandleTick()
+	action, ok := page.PopHomeAction()
+	if !ok || action.Kind != HomeActionFinishOnboardingProject {
+		t.Fatalf("expected auto-advance on 20th tick, got %+v", action)
+	}
+	if action.ProjectID != "proj_auto" {
+		t.Fatalf("expected project ID 'proj_auto', got %q", action.ProjectID)
+	}
+	if action.ProjectName != "auto-project" {
+		t.Fatalf("expected project name 'auto-project', got %q", action.ProjectName)
+	}
+}

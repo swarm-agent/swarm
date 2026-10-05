@@ -25,6 +25,18 @@ func hasAgentsMD(dir string) bool {
 
 func (p *HomePage) repositoryControls() []onboardingControl {
 	s := &p.onboarding
+	if s.PreFinish {
+		projName := strings.TrimSpace(s.PreFinishProjectName)
+		if projName == "" {
+			projName = strings.TrimSpace(s.ProjectName)
+		}
+		if projName == "" {
+			projName = "Project"
+		}
+		return []onboardingControl{
+			{label: fmt.Sprintf("[ Launch %s & Talk to Swarm → ]", projName), action: "finish_prefinish"},
+		}
+	}
 	if s.SetupConsent {
 		return []onboardingControl{{"Create folder + Git first commit + open workspace", "setup", ""}, {"Cancel", "cancel", ""}}
 	}
@@ -140,6 +152,24 @@ func (p *HomePage) repositoryControls() []onboardingControl {
 
 func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	s := &p.onboarding
+	if s.PreFinish {
+		switch ev.Key() {
+		case tcell.KeyEnter:
+			p.FinishOnboardingPreFinish()
+			return
+		case tcell.KeyRune:
+			if ev.Rune() == ' ' {
+				p.FinishOnboardingPreFinish()
+				return
+			}
+		case tcell.KeyEscape:
+			s.PreFinish = false
+			s.AddingWorkspaces = false
+			s.ActionIndex = 0
+			return
+		}
+		return
+	}
 	if s.NamingProject {
 		p.handleOnboardingProjectFolderKey(ev)
 		return
@@ -255,6 +285,9 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	c := controls[s.ActionIndex]
 	kind := HomeActionKind("")
 	switch c.action {
+	case "finish_prefinish":
+		p.FinishOnboardingPreFinish()
+		return
 	case "open_workspace_menu":
 		s.AddingWorkspaces = true
 		s.ChoosingRepository = true
@@ -582,15 +615,12 @@ var personalizingSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "�
 
 func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	st := &p.onboarding
+	if st.PreFinish {
+		p.drawOnboardingPreFinish(s, content)
+		return
+	}
 	if st.Personalizing {
-		frame := personalizingSpinnerFrames[(st.Tick/2)%len(personalizingSpinnerFrames)]
-		projName := strings.TrimSpace(st.ProjectName)
-		if projName == "" {
-			projName = "your project"
-		}
-		DrawText(s, content.X+1, content.Y+2, content.W-2, p.theme.Primary.Bold(true), fmt.Sprintf("%s Personalizing %s...", frame, projName))
-		DrawText(s, content.X+1, content.Y+4, content.W-2, p.theme.Text, "Analyzing workspaces and compiling project.md guidelines from AGENTS.md...")
-		DrawText(s, content.X+1, content.Y+6, content.W-2, p.theme.TextMuted, "Swarm will open your project chat as soon as personalizing finishes.")
+		p.drawOnboardingPersonalizing(s, content)
 		return
 	}
 
@@ -647,5 +677,117 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 			style = p.theme.Primary
 		}
 		DrawText(s, content.X, content.Y+3+i-start, content.W, style, clampEllipsis(prefix+controls[i].label, content.W))
+	}
+}
+
+func (p *HomePage) drawOnboardingPersonalizing(s tcell.Screen, content Rect) {
+	st := &p.onboarding
+	frame := personalizingSpinnerFrames[(st.Tick/2)%len(personalizingSpinnerFrames)]
+	projName := strings.TrimSpace(st.ProjectName)
+	if projName == "" {
+		projName = "your project"
+	}
+
+	cardH := minInt(11, maxInt(6, content.H-2))
+	cardRect := Rect{X: content.X + 1, Y: content.Y + 1, W: content.W - 2, H: cardH}
+	DrawBox(s, cardRect, p.theme.BorderActive)
+
+	title := fmt.Sprintf(" %s PERSONALIZING %s ", frame, strings.ToUpper(projName))
+	DrawText(s, cardRect.X+2, cardRect.Y, cardRect.W-4, p.theme.Primary.Bold(true), title)
+
+	pct := (st.Tick * 7) % 100
+	if pct < 20 {
+		pct = 20
+	}
+	barWidth := maxInt(10, cardRect.W-16)
+	filled := (pct * barWidth) / 100
+	bar := "[" + strings.Repeat("■", filled) + strings.Repeat("·", barWidth-filled) + "]"
+	DrawText(s, cardRect.X+3, cardRect.Y+2, cardRect.W-6, p.theme.Primary, fmt.Sprintf("%s %3d%%", bar, pct))
+
+	step1Style := p.theme.Success
+	step2Style := p.theme.Success
+	step3Style := p.theme.Primary
+	step4Style := p.theme.TextMuted
+	step3Icon := frame
+	if st.Tick > 6 {
+		step3Style = p.theme.Success
+		step3Icon = "✓"
+		step4Style = p.theme.Primary
+	}
+	if cardH >= 7 {
+		DrawText(s, cardRect.X+3, cardRect.Y+4, cardRect.W-6, step1Style, "✓ Linked workspaces indexed & mapped")
+	}
+	if cardH >= 8 {
+		DrawText(s, cardRect.X+3, cardRect.Y+5, cardRect.W-6, step2Style, "✓ AGENTS.md guidelines and rules extracted")
+	}
+	if cardH >= 9 {
+		DrawText(s, cardRect.X+3, cardRect.Y+6, cardRect.W-6, step3Style, fmt.Sprintf("%s Synthesizing PROJECT.md with AI Router", step3Icon))
+	}
+	if cardH >= 10 {
+		DrawText(s, cardRect.X+3, cardRect.Y+7, cardRect.W-6, step4Style, "· Priming autonomous agent orchestrator")
+	}
+
+	if content.H > cardH+2 {
+		DrawText(s, content.X+1, cardRect.Y+cardRect.H+1, content.W-2, p.theme.TextMuted, "Configuring project context… Preparing your launch screen.")
+	}
+}
+
+func (p *HomePage) drawOnboardingPreFinish(s tcell.Screen, content Rect) {
+	st := &p.onboarding
+	projName := strings.TrimSpace(st.PreFinishProjectName)
+	if projName == "" {
+		projName = strings.TrimSpace(st.ProjectName)
+	}
+	if projName == "" {
+		projName = "Project"
+	}
+
+	cardH := minInt(11, maxInt(6, content.H-2))
+	cardRect := Rect{X: content.X + 1, Y: content.Y + 1, W: content.W - 2, H: cardH}
+	DrawBox(s, cardRect, p.theme.BorderActive)
+
+	banner := " ✦ ALL SYSTEMS ONLINE · PROJECT READY ✦ "
+	if cardRect.W < 46 {
+		banner = " ✦ PROJECT READY ✦ "
+	}
+	DrawText(s, cardRect.X+2, cardRect.Y, cardRect.W-4, p.theme.Success.Bold(true), banner)
+
+	DrawText(s, cardRect.X+3, cardRect.Y+2, 14, p.theme.TextMuted, "⚡ Project    :")
+	DrawText(s, cardRect.X+18, cardRect.Y+2, cardRect.W-20, p.theme.Primary.Bold(true), projName)
+
+	wsSummary := "Standalone (No workspaces attached)"
+	if len(st.PreFinishWorkspaces) == 1 {
+		wsSummary = "1 workspace linked (" + filepath.Base(st.PreFinishWorkspaces[0]) + ")"
+	} else if len(st.PreFinishWorkspaces) > 1 {
+		wsSummary = fmt.Sprintf("%d workspaces linked and active", len(st.PreFinishWorkspaces))
+	}
+	if cardH >= 7 {
+		DrawText(s, cardRect.X+3, cardRect.Y+3, 14, p.theme.TextMuted, "📁 Workspaces :")
+		DrawText(s, cardRect.X+18, cardRect.Y+3, cardRect.W-20, p.theme.Text, clampTail(wsSummary, cardRect.W-20))
+	}
+	if cardH >= 8 {
+		DrawText(s, cardRect.X+3, cardRect.Y+4, 14, p.theme.TextMuted, "✓ Guidelines :")
+		DrawText(s, cardRect.X+18, cardRect.Y+4, cardRect.W-20, p.theme.Success, "PROJECT.md configured & rules primed")
+	}
+	if cardH >= 9 {
+		DrawText(s, cardRect.X+3, cardRect.Y+5, 14, p.theme.TextMuted, "🤖 Agent      :")
+		DrawText(s, cardRect.X+18, cardRect.Y+5, cardRect.W-20, p.theme.Secondary, "Swarm orchestrator ready for commands")
+	}
+
+	if cardH >= 10 {
+		DrawHLine(s, cardRect.X+1, cardRect.Y+cardH-3, cardRect.W-2, p.theme.Border)
+	}
+
+	btnY := cardRect.Y + cardH - 2
+	if btnY <= cardRect.Y+5 && cardH < 8 {
+		btnY = cardRect.Y + cardH - 1
+	}
+	launchBtn := fmt.Sprintf("›› [ Launch %s & Talk to Swarm → ] ‹‹", projName)
+	DrawText(s, cardRect.X+3, btnY, cardRect.W-6, p.theme.Primary.Bold(true), clampEllipsis(launchBtn, cardRect.W-6))
+
+	if content.H > cardH+2 {
+		secsLeft := maxInt(1, (20-st.PreFinishTicks+3)/4)
+		hint := fmt.Sprintf("Press Enter or Space to launch · Auto-launching in %ds", secsLeft)
+		DrawText(s, content.X+1, cardRect.Y+cardRect.H+1, content.W-2, p.theme.TextMuted, hint)
 	}
 }

@@ -39,6 +39,11 @@ type onboardingState struct {
 	Error              string
 	Pending            bool
 	Personalizing      bool
+	PreFinish          bool
+	PreFinishTicks     int
+	PreFinishProjectID string
+	PreFinishProjectName string
+	PreFinishWorkspaces []string
 	Tick               int
 	AddingWorkspaces   bool
 	CreatingFolder     bool
@@ -208,11 +213,55 @@ func (p *HomePage) ShowOnboardingWorkspace(status string) {
 	p.onboarding.ActionIndex = 0
 	p.onboarding.Pending = false
 	p.onboarding.Personalizing = false
+	p.onboarding.PreFinish = false
 	p.onboarding.AddingWorkspaces = false
 	p.onboarding.CreatingFolder = false
 	p.onboarding.Error = ""
 	if strings.TrimSpace(status) != "" {
 		p.onboarding.Status = strings.TrimSpace(status)
+	}
+}
+
+func (p *HomePage) ShowOnboardingPreFinish(projectID, projectName string, workspaces []string) {
+	if p == nil {
+		return
+	}
+	s := &p.onboarding
+	s.Visible = true
+	s.Phase = onboardingPhaseWorkspace
+	s.Personalizing = false
+	s.PreFinish = true
+	s.PreFinishProjectID = strings.TrimSpace(projectID)
+	s.PreFinishProjectName = strings.TrimSpace(projectName)
+	if s.PreFinishProjectName == "" {
+		s.PreFinishProjectName = strings.TrimSpace(s.ProjectName)
+	}
+	s.PreFinishWorkspaces = workspaces
+	s.PreFinishTicks = 0
+	s.Pending = false
+	s.Error = ""
+	s.Status = ""
+	s.ActionIndex = 0
+}
+
+func (p *HomePage) OnboardingPreFinishActive() bool {
+	return p != nil && p.onboarding.Visible && p.onboarding.PreFinish
+}
+
+func (p *HomePage) FinishOnboardingPreFinish() {
+	if p == nil {
+		return
+	}
+	s := &p.onboarding
+	projID := strings.TrimSpace(s.PreFinishProjectID)
+	projName := strings.TrimSpace(s.PreFinishProjectName)
+	if projName == "" {
+		projName = strings.TrimSpace(s.ProjectName)
+	}
+	p.pendingHomeAction = &HomeAction{
+		Kind:        HomeActionFinishOnboardingProject,
+		ProjectID:   projID,
+		ProjectName: projName,
 	}
 }
 
@@ -585,7 +634,9 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 	} else if p.onboarding.Phase == onboardingPhaseProject {
 		help = "Enter continue to workspaces · Esc back to provider"
 	} else if p.onboarding.Phase == onboardingPhaseWorkspace {
-		if p.onboarding.Personalizing {
+		if p.onboarding.PreFinish {
+			help = "Enter launch project · Space launch · Esc back"
+		} else if p.onboarding.Personalizing {
 			help = "Personalizing project with AI Router… Please wait"
 		} else if p.onboarding.CreatingFolder {
 			help = "Type folder path · Enter create · Esc cancel"
@@ -609,13 +660,16 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 		step = 4
 	}
 	labels := []string{"Identity", "Provider", "Project", "Workspace (optional)"}
+	if p.onboarding.PreFinish {
+		labels[3] = "Ready"
+	}
 	DrawText(s, rect.X+3, rect.Y+1, rect.W-6, p.theme.Text, "SWARM  ·  FIRST LAUNCH")
 	DrawText(s, rect.X+3, rect.Y+2, rect.W-6, p.theme.TextMuted, fmt.Sprintf("STEP %d OF 4  ·  %s", step, labels[step-1]))
 	barW := maxInt(3, (rect.W-12)/4)
 	for i := 0; i < 4; i++ {
 		style := p.theme.Border
 		marker := strings.Repeat("─", barW)
-		if i == step-1 {
+		if i == step-1 || (p.onboarding.PreFinish && i <= 3) {
 			style = p.theme.Primary
 			marker = strings.Repeat("━", barW)
 		}
@@ -623,7 +677,10 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 	}
 	step4Title := "Attach a workspace folder."
 	step4Subtitle := "Optional: attach a folder now, or let Swarm Orchestrator manage workspaces."
-	if strings.TrimSpace(p.onboarding.ProjectName) != "" {
+	if p.onboarding.PreFinish {
+		step4Title = "All systems online. Project ready to launch!"
+		step4Subtitle = "Swarm is primed with your project context and ready for instructions."
+	} else if strings.TrimSpace(p.onboarding.ProjectName) != "" {
 		step4Title = fmt.Sprintf("Add workspaces into %s?", strings.TrimSpace(p.onboarding.ProjectName))
 		step4Subtitle = "Add workspaces to your project or skip straight to Swarm."
 	}
