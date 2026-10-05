@@ -267,7 +267,28 @@ func (s *SessionStore) BackfillProjectTaskSummaries(account, project string) (Pr
 		return stats, err
 	}
 	if found && state.Version != taskSummaryVersion {
-		return stats, ErrProjectTaskSummaryCorrupt
+		// Version 3 used this namespace before environment attachments were
+		// added to cards. Rebuild only the derived index, retaining all tasks.
+		if state.Version != 3 {
+			return stats, fmt.Errorf("%w: unsupported summary version %d (expected %d)", ErrProjectTaskSummaryCorrupt, state.Version, taskSummaryVersion)
+		}
+		reset := s.store.db.NewBatch()
+		defer reset.Close()
+		if err := reset.DeleteRange([]byte(prefix), []byte(prefix+"\xff"), nil); err != nil {
+			return stats, err
+		}
+		state = taskSummaryState{Version: taskSummaryVersion}
+		raw, err := json.Marshal(state)
+		if err != nil {
+			return stats, err
+		}
+		if err := reset.Set([]byte(prefix+"state"), raw, nil); err != nil {
+			return stats, err
+		}
+		// Atomic invalidation makes an interrupted rebuild resume as not ready.
+		if err := reset.Commit(pebble.Sync); err != nil {
+			return stats, err
+		}
 	}
 	if state.Ready {
 		return stats, nil

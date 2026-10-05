@@ -1,6 +1,7 @@
 package pebblestore
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -152,6 +153,122 @@ func TestProjectTaskPreparationConcurrentMutation(t *testing.T) {
 			canonical, found, err := s.GetProjectTask("owner", "project", row.ID)
 			if err != nil || !found || canonical.Archived != row.Archived || canonical.Title != row.Title {
 				t.Fatal("mutation lost or stale summary")
+			}
+		}
+	}
+}
+
+// Purpose: Open must upgrade the version-3 card index in place without changing
+// canonical tasks. A multi-batch rebuild and second reopen prove startup recovery,
+// archive counts and account isolation at the narrowest durable store boundary.
+func TestProjectTaskPreparationVersionUpgrade(t *testing.T) {
+	path := t.TempDir()
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originals := map[string][]byte{}
+	for _, account := range []string{"owner", "foreign"} {
+		for i := 0; i < 35; i++ {
+			task := ProjectTaskRecord{ID: fmt.Sprintf("task-%02d", i), AccountID: account, ProjectID: "project", Title: "Retained", Archived: i >= 30, CreatedAt: int64(i)}
+			if err := NewSessionStore(db).PutProjectTask(account, &task); err != nil {
+				t.Fatal(err)
+			}
+			key := KeyProjectTask(account, "project", task.ID)
+			raw, ok, err := db.GetBytes(key)
+			if err != nil || !ok {
+				t.Fatalf("canonical read: %v", err)
+			}
+			originals[key] = append([]byte(nil), raw...)
+		}
+	}
+	// Old ready state and stale locators/counts must all be replaced, not reused.
+	prefix := taskSummaryPrefix("owner", "project")
+	if err := db.PutJSON(prefix+"state", taskSummaryState{Version: 3, Ready: true, Counts: [2]int{99, 99}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(prefix+"rows/0/stale", taskSummaryRow{Version: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(prefix+"ids/stale", prefix+"rows/0/stale"); err != nil {
+		t.Fatal(err)
+	}
+	for pass := 0; pass < 2; pass++ {
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		db, err = Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for key, want := range originals {
+			got, ok, err := db.GetBytes(key)
+			if err != nil || !ok || !bytes.Equal(got, want) {
+				t.Fatal("migration changed canonical task")
+			}
+		}
+		for _, account := range []string{"owner", "foreign"} {
+			for _, archived := range []bool{false, true} {
+				want := 30
+				if archived {
+					want = 5
+				}
+				rows, _, err := NewSessionStore(db).ListProjectTaskSummaries(account, "project", archived)
+				if err != nil || len(rows) != want {
+					t.Fatalf("cards: %d want %d: %v", len(rows), want, err)
+				}
+				for _, row := range rows {
+					if row.AccountID != account {
+						t.Fatal("foreign task exposed")
+					}
+				}
+			}
+		}
+		for _, key := range []string{prefix + "rows/0/stale", prefix + "ids/stale"} {
+			if _, ok, err := db.GetBytes(key); err != nil || ok {
+				t.Fatal("stale derived entry retained")
+			}
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Purpose: BackfillProjectTaskSummaries must reject unknown schemas without
+// deleting derived or canonical bytes. Direct store calls isolate the migration
+// rejection boundary and verify its no-mutation postcondition.
+func TestProjectTaskPreparationUnknownVersion(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	task := ProjectTaskRecord{ID: "task", AccountID: "owner", ProjectID: "project"}
+	key := KeyProjectTask("owner", "project", "task")
+	if err := db.PutJSON(key, task); err != nil {
+		t.Fatal(err)
+	}
+	stateKey := taskSummaryPrefix("owner", "project") + "state"
+	for _, version := range []int{0, 2, taskSummaryVersion + 1} {
+		if err := db.PutJSON(stateKey, taskSummaryState{Version: version, Ready: true}); err != nil {
+			t.Fatal(err)
+		}
+		before := map[string][]byte{}
+		for _, k := range []string{key, stateKey} {
+			raw, ok, err := db.GetBytes(k)
+			if err != nil || !ok {
+				t.Fatal(err)
+			}
+			before[k] = append([]byte(nil), raw...)
+		}
+		if _, err := NewSessionStore(db).BackfillProjectTaskSummaries("owner", "project"); !errors.Is(err, ErrProjectTaskSummaryCorrupt) {
+			t.Fatalf("unknown version accepted: %v", err)
+		}
+		for k, want := range before {
+			got, ok, err := db.GetBytes(k)
+			if err != nil || !ok || !bytes.Equal(got, want) {
+				t.Fatal("rejection changed stored bytes")
 			}
 		}
 	}
