@@ -36,10 +36,21 @@ func (e *sessionV3Executor) compileSessionV3MediaContract(principal identity.Pri
 	if record, ok := resolved.ModelCatalog.(pebblestore.ModelCatalogRecord); ok {
 		catalog = &record
 	}
+	projectScope := pebblestore.ProjectConversationID(resolved.Session)
+	if projectScope != "" {
+		// Project conversations intentionally have no ambient checkout. Validate
+		// their durable owner instead of inventing a workspace for media access.
+		if e.server.sessions == nil || e.server.sessions.Store() == nil {
+			return provideriface.SessionMediaContract{}, errors.New("project conversation authority unavailable")
+		}
+		if err := e.server.sessions.Store().ValidateProjectConversation(resolved.Session, principal.AccountScopeID, principal.UserID); err != nil {
+			return provideriface.SessionMediaContract{}, err
+		}
+	}
 	return runruntime.CompileSessionMediaContract(runruntime.SessionMediaContractInput{
 		ProviderID: providerID, Model: resolved.Preference.Model, Catalog: catalog, CatalogMeta: resolved.CatalogMeta,
 		Adapter:         runruntime.ResolveMediaAdapterDeclaration(identity.ContextWithPrincipal(context.Background(), principal), providerID, providerRunner),
 		AgentAuthorized: runruntime.AgentProfileAuthorizesMedia(resolved.AgentProfile), ExecutionMode: resolved.Session.Mode,
-		WorkspaceScope: resolved.Scope.PrimaryPath, SessionScope: resolved.Session.ID,
+		WorkspaceScope: resolved.Scope.PrimaryPath, SessionScope: resolved.Session.ID, ProjectScope: projectScope,
 	}), nil
 }
