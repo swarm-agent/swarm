@@ -25,11 +25,8 @@ func (s *Server) ResolveProjectInspection(ctx context.Context, p identity.Princi
 	if err != nil || !found {
 		return result, errors.New("project inspection parent unavailable")
 	}
-	if err := s.sessions.Store().ValidateProjectConversation(parent, p.AccountScopeID, p.UserID); err != nil {
+	if err := s.validateProjectInspectionCaller(p, parent, req.ProjectID); err != nil {
 		return result, err
-	}
-	if req.ProjectID == "" || pebblestore.ProjectConversationID(parent) != req.ProjectID {
-		return result, errors.New("inspection project does not match the current conversation")
 	}
 	proj, found, err := s.sessions.Store().GetProject(p.AccountScopeID, req.ProjectID)
 	if err != nil || !found {
@@ -117,4 +114,39 @@ func (s *Server) ResolveProjectInspection(ctx context.Context, p identity.Princi
 	req.WorkspacePath, req.WorkspaceID, req.WorkspaceGeneration = source.Path, source.WorkspaceID, source.WorkspaceGeneration
 	req.HeadCommit = state.HeadCommit
 	return tool.ProjectInspectionTarget{Reference: req, Root: child.WorktreeRootPath, Base: base, Branch: state.BranchName}, nil
+}
+
+// validateProjectInspectionCaller grants only source inspection admission, not
+// project mutation authority. Task conversations prove their own durable current
+// attempt; they need not be the conversation that produced the selected result.
+func (s *Server) validateProjectInspectionCaller(p identity.Principal, caller pebblestore.SessionSnapshot, projectID string) error {
+	if projectID == "" || caller.AccountScopeID != p.AccountScopeID || caller.UserID != p.UserID {
+		return errors.New("project inspection caller ownership mismatch")
+	}
+	if pebblestore.ProjectConversationID(caller) != "" {
+		if err := s.sessions.Store().ValidateProjectConversation(caller, p.AccountScopeID, p.UserID); err != nil {
+			return err
+		}
+		if pebblestore.ProjectConversationID(caller) != projectID {
+			return errors.New("inspection project does not match the current conversation")
+		}
+		return nil
+	}
+	taskID, _ := caller.Metadata["task_id"].(string)
+	if taskID == "" || caller.Metadata["project_id"] != projectID {
+		return errors.New("project inspection requires a bound project task conversation")
+	}
+	task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, projectID, taskID)
+	if err != nil || !found || task.Archived {
+		return errors.New("project inspection caller task unavailable or archived")
+	}
+	task.EnsureTaskAttempts()
+	attempt := task.ActiveAttempt()
+	if attempt == nil || attempt.SessionID != caller.ID || task.SessionID != caller.ID {
+		return errors.New("project inspection caller attempt is stale or mismatched")
+	}
+	if attemptID, _ := caller.Metadata["task_attempt_id"].(string); attemptID != "" && attemptID != attempt.ID {
+		return errors.New("project inspection caller attempt is stale or mismatched")
+	}
+	return verifyProjectTaskSession(task, caller, p.AccountScopeID)
 }

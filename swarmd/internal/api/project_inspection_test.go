@@ -23,6 +23,8 @@ import (
 // task attempt, never current dev, arbitrary siblings or stale identities.
 // ResolveProjectInspection plus real Git/store ownership and the exposed tool
 // dispatch is the narrowest boundary proving reads and rejection postconditions.
+// Cross-task callers must prove durable ownership without becoming project
+// mutation owners; real environment tool dispatch exercises that admission.
 // This is a hermetic contract test, not provider or live-environment evidence.
 func TestProjectInspectionExactResult(t *testing.T) {
 	f := setupMatrixTestFixture(t)
@@ -103,10 +105,53 @@ func TestProjectInspectionExactResult(t *testing.T) {
 	if err != nil || target.Root != alloc.WorkspacePath || target.Reference.HeadCommit != head {
 		t.Fatalf("exact tree: %+v %v", target, err)
 	}
+	// A different durable task conversation may consume this exact candidate;
+	// it must not acquire Orchestrator mutation ownership in the process.
+	consumer := &pebblestore.ProjectTaskRecord{ID: "consumer-task", ProjectID: proj.ID, AccountID: p.AccountScopeID, Title: "Validate candidate", Status: "in_progress", SessionID: "consumer-session", Agent: "swarm", SourceWorkspace: binding}
+	if err := db.PutProjectTask(p.AccountScopeID, consumer); err != nil {
+		t.Fatal(err)
+	}
+	caller := pebblestore.SessionSnapshot{ID: consumer.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Mode: "auto", Metadata: map[string]any{"project_id": proj.ID, "task_id": consumer.ID, "swarm_v3_source_workspace_path": repo, "swarm_v3_source_workspace_id": binding.WorkspaceID, "swarm_v3_source_workspace_generation": binding.WorkspaceGeneration}}
+	if _, err := applyProjectLifecycleFixture(f.server, sessionruntime.SessionMutationInput{SessionID: caller.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: caller.ID, IdempotencyKey: caller.ID, PayloadHash: caller.ID, RequestHash: caller.ID, Kind: sessionruntime.SessionMutationCreateSession, Session: &caller}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ValidateProjectConversation(caller, p.AccountScopeID, p.UserID); err == nil {
+		t.Fatal("task caller acquired project mutation authority")
+	}
+	if selected, err := f.server.ResolveProjectInspection(ctx, p, caller.ID, ref); err != nil || selected.Root != target.Root || selected.Reference != target.Reference {
+		t.Fatalf("cross-conversation candidate: %+v %v", selected, err)
+	}
 	runtime := tool.NewRuntime(1)
 	runtime.SetManageProjectStore(db)
 	runtime.SetManageSessionService(f.server.sessions)
 	runtime.SetProjectTaskLifecycleService(f.server)
+	runtime.SetEnvironmentServices(nil, pebblestore.NewEnvironmentStore(f.db), nil, nil, nil)
+	envArgs, err := json.Marshal(map[string]any{"action": "list", "project_result": target.Reference})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: caller.ID, Principal: p}, tool.Call{Name: "manage_environments", Arguments: string(envArgs)}); err != nil || !strings.Contains(out, binding.WorkspaceID) {
+		t.Fatalf("cross-task environment resolution: %s %v", out, err)
+	}
+	for _, change := range []func(*pebblestore.SessionSnapshot){
+		func(s *pebblestore.SessionSnapshot) { s.ID = "forged-session" },
+		func(s *pebblestore.SessionSnapshot) { s.Metadata["task_attempt_id"] = "superseded" },
+		func(s *pebblestore.SessionSnapshot) { s.AccountScopeID = "foreign" },
+		func(s *pebblestore.SessionSnapshot) { s.UserID = "foreign" },
+		func(s *pebblestore.SessionSnapshot) { s.Metadata["task_id"] = task.ID },
+		func(s *pebblestore.SessionSnapshot) { s.Metadata["project_id"] = "foreign" },
+		func(s *pebblestore.SessionSnapshot) { s.Metadata["swarm_v3_source_workspace_id"] = "foreign" },
+	} {
+		bad := caller
+		bad.Metadata = make(map[string]any)
+		for key, value := range caller.Metadata {
+			bad.Metadata[key] = value
+		}
+		change(&bad)
+		if err := f.server.validateProjectInspectionCaller(p, bad, proj.ID); err == nil {
+			t.Fatalf("forged caller accepted: %+v", bad)
+		}
+	}
 	scope := tool.WorkspaceScope{SessionID: parent.ID, Principal: p, RejectScopeExpansion: true}
 	for _, taskResult := range []bool{false, true} {
 		args := map[string]any{"action": "inspect_files", "project_id": proj.ID, "workspace_id": binding.WorkspaceID, "inspection": map[string]any{"tool": "read", "arguments": map[string]any{"path": "feature"}}}
@@ -131,14 +176,30 @@ func TestProjectInspectionExactResult(t *testing.T) {
 	} {
 		bad := ref
 		change(&bad)
-		if _, err := f.server.ResolveProjectInspection(ctx, p, parent.ID, bad); err == nil {
-			t.Fatalf("accepted invalid identity %+v", bad)
+		for _, callerID := range []string{parent.ID, caller.ID} {
+			if selected, err := f.server.ResolveProjectInspection(ctx, p, callerID, bad); err == nil || selected.Root != "" {
+				t.Fatalf("accepted invalid identity %+v from %s", bad, callerID)
+			}
 		}
 	}
 	foreign := p
 	foreign.AccountScopeID = "foreign"
-	if _, err := f.server.ResolveProjectInspection(ctx, foreign, parent.ID, ref); err == nil {
-		t.Fatal("cross-account inspection accepted")
+	for _, callerID := range []string{parent.ID, caller.ID} {
+		if _, err := f.server.ResolveProjectInspection(ctx, foreign, callerID, ref); err == nil {
+			t.Fatal("cross-account inspection accepted")
+		}
+	}
+	// Project association is necessary in addition to account catalog access.
+	proj.Workspaces = nil
+	if err := db.PutProject(p.AccountScopeID, proj); err != nil {
+		t.Fatal(err)
+	}
+	if selected, err := f.server.ResolveProjectInspection(ctx, p, caller.ID, ref); err == nil || selected.Root != "" {
+		t.Fatal("unassociated repository accepted")
+	}
+	proj.Workspaces = []pebblestore.ProjectWorkspaceRef{{WorkspaceID: entry.WorkspaceID, Path: repo}}
+	if err := db.PutProject(p.AccountScopeID, proj); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := f.server.ResolveProjectInspection(ctx, p, parent.ID, tool.ProjectInspectionRequest{ProjectID: proj.ID}); err == nil {
 		t.Fatal("implicit source selected")
@@ -154,6 +215,15 @@ func TestProjectInspectionExactResult(t *testing.T) {
 	}
 	if git(repo, "rev-parse", "HEAD") != base || git(alloc.WorkspacePath, "rev-parse", "HEAD") != head {
 		t.Fatal("inspection mutated Git")
+	}
+	git(alloc.WorkspacePath, "add", "untracked")
+	git(alloc.WorkspacePath, "commit", "-m", "advance candidate")
+	advanced := git(alloc.WorkspacePath, "rev-parse", "HEAD")
+	if selected, err := f.server.ResolveProjectInspection(ctx, p, caller.ID, ref); err == nil || selected.Root != "" {
+		t.Fatal("changed HEAD accepted through task conversation")
+	}
+	if git(alloc.WorkspacePath, "rev-parse", "HEAD") != advanced || git(repo, "rev-parse", "HEAD") != base {
+		t.Fatal("stale reference rejection changed Git")
 	}
 	stored, _, _ := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
 	if stored.Status != "needs_review" || stored.Integration != nil {
