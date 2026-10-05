@@ -110,6 +110,7 @@ type DeploymentPolicy struct {
 // Invariant: strictly contains NO ephemeral runtime state (container IDs, runtime IPs,
 // provider resource IDs, assigned ports, live status). Runtime instance state belongs in Deployment.
 type Environment struct {
+	FrontendEndpoints     []FrontendEndpoint    `json:"frontend_endpoints,omitempty"`
 	Build                 *ImageBuildDefinition `json:"build,omitempty"`
 	ID                    string                `json:"id"`
 	AccountScopeID        string                `json:"account_scope_id"`
@@ -229,6 +230,10 @@ func (e *Environment) Validate() error {
 		}
 	}
 
+	if err := ValidateFrontendEndpoints(e.FrontendEndpoints, e.Container.ExposedPorts); err != nil {
+		return err
+	}
+
 	if err := e.Provisioning.Validate(); err != nil {
 		return fmt.Errorf("invalid environment provisioning: %w", err)
 	}
@@ -261,6 +266,7 @@ func (e *Environment) Clone() *Environment {
 		return nil
 	}
 	cp := *e
+	cp.FrontendEndpoints = append([]FrontendEndpoint(nil), e.FrontendEndpoints...)
 	if e.Build != nil {
 		b := *e.Build
 		cp.Build = &b

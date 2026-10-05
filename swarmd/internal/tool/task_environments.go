@@ -38,13 +38,24 @@ type TaskEnvironmentRequest struct {
 	IdempotencyKey             string            `json:"idempotency_key,omitempty"`
 }
 
+type TaskBrowserEndpoint struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	URL           string `json:"url,omitempty"`
+	ContainerPort int    `json:"container_port"`
+	HostPort      int    `json:"host_port,omitempty"`
+	Ready         bool   `json:"ready"`
+	Error         string `json:"error,omitempty"`
+}
+
 type TaskEnvironmentResult struct {
-	TaskRevision   int                                      `json:"task_revision"`
-	Attachments    []environments.TaskEnvironmentAttachment `json:"attachments"`
-	Lease          *environments.DeploymentLease            `json:"lease,omitempty"`
-	Operation      *environments.EnvironmentOperation       `json:"operation,omitempty"`
-	Deployment     *TaskDeploymentView                      `json:"deployment,omitempty"`
-	FailureReasons map[string]string                        `json:"failure_reasons,omitempty"`
+	BrowserEndpoints []TaskBrowserEndpoint                    `json:"browser_endpoints"`
+	TaskRevision     int                                      `json:"task_revision"`
+	Attachments      []environments.TaskEnvironmentAttachment `json:"attachments"`
+	Lease            *environments.DeploymentLease            `json:"lease,omitempty"`
+	Operation        *environments.EnvironmentOperation       `json:"operation,omitempty"`
+	Deployment       *TaskDeploymentView                      `json:"deployment,omitempty"`
+	FailureReasons   map[string]string                        `json:"failure_reasons,omitempty"`
 }
 
 // TaskDeploymentView intentionally excludes runtime metadata, credentials and leases.

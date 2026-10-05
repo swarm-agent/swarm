@@ -22,6 +22,7 @@ type TaskEnvironmentAttachment struct {
 	EnvironmentID   string                   `json:"environment_id"`
 	EnvironmentName string                   `json:"environment_name"`
 	State           string                   `json:"state"`
+	ErrorMessage    string                   `json:"error_message,omitempty"` // sanitized projection only
 	OperationID     string                   `json:"operation_id,omitempty"`
 	Source          PreparedDeploymentSource `json:"source"`
 	ExpiresAt       int64                    `json:"expires_at"`

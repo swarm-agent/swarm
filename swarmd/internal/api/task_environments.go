@@ -189,6 +189,13 @@ func (s *Server) taskEnvironmentProjection(ctx context.Context, p identity.Princ
 			}
 		}
 	}
+	for i := range out {
+		out[i].ErrorMessage = ""
+		switch out[i].State {
+		case "failed", "stopped", "stale":
+			out[i].ErrorMessage = "Environment unavailable; inspect preparation, rebuild if source changed, and explicitly reattach."
+		}
+	}
 	return out
 }
 
@@ -238,6 +245,8 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 	switch req.Action {
 	case "build", "ensure", "deploy":
 		return s.prepareTaskEnvironment(ctx, p, sessionID, task, req)
+	case "browser_endpoints":
+		return s.taskBrowserEndpoints(ctx, p, sessionID, req)
 	case "list_attachments":
 	case "detach_task":
 		task, err = s.sessions.Store().MutateProjectTaskEnvironment(p.AccountScopeID, req.ProjectID, req.TaskID, pebblestore.TaskEnvironmentMutation{ExpectedTaskRevision: req.ExpectedTaskRevision, ExpectedAttachmentRevision: req.ExpectedAttachmentRevision, AttachmentID: req.AttachmentID})
