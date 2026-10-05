@@ -49,9 +49,20 @@ func ExportCommittedBuild(ctx context.Context, runner CommandRunner, productRoot
 			done <- err
 		}()
 		err = extractBuildArchive(ctx, reader, destination, source.prefix, hash, &total, &count)
+		if err == nil {
+			// tar EOF precedes archive padding and process exit. Drain bounded
+			// trailing bytes before waiting, rather than cancelling a good export.
+			n, drainErr := io.Copy(io.Discard, io.LimitReader(reader, 1<<20))
+			if drainErr != nil || n == 1<<20 {
+				err = errors.New("committed archive has invalid trailing data")
+			}
+		}
 		_ = reader.Close()
-		cancel()
+		if err != nil {
+			cancel()
+		}
 		runErr := <-done
+		cancel()
 		if err != nil {
 			return "", err
 		}
