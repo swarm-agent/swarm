@@ -15,7 +15,7 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-const taskSummaryVersion = 3
+const taskSummaryVersion = 4
 const taskSummaryMaxBytes = 256 << 10
 const taskSummaryBackfillRows = 32
 const taskSummaryBackfillBytes = 16 << 20
@@ -90,6 +90,7 @@ func compactProjectTask(task ProjectTaskRecord) ProjectTaskRecord {
 	// Explicit card allowlist: new detail fields must not silently enter the index.
 	task = ProjectTaskRecord{
 		ID: task.ID, ProjectID: task.ProjectID, AccountID: task.AccountID,
+		EnvironmentAttachments: taskEnvironmentProjection(task),
 		Title: task.Title, Description: task.Description, Status: task.Status,
 		SessionID: task.SessionID, OriginSessionID: task.OriginSessionID, ActiveAttemptID: task.ActiveAttemptID, Attempts: active,
 		Agent: task.Agent, WorkerID: task.WorkerID, WorkerName: task.WorkerName, WorkerRunID: task.WorkerRunID, AutomationID: task.AutomationID,

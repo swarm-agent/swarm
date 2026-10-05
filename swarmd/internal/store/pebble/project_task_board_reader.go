@@ -31,7 +31,12 @@ func (s *SessionStore) ReadProjectTaskBoard(account, project string, archived bo
 	return rows, stats, err
 }
 
-func (r *ProjectTaskBoardReader) BindTask(task *ProjectTaskRecord) { r.task = task }
+func (r *ProjectTaskBoardReader) BindTask(task *ProjectTaskRecord) {
+	if task != nil {
+		task.EnvironmentAttachments = taskEnvironmentProjection(*task)
+	}
+	r.task = task
+}
 
 func boardRead[T any](r *ProjectTaskBoardReader, key string) (T, bool, error) {
 	var zero T

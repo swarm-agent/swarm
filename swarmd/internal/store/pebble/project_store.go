@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"swarm-refactor/swarmtui/pkg/environments"
 )
 
 // ProjectWorkspaceRef represents a workspace bound to a project.
@@ -402,6 +403,7 @@ type TaskDeliveryAssessment struct {
 
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
+	EnvironmentAttachments []environments.TaskEnvironmentAttachment `json:"environment_attachments,omitempty"`
 	OriginSessionID     string                       `json:"origin_session_id,omitempty"` // authenticated conversation; never the project primary pointer
 	DeliveryAssessment  *TaskDeliveryAssessment      `json:"delivery_assessment,omitempty"`
 	ID                  string                       `json:"id"`
@@ -487,6 +489,9 @@ type ProjectTaskRecord struct {
 }
 
 func (t *ProjectTaskRecord) Validate() error {
+	if err := t.validateEnvironmentAttachments(); err != nil {
+		return err
+	}
 	t.ProjectID = strings.TrimSpace(t.ProjectID)
 	if t.ProjectID == "" {
 		return errors.New("project id is required")
@@ -806,6 +811,11 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 		prior, found, err := s.GetProjectTask(accountScopeID, task.ProjectID, task.ID)
 		if err != nil {
 			return nil, err
+		}
+		if found {
+			if err := validateTaskEnvironmentWrite(prior, task); err != nil {
+				return nil, err
+			}
 		}
 		if found && prior.ActiveAttemptID != "" && prior.ActiveAttemptID != "initial" && prior.SessionID != task.SessionID && task.Revision <= prior.Revision {
 			return nil, errors.New("stale task session cannot replace active attempt")
