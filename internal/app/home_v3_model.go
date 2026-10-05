@@ -38,8 +38,12 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 				status, statusErr := a.api.GetOnboardingStatus(ctx)
 				if statusErr == nil {
 					next.OnboardingRequired = status.NeedsOnboarding
+					next.OnboardingIdentityBootstrapped = status.Identity.Bootstrapped
 					next.OnboardingUsername = strings.TrimSpace(status.Identity.Username)
 					next.OnboardingSwarmName = strings.TrimSpace(status.Config.SwarmName)
+				} else {
+					next.OnboardingRequired = true
+					next.OnboardingIdentityBootstrapped = false
 				}
 				next.OnboardingRequired = true
 				next.HintLine = "Required onboarding: create username + swarm name before using Swarm."
@@ -54,8 +58,13 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		return next, fmt.Errorf("onboarding status: %w", err)
 	}
 	next.OnboardingRequired = status.NeedsOnboarding
+	next.OnboardingIdentityBootstrapped = status.Identity.Bootstrapped
 	next.OnboardingUsername = strings.TrimSpace(status.Identity.Username)
 	next.OnboardingSwarmName = strings.TrimSpace(status.Config.SwarmName)
+	if next.OnboardingRequired && !next.OnboardingIdentityBootstrapped {
+		next.HintLine = "Required onboarding: create username + swarm name before using Swarm."
+		return next, nil
+	}
 	if vault, err := a.api.GetVaultStatus(ctx); err == nil {
 		a.vault = vault
 		if vault.Enabled && !vault.Unlocked {

@@ -82,7 +82,7 @@ func (p *HomePage) ShowOnboardingLocked(status string) {
 	p.onboarding.Locked = true
 	if !wasVisible {
 		p.onboarding.Phase = onboardingPhaseIdentity
-		if p.model.OnboardingUsername != "" && p.model.OnboardingSwarmName != "" {
+		if p.model.OnboardingIdentityBootstrapped && p.model.OnboardingUsername != "" {
 			p.onboarding.Phase = onboardingPhaseProvider
 		}
 		p.onboarding.Focus = onboardingFocusUsername
@@ -271,6 +271,10 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 		p.clearOnboardingField()
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		if p.onboarding.Focus == onboardingFocusCancel {
+			p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
+			return
+		}
 		if p.onboarding.Focus == onboardingFocusUsername && strings.TrimSpace(p.model.OnboardingUsername) != "" {
 			p.onboarding.Focus = onboardingFocusSwarmName
 			p.onboarding.Error = ""
@@ -282,10 +286,14 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 		p.onboarding.Error = "Enter your username to continue."
 		return
 	}
-	if p.onboarding.Focus != onboardingFocusUsername || ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
+	if p.onboarding.Focus > onboardingFocusSwarmName || ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
 		return
 	}
-	p.model.OnboardingUsername += string(ev.Rune())
+	if p.onboarding.Focus == onboardingFocusUsername {
+		p.model.OnboardingUsername += string(ev.Rune())
+	} else {
+		p.model.OnboardingSwarmName += string(ev.Rune())
+	}
 	p.onboarding.Error = ""
 }
 
@@ -488,9 +496,7 @@ func (p *HomePage) submitOnboardingIdentity() {
 	}
 	swarm := strings.TrimSpace(p.model.OnboardingSwarmName)
 	if swarm == "" {
-		p.onboarding.Focus = onboardingFocusSwarmName
-		p.onboarding.Error = "Enter a name for this Swarm."
-		return
+		swarm = "default"
 	}
 	p.pendingHomeAction = &HomeAction{
 		Kind:      HomeActionSaveOnboarding,
@@ -605,7 +611,7 @@ func (p *HomePage) drawOnboardingIdentity(s tcell.Screen, content Rect) {
 		value string
 		focus onboardingFocus
 	}{
-		{label: "Your username", value: p.model.OnboardingUsername, focus: onboardingFocusUsername},
+		{label: "Your name", value: p.model.OnboardingUsername, focus: onboardingFocusUsername},
 		{label: "Swarm name (optional)", value: p.model.OnboardingSwarmName, focus: onboardingFocusSwarmName},
 	}
 	y := content.Y + 1

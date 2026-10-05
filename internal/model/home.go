@@ -197,6 +197,7 @@ type HomeModel struct {
 	HintLine                    string
 	TipLine                     string
 	OnboardingRequired          bool
+	OnboardingIdentityBootstrapped bool
 	OnboardingUsername          string
 	OnboardingSwarmName         string
 	ActiveProjectID             string

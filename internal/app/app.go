@@ -6586,6 +6586,7 @@ func (a *App) saveOnboarding(username, swarmName string) {
 		return
 	}
 	a.api.SetToken(session.Token)
+	a.homeModel.OnboardingIdentityBootstrapped = true
 	a.home.SetOnboardingRequired(status.NeedsOnboarding, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
 	a.refreshOnboardingWorkspaceGuidance()
 	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue.")
@@ -7025,6 +7026,9 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 
 func (a *App) refreshAuthModalData(statusHint string) {
 	if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
+		return
+	}
+	if strings.TrimSpace(a.api.Token()) == "" {
 		return
 	}
 	a.home.ClearAuthModalSnapshot()

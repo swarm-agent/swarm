@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime/debug"
 	"testing"
 
 	"swarm-refactor/swarmtui/internal/client"
@@ -228,5 +230,78 @@ func TestOnboardingProjectFirstFlowSkipWorkspace(t *testing.T) {
 	}
 	if !app.homeModel.FinishSetupMissingWorkspace {
 		t.Fatal("expected FinishSetupMissingWorkspace to be true")
+	}
+}
+
+func TestOnboardingFreshDaemonStartsAtStepOneWithout401(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+
+	providersCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{
+				OK:              true,
+				NeedsOnboarding: true,
+				Identity: client.OnboardingIdentity{
+					Bootstrapped: false,
+					Username:     "testbench",
+				},
+				Config: client.OnboardingConfig{
+					SwarmName: "testbench",
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
+			providersCalled = true
+			t.Logf("ListProviders called! Stack:\n%s", string(debug.Stack()))
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"product identity has not been bootstrapped"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/auth/credentials":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"product identity has not been bootstrapped"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	api := client.New(server.URL)
+	home := ui.NewHomePage(model.EmptyHome())
+
+	app := &App{
+		api:                   api,
+		home:                  home,
+		onboardingWorkspaceCh: make(chan onboardingWorkspaceResult, 1),
+	}
+
+	t.Logf("calling refreshHomeV3Model...")
+	next, err := app.refreshHomeV3Model(context.Background())
+	t.Logf("refreshHomeV3Model returned: err=%v, providersCalled=%v", err, providersCalled)
+	if err != nil {
+		t.Fatalf("refreshHomeV3Model failed: %v", err)
+	}
+
+	if !next.OnboardingRequired {
+		t.Fatal("expected OnboardingRequired to be true")
+	}
+	if next.OnboardingIdentityBootstrapped {
+		t.Fatal("expected OnboardingIdentityBootstrapped to be false on fresh install")
+	}
+
+	t.Logf("before applyHomeModel: OnboardingVisible=%v, OnboardingProviderActive=%v",
+		app.home.OnboardingVisible(), app.home.OnboardingProviderActive())
+	app.applyHomeModel(next)
+	t.Logf("after applyHomeModel: OnboardingVisible=%v, OnboardingProviderActive=%v",
+		app.home.OnboardingVisible(), app.home.OnboardingProviderActive())
+
+	if !app.home.OnboardingVisible() {
+		t.Fatal("expected onboarding to be visible")
+	}
+	if app.home.OnboardingProviderActive() {
+		t.Fatal("fresh install must NOT skip to provider phase before identity is bootstrapped")
+	}
+	if providersCalled {
+		t.Fatal("providers API should not be called before identity bootstrap")
 	}
 }
