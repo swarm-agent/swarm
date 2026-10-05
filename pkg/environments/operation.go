@@ -85,29 +85,29 @@ type OperationActivity struct {
 
 // OperationResult captures safe, bounded completion results.
 type OperationResult struct {
-	Build *ImageBuildResult `json:"build,omitempty"`
-	ExitCode     int    `json:"exit_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	FailureKind  string `json:"failure_kind,omitempty"`
-	Summary      string `json:"summary,omitempty"`
+	Build        *ImageBuildResult `json:"build,omitempty"`
+	ExitCode     int               `json:"exit_code,omitempty"`
+	ErrorMessage string            `json:"error_message,omitempty"`
+	FailureKind  string            `json:"failure_kind,omitempty"`
+	Summary      string            `json:"summary,omitempty"`
 }
 
 // EnvironmentOperation models a durable, supervised operation on an environment or deployment.
 type EnvironmentOperation struct {
-	BuildConnectionID string `json:"build_connection_id,omitempty"`
-	BuildDefinition *ImageBuildDefinition `json:"build_definition,omitempty"`
-	OperationID    string               `json:"operation_id"`
-	AccountScopeID string               `json:"account_scope_id"`
-	WorkspaceID    string               `json:"workspace_id"`
-	Action         string               `json:"action"`
-	EnvironmentID  string               `json:"environment_id,omitempty"`
-	DeploymentID   string               `json:"deployment_id,omitempty"`
-	LeaseID        string               `json:"lease_id,omitempty"`
-	Attribution    OperationAttribution `json:"attribution"`
-	Status         OperationStatus      `json:"status"`
-	Revision       uint64               `json:"revision"`
-	IdempotencyKey string               `json:"idempotency_key,omitempty"`
-	RequestHash    string               `json:"request_hash,omitempty"`
+	BuildConnectionID string                `json:"build_connection_id,omitempty"`
+	BuildDefinition   *ImageBuildDefinition `json:"build_definition,omitempty"`
+	OperationID       string                `json:"operation_id"`
+	AccountScopeID    string                `json:"account_scope_id"`
+	WorkspaceID       string                `json:"workspace_id"`
+	Action            string                `json:"action"`
+	EnvironmentID     string                `json:"environment_id,omitempty"`
+	DeploymentID      string                `json:"deployment_id,omitempty"`
+	LeaseID           string                `json:"lease_id,omitempty"`
+	Attribution       OperationAttribution  `json:"attribution"`
+	Status            OperationStatus       `json:"status"`
+	Revision          uint64                `json:"revision"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	RequestHash       string                `json:"request_hash,omitempty"`
 
 	CreatedAt   int64 `json:"created_at"`
 	StartedAt   int64 `json:"started_at,omitempty"`
@@ -301,8 +301,14 @@ func (op *EnvironmentOperation) Clone() *EnvironmentOperation {
 		return nil
 	}
 	cp := *op
-	if op.BuildDefinition != nil { b := *op.BuildDefinition; cp.BuildDefinition = &b }
-	if op.Result.Build != nil { b := *op.Result.Build; cp.Result.Build = &b }
+	if op.BuildDefinition != nil {
+		b := *op.BuildDefinition
+		cp.BuildDefinition = &b
+	}
+	if op.Result.Build != nil {
+		b := *op.Result.Build
+		cp.Result.Build = &b
+	}
 	return &cp
 }
 
@@ -396,8 +402,8 @@ type OperationHistoryQuery struct {
 // OperationRequestHashInput specifies parameters for computing an immutable request hash.
 // Secrets in env are never retained raw; values are hashed individually.
 type OperationRequestHashInput struct {
-	BuildDigest string `json:"build_digest,omitempty"`
-	BuildOperationID string `json:"build_operation_id,omitempty"`
+	BuildDigest       string               `json:"build_digest,omitempty"`
+	BuildOperationID  string               `json:"build_operation_id,omitempty"`
 	Action            string               `json:"action"`
 	EnvironmentID     string               `json:"environment_id,omitempty"`
 	DeploymentID      string               `json:"deployment_id,omitempty"`

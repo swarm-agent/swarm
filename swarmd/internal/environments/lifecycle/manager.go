@@ -86,7 +86,7 @@ type WorkspaceSettingsReader interface {
 
 // EnsureDeploymentRequest specifies parameters for acquiring or provisioning an environment deployment.
 type EnsureDeploymentRequest struct {
-	BuildOperationID string `json:"build_operation_id,omitempty"`
+	BuildOperationID string                    `json:"build_operation_id,omitempty"`
 	AccountScopeID   string                    `json:"account_scope_id"`
 	WorkspaceID      string                    `json:"workspace_id"`
 	EnvironmentID    string                    `json:"environment_id"`
@@ -162,7 +162,7 @@ type DestroyDeploymentRequest struct {
 
 // DeployDeploymentRequest specifies parameters for directly provisioning a new deployment.
 type DeployDeploymentRequest struct {
-	BuildOperationID string `json:"build_operation_id,omitempty"`
+	BuildOperationID string                    `json:"build_operation_id,omitempty"`
 	AccountScopeID   string                    `json:"account_scope_id"`
 	WorkspaceID      string                    `json:"workspace_id"`
 	EnvironmentID    string                    `json:"environment_id"`
@@ -390,9 +390,11 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	// Check Docker support capability if container definition specifies an image
-	buildResult, err := m.resolveBuildImage(ctx,req.AccountScopeID,req.WorkspaceID,req.BuildOperationID,&env,conn)
-	if err != nil { return nil,err }
-	env = runtimeBuildEnvironment(env,buildResult)
+	buildResult, err := m.resolveBuildImage(ctx, req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, &env, conn)
+	if err != nil {
+		return nil, err
+	}
+	env = runtimeBuildEnvironment(env, buildResult)
 	if err := provider.ValidateRuntimeConnection(conn, &env); err != nil {
 		return nil, err
 	}
@@ -432,8 +434,12 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	// 5. Attempt reuse if enabled by policy
 	if env.DeploymentPolicy.Reuse {
 		for _, dep := range existingDeps {
-			if (buildResult == nil) != (dep.Build == nil) { continue }
-			if buildResult != nil && (dep.Build.OperationID != buildResult.OperationID || dep.Build.ImageID != buildResult.ImageID) { continue }
+			if (buildResult == nil) != (dep.Build == nil) {
+				continue
+			}
+			if buildResult != nil && (dep.Build.OperationID != buildResult.OperationID || dep.Build.ImageID != buildResult.ImageID) {
+				continue
+			}
 			if dep.WorkspacePath != deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)) {
 				continue
 			}
@@ -447,7 +453,9 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 			// Verify container is actually active in provider before selecting for reuse
 			if prov != nil {
 				insRes, insErr := prov.Inspect(ctx, conn, &dep)
-				if dep.Build != nil && (insErr != nil || insRes == nil) { continue }
+				if dep.Build != nil && (insErr != nil || insRes == nil) {
+					continue
+				}
 				if insErr == nil && insRes != nil {
 					if insRes.Status == environments.DeploymentStatusStopped {
 						if startErr := prov.Start(ctx, conn, &dep); startErr != nil {
@@ -571,7 +579,7 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	newDep := environments.Deployment{
-		Build: buildResult,
+		Build:          buildResult,
 		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,
 		AccountScopeID: req.AccountScopeID,
@@ -707,9 +715,11 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 		return nil, fmt.Errorf("provider for connection kind %q: %w", conn.Kind, ErrProviderNotRegistered)
 	}
 
-	buildResult, err := m.resolveBuildImage(ctx,req.AccountScopeID,req.WorkspaceID,req.BuildOperationID,&env,conn)
-	if err != nil { return nil,err }
-	env = runtimeBuildEnvironment(env,buildResult)
+	buildResult, err := m.resolveBuildImage(ctx, req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, &env, conn)
+	if err != nil {
+		return nil, err
+	}
+	env = runtimeBuildEnvironment(env, buildResult)
 	if err := provider.ValidateRuntimeConnection(conn, &env); err != nil {
 		return nil, err
 	}
@@ -765,7 +775,7 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 	}
 
 	newDep := environments.Deployment{
-		Build: buildResult,
+		Build:          buildResult,
 		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,
 		AccountScopeID: req.AccountScopeID,
@@ -936,7 +946,9 @@ func (m *DeploymentManager) ReleaseDeployment(ctx context.Context, req ReleaseDe
 	}
 
 	// Manual onboarding state is retained even if its definition was later edited.
-	if dep.Build != nil { releaseBehavior = environments.ReleaseBehaviorNone }
+	if dep.Build != nil {
+		releaseBehavior = environments.ReleaseBehaviorNone
+	}
 	var prov provider.DeploymentProvider
 	var conn environments.Connection
 	if m.connections != nil {

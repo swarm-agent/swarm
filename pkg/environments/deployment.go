@@ -65,7 +65,7 @@ type DeploymentLifecycle struct {
 // Deployment represents an instantiated, running or historical execution environment.
 // Strictly scoped to AccountScopeID and WorkspaceID.
 type Deployment struct {
-	Build *ImageBuildResult `json:"build,omitempty"`
+	Build          *ImageBuildResult   `json:"build,omitempty"`
 	ID             string              `json:"id"`
 	AccountScopeID string              `json:"account_scope_id"`
 	WorkspaceID    string              `json:"workspace_id"`

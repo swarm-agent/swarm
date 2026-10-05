@@ -435,7 +435,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 type environmentMutationRequest struct {
-	BuildOperationID string `json:"build_operation_id,omitempty"`
+	BuildOperationID         string                    `json:"build_operation_id,omitempty"`
 	Action                   string                    `json:"action"`
 	WorkspaceID              string                    `json:"workspace_id"`
 	WorkspacePath            string                    `json:"workspace_path"`
@@ -808,32 +808,34 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 
 			subReq := lifecycle.SubmitOperationRequest{
 				BuildOperationID: req.BuildOperationID,
-				AccountScopeID: accountScopeID,
-				WorkspaceID:    workspaceID,
-				Action:         action,
-				EnvironmentID:  firstNonEmptyString(strings.TrimSpace(req.EnvironmentID), strings.TrimSpace(req.ID)),
-				DeploymentID:   strings.TrimSpace(req.DeploymentID),
-				LeaseID:        strings.TrimSpace(req.LeaseID),
-				ConnectionID:   strings.TrimSpace(req.ConnectionID),
-				DeploymentName: strings.TrimSpace(req.DeploymentName),
-				WorkspacePath:  workspacePath,
-				ConsumerType:   req.ConsumerType,
-				ConsumerID:     firstNonEmptyString(callerSessionID, strings.TrimSpace(req.ConsumerID)),
-				Command:        req.Command,
-				WorkingDir:     strings.TrimSpace(req.WorkingDir),
-				Env:            req.Env,
-				EnvOverrides:   req.EnvOverrides,
-				TTLMillis:      req.TTLMillis,
-				Deadline:       req.Deadline,
-				IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
-				Reason:         firstNonEmptyString(strings.TrimSpace(req.ReleaseReason), strings.TrimSpace(req.Reason)),
-				MaxOutput:      req.MaxOutput,
+				AccountScopeID:   accountScopeID,
+				WorkspaceID:      workspaceID,
+				Action:           action,
+				EnvironmentID:    firstNonEmptyString(strings.TrimSpace(req.EnvironmentID), strings.TrimSpace(req.ID)),
+				DeploymentID:     strings.TrimSpace(req.DeploymentID),
+				LeaseID:          strings.TrimSpace(req.LeaseID),
+				ConnectionID:     strings.TrimSpace(req.ConnectionID),
+				DeploymentName:   strings.TrimSpace(req.DeploymentName),
+				WorkspacePath:    workspacePath,
+				ConsumerType:     req.ConsumerType,
+				ConsumerID:       firstNonEmptyString(callerSessionID, strings.TrimSpace(req.ConsumerID)),
+				Command:          req.Command,
+				WorkingDir:       strings.TrimSpace(req.WorkingDir),
+				Env:              req.Env,
+				EnvOverrides:     req.EnvOverrides,
+				TTLMillis:        req.TTLMillis,
+				Deadline:         req.Deadline,
+				IdempotencyKey:   strings.TrimSpace(req.IdempotencyKey),
+				Reason:           firstNonEmptyString(strings.TrimSpace(req.ReleaseReason), strings.TrimSpace(req.Reason)),
+				MaxOutput:        req.MaxOutput,
 				Attribution: environments.OperationAttribution{
 					Actor:     callerActor,
 					SessionID: callerSessionID,
 				},
 			}
-			if action == "build" { subReq.WorkspacePath = "" }
+			if action == "build" {
+				subReq.WorkspacePath = ""
+			}
 			if req.TimeoutMS > 0 {
 				subReq.Timeout = time.Duration(req.TimeoutMS) * time.Millisecond
 			}

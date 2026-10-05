@@ -26,9 +26,9 @@ var _ OperationCanceler = (*LocalDockerProvider)(nil)
 type LocalDockerProvider struct {
 	buildRoot string
 	buildRuns sync.Map
-	kind    environments.ConnectionKind
-	runner  CommandRunner
-	httpGet func(ctx context.Context, url string) (int, error)
+	kind      environments.ConnectionKind
+	runner    CommandRunner
+	httpGet   func(ctx context.Context, url string) (int, error)
 }
 
 // NewLocalDockerProvider creates a new LocalDockerProvider using the supplied CommandRunner.
@@ -340,7 +340,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 
 	// Verify Podman's observed isolation before allowing any setup command.
 	if p.Kind() == environments.ConnectionKindLocalPodman {
-		if _, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{Build:req.Deployment.Build, Runtime: environments.RuntimeMetadata{ContainerID: containerID}}); err != nil {
+		if _, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{Build: req.Deployment.Build, Runtime: environments.RuntimeMetadata{ContainerID: containerID}}); err != nil {
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
 			defer cancel()
 			_, cleanupErr := p.runner.Run(cleanupCtx, "podman", append(dockerHostArgs(req.Connection), "rm", "-f", "-v", containerID)...)
@@ -367,7 +367,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 
 	// Inspect container to obtain dynamic runtime state (ports, IP, health)
 	insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
-		Build: req.Deployment.Build,
+		Build:         req.Deployment.Build,
 		ID:            req.Deployment.ID,
 		EnvironmentID: req.Environment.ID,
 		Runtime: environments.RuntimeMetadata{
@@ -447,8 +447,12 @@ func (p *LocalDockerProvider) Inspect(ctx context.Context, conn *environments.Co
 		}
 	}
 	if deployment.Build != nil {
-		var records []struct{ Image string `json:"Image"` }
-		if json.Unmarshal(out,&records)!=nil || len(records)!=1 || records[0].Image!=deployment.Build.ImageID { return nil,errors.New("deployment image does not match authenticated build result") }
+		var records []struct {
+			Image string `json:"Image"`
+		}
+		if json.Unmarshal(out, &records) != nil || len(records) != 1 || records[0].Image != deployment.Build.ImageID {
+			return nil, errors.New("deployment image does not match authenticated build result")
+		}
 	}
 	ins, err := parseDockerInspect(out)
 	if err != nil {

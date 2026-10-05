@@ -38,11 +38,11 @@ func manageEnvironmentsDefinition() Definition {
 				"workspace_path": map[string]any{"type": "string", "description": "Workspace or isolated worktree root path"},
 				"workspace_id":   map[string]any{"type": "string", "description": "Canonical workspace ID"},
 				// Explicit entity identifiers (no ambiguous cross-object aliasing)
-				"environment_id": map[string]any{"type": "string", "description": "Environment definition ID"},
-				"deployment_id":  map[string]any{"type": "string", "description": "Deployment instance ID for runtime actions (exec, stop, start, destroy, release, get_deployment)"},
-				"build_operation_id": map[string]any{"type":"string", "description":"Exact successful managed build operation for ensure/deploy; image substitution is forbidden"},
-			"operation_id":   map[string]any{"type": "string", "description": "Operation ID for get_operation or cancel_operation"},
-				"id":             map[string]any{"type": "string", "description": "Environment ID alias for backward compatibility with definition get/update/delete/export"},
+				"environment_id":     map[string]any{"type": "string", "description": "Environment definition ID"},
+				"deployment_id":      map[string]any{"type": "string", "description": "Deployment instance ID for runtime actions (exec, stop, start, destroy, release, get_deployment)"},
+				"build_operation_id": map[string]any{"type": "string", "description": "Exact successful managed build operation for ensure/deploy; image substitution is forbidden"},
+				"operation_id":       map[string]any{"type": "string", "description": "Operation ID for get_operation or cancel_operation"},
+				"id":                 map[string]any{"type": "string", "description": "Environment ID alias for backward compatibility with definition get/update/delete/export"},
 				// Definition fields
 				"name":                    map[string]any{"type": "string", "description": "Environment display name"},
 				"description":             map[string]any{"type": "string"},
@@ -53,6 +53,7 @@ func manageEnvironmentsDefinition() Definition {
 				"deployment_name":         map[string]any{"type": "string", "description": "Display name for deployment instance"},
 				"image":                   map[string]any{"type": "string", "description": "Container image name:tag"},
 				"container":               environmentValueSchema(reflect.TypeOf(environments.ContainerDefinition{})),
+				"build":                   environmentValueSchema(reflect.TypeOf(environments.ImageBuildDefinition{})),
 				"provisioning":            environmentValueSchema(reflect.TypeOf(environments.WorkspaceProvisioning{})),
 				"deployment_policy":       environmentValueSchema(reflect.TypeOf(environments.DeploymentPolicy{})),
 				"health_check":            environmentValueSchema(reflect.TypeOf(environments.HealthCheck{})),
@@ -81,7 +82,7 @@ func manageEnvironmentsDefinition() Definition {
 				"max_output":      map[string]any{"type": "integer", "description": "Maximum stdout/stderr bytes for exec"},
 				// History query filters
 				"status":        map[string]any{"type": "string", "description": "Filter history by status (queued, running, succeeded, failed, cancelled, timed_out, cleanup_failed, unknown)"},
-				"action_filter": map[string]any{"type": "string", "description": "Filter history by action (ensure, deploy, exec, stop, release, destroy, cancel)"},
+				"action_filter": map[string]any{"type": "string", "description": "Filter history by action (build, ensure, deploy, exec, stop, release, destroy, cancel)"},
 				"actor":         map[string]any{"type": "string", "description": "Filter history by actor user ID"},
 				"session_id":    map[string]any{"type": "string", "description": "Filter history by session ID"},
 				"worker_id":     map[string]any{"type": "string", "description": "Filter history by worker ID"},
@@ -167,7 +168,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			"   Mutations return an immediate bounded operation receipt with operation_id and status within 2 seconds. Do not busy-poll; inspect receipts and use realtime updates.\n" +
 			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id)."
 		response["definition_schema"] = manageEnvironmentsDefinition().Parameters
-		response["definition_help"] = "Create accepts top-level definition fields or one environment object; import accepts exactly one environment object or json string containing an exported definition. Nested fields are JSON objects, not JSON-encoded strings. Unknown fields, nulls and wrong types are rejected. Exported account_scope_id/workspace_id are rebound to authorized caller scope, never trusted. Update accepts top-level fields only: container and deployment_policy merge supplied fields; provisioning, health_check, resources and labels replace the supplied section. image/ports and max_instances/release_behavior/reuse are aliases and cannot accompany their canonical section. Omitted create provisioning defaults to local_mount at /app; explicit provisioning requires a valid strategy. Container keys: image, command, args, env_vars, exposed_ports, privileged, user, working_dir, setup_commands, rootless_systemd. Explicit local_podman connections support rootless_systemd={cgroup_namespace:private,network:slirp4netns,pids_limit:1024}; this requires registry_image provisioning, no host mounts, no privileged/GPU mode, and a pre-existing local image. Capabilities require rootless Linux Podman, crun, slirp4netns, systemd cgroup v2 and delegated cpu/memory/pids controllers. Ports remain 127.0.0.1-only; no host environment expansion, proxy inheritance, remote or privileged fallback. No arbitrary runtime flags are supported. Connection checks diagnose prerequisites without changing host configuration. Strategy availability is provider-dependent; schema describes stored definitions, not a guarantee of provider support."
+		response["definition_help"] = "Create accepts top-level definition fields or one environment object; import accepts exactly one environment object or json string containing an exported definition. Nested fields are JSON objects, not JSON-encoded strings. Unknown fields, nulls and wrong types are rejected. Exported account_scope_id/workspace_id are rebound to authorized caller scope, never trusted. Update accepts top-level fields only: container and deployment_policy merge supplied fields; build, provisioning, health_check, resources and labels replace the supplied section. image/ports and max_instances/release_behavior/reuse are aliases and cannot accompany their canonical section. Omitted create provisioning defaults to local_mount at /app; explicit provisioning requires a valid strategy. Container keys: image, command, args, env_vars, exposed_ports, privileged, user, working_dir, setup_commands, rootless_systemd. Explicit local_podman connections support rootless_systemd={cgroup_namespace:private,network:slirp4netns,pids_limit:1024}; this requires registry_image provisioning, no host mounts, no privileged/GPU mode, and a pre-existing local image. Capabilities require rootless Linux Podman, crun, slirp4netns, systemd cgroup v2 and delegated cpu/memory/pids controllers. Ports remain 127.0.0.1-only; no host environment expansion, proxy inheritance, remote or privileged fallback. No arbitrary runtime flags are supported. Connection checks diagnose prerequisites without changing host configuration. Strategy availability is provider-dependent; schema describes stored definitions, not a guarantee of provider support."
 		response["available_actions"] = []string{
 			"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 			"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
@@ -511,11 +512,11 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 
 		subReq := lifecycle.SubmitOperationRequest{
 			BuildOperationID: strings.TrimSpace(asString(args["build_operation_id"])),
-			AccountScopeID: accountScopeID,
-			WorkspaceID:    workspaceID,
-			Action:         actionName,
-			IdempotencyKey: idempotencyKey,
-			Deadline:       int64(asInt(args["deadline"], 0)),
+			AccountScopeID:   accountScopeID,
+			WorkspaceID:      workspaceID,
+			Action:           actionName,
+			IdempotencyKey:   idempotencyKey,
+			Deadline:         int64(asInt(args["deadline"], 0)),
 			Attribution: environments.OperationAttribution{
 				Actor:     callerActor,
 				SessionID: callerSessionID,
@@ -529,6 +530,11 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 
 		switch actionName {
 		case "build":
+			for _, key := range []string{"deployment_id", "lease_id", "build_operation_id", "command", "env", "env_overrides", "working_dir", "image", "container"} {
+				if _, supplied := args[key]; supplied {
+					return "", fmt.Errorf("build does not accept %s", key)
+				}
+			}
 			subReq.EnvironmentID = strings.TrimSpace(asString(args["environment_id"]))
 			subReq.ConnectionID = strings.TrimSpace(asString(args["connection_id"]))
 		case "ensure":
@@ -752,6 +758,13 @@ func applyEnvironmentFields(env environments.Environment, args map[string]any) (
 		}
 		env.Provisioning = provisioning
 	}
+	if value, supplied := args["build"]; supplied {
+		var build environments.ImageBuildDefinition
+		if err := decodeEnvironmentValue("build", value, &build); err != nil {
+			return environments.Environment{}, err
+		}
+		env.Build = &build
+	}
 	if value, supplied := args["health_check"]; supplied {
 		var health environments.HealthCheck
 		if err := decodeEnvironmentValue("health_check", value, &health); err != nil {
@@ -777,7 +790,7 @@ func applyEnvironmentFields(env environments.Environment, args map[string]any) (
 }
 
 func rejectEnvironmentFieldMix(args map[string]any) error {
-	for _, field := range []string{"name", "description", "mode", "role", "preferred_connection_id", "container", "image", "ports", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "id", "environment_id"} {
+	for _, field := range []string{"name", "description", "mode", "role", "preferred_connection_id", "container", "image", "ports", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "id", "environment_id"} {
 		if _, supplied := args[field]; supplied {
 			return fmt.Errorf("%s: cannot combine definition fields with environment or json; supply one definition", field)
 		}
@@ -934,7 +947,7 @@ func validateEnvironmentDefinitionArgs(action string, args map[string]any) error
 	if action == "import" {
 		allowed["json"], allowed["environment"] = true, true
 	} else {
-		for _, key := range []string{"environment_id", "id", "name", "description", "mode", "role", "preferred_connection_id", "image", "container", "ports", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "set_default_test"} {
+		for _, key := range []string{"environment_id", "id", "name", "description", "mode", "role", "preferred_connection_id", "image", "container", "ports", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "set_default_test"} {
 			allowed[key] = true
 		}
 		if action == "create" {

@@ -85,17 +85,17 @@ type OperationService interface {
 
 // SubmitOperationRequest specifies parameters for submitting a supervised environment operation.
 type SubmitOperationRequest struct {
-	BuildOperationID string `json:"build_operation_id,omitempty"`
-	AccountScopeID string                            `json:"account_scope_id"`
-	WorkspaceID    string                            `json:"workspace_id"`
-	Action         string                            `json:"action"` // "ensure", "deploy", "exec", "stop", "start", "release", "destroy", "cancel"
-	EnvironmentID  string                            `json:"environment_id,omitempty"`
-	DeploymentID   string                            `json:"deployment_id,omitempty"`
-	LeaseID        string                            `json:"lease_id,omitempty"`
-	Attribution    environments.OperationAttribution `json:"attribution"`
-	IdempotencyKey string                            `json:"idempotency_key,omitempty"`
-	Deadline       int64                             `json:"deadline,omitempty"` // epoch millis
-	Timeout        time.Duration                     `json:"timeout,omitempty"`
+	BuildOperationID string                            `json:"build_operation_id,omitempty"`
+	AccountScopeID   string                            `json:"account_scope_id"`
+	WorkspaceID      string                            `json:"workspace_id"`
+	Action           string                            `json:"action"` // "ensure", "deploy", "exec", "stop", "start", "release", "destroy", "cancel"
+	EnvironmentID    string                            `json:"environment_id,omitempty"`
+	DeploymentID     string                            `json:"deployment_id,omitempty"`
+	LeaseID          string                            `json:"lease_id,omitempty"`
+	Attribution      environments.OperationAttribution `json:"attribution"`
+	IdempotencyKey   string                            `json:"idempotency_key,omitempty"`
+	Deadline         int64                             `json:"deadline,omitempty"` // epoch millis
+	Timeout          time.Duration                     `json:"timeout,omitempty"`
 
 	// Deploy / Ensure specific:
 	ConnectionID     string                    `json:"connection_id,omitempty"`
@@ -305,9 +305,15 @@ func (m *DeploymentManager) validateAdmission(
 		}
 		conn = c
 		if req.Action == environments.OperationActionBuild {
-			if req.DeploymentID != "" || req.LeaseID != "" || req.WorkspacePath != "" || req.BuildOperationID != "" { return nil,nil,nil,errors.New("build does not accept runtime targets or raw workspace paths") }
-			if err := m.validateBuild(ctx,req.AccountScopeID,env,conn); err != nil { return nil,nil,nil,err }
-		} else if _, err := m.resolveBuildImage(ctx,req.AccountScopeID,req.WorkspaceID,req.BuildOperationID,env,conn); err != nil { return nil,nil,nil,err }
+			if req.DeploymentID != "" || req.LeaseID != "" || req.WorkspacePath != "" || req.BuildOperationID != "" || len(req.Command) != 0 || len(req.Env) != 0 || len(req.EnvOverrides) != 0 || req.WorkingDir != "" {
+				return nil, nil, nil, errors.New("build does not accept runtime targets, commands, environment overrides or raw workspace paths")
+			}
+			if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
+				return nil, nil, nil, err
+			}
+		} else if _, err := m.resolveBuildImage(ctx, req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, env, conn); err != nil {
+			return nil, nil, nil, err
+		}
 
 		// Verify provider registration
 		if m.registry == nil {
@@ -529,25 +535,35 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 	opID := "op_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	reqHash := environments.ComputeOperationRequestHash(environments.OperationRequestHashInput{
 		BuildOperationID: req.BuildOperationID,
-		BuildDigest: func() string { if env != nil && env.Build != nil { return env.Build.Digest() }; return "" }(),
+		BuildDigest: func() string {
+			if env != nil && env.Build != nil {
+				return env.Build.Digest()
+			}
+			return ""
+		}(),
 		Action:            req.Action,
 		EnvironmentID:     envID,
 		DeploymentID:      depID,
 		LeaseID:           req.LeaseID,
 		TargetOperationID: req.TargetOperationID,
 		Attribution:       req.Attribution,
-		ConnectionID:      req.ConnectionID,
-		DeploymentName:    req.DeploymentName,
-		WorkspacePath:     req.WorkspacePath,
-		ConsumerType:      req.ConsumerType,
-		ConsumerID:        req.ConsumerID,
-		ConsumerMetadata:  req.ConsumerMetadata,
-		TTLMillis:         req.TTLMillis,
-		Command:           req.Command,
-		WorkingDir:        req.WorkingDir,
-		Env:               req.Env,
-		MaxOutput:         req.MaxOutput,
-		Reason:            req.Reason,
+		ConnectionID: func() string {
+			if req.Action == environments.OperationActionBuild && conn != nil {
+				return conn.ID
+			}
+			return req.ConnectionID
+		}(),
+		DeploymentName:   req.DeploymentName,
+		WorkspacePath:    req.WorkspacePath,
+		ConsumerType:     req.ConsumerType,
+		ConsumerID:       req.ConsumerID,
+		ConsumerMetadata: req.ConsumerMetadata,
+		TTLMillis:        req.TTLMillis,
+		Command:          req.Command,
+		WorkingDir:       req.WorkingDir,
+		Env:              req.Env,
+		MaxOutput:        req.MaxOutput,
+		Reason:           req.Reason,
 	})
 
 	op := environments.EnvironmentOperation{
@@ -573,7 +589,11 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		},
 	}
 
-	if req.Action == environments.OperationActionBuild { b := *env.Build; op.BuildDefinition = &b; op.BuildConnectionID = conn.ID }
+	if req.Action == environments.OperationActionBuild {
+		b := *env.Build
+		op.BuildDefinition = &b
+		op.BuildConnectionID = conn.ID
+	}
 	if err := admissionCtx.Err(); err != nil {
 		return nil, fmt.Errorf("admission deadline exceeded before admit: %w", err)
 	}
@@ -789,7 +809,12 @@ func (m *DeploymentManager) superviseOperation(
 					failResult.FailureKind = boundedString(outcome.res.FailureKind, 64)
 				}
 			}
-			m.transitionFinalWithRetry(latest, environments.OperationStatusFailed, &failResult, tNow, conn, dep)
+			failureStatus := environments.OperationStatusFailed
+			if errors.Is(outcome.err, provider.ErrOperationCleanupFailed) {
+				failureStatus = environments.OperationStatusCleanupFailed
+				failResult.FailureKind = "cleanup_failed"
+			}
+			m.transitionFinalWithRetry(latest, failureStatus, &failResult, tNow, conn, dep)
 			return
 		}
 
@@ -798,7 +823,9 @@ func (m *DeploymentManager) superviseOperation(
 			ExitCode: 0,
 			Summary:  fmt.Sprintf("%s completed successfully", req.Action),
 		}
-		if outcome.res != nil { succResult.Build = outcome.res.Build }
+		if outcome.res != nil {
+			succResult.Build = outcome.res.Build
+		}
 		if outcome.res != nil && outcome.res.Summary != "" {
 			succResult.Summary = boundedString(outcome.res.Summary, 2048)
 		}
@@ -905,7 +932,7 @@ func (m *DeploymentManager) executeAction(
 	ctx = withOperationID(ctx, currentOp.OperationID)
 	switch req.Action {
 	case environments.OperationActionBuild:
-		return m.executeBuild(ctx,currentOp.OperationID,req,env,conn)
+		return m.executeBuild(ctx, currentOp.OperationID, req, env, conn)
 	case environments.OperationActionEnsure:
 		ensureReq := EnsureDeploymentRequest{
 			BuildOperationID: req.BuildOperationID,
@@ -976,7 +1003,9 @@ func (m *DeploymentManager) executeAction(
 		}
 
 		if dep.Build != nil {
-			if _, err := prov.Inspect(ctx,conn,dep); err != nil { return nil,err }
+			if _, err := prov.Inspect(ctx, conn, dep); err != nil {
+				return nil, err
+			}
 		}
 		execReq := provider.ExecRequest{
 			OperationID: currentOp.OperationID,
@@ -1260,12 +1289,23 @@ func (m *DeploymentManager) cleanupTargetProcess(
 	dep *environments.Deployment,
 ) (bool, error) {
 	if op.Action == environments.OperationActionBuild {
-		if m.connections == nil || m.registry == nil { return false, errors.New("build cleanup authority unavailable") }
-		c, found, err := m.connections.Get(op.AccountScopeID,op.WorkspaceID,op.BuildConnectionID)
-		if err != nil || !found { return false, errors.New("build cleanup connection unavailable") }
-		p, ok := m.registry.Get(c.Kind); if !ok { return false, ErrProviderNotRegistered }
-		b, ok := p.(provider.ImageBuilder); if !ok { return false, errors.New("build cleanup unsupported") }
-		err = b.CleanupBuild(ctx,op.OperationID); return err == nil,err
+		if m.connections == nil || m.registry == nil {
+			return false, errors.New("build cleanup authority unavailable")
+		}
+		c, found, err := m.connections.Get(op.AccountScopeID, op.WorkspaceID, op.BuildConnectionID)
+		if err != nil || !found {
+			return false, errors.New("build cleanup connection unavailable")
+		}
+		p, ok := m.registry.Get(c.Kind)
+		if !ok {
+			return false, ErrProviderNotRegistered
+		}
+		b, ok := p.(provider.ImageBuilder)
+		if !ok {
+			return false, errors.New("build cleanup unsupported")
+		}
+		err = b.CleanupBuild(ctx, op.OperationID)
+		return err == nil, err
 	}
 	if (conn == nil || dep == nil) && m.connections != nil && m.deployments != nil && op.DeploymentID != "" {
 		d, found, _ := m.deployments.Get(op.AccountScopeID, op.WorkspaceID, op.DeploymentID)
