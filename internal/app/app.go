@@ -5217,7 +5217,7 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 	case ui.HomeActionCreateOnboardingWorkspace:
 		a.createOnboardingWorkspace(action.WorkspacePath)
 	case ui.HomeActionCreateOnboardingProject:
-		a.handleCreateOnboardingProject(action.ProjectName, action.ProjectDescription, action.AttachWorkspace)
+		a.handleCreateOnboardingProject(action.ProjectName, action.ProjectDescription, action.WorkspacePaths)
 	case ui.HomeActionKind("skip-onboarding-workspace"):
 		a.handleSkipOnboardingWorkspace()
 	case ui.HomeActionOpenFinishSetup:
@@ -6592,18 +6592,47 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	a.refreshAuthModalData("Loading providers...")
 }
 
-func (a *App) handleCreateOnboardingProject(name, description string, attachWorkspace bool) {
+func (a *App) handleCreateOnboardingProject(name, description string, workspacePaths []string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		a.home.SetOnboardingError("Project name is required.")
-		return
+		name = "default"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	var wsRefs []client.ProjectWorkspaceRef
+	for _, wsPath := range workspacePaths {
+		wsPath = strings.TrimSpace(wsPath)
+		if wsPath == "" {
+			continue
+		}
+		res, err := a.api.AddWorkspace(ctx, wsPath, "", "", false)
+		if err == nil && res.WorkspaceID != "" {
+			wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
+				WorkspaceID:   res.WorkspaceID,
+				Path:          res.WorkspacePath,
+				WorkspaceName: res.WorkspaceName,
+			})
+		} else {
+			if list, lErr := a.api.ListWorkspaces(ctx, 200); lErr == nil {
+				for _, w := range list {
+					if pathsEqual(w.Path, wsPath) {
+						wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
+							WorkspaceID:   w.WorkspaceID,
+							Path:          w.Path,
+							WorkspaceName: w.WorkspaceName,
+						})
+						break
+					}
+				}
+			}
+		}
+	}
 
 	project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
 		Name:        name,
 		Description: strings.TrimSpace(description),
+		Workspaces:  wsRefs,
 	})
 	if err != nil {
 		a.home.SetOnboardingError(fmt.Sprintf("Failed to create project: %v", err))
@@ -6612,12 +6641,6 @@ func (a *App) handleCreateOnboardingProject(name, description string, attachWork
 
 	a.onboardingProjectID = project.ID
 	a.onboardingProjectName = project.Name
-
-	if attachWorkspace {
-		a.home.ShowOnboardingWorkspace("Project created. Attach an existing or new workspace folder, or skip to finish.")
-		return
-	}
-
 	a.completeOnboardingWithProject(project.ID, project.Name)
 }
 

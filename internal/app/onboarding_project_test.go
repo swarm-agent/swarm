@@ -128,7 +128,7 @@ func TestOnboardingProjectFirstFlowWithoutWorkspaces(t *testing.T) {
 	}
 
 	// 1. Trigger project creation from onboarding (Direct to project, no workspace)
-	app.handleCreateOnboardingProject("My Awesome Project", "Build the future", false)
+	app.handleCreateOnboardingProject("My Awesome Project", "Build the future", nil)
 
 	// 2. Verify genuine V3 project was created
 	if createdProjectName != "My Awesome Project" {

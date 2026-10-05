@@ -17,143 +17,53 @@ func (p *HomePage) handleOnboardingProjectKey(ev *tcell.EventKey) {
 	case tcell.KeyEscape:
 		p.ShowOnboardingProvider("Provider configuration.")
 		return
-	case tcell.KeyTab, tcell.KeyDown:
-		s.ProjectFocus = (s.ProjectFocus + 1) % 4
-		s.Error = ""
-		return
-	case tcell.KeyBacktab, tcell.KeyUp:
-		s.ProjectFocus = (s.ProjectFocus + 3) % 4
-		s.Error = ""
-		return
 	case tcell.KeyEnter:
-		if s.ProjectFocus == 0 {
-			if strings.TrimSpace(s.ProjectName) == "" {
-				s.Error = "Project name is required."
-				return
-			}
-			s.ProjectFocus = 1
-			s.Error = ""
-			return
+		name := strings.TrimSpace(s.ProjectName)
+		if name == "" {
+			name = "default"
+			s.ProjectName = name
 		}
-		if s.ProjectFocus == 1 {
-			s.ProjectFocus = 2
-			s.Error = ""
-			return
-		}
-		if s.ProjectFocus == 2 { // Open Project in Terminal
-			name := strings.TrimSpace(s.ProjectName)
-			if name == "" {
-				name = "default"
-			}
-			s.Pending = true
-			s.Error = ""
-			s.Status = "Creating project and opening terminal..."
-			p.pendingHomeAction = &HomeAction{
-				Kind:               HomeActionCreateOnboardingProject,
-				ProjectName:        name,
-				ProjectDescription: strings.TrimSpace(s.ProjectDescription),
-				AttachWorkspace:    false,
-			}
-			return
-		}
-		if s.ProjectFocus == 3 { // Attach Workspace Folder
-			name := strings.TrimSpace(s.ProjectName)
-			if name == "" {
-				name = "default"
-			}
-			s.Pending = true
-			s.Error = ""
-			s.Status = "Creating project before workspace setup..."
-			p.pendingHomeAction = &HomeAction{
-				Kind:               HomeActionCreateOnboardingProject,
-				ProjectName:        name,
-				ProjectDescription: strings.TrimSpace(s.ProjectDescription),
-				AttachWorkspace:    true,
-			}
-			return
-		}
-	}
-
-	if s.ProjectFocus > 1 {
+		p.ShowOnboardingWorkspace("Select workspaces to add to " + name + ", or skip.")
 		return
-	}
-
-	field := &s.ProjectName
-	if s.ProjectFocus == 1 {
-		field = &s.ProjectDescription
-	}
-
-	switch ev.Key() {
 	case tcell.KeyCtrlU:
-		*field = ""
+		s.ProjectName = ""
+		s.Error = ""
+		return
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
-		_, size := utf8.DecodeLastRuneInString(*field)
+		_, size := utf8.DecodeLastRuneInString(s.ProjectName)
 		if size > 0 {
-			*field = (*field)[:len(*field)-size]
+			s.ProjectName = s.ProjectName[:len(s.ProjectName)-size]
 		}
+		s.Error = ""
+		return
 	case tcell.KeyRune:
 		if unicode.IsPrint(ev.Rune()) {
-			*field += string(ev.Rune())
+			s.ProjectName += string(ev.Rune())
 		}
+		s.Error = ""
+		return
 	}
-	s.Error = ""
 }
 
 func (p *HomePage) drawOnboardingProject(screen tcell.Screen, content Rect) {
 	s := &p.onboarding
-	fields := []struct {
-		label string
-		value string
-		focus int
-		hint  string
-	}{
-		{label: "Project name", value: s.ProjectName, focus: 0, hint: "Name your project (e.g. default, my-agent)"},
-		{label: "Project instructions / goal (optional)", value: s.ProjectDescription, focus: 1, hint: "High-level goal or guidelines for the Orchestrator"},
+	y := content.Y + 2
+	DrawText(screen, content.X+1, y, content.W-2, p.theme.TextMuted, "Project name")
+	fieldRect := Rect{X: content.X, Y: y + 1, W: content.W, H: 3}
+	DrawBox(screen, fieldRect, p.theme.BorderActive)
+	value := s.ProjectName
+	valueStyle := p.theme.Primary
+	if value == "" {
+		value = "default (or type your project name)"
+		valueStyle = p.theme.TextMuted
 	}
+	DrawText(screen, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valueStyle, clampTail(value, fieldRect.W-4))
 
-	y := content.Y + 1
-	for _, field := range fields {
-		DrawText(screen, content.X+1, y, content.W-2, p.theme.TextMuted, field.label)
-		fieldRect := Rect{X: content.X, Y: y + 1, W: content.W, H: 3}
-		border := p.theme.Border
-		valueStyle := p.theme.Text
-		if s.ProjectFocus == field.focus {
-			border = p.theme.BorderActive
-			valueStyle = p.theme.Primary
-		}
-		DrawBox(screen, fieldRect, border)
-		value := field.value
-		if value == "" {
-			value = field.hint
-			valueStyle = p.theme.TextMuted
-		}
-		DrawText(screen, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valueStyle, clampTail(value, fieldRect.W-4))
-		y += 5
-	}
-
-	actions := []struct {
-		label string
-		focus int
-	}{
-		{label: "[ Open Project in Terminal (Enter) ]", focus: 2},
-		{label: "[ Attach Workspace Folder (Optional) ]", focus: 3},
-	}
-
-	for i, act := range actions {
-		style := p.theme.TextMuted
-		prefix := "  "
-		if s.ProjectFocus == act.focus {
-			style = p.theme.Primary.Bold(true)
-			prefix = "› "
-		}
-		DrawText(screen, content.X+1, y+i*2, content.W-2, style, prefix+act.label)
-	}
-
-	DrawText(screen, content.X+1, content.Y+content.H-1, content.W-2, p.theme.TextMuted, "Tab/↑/↓ move · Enter select/next · Esc back to provider")
+	DrawText(screen, content.X+1, y+5, content.W-2, p.theme.Primary.Bold(true), "› [ Continue to Workspaces (Enter) ]")
+	DrawText(screen, content.X+1, content.Y+content.H-1, content.W-2, p.theme.TextMuted, "Enter continue to workspaces · Esc back to provider")
 }
 
-// Workspace folder creation subdialog (Phase 4 helper)
-
+// Legacy helper preserved for compatibility
 func (p *HomePage) beginOnboardingProject() {
 	s := &p.onboarding
 	s.NamingProject = true
@@ -252,7 +162,7 @@ func (p *HomePage) drawOnboardingProjectFolder(screen tcell.Screen, content Rect
 	}
 	destination := p.onboardingProjectDestination()
 	if destination == "" {
-		destination = "Enter a project name"
+		destination = "Enter a folder name"
 	}
 	DrawText(screen, content.X, content.Y+5, content.W, p.theme.TextMuted, clampTail("Destination: "+destination, content.W))
 	DrawText(screen, content.X, content.Y+7, content.W, p.theme.TextMuted, "Tab fields · Enter next · Ctrl+U clear · Esc back (keeps draft)")

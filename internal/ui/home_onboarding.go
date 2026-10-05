@@ -104,7 +104,7 @@ func (p *HomePage) OnboardingProviderActive() bool {
 }
 
 func (p *HomePage) OnboardingProjectActive() bool {
-	return p != nil && p.onboarding.Visible && p.onboarding.Phase == onboardingPhaseProject
+	return p != nil && p.onboarding.Visible && (p.onboarding.Phase == onboardingPhaseProject || p.onboarding.NamingProject)
 }
 
 func (p *HomePage) OnboardingWorkspaceActive() bool {
@@ -124,10 +124,13 @@ func (p *HomePage) OnboardingWorkspacePath() string {
 	if p.onboarding.NamingProject {
 		return p.onboardingProjectDestination()
 	}
-	if strings.TrimSpace(p.onboarding.WorkspacePath) == "" {
+	if p.onboarding.WorkspacePath != "" {
+		return p.onboarding.WorkspacePath
+	}
+	if !p.model.WorkspaceSetupHasGit && p.model.CWD != "" {
 		return strings.TrimSpace(p.model.CWD)
 	}
-	return p.onboarding.WorkspacePath
+	return ""
 }
 
 func (p *HomePage) SetOnboardingWorkspacePath(path string) {
@@ -162,9 +165,10 @@ func (p *HomePage) ShowOnboardingProvider(status string) {
 }
 
 func (p *HomePage) ShowOnboardingProject(status string) {
-	if p == nil || !p.onboarding.Visible {
+	if p == nil {
 		return
 	}
+	p.onboarding.Visible = true
 	p.authModal.Editor = nil
 	p.authModal.Login = nil
 	p.authModal.Loading = false
@@ -179,9 +183,10 @@ func (p *HomePage) ShowOnboardingProject(status string) {
 }
 
 func (p *HomePage) ShowOnboardingWorkspace(status string) {
-	if p == nil || !p.onboarding.Visible {
+	if p == nil {
 		return
 	}
+	p.onboarding.Visible = true
 	p.authModal.Editor = nil
 	p.authModal.Login = nil
 	p.authModal.Loading = false
@@ -274,17 +279,13 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 		p.submitOnboardingIdentity()
 		return
 	case p.keybinds.Match(ev, KeybindEditorClose):
-		p.onboarding.Error = "Finish all three setup steps before entering Swarm."
+		p.onboarding.Error = "Enter your username to continue."
 		return
 	}
-	if p.onboarding.Focus > onboardingFocusSwarmName || ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
+	if p.onboarding.Focus != onboardingFocusUsername || ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
 		return
 	}
-	if p.onboarding.Focus == onboardingFocusUsername {
-		p.model.OnboardingUsername += string(ev.Rune())
-	} else {
-		p.model.OnboardingSwarmName += string(ev.Rune())
-	}
+	p.model.OnboardingUsername += string(ev.Rune())
 	p.onboarding.Error = ""
 }
 
@@ -292,34 +293,64 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 	if p.authModal.Loading {
 		return
 	}
-	if p.authModal.Editor == nil && (ev.Key() == tcell.KeyTab || ev.Key() == tcell.KeyBacktab) {
-		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 1) % 3
-		return
-	}
-	if p.authModal.Editor == nil && ev.Key() == tcell.KeyEnter && p.onboarding.ActionIndex != 0 {
-		if p.onboarding.ActionIndex == 1 {
-			p.ShowOnboardingProject("Provider skipped. Name your first project to continue.")
-			p.onboarding.ActionIndex = 0
-		} else {
-			p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
-		}
-		return
-	}
 	if p.authModal.Editor != nil {
+		if ev.Key() == tcell.KeyEscape {
+			p.authModal.Editor = nil
+			p.authModal.Status = "Editor closed"
+			return
+		}
+		if ev.Key() == tcell.KeyCtrlS {
+			p.authModal.Editor = nil
+			p.ShowOnboardingProject("Provider skipped. Enter a project name to continue.")
+			return
+		}
 		p.handleAuthModalEditorKey(ev)
 		return
 	}
-	if p.keybinds.Match(ev, KeybindEditorClose) {
-		p.ShowOnboardingProject("Provider skipped. Name your first project to continue.")
+	if ev.Key() == tcell.KeyTab {
+		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 1) % 3
 		return
 	}
-	if ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S') {
-		p.ShowOnboardingProject("Provider skipped. Name your first project to continue.")
+	if ev.Key() == tcell.KeyBacktab {
+		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 2) % 3
 		return
 	}
+	if (ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S')) || ev.Key() == tcell.KeyEscape {
+		p.ShowOnboardingProject("Provider skipped. Enter a project name to continue.")
+		return
+	}
+	if p.onboarding.ActionIndex == 1 { // Skip for now
+		switch {
+		case ev.Key() == tcell.KeyDown:
+			p.onboarding.ActionIndex = 2
+			return
+		case ev.Key() == tcell.KeyUp:
+			p.onboarding.ActionIndex = 0
+			return
+		case ev.Key() == tcell.KeyEnter:
+			p.ShowOnboardingProject("Provider skipped. Enter a project name to continue.")
+			p.onboarding.ActionIndex = 0
+			return
+		}
+	}
+	if p.onboarding.ActionIndex == 2 { // Cancel / Exit
+		switch {
+		case ev.Key() == tcell.KeyUp:
+			p.onboarding.ActionIndex = 1
+			return
+		case ev.Key() == tcell.KeyEnter:
+			p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
+			return
+		}
+	}
+	// ActionIndex == 0 (In provider list)
 	switch {
 	case p.keybinds.MatchAny(ev, KeybindEditorFocusNext, KeybindEditorMoveDown), ev.Key() == tcell.KeyRight:
 		p.authModal.Focus = authModalFocusProviders
+		if len(p.authModal.Providers) > 0 && p.authModal.SelectedProvider >= len(p.authModal.Providers)-1 {
+			p.onboarding.ActionIndex = 1
+			return
+		}
 		p.moveAuthModalSelection(1)
 		p.onboarding.Error = ""
 		return
@@ -335,7 +366,7 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 			return
 		}
 		if provider, ok := p.selectedAuthProvider(); ok && provider.Ready && provider.Runnable {
-			p.ShowOnboardingProject("Connected provider selected. Name your first project to continue.")
+			p.ShowOnboardingProject("Connected provider selected. Enter a project name to continue.")
 			return
 		}
 		p.triggerProviderLogin(providerID)
@@ -401,7 +432,19 @@ func (p *HomePage) advanceOnboardingFocus(delta int) {
 	if delta == 0 {
 		return
 	}
-	p.onboarding.Focus = onboardingFocus((int(p.onboarding.Focus) + delta + 4) % 4)
+	order := []onboardingFocus{onboardingFocusUsername, onboardingFocusSwarmName, onboardingFocusContinue, onboardingFocusCancel}
+	current := 0
+	for i, f := range order {
+		if p.onboarding.Focus == f {
+			current = i
+			break
+		}
+	}
+	next := (current + delta) % len(order)
+	if next < 0 {
+		next += len(order)
+	}
+	p.onboarding.Focus = order[next]
 	p.onboarding.Error = ""
 }
 
@@ -433,27 +476,29 @@ func (p *HomePage) onboardingField() *string {
 }
 
 func (p *HomePage) identityOnboardingComplete() bool {
-	return strings.TrimSpace(p.model.OnboardingUsername) != "" && strings.TrimSpace(p.model.OnboardingSwarmName) != ""
+	return strings.TrimSpace(p.model.OnboardingUsername) != ""
 }
 
 func (p *HomePage) submitOnboardingIdentity() {
-	if strings.TrimSpace(p.model.OnboardingUsername) == "" {
+	user := strings.TrimSpace(p.model.OnboardingUsername)
+	if user == "" {
 		p.onboarding.Focus = onboardingFocusUsername
-		p.onboarding.Error = "Your name is required."
+		p.onboarding.Error = "Your username is required."
 		return
 	}
-	if strings.TrimSpace(p.model.OnboardingSwarmName) == "" {
+	swarm := strings.TrimSpace(p.model.OnboardingSwarmName)
+	if swarm == "" {
 		p.onboarding.Focus = onboardingFocusSwarmName
-		p.onboarding.Error = "Swarm name is required."
+		p.onboarding.Error = "Enter a name for this Swarm."
 		return
 	}
 	p.pendingHomeAction = &HomeAction{
 		Kind:      HomeActionSaveOnboarding,
-		Username:  strings.TrimSpace(p.model.OnboardingUsername),
-		SwarmName: strings.TrimSpace(p.model.OnboardingSwarmName),
+		Username:  user,
+		SwarmName: swarm,
 	}
 	p.onboarding.Pending = true
-	p.onboarding.Status = "Saving identity..."
+	p.onboarding.Status = "Creating account and saving settings…"
 	p.onboarding.Error = ""
 }
 
@@ -560,8 +605,8 @@ func (p *HomePage) drawOnboardingIdentity(s tcell.Screen, content Rect) {
 		value string
 		focus onboardingFocus
 	}{
-		{label: "Your name", value: p.model.OnboardingUsername, focus: onboardingFocusUsername},
-		{label: "Swarm name", value: p.model.OnboardingSwarmName, focus: onboardingFocusSwarmName},
+		{label: "Your username", value: p.model.OnboardingUsername, focus: onboardingFocusUsername},
+		{label: "Swarm name (optional)", value: p.model.OnboardingSwarmName, focus: onboardingFocusSwarmName},
 	}
 	y := content.Y + 1
 	for _, field := range fields {
@@ -577,17 +622,21 @@ func (p *HomePage) drawOnboardingIdentity(s tcell.Screen, content Rect) {
 		value := field.value
 		if value == "" {
 			value = "Type here"
+			if field.focus == onboardingFocusSwarmName {
+				value = "default (optional)"
+			}
 			valueStyle = p.theme.TextMuted
 		}
 		DrawText(s, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valueStyle, clampTail(value, fieldRect.W-4))
 		y += 5
 	}
-	label := "[ Continue ]   [ Cancel / Exit ]"
+
+	label := "[ Continue (Enter) ]   [ Cancel / Exit ]"
 	if p.onboarding.Focus == onboardingFocusContinue {
-		label = "› [ Continue ]   [ Cancel / Exit ]"
+		label = "› [ Continue (Enter) ]   [ Cancel / Exit ]"
 	}
 	if p.onboarding.Focus == onboardingFocusCancel {
-		label = "[ Continue ]   › [ Cancel / Exit ]"
+		label = "[ Continue (Enter) ]   › [ Cancel / Exit ]"
 	}
 	DrawText(s, content.X, content.Y+content.H-1, content.W, p.theme.Primary, label)
 }

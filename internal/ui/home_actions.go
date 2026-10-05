@@ -56,6 +56,7 @@ type HomeAction struct {
 	ProjectName        string
 	ProjectDescription string
 	AttachWorkspace    bool
+	WorkspacePaths     []string
 }
 
 func (p *HomePage) PopHomeAction() (HomeAction, bool) {

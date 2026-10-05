@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/gdamore/tcell/v2"
 	"swarm-refactor/swarmtui/internal/client"
 )
@@ -18,7 +20,13 @@ func (p *HomePage) repositoryControls() []onboardingControl {
 		for _, repo := range s.Repositories {
 			controls = append(controls, onboardingControl{"Git repo: " + repo.Path, "repository", repo.Path})
 		}
-		return append(controls, onboardingControl{"Enter repository path", "edit", ""}, onboardingControl{"Refresh repository list", "discover", ""}, onboardingControl{"Back", "cancel", ""})
+		return append(controls,
+			onboardingControl{"Enter repository path", "edit", ""},
+			onboardingControl{"[ Add Selected Workspaces & Finish ]", "save", ""},
+			onboardingControl{"[ Continue without Workspaces (Skip) ]", "skip", ""},
+			onboardingControl{"Refresh repository list", "discover", ""},
+			onboardingControl{"Back", "cancel", ""},
+		)
 	}
 	if s.Review != nil {
 		controls := []onboardingControl{}
@@ -46,8 +54,6 @@ func (p *HomePage) repositoryControls() []onboardingControl {
 		}
 		return append(controls, onboardingControl{"Refresh review (discard selection)", "review", ""}, onboardingControl{"Cancel review", "cancel", ""})
 	}
-	// Put the next useful step first, not another verification loop. Repository
-	// state is daemon-owned; discovery and folder selection never grant consent.
 	primary := onboardingControl{"Inspect selected folder", "inspect", ""}
 	if s.Error != "" {
 		primary.label = "Retry selected folder"
@@ -77,11 +83,13 @@ func (p *HomePage) repositoryControls() []onboardingControl {
 	controls = append(controls,
 		onboardingControl{"Use an existing Git repository…", "discover", ""},
 		onboardingControl{"Select another location", "edit", ""},
+		onboardingControl{"[ Add Selected Workspaces & Finish ]", "save", ""},
 		onboardingControl{"Skip / Continue without folder", "skip", ""},
 		onboardingControl{"Back to Project", "back", ""},
 		onboardingControl{"Cancel setup / Exit", "exit", ""})
 	return controls
 }
+
 func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	s := &p.onboarding
 	if s.NamingProject {
@@ -92,7 +100,12 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.handleOnboardingWorkspaceShortcut(ev)
 		return
 	}
+
 	controls := p.repositoryControls()
+	if len(controls) == 0 {
+		return
+	}
+
 	if ev.Key() == tcell.KeyTab || ev.Key() == tcell.KeyDown {
 		s.ActionIndex = (s.ActionIndex + 1) % len(controls)
 		return
@@ -101,6 +114,7 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		s.ActionIndex = (s.ActionIndex + len(controls) - 1) % len(controls)
 		return
 	}
+
 	if ev.Key() == tcell.KeyEscape {
 		if s.Review != nil || s.SetupConsent || s.ChoosingRepository {
 			s.ChoosingRepository = false
@@ -118,19 +132,34 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 			s.Repository = nil
 			s.ActionIndex = 0
 		} else {
-			p.ShowOnboardingProject("Project settings.")
+			p.ShowOnboardingProject("Enter project name.")
 		}
 		return
 	}
+
 	if ev.Key() == tcell.KeyCtrlL || ev.Key() == tcell.KeyCtrlN || ev.Key() == tcell.KeyCtrlS {
 		p.handleOnboardingWorkspaceShortcut(ev)
 		return
 	}
+
+	// Space toggles selection on repository items in multi-select mode
+	if ev.Key() == tcell.KeyRune && ev.Rune() == ' ' {
+		if s.ActionIndex < len(controls) && controls[s.ActionIndex].action == "repository" {
+			if s.Selected == nil {
+				s.Selected = make(map[string]bool)
+			}
+			path := controls[s.ActionIndex].path
+			s.Selected[path] = !s.Selected[path]
+			return
+		}
+	}
+
 	if s.SetupConsent && ev.Key() == tcell.KeyRune && ev.Rune() == 'y' {
 		s.ActionIndex = 0
 	} else if ev.Key() != tcell.KeyEnter {
 		return
 	}
+
 	if s.ActionIndex >= len(controls) {
 		s.ActionIndex = 0
 	}
@@ -169,7 +198,25 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 			p.SetOnboardingError("Acknowledge omitted content before continuing.")
 			return
 		}
-		kind = HomeActionCreateOnboardingWorkspace
+		if s.Repository != nil {
+			kind = HomeActionCreateOnboardingWorkspace
+			p.pendingHomeAction = &HomeAction{Kind: kind, WorkspacePath: s.WorkspacePath}
+			return
+		}
+		var selected []string
+		for _, r := range s.Repositories {
+			if s.Selected != nil && s.Selected[r.Path] {
+				selected = append(selected, r.Path)
+			}
+		}
+		if s.WorkspacePath != "" {
+			selected = append(selected, s.WorkspacePath)
+		}
+		p.submitOnboardingProjectWorkspaces(selected)
+		return
+	case "skip":
+		p.submitOnboardingProjectWorkspaces(nil)
+		return
 	case "baseline":
 		if !s.ConfirmOmissions {
 			p.SetOnboardingError("Acknowledge omitted content before creating a baseline.")
@@ -207,14 +254,8 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		s.BaselineAttempt = nil
 		p.handleOnboardingWorkspaceShortcut(tcell.NewEventKey(tcell.KeyCtrlL, 0, tcell.ModNone))
 		return
-	case "skip":
-		s.Pending = true
-		s.Error = ""
-		s.Status = "Finishing setup without workspace folder..."
-		p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("skip-onboarding-workspace")}
-		return
 	case "back":
-		p.ShowOnboardingProject("Project settings.")
+		p.ShowOnboardingProject("Enter project name.")
 		return
 	case "exit":
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
@@ -225,11 +266,26 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	s.Status = "Waiting for daemon acknowledgement..."
 	p.pendingHomeAction = &HomeAction{Kind: kind, WorkspacePath: s.WorkspacePath}
 }
+
+func (p *HomePage) submitOnboardingProjectWorkspaces(paths []string) {
+	s := &p.onboarding
+	name := strings.TrimSpace(s.ProjectName)
+	if name == "" {
+		name = "default"
+	}
+	s.Pending = true
+	s.Error = ""
+	s.Status = "Creating project and completing setup…"
+	p.pendingHomeAction = &HomeAction{
+		Kind:           HomeActionCreateOnboardingProject,
+		ProjectName:    name,
+		WorkspacePaths: paths,
+	}
+}
+
 func (p *HomePage) SetOnboardingRepositories(entries []client.WorkspaceDiscoverEntry) {
 	s := &p.onboarding
 	s.Repositories = nil
-	// Saved Git directories may live outside the daemon's default search roots.
-	// They remain candidates only: choosing one still revalidates via inspection.
 	candidates := make([]client.WorkspaceDiscoverEntry, 0, len(entries)+len(p.model.Directories))
 	for _, directory := range p.model.Directories {
 		if directory.HasGit {
@@ -248,9 +304,9 @@ func (p *HomePage) SetOnboardingRepositories(entries []client.WorkspaceDiscoverE
 	s.ChoosingRepository = true
 	s.ActionIndex = 0
 	s.Error = ""
-	s.Status = "Select a repository to verify it, then open the workspace."
+	s.Status = "Select a repository to verify it, or press s to skip."
 	if len(s.Repositories) == 0 {
-		s.Status = "No Git repositories found in the runtime account's search locations. Enter a repository path, or go Back to create a new workspace."
+		s.Status = "No Git repositories found. Enter a repository path, or press s to continue without one."
 	}
 }
 
@@ -262,6 +318,7 @@ func (p *HomePage) SetOnboardingRepository(r client.OnboardingRepository) {
 	p.onboarding.Status = r.Message
 	p.onboarding.ActionIndex = 0
 }
+
 func (p *HomePage) SetOnboardingReview(r client.OnboardingReview) {
 	p.SetOnboardingRepository(r.Repository)
 	p.onboarding.Review = &r
@@ -270,7 +327,9 @@ func (p *HomePage) SetOnboardingReview(r client.OnboardingReview) {
 	p.onboarding.BaselineAttempt = nil
 	p.onboarding.Status = r.Warning
 }
+
 func (p *HomePage) OnboardingCommittedOnly() bool { return p.onboarding.ConfirmOmissions }
+
 func (p *HomePage) OnboardingBaselineRequest() client.OnboardingBaseline {
 	s := &p.onboarding
 	if s.BaselineAttempt != nil {
@@ -288,7 +347,9 @@ func (p *HomePage) OnboardingBaselineRequest() client.OnboardingBaseline {
 	s.BaselineAttempt = &req
 	return req
 }
+
 func (p *HomePage) ClearOnboardingReview() { p.onboarding.Review = nil }
+
 func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	st := &p.onboarding
 	DrawText(s, content.X, content.Y, content.W, p.theme.TextMuted, clampEllipsis("Runtime account: "+st.RuntimeAccount+" (not terminal identity)", content.W))
@@ -306,7 +367,7 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	}
 	controls := p.repositoryControls()
 	if st.ChoosingRepository {
-		DrawText(s, content.X, content.Y+2, content.W, p.theme.TextMuted, fmt.Sprintf("Git repositories · %d found · ↑/↓ scroll", len(st.Repositories)))
+		DrawText(s, content.X, content.Y+2, content.W, p.theme.TextMuted, fmt.Sprintf("Git repositories · %d found · ↑/↓ scroll · s skip", len(st.Repositories)))
 	}
 	height := maxInt(1, content.H-3)
 	start := maxInt(0, st.ActionIndex-height+1)
