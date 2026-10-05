@@ -773,8 +773,8 @@ export function MinimalTaskCard({
   const detailsToggleRef = useRef<HTMLButtonElement>(null)
   const detailsId = useId()
   useEffect(() => {
-    if (expanded && projectId) desktopProjects.inspectTask(projectId, task.id)
-  }, [expanded, projectId, task.id, task.revision])
+    if (expanded && projectId && !task.detailLoaded) desktopProjects.inspectTask(projectId, task.id)
+  }, [expanded, projectId, task.id, task.revision, task.detailLoaded])
   const handleToggleExpand = () => {
     if (expanded) {
       requestAnimationFrame(() => {

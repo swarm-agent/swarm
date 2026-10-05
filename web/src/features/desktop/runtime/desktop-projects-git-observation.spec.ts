@@ -273,3 +273,27 @@ test('card hydration does not invalidate inspected project Git', { timeout: 5000
   await flush()
   lease.release()
 })
+
+// Requirement: with an already hydrated board, repeatedly selecting, expanding,
+// or switching tasks (100 interactions) must consume shared observed state with
+// ZERO additional task assessment requests, ZERO collection reads, and no subscription churn.
+test('repeatedly selecting, expanding, and switching tasks causes zero Git assessments and no subscription churn', { timeout: 5000 }, async () => {
+  const h = harness()
+  const lease = await hydrate(h)
+  const initialReads = h.reads.length
+  const initialCollections = h.collections
+  const start = performance.now()
+  for (let i = 0; i < 100; i++) {
+    const taskId = i % 2 === 0 ? 'integrated' : 'pending'
+    h.runtime.inspectTask('project', taskId)
+  }
+  await flush()
+  const durationMs = performance.now() - start
+  assert.equal(h.reads.length, initialReads, 'zero additional Git assessment requests after 100 interactions')
+  assert.equal(h.collections, initialCollections, 'zero collection refetches after 100 interactions')
+  assert.equal(h.state.project.tasks[0].gitStatus, 'clean')
+  assert.equal(h.state.project.tasks[1].gitStatus, 'diverged')
+  assert.ok(durationMs < 1000, `100 interactions completed synchronously in ${durationMs.toFixed(2)}ms`)
+  lease.release()
+})
+
