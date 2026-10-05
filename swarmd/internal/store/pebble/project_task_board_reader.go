@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"swarm-refactor/swarmtui/pkg/environments"
 )
 
 // ProjectTaskBoardReader is request-local, read-only and valid only inside the
@@ -34,6 +35,24 @@ func (s *SessionStore) ReadProjectTaskBoard(account, project string, archived bo
 func (r *ProjectTaskBoardReader) BindTask(task *ProjectTaskRecord) {
 	if task != nil {
 		task.EnvironmentAttachments = taskEnvironmentProjection(*task)
+		for i := range task.EnvironmentAttachments {
+			a := &task.EnvironmentAttachments[i]
+			if a.State == "stale" { continue }
+			if a.Source.DeploymentID != "" {
+				dep, found, err := boardRead[environments.Deployment](r, KeyDeploymentForAccount(r.account, a.Source.WorkspaceID, a.Source.DeploymentID))
+				if err != nil || !found || dep.AccountScopeID != r.account || dep.CreatedAt != a.Source.CreatedAt || dep.Runtime.ContainerID != a.Source.ContainerID { a.State = "stale"; continue }
+				switch dep.Status {
+				case environments.DeploymentStatusFailed: a.State = "failed"
+				case environments.DeploymentStatusStopped, environments.DeploymentStatusTerminated: a.State = "stopped"
+				default:
+					if dep.ReviewExpired(time.Now().UnixMilli()) || !a.Source.Matches(dep) { a.State = "stale" } else { a.State = "ready" }
+				}
+			} else if a.OperationID != "" {
+				op, found, err := boardRead[environments.EnvironmentOperation](r, KeyEnvironmentOperationForAccount(r.account, a.Source.WorkspaceID, a.OperationID))
+				if err != nil || !found || op.AccountScopeID != r.account || op.EnvironmentID != a.EnvironmentID { a.State = "stale"; continue }
+				if op.IsActive() { if op.Action == environments.OperationActionBuild { a.State = "building" } else { a.State = "preparing" } } else if op.Status == environments.OperationStatusSucceeded { a.State = "stale" } else { a.State = "failed" }
+			}
+		}
 	}
 	r.task = task
 }

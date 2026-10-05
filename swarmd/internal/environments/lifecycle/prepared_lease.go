@@ -82,9 +82,8 @@ func (m *DeploymentManager) AcquirePreparedLease(ctx context.Context, req Acquir
 	if err := ctx.Err(); err != nil {
 		return environments.DeploymentLease{}, err
 	}
-	if err := m.validateTaskLease(ctx, candidate); err != nil {
-		return environments.DeploymentLease{}, err
-	}
+	// Durable authorization is repeated at exec's provider boundary, without
+	// holding lifecycle locks (validators may call back into the manager).
 	candidate.ExpiresAt = resolveLeaseExpiresAt(time.Now().UnixMilli(), req.TTLMillis, 0)
 	return m.deployments.Leases().AcquireSharedLease(candidate)
 }

@@ -118,9 +118,10 @@ func (s *LeaseStore) AcquireLease(lease environments.DeploymentLease) (environme
 		lease.AcquiredAt = now
 	}
 	lease.Active = true
-	lease.Shared = false
-	lease.PreparedSource = nil
-	lease.TaskBinding = nil
+	if lease.Shared || lease.PreparedSource != nil || lease.TaskBinding != nil {
+		return environments.DeploymentLease{}, errors.New("task-bound receipts require prepared acquisition")
+	}
+	if err := s.boundReviewLease(&lease, now, false); err != nil { return environments.DeploymentLease{}, err }
 
 	if err := lease.Validate(); err != nil {
 		return environments.DeploymentLease{}, fmt.Errorf("validate lease: %w", err)
@@ -140,7 +141,7 @@ func (s *LeaseStore) AcquireLease(lease environments.DeploymentLease) (environme
 		return environments.DeploymentLease{}, fmt.Errorf("check active lease: %w", err)
 	}
 
-	batch := s.store.NewBatch()
+	batch := s.realtimeBatch(lease.AccountScopeID, lease.WorkspaceID)
 	defer batch.Close()
 
 	if hasActive {
@@ -228,7 +229,7 @@ func (s *LeaseStore) ReleaseLease(accountScopeID, workspaceID, leaseID string, r
 		lease.ReleaseReason = "released"
 	}
 
-	batch := s.store.NewBatch()
+	batch := s.realtimeBatch(lease.AccountScopeID, lease.WorkspaceID)
 	defer batch.Close()
 
 	leaseRaw, err := json.Marshal(lease)
@@ -355,7 +356,7 @@ func (s *LeaseStore) ExpireStaleLeases(accountScopeID, workspaceID string, nowMi
 			l.ReleasedAt = nowMillis
 			l.ReleaseReason = "expired"
 
-			batch := s.store.NewBatch()
+			batch := s.realtimeBatch(l.AccountScopeID, l.WorkspaceID)
 			raw, err := json.Marshal(l)
 			if err != nil {
 				batch.Close()
@@ -447,6 +448,7 @@ func (s *LeaseStore) AcquireSharedLease(lease environments.DeploymentLease) (env
 	if err := lease.Validate(); err != nil {
 		return environments.DeploymentLease{}, err
 	}
+	if err := s.boundReviewLease(&lease, now, true); err != nil { return environments.DeploymentLease{}, err }
 	key := KeyDeploymentActiveLeaseForAccount(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
 	id, found, err := s.store.GetBytes(key)
 	if err != nil {
@@ -490,7 +492,7 @@ func (s *LeaseStore) AcquireSharedLease(lease environments.DeploymentLease) (env
 	if err != nil {
 		return environments.DeploymentLease{}, err
 	}
-	batch := s.store.NewBatch()
+	batch := s.realtimeBatch(lease.AccountScopeID, lease.WorkspaceID)
 	defer batch.Close()
 	if err := batch.Set([]byte(KeyDeploymentLeaseForAccount(lease.AccountScopeID, lease.WorkspaceID, lease.ID)), raw, nil); err != nil {
 		return environments.DeploymentLease{}, err
@@ -505,7 +507,7 @@ func (s *LeaseStore) AcquireSharedLease(lease environments.DeploymentLease) (env
 }
 
 // Called under the store stripe lock; receipt state and index change atomically.
-func (s *LeaseStore) removeSharedIndex(batch *pebble.Batch, lease environments.DeploymentLease) error {
+func (s *LeaseStore) removeSharedIndex(batch *environmentLeaseBatch, lease environments.DeploymentLease) error {
 	key := sharedLeaseKey(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
 	var ids []string
 	if _, err := s.store.GetJSON(key, &ids); err != nil {
@@ -528,4 +530,17 @@ func (s *LeaseStore) removeSharedIndex(batch *pebble.Batch, lease environments.D
 		return err
 	}
 	return batch.Set([]byte(key), raw, nil)
+}
+
+// Storage clamps all acquisition paths, not only task tool requests. Legacy
+// standalone lease records remain supported, but prepared receipts fail closed.
+func (s *LeaseStore) boundReviewLease(lease *environments.DeploymentLease, now int64, prepared bool) error {
+	dep, found, err := NewDeploymentStore(s.store).Get(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
+	if err != nil { return err }
+	if prepared && (!found || lease.TaskBinding == nil || lease.PreparedSource == nil || !lease.PreparedSource.Matches(dep)) { return errors.New("prepared receipt source or binding unavailable") }
+	if !found { return nil }
+	if dep.EnvironmentID != lease.EnvironmentID { return errors.New("lease environment mismatch") }
+	if dep.ReviewExpired(now) { return errors.New("review deadline expired; prepare a new deployment") }
+	if deadline := dep.ReviewExpiresAt(); deadline > 0 && (lease.ExpiresAt <= 0 || lease.ExpiresAt > deadline) { lease.ExpiresAt = deadline }
+	return nil
 }

@@ -676,6 +676,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := deploymentMgr.Recover(bgCtx); err != nil {
 		log.Printf("warning: environment supervisor recovery: %v", err)
 	}
+	go deploymentMgr.RunReviewCleanup(bgCtx, func(err error) {
+		log.Printf("warning: environment review cleanup: %v", err)
+	})
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)

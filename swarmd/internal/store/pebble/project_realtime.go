@@ -89,6 +89,9 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 				if err != nil {
 					return err
 				}
+				previous := ProjectTaskRecord{}
+				if found { previous = *prior }
+				if err := setTaskEnvironmentIndex(batch, previous, task); err != nil { return err }
 				if found {
 					if err := repository.bindTaskUsageInBatch(batch, account, *prior); err != nil {
 						return err
@@ -128,6 +131,12 @@ func setProjectRealtimeMutationInBatch(batch *pebble.Batch, account string, m *p
 	for _, key := range m.deletes {
 		if !isAllowedProjectKey(account, key) {
 			return ErrProjectInvalid
+		}
+		if strings.HasPrefix(key, KeyProjectTaskAccountPrefix) && len(repositories) > 0 {
+			var prior ProjectTaskRecord
+			found, err := repositories[0].store.GetJSON(key, &prior)
+			if err != nil { return err }
+			if found { if err := setTaskEnvironmentIndex(batch, prior, ProjectTaskRecord{}); err != nil { return err } }
 		}
 		if err := batch.Delete([]byte(key), nil); err != nil {
 			return err

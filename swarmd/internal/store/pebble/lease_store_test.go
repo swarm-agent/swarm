@@ -299,12 +299,19 @@ func TestLeaseStore_SharedConsumers(t *testing.T) {
 	store := openEphemeralStore(t)
 	ls := NewLeaseStore(store)
 	base := environments.DeploymentLease{AccountScopeID: "account", WorkspaceID: "workspace", DeploymentID: "deployment", EnvironmentID: "environment", ConsumerType: environments.ConsumerTypeSession, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	a := taskEnvironmentFixture("attachment")
+	dep, err := NewDeploymentStore(store).Save(environments.Deployment{ID: base.DeploymentID, AccountScopeID: "account", WorkspaceID: "workspace", EnvironmentID: "environment", ConnectionID: "local", Name: "Review", Status: environments.DeploymentStatusReady, Health: environments.HealthStatusHealthy, Build: &a.Source.Build, Runtime: environments.RuntimeMetadata{ContainerID: a.Source.ContainerID}})
+	if err != nil { t.Fatal(err) }
+	source := a.Source
+	source.CreatedAt = dep.CreatedAt
+	binding := &environments.TaskLeaseBinding{ProjectID: "project", TaskID: "task", AttemptID: "initial", AttachmentID: a.ID, AttachmentRevision: 1, UserID: "user"}
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			lease := base
+			lease.PreparedSource, lease.TaskBinding = &source, binding
 			lease.ConsumerID = fmt.Sprintf("consumer-%d", i)
 			if _, err := NewLeaseStore(store).AcquireSharedLease(lease); err != nil {
 				t.Errorf("acquire: %v", err)
@@ -343,6 +350,7 @@ func TestLeaseStore_SharedConsumers(t *testing.T) {
 		t.Fatal(err)
 	}
 	base.ConsumerID = "shared"
+	base.PreparedSource, base.TaskBinding = &source, binding
 	if _, err := ls.AcquireSharedLease(base); !errors.Is(err, ErrDeploymentLeaseHeld) {
 		t.Fatalf("shared borrowed exclusive: %v", err)
 	}

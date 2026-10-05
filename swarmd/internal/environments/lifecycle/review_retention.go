@@ -8,45 +8,96 @@ import (
 	"swarm-refactor/swarmtui/pkg/environments"
 )
 
-const ManagedReviewRetention = 24 * time.Hour
+const ManagedReviewRetention = environments.ManagedReviewRetention
 
-// CleanupReviewDeployments is an explicit bounded cleanup sweep, not a polling
-// loop. Managed deployments have a finite review hold measured from creation.
-// Live leases and operations postpone cleanup; attachment expiry is unrelated.
+func ManagedReviewExpired(dep environments.Deployment, now int64) bool { return dep.ReviewExpired(now) }
+
+type reviewPager interface {
+	ReviewPage(context.Context, string) ([]environments.Deployment, string, error)
+}
+
+// RunReviewCleanup performs one bounded page immediately (including on restart),
+// then advances every minute. One goroutine, no fanout, no task/status polling.
+// Failed stops remain eligible on the next traversal; deadlines never move.
+func (m *DeploymentManager) RunReviewCleanup(ctx context.Context, report func(error)) {
+	pager, ok := m.deployments.(reviewPager)
+	if !ok { if report != nil { report(errors.New("review cleanup pagination unavailable")) }; return }
+	cursor := ""
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done(): return
+		case <-m.rootCtx.Done(): return
+		case <-timer.C:
+		}
+		pageCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		deps, next, err := pager.ReviewPage(pageCtx, cursor)
+		if err == nil {
+			for _, dep := range deps {
+				_, cleanupErr := m.cleanupReviewDeployment(pageCtx, dep)
+				err = errors.Join(err, cleanupErr)
+				if pageCtx.Err() != nil { break }
+			}
+			cursor = next
+		}
+		cancel()
+		if err != nil && report != nil { report(err) }
+		timer.Reset(time.Minute)
+	}
+}
+
 func (m *DeploymentManager) CleanupReviewDeployments(ctx context.Context, account, workspace string) ([]string, error) {
 	if m == nil || m.deployments == nil { return nil, errors.New("deployment store unavailable") }
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	deps, err := m.deployments.List(account, workspace, 1000)
+	deps, err := m.deployments.List(account, workspace, 64)
 	if err != nil { return nil, err }
 	var stopped []string
 	for _, dep := range deps {
-		if err := ctx.Err(); err != nil { return stopped, err }
-		if dep.Build == nil || !dep.IsActive() || dep.CreatedAt <= 0 || time.Now().UnixMilli() < dep.CreatedAt + ManagedReviewRetention.Milliseconds() { continue }
-		// Ensure/acquire serialize on the environment lock before the deployment lock.
-		lock := m.getEnvLock(account, workspace, dep.EnvironmentID)
-		if err := lock.Lock(ctx); err != nil { return stopped, err }
-		err := func() error {
-			defer lock.Unlock()
-			lease, found, err := m.deployments.GetActiveLease(account, workspace, dep.ID)
-			if err != nil { return err }
-			if found && lease.IsHeld(time.Now().UnixMilli()) { return nil }
-			if m.operations != nil {
-				_, active, err := m.operations.GetActiveOperationForDeployment(account, workspace, dep.ID)
-				if err != nil { return err }
-				if active { return nil }
-			}
-			if err := m.StopDeployment(ctx, account, workspace, dep.ID); err != nil { return err }
-			stopped = append(stopped, dep.ID)
-			return nil
-		}()
-		if err != nil { return stopped, err }
+		didStop, e := m.cleanupReviewDeployment(ctx, dep)
+		err = errors.Join(err, e)
+		if didStop { stopped = append(stopped, dep.ID) }
+		if ctx.Err() != nil { break }
 	}
-	return stopped, nil
+	return stopped, err
 }
 
-// ManagedReviewExpired prevents a new consumer from extending an expired hold.
-// Existing consumers remain releasable and are never stopped by attachment expiry.
-func ManagedReviewExpired(dep environments.Deployment, now int64) bool {
-	return dep.Build != nil && dep.CreatedAt > 0 && now >= dep.CreatedAt + ManagedReviewRetention.Milliseconds()
+func (m *DeploymentManager) cleanupReviewDeployment(ctx context.Context, candidate environments.Deployment) (bool, error) {
+	if !candidate.ReviewExpired(time.Now().UnixMilli()) || candidate.Status == environments.DeploymentStatusStopped || candidate.Status == environments.DeploymentStatusTerminated { return false, nil }
+	lock := m.getEnvLock(candidate.AccountScopeID, candidate.WorkspaceID, candidate.EnvironmentID)
+	if err := lock.Lock(ctx); err != nil { return false, err }
+	defer lock.Unlock()
+	dep, found, err := m.deployments.Get(candidate.AccountScopeID, candidate.WorkspaceID, candidate.ID)
+	if err != nil { return false, err }
+	if !found || dep.CreatedAt != candidate.CreatedAt || dep.Runtime.ContainerID != candidate.Runtime.ContainerID || !dep.ReviewExpired(time.Now().UnixMilli()) { return false, nil }
+	if err := m.guardDeploymentIdle(ctx, dep); err != nil {
+		if errors.Is(err, ErrDeploymentLeaseHeld) || errors.Is(err, environments.ErrDeploymentOperationConflict) { return false, nil }
+		return false, err
+	}
+	if err := m.stopDeploymentLocked(ctx, dep.AccountScopeID, dep.WorkspaceID, dep.ID); err != nil { return false, err }
+	return true, nil
+}
+
+// Called under lifecycle locks. An operation may mutate only its own target;
+// independent active and unresolved operations always prevent destructive work.
+func (m *DeploymentManager) guardDeploymentIdle(ctx context.Context, dep environments.Deployment) error {
+	lease, found, err := m.deployments.GetActiveLease(dep.AccountScopeID, dep.WorkspaceID, dep.ID)
+	if err != nil { return err }
+	if found && lease.IsHeld(time.Now().UnixMilli()) { return ErrDeploymentLeaseHeld }
+	if m.operations != nil {
+		op, active, err := m.operations.GetActiveOperationForDeployment(dep.AccountScopeID, dep.WorkspaceID, dep.ID)
+		if err != nil { return err }
+		if active && op.OperationID != operationIDFromContext(ctx) { return environments.ErrDeploymentOperationConflict }
+	}
+	return ctx.Err()
+}
+
+func (m *DeploymentManager) requireDeploymentProvider(dep environments.Deployment) error {
+	if m.connections == nil || m.registry == nil { return errors.New("provider unavailable") }
+	conn, found, err := m.connections.Get(dep.AccountScopeID, dep.WorkspaceID, dep.ConnectionID)
+	if err != nil { return err }
+	if !found { return ErrConnectionNotFound }
+	if _, ok := m.registry.Get(conn.Kind); !ok { return ErrProviderNotRegistered }
+	return nil
 }
