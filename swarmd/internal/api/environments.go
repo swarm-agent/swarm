@@ -212,6 +212,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		action := strings.ToLower(strings.TrimSpace(req.Action))
+		if req.Kind == environments.ConnectionKindLocalPodman && (req.Host != "" || req.User != "" || req.Port != 0 || req.SSHKeyPath != "" || req.KnownHostsFile != "" || req.SocketPath != "" || req.DockerHost != "" || req.Capabilities != nil) {
+			writeError(w, http.StatusBadRequest, errors.New("local_podman forbids remote/socket configuration and capability overrides"))
+			return
+		}
 		switch action {
 		case "create", "update":
 			connID := strings.TrimSpace(req.ID)
@@ -244,6 +248,8 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 					conn.Capabilities.SupportsDocker = true
 					conn.Capabilities.SupportsDirectMount = true
 				}
+			case environments.ConnectionKindLocalPodman:
+				// No configuration or assumed capabilities: provider probe is authority.
 			case environments.ConnectionKindSSH:
 				port := req.Port
 				if port <= 0 {
@@ -272,6 +278,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if found {
+					if conn.Kind != existing.Kind {
+						writeError(w, http.StatusBadRequest, errors.New("connection kind cannot be changed"))
+						return
+					}
 					conn.CreatedAt = existing.CreatedAt
 					if conn.Name == "" {
 						conn.Name = existing.Name
@@ -326,6 +336,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 			} else {
 				conn = environments.Connection{
 					ID:             "check-temp",
+					Name:           "Connection check",
 					AccountScopeID: accountScopeID,
 					WorkspaceID:    workspaceID,
 					Kind:           req.Kind,

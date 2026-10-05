@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Preserve bounded, redacted local-engine failure diagnostics and add an explicit rootless Podman/systemd managed-environment contract with capability admission, private cgroups, PID limits, no host mounts, and loopback-only ports. Docs impact: managed-environment tool schema/help documents the typed runtime and host prerequisites; live runtime qualification remains separate.
+
 - Add headless worker control, runtime journaling, verified-host SSH transport probe, and GCP compute target registration. Support fenced runtime claims, command acknowledgement, and target capacity reservations in store, runtime execution service, and TypeScript SDK (`WorkerControl`). Docs impact: none.
 
 - Add typed SDK permission views and explicit structured/custom answers, confirmed browser/bridge resolution with recoverable errors, duplicate guards and durable pending-request reconciliation. Never auto-answer ask-user, and remove bypass/model configuration from chat quickstarts. Docs impact: explicit-decision examples and permission protocol migration guidance in `packages/sdk/README.md` and SDK quickstarts.

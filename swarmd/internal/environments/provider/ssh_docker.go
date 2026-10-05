@@ -108,6 +108,9 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	if req.Environment == nil {
 		return nil, errors.New("environment cannot be nil")
 	}
+	if err := ValidateRuntimeConnection(req.Connection, req.Environment); err != nil {
+		return nil, err
+	}
 	if req.Deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}

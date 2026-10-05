@@ -233,3 +233,87 @@ func TestEnvironmentStrictSchema(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: the new typed runtime must survive real tool/store export-import and
+// update paths, while bad/unknown isolation options fail before persistence.
+// This extends the existing strict decoder regression at its production boundary.
+func TestEnvironmentRootlessSystemdRoundTrip(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+	fields := strictEnvironmentFixture(t)
+	fields["action"], fields["id"] = "create", "rootless-env"
+	fields["container"].(map[string]any)["rootless_systemd"] = map[string]any{"cgroup_namespace": "private", "network": "slirp4netns", "pids_limit": 1024}
+	fields["provisioning"] = map[string]any{"strategy": map[string]any{"kind": "registry_image", "registry_image": map[string]any{"image": "alpine:3.21", "pull_policy": "never"}}}
+	created := strictEnvironmentCall(t, h, fields)
+	if created.Container.RootlessSystemd == nil || created.Container.RootlessSystemd.PidsLimit != 1024 {
+		t.Fatal("runtime lost on create")
+	}
+	out, err := execTool(t, h, "manage_environments", map[string]any{"action": "export", "id": created.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported map[string]any
+	if err = json.Unmarshal([]byte(out), &exported); err != nil {
+		t.Fatal(err)
+	}
+	imported := strictEnvironmentCall(t, h, map[string]any{"action": "import", "json": exported["json"]})
+	if !reflect.DeepEqual(imported.Container, created.Container) {
+		t.Fatal("runtime lost on export/import")
+	}
+	for _, bad := range []map[string]any{
+		{"cgroup_namespace": "host", "network": "slirp4netns", "pids_limit": 1024},
+		{"cgroup_namespace": "private", "network": "host", "pids_limit": 1024},
+		{"cgroup_namespace": "private", "network": "slirp4netns", "pids_limit": 0},
+		{"cgroup_namespace": "private", "network": "slirp4netns", "pids_limit": 1.5},
+		{"cgroup_namespace": "private", "network": "slirp4netns", "pids_limit": 1024, "flags": []any{"--privileged"}},
+	} {
+		_, err = execTool(t, h, "manage_environments", map[string]any{"action": "update", "id": created.ID, "container": map[string]any{"rootless_systemd": bad}})
+		if err == nil {
+			t.Fatalf("unsafe runtime accepted: %#v", bad)
+		}
+		stored, found, err := h.envStore.Get(created.AccountScopeID, created.WorkspaceID, created.ID)
+		if err != nil || !found || !reflect.DeepEqual(stored.Container, created.Container) {
+			t.Fatal("invalid update changed persisted definition")
+		}
+	}
+}
+
+// Purpose: local Podman connection creation must remain account/workspace-scoped
+// and cannot accept capability claims, sockets, remote targets or arbitrary flags.
+// Real tool dispatch/store reads prove rejection has no mutation side effect.
+func TestLocalPodmanConnectionRoundTrip(t *testing.T) {
+	h := setupEnvironmentsToolHarness(t)
+	out, err := execTool(t, h, "manage_connections", map[string]any{"action": "create", "id": "podman-local", "name": "Rootless local", "kind": "local_podman"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Connection environments.Connection `json:"connection"`
+	}
+	if err = json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatal(err)
+	}
+	c := response.Connection
+	_, err = execTool(t, h, "manage_connections", map[string]any{"action": "create", "id": c.ID, "name": "replacement", "kind": "local_docker"})
+	if err == nil {
+		t.Fatal("create overwrote Podman connection engine")
+	}
+	if c.Kind != environments.ConnectionKindLocalPodman || c.Capabilities.SupportsPodman || c.Capabilities.RootlessSystemd {
+		t.Fatalf("unverified claims: %+v", c)
+	}
+	for _, bad := range []string{"docker_host", "host", "socket_path", "capabilities", "flags"} {
+		_, err := execTool(t, h, "manage_connections", map[string]any{"action": "update", "id": c.ID, bad: "unsupported", "name": "changed"})
+		if err == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+		out, err = execTool(t, h, "manage_connections", map[string]any{"action": "get", "id": c.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal([]byte(out), &response); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(c, response.Connection) {
+			t.Fatal("invalid update changed connection")
+		}
+	}
+}

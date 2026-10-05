@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
+	"swarm/packages/swarmd/internal/privacy"
 )
 
 // Standard operation timeout bounds.
@@ -594,6 +595,11 @@ func (r *OSCommandRunner) Run(ctx context.Context, name string, args ...string) 
 	cmd.Stdout = &boundedBuffer{buf: &stdout, max: maxBytes}
 	cmd.Stderr = &boundedBuffer{buf: &stderr, max: maxBytes}
 	err := cmd.Run()
+	if err != nil {
+		// Preserve exit-code/cancellation classification while never mixing stderr
+		// into machine-readable stdout or exposing command arguments.
+		err = &commandDiagnosticError{cause: err, message: commandDiagnostic(err.Error() + ": " + stderr.String())}
+	}
 	return stdout.Bytes(), err
 }
 
@@ -760,6 +766,31 @@ func isContainerNotRunningError(out string, err error) bool {
 		strings.Contains(lower, "is not running") ||
 		strings.Contains(lower, "cannot exec in a stopped state") ||
 		strings.Contains(lower, "container is paused")
+}
+
+type commandDiagnosticError struct {
+	cause   error
+	message string
+}
+
+func (e *commandDiagnosticError) Error() string { return e.message }
+func (e *commandDiagnosticError) Unwrap() error { return e.cause }
+
+var diagnosticCredentialLine = regexp.MustCompile(`(?im)^.*(?:authorization\s*[:=]|cookie\s*[:=]|(?:password|passwd|secret|private[_-]?key)\s*["']?\s*[:=]).*$`)
+var diagnosticPrivateKey = regexp.MustCompile(`(?s)-----BEGIN [^-]*PRIVATE KEY-----.*`)
+
+// Redact before truncating so credentials crossing the output limit cannot leak.
+func commandDiagnostic(out string) string {
+	out = diagnosticPrivateKey.ReplaceAllString(out, "[REDACTED PRIVATE KEY]")
+	out = diagnosticCredentialLine.ReplaceAllString(out, "[REDACTED CREDENTIAL LINE]")
+	out = privacy.SanitizeText(privacy.SanitizeDiagnostic(out))
+	out = strings.Map(func(r rune) rune {
+		if r < 32 && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, out)
+	return sanitizeOutput(out)
 }
 
 func sanitizeOutput(out string) string {

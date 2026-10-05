@@ -388,7 +388,19 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	// Check Docker support capability if container definition specifies an image
-	if env.Container.Image != "" && !conn.Capabilities.SupportsDocker {
+	if err := provider.ValidateRuntimeConnection(conn, &env); err != nil {
+		return nil, err
+	}
+	if conn.Kind == environments.ConnectionKindLocalPodman {
+		caps, err := prov.Capabilities(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		if !caps.SupportsPodman || !caps.RootlessSystemd {
+			return nil, errors.New("provider did not verify rootless Podman systemd support")
+		}
+	}
+	if env.Container.Image != "" && conn.Kind != environments.ConnectionKindLocalPodman && !conn.Capabilities.SupportsDocker {
 		return nil, fmt.Errorf("connection %q does not support Docker required by environment %q", conn.ID, env.ID)
 	}
 
@@ -686,7 +698,19 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 		return nil, fmt.Errorf("provider for connection kind %q: %w", conn.Kind, ErrProviderNotRegistered)
 	}
 
-	if env.Container.Image != "" && !conn.Capabilities.SupportsDocker {
+	if err := provider.ValidateRuntimeConnection(conn, &env); err != nil {
+		return nil, err
+	}
+	if conn.Kind == environments.ConnectionKindLocalPodman {
+		caps, err := prov.Capabilities(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		if !caps.SupportsPodman || !caps.RootlessSystemd {
+			return nil, errors.New("provider did not verify rootless Podman systemd support")
+		}
+	}
+	if env.Container.Image != "" && conn.Kind != environments.ConnectionKindLocalPodman && !conn.Capabilities.SupportsDocker {
 		return nil, fmt.Errorf("connection %q does not support Docker required by environment %q", conn.ID, env.ID)
 	}
 

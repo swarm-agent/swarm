@@ -515,6 +515,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	depStore := pebblestore.NewDeploymentStore(store)
 	providerReg := provider.NewRegistry()
 	providerReg.Register(provider.NewLocalDockerProvider(nil))
+	providerReg.Register(provider.NewLocalPodmanProvider(nil))
 	providerReg.Register(provider.NewSSHDockerProvider(nil))
 	deploymentMgr := lifecycle.NewDeploymentManager(connStore, envStore, depStore, workspaceStore, providerReg)
 	toolRuntime.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)

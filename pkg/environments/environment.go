@@ -49,18 +49,27 @@ type PortMapping struct {
 	Protocol      string `json:"protocol,omitempty"`  // "tcp" (default) or "udp"
 }
 
+// RootlessSystemd is the deliberately closed local Podman runtime contract.
+// It cannot request host namespaces, arbitrary flags, or unlimited processes.
+type RootlessSystemd struct {
+	CgroupNamespace string `json:"cgroup_namespace"`
+	Network         string `json:"network"`
+	PidsLimit       int    `json:"pids_limit"`
+}
+
 // ContainerDefinition specifies the container configuration.
 // Strictly contains NO runtime state (container_id, live IPs, runtime ports).
 type ContainerDefinition struct {
-	Image         string            `json:"image"`
-	Command       []string          `json:"command,omitempty"`
-	Args          []string          `json:"args,omitempty"`
-	EnvVars       map[string]string `json:"env_vars,omitempty"`
-	ExposedPorts  []PortMapping     `json:"exposed_ports,omitempty"`
-	Privileged    bool              `json:"privileged,omitempty"`
-	User          string            `json:"user,omitempty"`
-	WorkingDir    string            `json:"working_dir,omitempty"`
-	SetupCommands []string          `json:"setup_commands,omitempty"`
+	RootlessSystemd *RootlessSystemd  `json:"rootless_systemd,omitempty"`
+	Image           string            `json:"image"`
+	Command         []string          `json:"command,omitempty"`
+	Args            []string          `json:"args,omitempty"`
+	EnvVars         map[string]string `json:"env_vars,omitempty"`
+	ExposedPorts    []PortMapping     `json:"exposed_ports,omitempty"`
+	Privileged      bool              `json:"privileged,omitempty"`
+	User            string            `json:"user,omitempty"`
+	WorkingDir      string            `json:"working_dir,omitempty"`
+	SetupCommands   []string          `json:"setup_commands,omitempty"`
 }
 
 // HealthCheck specifies how to determine if the container is healthy and ready.
@@ -180,6 +189,25 @@ func (e *Environment) Validate() error {
 		return errors.New("container image cannot be empty")
 	}
 
+	if s := e.Container.RootlessSystemd; s != nil {
+		if s.CgroupNamespace != "private" || s.Network != "slirp4netns" || s.PidsLimit < 1 || s.PidsLimit > 65536 {
+			return errors.New("rootless_systemd requires cgroup_namespace=private, network=slirp4netns and pids_limit between 1 and 65536")
+		}
+		registry := e.Provisioning.Strategy.RegistryImage
+		if registry == nil || registry.Image != e.Container.Image || registry.PullPolicy != "never" || strings.HasPrefix(e.Container.Image, "-") {
+			return errors.New("rootless_systemd requires matching container/registry image and pull_policy=never")
+		}
+		if e.Container.Privileged {
+			return errors.New("rootless_systemd forbids privileged containers")
+		}
+		if e.Provisioning.Strategy.Kind != SourceStrategyKindRegistryImage || len(e.Provisioning.Mounts) != 0 {
+			return errors.New("rootless_systemd requires registry_image provisioning without host mounts")
+		}
+		if e.Resources != nil && (e.Resources.GPURequired || e.Resources.GPUCount != 0) {
+			return errors.New("rootless_systemd does not support GPU passthrough")
+		}
+	}
+
 	for i, port := range e.Container.ExposedPorts {
 		if port.ContainerPort <= 0 || port.ContainerPort > 65535 {
 			return fmt.Errorf("exposed_ports[%d] container_port must be between 1 and 65535", i)
@@ -224,6 +252,10 @@ func (e *Environment) Clone() *Environment {
 		return nil
 	}
 	cp := *e
+	if e.Container.RootlessSystemd != nil {
+		s := *e.Container.RootlessSystemd
+		cp.Container.RootlessSystemd = &s
+	}
 	if e.Container.Command != nil {
 		cp.Container.Command = append([]string(nil), e.Container.Command...)
 	}
