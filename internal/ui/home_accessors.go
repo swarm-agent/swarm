@@ -93,6 +93,12 @@ func (p *HomePage) SetModel(next model.HomeModel) {
 		}
 	}
 	p.model = next
+	if p.taskCursorIndex >= len(next.ProjectTasks) {
+		p.taskCursorIndex = 0
+	}
+	if next.SelectedTaskIndex >= 0 && next.SelectedTaskIndex < len(next.ProjectTasks) {
+		p.taskCursorIndex = next.SelectedTaskIndex
+	}
 	p.sessionMode = normalizeHomeSessionMode(p.sessionMode)
 	p.applySessionModeModel()
 	if next.OnboardingRequired {

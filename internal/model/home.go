@@ -202,6 +202,9 @@ type HomeModel struct {
 	OnboardingSwarmName         string
 	ActiveProjectID             string
 	ActiveProjectName           string
+	ActiveProjectPrimarySessionID string
+	ProjectTasks                []client.ProjectTaskRecord
+	SelectedTaskIndex           int
 	Projects                    []client.ProjectRecord
 	FinishSetupNeeded           bool
 	FinishSetupMissingProvider  bool

@@ -36,6 +36,7 @@ type ProjectRecord struct {
 	Workspaces        []ProjectWorkspaceRef     `json:"workspaces,omitempty"`
 	ProjectContext    string                    `json:"project_context,omitempty"`
 	ContextGeneration *ProjectContextGeneration `json:"context_generation,omitempty"`
+	PrimarySessionID  string                    `json:"primary_session_id,omitempty"`
 	CreatedAt         int64                     `json:"created_at"`
 	UpdatedAt         int64                     `json:"updated_at"`
 }
@@ -120,4 +121,57 @@ func (c *API) UpdateProject(ctx context.Context, id string, patch map[string]any
 		return ProjectRecord{}, fmt.Errorf("decode /v3/projects/%s response: %w", id, err)
 	}
 	return rec, nil
+}
+
+type ProjectTaskRecord struct {
+	ID              string `json:"id"`
+	ProjectID       string `json:"project_id"`
+	AccountID       string `json:"account_id,omitempty"`
+	Title           string `json:"title"`
+	Description     string `json:"description,omitempty"`
+	Status          string `json:"status"` // queued, in_progress, needs_review, completed, failed
+	SessionID       string `json:"session_id,omitempty"`
+	ActiveAttemptID string `json:"active_attempt_id,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	WorkerID        string `json:"worker_id,omitempty"`
+	WorkerName      string `json:"worker_name,omitempty"`
+	WorktreeBranch  string `json:"worktree_branch,omitempty"`
+	WorktreeName    string `json:"worktree_name,omitempty"`
+	BaseBranch      string `json:"base_branch,omitempty"`
+	GitStatus       string `json:"git_status,omitempty"`
+	CreatedAt       int64  `json:"created_at,omitempty"`
+	UpdatedAt       int64  `json:"updated_at,omitempty"`
+}
+
+func (c *API) ListProjectTasks(ctx context.Context, projectID string) ([]ProjectTaskRecord, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project id is required")
+	}
+	var resp struct {
+		Tasks []ProjectTaskRecord `json:"tasks"`
+		Count int                 `json:"count"`
+	}
+	if err := c.getJSON(ctx, "/v3/projects/"+projectID+"/tasks", &resp, true); err != nil {
+		return nil, err
+	}
+	return resp.Tasks, nil
+}
+
+func (c *API) GetProjectTask(ctx context.Context, projectID, taskID string) (ProjectTaskRecord, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ProjectTaskRecord{}, errors.New("project id is required")
+	}
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return ProjectTaskRecord{}, errors.New("task id is required")
+	}
+	var resp struct {
+		Task ProjectTaskRecord `json:"task"`
+	}
+	if err := c.getJSON(ctx, "/v3/projects/"+projectID+"/tasks/"+taskID, &resp, true); err != nil {
+		return ProjectTaskRecord{}, err
+	}
+	return resp.Task, nil
 }

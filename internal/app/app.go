@@ -257,6 +257,7 @@ type App struct {
 	api                 *client.API
 	startupCWD          string
 	activePath          string
+	activeProjectID     string
 	workspacePath       string
 	selectedChatRouteID string
 	homeModel           model.HomeModel
@@ -1904,6 +1905,15 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 	}
 	if keybinds.Match(ev, ui.KeybindHomeOpenSessions) {
+		if (a.route == "chat" || a.route == "v3chat") && strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID) != "" {
+			if a.route == "v3chat" {
+				a.closeV3Chat()
+			}
+			a.chat = nil
+			a.route = "home"
+			a.home.SelectNextHomeTip()
+			return true
+		}
 		if a.route == "chat" || a.route == "v3chat" {
 			a.handleSessionsCommand(nil)
 			return true
@@ -1923,6 +1933,12 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 				a.home.VoiceModalVisible() ||
 				a.home.ThemeModalVisible() ||
 				a.home.KeybindsModalVisible() {
+				return true
+			}
+			if strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID) != "" {
+				if err := a.openSessionSummary(model.SessionSummary{ID: strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID)}, ""); err != nil {
+					a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
+				}
 				return true
 			}
 			a.openHomeSessionsModal("")
@@ -2071,6 +2087,19 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 
 	prompt := strings.TrimSpace(a.home.PromptValue())
 	if prompt == "" {
+		if task, ok := a.home.SelectedTask(); ok {
+			a.home.ClearCommandOverlay()
+			if strings.TrimSpace(task.SessionID) != "" {
+				if err := a.openSessionSummary(model.SessionSummary{ID: strings.TrimSpace(task.SessionID)}, ""); err != nil {
+					a.home.SetStatus(fmt.Sprintf("open task session failed: %v", err))
+				}
+				return true
+			}
+			if err := a.openChatSession(task.Title, task.Title); err != nil {
+				a.home.SetStatus(fmt.Sprintf("start task session failed: %v", err))
+			}
+			return true
+		}
 		return false
 	}
 
@@ -2087,6 +2116,14 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 	}
 
 	a.home.ClearCommandOverlay()
+	if strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID) != "" {
+		if err := a.openSessionSummary(model.SessionSummary{ID: strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID)}, prompt); err != nil {
+			a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
+			return true
+		}
+		a.home.ClearPrompt()
+		return true
+	}
 	if err := a.openChatSession("", prompt); err != nil {
 		a.home.SetStatus(fmt.Sprintf("open chat failed: %v", err))
 		return true
@@ -5714,6 +5751,60 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			a.home.SetWorkspaceModalError("workspace switching is unavailable while a run is active")
 			return
 		}
+
+		var targetProject *client.ProjectRecord
+		if strings.HasPrefix(action.Path, "project:") {
+			projID := strings.TrimPrefix(action.Path, "project:")
+			for i := range a.homeModel.Projects {
+				if a.homeModel.Projects[i].ID == projID {
+					targetProject = &a.homeModel.Projects[i]
+					break
+				}
+			}
+		} else {
+			for i := range a.homeModel.Projects {
+				for _, ws := range a.homeModel.Projects[i].Workspaces {
+					if pathsEqual(ws.Path, action.Path) {
+						targetProject = &a.homeModel.Projects[i]
+						break
+					}
+				}
+				if targetProject != nil {
+					break
+				}
+			}
+		}
+		if targetProject != nil {
+			a.activeProjectID = targetProject.ID
+			a.homeModel.ActiveProjectID = targetProject.ID
+			a.homeModel.ActiveProjectName = targetProject.Name
+			a.homeModel.ActiveProjectPrimarySessionID = targetProject.PrimarySessionID
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if tasks, err := a.api.ListProjectTasks(ctx, targetProject.ID); err == nil {
+				a.homeModel.ProjectTasks = tasks
+			}
+			cancel()
+		}
+
+		if strings.HasPrefix(action.Path, "project:") {
+			if selectorMode {
+				a.home.HideWorkspaceModal()
+				name := action.Path
+				if targetProject != nil {
+					name = targetProject.Name
+				}
+				a.home.SetStatus(fmt.Sprintf("project active: %s", name))
+			} else {
+				a.home.SetWorkspaceModalDirectory(a.activeContextPath())
+				a.refreshWorkspaceModalData("")
+				if targetProject != nil {
+					a.home.SetWorkspaceModalStatus(fmt.Sprintf("project active: %s", targetProject.Name))
+				}
+			}
+			a.queueReload(false)
+			return
+		}
+
 		previousWorkspacePath := a.activeWorkspacePath()
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
@@ -6564,6 +6655,34 @@ func (a *App) loadWorkspaceModalEntries(statusHint string) ([]client.WorkspaceEn
 		return nil, err
 	}
 
+	if projects, err := a.api.ListProjects(ctx); err == nil && len(projects) > 0 {
+		for _, proj := range projects {
+			found := false
+			for _, ws := range proj.Workspaces {
+				for _, e := range entries {
+					if pathsEqual(e.Path, ws.Path) {
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				path := "project:" + proj.ID
+				if len(proj.Workspaces) > 0 && proj.Workspaces[0].Path != "" {
+					path = proj.Workspaces[0].Path
+				}
+				entries = append(entries, client.WorkspaceEntry{
+					WorkspaceName: proj.Name,
+					Path:          path,
+					Active:        proj.ID == a.activeProjectID,
+				})
+			}
+		}
+	}
+
 	a.home.SetWorkspaceModalData(mapWorkspaceModalEntries(entries))
 	a.home.SetWorkspaceModalLoading(false)
 	if len(entries) == 0 {
@@ -6783,6 +6902,9 @@ func (a *App) completeOnboardingWithProject(projectID, projectName string) {
 		return
 	}
 
+	if projectID != "" {
+		a.activeProjectID = projectID
+	}
 	next, err := a.refreshHomeV3Model(ctx)
 	if err == nil {
 		next, _ = acknowledgeOnboardingHomeModel(next, acknowledged)

@@ -72,3 +72,53 @@ func TestCreateProjectIncludesClientRequestID(t *testing.T) {
 		t.Fatalf("expected client_request_id 'my-custom-request-id-456', got %v", receivedBody["client_request_id"])
 	}
 }
+
+func TestListAndGetProjectTasks(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-1/tasks" {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tasks": []ProjectTaskRecord{
+					{ID: "task-1", ProjectID: "proj-1", Title: "Build feature", Status: "in_progress", Agent: "coder", SessionID: "sess-1"},
+					{ID: "task-2", ProjectID: "proj-1", Title: "Audit security", Status: "completed", Agent: "finder", SessionID: "sess-2"},
+				},
+				"count": 2,
+			})
+			return
+		}
+		if r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-1/tasks/task-1" {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task": ProjectTaskRecord{
+					ID: "task-1", ProjectID: "proj-1", Title: "Build feature", Status: "in_progress", Agent: "coder", SessionID: "sess-1",
+				},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	api := New(server.URL)
+	api.SetToken("test-token")
+
+	tasks, err := api.ListProjectTasks(context.Background(), "proj-1")
+	if err != nil {
+		t.Fatalf("ListProjectTasks error: %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(tasks))
+	}
+	if tasks[0].ID != "task-1" || tasks[0].Title != "Build feature" || tasks[0].Status != "in_progress" {
+		t.Fatalf("unexpected task 0: %+v", tasks[0])
+	}
+
+	task, err := api.GetProjectTask(context.Background(), "proj-1", "task-1")
+	if err != nil {
+		t.Fatalf("GetProjectTask error: %v", err)
+	}
+	if task.ID != "task-1" || task.Agent != "coder" {
+		t.Fatalf("unexpected task: %+v", task)
+	}
+}

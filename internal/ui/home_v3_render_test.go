@@ -6,6 +6,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -195,6 +196,44 @@ func TestV3HomepageCompactLayoutOmitsLaunchPanel(t *testing.T) {
 
 	if text := dumpHomeTestScreen(screen, 60, 14); strings.Contains(text, "SWARM HOME") {
 		t.Fatalf("compact homepage unexpectedly rendered full launch panel:\n%s", text)
+	}
+}
+
+func TestV3HomepageRendersProjectTasks(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	home := model.EmptyHome()
+	home.ActiveProjectID = "proj-1"
+	home.ActiveProjectName = "SuperApp"
+	home.ProjectTasks = []client.ProjectTaskRecord{
+		{ID: "task-1", Title: "Implement payment flow", Status: "in_progress", Agent: "coder"},
+		{ID: "task-2", Title: "Audit authentication tokens", Status: "completed", Agent: "finder"},
+		{ID: "task-3", Title: "Design landing page", Status: "queued", Agent: "designer"},
+	}
+
+	page := NewHomePage(home)
+	page.Draw(screen)
+
+	text := dumpHomeTestScreen(screen, 100, 30)
+	for _, want := range []string{"Tasks · SuperApp", "[RUNNING]", "Implement payment flow", "[DONE]", "Audit authentication tokens", "[QUEUED]", "Design landing page"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("homepage missing expected task text %q:\n%s", want, text)
+		}
+	}
+
+	// Test task navigation
+	page.MoveTaskSelection(1)
+	if page.SelectedTaskIndex() != 1 {
+		t.Fatalf("expected selected task index 1, got %d", page.SelectedTaskIndex())
+	}
+	selected, ok := page.SelectedTask()
+	if !ok || selected.ID != "task-2" {
+		t.Fatalf("expected selected task-2, got %+v", selected)
 	}
 }
 

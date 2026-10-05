@@ -205,8 +205,39 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 
 	if projects, err := a.api.ListProjects(ctx); err == nil && len(projects) > 0 {
 		next.Projects = projects
-		next.ActiveProjectID = projects[0].ID
-		next.ActiveProjectName = projects[0].Name
+		var activeProj *client.ProjectRecord
+		if strings.TrimSpace(a.activeProjectID) != "" {
+			for i := range projects {
+				if projects[i].ID == a.activeProjectID {
+					activeProj = &projects[i]
+					break
+				}
+			}
+		}
+		if activeProj == nil && selectedPath != "" {
+			for i := range projects {
+				for _, ws := range projects[i].Workspaces {
+					if pathsEqual(ws.Path, selectedPath) {
+						activeProj = &projects[i]
+						break
+					}
+				}
+				if activeProj != nil {
+					break
+				}
+			}
+		}
+		if activeProj == nil {
+			activeProj = &projects[0]
+		}
+		a.activeProjectID = activeProj.ID
+		next.ActiveProjectID = activeProj.ID
+		next.ActiveProjectName = activeProj.Name
+		next.ActiveProjectPrimarySessionID = activeProj.PrimarySessionID
+
+		if tasks, err := a.api.ListProjectTasks(ctx, activeProj.ID); err == nil {
+			next.ProjectTasks = tasks
+		}
 	}
 	if !next.AuthConfigured {
 		next.FinishSetupNeeded = true

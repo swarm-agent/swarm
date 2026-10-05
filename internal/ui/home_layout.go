@@ -55,15 +55,21 @@ func resolveHomeResponsiveLayout(width, height int) homeResponsiveLayout {
 	return profile
 }
 
-func buildHomeSections(variant layoutVariant) []homeSection {
+func (p *HomePage) buildHomeSections(variant layoutVariant) []homeSection {
 	metaH := 1
 	if variant.ShowDirectory {
 		metaH = 2
 	}
 
-	sections := make([]homeSection, 0, 5)
+	sections := make([]homeSection, 0, 6)
 	if variant.UseSwarmTopBar {
-		if variant.ShowHero {
+		if p != nil && len(p.model.ProjectTasks) > 0 {
+			tasksH := len(p.model.ProjectTasks) + 2
+			if tasksH > 6 {
+				tasksH = 6
+			}
+			sections = append(sections, homeSection{kind: "tasks", h: tasksH})
+		} else if variant.ShowHero {
 			sections = append(sections, homeSection{kind: "hero", h: 5})
 		}
 		if variant.ShowPresets {
@@ -76,6 +82,13 @@ func buildHomeSections(variant layoutVariant) []homeSection {
 		return sections
 	}
 
+	if p != nil && len(p.model.ProjectTasks) > 0 {
+		tasksH := len(p.model.ProjectTasks) + 2
+		if tasksH > 5 {
+			tasksH = 5
+		}
+		sections = append(sections, homeSection{kind: "tasks", h: tasksH})
+	}
 	if variant.InputFirst {
 		sections = append(sections, homeSection{kind: "input", h: 3})
 		sections = append(sections, homeSection{kind: "meta", h: metaH})

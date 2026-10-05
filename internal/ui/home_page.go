@@ -86,6 +86,7 @@ type HomePage struct {
 	commandPaletteTargets           []clickTarget
 	commandPaletteOptionIndex       int
 	commandPaletteOptionOwner       string
+	taskCursorIndex                 int
 	statusLine                      string
 	sessionMode                     string
 	showHomeTips                    bool
@@ -147,7 +148,7 @@ func NewHomePage(m model.HomeModel) *HomePage {
 		statusLine:   "Waiting...",
 		sessionMode:  "auto",
 		showHomeTips: true,
-		homeTipIndex: randomHomeTipIndex(-1),
+		homeTipIndex: 0,
 		swarmName:    "Local",
 		promptCursor: 0,
 	}
@@ -355,11 +356,15 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 	case p.keybinds.Match(ev, KeybindHomePaletteMoveUp):
 		if p.commandPaletteActive() {
 			p.moveCommandPaletteSelection(-1)
+		} else if len(p.model.ProjectTasks) > 0 {
+			p.MoveTaskSelection(-1)
 		}
 		return
 	case p.keybinds.Match(ev, KeybindHomePaletteMoveDown):
 		if p.commandPaletteActive() {
 			p.moveCommandPaletteSelection(1)
+		} else if len(p.model.ProjectTasks) > 0 {
+			p.MoveTaskSelection(1)
 		}
 		return
 	case ev.Key() == tcell.KeyLeft:
@@ -613,7 +618,7 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		p.topBarTargets = p.topBarTargets[:0]
 	}
 
-	sections := buildHomeSections(variant)
+	sections := p.buildHomeSections(variant)
 	if len(sections) == 0 {
 		sections = []homeSection{{kind: "input", h: 3}}
 	}
@@ -739,6 +744,8 @@ func (p *HomePage) Draw(s tcell.Screen) {
 			switch sec.kind {
 			case "hero":
 				p.drawHeroPanel(s, rect, variant.CenterRows)
+			case "tasks":
+				p.drawProjectTasks(s, rect, variant.CenterRows)
 			case "meta":
 				p.drawMeta(s, rect, variant)
 			case "input":
