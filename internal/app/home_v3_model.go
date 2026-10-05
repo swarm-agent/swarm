@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"swarm-refactor/swarmtui/internal/buildinfo"
 	"swarm-refactor/swarmtui/internal/client"
@@ -233,7 +234,21 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		a.activeProjectID = activeProj.ID
 		next.ActiveProjectID = activeProj.ID
 		next.ActiveProjectName = activeProj.Name
-		next.ActiveProjectPrimarySessionID = activeProj.PrimarySessionID
+		primarySessID := strings.TrimSpace(activeProj.PrimarySessionID)
+		if primarySessID == "" {
+			if sessList, err := a.api.ListProjectSessions(ctx, activeProj.ID); err == nil && len(sessList) > 0 {
+				primarySessID = strings.TrimSpace(sessList[0].ID)
+				if primarySessID != "" {
+					projID := activeProj.ID
+					go func() {
+						bgCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+						defer cancel()
+						_, _ = a.api.UpdateProject(bgCtx, projID, map[string]any{"primary_session_id": primarySessID})
+					}()
+				}
+			}
+		}
+		next.ActiveProjectPrimarySessionID = primarySessID
 
 		if tasks, err := a.api.ListProjectTasks(ctx, activeProj.ID); err == nil {
 			next.ProjectTasks = tasks
@@ -253,12 +268,15 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	case activeWorkspaceIndex(next.Workspaces) < 0 && !next.AuthConfigured:
 		next.HintLine = "Choose a workspace and configure auth to start"
 		next.TipLine = "/workspace  •  /auth"
-	case activeWorkspaceIndex(next.Workspaces) < 0:
+	case activeWorkspaceIndex(next.Workspaces) < 0 && next.ActiveProjectID == "":
 		next.HintLine = "Choose a workspace to start"
 		next.TipLine = "/workspace"
 	case !next.AuthConfigured:
 		next.HintLine = "Auth is missing, run /auth"
 		next.TipLine = "/auth"
+	case next.ActiveProjectID != "":
+		next.HintLine = fmt.Sprintf("Project: %s · Type to plan or press Enter on a task", next.ActiveProjectName)
+		next.TipLine = "Ctrl+X: Orchestrator Chat  •  Alt+W: Switch Project  •  ↑/↓: Select Task"
 	default:
 		next.HintLine = ""
 		next.TipLine = ""

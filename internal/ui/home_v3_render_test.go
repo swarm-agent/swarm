@@ -237,6 +237,30 @@ func TestV3HomepageRendersProjectTasks(t *testing.T) {
 	}
 }
 
+func TestV3HomepageRendersEmptyProjectTasksBoard(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	home := model.EmptyHome()
+	home.ActiveProjectID = "proj-empty"
+	home.ActiveProjectName = "EmptyProj"
+	home.ProjectTasks = nil
+
+	page := NewHomePage(home)
+	page.Draw(screen)
+
+	text := dumpHomeTestScreen(screen, 100, 30)
+	for _, want := range []string{"Tasks · EmptyProj", "No tasks yet", "Plan with Orchestrator · EmptyProj"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("homepage missing expected text %q:\n%s", want, text)
+		}
+	}
+}
+
 func dumpHomeTestScreen(screen tcell.Screen, width, height int) string {
 	var out strings.Builder
 	for y := 0; y < height; y++ {

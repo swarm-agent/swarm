@@ -75,6 +75,10 @@ func (p *HomePage) drawInputBar(s tcell.Screen, rect Rect, centered bool) {
 	}
 
 	DrawOpenBox(s, rect, p.theme.BorderActive)
+	if strings.TrimSpace(p.model.ActiveProjectName) != "" {
+		inputTitle := fmt.Sprintf(" Plan with Orchestrator · %s ", p.model.ActiveProjectName)
+		DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Secondary.Bold(true), clampEllipsis(inputTitle, rect.W-4))
+	}
 	prefix := "› "
 	lineStart := rect.X + 1
 	contentY := rect.Y + 1
@@ -97,6 +101,13 @@ func (p *HomePage) drawInputBar(s tcell.Screen, rect Rect, centered bool) {
 	}
 
 	cursorX, cursorY, ok := drawWrappedInputArea(s, lineStart, contentY, innerW, contentH, p.theme.Text, prefix, p.prompt, p.promptCursor)
+	if len(p.prompt) == 0 && strings.TrimSpace(p.model.ActiveProjectName) != "" && innerW > 4 {
+		placeholder := "Type a prompt to orchestrate tasks... (Enter to send, Ctrl+X to chat)"
+		availW := innerW - len(prefix)
+		if availW > 0 {
+			DrawText(s, lineStart+len(prefix), contentY, availW, p.theme.TextMuted, clampEllipsis(placeholder, availW))
+		}
+	}
 	if ok {
 		s.SetContent(cursorX, cursorY, inputCursorRune, nil, p.theme.Primary)
 	}

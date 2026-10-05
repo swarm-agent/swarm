@@ -197,3 +197,108 @@ func TestOrchestratorTUIFocusMode(t *testing.T) {
 		t.Fatalf("expected beta tasks loaded after project switch, got %+v", app.homeModel.ProjectTasks)
 	}
 }
+
+func TestOrchestratorResolutionAndEmptyTaskEnter(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+
+	var openedSessionID string
+	var createdSessionProjectID string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{
+				Identity: client.OnboardingIdentity{Bootstrapped: true, Username: "bob"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/vault":
+			_ = json.NewEncoder(w).Encode(client.VaultStatus{Enabled: false})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"projects": []client.ProjectRecord{
+					{
+						ID:               "proj-gamma",
+						Name:             "Project Gamma",
+						PrimarySessionID: "", // Empty! Needs resolution
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions" && r.URL.Query().Get("project_id") == "proj-gamma":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": true,
+				"sessions": []map[string]any{
+					{
+						"session": map[string]any{
+							"id":         "orch-sess-gamma",
+							"title":      "Project Gamma Orchestrator",
+							"session_api": "v3",
+							"metadata": map[string]any{
+								"agent_name": "system-orchestrator",
+								"project_id": "proj-gamma",
+							},
+						},
+						"projection": map[string]any{
+							"session_id": "orch-sess-gamma",
+						},
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			createdSessionProjectID, _ = body["project_id"].(string)
+			_ = json.NewEncoder(w).Encode(client.SessionV3Hydrated{
+				Session: client.SessionSummary{ID: "new-orch-sess", Title: "Orchestrator", SessionAPI: "v3"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-gamma/tasks":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tasks": []client.ProjectTaskRecord{},
+				"count": 0,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/tui/sessions/orch-sess-gamma":
+			openedSessionID = "orch-sess-gamma"
+			_ = json.NewEncoder(w).Encode(client.SessionV3Hydrated{
+				Session: client.SessionSummary{ID: "orch-sess-gamma", Title: "Orchestrator", SessionAPI: "v3"},
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		}
+	}))
+	defer server.Close()
+
+	api := client.New(server.URL)
+	api.SetToken("test-token")
+
+	home := ui.NewHomePage(model.EmptyHome())
+	app := &App{
+		api:       api,
+		home:      home,
+		homeModel: model.EmptyHome(),
+		keybinds:  ui.NewDefaultKeyBindings(),
+	}
+
+	// 1. Refresh model: active project has empty PrimarySessionID, should resolve from /v3/sessions?project_id=proj-gamma
+	m, err := app.refreshHomeV3Model(context.Background())
+	if err != nil {
+		t.Fatalf("refresh error: %v", err)
+	}
+	if m.ActiveProjectID != "proj-gamma" {
+		t.Fatalf("expected proj-gamma, got %q", m.ActiveProjectID)
+	}
+	if m.ActiveProjectPrimarySessionID != "orch-sess-gamma" {
+		t.Fatalf("expected resolved primary session 'orch-sess-gamma', got %q", m.ActiveProjectPrimarySessionID)
+	}
+
+	app.homeModel = m
+	app.home.SetModel(m)
+
+	// 2. Press Enter with empty prompt and 0 tasks: should open the orchestrator session
+	enterEv := tcell.NewEventKey(tcell.KeyEnter, 0, tcell.ModNone)
+	if !app.handleHomeKey(enterEv) {
+		t.Fatal("expected handleHomeKey to handle Enter on empty tasks")
+	}
+	if openedSessionID != "orch-sess-gamma" {
+		t.Fatalf("expected Enter to open 'orch-sess-gamma', got %q", openedSessionID)
+	}
+	_ = createdSessionProjectID
+}

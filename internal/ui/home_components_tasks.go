@@ -53,11 +53,6 @@ func (p *HomePage) drawProjectTasks(s tcell.Screen, rect Rect, centered bool) {
 	if rect.W <= 0 || rect.H <= 0 {
 		return
 	}
-	tasks := p.model.ProjectTasks
-	if len(tasks) == 0 {
-		return
-	}
-
 	innerW := rect.W
 	if innerW > 88 {
 		innerW = 88
@@ -80,6 +75,19 @@ func (p *HomePage) drawProjectTasks(s tcell.Screen, rect Rect, centered bool) {
 	}
 	title = clampEllipsis(title, innerW-4)
 	DrawText(s, boxRect.X+2, boxRect.Y, innerW-4, p.theme.Primary.Bold(true), title)
+
+	tasks := p.model.ProjectTasks
+	if len(tasks) == 0 {
+		emptyMsg := "No tasks yet. Enter a goal below or press Enter to chat with Orchestrator."
+		emptyMsg = clampEllipsis(emptyMsg, innerW-4)
+		DrawText(s, boxRect.X+2, boxRect.Y+1, innerW-4, p.theme.TextMuted, emptyMsg)
+		if boxRect.H >= 4 {
+			hintMsg := "Ctrl+X: Orchestrator Chat  •  Alt+W: Switch Project"
+			hintMsg = clampEllipsis(hintMsg, innerW-4)
+			DrawText(s, boxRect.X+2, boxRect.Y+2, innerW-4, p.theme.Secondary, hintMsg)
+		}
+		return
+	}
 
 	maxVisible := boxRect.H - 2
 	if maxVisible <= 0 {
@@ -117,6 +125,9 @@ func (p *HomePage) drawProjectTasks(s tcell.Screen, rect Rect, centered bool) {
 		case "failed", "error":
 			statusBadge = "[FAILED]"
 			badgeStyle = p.theme.Error
+		case "pending_approval", "pending":
+			statusBadge = "[PENDING]"
+			badgeStyle = p.theme.Secondary
 		default:
 			statusBadge = "[QUEUED]"
 			badgeStyle = p.theme.TextMuted

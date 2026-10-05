@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -175,3 +176,44 @@ func (c *API) GetProjectTask(ctx context.Context, projectID, taskID string) (Pro
 	}
 	return resp.Task, nil
 }
+
+func (c *API) ListProjectSessions(ctx context.Context, projectID string) ([]SessionSummary, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil, errors.New("project id is required")
+	}
+	path := "/v3/sessions?project_id=" + url.QueryEscape(projectID) + "&limit=10"
+	var resp struct {
+		OK       bool `json:"ok"`
+		Sessions []struct {
+			Session    SessionSummary      `json:"session"`
+			Projection SessionV3Projection `json:"projection"`
+		} `json:"sessions"`
+	}
+	if err := c.getJSON(ctx, path, &resp, true); err != nil {
+		return nil, err
+	}
+	out := make([]SessionSummary, 0, len(resp.Sessions))
+	for _, item := range resp.Sessions {
+		out = append(out, markSessionV3(item.Session, item.Projection))
+	}
+	return out, nil
+}
+
+func (c *API) CreateProjectSession(ctx context.Context, projectID, title string) (SessionV3Hydrated, error) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return SessionV3Hydrated{}, errors.New("project id is required")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Orchestrator"
+	}
+	return c.CreateSessionV3WithOptions(ctx, SessionCreateOptions{
+		ProjectID: projectID,
+		Title:     title,
+		AgentName: "system-orchestrator",
+		Mode:      "auto",
+	})
+}
+

@@ -1,5 +1,7 @@
 package ui
 
+import "strings"
+
 type homeSection struct {
 	kind string
 	h    int
@@ -62,11 +64,15 @@ func (p *HomePage) buildHomeSections(variant layoutVariant) []homeSection {
 	}
 
 	sections := make([]homeSection, 0, 6)
+	hasActiveProject := p != nil && strings.TrimSpace(p.model.ActiveProjectID) != ""
+
 	if variant.UseSwarmTopBar {
-		if p != nil && len(p.model.ProjectTasks) > 0 {
+		if hasActiveProject {
 			tasksH := len(p.model.ProjectTasks) + 2
-			if tasksH > 6 {
-				tasksH = 6
+			if len(p.model.ProjectTasks) == 0 {
+				tasksH = 4
+			} else if tasksH > 7 {
+				tasksH = 7
 			}
 			sections = append(sections, homeSection{kind: "tasks", h: tasksH})
 		} else if variant.ShowHero {
@@ -82,10 +88,12 @@ func (p *HomePage) buildHomeSections(variant layoutVariant) []homeSection {
 		return sections
 	}
 
-	if p != nil && len(p.model.ProjectTasks) > 0 {
+	if hasActiveProject {
 		tasksH := len(p.model.ProjectTasks) + 2
-		if tasksH > 5 {
-			tasksH = 5
+		if len(p.model.ProjectTasks) == 0 {
+			tasksH = 4
+		} else if tasksH > 6 {
+			tasksH = 6
 		}
 		sections = append(sections, homeSection{kind: "tasks", h: tasksH})
 	}

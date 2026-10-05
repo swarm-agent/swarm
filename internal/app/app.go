@@ -1905,7 +1905,7 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 	}
 	if keybinds.Match(ev, ui.KeybindHomeOpenSessions) {
-		if (a.route == "chat" || a.route == "v3chat") && strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID) != "" {
+		if (a.route == "chat" || a.route == "v3chat") && a.homeModel.ActiveProjectID != "" {
 			if a.route == "v3chat" {
 				a.closeV3Chat()
 			}
@@ -1935,8 +1935,8 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 				a.home.KeybindsModalVisible() {
 				return true
 			}
-			if strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID) != "" {
-				if err := a.openSessionSummary(model.SessionSummary{ID: strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID)}, ""); err != nil {
+			if a.homeModel.ActiveProjectID != "" {
+				if err := a.openOrchestratorChat(""); err != nil {
 					a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
 				}
 				return true
@@ -2100,6 +2100,13 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 			}
 			return true
 		}
+		if a.homeModel.ActiveProjectID != "" {
+			a.home.ClearCommandOverlay()
+			if err := a.openOrchestratorChat(""); err != nil {
+				a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
+			}
+			return true
+		}
 		return false
 	}
 
@@ -2116,8 +2123,8 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 	}
 
 	a.home.ClearCommandOverlay()
-	if strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID) != "" {
-		if err := a.openSessionSummary(model.SessionSummary{ID: strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID)}, prompt); err != nil {
+	if a.homeModel.ActiveProjectID != "" {
+		if err := a.openOrchestratorChat(prompt); err != nil {
 			a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
 			return true
 		}
@@ -2931,6 +2938,44 @@ func (a *App) openChatSessionWithWorktree(titleSeed, initialPrompt, worktreeBran
 
 func (a *App) openExistingSession(summary model.SessionSummary) error {
 	return a.openExistingV3Chat(summary)
+}
+
+func (a *App) openOrchestratorChat(initialPrompt string) error {
+	if a.homeModel.ActiveProjectID == "" {
+		return errors.New("no active project")
+	}
+	sessID := strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID)
+	if sessID == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if a.api != nil {
+			if sessList, err := a.api.ListProjectSessions(ctx, a.homeModel.ActiveProjectID); err == nil && len(sessList) > 0 {
+				sessID = strings.TrimSpace(sessList[0].ID)
+			}
+			if sessID == "" {
+				title := "Orchestrator"
+				if a.homeModel.ActiveProjectName != "" {
+					title = fmt.Sprintf("Orchestrator · %s", a.homeModel.ActiveProjectName)
+				}
+				if created, err := a.api.CreateProjectSession(ctx, a.homeModel.ActiveProjectID, title); err == nil {
+					sessID = strings.TrimSpace(created.Session.ID)
+				}
+			}
+			if sessID != "" {
+				a.homeModel.ActiveProjectPrimarySessionID = sessID
+				projID := a.homeModel.ActiveProjectID
+				go func() {
+					bgCtx, bgCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer bgCancel()
+					_, _ = a.api.UpdateProject(bgCtx, projID, map[string]any{"primary_session_id": sessID})
+				}()
+			}
+		}
+	}
+	if sessID == "" {
+		return errors.New("orchestrator session unavailable")
+	}
+	return a.openSessionSummary(model.SessionSummary{ID: sessID}, initialPrompt)
 }
 
 func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt string) error {
@@ -5778,10 +5823,20 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			a.activeProjectID = targetProject.ID
 			a.homeModel.ActiveProjectID = targetProject.ID
 			a.homeModel.ActiveProjectName = targetProject.Name
-			a.homeModel.ActiveProjectPrimarySessionID = targetProject.PrimarySessionID
+			primarySessID := strings.TrimSpace(targetProject.PrimarySessionID)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			if tasks, err := a.api.ListProjectTasks(ctx, targetProject.ID); err == nil {
-				a.homeModel.ProjectTasks = tasks
+			if primarySessID == "" && a.api != nil {
+				if sessList, err := a.api.ListProjectSessions(ctx, targetProject.ID); err == nil && len(sessList) > 0 {
+					primarySessID = strings.TrimSpace(sessList[0].ID)
+				}
+			}
+			a.homeModel.ActiveProjectPrimarySessionID = primarySessID
+			if a.api != nil {
+				if tasks, err := a.api.ListProjectTasks(ctx, targetProject.ID); err == nil {
+					a.homeModel.ProjectTasks = tasks
+				} else {
+					a.homeModel.ProjectTasks = nil
+				}
 			}
 			cancel()
 		}
