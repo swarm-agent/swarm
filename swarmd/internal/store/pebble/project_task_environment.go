@@ -32,6 +32,11 @@ func (s *SessionStore) MutateProjectTaskEnvironment(account, project, taskID str
 		if t.Revision != req.ExpectedTaskRevision {
 			return errors.New("stale task revision")
 		}
+		for _, retired := range t.RetiredEnvironmentAttachmentIDs {
+			if retired == req.AttachmentID {
+				return errors.New("attachment identity retired; use a fresh attachment ID")
+			}
+		}
 		index := -1
 		for i, a := range t.EnvironmentAttachments {
 			if a.ID == req.AttachmentID {
@@ -45,6 +50,10 @@ func (s *SessionStore) MutateProjectTaskEnvironment(account, project, taskID str
 			return errors.New("attachment not found")
 		}
 		if req.Attachment == nil {
+			if len(t.RetiredEnvironmentAttachmentIDs) >= 4096 {
+				return errors.New("task attachment history limit reached")
+			}
+			t.RetiredEnvironmentAttachmentIDs = append(t.RetiredEnvironmentAttachmentIDs, req.AttachmentID)
 			t.EnvironmentAttachments = append(t.EnvironmentAttachments[:index], t.EnvironmentAttachments[index+1:]...)
 		} else {
 			a := *req.Attachment
@@ -78,7 +87,16 @@ func (t *ProjectTaskRecord) validateEnvironmentAttachments() error {
 	if len(t.EnvironmentAttachments) > environments.MaxTaskEnvironmentAttachments {
 		return errors.New("task attachment limit reached")
 	}
+	if len(t.RetiredEnvironmentAttachmentIDs) > 4096 {
+		return errors.New("task attachment history limit reached")
+	}
 	seen := make(map[string]bool, len(t.EnvironmentAttachments))
+	for _, id := range t.RetiredEnvironmentAttachmentIDs {
+		if id == "" || len(id) > 256 || seen[id] {
+			return errors.New("invalid retired attachment identity")
+		}
+		seen[id] = true
+	}
 	for _, a := range t.EnvironmentAttachments {
 		if err := a.Validate(); err != nil {
 			return fmt.Errorf("task environment attachment: %w", err)
@@ -94,7 +112,38 @@ func (t *ProjectTaskRecord) validateEnvironmentAttachments() error {
 // Legacy full-record writes must not drop a newer attachment snapshot. Reopen
 // preserves evidence; an attempt mismatch is projected stale, never rebound.
 func validateTaskEnvironmentWrite(prior, next *ProjectTaskRecord) error {
-	if !reflect.DeepEqual(prior.EnvironmentAttachments, next.EnvironmentAttachments) && next.Revision <= prior.Revision {
+	if len(next.RetiredEnvironmentAttachmentIDs) < len(prior.RetiredEnvironmentAttachmentIDs) {
+		return errors.New("attachment revocation history cannot be removed")
+	}
+	for i, id := range prior.RetiredEnvironmentAttachmentIDs {
+		if next.RetiredEnvironmentAttachmentIDs[i] != id {
+			return errors.New("attachment revocation history cannot be rewritten")
+		}
+	}
+	for _, old := range prior.EnvironmentAttachments {
+		found := false
+		for _, current := range next.EnvironmentAttachments {
+			if current.ID != old.ID {
+				continue
+			}
+			found = true
+			if !reflect.DeepEqual(old, current) && current.Revision != old.Revision+1 {
+				return errors.New("attachment revision must advance exactly once")
+			}
+		}
+		if !found {
+			retired := false
+			for _, id := range next.RetiredEnvironmentAttachmentIDs {
+				if id == old.ID {
+					retired = true
+				}
+			}
+			if !retired {
+				return errors.New("removed attachment must retain revocation tombstone")
+			}
+		}
+	}
+	if (!reflect.DeepEqual(prior.EnvironmentAttachments, next.EnvironmentAttachments) || !reflect.DeepEqual(prior.RetiredEnvironmentAttachmentIDs, next.RetiredEnvironmentAttachmentIDs)) && next.Revision <= prior.Revision {
 		return errors.New("stale task attachment snapshot")
 	}
 	return nil

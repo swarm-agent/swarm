@@ -91,7 +91,7 @@ func compactProjectTask(task ProjectTaskRecord) ProjectTaskRecord {
 	task = ProjectTaskRecord{
 		ID: task.ID, ProjectID: task.ProjectID, AccountID: task.AccountID,
 		EnvironmentAttachments: taskEnvironmentProjection(task),
-		Title: task.Title, Description: task.Description, Status: task.Status,
+		Title:                  task.Title, Description: task.Description, Status: task.Status,
 		SessionID: task.SessionID, OriginSessionID: task.OriginSessionID, ActiveAttemptID: task.ActiveAttemptID, Attempts: active,
 		Agent: task.Agent, WorkerID: task.WorkerID, WorkerName: task.WorkerName, WorkerRunID: task.WorkerRunID, AutomationID: task.AutomationID,
 		OutcomeType: task.OutcomeType, WorkspacePath: task.WorkspacePath, SourceWorkspace: task.SourceWorkspace,

@@ -404,88 +404,90 @@ type TaskDeliveryAssessment struct {
 // ProjectTaskRecord represents an autonomous task unit in a project.
 type ProjectTaskRecord struct {
 	EnvironmentAttachments []environments.TaskEnvironmentAttachment `json:"environment_attachments,omitempty"`
-	OriginSessionID     string                       `json:"origin_session_id,omitempty"` // authenticated conversation; never the project primary pointer
-	DeliveryAssessment  *TaskDeliveryAssessment      `json:"delivery_assessment,omitempty"`
-	ID                  string                       `json:"id"`
-	ProjectID           string                       `json:"project_id"`
-	AccountID           string                       `json:"account_id"`
-	Title               string                       `json:"title"`
-	Description         string                       `json:"description,omitempty"`
-	Status              string                       `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed" | "pending_approval" | "planning"
-	SessionID           string                       `json:"session_id,omitempty"`
-	ActiveAttemptID     string                       `json:"active_attempt_id,omitempty"`
-	Attempts            []ProjectTaskAttempt         `json:"attempts,omitempty"`
-	Agent               string                       `json:"agent,omitempty"`
-	WorkerID            string                       `json:"worker_id,omitempty"`
-	WorkerName          string                       `json:"worker_name,omitempty"`
-	WorkerRunID         string                       `json:"worker_run_id,omitempty"`
-	AutomationID        string                       `json:"automation_id,omitempty"`
-	OutcomeType         string                       `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
-	WorkspacePath       string                       `json:"workspace_path,omitempty"`
-	SourceWorkspace     ProjectTaskSource            `json:"source_workspace,omitempty"`
-	ContextSources      []ProjectTaskSource          `json:"context_sources,omitempty"` // read-only; never execution bindings
-	ClientRequestID     string                       `json:"client_request_id,omitempty"`
-	SubmissionHash      string                       `json:"submission_hash,omitempty"`
-	WorktreeBranch      string                       `json:"worktree_branch,omitempty"`
-	WorktreeName        string                       `json:"worktree_name,omitempty"`
-	BaseBranch          string                       `json:"base_branch,omitempty"`
-	BaseCommit          string                       `json:"base_commit,omitempty"`
-	GitStatus           string                       `json:"git_status,omitempty"` // "clean" | "dirty" | "diverged" | "unknown" | "stale"
-	UnintegratedCommits int                          `json:"unintegrated_commits,omitempty"`
-	BehindCommits       int                          `json:"behind_commits,omitempty"`
-	IsIntegrated        bool                         `json:"is_integrated,omitempty"`
-	Integration         *ProjectTaskIntegration      `json:"integration,omitempty"`
-	DiffSummary         string                       `json:"diff_summary,omitempty"`
-	IsDirty             bool                         `json:"is_dirty,omitempty"`
-	DirtyCount          int                          `json:"dirty_count,omitempty"`
-	SyncWarning         string                       `json:"sync_warning,omitempty"`
-	ActionNeeded        string                       `json:"action_needed,omitempty"`
-	WhatDidDo           []string                     `json:"what_did_do,omitempty"`
-	WhatNotDone         []string                     `json:"what_not_done,omitempty"`
-	PipelineStages      []string                     `json:"pipeline_stages,omitempty"`
-	CurrentStageIndex   int                          `json:"current_stage_index"`
-	Deliverables        []ProjectTaskDeliverable     `json:"deliverables,omitempty"`
-	WorkspacesInvolved  []string                     `json:"workspaces_involved,omitempty"`
-	ContextPoolSummary  string                       `json:"context_pool_summary,omitempty"`
-	PlanSummary         string                       `json:"plan_summary,omitempty"`
-	FullPlanMarkdown    string                       `json:"full_plan_markdown,omitempty"`
-	Tier                string                       `json:"tier,omitempty"`         // "direct" | "discovery" | "complex"
-	FeatureSize         string                       `json:"feature_size,omitempty"` // "small" | "big"
-	Revision            int                          `json:"revision,omitempty"`
-	Priority            string                       `json:"priority,omitempty"` // low | medium | high | urgent
-	Group               string                       `json:"group,omitempty"`
-	Order               int                          `json:"order,omitempty"`
-	Archived            bool                         `json:"archived,omitempty"`
-	LastError           string                       `json:"last_error,omitempty"`
-	FeedbackHistory     []string                     `json:"feedback_history,omitempty"`
-	AspectRatio         string                       `json:"aspect_ratio,omitempty"`
-	Resolution          string                       `json:"resolution,omitempty"`
-	VariantCount        int                          `json:"variant_count,omitempty"`
-	EnhancePrompt       bool                         `json:"enhance_prompt,omitempty"`
-	ImagePrompts        []string                     `json:"image_prompts,omitempty"`
-	DurationSeconds     int                          `json:"duration_seconds,omitempty"`
-	Model               string                       `json:"model,omitempty"`
-	Provider            string                       `json:"provider,omitempty"`
-	Thinking            string                       `json:"thinking,omitempty"`
-	ServiceTier         string                       `json:"service_tier,omitempty"`
-	ContextMode         string                       `json:"context_mode,omitempty"`
-	Scenes              []ProjectTaskScene           `json:"scenes,omitempty"`
-	Soundtrack          string                       `json:"soundtrack,omitempty"`
-	Operation           string                       `json:"operation,omitempty"` // "create" | "edit" | "extend"
-	SourceDigestSHA256  string                       `json:"source_digest_sha256,omitempty"`
-	VideoProvenance     *VideoProvenance             `json:"video_provenance,omitempty"`
-	AutoApprove         bool                         `json:"auto_approve,omitempty"`
-	RouterAlert         string                       `json:"router_alert,omitempty"`
-	AttachedMedia       []ProjectTaskMediaRef        `json:"attached_media,omitempty"`
-	PlanBinding         *ProjectTaskPlanBinding      `json:"plan_binding,omitempty"`
-	PlanDocument        *SessionPlanDocument         `json:"plan_document,omitempty"`
-	CoderAssignments    []ProjectTaskCoderAssignment `json:"coder_assignments,omitempty"`
-	ProgramSources      []ProjectTaskSource          `json:"program_sources,omitempty"`
-	TaskProgram         *TaskProgramDefinition       `json:"task_program,omitempty"`
-	TaskProgramID       string                       `json:"task_program_id,omitempty"`
-	TaskProgramStatus   *TaskProgramRecord           `json:"task_program_status,omitempty"`
-	CreatedAt           int64                        `json:"created_at"`
-	UpdatedAt           int64                        `json:"updated_at"`
+	// Retired IDs cannot be reused: old attachment-bound receipts stay revoked.
+	RetiredEnvironmentAttachmentIDs []string                     `json:"retired_environment_attachment_ids,omitempty"`
+	OriginSessionID                 string                       `json:"origin_session_id,omitempty"` // authenticated conversation; never the project primary pointer
+	DeliveryAssessment              *TaskDeliveryAssessment      `json:"delivery_assessment,omitempty"`
+	ID                              string                       `json:"id"`
+	ProjectID                       string                       `json:"project_id"`
+	AccountID                       string                       `json:"account_id"`
+	Title                           string                       `json:"title"`
+	Description                     string                       `json:"description,omitempty"`
+	Status                          string                       `json:"status"` // "queued" | "in_progress" | "needs_review" | "completed" | "failed" | "pending_approval" | "planning"
+	SessionID                       string                       `json:"session_id,omitempty"`
+	ActiveAttemptID                 string                       `json:"active_attempt_id,omitempty"`
+	Attempts                        []ProjectTaskAttempt         `json:"attempts,omitempty"`
+	Agent                           string                       `json:"agent,omitempty"`
+	WorkerID                        string                       `json:"worker_id,omitempty"`
+	WorkerName                      string                       `json:"worker_name,omitempty"`
+	WorkerRunID                     string                       `json:"worker_run_id,omitempty"`
+	AutomationID                    string                       `json:"automation_id,omitempty"`
+	OutcomeType                     string                       `json:"outcome_type,omitempty"` // "code_pr" | "media_bundle" | "bug_patch" | "audit_report" | "video_story"
+	WorkspacePath                   string                       `json:"workspace_path,omitempty"`
+	SourceWorkspace                 ProjectTaskSource            `json:"source_workspace,omitempty"`
+	ContextSources                  []ProjectTaskSource          `json:"context_sources,omitempty"` // read-only; never execution bindings
+	ClientRequestID                 string                       `json:"client_request_id,omitempty"`
+	SubmissionHash                  string                       `json:"submission_hash,omitempty"`
+	WorktreeBranch                  string                       `json:"worktree_branch,omitempty"`
+	WorktreeName                    string                       `json:"worktree_name,omitempty"`
+	BaseBranch                      string                       `json:"base_branch,omitempty"`
+	BaseCommit                      string                       `json:"base_commit,omitempty"`
+	GitStatus                       string                       `json:"git_status,omitempty"` // "clean" | "dirty" | "diverged" | "unknown" | "stale"
+	UnintegratedCommits             int                          `json:"unintegrated_commits,omitempty"`
+	BehindCommits                   int                          `json:"behind_commits,omitempty"`
+	IsIntegrated                    bool                         `json:"is_integrated,omitempty"`
+	Integration                     *ProjectTaskIntegration      `json:"integration,omitempty"`
+	DiffSummary                     string                       `json:"diff_summary,omitempty"`
+	IsDirty                         bool                         `json:"is_dirty,omitempty"`
+	DirtyCount                      int                          `json:"dirty_count,omitempty"`
+	SyncWarning                     string                       `json:"sync_warning,omitempty"`
+	ActionNeeded                    string                       `json:"action_needed,omitempty"`
+	WhatDidDo                       []string                     `json:"what_did_do,omitempty"`
+	WhatNotDone                     []string                     `json:"what_not_done,omitempty"`
+	PipelineStages                  []string                     `json:"pipeline_stages,omitempty"`
+	CurrentStageIndex               int                          `json:"current_stage_index"`
+	Deliverables                    []ProjectTaskDeliverable     `json:"deliverables,omitempty"`
+	WorkspacesInvolved              []string                     `json:"workspaces_involved,omitempty"`
+	ContextPoolSummary              string                       `json:"context_pool_summary,omitempty"`
+	PlanSummary                     string                       `json:"plan_summary,omitempty"`
+	FullPlanMarkdown                string                       `json:"full_plan_markdown,omitempty"`
+	Tier                            string                       `json:"tier,omitempty"`         // "direct" | "discovery" | "complex"
+	FeatureSize                     string                       `json:"feature_size,omitempty"` // "small" | "big"
+	Revision                        int                          `json:"revision,omitempty"`
+	Priority                        string                       `json:"priority,omitempty"` // low | medium | high | urgent
+	Group                           string                       `json:"group,omitempty"`
+	Order                           int                          `json:"order,omitempty"`
+	Archived                        bool                         `json:"archived,omitempty"`
+	LastError                       string                       `json:"last_error,omitempty"`
+	FeedbackHistory                 []string                     `json:"feedback_history,omitempty"`
+	AspectRatio                     string                       `json:"aspect_ratio,omitempty"`
+	Resolution                      string                       `json:"resolution,omitempty"`
+	VariantCount                    int                          `json:"variant_count,omitempty"`
+	EnhancePrompt                   bool                         `json:"enhance_prompt,omitempty"`
+	ImagePrompts                    []string                     `json:"image_prompts,omitempty"`
+	DurationSeconds                 int                          `json:"duration_seconds,omitempty"`
+	Model                           string                       `json:"model,omitempty"`
+	Provider                        string                       `json:"provider,omitempty"`
+	Thinking                        string                       `json:"thinking,omitempty"`
+	ServiceTier                     string                       `json:"service_tier,omitempty"`
+	ContextMode                     string                       `json:"context_mode,omitempty"`
+	Scenes                          []ProjectTaskScene           `json:"scenes,omitempty"`
+	Soundtrack                      string                       `json:"soundtrack,omitempty"`
+	Operation                       string                       `json:"operation,omitempty"` // "create" | "edit" | "extend"
+	SourceDigestSHA256              string                       `json:"source_digest_sha256,omitempty"`
+	VideoProvenance                 *VideoProvenance             `json:"video_provenance,omitempty"`
+	AutoApprove                     bool                         `json:"auto_approve,omitempty"`
+	RouterAlert                     string                       `json:"router_alert,omitempty"`
+	AttachedMedia                   []ProjectTaskMediaRef        `json:"attached_media,omitempty"`
+	PlanBinding                     *ProjectTaskPlanBinding      `json:"plan_binding,omitempty"`
+	PlanDocument                    *SessionPlanDocument         `json:"plan_document,omitempty"`
+	CoderAssignments                []ProjectTaskCoderAssignment `json:"coder_assignments,omitempty"`
+	ProgramSources                  []ProjectTaskSource          `json:"program_sources,omitempty"`
+	TaskProgram                     *TaskProgramDefinition       `json:"task_program,omitempty"`
+	TaskProgramID                   string                       `json:"task_program_id,omitempty"`
+	TaskProgramStatus               *TaskProgramRecord           `json:"task_program_status,omitempty"`
+	CreatedAt                       int64                        `json:"created_at"`
+	UpdatedAt                       int64                        `json:"updated_at"`
 }
 
 func (t *ProjectTaskRecord) Validate() error {
