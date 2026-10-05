@@ -19,27 +19,43 @@ import { applyWorkspaceTheme, workspaceThemeDefaultId } from '../../../workspace
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
 
 import { completeAccountOnboarding } from '../../orchestrate/project-entry-policy'
+import { requestJson } from '../../../../app/api'
+import { registerProjectFolder } from '../../runtime/project-creation'
+import { createProjectConversation, projectConversationLink } from '../../orchestrate/project-conversations'
+import { projectRouteSegment } from '../../orchestrate/project-route'
+import { PersonalizingCard } from '../../orchestrate/project-creation-flow'
+import type { CreationProject, CreationWorkspace } from '../../state/project-creation'
 
-type OnboardingStep = 'identity' | 'provider'
+type OnboardingStep = 'identity' | 'provider' | 'project' | 'workspaces'
 type CodexOAuthMode = StartCodexOAuthInput['method']
 type ProviderSetupMode = 'api' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | null
-type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | null
+type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'project-create' | 'folder-add' | null
 
-type OnboardingView = OnboardingStep | 'setup'
+type OnboardingView = OnboardingStep | 'setup' | 'personalizing'
 
 const SWARM_MARK_SRC = '/favicon.svg'
 const STEP_TRANSITION_MS = 220
 const ONBOARDING_READY_HOLD_MS = 1_000
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
   identity: {
-    stepLabel: 'Step 1 of 2 · Identity',
+    stepLabel: 'Step 1 of 4 · Identity',
     title: 'Hi, I’m Swarm — your AI command center.',
     subtitle: 'Start with the basics: your username and this device name.',
   },
   provider: {
-    stepLabel: 'Step 2 of 2 · Provider',
+    stepLabel: 'Step 2 of 4 · Provider',
     title: 'Connect your AI provider.',
-    subtitle: 'Connect a provider now or skip ahead to your projects. No workspace is required.'
+    subtitle: 'Connect a provider now or skip ahead. No workspace or credit card required.',
+  },
+  project: {
+    stepLabel: 'Step 3 of 4 · Project',
+    title: 'Name your first project.',
+    subtitle: 'Projects organize your conversations, workspaces, and AI context.',
+  },
+  workspaces: {
+    stepLabel: 'Step 4 of 4 · Workspaces',
+    title: 'Add workspaces to your project.',
+    subtitle: 'Select code folders to personalize AI context, or skip straight to chatting with Swarm.',
   },
 }
 
@@ -102,6 +118,10 @@ function pendingMessage(action: PendingAction): string | null {
       return 'Completing sign-in…'
     case 'finalize':
       return 'Setting up your Swarm…'
+    case 'project-create':
+      return 'Creating your project…'
+    case 'folder-add':
+      return 'Registering workspace folder…'
     default:
       return null
   }
@@ -114,10 +134,14 @@ function waitForOnboardingReadyHold(): Promise<void> {
   })
 }
 
-function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; step: OnboardingStep; visible: boolean }) {
+function OnboardingBrandHeader({ restart, step, visible, projectName }: { restart: boolean; step: OnboardingStep; visible: boolean; projectName?: string }) {
   const stepCopy = ONBOARDING_STEPS[step]
-  const visibleSteps: OnboardingStep[] = ['identity', 'provider']
+  const visibleSteps: OnboardingStep[] = restart ? ['identity', 'provider'] : ['identity', 'provider', 'project', 'workspaces']
   const stepIndex = visibleSteps.indexOf(step) + 1
+  const stepLabel = restart ? `Step ${stepIndex} of 2 · ${step === 'identity' ? 'Identity' : 'Provider'}` : stepCopy.stepLabel
+  const title = step === 'workspaces' && projectName?.trim()
+    ? `Add workspaces into ${projectName.trim()}?`
+    : stepCopy.title
 
   return (
     <div
@@ -134,7 +158,7 @@ function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; s
             <span className="text-xs text-[var(--app-text-muted)]">{restart ? 'Setup review' : 'First launch'}</span>
           </div>
         </div>
-        <div className="grid min-w-32 gap-2 text-right" aria-label={stepCopy.stepLabel}>
+        <div className="grid min-w-32 gap-2 text-right" aria-label={stepLabel}>
           <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{stepIndex} / {visibleSteps.length}</span>
           <div className="grid grid-flow-col auto-cols-fr gap-1">
             {visibleSteps.map((item) => (
@@ -147,7 +171,7 @@ function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; s
         </div>
       </div>
       <div className="grid gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">{stepCopy.title}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h1>
         <p className="max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">{stepCopy.subtitle}</p>
       </div>
     </div>
@@ -240,6 +264,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const [username, setUsername] = useState(initialStatus.identity.username)
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
+  const [projectName, setProjectName] = useState('')
+  const [projectDescription, setProjectDescription] = useState('')
+  const [workspaceCatalog, setWorkspaceCatalog] = useState<Array<{ id: string; path: string; label: string }>>([])
+  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<string[]>([])
+  const [customFolderPath, setCustomFolderPath] = useState('')
+  const [createdProject, setCreatedProject] = useState<CreationProject | null>(null)
+  const [personalizingBusy, setPersonalizingBusy] = useState(false)
+  const autoOpenedRef = useRef(false)
 
   const [providerRecords, setProviderRecords] = useState<ProviderStatus[]>(status.auth.providers)
   const [providerLoading, setProviderLoading] = useState(false)
@@ -274,11 +306,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const mustUseOnboardingProviderAPI = status.heuristics.credentialCount === 0 && status.heuristics.agentCount === 0
   const finishButtonLabel = pendingAction === 'finalize'
     ? 'Finishing…'
-    : providerAlreadyConnected
-      ? 'Continue to projects'
-      : providerOptions.length === 0
-        ? 'Continue without provider'
-        : 'Skip for now'
+    : restart
+      ? 'Finish setup review'
+      : providerAlreadyConnected
+        ? 'Continue to project'
+        : providerOptions.length === 0
+          ? 'Continue without provider'
+          : 'Skip for now'
 
   useEffect(() => {
     applyWorkspaceTheme(workspaceThemeDefaultId())
@@ -370,8 +404,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
             await refreshAuthDependentQueries()
             if (cancelled) return
             setOAuthSession(next)
-            setNotice('Provider connected. Continue to your projects when you’re ready.')
-            transitionToStep('provider')
+            if (restart) {
+              setNotice('Provider connected. Review complete.')
+              transitionToStep('provider')
+            } else {
+              setNotice('Provider connected. Advancing to project setup…')
+              transitionToStep('project')
+            }
           }
         })
         .catch((err) => {
@@ -528,6 +567,158 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
+  useEffect(() => {
+    if (step !== 'workspaces') return
+    let active = true
+    void requestJson<{ workspaces?: Array<{ id?: string; workspace_id?: string; path: string; name?: string }> }>('/v1/workspace/list?limit=200')
+      .then(({ workspaces = [] }) => {
+        if (!active) return
+        const rows = workspaces.flatMap(w => (w.id || w.workspace_id) ? [{ id: (w.id || w.workspace_id)!, path: w.path, label: w.name || w.path }] : [])
+        setWorkspaceCatalog(rows)
+      })
+      .catch(() => { /* non-fatal */ })
+    return () => { active = false }
+  }, [step])
+
+  const handleAddCustomFolder = async () => {
+    const raw = customFolderPath.trim()
+    if (!raw || submitting) return
+    setPendingAction('folder-add')
+    setError(null)
+    try {
+      const reg = await registerProjectFolder(raw)
+      setWorkspaceCatalog(prev => {
+        const next = [...prev.filter(w => w.id !== reg.workspace_id), { id: reg.workspace_id, path: reg.path, label: reg.label }]
+        return next
+      })
+      setSelectedWorkspaceIds(ids => [...new Set([...ids, reg.workspace_id])])
+      setCustomFolderPath('')
+      setNotice(`Folder registered: ${reg.path}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to register folder')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const finishAndOpenProjectChat = async (project: CreationProject) => {
+    setPendingAction('finalize')
+    try {
+      await patchDesktopOnboarding({ desktopOnboardingComplete: true })
+      const next = await reloadStatus()
+      await refreshAuthDependentQueries()
+      const sessionId = await createProjectConversation(project.id, `desktop-project-first:${project.id}`)
+      setClosing(true)
+      onComplete(next)
+      void navigate(projectConversationLink(projectRouteSegment(project, [project]), sessionId))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to complete project setup')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const handleCreateAndPersonalize = async () => {
+    if (submitting || !projectName.trim()) return
+    const chosenWorkspaces: CreationWorkspace[] = workspaceCatalog
+      .filter(w => selectedWorkspaceIds.includes(w.id))
+      .map(w => ({ workspace_id: w.id, path: w.path, label: w.label, role: 'auxiliary' }))
+    setPendingAction('project-create')
+    setError(null)
+    setNotice(null)
+    try {
+      const clientRequestId = `desktop-project:${crypto.randomUUID()}`
+      const { project } = await requestJson<{ project: CreationProject }>('/v3/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_request_id: clientRequestId,
+          name: projectName.trim(),
+          description: projectDescription.trim(),
+          workspaces: chosenWorkspaces,
+        }),
+      })
+      if (!project?.id) throw new Error('Project creation failed: no project ID returned.')
+      setCreatedProject(project)
+      setView('personalizing')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create project')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const handleCreateWithoutWorkspaces = async () => {
+    if (submitting || !projectName.trim()) return
+    setPendingAction('project-create')
+    setError(null)
+    setNotice(null)
+    try {
+      const clientRequestId = `desktop-project:${crypto.randomUUID()}`
+      const { project } = await requestJson<{ project: CreationProject }>('/v3/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_request_id: clientRequestId,
+          name: projectName.trim(),
+          description: projectDescription.trim(),
+          workspaces: [],
+        }),
+      })
+      if (!project?.id) throw new Error('Project creation failed: no project ID returned.')
+      await finishAndOpenProjectChat(project)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create project')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const handlePersonalizeRefresh = async () => {
+    if (!createdProject?.id || personalizingBusy) return
+    setPersonalizingBusy(true)
+    try {
+      const { project } = await requestJson<{ project: CreationProject }>(`/v3/projects/${encodeURIComponent(createdProject.id)}`)
+      if (project) setCreatedProject(project)
+    } catch { /* ignore */ }
+    finally { setPersonalizingBusy(false) }
+  }
+
+  const handlePersonalizeRetry = async () => {
+    if (!createdProject?.id || personalizingBusy) return
+    setPersonalizingBusy(true)
+    try {
+      const { project } = await requestJson<{ project: CreationProject }>(`/v3/projects/${encodeURIComponent(createdProject.id)}/context:retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expected_attempt: createdProject.context_generation?.attempt ?? 0 }),
+      })
+      if (project) setCreatedProject(project)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to retry context generation')
+    } finally { setPersonalizingBusy(false) }
+  }
+
+  useEffect(() => {
+    if (view !== 'personalizing' || !createdProject?.id) return
+    if (createdProject.context_generation?.status === 'ready' || createdProject.context_generation?.status === 'failed') return
+    const timer = setInterval(() => {
+      void handlePersonalizeRefresh()
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [view, createdProject?.id, createdProject?.context_generation?.status])
+
+  useEffect(() => {
+    if (view !== 'personalizing' || !createdProject || autoOpenedRef.current) return
+    if (createdProject.context_generation?.status === 'ready') {
+      autoOpenedRef.current = true
+      const timer = setTimeout(() => {
+        void finishAndOpenProjectChat(createdProject)
+      }, 700)
+      return () => clearTimeout(timer)
+    }
+  }, [view, createdProject])
+
   const handleProviderSave = async () => {
     if (submitting || pendingActionRef.current !== null) {
       return
@@ -576,9 +767,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setCredentialValue('')
       const next = await reloadStatus()
       await refreshAuthDependentQueries()
-      setNotice('Provider connected. Continue to your projects when you’re ready.')
       setStatus(next)
-      transitionToStep('provider')
+      if (restart) {
+        setNotice('Provider connected. Review complete.')
+        transitionToStep('provider')
+      } else {
+        setNotice('Provider connected. Advancing to project setup…')
+        transitionToStep('project')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save provider credential')
     } finally {
@@ -667,8 +863,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setCallbackInput('')
       await reloadStatus()
       await refreshAuthDependentQueries()
-      setNotice('Provider connected. Continue to your projects when you’re ready.')
-      transitionToStep('provider')
+      if (restart) {
+        setNotice('Provider connected. Review complete.')
+        transitionToStep('provider')
+      } else {
+        setNotice('Provider connected. Advancing to project setup…')
+        transitionToStep('project')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to complete remote sign-in')
     } finally {
@@ -679,10 +880,10 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   return (
     <div className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black px-6 py-8 text-[var(--app-text)] transition-opacity duration-200 ease-out ${closing ? 'pointer-events-none opacity-0' : 'opacity-100'}`}>
       <main className="relative w-full max-w-5xl overflow-hidden rounded-[2rem] border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_88%,black)] shadow-[0_24px_90px_rgb(0_0_0/0.55)] outline outline-1 outline-offset-2 outline-[color-mix(in_oklab,var(--app-border)_34%,transparent)] transition-[box-shadow,transform] duration-300 ease-out">
-        <div className={view === 'setup' ? 'grid min-h-[42rem] place-items-center p-8' : 'grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8'}>
-          {view !== 'setup' ? (
+        <div className={view === 'setup' || view === 'personalizing' ? 'grid min-h-[42rem] place-items-center p-8' : 'grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8'}>
+          {view !== 'setup' && view !== 'personalizing' ? (
             <>
-              <OnboardingBrandHeader restart={restart} step={step} visible={panelVisible} />
+              <OnboardingBrandHeader restart={restart} step={step} visible={panelVisible} projectName={projectName} />
               <FeedbackSlot error={error} notice={notice} progress={progress} />
             </>
           ) : null}
@@ -1028,10 +1229,227 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                     <Button type="button" variant="outline" onClick={() => transitionToStep('identity')} disabled={submitting}>
                       Back
                     </Button>
-                    <Button type="button" variant={providerAlreadyConnected || providerOptions.length === 0 ? 'primary' : 'outline'} onClick={handleProviderContinue} disabled={submitting}>
+                    <Button
+                      type="button"
+                      variant={providerAlreadyConnected || providerOptions.length === 0 ? 'primary' : 'outline'}
+                      onClick={restart ? handleProviderContinue : () => transitionToStep('project')}
+                      disabled={submitting}
+                      aria-label={finishButtonLabel}
+                    >
                       {finishButtonLabel}
                     </Button>
                   </div>
+                </div>
+              ) : null}
+
+              {view === 'project' ? (
+                <div className="grid h-full content-start gap-6">
+                  <div className="grid gap-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-project-name">
+                      Project name.
+                    </label>
+                    <Input
+                      id="desktop-onboarding-project-name"
+                      autoFocus
+                      value={projectName}
+                      onChange={(event) => setProjectName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                        event.preventDefault()
+                        if (projectName.trim()) {
+                          setError(null)
+                          transitionToStep('workspaces')
+                        } else {
+                          setError('Project name is required.')
+                        }
+                      }}
+                      placeholder="e.g. My Application"
+                      disabled={submitting}
+                    />
+                    <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                      Name your first project. Git is not required; you can attach code folders in the next step or chat with Swarm directly.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-project-description">
+                      Description (optional).
+                    </label>
+                    <Input
+                      id="desktop-onboarding-project-description"
+                      value={projectDescription}
+                      onChange={(event) => setProjectDescription(event.target.value)}
+                      placeholder="e.g. Main web application and services"
+                      disabled={submitting}
+                    />
+                  </div>
+
+                  <div className="mt-auto flex items-center justify-between gap-3 pt-1">
+                    <Button type="button" variant="outline" onClick={() => transitionToStep('provider')} disabled={submitting}>
+                      Back
+                    </Button>
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleProviderContinue}
+                        disabled={submitting}
+                        aria-label="Continue to projects"
+                      >
+                        Continue to projects
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        disabled={!projectName.trim() || submitting}
+                        onClick={() => {
+                          if (projectName.trim()) {
+                            setError(null)
+                            transitionToStep('workspaces')
+                          } else {
+                            setError('Project name is required.')
+                          }
+                        }}
+                      >
+                        Continue to workspaces
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {view === 'workspaces' ? (
+                <div className="grid h-full content-start gap-5">
+                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                        Project folders
+                      </h2>
+                      <span className="text-xs text-[var(--app-text-muted)]">
+                        {selectedWorkspaceIds.length} selected
+                      </span>
+                    </div>
+
+                    {workspaceCatalog.length > 0 ? (
+                      <div className="grid gap-2 max-h-48 overflow-y-auto pr-1">
+                        {workspaceCatalog.map((w) => {
+                          const isChecked = selectedWorkspaceIds.includes(w.id)
+                          return (
+                            <label
+                              key={w.id}
+                              className={[
+                                'flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors',
+                                isChecked
+                                  ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)]'
+                                  : 'border-[var(--app-border)] bg-transparent hover:border-[var(--app-border-accent)]',
+                              ].join(' ')}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  setSelectedWorkspaceIds(ids =>
+                                    e.target.checked ? [...ids, w.id] : ids.filter(id => id !== w.id)
+                                  )
+                                }}
+                                className="mt-0.5"
+                              />
+                              <div className="grid gap-0.5 overflow-hidden">
+                                <span className="text-sm font-medium text-[var(--app-text)] truncate">{w.label}</span>
+                                <span className="text-xs font-mono text-[var(--app-text-muted)] truncate">{w.path}</span>
+                              </div>
+                            </label>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-[var(--app-text-muted)]">
+                        No registered folders found. Add a folder below or skip straight to chatting with Swarm.
+                      </p>
+                    )}
+
+                    <div className="grid gap-2 pt-2 border-t border-[var(--app-border)]">
+                      <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-add-folder">
+                        Add folder path
+                      </label>
+                      <div className="flex gap-2">
+                        <Input
+                          id="desktop-onboarding-add-folder"
+                          value={customFolderPath}
+                          onChange={(e) => setCustomFolderPath(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              void handleAddCustomFolder()
+                            }
+                          }}
+                          placeholder="/path/to/my/project"
+                          disabled={submitting}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={!customFolderPath.trim() || submitting}
+                          onClick={() => void handleAddCustomFolder()}
+                        >
+                          <OnboardingButtonLabel idle="Add folder" pending="Adding…" isPending={pendingAction === 'folder-add'} />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-[var(--app-text-muted)]">
+                    Swarm AI Router will synthesize project context directly into Swarm’s durable Pebble database. Zero files will be written to disk.
+                  </p>
+
+                  <div className="mt-auto flex items-center justify-between gap-3 pt-1">
+                    <Button type="button" variant="outline" onClick={() => transitionToStep('project')} disabled={submitting}>
+                      Back
+                    </Button>
+                    <div className="flex items-center gap-3">
+                      {selectedWorkspaceIds.length > 0 ? (
+                        <>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void handleCreateWithoutWorkspaces()}
+                            disabled={submitting}
+                          >
+                            Skip workspaces &amp; Talk to Swarm
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="primary"
+                            onClick={() => void handleCreateAndPersonalize()}
+                            disabled={submitting}
+                          >
+                            <OnboardingButtonLabel idle="Personalize &amp; Talk to Swarm" pending="Creating…" isPending={pendingAction === 'project-create'} />
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="primary"
+                          onClick={() => void handleCreateWithoutWorkspaces()}
+                          disabled={submitting}
+                        >
+                          <OnboardingButtonLabel idle="Skip to Talk to Swarm" pending="Creating…" isPending={pendingAction === 'project-create'} />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {view === 'personalizing' && createdProject ? (
+                <div className="grid h-full content-center">
+                  <PersonalizingCard
+                    project={createdProject}
+                    busy={personalizingBusy}
+                    onRetry={() => void handlePersonalizeRetry()}
+                    onRefresh={() => void handlePersonalizeRefresh()}
+                    onOpen={() => void finishAndOpenProjectChat(createdProject)}
+                  />
                 </div>
               ) : null}
 

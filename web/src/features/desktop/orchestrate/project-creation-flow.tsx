@@ -144,7 +144,7 @@ const SYNTHESIS_STAGES = [
   'Preparing personalized Swarm orchestrator context',
 ]
 
-function PersonalizingCard({
+export function PersonalizingCard({
   project,
   busy,
   onRetry,
