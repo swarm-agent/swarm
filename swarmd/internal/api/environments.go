@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+	"encoding/json"
+	"io"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -207,7 +209,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req connectionMutationRequest
-		if err := decodeJSON(r, &req); err != nil {
+		if err := decodeEnvironmentRequest(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -622,10 +624,10 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			if list == nil {
 				list = []environments.Deployment{}
 			}
-			activeLeases := make(map[string]environments.DeploymentLease)
+			activeLeases := make(map[string]bool)
 			for _, dep := range list {
 				if lease, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID); ok {
-					activeLeases[dep.ID] = lease
+					activeLeases[dep.ID] = lease.Active
 				}
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -664,7 +666,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":               true,
 				"deployment":       dep,
-				"active_lease":     lease,
+				"leased":           lease.Active,
 				"has_active_lease": hasLease,
 			})
 			return
@@ -716,7 +718,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req environmentMutationRequest
-		if err := decodeJSON(r, &req); err != nil {
+		if err := decodeEnvironmentRequest(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -727,6 +729,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if _, err := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments"); err != nil { writeError(w, http.StatusForbidden, err); return }
 		action := strings.ToLower(strings.TrimSpace(req.Action))
 
 		// Cancellation routing
@@ -875,7 +878,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 				if dep, found, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, op.DeploymentID); found {
 					resp["deployment"] = dep
 				}
-				if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease {
+				if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease && lease.ID == op.LeaseID && lease.ConsumerID == firstNonEmptyString(callerSessionID, callerActor) {
 					resp["lease"] = lease
 				}
 			}
@@ -1074,7 +1077,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":               true,
 				"deployment":       dep,
-				"active_lease":     lease,
+				"leased":           lease.Active,
 				"has_active_lease": hasLease,
 			})
 			return
@@ -1103,10 +1106,10 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			list = []environments.Deployment{}
 		}
 
-		activeLeases := make(map[string]environments.DeploymentLease)
+		activeLeases := make(map[string]bool)
 		for _, dep := range list {
 			if lease, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID); ok {
-				activeLeases[dep.ID] = lease
+				activeLeases[dep.ID] = lease.Active
 			}
 		}
 
@@ -1119,7 +1122,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req deploymentMutationRequest
-		if err := decodeJSON(r, &req); err != nil {
+		if err := decodeEnvironmentRequest(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -1200,7 +1203,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			if dep, found, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, op.DeploymentID); found {
 				resp["deployment"] = dep
 			}
-			if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease {
+			if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease && lease.ID == op.LeaseID && lease.ConsumerID == firstNonEmptyString(callerSessionID, callerActor) {
 				resp["lease"] = lease
 			}
 		}
@@ -1213,4 +1216,13 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+// Reject ambiguous multi-value payloads before any environment side effect.
+func decodeEnvironmentRequest(w http.ResponseWriter, r *http.Request, dest any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dest); err != nil { return err }
+	if err := decoder.Decode(new(any)); err != io.EOF { return errors.New("exactly one JSON request required") }
+	return nil
 }

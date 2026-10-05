@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,8 @@ type TaskEnvironmentRequest struct {
 	ExpectedAttachmentRevision int `json:"expected_attachment_revision,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	DeploymentID string `json:"deployment_id,omitempty"`
+	EnvironmentID string `json:"environment_id,omitempty"`
+	BuildOperationID string `json:"build_operation_id,omitempty"`
 	OperationID string `json:"operation_id,omitempty"`
 	ExpiresAt int64 `json:"expires_at,omitempty"`
 	TTLMillis int64 `json:"ttl_millis,omitempty"`
@@ -36,6 +39,18 @@ type TaskEnvironmentResult struct {
 	Attachments []environments.TaskEnvironmentAttachment `json:"attachments"`
 	Lease *environments.DeploymentLease `json:"lease,omitempty"`
 	Operation *environments.EnvironmentOperation `json:"operation,omitempty"`
+	Deployment *TaskDeploymentView `json:"deployment,omitempty"`
+	FailureReasons map[string]string `json:"failure_reasons,omitempty"`
+}
+
+// TaskDeploymentView intentionally excludes runtime metadata, credentials and leases.
+type TaskDeploymentView struct {
+	ID string `json:"id"`
+	EnvironmentID string `json:"environment_id"`
+	Status environments.DeploymentStatus `json:"status"`
+	Health environments.HealthStatus `json:"health"`
+	CreatedAt int64 `json:"created_at"`
+	Endpoints []string `json:"endpoints,omitempty"`
 }
 
 type taskEnvironmentService interface {
@@ -50,7 +65,9 @@ func (r *Runtime) executeTaskEnvironment(ctx context.Context, scope WorkspaceSco
 	raw, err := json.Marshal(args)
 	if err != nil { return "", err }
 	var req TaskEnvironmentRequest
-	if err := json.Unmarshal(raw, &req); err != nil { return "", err }
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil { return "", err }
 	result, err := service.ManageTaskEnvironment(ctx, scope.Principal, scope.SessionID, req)
 	if err != nil { return "", err }
 	raw, err = json.Marshal(result)

@@ -328,9 +328,14 @@ func (s *Service) WorkspaceEnvironmentPromptBlock(ctx context.Context, scope too
 	if projectID, ok := snapshot.Metadata["project_id"].(string); ok && projectID != "" {
 		if taskID, ok := snapshot.Metadata["task_id"].(string); ok && taskID != "" {
 			if task, found, err := s.sessions.Store().GetProjectTask(accountScopeID, projectID, taskID); err == nil && found && task.SessionID == snapshot.ID {
+				task.EnsureTaskAttempts()
 				taskContext = fmt.Sprintf("Task environment discovery: project_id=%q task_id=%q attempt_id=%q; %d retained attachments. Use manage_environments list_attachments for current state, including attachments added after this turn began. Select attachment_id explicitly and acquire your own receipt; retained evidence grants no execution or workspace scope.\n", projectID, taskID, task.ActiveAttemptID, len(task.EnvironmentAttachments))
 			}
 		}
+	}
+	if tool.TaskEnvironmentConsumer(snapshot.Metadata) {
+		if taskContext == "" { return "Task environment discovery unavailable: current task identity must be restored before environment access." }
+		return taskContext
 	}
 	workspaceID := s.resolveWorkspaceIDForScope(scope)
 	if workspaceID == "" {
@@ -352,7 +357,7 @@ func (s *Service) WorkspaceEnvironmentPromptBlockForWorkspace(ctx context.Contex
 }
 
 func (s *Service) appendWorkspaceEnvironmentPromptBlock(base string, scope tool.WorkspaceScope) string {
-	if s == nil || (s.envDefinitions == nil && s.envWorkspaceSettings == nil) {
+	if s == nil {
 		return strings.TrimSpace(base)
 	}
 	block := s.WorkspaceEnvironmentPromptBlock(context.Background(), scope)

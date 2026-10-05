@@ -107,7 +107,8 @@ func manageEnvironmentsDefinition() Definition {
 }
 
 func (r *Runtime) executeManageEnvironments(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
-	if _, err := r.authorizeEnvironmentAccess(scope, "manage_environments"); err != nil {
+	caller, authErr := r.authorizeEnvironmentAccess(scope, "manage_environments")
+	if err := authErr; err != nil {
 		return "", err
 	}
 	if r == nil || r.environmentsStore == nil {
@@ -119,6 +120,18 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		actionName = "list"
 	}
 
+	if actionName == "cancel" { actionName = "cancel_operation" }
+	args = cloneTaskEnvironmentArgs(args, actionName)
+	if TaskEnvironmentConsumer(caller.Metadata) {
+		if taskEnvironmentRoutedAction(actionName) {
+			return r.executeTaskEnvironment(ctx, scope, args)
+		}
+		switch actionName {
+		case "help", "list", "get", "create", "update", "import", "export":
+		default:
+			return "", errors.New("task consumer requires explicit attachment and own receipt; use list_attachments")
+		}
+	}
 	if actionName == "cleanup_review" {
 		account, workspace, _, err := r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
 		if err != nil { return "", err }
@@ -195,7 +208,8 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			"3. Managed build: save environment.build with exact product/recipe catalog workspace_id, workspace_generation and commit; recipe_directory/recipe_file are relative committed paths. Use managed-build image, local_podman, reuse=true, release_behavior=none. build(environment_id) returns an operation; pass its successful build_operation_id to ensure/deploy. Product context is at root; recipe tree is under .swarm-recipe. No live worktree, credentials, arbitrary build flags or mutable tags are accepted.\n" +
 			"   Supervised runtime mutations: ensure (environment_id, deliberate receipt execution), deploy, exec (deployment_id, command), start, stop, destroy, release (deployment_id or lease_id).\n" +
 			"   Mutations return an immediate bounded operation receipt with operation_id and status within 2 seconds. Do not busy-poll; inspect receipts and use realtime updates.\n" +
-			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id)."
+			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id).\n" +
+			"5. Task attachments: list_attachments(project_id,task_id); attach_task(project_id,task_id,attachment_id,expected_task_revision,expected_attachment_revision,attempt_id,workspace_id,deployment_id OR operation_id,expires_at). expires_at is an epoch millisecond deadline within 24h. Prepare before assignment with empty attempt_id, then explicitly CAS reassign to the current attempt before acquire_attachment(project_id,task_id,attachment_id,expected_attachment_revision,attempt_id,ttl_millis). Each consumer gets its own receipt. exec/release/get_deployment/get_operation/cancel_operation require project_id,task_id,attachment_id,workspace_id,lease_id (and operation_id for operation inspection/cancellation). No automatic wake or scope expansion. Task build/ensure/deploy require project_id,task_id,workspace_id,environment_id and ensure/deploy require the exact successful build_operation_id. After preparation explicitly attach the selected deployment and acquire a bound receipt. Changed source requires rebuild and explicit CAS reassignment, never current-dev substitution. Task completion, detach and release do not stop review deployments; finite review retention is 24h with automatic cleanup."
 		response["definition_schema"] = manageEnvironmentsDefinition().Parameters
 		response["definition_help"] = "Create accepts top-level definition fields or one environment object; import accepts exactly one environment object or json string containing an exported definition. Nested fields are JSON objects, not JSON-encoded strings. Unknown fields, nulls and wrong types are rejected. Exported account_scope_id/workspace_id are rebound to authorized caller scope, never trusted. Update accepts top-level fields only: container and deployment_policy merge supplied fields; build, provisioning, health_check, resources and labels replace the supplied section. image/ports and max_instances/release_behavior/reuse are aliases and cannot accompany their canonical section. Omitted create provisioning defaults to local_mount at /app; explicit provisioning requires a valid strategy. Container keys: image, command, args, env_vars, exposed_ports, privileged, user, working_dir, setup_commands, rootless_systemd. Explicit local_podman connections support rootless_systemd={cgroup_namespace:private,network:slirp4netns,pids_limit:1024}; this requires registry_image provisioning, no host mounts, no privileged/GPU mode, and a pre-existing local image. Capabilities require rootless Linux Podman, crun, slirp4netns, systemd cgroup v2 and delegated cpu/memory/pids controllers. Ports remain 127.0.0.1-only; no host environment expansion, proxy inheritance, remote or privileged fallback. No arbitrary runtime flags are supported. Connection checks diagnose prerequisites without changing host configuration. Strategy availability is provider-dependent; schema describes stored definitions, not a guarantee of provider support."
 		response["available_actions"] = []string{
@@ -389,13 +403,13 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 
 		type depListItem struct {
 			environments.Deployment
-			ActiveLease *environments.DeploymentLease `json:"active_lease,omitempty"`
+			Leased bool `json:"leased"`
 		}
 		items := make([]depListItem, 0, len(deps))
 		for _, dep := range deps {
 			item := depListItem{Deployment: dep}
 			if lease, hasLease, _ := r.deploymentManager.GetActiveLease(accountScopeID, workspaceID, dep.ID); hasLease && lease.Active {
-				item.ActiveLease = &lease
+				item.Leased = true
 			}
 			items = append(items, item)
 		}
@@ -419,8 +433,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		}
 		response["deployment"] = dep
 		if lease, hasLease, _ := r.deploymentManager.GetActiveLease(accountScopeID, workspaceID, depID); hasLease {
-			response["active_lease"] = lease
-			response["lease"] = lease
+			response["leased"] = lease.Active
 		}
 		if dep.IsUsable() {
 			if access, _ := r.deploymentManager.ResolveAccess(ctx, accountScopeID, workspaceID, depID); access != nil {

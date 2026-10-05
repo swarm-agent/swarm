@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"io"
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
@@ -38,11 +39,17 @@ func (s *Server) authorizeTaskEnvironment(p identity.Principal, sessionID, proje
 			if a == nil || a.SessionID != sessionID { return nil, errors.New("task consumer attempt is stale") }
 		}
 	}
+	task.EnsureTaskAttempts()
 	return task, nil
 }
 
-func (s *Server) validateTaskEnvironmentSource(p identity.Principal, projectID string, source environments.PreparedDeploymentSource) error {
-	proj, found, err := s.sessions.Store().GetProject(p.AccountScopeID, projectID)
+func (s *Server) validateTaskEnvironmentSource(p identity.Principal, task *pebblestore.ProjectTaskRecord, source environments.PreparedDeploymentSource) error {
+	if source.AccountScopeID != p.AccountScopeID { return errors.New("source account mismatch") }
+	product := source.Build.Product
+	if task.SourceWorkspace.WorkspaceID == "" || product.WorkspaceID != task.SourceWorkspace.WorkspaceID || product.WorkspaceGeneration != task.SourceWorkspace.WorkspaceGeneration {
+		return errors.New("deployment product must match exact task source workspace and generation")
+	}
+	proj, found, err := s.sessions.Store().GetProject(p.AccountScopeID, task.ProjectID)
 	if err != nil || !found { return errors.New("project unavailable") }
 	if source.AccountScopeID != p.AccountScopeID { return errors.New("source account mismatch") }
 	for _, ref := range []environments.CommittedBuildSource{source.Build.Product, source.Build.Recipe} {
@@ -50,7 +57,9 @@ func (s *Server) validateTaskEnvironmentSource(p identity.Principal, projectID s
 		if _, err := s.resolveProjectTaskSource(p, proj, "", ref.WorkspaceID, ref.WorkspaceGeneration, false); err != nil { return err }
 	}
 	if source.WorkspaceID != source.Build.Product.WorkspaceID { return errors.New("deployment must belong to product workspace") }
-	return nil
+	bound, err := s.resolveProjectTaskSource(p, proj, task.SourceWorkspace.Path, product.WorkspaceID, product.WorkspaceGeneration, false)
+	if err != nil || bound.Path != task.SourceWorkspace.Path { return errors.New("task source catalog path changed") }
+	return s.validateTaskEnvironmentCommit(task, product.Commit)
 }
 
 // ValidateTaskEnvironmentLease is called both before receipt creation and directly
@@ -60,6 +69,7 @@ func (s *Server) ValidateTaskEnvironmentLease(ctx context.Context, lease environ
 	if err := ctx.Err(); err != nil { return err }
 	b := lease.TaskBinding
 	if b == nil || lease.PreparedSource == nil || b.UserID == "" { return errors.New("task binding required") }
+	if lease.ID != "" && (lease.WorkspaceID != lease.PreparedSource.WorkspaceID || lease.DeploymentID != lease.PreparedSource.DeploymentID || lease.EnvironmentID != lease.PreparedSource.EnvironmentID) { return errors.New("receipt source identity mismatch") }
 	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: b.UserID, AccountScopeID: lease.AccountScopeID}
 	sessionID := ""
 	if lease.ConsumerType == environments.ConsumerTypeSession { sessionID = lease.ConsumerID } else if lease.ConsumerType != environments.ConsumerTypeCustom || lease.ConsumerID != b.UserID { return errors.New("invalid task consumer") }
@@ -71,7 +81,7 @@ func (s *Server) ValidateTaskEnvironmentLease(ctx context.Context, lease environ
 		if a.Revision != b.AttachmentRevision || a.AttemptID != b.AttemptID || a.EffectiveState(task.ActiveAttemptID, time.Now().UnixMilli()) != "ready" || a.Source != *lease.PreparedSource {
 			return errors.New("attachment expired, replaced or reassigned")
 		}
-		if err := s.validateTaskEnvironmentSource(p, b.ProjectID, a.Source); err != nil { return err }
+		if err := s.validateTaskEnvironmentSource(p, task, a.Source); err != nil { return err }
 		if s.deployments == nil { return errors.New("deployment service unavailable") }
 		d, found, err := s.deployments.GetDeployment(p.AccountScopeID, a.Source.WorkspaceID, a.Source.DeploymentID)
 		if err != nil { return err }
@@ -87,7 +97,7 @@ func (s *Server) taskEnvironmentProjection(ctx context.Context, p identity.Princ
 		a := &out[i]
 		a.State = a.EffectiveState(task.ActiveAttemptID, time.Now().UnixMilli())
 		if a.State == "stale" { continue }
-		if s.validateTaskEnvironmentSource(p, task.ProjectID, a.Source) != nil || s.deployments == nil { a.State = "stale"; continue }
+		if s.validateTaskEnvironmentSource(p, task, a.Source) != nil || s.deployments == nil { a.State = "stale"; continue }
 		if a.Source.DeploymentID == "" {
 			op, found, err := s.deployments.Get(ctx, p.AccountScopeID, a.Source.WorkspaceID, a.OperationID)
 			if err != nil || !found { a.State = "stale"; continue }
@@ -134,11 +144,16 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 	if err != nil { return result, err }
 	if req.Action == "attach_task" && sessionID != "" {
 		caller, _, _ := s.sessions.GetSession(sessionID)
-		if caller.Metadata["task_id"] != nil && req.AttemptID != task.ActiveAttemptID { return result, errors.New("task consumer must attach to its current attempt") }
+		if tool.TaskEnvironmentConsumer(caller.Metadata) && req.AttemptID != task.ActiveAttemptID { return result, errors.New("task consumer must attach to its current attempt") }
 	}
 	if req.TimeoutMS < 0 || req.TimeoutMS > int64((time.Hour)/time.Millisecond) { return result, errors.New("timeout_ms must be between zero and one hour") }
-	if req.Action != "list_attachments" && req.AttachmentID == "" { return result, errors.New("explicit attachment_id required") }
+	if req.Action != "list_attachments" && req.Action != "build" && req.Action != "ensure" && req.Action != "deploy" && req.Action != "get_operation" && req.Action != "cancel_operation" && req.AttachmentID == "" { return result, errors.New("explicit attachment_id required") }
+	if (req.Action == "get_operation" || req.Action == "cancel_operation") && req.AttachmentID == "" {
+		return s.taskPreparationOperation(ctx, p, sessionID, task, req)
+	}
 	switch req.Action {
+	case "build", "ensure", "deploy":
+		return s.prepareTaskEnvironment(ctx, p, sessionID, task, req)
 	case "list_attachments":
 	case "detach_task":
 		task, err = s.sessions.Store().MutateProjectTaskEnvironment(p.AccountScopeID, req.ProjectID, req.TaskID, pebblestore.TaskEnvironmentMutation{ExpectedTaskRevision: req.ExpectedTaskRevision, ExpectedAttachmentRevision: req.ExpectedAttachmentRevision, AttachmentID: req.AttachmentID})
@@ -167,14 +182,14 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 		env, found, e := s.environments.Get(p.AccountScopeID, req.WorkspaceID, a.EnvironmentID)
 		if e != nil || !found { return result, errors.New("environment definition unavailable") }
 		a.EnvironmentName = env.Name
-		if e := s.validateTaskEnvironmentSource(p, req.ProjectID, a.Source); e != nil { return result, e }
+		if e := s.validateTaskEnvironmentSource(p, task, a.Source); e != nil { return result, e }
 		if e := a.Validate(); e != nil { return result, e }
 		task, err = s.sessions.Store().MutateProjectTaskEnvironment(p.AccountScopeID, req.ProjectID, req.TaskID, pebblestore.TaskEnvironmentMutation{ExpectedTaskRevision: req.ExpectedTaskRevision, ExpectedAttachmentRevision: req.ExpectedAttachmentRevision, AttachmentID: req.AttachmentID, Attachment: &a})
 	case "exec", "release", "get_operation", "cancel_operation", "get_deployment":
 		reader, ok := s.deployments.(interface { GetLease(string, string, string) (environments.DeploymentLease, bool, error) })
 		if !ok || req.LeaseID == "" || req.WorkspaceID == "" { return result, errors.New("exact workspace_id and own lease_id required") }
 		lease, found, e := reader.GetLease(p.AccountScopeID, req.WorkspaceID, req.LeaseID)
-		if e != nil || !found || lease.TaskBinding == nil { return result, errors.New("task lease unavailable") }
+		if e != nil || !found || lease.TaskBinding == nil || lease.AccountScopeID != p.AccountScopeID || lease.WorkspaceID != req.WorkspaceID || lease.ID != req.LeaseID { return result, errors.New("task lease unavailable") }
 		kind, id := environments.ConsumerTypeCustom, p.UserID
 		if sessionID != "" { kind, id = environments.ConsumerTypeSession, sessionID }
 		b := lease.TaskBinding
@@ -193,7 +208,11 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 				op = *cancelled
 			}
 			result.Operation = &op
-		} else if req.Action != "get_deployment" {
+		} else if req.Action == "get_deployment" {
+			d, found, e := s.deployments.GetDeployment(p.AccountScopeID, req.WorkspaceID, lease.DeploymentID)
+			if e != nil || !found || !lease.PreparedSource.Matches(d) { return result, errors.New("deployment changed during inspection") }
+			result.Deployment = &tool.TaskDeploymentView{ID: d.ID, EnvironmentID: d.EnvironmentID, Status: d.Status, Health: d.Health, CreatedAt: d.CreatedAt, Endpoints: taskDeploymentEndpoints(d)}
+		} else {
 			op, e := s.deployments.Submit(ctx, lifecycle.SubmitOperationRequest{AccountScopeID: p.AccountScopeID, WorkspaceID: req.WorkspaceID, DeploymentID: lease.DeploymentID, LeaseID: lease.ID, Action: req.Action, Attribution: attribution, Command: req.Command, WorkingDir: req.WorkingDir, Timeout: time.Duration(req.TimeoutMS)*time.Millisecond, MaxOutput: req.MaxOutput})
 			if e != nil { return result, e }
 			result.Operation = op
@@ -218,6 +237,12 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 	}
 	if err != nil { return result, err }
 	result.TaskRevision, result.Attachments = task.Revision, s.taskEnvironmentProjection(ctx, p, task)
+	for _, a := range result.Attachments {
+		if a.State == "failed" || a.State == "stale" || a.State == "stopped" {
+			if result.FailureReasons == nil { result.FailureReasons = map[string]string{} }
+			result.FailureReasons[a.ID] = "Environment unavailable; inspect preparation, rebuild if source changed, and explicitly CAS reassign before acquiring."
+		}
+	}
 	return result, nil
 }
 
@@ -229,6 +254,7 @@ func (s *Server) handleTaskEnvironments(w http.ResponseWriter, r *http.Request) 
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil { writeError(w, http.StatusBadRequest, err); return }
+	if err := decoder.Decode(new(any)); err != io.EOF { writeError(w, http.StatusBadRequest, errors.New("exactly one JSON request required")); return }
 	result, err := s.ManageTaskEnvironment(r.Context(), p, p.SessionID, req)
 	if err != nil { writeError(w, http.StatusForbidden, err); return }
 	w.Header().Set("Content-Type", "application/json")

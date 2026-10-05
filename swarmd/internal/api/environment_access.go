@@ -35,5 +35,8 @@ func (s *Server) authorizeEnvironmentHTTPSession(r *http.Request, selected, tool
 	if err != nil || !found || snap.AccountScopeID != p.AccountScopeID || snap.UserID != p.UserID || !tool.EnvironmentToolAllowed(snap.Metadata, toolName) {
 		return pebblestore.SessionSnapshot{}, deny
 	}
+	if toolName == "manage_environments" && tool.TaskEnvironmentConsumer(snap.Metadata) {
+		return pebblestore.SessionSnapshot{}, errors.New("task consumers must use the task environment endpoint with explicit task references and own receipts")
+	}
 	return snap, nil
 }
