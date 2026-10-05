@@ -39,12 +39,11 @@ function harness() {
     get tasks() { return tasks }, set tasks(value) { tasks = value },
     get collections() { return collections }, set holdList(value: boolean) { holdList = value } }
 }
-// Initialize inspected facts through explicit detail disclosure, not acquisition.
+// Initial acquisition must inspect each execution once without user disclosure.
 async function hydrate(h: ReturnType<typeof harness>) {
   const lease = h.runtime.acquire('project')
   await lease.ready
-  assert.equal(h.reads.length, 0, 'entry is collection-only')
-  for (const task of h.tasks) h.runtime.inspectTask('project', task.id)
+  assert.equal(h.reads.length, 2, 'entry hydrates initial Git assessments')
   h.reads[0].resolve({ task: { ...h.tasks[0], git_status: 'clean', is_integrated: true, status: 'completed' } })
   h.reads[1].resolve({ task: { ...h.tasks[1], git_status: 'diverged', unintegrated_commits: 3 } })
   await flush()
@@ -74,8 +73,7 @@ test('collection and membership refreshes retain inspected labels without all-ca
   h.runtime.acceptFrame({ kind: 'project.updated', project_id: 'project', event: { payload: { action: 'task_created' } } })
   await flush()
   assert.equal(h.collections, 3)
-  assert.equal(h.reads.length, 2, 'membership alone must not inspect new cards')
-  h.runtime.inspectTask('project', 'new')
+  assert.equal(h.reads.length, 3, 'membership inspects only the new card')
   assert.deepEqual(h.reads.map(read => read.id), ['integrated', 'pending', 'new'])
   h.reads[2].resolve({ task: { ...h.tasks[2], git_status: 'dirty', is_dirty: true, dirty_count: 2 } })
   await flush()
@@ -151,9 +149,7 @@ test('in-flight list updates stay scoped and execution identity replacement requ
   h.tasks = [h.tasks[0], { ...h.tasks[1], revision: 3, session_id: 'replacement', base_commit: 'new-fork' }]
   h.runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
   await flush()
-  assert.equal(h.reads.length, 3, 'replacement remains uninspected until explicitly requested')
-  h.runtime.inspectTask('project', 'pending')
-  assert.equal(h.reads.length, 4)
+  assert.equal(h.reads.length, 4, 'replacement identity is inspected automatically')
   assert.equal(h.reads[3].id, 'pending')
   assert.equal(h.state.project.tasks[1].isIntegrated, false)
   assert.equal(h.state.project.tasks[1].gitStatus, 'stale')
@@ -223,35 +219,33 @@ test('canonical observation provenance rejects owner, attempt, branch, fork and 
 
 // Purpose: replacing execution identity during an active detail read must queue
 // the new owner after completion, never publish the old owner's success, and
-// bound concurrent detail reads to four. Deferred promises expose race ordering
+// bound concurrent detail reads to two. Deferred promises expose race ordering
 // directly at DesktopProjectsRuntime rather than relying on wall-clock timing.
 test('identity replacement during inspection rejects old ancestry and bounded queue hydrates the new owner', { timeout: 5000 }, async () => {
   const h = harness()
-  h.tasks = Array.from({ length: 7 }, (_, i) => record(`card-${i}`))
+  h.tasks = Array.from({ length: 3 }, (_, i) => record(`card-${i}`))
   const lease = h.runtime.acquire('project')
   await lease.ready
-  assert.equal(h.reads.length, 0)
-  for (const task of h.tasks) h.runtime.inspectTask('project', task.id)
-  assert.equal(h.reads.length, 4)
+  assert.equal(h.reads.length, 2, 'initial inspection concurrency matches Git admission')
   h.tasks = h.tasks.map((task, i) => i === 0 ? { ...task, revision: 2, session_id: 'new-owner' } : task)
   h.runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
   await flush()
-  assert.equal(h.reads.length, 4)
+  assert.equal(h.reads.length, 2)
   h.reads[0].resolve({ task: { ...record('card-0'), git_status: 'clean', is_integrated: true } })
   await flush()
   assert.equal(h.state.project.tasks[0].sessionId, 'new-owner')
   assert.equal(h.state.project.tasks[0].isIntegrated, false)
-  assert.equal(h.reads.length, 5)
-  for (const read of h.reads.slice(1, 4)) read.resolve({ task: { ...h.tasks.find(task => task.id === read.id), git_status: 'clean' } })
+  assert.equal(h.reads.length, 3)
+  for (const read of h.reads.slice(1, 2)) read.resolve({ task: { ...h.tasks.find(task => task.id === read.id), git_status: 'clean' } })
   await flush()
-  assert.equal(h.reads.length, 8) // Seven initial owners plus one replacement; never duplicate unaffected owners.
-  const replacement = h.reads.slice(4).find(read => read.id === 'card-0')!
+  assert.equal(h.reads.length, 4) // Three initial owners plus one replacement; never duplicate unaffected owners.
+  const replacement = h.reads.slice(2).find(read => read.id === 'card-0')!
   replacement.resolve({ task: { ...h.tasks[0], git_status: 'unknown' } })
-  for (const read of h.reads.slice(4).filter(read => read !== replacement)) {
+  for (const read of h.reads.slice(2).filter(read => read !== replacement)) {
     read.resolve({ task: { ...h.tasks.find(task => task.id === read.id), git_status: 'clean' } })
   }
   await flush()
-  assert.equal(h.reads.length, 8)
+  assert.equal(h.reads.length, 4)
   assert.equal(h.state.project.tasks[0].isIntegrated, false)
   assert.equal(h.state.project.tasks[0].gitStatus, 'unknown')
   lease.release()

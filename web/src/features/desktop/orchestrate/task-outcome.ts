@@ -11,23 +11,26 @@ export function taskDelivery(task: RunningTask) {
     a.base_oid === task.baseCommit && a.source_branch === task.worktreeBranch &&
     a.target_branch === task.baseBranch && a.workspace_id === task.sourceWorkspaceId &&
     a.workspace_generation === task.sourceWorkspaceGeneration
-  const observed = current && a.freshness === 'observed' && task.gitStatus !== 'stale' && task.gitStatus !== 'unknown' && !task.isDirty && !task.syncWarning
+  const observed = current && a.freshness === 'observed' && task.gitStatus !== 'stale' && task.gitStatus !== 'unknown' && !task.syncWarning
+  const dirty = task.isDirty || a.source_dirty || a.target_dirty
   const integrated = observed && a.state === 'integrated'
   const recoveryPending = task.integration?.state === 'in_progress' && Boolean(task.integration.recovery_base)
   const recovered = observed && !recoveryPending && ['recovered', 'equivalent'].includes(a.state)
-  const recoverable = observed && ((['history_rewritten', 'history_equivalent'].includes(a.state) && a.allowed_actions?.includes('recover_integrate')) || (a.state === 'recovered' && recoveryPending))
+  const recoverable = observed && !dirty && ((['history_rewritten', 'history_equivalent'].includes(a.state) && a.allowed_actions?.includes('recover_integrate')) || (a.state === 'recovered' && recoveryPending))
     && ['completed', 'needs_review', 'failed', 'blocked'].includes(task.status)
-  const actionable = observed && a.state === 'candidate_work' && a.candidate_commits > 0 && a.allowed_actions?.includes('integrate')
+  const actionable = observed && !dirty && a.state === 'candidate_work' && a.candidate_commits > 0 && a.allowed_actions?.includes('integrate')
   const summary = !current ? 'Git assessment stale — refresh task'
     : recovered ? a.state === 'equivalent' ? 'Task edits already present — no merge needed' : 'Task delta recovered & integrated'
     : recoverable ? `Recover recorded task delta (${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'})`
     : a.state === 'history_rewritten' ? 'History rewritten — review task'
     : a.state === 'history_equivalent' ? 'Matching tree; integration not verified — review task'
-    : !observed ? task.syncWarning || (task.isDirty ? 'Changes pending commit' : 'Git assessment unavailable — review task')
+    : !observed ? task.syncWarning || (a.reason_code === 'not_assessed' ? 'Checking Git…'
+      : a.state === 'unavailable' && a.reason ? `Git assessment unavailable — ${a.reason}` : 'Git assessment stale — checking changes')
     : integrated ? 'Integrated'
     : actionable ? `${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'} to integrate`
     : a.reason || 'Integration needs review'
-  return { integrated, actionable, recovered, recoverable, summary }
+  return { integrated, actionable, recovered, recoverable,
+    summary: observed && dirty ? `${summary} · ${a.target_dirty ? 'Target has uncommitted changes' : 'Changes pending commit'}` : summary }
 }
 
 // Projection only: durable task/attempt/program receipts own these facts. Neither
@@ -58,7 +61,10 @@ export function taskOutcome(task: RunningTask) {
     : undefined
   const code = Boolean(task.worktreeBranch || task.agentType === 'coder' || currentProgram?.definition?.jobs?.some(job => job.agent_type === 'coder'))
   const assembled = currentProgram?.state === 'completed'
-  const delivered = ((taskDelivery(task)?.integrated || taskDelivery(task)?.recovered) ?? task.isIntegrated === true) && !integrationFailed && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0)
+  const assessment = taskDelivery(task)
+  const delivered = !integrationFailed && (assessment
+    ? assessment.integrated || assessment.recovered
+    : task.isIntegrated === true && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0))
   // Unknown freshness is not evidence of undelivered work. Preserve explicit
   // last-known dirty/commit facts during refresh, without claiming fresh delivery.
   const deliveryAction = code && !running && (assembled || ['completed', 'needs_review'].includes(task.status))

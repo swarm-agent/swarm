@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { requestStartupJson } from '../../../app/api'
+import { subscribeGit, type SubscribeGit, type GitWatchSelector } from '../git/subscriptions'
 import { fetchProjectTaskCollection } from './project-task-collection'
 import type { RunningTask, ProjectTaskMediaRef } from '../orchestrate/orchestrate-types'
 import {
@@ -29,6 +30,7 @@ export interface DesktopProjectsRuntimeDeps {
   fetchMedia: (projectId: string, signal?: AbortSignal) => Promise<{ media?: ProjectTaskMediaRef[] }>
   getState: () => DesktopProjectsState
   dispatch: (action: DesktopProjectsAction) => void
+  subscribeGit?: SubscribeGit
   subscribe?: (listener: (mutation?: DesktopV3CacheMutation) => void) => () => void
 }
 
@@ -59,6 +61,117 @@ export class DesktopProjectsRuntime {
   private readonly taskVersions = new Map<string, number>()
   private taskEpoch = 0
   private unsubscribeCache: (() => void) | null = null
+  private readonly gitWatches = new Map<string, { signature: string; release: () => void }>()
+  private readonly gitChanges = new Map<string, { projectId: string; task: RunningTask }>()
+  private gitFlushScheduled = false
+  private readonly lostGitWatches = new Map<string, string>()
+  private gitAdmissionOrder: string[] = []
+
+  private taskWatchLost(task: RunningTask): boolean {
+    return !!this.taskWatchError(task)
+  }
+
+  private taskWatchError(task: RunningTask): string | undefined {
+    for (const [key, error] of this.lostGitWatches) {
+      const repository = JSON.parse(key) as GitWatchSelector
+      const matches = repository.session_id
+        ? task.workspacePath === repository.workspace_path && task.sessionId === repository.session_id
+        : task.sourceWorkspacePath === repository.workspace_path && task.baseBranch === repository.branch
+      if (matches) return error
+    }
+  }
+
+  // Only an explicit repair signal retries failed setup. No timer and no retry
+  // induced by healthy filesystem notices or ordinary task assessment responses.
+  private retryLostGitWatches(): void {
+    if (!this.lostGitWatches.size) return
+    for (const watch of this.gitWatches.values()) watch.release()
+    this.gitWatches.clear()
+    this.syncGitWatches()
+  }
+
+  private syncGitWatches(): void {
+    // Deduplicate source and target selectors in one board-owned push stream.
+    // Multiple long-lived HTTP/1 streams can starve task GETs at the browser's
+    // connection limit. Membership changes reconnect once; Git notices remain
+    // strictly repository-scoped. The server enforces a 256-selector bound.
+    const groups = new Map<string, Map<string, GitWatchSelector>>()
+    for (const { projectId } of this.demand.values()) {
+      for (const task of this.deps.getState()[projectId]?.tasks ?? []) {
+        if (!task.sessionId || !task.workspacePath || !task.sourceWorkspacePath || !task.worktreeBranch) continue
+        const group = groups.get(task.sourceWorkspacePath) ?? new Map<string, GitWatchSelector>()
+        for (const selector of [
+          { workspace_path: task.workspacePath, session_id: task.sessionId, branch: task.worktreeBranch },
+          { workspace_path: task.sourceWorkspacePath, branch: task.baseBranch ?? '' },
+        ]) group.set(JSON.stringify(selector), selector)
+        groups.set(task.sourceWorkspacePath, group)
+      }
+    }
+    const desired = new Map<string, GitWatchSelector[]>()
+    const all = new Map([...groups.values()].flatMap(group => [...group.entries()]))
+    // FIFO admission survives board order changes: new rows cannot evict healthy
+    // slots. Vacancies go to the oldest waiting selectors; targets precede sources
+    // on first admission so a shared target does not strand admitted task lanes.
+    const retained = this.gitAdmissionOrder.filter(key => all.has(key))
+    const known = new Set(retained)
+    const added = [...all.entries()].filter(([key]) => !known.has(key))
+      .sort(([a, av], [b, bv]) => Number(!!av.session_id) - Number(!!bv.session_id) || a.localeCompare(b))
+    this.gitAdmissionOrder = [...retained, ...added.map(([key]) => key)]
+    const ordered = this.gitAdmissionOrder.map(key => all.get(key)!)
+    if (ordered.length) desired.set('board', ordered)
+    const selectors = new Set([...desired.values()].flat().map(selector => JSON.stringify(selector)))
+    for (const key of this.lostGitWatches.keys()) if (!selectors.has(key)) this.lostGitWatches.delete(key)
+    for (const [key, watch] of this.gitWatches) {
+      if (JSON.stringify(desired.get(key)) !== watch.signature) { watch.release(); this.gitWatches.delete(key) }
+    }
+    for (const [key, repositories] of desired) {
+      if (this.gitWatches.has(key)) continue
+      const watch = { signature: JSON.stringify(repositories), release: () => {} }
+      this.gitWatches.set(key, watch)
+      watch.release = this.deps.subscribeGit!(repositories, notice => {
+        if (this.gitWatches.get(key) !== watch) return
+        const repository = repositories[notice.index]
+        if (!repository) return
+        const selectorKey = JSON.stringify(repository)
+        if (notice.kind === 'lost') this.lostGitWatches.set(selectorKey, notice.error || 'Git filesystem watch unavailable; reconnecting')
+        else if (notice.kind === 'ready') this.lostGitWatches.delete(selectorKey)
+        for (const { projectId } of this.demand.values()) {
+          for (const task of this.deps.getState()[projectId]?.tasks ?? []) {
+            const matches = repository.session_id
+              ? task.workspacePath === repository.workspace_path && task.sessionId === repository.session_id
+              : task.sourceWorkspacePath === repository.workspace_path && task.baseBranch === repository.branch
+            if (!matches) continue
+            const taskKey = JSON.stringify([projectId, task.id])
+            // Fence immediately, before a stale in-flight HTTP result can apply.
+            this.taskVersions.set(taskKey, (this.taskVersions.get(taskKey) ?? 0) + 1)
+            this.deps.dispatch({ type: 'projects.invalidateGit', projectId, taskId: task.id,
+              error: this.taskWatchError(task) })
+            if (this.taskWatchLost(task)) {
+              this.taskQueue.delete(taskKey)
+              this.gitChanges.delete(taskKey)
+            } else this.gitChanges.set(taskKey, { projectId, task })
+          }
+        }
+        if (!this.gitFlushScheduled && this.gitChanges.size) {
+          this.gitFlushScheduled = true
+          queueMicrotask(() => {
+            this.gitFlushScheduled = false
+            const changes = [...this.gitChanges.values()]
+            this.gitChanges.clear()
+            for (const { projectId, task } of changes) this.queueTask(projectId, task)
+          })
+        }
+      })
+    }
+    // Collection hydration can replace task fields, but cannot heal an unwatched
+    // lane. Preserve its exact failure until that selector emits ready.
+    for (const { projectId } of this.demand.values()) {
+      for (const task of this.deps.getState()[projectId]?.tasks ?? []) {
+        const error = this.taskWatchError(task)
+        if (error) this.deps.dispatch({ type: 'projects.invalidateGit', projectId, taskId: task.id, error })
+      }
+    }
+  }
 
   private ensureSubscribed(): void {
     if (this.unsubscribeCache) return
@@ -67,22 +180,28 @@ export class DesktopProjectsRuntime {
   }
 
   acceptSessionMutation(mutation?: DesktopV3CacheMutation): void {
-    // Card mounts hydrate permissions/plans, not Git. Initial project acquisition
-    // reads the collection only; durable events and reconnect repair own later
-    // invalidations. Re-reading Git for cache enrichment creates a feedback loop.
+    // Card hydration is not a Git invalidation. Initial collection identities
+    // receive one bounded inspection; durable events and reconnect repair own
+    // subsequent invalidations, never cache enrichment or recurring timers.
     if (mutation?.action.type === 'hydrate.apply') return
+    let retryWatches = false
     for (const { projectId } of this.demand.values()) {
       for (const task of this.deps.getState()[projectId]?.tasks ?? []) {
         if (!task.sessionId) continue
         const owners = mutation ? repositoryOwnerIds(task.sessionId, [], mutation.nextState) : new Set([task.sessionId])
         for (const id of extractTaskSessionIds(task)) owners.add(id)
-        if (!mutation || repositoryEventInvalidates(mutation.action, owners) || taskPlanEventInvalidates(mutation.action, owners)) this.queueTask(projectId, task, false, true)
+        if (!mutation || repositoryEventInvalidates(mutation.action, owners) || taskPlanEventInvalidates(mutation.action, owners)) {
+          if (this.taskWatchLost(task)) retryWatches = true
+          this.queueTask(projectId, task, false, true)
+        }
       }
     }
+    if (retryWatches) this.retryLostGitWatches()
   }
 
   private queueTask(projectId: string, task: RunningTask, authoritative = false, invalidateGit = false): void {
     if ((!task.sessionId && !authoritative) || !this.demand.has(projectId)) return
+    if (!authoritative && this.taskWatchLost(task)) return
     const key = JSON.stringify([projectId, task.id])
     if (invalidateGit) {
       this.taskVersions.set(key, (this.taskVersions.get(key) ?? 0) + 1)
@@ -96,7 +215,9 @@ export class DesktopProjectsRuntime {
 
   private drainTasks(): void {
     for (const [key, entry] of this.taskQueue) {
-      if (this.taskReads.size >= 4) break
+      // Match the assessor's per-repository admission bound even when all cards
+      // share one repository; avoid turning initial hydration into capacity errors.
+      if (this.taskReads.size >= 2) break
       if (this.taskReads.has(key)) continue
       this.taskQueue.delete(key)
       if (!this.demand.has(entry.projectId)) continue
@@ -119,6 +240,10 @@ export class DesktopProjectsRuntime {
             return updated ? [updated] : []
           }),
         })
+        this.syncGitWatches()
+        const updated = this.deps.getState()[entry.projectId]?.tasks.find(task => task.id === entry.task.id)
+        if (updated && this.taskWatchLost(updated)) this.deps.dispatch({ type: 'projects.invalidateGit', projectId: entry.projectId, taskId: updated.id,
+          error: this.taskWatchError(updated) })
       }
       void this.deps.fetchTask(entry.projectId, entry.task.id).then(response => {
         if (!response.task || response.task.id !== entry.task.id ||
@@ -154,6 +279,7 @@ export class DesktopProjectsRuntime {
       getState: deps?.getState ?? (() => getDesktopV3CacheSnapshot().projectsState ?? {}),
       dispatch: deps?.dispatch ?? ((action: DesktopProjectsAction) => dispatchDesktopV3Cache(action as any)),
       subscribe: deps?.subscribe ?? subscribeDesktopV3Cache,
+      subscribeGit: deps?.subscribeGit ?? subscribeGit,
     }
   }
 
@@ -172,6 +298,8 @@ export class DesktopProjectsRuntime {
         const entry = this.demand.get(projectId)
         if (entry && --entry.count === 0) {
           this.demand.delete(projectId)
+          for (const [key, change] of this.gitChanges) if (change.projectId === projectId) this.gitChanges.delete(key)
+          this.syncGitWatches()
           for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
           for (const key of this.taskVersions.keys()) if (JSON.parse(key)[0] === projectId) this.taskVersions.delete(key)
           this.inFlight.delete(projectId)
@@ -190,6 +318,8 @@ export class DesktopProjectsRuntime {
   evict(projectId: string): void {
     if (!projectId) return
     this.demand.delete(projectId)
+    for (const [key, change] of this.gitChanges) if (change.projectId === projectId) this.gitChanges.delete(key)
+    this.syncGitWatches()
     for (const [key, entry] of this.taskQueue) if (entry.projectId === projectId) this.taskQueue.delete(key)
     for (const key of this.taskVersions.keys()) if (JSON.parse(key)[0] === projectId) this.taskVersions.delete(key)
     this.inFlight.delete(projectId)
@@ -204,6 +334,11 @@ export class DesktopProjectsRuntime {
 
   reset(): void {
     this.taskEpoch++
+    for (const watch of this.gitWatches.values()) watch.release()
+    this.gitWatches.clear()
+    this.gitChanges.clear()
+    this.lostGitWatches.clear()
+    this.gitAdmissionOrder = []
     this.taskQueue.clear()
     this.taskVersions.clear()
     this.demand.clear()
@@ -219,6 +354,7 @@ export class DesktopProjectsRuntime {
     const pending = this.inFlight.get(projectId)
     if (pending) return pending
     if (inspectGit) {
+      this.retryLostGitWatches()
       for (const task of this.deps.getState()[projectId]?.tasks ?? []) this.queueTask(projectId, task, false, true)
     }
 
@@ -242,6 +378,7 @@ export class DesktopProjectsRuntime {
           generation,
           tasks: backendTasks,
         })
+        this.syncGitWatches()
         if (this.deps.getState()[projectId]?.generation === generation) {
           const project = this.deps.getState()[projectId]
           for (const task of project?.tasks ?? []) {
@@ -250,9 +387,8 @@ export class DesktopProjectsRuntime {
               // An unchanged card already being inspected needs no second read.
               const read = this.taskReads.get(key)
               const queued = this.taskQueue.get(key)
-              // Collection entry never starts Git inspection. Preserve an already
-              // requested inspection when its owner changes during the read.
-              if (!inspectGit && !read && !queued) continue
+              // Hydrate each new execution identity once, including initial entry.
+              // Collection refreshes retain observations; no timer retries reads.
               if (queued ? taskGitIdentity(queued.task) !== taskGitIdentity(task) :
                 (!read || read.identity !== taskGitIdentity(task) || read.demand !== this.demand.get(projectId) || read.epoch !== this.taskEpoch)) {
                 this.queueTask(projectId, task)
@@ -297,7 +433,10 @@ export class DesktopProjectsRuntime {
 
   inspectTask(projectId: string, taskId: string): void {
     const task = this.deps.getState()[projectId]?.tasks.find(item => item.id === taskId)
-    if (task) this.queueTask(projectId, task, true, true)
+    if (task) {
+      if (this.taskWatchLost(task)) this.retryLostGitWatches()
+      this.queueTask(projectId, task, true, true)
+    }
   }
 
   invalidate(projectId?: string): void {
@@ -348,6 +487,7 @@ export class DesktopProjectsRuntime {
         return
       }
       if (projectId && task && change?.action === 'task_updated') {
+        if (this.taskWatchLost(task)) this.retryLostGitWatches()
         this.queueTask(projectId, task, true, true)
         return
       }
@@ -360,6 +500,7 @@ export class DesktopProjectsRuntime {
       frame.kind === 'rehydrate.required' ||
       frame.kind === 'auth.credentials.updated'
     ) {
+      this.retryLostGitWatches()
       for (const { projectId: id } of this.demand.values()) {
         for (const task of this.deps.getState()[id]?.tasks ?? []) this.queueTask(id, task, false, true)
       }
@@ -373,6 +514,7 @@ export class DesktopProjectsRuntime {
     const current = this.deps.getState()[projectId]?.tasks.find(task => task.id === receipt.id)
     if (!current || (current.revision ?? 0) <= receipt.revision) this.taskQueue.delete(JSON.stringify([projectId, receipt.id]))
     this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: tasks => tasks, archivedReceipt: receipt })
+    this.syncGitWatches()
   }
 
   unarchiveReceipt(projectId: string, receipt: { id: string; revision: number; archived: false; status: string }): void {

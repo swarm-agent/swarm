@@ -50,7 +50,7 @@ export type DesktopProjectsAction =
       projectId: string
       media: ProjectTaskMediaRef[] | ((prev: ProjectTaskMediaRef[]) => ProjectTaskMediaRef[])
     }
-  | { type: 'projects.invalidateGit'; projectId: string; taskId?: string }
+  | { type: 'projects.invalidateGit'; projectId: string; taskId?: string; error?: string }
   | { type: 'projects.invalidate'; projectId?: string }
   | { type: 'projects.evict'; projectId: string }
 
@@ -80,7 +80,7 @@ export function normalizePlanBinding(raw: any): ProjectTaskPlanBinding | undefin
 }
 
 // Revision plus execution/repository identity bounds reuse of a detail observation.
-// Git HEAD changes arrive through durable invalidations, not collection freshness.
+// Git HEAD changes arrive through native watch invalidations, not collection freshness.
 export function taskGitIdentity(task: RunningTask): string {
   return JSON.stringify([task.id, task.revision, task.sessionId, task.activeAttemptId,
     ['completed', 'needs_review'].includes(task.status) ? 'review' : task.status,
@@ -292,7 +292,8 @@ export function reduceDesktopProjectsState(
     const tasks = previous.tasks.map(task => {
       if (action.taskId && task.id !== action.taskId) return task
       delete gitObservations[task.id]
-      return { ...task, gitStatus: 'stale' as const }
+      return { ...task, gitStatus: 'stale' as const, syncWarning: action.error,
+        deliveryAssessment: task.deliveryAssessment ? { ...task.deliveryAssessment, freshness: 'stale', allowed_actions: [] } : undefined }
     })
     return { ...state, [action.projectId]: { ...previous, tasks, gitObservations } }
   }
