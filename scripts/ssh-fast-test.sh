@@ -286,9 +286,9 @@ printf 'ssh-fast-test: copying git bundle to %s:%s\n' "${SSH_ALIAS}" "${REMOTE_B
 copy_bundle_to_remote "${LOCAL_BUNDLE}" "${REMOTE_BUNDLE_PATH}"
 trap 'rm -f -- "${LOCAL_BUNDLE}"; cleanup_remote_bundle "${REMOTE_BUNDLE_PATH}" >/dev/null 2>&1 || true' EXIT
 
-if [[ "${FROM_ZERO}" == "true" ]]; then
+if [[ "${RESTART_SERVICE}" == "true" ]]; then
   printf 'ssh-fast-test: stopping remote service before checkout update\n'
-  remote_service_action stop
+  remote_service_action stop || true
 fi
 
 remote_command="bash -s --"
