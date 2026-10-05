@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 
 	"swarm-refactor/swarmtui/pkg/environments"
@@ -45,7 +46,7 @@ func (m *DeploymentManager) validateBuild(ctx context.Context, account string, e
 	return ctx.Err()
 }
 
-func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req SubmitOperationRequest, env *environments.Environment, conn *environments.Connection) (*environments.OperationResult, error) {
+func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req SubmitOperationRequest, env *environments.Environment, conn *environments.Connection) (out *environments.OperationResult, retErr error) {
 	if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
 		return nil, err
 	}
@@ -65,6 +66,19 @@ func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req S
 	if !ok {
 		return nil, errors.New("provider does not implement managed builds")
 	}
+	accepted := false
+	defer func() {
+		// Provider success is not admission success. A stale catalog or mismatched
+		// receipt must not leave an imported image behind as an accepted build.
+		if !accepted {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), m.cleanupTimeout)
+			defer cancel()
+			if err := builder.CleanupBuild(cleanupCtx, opID); err != nil {
+				out = nil
+				retErr = fmt.Errorf("%w: managed build rejection cleanup unconfirmed", provider.ErrOperationCleanupFailed)
+			}
+		}
+	}()
 	result, err := builder.BuildImage(ctx, provider.ImageBuildRequest{OperationID: opID, Connection: conn, Definition: *env.Build, ProductRoot: product, RecipeRoot: recipe})
 	if err != nil {
 		return nil, err
@@ -75,6 +89,7 @@ func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req S
 	if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
 		return nil, err
 	}
+	accepted = true
 	return &environments.OperationResult{Build: result, Summary: "Managed image built from exact committed inputs"}, nil
 }
 

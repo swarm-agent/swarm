@@ -432,6 +432,12 @@ func ComputeOperationRequestHash(in OperationRequestHashInput) string {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
 	}
+	// Preserve legacy request hashes when no managed build is involved.
+	if in.BuildDigest != "" || in.BuildOperationID != "" {
+		writePart("managed-build-v1")
+		writePart(in.BuildDigest)
+		writePart(in.BuildOperationID)
+	}
 	writePart(strings.TrimSpace(in.Action))
 	writePart(strings.TrimSpace(in.EnvironmentID))
 	writePart(strings.TrimSpace(in.DeploymentID))

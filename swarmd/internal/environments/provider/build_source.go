@@ -31,7 +31,7 @@ func ExportCommittedBuild(ctx context.Context, runner CommandRunner, productRoot
 		{productRoot, b.Product.Commit, "", ""},
 		{recipeRoot, b.Recipe.Commit, ".swarm-recipe/", b.RecipeDirectory},
 	} {
-		args := []string{"-i", "PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_ATTR_NOSYSTEM=1", "git", "--no-replace-objects", "-C", source.root}
+		args := []string{"-i", "PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_ATTR_NOSYSTEM=1", "git", "--no-replace-objects", "--literal-pathspecs", "-C", source.root}
 		out, err := runner.Run(ctx, "env", append(append([]string{}, args...), "rev-parse", "--verify", source.commit+"^{commit}")...)
 		if err != nil || strings.TrimSpace(string(out)) != source.commit {
 			return "", errors.New("exact committed build source is unavailable")

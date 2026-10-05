@@ -57,6 +57,9 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	if err := req.Definition.Validate(); err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	root, err := p.buildDirectory(req.OperationID)
 	if err != nil {
 		return nil, err
@@ -98,7 +101,10 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	}
 	// Isolated image storage gives cleanup exact ownership, including intermediate
 	// Buildah containers after crashes. No host auth, hooks, mounts or proxy values.
-	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "--cgroup-manager=systemd", "--runtime=crun"}
+	// Build containers stay below the delegated transient unit: using the
+	// systemd manager here could move descendants into sibling user scopes.
+	// Runtime containers still use the separately admitted systemd manager.
+	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--runtime=crun"}
 	cleanEnv := []string{"env", "-i", "PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(root, "home"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR"), "DBUS_SESSION_BUS_ADDRESS=" + os.Getenv("DBUS_SESSION_BUS_ADDRESS"), "TMPDIR=" + filepath.Join(root, "tmp"), "CONTAINERS_CONF=" + filepath.Join(root, "containers.conf"), "CONTAINERS_REGISTRIES_CONF=" + filepath.Join(root, "registries.conf"), "CONTAINERS_MOUNTS_CONF=" + filepath.Join(root, "mounts.conf"), "podman"}
 	build := append(append([]string{}, isolated...), "build", "--jobs=1", "--ignorefile", filepath.Join(root, "ignore"), "--layers=false", "--force-rm=true", "--http-proxy=false", "--isolation=oci", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--memory=8g", "--cpu-period=100000", "--cpu-quota=200000", "--ulimit=nofile=4096:4096", "--no-hosts", "--hooks-dir", filepath.Join(root, "hooks"), "--authfile", filepath.Join(root, "auth.json"), "--tls-verify=true", "--retry=0", "--iidfile", filepath.Join(root, "image-id"), "--build-arg", "SWARM_BUILD_SHA="+req.Definition.Product.Commit, "--label", "io.swarm.build.operation="+req.OperationID, "--label", "org.opencontainers.image.revision="+req.Definition.Product.Commit, "--label", "io.swarm.build.inputs="+req.Definition.Digest(), "--file", filepath.Join(root, "context", ".swarm-recipe", filepath.FromSlash(req.Definition.RecipeFile)), filepath.Join(root, "context"))
 	args := []string{"--user", "--wait", "--pipe", "--collect", "--unit=swarm-build-" + req.OperationID, "--property=Delegate=yes", "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=5", "--property=KillMode=control-group", "--property=MemoryMax=10G", "--property=TasksMax=1024", "--property=CPUQuota=200%", "--property=LimitFSIZE=8G", "--"}

@@ -230,6 +230,10 @@ func (d *Deployment) Clone() *Deployment {
 		return nil
 	}
 	cp := *d
+	if d.Build != nil {
+		build := *d.Build
+		cp.Build = &build
+	}
 	if d.Runtime.AssignedPorts != nil {
 		cp.Runtime.AssignedPorts = append([]AssignedPort(nil), d.Runtime.AssignedPorts...)
 	}

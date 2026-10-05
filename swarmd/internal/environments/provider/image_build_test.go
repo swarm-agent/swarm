@@ -204,7 +204,7 @@ func TestManagedBuildProviderContract(t *testing.T) {
 					build = strings.Join(c.Args, " ")
 				}
 			}
-			for _, want := range []string{"--jobs=1", "--ignorefile", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--property=TasksMax=1024", "--property=KillMode=control-group", "env -i", "--http-proxy=false", "--authfile", "--storage-driver=vfs", "SWARM_BUILD_SHA=" + r.definition.Product.Commit} {
+			for _, want := range []string{"--jobs=1", "--ignorefile", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--property=TasksMax=1024", "--property=KillMode=control-group", "env -i", "--http-proxy=false", "--authfile", "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--property=Delegate=yes", "SWARM_BUILD_SHA=" + r.definition.Product.Commit} {
 				if !strings.Contains(build, want) {
 					t.Fatalf("missing %s", want)
 				}

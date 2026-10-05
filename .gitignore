@@ -90,6 +90,7 @@ secrets.env
 !/docs/migrations/**
 !/docs/swarm-harness-vm.md
 !/docs/managed-host-launch-gate.md
+!/docs/managed-local-systemd-environments.md
 !/docs/task-program-probes/
 !/docs/task-program-probes/**
 /REPO_SHIP_READINESS_CHECKLIST.md
