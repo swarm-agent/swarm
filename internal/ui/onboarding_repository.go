@@ -76,13 +76,16 @@ func (p *HomePage) repositoryControls() []onboardingControl {
 	}
 	controls = append(controls,
 		onboardingControl{"Use an existing Git repository…", "discover", ""},
-		onboardingControl{"Select another location", "edit", ""})
-	return append(controls, onboardingControl{"Cancel setup / Exit", "exit", ""})
+		onboardingControl{"Select another location", "edit", ""},
+		onboardingControl{"Skip / Continue without folder", "skip", ""},
+		onboardingControl{"Back to Project", "back", ""},
+		onboardingControl{"Cancel setup / Exit", "exit", ""})
+	return controls
 }
 func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	s := &p.onboarding
 	if s.NamingProject {
-		p.handleOnboardingProjectKey(ev)
+		p.handleOnboardingProjectFolderKey(ev)
 		return
 	}
 	if s.EditingPath {
@@ -115,7 +118,7 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 			s.Repository = nil
 			s.ActionIndex = 0
 		} else {
-			p.ShowOnboardingProvider("Provider is optional. Skip to return.")
+			p.ShowOnboardingProject("Project settings.")
 		}
 		return
 	}
@@ -204,6 +207,15 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		s.BaselineAttempt = nil
 		p.handleOnboardingWorkspaceShortcut(tcell.NewEventKey(tcell.KeyCtrlL, 0, tcell.ModNone))
 		return
+	case "skip":
+		s.Pending = true
+		s.Error = ""
+		s.Status = "Finishing setup without workspace folder..."
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("skip-onboarding-workspace")}
+		return
+	case "back":
+		p.ShowOnboardingProject("Project settings.")
+		return
 	case "exit":
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
 		return
@@ -282,7 +294,7 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	DrawText(s, content.X, content.Y, content.W, p.theme.TextMuted, clampEllipsis("Runtime account: "+st.RuntimeAccount+" (not terminal identity)", content.W))
 	DrawText(s, content.X, content.Y+1, content.W, p.theme.Primary, clampTail(st.WorkspacePath, content.W))
 	if st.NamingProject {
-		p.drawOnboardingProject(s, content)
+		p.drawOnboardingProjectFolder(s, content)
 		return
 	}
 	if st.WorkspacePath == "" {

@@ -32,6 +32,8 @@ const (
 	HomeActionBaselineOnboardingRepository   HomeActionKind = "baseline-onboarding-repository"
 	HomeActionSetupOnboardingRepository      HomeActionKind = "setup-onboarding-repository"
 	HomeActionCreateOnboardingFolder         HomeActionKind = "create-onboarding-folder"
+	HomeActionCreateOnboardingProject        HomeActionKind = "create-onboarding-project"
+	HomeActionOpenFinishSetup                HomeActionKind = "open-finish-setup"
 )
 
 type HomeAction struct {
@@ -49,8 +51,11 @@ type HomeAction struct {
 	SwarmName        string
 	ModelProfileID   string
 	WorkspaceIndex   int
-	ResetCreditID    string
-	IdempotencyKey   string
+	ResetCreditID      string
+	IdempotencyKey     string
+	ProjectName        string
+	ProjectDescription string
+	AttachWorkspace    bool
 }
 
 func (p *HomePage) PopHomeAction() (HomeAction, bool) {

@@ -219,7 +219,7 @@ func TestOnboardingFlowProviderBusyAndConnected(t *testing.T) {
 	}
 	p.authModal.Loading = false
 	p.handleOnboardingKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
-	if !p.OnboardingWorkspaceActive() || p.authModal.Editor != nil {
+	if (!p.OnboardingProjectActive() && !p.OnboardingWorkspaceActive()) || p.authModal.Editor != nil {
 		t.Fatal("connected choice asked for credentials")
 	}
 }

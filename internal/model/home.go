@@ -199,6 +199,12 @@ type HomeModel struct {
 	OnboardingRequired          bool
 	OnboardingUsername          string
 	OnboardingSwarmName         string
+	ActiveProjectID             string
+	ActiveProjectName           string
+	Projects                    []client.ProjectRecord
+	FinishSetupNeeded           bool
+	FinishSetupMissingProvider  bool
+	FinishSetupMissingWorkspace bool
 	RecentSessions              []SessionSummary
 	BackgroundSessions          []BackgroundSessionSummary
 }

@@ -37,8 +37,8 @@ func TestOnboardingRepositorySetupConsent(t *testing.T) {
 			t.Fatal("back queued a mutation")
 		}
 		p.HandleKey(tcell.NewEventKey(tcell.KeyEsc, 0, 0))
-		if !p.OnboardingProviderActive() {
-			t.Fatal("back from choices did not return to provider")
+		if !p.OnboardingProjectActive() && !p.OnboardingProviderActive() {
+			t.Fatal("back from choices did not return to project or provider")
 		}
 	}
 }

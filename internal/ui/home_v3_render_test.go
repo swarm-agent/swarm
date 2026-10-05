@@ -155,7 +155,7 @@ func TestRequiredOnboardingReplacesHomepageAndAcceptsInput(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"SWARM  ·  FIRST LAUNCH", "STEP 1 OF 3", "Your name", "Swarm name"} {
+	for _, want := range []string{"SWARM  ·  FIRST LAUNCH", "STEP 1 OF 4", "Your name", "Swarm name"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("required onboarding missing %q from home page:\n%s", want, text)
 		}

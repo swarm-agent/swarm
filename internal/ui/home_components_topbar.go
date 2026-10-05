@@ -447,7 +447,7 @@ func (p *HomePage) workspaceSetupWarning() string {
 			return fmt.Sprintf("Swarm could not verify Git readiness for saved workspace %s at %s. Check that Git can run there before using managed worktrees.", name, path)
 		default:
 			if !directory.HasGit {
-				return fmt.Sprintf("Workspace %s at %s is not ready: Swarm requires a committed Git repository for managed worktrees.", name, path)
+				return fmt.Sprintf("Saved workspace %s at %s has no Git repository. Ask Swarm to create a Git repository in this workspace.", name, path)
 			}
 		}
 	}

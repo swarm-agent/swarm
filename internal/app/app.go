@@ -270,6 +270,8 @@ type App struct {
 	authLogging               atomic.Bool
 	onboardingDifferentUser   bool
 	onboardingWorkspaceCh     chan onboardingWorkspaceResult
+	onboardingProjectID       string
+	onboardingProjectName     string
 	codexPending              *codexCodeLoginState
 
 	voiceCaptureSeq        int64
@@ -5214,6 +5216,12 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.createOnboardingWorkspaceWithSetup(action.WorkspacePath, true)
 	case ui.HomeActionCreateOnboardingWorkspace:
 		a.createOnboardingWorkspace(action.WorkspacePath)
+	case ui.HomeActionCreateOnboardingProject:
+		a.handleCreateOnboardingProject(action.ProjectName, action.ProjectDescription, action.AttachWorkspace)
+	case ui.HomeActionKind("skip-onboarding-workspace"):
+		a.handleSkipOnboardingWorkspace()
+	case ui.HomeActionOpenFinishSetup:
+		a.handleOpenFinishSetup()
 	}
 }
 
@@ -6580,8 +6588,132 @@ func (a *App) saveOnboarding(username, swarmName string) {
 	a.api.SetToken(session.Token)
 	a.home.SetOnboardingRequired(status.NeedsOnboarding, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
 	a.refreshOnboardingWorkspaceGuidance()
-	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
+	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue.")
 	a.refreshAuthModalData("Loading providers...")
+}
+
+func (a *App) handleCreateOnboardingProject(name, description string, attachWorkspace bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		a.home.SetOnboardingError("Project name is required.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
+		Name:        name,
+		Description: strings.TrimSpace(description),
+	})
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("Failed to create project: %v", err))
+		return
+	}
+
+	a.onboardingProjectID = project.ID
+	a.onboardingProjectName = project.Name
+
+	if attachWorkspace {
+		a.home.ShowOnboardingWorkspace("Project created. Attach an existing or new workspace folder, or skip to finish.")
+		return
+	}
+
+	a.completeOnboardingWithProject(project.ID, project.Name)
+}
+
+func (a *App) handleSkipOnboardingWorkspace() {
+	projectID := strings.TrimSpace(a.onboardingProjectID)
+	projectName := strings.TrimSpace(a.onboardingProjectName)
+	if projectID == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
+			Name: "default",
+		})
+		if err == nil {
+			projectID = project.ID
+			projectName = project.Name
+			a.onboardingProjectID = project.ID
+			a.onboardingProjectName = project.Name
+		}
+	}
+	a.completeOnboardingWithProject(projectID, projectName)
+}
+
+func (a *App) completeOnboardingWithProject(projectID, projectName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	complete := true
+	acknowledged, err := a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{
+		DesktopOnboardingComplete: &complete,
+	})
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("Could not acknowledge onboarding completion: %v", err))
+		return
+	}
+
+	next, err := a.refreshHomeV3Model(ctx)
+	if err == nil {
+		next, _ = acknowledgeOnboardingHomeModel(next, acknowledged)
+	}
+	next.ActiveProjectID = projectID
+	next.ActiveProjectName = projectName
+
+	if !next.AuthConfigured {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingProvider = true
+	}
+	if len(next.Workspaces) == 0 {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingWorkspace = true
+	}
+
+	a.syncActiveContextFromHomeModel(next)
+	a.applyHomeModel(next)
+	a.syncVaultUI()
+	a.home.CompleteOnboardingWorkspace()
+
+	if projectName != "" {
+		a.home.SetStatus(fmt.Sprintf("Project ready: %s. Swarm is ready.", projectName))
+	} else {
+		a.home.SetStatus("Swarm is ready.")
+	}
+
+	if next.AuthConfigured && projectID != "" {
+		activeProvider, activeModel, activeThinking, activeServiceTier, activeContextMode, _ := a.currentModelPreferenceState()
+		sess, err := a.api.CreateSessionV3WithOptions(ctx, client.SessionCreateOptions{
+			ProjectID:  projectID,
+			Title:      projectName,
+			Mode:       "auto",
+			AgentName:  "system-orchestrator",
+			Preference: client.ModelPreference{
+				Provider:    activeProvider,
+				Model:       activeModel,
+				Thinking:    activeThinking,
+				ServiceTier: activeServiceTier,
+				ContextMode: activeContextMode,
+			},
+		})
+		if err == nil && sess.Session.ID != "" {
+			_ = a.openExistingSession(model.SessionSummary{
+				ID:    sess.Session.ID,
+				Title: projectName,
+				Mode:  "auto",
+			})
+		}
+	}
+}
+
+func (a *App) handleOpenFinishSetup() {
+	if a.homeModel.FinishSetupMissingProvider {
+		a.openAuthModal()
+		return
+	}
+	if a.homeModel.FinishSetupMissingWorkspace {
+		a.showWorkspaceSelector()
+		return
+	}
 }
 
 func (a *App) refreshOnboardingWorkspaceGitReadinessBeforeSubmit(event *tcell.EventKey) {
@@ -6658,10 +6790,22 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 			next, err = a.refreshHomeV3Model(ctx)
 		}
 		readyPath := firstNonEmpty(normalizePath(resolution.WorkspacePath), normalizePath(resolution.ResolvedPath), path)
-		if err == nil && !homeModelHasActiveWorkspace(next, readyPath) {
-			err = fmt.Errorf("workspace API completed but refreshed workspace is not active and Git-ready at %s (Git readiness: %s)", displayPath(readyPath), homeModelWorkspaceGitReadiness(next, readyPath))
+		if err == nil && !homeModelHasWorkspace(next, readyPath) && !homeModelHasActiveWorkspace(next, readyPath) {
+			err = fmt.Errorf("workspace API completed but refreshed workspace is not available at %s", displayPath(readyPath))
 		}
 		if err == nil {
+			if projectID := strings.TrimSpace(a.onboardingProjectID); projectID != "" {
+				wsRef := []client.ProjectWorkspaceRef{
+					{
+						WorkspaceID:   resolution.WorkspaceID,
+						Path:          readyPath,
+						WorkspaceName: resolution.WorkspaceName,
+					},
+				}
+				_, _ = a.api.UpdateProject(ctx, projectID, map[string]any{
+					"workspaces": wsRef,
+				})
+			}
 			complete := true
 			var acknowledged client.OnboardingStatus
 			acknowledged, err = a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{DesktopOnboardingComplete: &complete})
@@ -6689,6 +6833,19 @@ func acknowledgeOnboardingHomeModel(next model.HomeModel, acknowledged client.On
 	next.WorkspaceSetupHasGit = false
 	next.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
 	return next, nil
+}
+
+func homeModelHasWorkspace(home model.HomeModel, path string) bool {
+	path = normalizePath(path)
+	if path == "" {
+		return false
+	}
+	for _, workspace := range home.Workspaces {
+		if pathsEqual(normalizePath(workspace.Path), path) {
+			return true
+		}
+	}
+	return false
 }
 
 func homeModelHasActiveWorkspace(home model.HomeModel, path string) bool {

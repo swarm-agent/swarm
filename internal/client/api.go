@@ -557,6 +557,7 @@ type SessionCreateOptions struct {
 	RuntimeWorkspacePath     string
 	WorkspaceName            string
 	WorkspaceBindingID       string
+	ProjectID                string
 	TUIPrimaryCWD            bool
 	Mode                     string
 	AgentName                string
@@ -3065,6 +3066,43 @@ func (c *API) ListSessionsV3(ctx context.Context, limit int) ([]SessionSummary, 
 }
 
 func (c *API) CreateSessionV3WithOptions(ctx context.Context, options SessionCreateOptions) (SessionV3Hydrated, error) {
+	if projectID := strings.TrimSpace(options.ProjectID); projectID != "" {
+		mode := strings.ToLower(strings.TrimSpace(options.Mode))
+		if mode != "plan" {
+			mode = "auto"
+		}
+		agentName := strings.TrimSpace(options.AgentName)
+		if agentName == "" {
+			agentName = "system-orchestrator"
+		}
+		req := map[string]any{
+			"client_request_id": newSessionV3ClientRequestID("create"),
+			"project_id":        projectID,
+			"title":             strings.TrimSpace(options.Title),
+			"mode":              mode,
+			"agent_name":        agentName,
+			"preference": map[string]string{
+				"provider":     strings.TrimSpace(options.Preference.Provider),
+				"model":        strings.TrimSpace(options.Preference.Model),
+				"thinking":     strings.TrimSpace(options.Preference.Thinking),
+				"service_tier": strings.TrimSpace(options.Preference.ServiceTier),
+				"context_mode": strings.TrimSpace(options.Preference.ContextMode),
+			},
+		}
+		if profile := sessionV3ModelProfileCreateRequest(options.ModelProfile); profile != nil {
+			req["model_profile"] = profile
+		}
+		if len(options.Metadata) > 0 {
+			req["metadata"] = options.Metadata
+		}
+		var resp SessionV3Hydrated
+		if err := c.postJSON(ctx, sessionV3PrimaryPath("", ""), req, &resp, true); err != nil {
+			return SessionV3Hydrated{}, err
+		}
+		resp.Session = markSessionV3(resp.Session, resp.Projection)
+		return resp, nil
+	}
+
 	workspacePath := strings.TrimSpace(options.WorkspacePath)
 	if workspacePath == "" {
 		return SessionV3Hydrated{}, errors.New("workspace path is required")
@@ -4303,6 +4341,7 @@ func (c *API) requestWithHeaders(ctx context.Context, method, path string, paylo
 		token := strings.TrimSpace(c.Token())
 		if token != "" {
 			req.Header.Set("X-Swarm-Token", token)
+			req.Header.Set("Authorization", "Bearer "+token)
 		}
 	}
 	for name, value := range headers {

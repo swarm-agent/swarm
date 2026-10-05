@@ -194,6 +194,20 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		}
 	}
 
+	if projects, err := a.api.ListProjects(ctx); err == nil && len(projects) > 0 {
+		next.Projects = projects
+		next.ActiveProjectID = projects[0].ID
+		next.ActiveProjectName = projects[0].Name
+	}
+	if !next.AuthConfigured {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingProvider = true
+	}
+	if len(next.Workspaces) == 0 {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingWorkspace = true
+	}
+
 	next.QuickActions = homeQuickActions(next)
 	switch {
 	case activeWorkspaceIndex(next.Workspaces) < 0 && !next.AuthConfigured:
