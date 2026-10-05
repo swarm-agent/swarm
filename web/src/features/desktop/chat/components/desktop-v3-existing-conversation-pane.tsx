@@ -162,6 +162,10 @@ import {
   resolveSessionPermission,
 } from "../queries/chat-queries";
 import { AgentModelControl, type AgentModelControlConfirmInput } from "./agent-model-control";
+import {
+  applySessionModelFavorite,
+  resolveCanonicalHeaderModelLabel,
+} from "../../orchestrate/orchestrator-header-actions";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
   isAutomationPermission,
@@ -2040,19 +2044,12 @@ export function DesktopV3ExistingConversationPane({
     : (sessionProfilePreference ?? sessionAgentPreference ?? preference);
   // Header identity is presentation-only and must come from the hydrated session
   // snapshot/view. Local profile-picker state must never appear before resolution.
-  const canonicalHeaderPreference = sessionProfilePreference ?? cachedPreference;
-  const canonicalHeaderModelKey = modelOptionKey(
-    canonicalHeaderPreference.provider,
-    canonicalHeaderPreference.model,
-    canonicalHeaderPreference.contextMode,
-  );
-  const canonicalHeaderModelOption = modelOptions.find(
-    (option) => option.key === canonicalHeaderModelKey,
-  ) ?? null;
-  const canonicalHeaderModelLabel = canonicalHeaderPreference.provider.trim()
-    && canonicalHeaderPreference.model.trim()
-      ? canonicalHeaderModelOption?.label || canonicalHeaderPreference.model
-      : "";
+  const canonicalHeaderModelLabel = resolveCanonicalHeaderModelLabel({
+    metadata: sessionMetadata,
+    mode,
+    cachedPreference,
+    modelOptions,
+  });
   const selectedModelKey = modelOptionKey(
     displayedPreference.provider,
     displayedPreference.model,
@@ -2764,25 +2761,14 @@ export function DesktopV3ExistingConversationPane({
 
   async function handleApplyModelFavorite(profile: ModelProfileRecord) {
     if (!normalizedSessionId) return;
-    const nextPreference = preferenceFromModelProfile(profile, mode, Date.now());
-    if (!nextPreference) throw new Error("Model favorite does not resolve for the current chat mode");
-    const response = await updateSessionV3ModelProfile(normalizedSessionId, {
-      kind: 'temporary',
-      profile: {
-        name: profile.name,
-        provider: profile.provider,
-        model: profile.model,
-        thinking: profile.thinking,
-        serviceTier: profile.serviceTier,
-        contextMode: profile.contextMode,
-      },
+    const result = await applySessionModelFavorite({
+      sessionId: normalizedSessionId,
+      profile,
+      mode,
     });
-    dispatchDesktopV3Cache({
-      type: "mutation.sessionSettingsResult",
-      raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId),
-    });
-    setPreference(nextPreference);
-    unlockedPreferenceRef.current = nextPreference;
+    if (!result) return;
+    setPreference(result.nextPreference);
+    unlockedPreferenceRef.current = result.nextPreference;
     localSettingsDirtyRef.current.preference = false;
   }
 

@@ -35,6 +35,7 @@ import { filterOrchestrateCommands, parseOrchestrateCommand, ORCHESTRATE_TIPS, t
 import { SwarmLayoutControls, useSwarmResponsiveLayout, useSwarmModalFocus } from './swarm-responsive-layout'
 import { OrchestrateSettings } from './orchestrate-settings'
 import { OrchestrateAgents } from './orchestrate-agents'
+import { navigateToProjectAgents } from './orchestrator-header-actions'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -2999,7 +3000,15 @@ function OrchestratorChatSidebar({
         presentation="sidebar"
         orchestratorHeader={!activeTask && !repairSession ? {
           projectName: project?.name || 'Orchestrator',
-          onOpenAgents: () => { void navigate(projectPageLink('agents')) },
+          onOpenAgents: () => {
+            navigateToProjectAgents(navigate, {
+              projectId: project?.id,
+              projectSegment,
+              sessionId,
+              primarySessionId: project?.primarySessionId,
+              workspaceSlug,
+            })
+          },
         } : undefined}
         sessionId={sessionId}
         session={currentSession}

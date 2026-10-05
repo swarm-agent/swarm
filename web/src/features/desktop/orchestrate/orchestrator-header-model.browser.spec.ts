@@ -12,14 +12,16 @@ import { chromium } from 'playwright'
 // Workspaces slot (rather than generic 'Workspaces'), open model favorites on clicking the model
 // name, send full selection parameters (provider, model, thinking, serviceTier, contextMode)
 // to the canonical session API while keeping agent and mode unchanged, rehydrate the header on
-// successful save, preserve identity on rejection, route 'Agents' to Orchestrator-owned agents
-// settings with Orchestrator selected (not the legacy chat dialog), allow conversation rename and
-// session switching, and gracefully truncate long labels in narrow responsive viewports without
-// horizontal overflow.
+// successful save via canonical Desktop V3 cache mutations, preserve identity on rejection,
+// route 'Agents' to Orchestrator-owned agents settings with Orchestrator selected (not the legacy chat dialog),
+// allow conversation rename and session switching, and gracefully truncate long labels in narrow
+// responsive viewports without horizontal overflow.
 // Regular Chat and task/repair sessions must not regress to showing project identity or model buttons.
-// Boundary/ownership: DesktopV3ChatHeader, AgentModelControl, OrchestrateAgents, and updateSessionV3ModelProfile.
-// Browser integration with compiled theme CSS is the narrowest layer proving geometry, DOM identity,
-// real event handlers, and intercepted HTTP contracts together.
+// Boundary/ownership: DesktopV3ChatHeader, AgentModelControl, OrchestrateAgents,
+// orchestrator-header-actions (applySessionModelFavorite, navigateToProjectAgents, useCanonicalSessionModelLabel),
+// and Desktop V3 cache store hydration.
+// Browser integration with compiled theme CSS and TanStack Router is the narrowest layer proving geometry, DOM identity,
+// real event handlers, and intercepted HTTP/cache contracts together.
 test('orchestrator header shows project name, opens favorites, persists model, and routes to Orchestrator agents', { timeout: 60000 }, async () => {
   const webDir = existsSync('src/theme.css') ? process.cwd() : path.resolve(process.cwd(), 'web')
   const themePath = path.resolve(webDir, 'src/theme.css')
@@ -28,28 +30,78 @@ test('orchestrator header shows project name, opens favorites, persists model, a
   const fixture = `import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterProvider,
+  Outlet,
+  useNavigate,
+  useSearch,
+  useParams,
+} from '@tanstack/react-router';
 import { DesktopV3ChatHeader } from './src/features/desktop/chat/components/desktop-v3-chat-header';
 import { AgentModelControl } from './src/features/desktop/chat/components/agent-model-control';
 import { OrchestrateAgents } from './src/features/desktop/orchestrate/orchestrate-agents';
-import { updateSessionV3ModelProfile, updateSessionV3Title } from './src/features/desktop/session-v3/api';
+import { updateSessionV3Title } from './src/features/desktop/session-v3/api';
 import { agentModelSettingsQueryKey } from './src/features/desktop/settings/swarm/queries/get-agent-model-settings';
 import { modelOptionsQueryOptions } from './src/features/queries/query-options';
+import {
+  applySessionModelFavorite,
+  navigateToProjectAgents,
+  useCanonicalSessionModelLabel,
+} from './src/features/desktop/orchestrate/orchestrator-header-actions';
+import {
+  dispatchDesktopV3Cache,
+  getDesktopV3CacheSnapshot,
+  resetDesktopV3CacheForTests,
+} from './src/features/desktop/state/desktop-v3-cache-store';
+import { hydrateResponseToAction } from './src/features/desktop/state/desktop-v3-cache-wire';
 
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 window.client = client;
+window.getDesktopV3CacheSnapshot = getDesktopV3CacheSnapshot;
 
 const assignment = { provider: 'google', model: 'gemini-3.8-flash', thinking: 'high', serviceTier: '', contextMode: '' };
 client.setQueryData(agentModelSettingsQueryKey, {
   roles: [
     { id: 'system-orchestrator', label: 'Swarm Orchestrator', group: 'swarm', slot: 'plan' },
     { id: 'swarm', label: 'Swarm', group: 'swarm', slot: 'action' },
-    { id: 'system-coder', label: 'Coder', group: 'system_agents', slot: 'coder' }
+    { id: 'system-coder', label: 'Coder', group: 'system_agents', slot: 'coder' },
   ],
   swarm: { action: assignment, plan: assignment },
   systemAgents: { compact: assignment, finder: assignment, coder: assignment, designer: assignment, router: assignment },
-  updatedAt: 1
+  updatedAt: 1,
 });
 client.setQueryData(modelOptionsQueryOptions().queryKey, []);
+
+resetDesktopV3CacheForTests();
+dispatchDesktopV3Cache(hydrateResponseToAction({
+  sessions_by_id: {
+    'orchestrator-session-1': {
+      id: 'orchestrator-session-1',
+      title: 'Conversation 1',
+      metadata: {
+        agent_name: 'system-orchestrator',
+        model_profile: {
+          action: { provider: 'google', model: 'gemini-3.8-flash', thinking: 'high' },
+          plan: { provider: 'google', model: 'gemini-3.8-flash', thinking: 'high' },
+        },
+      },
+    },
+    'orchestrator-session-2': {
+      id: 'orchestrator-session-2',
+      title: 'Review Session',
+      metadata: {
+        agent_name: 'system-orchestrator',
+        model_profile: {
+          action: { provider: 'openai', model: 'gpt-4o' },
+          plan: { provider: 'openai', model: 'gpt-4o' },
+        },
+      },
+    },
+  },
+}, ['orchestrator-session-1', 'orchestrator-session-2']));
 
 const favorite = {
   profileId: 'favorite-sonnet',
@@ -58,43 +110,48 @@ const favorite = {
   model: 'claude-3-7-sonnet',
   thinking: 'high',
   serviceTier: 'fast',
-  contextMode: 'long'
+  contextMode: 'long',
 };
 
 window.rejectSave = false;
-window.modelPuts = [];
-window.titlePosts = [];
-window.unexpectedCalls = [];
-window.destination = '';
 
-function Harness() {
-  const [sessionId, setSessionId] = useState('orchestrator-session-1');
+function OrchestratorApp() {
+  const navigate = useNavigate();
+  const search = useSearch({ from: projectRoute.id });
+  const params = useParams({ from: projectRoute.id });
+  const sessionId = params.sessionId || 'orchestrator-session-1';
+  const projectId = params.projectId || 'project-atlas';
+
   const [projectName, setProjectName] = useState('Project Atlas');
-  const [title, setTitle] = useState('Conversation 1');
-  const [modelLabel, setModelLabel] = useState('gemini-3.8-flash');
+  const [title, setTitle] = useState(sessionId === 'orchestrator-session-2' ? 'Review Session' : 'Conversation 1');
+  const [modelLabelOverride, setModelLabelOverride] = useState(undefined);
   const [openSignal, setOpenSignal] = useState(0);
-  const [activeSection, setActiveSection] = useState('chat');
+
+  const canonicalModelLabel = useCanonicalSessionModelLabel(sessionId, 'auto', []);
+  const resolvedModelLabel = modelLabelOverride !== undefined ? modelLabelOverride : canonicalModelLabel;
 
   window.setHarnessProps = (props) => {
-    if (props.sessionId !== undefined) setSessionId(props.sessionId);
+    if (props.sessionId !== undefined && props.sessionId !== sessionId) {
+      void navigate({
+        to: '/projects/$projectId/sessions/$sessionId',
+        params: { projectId: projectId || 'project-atlas', sessionId: props.sessionId },
+        search: search.section ? { section: search.section } : {},
+      });
+      if (props.title !== undefined) setTitle(props.title);
+      else setTitle(props.sessionId === 'orchestrator-session-2' ? 'Review Session' : 'Conversation 1');
+    } else if (props.title !== undefined) {
+      setTitle(props.title);
+    }
     if (props.projectName !== undefined) setProjectName(props.projectName);
-    if (props.title !== undefined) setTitle(props.title);
-    if (props.modelLabel !== undefined) setModelLabel(props.modelLabel);
+    if (props.modelLabel !== undefined) setModelLabelOverride(props.modelLabel);
   };
 
   const handleApplyModelFavorite = async (profile) => {
-    await updateSessionV3ModelProfile(sessionId, {
-      kind: 'temporary',
-      profile: {
-        name: profile.name,
-        provider: profile.provider,
-        model: profile.model,
-        thinking: profile.thinking,
-        serviceTier: profile.serviceTier,
-        contextMode: profile.contextMode,
-      }
+    return await applySessionModelFavorite({
+      sessionId,
+      profile,
+      mode: 'auto',
     });
-    setModelLabel(profile.model);
   };
 
   const handleRename = async (newTitle) => {
@@ -102,16 +159,23 @@ function Harness() {
     setTitle(newTitle);
   };
 
+  const handleOpenAgents = () => {
+    navigateToProjectAgents(navigate, {
+      projectId,
+      sessionId,
+    });
+  };
+
   return (
-    <QueryClientProvider client={client}>
+    <>
       <div id="orchestrator-surface">
         <DesktopV3ChatHeader
           sessionId={sessionId}
           projectName={projectName}
           title={title}
           workspaceName="Workspace"
-          modelLabel={modelLabel}
-          onOpenModelFavorites={() => setOpenSignal(s => s + 1)}
+          modelLabel={resolvedModelLabel}
+          onOpenModelFavorites={() => setOpenSignal((s) => s + 1)}
           modelFavoritesAnchorId={'orchestrator-model:' + sessionId}
           sessionActions={{
             pinned: false,
@@ -132,16 +196,13 @@ function Harness() {
           showTrigger={false}
           openSignal={openSignal}
           popoverAnchorId={'orchestrator-model:' + sessionId}
-          onOpenAgents={() => {
-            window.destination = 'agents';
-            setActiveSection('agents');
-          }}
+          onOpenAgents={handleOpenAgents}
           onApplyModelFavorite={handleApplyModelFavorite}
           onApplyModelFavoriteChatOnly={handleApplyModelFavorite}
         />
       </div>
 
-      {activeSection === 'agents' && (
+      {search.section === 'agents' && (
         <div id="orchestrator-agents-section">
           <OrchestrateAgents />
         </div>
@@ -164,11 +225,32 @@ function Harness() {
           modelLabel="task-model"
         />
       </div>
-    </QueryClientProvider>
+    </>
   );
 }
 
-createRoot(document.getElementById('root')).render(<Harness />);`
+const rootRoute = createRootRoute({
+  component: () => (
+    <QueryClientProvider client={client}>
+      <Outlet />
+    </QueryClientProvider>
+  ),
+});
+const projectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/projects/$projectId/sessions/$sessionId',
+  validateSearch: (search) => ({
+    section: typeof search?.section === 'string' ? search.section : undefined,
+  }),
+  component: OrchestratorApp,
+});
+
+const router = createRouter({
+  routeTree: rootRoute.addChildren([projectRoute]),
+});
+window.router = router;
+
+createRoot(document.getElementById('root')).render(<RouterProvider router={router} />);`
 
   const bundle = await build({
     stdin: { contents: fixture, resolveDir: webDir, loader: 'tsx' },
@@ -179,7 +261,6 @@ createRoot(document.getElementById('root')).render(<Harness />);`
     jsx: 'automatic',
     logLevel: 'silent',
   })
-
   const styles = await buildStyles({
     root: webDir,
     configFile: false,
@@ -209,7 +290,7 @@ createRoot(document.getElementById('root')).render(<Harness />);`
       const url = new URL(request.url())
       const p = url.pathname
 
-      if (p === '/') {
+      if (p === '/' || p.startsWith('/projects')) {
         await route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' })
         return
       }
@@ -247,7 +328,22 @@ createRoot(document.getElementById('root')).render(<Harness />);`
           await route.fulfill({ status: 500, json: { error: 'Failed to update model profile on server' } })
           return
         }
-        await route.fulfill({ json: { ok: true, metadata: { model_profile: body.choice } } })
+        const profile = body.choice?.profile || {}
+        await route.fulfill({
+          json: {
+            ok: true,
+            session_id: 'orchestrator-session-1',
+            metadata: {
+              agent_name: 'system-orchestrator',
+              model_profile: {
+                source: 'temporary',
+                action: profile,
+                plan: profile,
+                applied_at: Date.now(),
+              },
+            },
+          },
+        })
         return
       }
       if (p.includes('/title') && request.method() === 'POST') {
@@ -264,7 +360,7 @@ createRoot(document.getElementById('root')).render(<Harness />);`
       await route.fulfill({ status: 200, json: {} })
     })
 
-    await page.goto('https://orchestrator-header.test/')
+    await page.goto('https://orchestrator-header.test/projects/project-atlas/sessions/orchestrator-session-1')
     await page.addStyleTag({ content: css + '\n' + sectionCss })
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
 
@@ -294,8 +390,9 @@ createRoot(document.getElementById('root')).render(<Harness />);`
     const taskModel = page.locator('#task-repair-surface [data-testid="desktop-v3-resolved-model"]')
     assert.equal(await taskModel.evaluate((el) => el.tagName), 'SPAN')
 
-    // 3. Open favorites and verify rejected save preserves identity/model
-    await orchModelBtn.click()
+    // 3. Open favorites via keyboard activation and verify rejected save preserves identity/model
+    await orchModelBtn.focus()
+    await page.keyboard.press('Enter')
     await page.getByRole('menu', { name: 'Model favorites' }).waitFor()
     await page.evaluate(() => { (window as any).rejectSave = true })
     await page.getByRole('button', { name: 'Use Favorite Sonnet in this chat only' }).click()
@@ -303,6 +400,8 @@ createRoot(document.getElementById('root')).render(<Harness />);`
     assert.equal(modelPuts.length, 1, 'one PUT request attempted')
     assert.equal(await orchModelBtn.innerText(), 'gemini-3.8-flash', 'rejected save preserves canonical model label')
     assert.deepEqual(unexpectedCalls, [], 'agent and mode remain completely untouched')
+    const cacheBefore = await page.evaluate(() => (window as any).getDesktopV3CacheSnapshot().sessionsById['orchestrator-session-1']?.session?.metadata?.model_profile)
+    assert.equal(cacheBefore?.action?.model, 'gemini-3.8-flash')
 
     // 4. Successful save sends provider/model/thinking/tier/context and canonical rehydration updates header
     await page.evaluate(() => { (window as any).rejectSave = false })
@@ -319,10 +418,24 @@ createRoot(document.getElementById('root')).render(<Harness />);`
     assert.equal(lastPut.choice.profile.context_mode, 'long')
     assert.deepEqual(unexpectedCalls, [], 'agent and mode remain unchanged across model update')
 
+    // Verify real cache hydration from the response
+    const cacheAfter = await page.evaluate(() => (window as any).getDesktopV3CacheSnapshot().sessionsById['orchestrator-session-1']?.session?.metadata?.model_profile)
+    assert.equal(cacheAfter?.action?.provider, 'anthropic')
+    assert.equal(cacheAfter?.action?.model, 'claude-3-7-sonnet')
+    assert.equal(cacheAfter?.action?.thinking, 'high')
+    assert.equal(cacheAfter?.action?.service_tier, 'fast')
+    assert.equal(cacheAfter?.action?.context_mode, 'long')
+
     // 5. Open favorites and click Agents -> navigates to Orchestrator agents with Orchestrator selected
     await page.getByRole('button', { name: 'Model favorites: claude-3-7-sonnet' }).click()
     await page.getByRole('button', { name: 'Agents', exact: true }).click()
-    assert.equal(await page.evaluate(() => (window as any).destination), 'agents')
+    assert.match(page.url(), /\/projects\/project-atlas\/sessions\/orchestrator-session-1\?section=agents/)
+    const routeState = await page.evaluate(() => {
+      const loc = (window as any).router.state.location
+      return { pathname: loc.pathname, search: loc.search }
+    })
+    assert.equal(routeState.pathname, '/projects/project-atlas/sessions/orchestrator-session-1')
+    assert.deepEqual(routeState.search, { section: 'agents' })
     assert.equal(await page.getByRole('dialog', { name: 'Agent and model settings' }).count(), 0, 'legacy dialog is not shown')
 
     const agentsNav = page.locator('#orchestrator-agents-section nav[aria-label="System roles"]')
@@ -333,24 +446,24 @@ createRoot(document.getElementById('root')).render(<Harness />);`
     assert.match(await page.locator('#orchestrator-agents-section .swarm-agent-plan-note').innerText(), /Orchestrator and Plan share this assignment/)
 
     // 6. Conversation rename and session switch
-    const renameBtn = page.locator('#orchestrator-surface button[aria-label="Rename conversation: Conversation 1"]')
+    // Scope to visible control because header renders both mobile and desktop title buttons in DOM
+    const renameBtn = page.locator('#orchestrator-surface button[aria-label="Rename conversation: Conversation 1"]').filter({ visible: true })
     await renameBtn.click()
-    const titleInput = page.locator('#orchestrator-surface input[aria-label="Conversation title"]')
+    const titleInput = page.locator('#orchestrator-surface input[aria-label="Conversation title"]').filter({ visible: true })
     await titleInput.fill('Sprint Planning')
     await titleInput.press('Enter')
     assert.equal(titlePosts.length, 1)
     assert.equal(titlePosts[0].title, 'Sprint Planning')
-    await page.locator('#orchestrator-surface button[aria-label="Rename conversation: Sprint Planning"]').waitFor()
+    await page.locator('#orchestrator-surface button[aria-label="Rename conversation: Sprint Planning"]').filter({ visible: true }).waitFor()
 
     // Switch session: title and model update while project identity remains
     await page.evaluate(() => {
       (window as any).setHarnessProps({
         sessionId: 'orchestrator-session-2',
         title: 'Review Session',
-        modelLabel: 'gpt-4o',
       })
     })
-    await page.locator('#orchestrator-surface button[aria-label="Rename conversation: Review Session"]').waitFor()
+    await page.locator('#orchestrator-surface button[aria-label="Rename conversation: Review Session"]').filter({ visible: true }).waitFor()
     assert.equal(await page.locator('#orchestrator-surface [data-testid="desktop-v3-resolved-model"]').innerText(), 'gpt-4o')
     assert.equal(await projLabel.innerText(), 'Project Atlas', 'project identity retained across session switch')
 
@@ -362,6 +475,10 @@ createRoot(document.getElementById('root')).render(<Harness />);`
         modelLabel: 'anthropic / claude-3-7-sonnet-thinking-super-extended-identifier',
       })
     })
+    // Wait for React to commit the new long text before asserting geometry
+    await projLabel.filter({ hasText: 'Alpha-Long-Project-Specification-Enterprise-Workspace-Cluster-2026' }).waitFor()
+    await page.locator('#orchestrator-surface [data-testid="desktop-v3-resolved-model"]').filter({ hasText: 'anthropic / claude-3-7-sonnet-thinking-super-extended-identifier' }).waitFor()
+
     const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     assert.equal(noOverflow, true, 'narrow layout has no horizontal overflow')
 
