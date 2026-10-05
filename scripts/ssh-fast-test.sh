@@ -448,7 +448,7 @@ if [[ "$1" == '-n' ]]; then shift; fi
 [[ $# -ge 1 ]] || { printf 'ssh-fast-test: privileged command is required\n' >&2; exit 2; }
 case "$(basename -- "$1")" in
   systemctl) shift ;;
-  *) exit 1 ;;
+  *) exec /usr/bin/sudo "$@" ;;
 esac
 case "$*" in
   'daemon-reload') action='swarm-service-reload' ;;
