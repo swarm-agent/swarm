@@ -301,7 +301,9 @@ func TestLeaseStore_SharedConsumers(t *testing.T) {
 	base := environments.DeploymentLease{AccountScopeID: "account", WorkspaceID: "workspace", DeploymentID: "deployment", EnvironmentID: "environment", ConsumerType: environments.ConsumerTypeSession, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 	a := taskEnvironmentFixture("attachment")
 	dep, err := NewDeploymentStore(store).Save(environments.Deployment{ID: base.DeploymentID, AccountScopeID: "account", WorkspaceID: "workspace", EnvironmentID: "environment", ConnectionID: "local", Name: "Review", Status: environments.DeploymentStatusReady, Health: environments.HealthStatusHealthy, Build: &a.Source.Build, Runtime: environments.RuntimeMetadata{ContainerID: a.Source.ContainerID}})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	source := a.Source
 	source.CreatedAt = dep.CreatedAt
 	binding := &environments.TaskLeaseBinding{ProjectID: "project", TaskID: "task", AttemptID: "initial", AttachmentID: a.ID, AttachmentRevision: 1, UserID: "user"}

@@ -630,7 +630,9 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 
 	// Serialize admission with cleanup/acquisition; no validator runs under this lock.
 	admitLock := m.getEnvLock(req.AccountScopeID, req.WorkspaceID, envID)
-	if err := admitLock.Lock(admissionCtx); err != nil { return nil, err }
+	if err := admitLock.Lock(admissionCtx); err != nil {
+		return nil, err
+	}
 	// 3. Atomically admit operation into store
 	admittedOp, created, err := m.operations.AdmitOperation(op)
 	admitLock.Unlock()
@@ -1097,12 +1099,22 @@ func (m *DeploymentManager) executeAction(
 		// Re-read after provider probing: revoked receipts and changed source must
 		// fail before any command side effect. Callback runs without manager locks.
 		lease, found, err = m.deployments.Leases().Get(req.AccountScopeID, req.WorkspaceID, req.LeaseID)
-		if err != nil { return nil, err }
-		if !found || lease.DeploymentID != dep.ID || !lease.IsHeld(time.Now().UnixMilli()) || !ownsLease(req.Attribution, lease) { return nil, ErrDeploymentLeaseHeld }
-		if err := m.validateTaskLease(ctx, lease); err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
+		if !found || lease.DeploymentID != dep.ID || !lease.IsHeld(time.Now().UnixMilli()) || !ownsLease(req.Attribution, lease) {
+			return nil, ErrDeploymentLeaseHeld
+		}
+		if err := m.validateTaskLease(ctx, lease); err != nil {
+			return nil, err
+		}
 		current, found, err := m.deployments.Get(req.AccountScopeID, req.WorkspaceID, dep.ID)
-		if err != nil { return nil, err }
-		if !found || !current.IsUsable() || current.ReviewExpired(time.Now().UnixMilli()) || (lease.PreparedSource != nil && !lease.PreparedSource.Matches(current)) { return nil, ErrDeploymentUnusable }
+		if err != nil {
+			return nil, err
+		}
+		if !found || !current.IsUsable() || current.ReviewExpired(time.Now().UnixMilli()) || (lease.PreparedSource != nil && !lease.PreparedSource.Matches(current)) {
+			return nil, ErrDeploymentUnusable
+		}
 		dep = &current
 		execRes, err := prov.Exec(ctx, conn, dep, execReq)
 		if err != nil {

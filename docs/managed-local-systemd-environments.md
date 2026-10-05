@@ -122,3 +122,73 @@ archive handling, argv isolation, cancellation and cleanup with injected
 engines. They do not establish actual host capability, image build/install,
 systemd boot or user onboarding. Those need exact-revision live receipts after
 reviewed integration and daemon rebuild.
+
+## Task-linked handoff
+
+The task attachment interface uses `manage_environments` or authenticated
+`POST /v1/task-environments`. Supply explicit `project_id`, `task_id`, and
+catalog `workspace_id`; attachment operations deliberately do not accept
+`workspace_path` or `project_result` as alternate source authorities. Orchestrator
+may prepare before assignment. A task-linked Swarm may prepare only its current
+task's clean committed isolated source. Product workspace/generation must match
+the task source; product commit must match its current clean checkout. Recipe
+source must also resolve to an authorized project workspace generation.
+
+1. Create the committed build definition, then `build` with task references and
+   `environment_id`. Inspect the exact returned `operation_id` with
+   `get_operation`; use durable updates rather than polling. `ensure`/`deploy`
+   selects its successful `build_operation_id` explicitly.
+2. The **originating preparer** calls `release_preparation` with task references,
+   `workspace_id`, and the successful ensure/deploy `operation_id`. Wait for the
+   release operation to finish through durable updates. This releases only that
+   consumer's exclusive preparation receipt and retains the managed deployment;
+   it never copies that receipt to the task or takes another consumer's lease.
+   A generic non-task preparer uses its ordinary own `release` receipt instead.
+3. `attach_task` supplies `attachment_id`, `expected_task_revision`,
+   `expected_attachment_revision` (zero for creation), `deployment_id`, and an
+   epoch-millisecond `expires_at` within 24 hours. Alternatively select a build
+   `operation_id` to record preparing/building evidence. Completed build evidence
+   is not automatically switched to a deployment: explicitly CAS replace it.
+4. Before assignment, omit `attempt_id`. After task deployment/reopen, list with
+   `list_attachments` and CAS replace the attachment with the current exact
+   `attempt_id`. Attach never starts a task, approves scope, or changes its code.
+5. Each authorized consumer calls `acquire_attachment` with explicit
+   `attachment_id`, `expected_attachment_revision`, `attempt_id`, and optional
+   `ttl_millis` (maximum one hour). Each gets its own receipt. `exec`,
+   `get_deployment`, `get_operation`, `cancel_operation`, and `release` include
+   the task/attachment identity, `workspace_id`, and that consumer's `lease_id`.
+   Preparation status/cancellation uses its originating operation without an
+   attachment. Exec supports `env`, `working_dir`, `timeout_ms`, and `max_output`.
+
+The same steps support Swarm-created environments after execution starts.
+Current task discovery is available on every turn and through `list_attachments`;
+no originating conversation or parent's lease is needed. Reopen, source edits,
+workspace-generation change, runtime replacement, expiry and detach invalidate
+execution. Commit changes, rebuild the explicit source, select the exact new
+runtime, and CAS reassign; never substitute current dev. Detached attachment IDs
+are permanently retired for that task; create a fresh ID. Mutations are bounded
+at 16 live attachments and 4096 retired identities per task.
+
+### Lifetime and realtime
+
+Managed deployments retain state on individual release and task completion, but
+have an immutable review deadline (24 hours from creation for existing/default
+records). Attachment and lease expiry cannot extend it. Automatic cleanup runs
+on daemon startup and traverses at most 64 durable deployment records per minute,
+with a 15-second sweep budget. Live leases or unresolved operations postpone
+stopping; failures remain retryable and visible. Large catalogs can delay cleanup.
+Explicit `cleanup_review` performs one bounded workspace sweep. Stopping does
+not delete retained state/images; explicit authorized destruction remains separate.
+Do not treat an attachment expiry as a promise that resources have been removed.
+
+Task mutations emit canonical project invalidations. Environment/deployment,
+operation and lease mutations atomically emit `environment.updated` with bounded
+`task_environment_targets` and `task_environment_workspace_invalidated` for
+workspace rehydration, including upgrade repair. Clients must subscribe to the
+relevant environment workspace scopes as well as project events; no recurring
+card-status polling. Projections report preparing/building/ready/failed/stopped/
+stale, and never serialize lease receipts into task cards or seed context.
+
+These are source contracts, not evidence of a live container or browser-ready
+frontend. Focused Go contract tests are authored separately; execution receipts
+and manual container/browser qualification are required before runtime claims.

@@ -6,8 +6,12 @@ import "time"
 const ManagedReviewRetention = 24 * time.Hour
 
 func (d Deployment) ReviewExpiresAt() int64 {
-	if d.ReviewDeadline > 0 { return d.ReviewDeadline }
-	if d.Build != nil && d.CreatedAt > 0 { return d.CreatedAt + ManagedReviewRetention.Milliseconds() }
+	if d.ReviewDeadline > 0 {
+		return d.ReviewDeadline
+	}
+	if d.Build != nil && d.CreatedAt > 0 {
+		return d.CreatedAt + ManagedReviewRetention.Milliseconds()
+	}
 	return 0
 }
 

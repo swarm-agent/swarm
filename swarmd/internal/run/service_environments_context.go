@@ -334,7 +334,9 @@ func (s *Service) WorkspaceEnvironmentPromptBlock(ctx context.Context, scope too
 		}
 	}
 	if tool.TaskEnvironmentConsumer(snapshot.Metadata) {
-		if taskContext == "" { return "Task environment discovery unavailable: current task identity must be restored before environment access." }
+		if taskContext == "" {
+			return "Task environment discovery unavailable: current task identity must be restored before environment access."
+		}
 		return taskContext
 	}
 	workspaceID := s.resolveWorkspaceIDForScope(scope)

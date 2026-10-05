@@ -190,12 +190,12 @@ type DeployDeploymentResult struct {
 // limit enforcement, cancellation-aware locking, and durable supervised operations.
 type DeploymentManager struct {
 	taskLeaseValidator func(context.Context, environments.DeploymentLease) error
-	connections  ConnectionReader
-	environments EnvironmentReader
-	deployments  DeploymentManagerStore
-	workspaces   WorkspaceSettingsReader
-	registry     *provider.Registry
-	operations   OperationStore
+	connections        ConnectionReader
+	environments       EnvironmentReader
+	deployments        DeploymentManagerStore
+	workspaces         WorkspaceSettingsReader
+	registry           *provider.Registry
+	operations         OperationStore
 
 	mu       sync.Mutex
 	envLocks map[string]*contextMutex
@@ -1094,10 +1094,18 @@ func (m *DeploymentManager) DestroyDeployment(ctx context.Context, req DestroyDe
 	defer depLock.Unlock()
 
 	dep, found, err = m.deployments.Get(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
-	if err != nil { return err }
-	if !found { return ErrDeploymentNotFound }
-	if err := m.guardDeploymentIdle(ctx, dep); err != nil { return err }
-	if err := m.requireDeploymentProvider(dep); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	if err := m.guardDeploymentIdle(ctx, dep); err != nil {
+		return err
+	}
+	if err := m.requireDeploymentProvider(dep); err != nil {
+		return err
+	}
 	// 1. Release active lease if held
 	activeLease, hasActive, err := m.deployments.GetActiveLease(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
 	if err != nil {
@@ -1146,10 +1154,16 @@ func (m *DeploymentManager) DestroyDeployment(ctx context.Context, req DestroyDe
 // StopDeployment stops a running deployment container.
 func (m *DeploymentManager) StopDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error {
 	dep, found, err := m.GetDeployment(accountScopeID, workspaceID, deploymentID)
-	if err != nil { return err }
-	if !found { return ErrDeploymentNotFound }
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
 	lock := m.getEnvLock(accountScopeID, workspaceID, dep.EnvironmentID)
-	if err := lock.Lock(ctx); err != nil { return err }
+	if err := lock.Lock(ctx); err != nil {
+		return err
+	}
 	defer lock.Unlock()
 	return m.stopDeploymentLocked(ctx, accountScopeID, workspaceID, deploymentID)
 }
@@ -1181,9 +1195,15 @@ func (m *DeploymentManager) stopDeploymentLocked(ctx context.Context, accountSco
 	defer depLock.Unlock()
 
 	dep, found, err = m.deployments.Get(accountScopeID, workspaceID, deploymentID)
-	if err != nil { return err }
-	if !found { return ErrDeploymentNotFound }
-	if err := m.guardDeploymentIdle(ctx, dep); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	if err := m.guardDeploymentIdle(ctx, dep); err != nil {
+		return err
+	}
 	active, held, leaseErr := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
 	if leaseErr != nil {
 		return leaseErr
@@ -1191,7 +1211,9 @@ func (m *DeploymentManager) stopDeploymentLocked(ctx context.Context, accountSco
 	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) {
 		return ErrDeploymentLeaseHeld
 	}
-	if err := m.requireDeploymentProvider(dep); err != nil { return err }
+	if err := m.requireDeploymentProvider(dep); err != nil {
+		return err
+	}
 	if m.connections != nil && m.registry != nil {
 		conn, foundConn, err := m.connections.Get(accountScopeID, workspaceID, dep.ConnectionID)
 		if err != nil {
@@ -1222,10 +1244,16 @@ func (m *DeploymentManager) stopDeploymentLocked(ctx context.Context, accountSco
 // StartDeployment starts a stopped deployment container.
 func (m *DeploymentManager) StartDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error {
 	dep, found, err := m.GetDeployment(accountScopeID, workspaceID, deploymentID)
-	if err != nil { return err }
-	if !found { return ErrDeploymentNotFound }
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
 	lock := m.getEnvLock(accountScopeID, workspaceID, dep.EnvironmentID)
-	if err := lock.Lock(ctx); err != nil { return err }
+	if err := lock.Lock(ctx); err != nil {
+		return err
+	}
 	defer lock.Unlock()
 	return m.startDeploymentLocked(ctx, accountScopeID, workspaceID, deploymentID)
 }
@@ -1257,9 +1285,15 @@ func (m *DeploymentManager) startDeploymentLocked(ctx context.Context, accountSc
 	defer depLock.Unlock()
 
 	dep, found, err = m.deployments.Get(accountScopeID, workspaceID, deploymentID)
-	if err != nil { return err }
-	if !found { return ErrDeploymentNotFound }
-	if err := m.guardDeploymentIdle(ctx, dep); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	if err := m.guardDeploymentIdle(ctx, dep); err != nil {
+		return err
+	}
 	active, held, leaseErr := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
 	if leaseErr != nil {
 		return leaseErr
@@ -1267,7 +1301,9 @@ func (m *DeploymentManager) startDeploymentLocked(ctx context.Context, accountSc
 	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) {
 		return ErrDeploymentLeaseHeld
 	}
-	if err := m.requireDeploymentProvider(dep); err != nil { return err }
+	if err := m.requireDeploymentProvider(dep); err != nil {
+		return err
+	}
 	if m.connections != nil && m.registry != nil {
 		conn, foundConn, err := m.connections.Get(accountScopeID, workspaceID, dep.ConnectionID)
 		if err != nil {
@@ -1275,7 +1311,9 @@ func (m *DeploymentManager) startDeploymentLocked(ctx context.Context, accountSc
 		}
 		if foundConn {
 			if prov, ok := m.registry.Get(conn.Kind); ok {
-				if dep.ReviewExpired(time.Now().UnixMilli()) { return errors.New("review deadline expired; prepare a new deployment") }
+				if dep.ReviewExpired(time.Now().UnixMilli()) {
+					return errors.New("review deadline expired; prepare a new deployment")
+				}
 				if err := prov.Start(ctx, &conn, &dep); err != nil {
 					_, _ = m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, "start failed: "+err.Error())
 					return fmt.Errorf("start deployment container %q: %w", deploymentID, err)
@@ -1414,8 +1452,12 @@ func (m *DeploymentManager) ResolveAccess(ctx context.Context, accountScopeID, w
 	defer cancel()
 
 	lease, held, err := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
-	if err != nil { return nil, err }
-	if !held || lease.Shared || lease.TaskBinding != nil || !lease.IsHeld(time.Now().UnixMilli()) || dep.ReviewExpired(time.Now().UnixMilli()) { return nil, errors.New("ordinary active lease required; task consumers must use receipt-bound access") }
+	if err != nil {
+		return nil, err
+	}
+	if !held || lease.Shared || lease.TaskBinding != nil || !lease.IsHeld(time.Now().UnixMilli()) || dep.ReviewExpired(time.Now().UnixMilli()) {
+		return nil, errors.New("ordinary active lease required; task consumers must use receipt-bound access")
+	}
 	return prov.ResolveAccess(probeCtx, &conn, &dep)
 }
 

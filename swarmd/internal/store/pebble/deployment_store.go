@@ -199,7 +199,7 @@ func (s *DeploymentStore) Save(dep environments.Deployment) (environments.Deploy
 	if dep.Build != nil && dep.ReviewDeadline == 0 {
 		dep.ReviewDeadline = dep.CreatedAt + environments.ManagedReviewRetention.Milliseconds()
 	}
-	if dep.ReviewDeadline < 0 || (dep.ReviewDeadline > 0 && (dep.ReviewDeadline <= dep.CreatedAt || dep.ReviewDeadline > dep.CreatedAt + environments.ManagedReviewRetention.Milliseconds())) {
+	if dep.ReviewDeadline < 0 || (dep.ReviewDeadline > 0 && (dep.ReviewDeadline <= dep.CreatedAt || dep.ReviewDeadline > dep.CreatedAt+environments.ManagedReviewRetention.Milliseconds())) {
 		return environments.Deployment{}, errors.New("review deadline must be finite and within the managed review policy")
 	}
 	dep.UpdatedAt = now

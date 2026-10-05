@@ -2,10 +2,10 @@ package api
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
-	"io"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -74,7 +74,9 @@ func (s *Server) SetEnvironmentServices(
 	s.connections = connections
 	s.environments = definitions
 	s.deployments = deployments
-	if bound, ok := deployments.(interface { SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error) }); ok {
+	if bound, ok := deployments.(interface {
+		SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error)
+	}); ok {
 		bound.SetTaskLeaseValidator(s.ValidateTaskEnvironmentLease)
 	}
 	s.workspaceEnvSettings = workspaceEnvSettings
@@ -624,10 +626,10 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			if list == nil {
 				list = []environments.Deployment{}
 			}
-			activeLeases := make(map[string]bool)
+			activeLeases := make(map[string]environments.DeploymentLease)
 			for _, dep := range list {
 				if lease, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID); ok {
-					activeLeases[dep.ID] = lease.Active
+					activeLeases[dep.ID] = publicEnvironmentLease(lease)
 				}
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -666,7 +668,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":               true,
 				"deployment":       dep,
-				"leased":           lease.Active,
+				"active_lease":     publicEnvironmentLease(lease),
 				"has_active_lease": hasLease,
 			})
 			return
@@ -729,7 +731,10 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if _, err := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments"); err != nil { writeError(w, http.StatusForbidden, err); return }
+		if _, err := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments"); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
 		action := strings.ToLower(strings.TrimSpace(req.Action))
 
 		// Cancellation routing
@@ -1077,7 +1082,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":               true,
 				"deployment":       dep,
-				"leased":           lease.Active,
+				"active_lease":     publicEnvironmentLease(lease),
 				"has_active_lease": hasLease,
 			})
 			return
@@ -1106,10 +1111,10 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			list = []environments.Deployment{}
 		}
 
-		activeLeases := make(map[string]bool)
+		activeLeases := make(map[string]environments.DeploymentLease)
 		for _, dep := range list {
 			if lease, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID); ok {
-				activeLeases[dep.ID] = lease.Active
+				activeLeases[dep.ID] = publicEnvironmentLease(lease)
 			}
 		}
 
@@ -1222,7 +1227,20 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 func decodeEnvironmentRequest(w http.ResponseWriter, r *http.Request, dest any) error {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(dest); err != nil { return err }
-	if err := decoder.Decode(new(any)); err != io.EOF { return errors.New("exactly one JSON request required") }
+	if err := decoder.Decode(dest); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return errors.New("exactly one JSON request required")
+	}
 	return nil
+}
+
+// Preserve the existing status DTO shape without publishing a usable receipt or
+// another consumer's task binding through generic discovery.
+func publicEnvironmentLease(lease environments.DeploymentLease) environments.DeploymentLease {
+	lease.ID = ""
+	lease.PreparedSource = nil
+	lease.TaskBinding = nil
+	return lease
 }

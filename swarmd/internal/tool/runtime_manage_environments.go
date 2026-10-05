@@ -25,21 +25,21 @@ func manageEnvironmentsDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"project_result": projectResultDefinition(),
-				"project_id": map[string]any{"type": "string"},
-				"task_id": map[string]any{"type": "string"},
-				"attempt_id": map[string]any{"type": "string"},
-				"attachment_id": map[string]any{"type": "string"},
-				"expected_task_revision": map[string]any{"type": "integer"},
+				"project_result":               projectResultDefinition(),
+				"project_id":                   map[string]any{"type": "string"},
+				"task_id":                      map[string]any{"type": "string"},
+				"attempt_id":                   map[string]any{"type": "string"},
+				"attachment_id":                map[string]any{"type": "string"},
+				"expected_task_revision":       map[string]any{"type": "integer"},
 				"expected_attachment_revision": map[string]any{"type": "integer"},
-				"expires_at": map[string]any{"type": "integer"},
+				"expires_at":                   map[string]any{"type": "integer"},
 				"action": map[string]any{
 					"type": "string",
 					"enum": []string{
 						"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 						"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 						"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
-						"list_attachments", "attach_task", "detach_task", "acquire_attachment", "cleanup_review",
+						"list_attachments", "attach_task", "detach_task", "acquire_attachment", "release_preparation", "cleanup_review",
 					},
 					"description": "Operation action to perform",
 				},
@@ -120,7 +120,9 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		actionName = "list"
 	}
 
-	if actionName == "cancel" { actionName = "cancel_operation" }
+	if actionName == "cancel" {
+		actionName = "cancel_operation"
+	}
 	args = cloneTaskEnvironmentArgs(args, actionName)
 	if TaskEnvironmentConsumer(caller.Metadata) {
 		if taskEnvironmentRoutedAction(actionName) {
@@ -134,15 +136,23 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 	}
 	if actionName == "cleanup_review" {
 		account, workspace, _, err := r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
-		if err != nil { return "", err }
-		service, ok := r.deploymentManager.(interface { CleanupReviewDeployments(context.Context, string, string) ([]string, error) })
-		if !ok { return "", errors.New("review cleanup unavailable") }
+		if err != nil {
+			return "", err
+		}
+		service, ok := r.deploymentManager.(interface {
+			CleanupReviewDeployments(context.Context, string, string) ([]string, error)
+		})
+		if !ok {
+			return "", errors.New("review cleanup unavailable")
+		}
 		stopped, err := service.CleanupReviewDeployments(ctx, account, workspace)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		raw, err := json.Marshal(map[string]any{"stopped_deployments": stopped})
 		return string(raw), err
 	}
-	if asString(args["attachment_id"]) != "" {
+	if asString(args["attachment_id"]) != "" || (asString(args["task_id"]) != "" && taskEnvironmentRoutedAction(actionName)) {
 		return r.executeTaskEnvironment(ctx, scope, args)
 	}
 	switch actionName {
@@ -209,14 +219,14 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			"   Supervised runtime mutations: ensure (environment_id, deliberate receipt execution), deploy, exec (deployment_id, command), start, stop, destroy, release (deployment_id or lease_id).\n" +
 			"   Mutations return an immediate bounded operation receipt with operation_id and status within 2 seconds. Do not busy-poll; inspect receipts and use realtime updates.\n" +
 			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id).\n" +
-			"5. Task attachments: list_attachments(project_id,task_id); attach_task(project_id,task_id,attachment_id,expected_task_revision,expected_attachment_revision,attempt_id,workspace_id,deployment_id OR operation_id,expires_at). expires_at is an epoch millisecond deadline within 24h. Prepare before assignment with empty attempt_id, then explicitly CAS reassign to the current attempt before acquire_attachment(project_id,task_id,attachment_id,expected_attachment_revision,attempt_id,ttl_millis). Each consumer gets its own receipt. exec/release/get_deployment/get_operation/cancel_operation require project_id,task_id,attachment_id,workspace_id,lease_id (and operation_id for operation inspection/cancellation). No automatic wake or scope expansion. Task build/ensure/deploy require project_id,task_id,workspace_id,environment_id and ensure/deploy require the exact successful build_operation_id. After preparation explicitly attach the selected deployment and acquire a bound receipt. Changed source requires rebuild and explicit CAS reassignment, never current-dev substitution. Task completion, detach and release do not stop review deployments; finite review retention is 24h with automatic cleanup."
+			"5. Task attachments: list_attachments(project_id,task_id); attach_task(project_id,task_id,attachment_id,expected_task_revision,expected_attachment_revision,attempt_id,workspace_id,deployment_id OR operation_id,expires_at). expires_at is an epoch millisecond deadline within 24h. Prepare before assignment with empty attempt_id, then explicitly CAS reassign to the current attempt before acquire_attachment(project_id,task_id,attachment_id,expected_attachment_revision,attempt_id,ttl_millis). Each consumer gets its own receipt. exec/release/get_deployment/get_operation/cancel_operation require project_id,task_id,attachment_id,workspace_id,lease_id (and operation_id for operation inspection/cancellation). No automatic wake or scope expansion. Task build/ensure/deploy require project_id,task_id,workspace_id,environment_id and ensure/deploy require the exact successful build_operation_id. Task actions use workspace_id, not workspace_path/project_result. The originating preparer must call release_preparation(project_id,task_id,workspace_id,operation_id) on the successful ensure/deploy operation and wait for release before shared acquisition; no other consumer can release or borrow that receipt. Then explicitly attach the selected deployment and acquire a bound receipt. Changed source requires rebuild and explicit CAS reassignment, never current-dev substitution. Task completion, detach and release do not stop review deployments; finite review retention is 24h with automatic cleanup."
 		response["definition_schema"] = manageEnvironmentsDefinition().Parameters
 		response["definition_help"] = "Create accepts top-level definition fields or one environment object; import accepts exactly one environment object or json string containing an exported definition. Nested fields are JSON objects, not JSON-encoded strings. Unknown fields, nulls and wrong types are rejected. Exported account_scope_id/workspace_id are rebound to authorized caller scope, never trusted. Update accepts top-level fields only: container and deployment_policy merge supplied fields; build, provisioning, health_check, resources and labels replace the supplied section. image/ports and max_instances/release_behavior/reuse are aliases and cannot accompany their canonical section. Omitted create provisioning defaults to local_mount at /app; explicit provisioning requires a valid strategy. Container keys: image, command, args, env_vars, exposed_ports, privileged, user, working_dir, setup_commands, rootless_systemd. Explicit local_podman connections support rootless_systemd={cgroup_namespace:private,network:slirp4netns,pids_limit:1024}; this requires registry_image provisioning, no host mounts, no privileged/GPU mode, and a pre-existing local image. Capabilities require rootless Linux Podman, crun, slirp4netns, systemd cgroup v2 and delegated cpu/memory/pids controllers. Ports remain 127.0.0.1-only; no host environment expansion, proxy inheritance, remote or privileged fallback. No arbitrary runtime flags are supported. Connection checks diagnose prerequisites without changing host configuration. Strategy availability is provider-dependent; schema describes stored definitions, not a guarantee of provider support."
 		response["available_actions"] = []string{
 			"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 			"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 			"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
-			"list_attachments", "attach_task", "detach_task", "acquire_attachment", "cleanup_review",
+			"list_attachments", "attach_task", "detach_task", "acquire_attachment", "release_preparation", "cleanup_review",
 		}
 
 	case "list":

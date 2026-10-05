@@ -121,7 +121,9 @@ func (s *Store) SetEnvironmentPublisher(publish func(V3RealtimeOutboxRecord)) {
 func (s *Store) commitEnvironmentRealtime(m *environmentRealtimeMutation) error {
 	requestID := uuid.NewString()
 	payload, err := s.taskEnvironmentEventPayload(m)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	// Session ID is lowercase to satisfy canonical session validation
 	sessionID := "__environment__:" + strings.ToLower(m.accountScopeID) + ":" + strings.ToLower(m.workspaceID)
 	result, err := NewSessionStore(s).ApplyV3SessionMutation(V3SessionMutationInput{

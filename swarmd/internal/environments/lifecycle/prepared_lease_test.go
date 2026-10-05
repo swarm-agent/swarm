@@ -33,6 +33,18 @@ func TestPreparedLeaseIsolation(t *testing.T) {
 	req.Binding = &environments.TaskLeaseBinding{ProjectID: "project", TaskID: "task", AttemptID: "attempt", AttachmentID: "attachment", AttachmentRevision: 1, UserID: "user"}
 	// This test isolates deployment/source fencing; API tests own durable task authorization.
 	h.manager.SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error { return nil })
+	// A provisioning receipt is exclusive until its authenticated owner releases
+	// it explicitly. Attachment acquisition must never take another consumer over.
+	preparation, err := h.deployments.AcquireLease(environments.DeploymentLease{AccountScopeID: "account", WorkspaceID: "workspace", EnvironmentID: dep.EnvironmentID, DeploymentID: dep.ID, ConsumerType: environments.ConsumerTypeSession, ConsumerID: "preparer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.manager.AcquirePreparedLease(ctx, req); !errors.Is(err, ErrDeploymentLeaseHeld) {
+		t.Fatalf("preparation lease taken over: %v", err)
+	}
+	if _, err := h.manager.ReleaseDeployment(ctx, ReleaseDeploymentRequest{AccountScopeID: "account", WorkspaceID: "workspace", LeaseID: preparation.ID, Attribution: environments.OperationAttribution{SessionID: "preparer"}}); err != nil {
+		t.Fatal(err)
+	}
 	first, err := h.manager.AcquirePreparedLease(ctx, req)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +96,13 @@ func TestPreparedLeaseIsolation(t *testing.T) {
 		}
 	}
 	all, err := h.deployments.Leases().ListForDeployment("account", "workspace", dep.ID, 100)
-	if err != nil || len(all) != 2 || !all[0].Active || !all[1].Active {
+	activeCount := 0
+	for _, lease := range all {
+		if lease.Active {
+			activeCount++
+		}
+	}
+	if err != nil || len(all) != 3 || activeCount != 2 {
 		t.Fatalf("rejections mutated leases: %+v %v", all, err)
 	}
 	if _, err := h.manager.ReleaseDeployment(ctx, ReleaseDeploymentRequest{AccountScopeID: "account", WorkspaceID: "workspace", LeaseID: first.ID, Attribution: environments.OperationAttribution{SessionID: "first"}}); err != nil {

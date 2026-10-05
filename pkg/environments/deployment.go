@@ -66,7 +66,7 @@ type DeploymentLifecycle struct {
 // Strictly scoped to AccountScopeID and WorkspaceID.
 type Deployment struct {
 	// ReviewDeadline is immutable for this deployment generation. Zero is legacy.
-	ReviewDeadline int64 `json:"review_deadline,omitempty"`
+	ReviewDeadline int64               `json:"review_deadline,omitempty"`
 	Build          *ImageBuildResult   `json:"build,omitempty"`
 	ID             string              `json:"id"`
 	AccountScopeID string              `json:"account_scope_id"`

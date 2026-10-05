@@ -121,7 +121,9 @@ func (s *LeaseStore) AcquireLease(lease environments.DeploymentLease) (environme
 	if lease.Shared || lease.PreparedSource != nil || lease.TaskBinding != nil {
 		return environments.DeploymentLease{}, errors.New("task-bound receipts require prepared acquisition")
 	}
-	if err := s.boundReviewLease(&lease, now, false); err != nil { return environments.DeploymentLease{}, err }
+	if err := s.boundReviewLease(&lease, now, false); err != nil {
+		return environments.DeploymentLease{}, err
+	}
 
 	if err := lease.Validate(); err != nil {
 		return environments.DeploymentLease{}, fmt.Errorf("validate lease: %w", err)
@@ -448,7 +450,9 @@ func (s *LeaseStore) AcquireSharedLease(lease environments.DeploymentLease) (env
 	if err := lease.Validate(); err != nil {
 		return environments.DeploymentLease{}, err
 	}
-	if err := s.boundReviewLease(&lease, now, true); err != nil { return environments.DeploymentLease{}, err }
+	if err := s.boundReviewLease(&lease, now, true); err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	key := KeyDeploymentActiveLeaseForAccount(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
 	id, found, err := s.store.GetBytes(key)
 	if err != nil {
@@ -536,11 +540,23 @@ func (s *LeaseStore) removeSharedIndex(batch *environmentLeaseBatch, lease envir
 // standalone lease records remain supported, but prepared receipts fail closed.
 func (s *LeaseStore) boundReviewLease(lease *environments.DeploymentLease, now int64, prepared bool) error {
 	dep, found, err := NewDeploymentStore(s.store).Get(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
-	if err != nil { return err }
-	if prepared && (!found || lease.TaskBinding == nil || lease.PreparedSource == nil || !lease.PreparedSource.Matches(dep)) { return errors.New("prepared receipt source or binding unavailable") }
-	if !found { return nil }
-	if dep.EnvironmentID != lease.EnvironmentID { return errors.New("lease environment mismatch") }
-	if dep.ReviewExpired(now) { return errors.New("review deadline expired; prepare a new deployment") }
-	if deadline := dep.ReviewExpiresAt(); deadline > 0 && (lease.ExpiresAt <= 0 || lease.ExpiresAt > deadline) { lease.ExpiresAt = deadline }
+	if err != nil {
+		return err
+	}
+	if prepared && (!found || lease.TaskBinding == nil || lease.PreparedSource == nil || !lease.PreparedSource.Matches(dep)) {
+		return errors.New("prepared receipt source or binding unavailable")
+	}
+	if !found {
+		return nil
+	}
+	if dep.EnvironmentID != lease.EnvironmentID {
+		return errors.New("lease environment mismatch")
+	}
+	if dep.ReviewExpired(now) {
+		return errors.New("review deadline expired; prepare a new deployment")
+	}
+	if deadline := dep.ReviewExpiresAt(); deadline > 0 && (lease.ExpiresAt <= 0 || lease.ExpiresAt > deadline) {
+		lease.ExpiresAt = deadline
+	}
 	return nil
 }
