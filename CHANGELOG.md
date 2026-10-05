@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Show task-linked environments on task cards with exact deployment navigation and event-driven status; gate browser opening on deployment-snapshotted frontend declarations, fresh bounded HTTP readiness checks and verified loopback port mappings. Docs impact: `docs/managed-local-systemd-environments.md` documents browser configuration, safety and unrun frontend/manual qualification.
+
 - Persist revision-guarded task environment attachments, source-bound per-consumer access, durable task invalidations and finite managed review cleanup; distinguish preparation handoff from task execution and lease ownership. Docs impact: `docs/managed-local-systemd-environments.md` documents task attach/acquire/release, explicit rebuild/reassignment and retention; live qualification remains separate.
 
 - Expose environment management to Orchestrator while preserving saved capability denials; enforce durable Swarm/Orchestrator session admission on environment tools and HTTP routes, and add an internal source-bound independent-consumer lease foundation. Docs impact: none; task attachment wiring and live environment qualification remain separate.

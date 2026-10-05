@@ -192,3 +192,49 @@ stale, and never serialize lease receipts into task cards or seed context.
 These are source contracts, not evidence of a live container or browser-ready
 frontend. Focused Go contract tests are authored separately; execution receipts
 and manual container/browser qualification are required before runtime claims.
+
+### Task-card browser access
+
+Task cards show each attachment and its runtime/preparation status, including
+bounded failure guidance and a link to the exact workspace/deployment in the
+existing Deployments view. Missing catalog identity fails closed. Scoped durable
+`environment.updated` events invalidate cards and coalesce reloads; there is no
+recurring status polling. Attachment expiry disables browser controls locally.
+
+Declare `frontend_endpoints` in the environment definition **before deploying**.
+Each endpoint requires a unique `id`, a `name`, a declared TCP `container_port`,
+`scheme` (`http` or `https`), and a safe absolute `health_path`; `path` defaults to
+`/`. At most eight endpoints are accepted. Paths cannot contain credentials,
+query strings, fragments, encoded escapes, traversal or scheme-relative URLs.
+Nested `environment` creation and JSON import accept these typed definitions;
+the HTTP environment replacement route can update definitions. Deployment
+creation snapshots the endpoint intent and declared ports. Editing a definition
+does not alter an existing deployment's browser intent: explicitly deploy again
+and reattach. Legacy deployments without the snapshot offer no browser access.
+
+**Check browser access** sends an authenticated `POST /v1/task-environments` with
+`action: browser_endpoints`, exact project/task/workspace/attachment IDs and
+`expected_attachment_revision`. This is a Desktop HTTP action, not a new model
+tool action. It does not acquire or copy a lease. Source, attempt, expiry and
+runtime generation are checked before and after probes. Only local engine
+mappings to literal `127.0.0.1` or `::1` qualify; SSH and container-only addresses
+do not. Each configured health path must return HTTP 2xx without redirects,
+ambient proxy use or disabled TLS verification. Up to eight probes run together
+with one-second request timeouts and a five-second overall budget. Response
+bodies are not read or disclosed. Mere container existence/health is insufficient.
+
+Multiple endpoints require explicit selection. **Open in browser** reserves a
+blank browser tab during the click, severs its opener, then rechecks readiness
+and validates the fresh loopback URL/mapped port before navigation. Failure,
+cancellation, expiry, detach or component teardown closes the pending blank tab;
+popup blocking produces an actionable error. The browser's normal new-tab path
+is used; no separate native external-browser bridge is present in this client.
+Backend-only deployments return no browser endpoints and retain agent exec use.
+
+Frontend URL, popup-controller, card-rendering, route-identity, realtime-wire,
+workspace-demand and invalidation regressions are authored **but not run** in
+this implementation task. Go endpoint/snapshot tests are also authored; their
+execution belongs to the separate focused verification checkpoint. No frontend
+build, screenshot, browser run, container run or live-readiness claim accompanies
+this source implementation. Manual browser/container qualification remains a
+separately authorized follow-up.
