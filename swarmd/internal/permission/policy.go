@@ -593,7 +593,7 @@ func ManageEnvironmentsPolicyIdentity(arguments string) (string, bool) {
 		return "deployment_exec", true
 	case "destroy":
 		return "deployment_destroy", true
-	case "deploy", "ensure":
+	case "build", "deploy", "ensure":
 		return "deployment_deploy", true
 	case "stop":
 		return "deployment_stop", true
