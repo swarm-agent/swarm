@@ -86,6 +86,10 @@ type Page struct {
 	scroll                       int
 	lastMaxScroll                int
 	follow                       bool
+	anchor                       ViewportAnchor
+	cachedLayout                 *TranscriptLayout
+	markdownCache                *markdownRowCache
+	itemCache                    *itemLayoutCache
 	status                       string
 	errText                      string
 	busy                         bool
@@ -181,7 +185,20 @@ const (
 )
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
-	return &Page{runtime: runtime, styles: styles, showHeader: true, showThinkingTags: true, follow: true, lastMaxScroll: -1, rowCache: make(map[string]cachedRows), taskProgramCollapsed: make(map[string]bool), handoffTargets: make(map[string]footerbar.Rect), matchKey: defaultKeyMatcher}
+	return &Page{
+		runtime:               runtime,
+		styles:                styles,
+		showHeader:            true,
+		showThinkingTags:      true,
+		follow:                true,
+		lastMaxScroll:         -1,
+		rowCache:              make(map[string]cachedRows),
+		taskProgramCollapsed:  make(map[string]bool),
+		handoffTargets:        make(map[string]footerbar.Rect),
+		matchKey:              defaultKeyMatcher,
+		markdownCache:         newMarkdownRowCache(512),
+		itemCache:             newItemLayoutCache(1024),
+	}
 }
 
 func (p *Page) SetKeyMatcher(match func(*tcell.EventKey, string) bool) {
@@ -768,8 +785,8 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 	}
 	switch {
 	case match(KeyEscape):
-		if p.runtime != nil {
-			if _, active := SelectActiveRun(p.runtime.Store().Snapshot()); active {
+		if p.runtime != nil && p.runtime.Store() != nil {
+			if _, active := p.runtime.Store().SelectActiveRun(); active {
 				go p.StopRun()
 				return PageActionNone
 			}
@@ -782,6 +799,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 				p.scroll = p.lastMaxScroll
 			}
 			p.follow = p.scroll == 0
+			p.anchor = ViewportAnchor{Valid: false}
 		}
 	case match(KeyMoveDown):
 		if !p.moveCommandPaletteSelectionLocked(1) {
@@ -789,7 +807,10 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			if p.scroll <= 0 {
 				p.scroll = 0
 				p.follow = true
+			} else {
+				p.follow = false
 			}
+			p.anchor = ViewportAnchor{Valid: false}
 		}
 	case match(KeyPageUp):
 		p.scroll += 8
@@ -797,12 +818,16 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.scroll = p.lastMaxScroll
 		}
 		p.follow = p.scroll == 0
+		p.anchor = ViewportAnchor{Valid: false}
 	case match(KeyPageDown):
 		p.scroll -= 8
 		if p.scroll <= 0 {
 			p.scroll = 0
 			p.follow = true
+		} else {
+			p.follow = false
 		}
+		p.anchor = ViewportAnchor{Valid: false}
 	case match(KeyJumpHome):
 		if p.lastMaxScroll >= 0 {
 			p.scroll = p.lastMaxScroll
@@ -810,9 +835,11 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			p.scroll = 10000
 		}
 		p.follow = p.scroll == 0
+		p.anchor = ViewportAnchor{Valid: false}
 	case match(KeyJumpEnd):
 		p.scroll = 0
 		p.follow = true
+		p.anchor = ViewportAnchor{Valid: false}
 	case match(KeyComplete):
 		if len(p.input) == 0 && p.focusLatestFinalHandoffLocked() {
 			break
@@ -910,6 +937,7 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 				p.scroll = p.lastMaxScroll
 			}
 			p.follow = p.scroll == 0
+			p.anchor = ViewportAnchor{Valid: false}
 			break
 		}
 		if match(KeyMoveDownAlt) {
@@ -917,7 +945,10 @@ func (p *Page) HandleKey(ev *tcell.EventKey) PageAction {
 			if p.scroll <= 0 {
 				p.scroll = 0
 				p.follow = true
+			} else {
+				p.follow = false
 			}
+			p.anchor = ViewportAnchor{Valid: false}
 			break
 		}
 		p.insertRunesLocked([]rune{ev.Rune()})
@@ -1243,7 +1274,10 @@ func (p *Page) handleModelPickerKeyLocked(ev *tcell.EventKey) PageAction {
 }
 
 func (p *Page) ensurePermissionPrefixLocked() {
-	permissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+	var permissions []client.PermissionRecord
+	if p.runtime != nil && p.runtime.Store() != nil {
+		permissions = p.runtime.Store().SelectPendingPermissions()
+	}
 	if len(permissions) == 0 {
 		p.permissionPrefix, p.permissionPrefixID, p.permissionPrefixLoading = "", "", false
 		p.permissionContentScroll, p.permissionContentMaxScroll, p.permissionContentID = 0, 0, ""
@@ -1353,13 +1387,20 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 				p.scroll = p.lastMaxScroll
 			}
 			p.follow = p.scroll == 0
+			p.anchor = ViewportAnchor{Valid: false}
 		}
 	case tcell.KeyPgDn:
 		if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
 			p.permissionContentScroll = minInt(p.permissionContentMaxScroll, p.permissionContentScroll+6)
 		} else {
 			p.scroll = maxInt(0, p.scroll-8)
-			p.follow = p.scroll == 0
+			if p.scroll <= 0 {
+				p.scroll = 0
+				p.follow = true
+			} else {
+				p.follow = false
+			}
+			p.anchor = ViewportAnchor{Valid: false}
 		}
 	case tcell.KeyHome:
 		if isBashPermissionRequest(permission) && p.permissionContentMaxScroll > 0 {
@@ -1371,6 +1412,7 @@ func (p *Page) handlePermissionKeyLocked(ev *tcell.EventKey) PageAction {
 				p.scroll = 10000
 			}
 			p.follow = p.scroll == 0
+			p.anchor = ViewportAnchor{Valid: false}
 		}
 	case tcell.KeyBackspace, tcell.KeyBackspace2:
 		if hidePermissionNote {
@@ -1543,6 +1585,7 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 					p.scroll = p.lastMaxScroll
 				}
 				p.follow = p.scroll == 0
+				p.anchor = ViewportAnchor{Valid: false}
 			}
 		}
 		if buttons&tcell.WheelDown != 0 {
@@ -1550,7 +1593,13 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 				p.permissionContentScroll = minInt(p.permissionContentMaxScroll, p.permissionContentScroll+3)
 			} else {
 				p.scroll = maxInt(0, p.scroll-2)
-				p.follow = p.scroll == 0
+				if p.scroll <= 0 {
+					p.scroll = 0
+					p.follow = true
+				} else {
+					p.follow = false
+				}
+				p.anchor = ViewportAnchor{Valid: false}
 			}
 		}
 		return
@@ -1570,13 +1619,17 @@ func (p *Page) HandleMouse(ev *tcell.EventMouse) {
 			p.scroll = p.lastMaxScroll
 		}
 		p.follow = p.scroll == 0
+		p.anchor = ViewportAnchor{Valid: false}
 	}
 	if buttons&tcell.WheelDown != 0 {
 		p.scroll -= 2
 		if p.scroll <= 0 {
 			p.scroll = 0
 			p.follow = true
+		} else {
+			p.follow = false
 		}
+		p.anchor = ViewportAnchor{Valid: false}
 	}
 }
 
@@ -1644,7 +1697,10 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	modelOptions := append([]client.ModelCatalogRecord(nil), p.modelOptions...)
 	commandSuggestions := append([]CommandSuggestion(nil), p.commandSuggestions...)
 	p.ensurePermissionPrefixLocked()
-	pendingPermissions := SelectPendingPermissions(p.runtime.Store().Snapshot())
+	var pendingPermissions []client.PermissionRecord
+	if p.runtime != nil && p.runtime.Store() != nil {
+		pendingPermissions = p.runtime.Store().SelectPendingPermissions()
+	}
 	taskLaunchModalIndex := p.taskLaunchPermissionIndexLocked(pendingPermissions)
 	if taskLaunchModalIndex >= 0 {
 		p.permissionIndex = taskLaunchModalIndex
@@ -1725,7 +1781,9 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	if transcriptHeight < 1 {
 		transcriptHeight = 1
 	}
-	rows := p.renderRowsForHeight(state, maxInt(1, width-4), transcriptHeight, styles)
+	contentWidth := maxInt(1, width-4)
+	layout := p.getOrCreateLayout(state, contentWidth, transcriptHeight, styles)
+	totalRows := layout.TotalRows()
 	workerOpen := false
 	if len(SelectPendingWorkerReviews(state)) > 0 {
 		p.mu.Lock()
@@ -1740,35 +1798,68 @@ func (p *Page) DrawAt(screen tcell.Screen, now time.Time) {
 	p.mu.Unlock()
 	if handoffFocused && !workerOpen {
 		if action := finalHandoffSelectedAction(state.Messages, handoffMessageID, handoffControl); action != "" {
-			scroll = scrollToRenderAction(rows, action, transcriptHeight, scroll)
-			p.mu.Lock()
-			p.scroll = scroll
-			p.follow = scroll == 0
-			p.mu.Unlock()
+			if targetRow, ok := layout.FindRowIndexForAction(action); ok {
+				bottomStart := maxInt(0, totalRows-transcriptHeight)
+				visibleStart := bottomStart - scroll
+				if targetRow < visibleStart {
+					scroll = maxInt(0, bottomStart-targetRow)
+				} else if targetRow >= visibleStart+transcriptHeight {
+					scroll = maxInt(0, bottomStart-targetRow+transcriptHeight-1)
+				}
+				p.mu.Lock()
+				p.scroll = scroll
+				p.follow = scroll == 0
+				p.mu.Unlock()
+			}
 		}
 	}
-	maxScroll := maxInt(0, len(rows)-transcriptHeight)
-	if scroll > maxScroll {
-		scroll = maxScroll
-	}
-	if scroll < 0 {
+	maxScroll := maxInt(0, totalRows-transcriptHeight)
+
+	var start int
+	if p.follow {
 		scroll = 0
+		start = maxInt(0, totalRows-transcriptHeight)
+		p.anchor = ViewportAnchor{Valid: false}
+	} else if p.anchor.Valid {
+		if targetRow, ok := layout.ResolveAnchor(p.anchor); ok {
+			start = minInt(maxInt(0, targetRow), maxInt(0, totalRows-transcriptHeight))
+			scroll = maxInt(0, totalRows-transcriptHeight-start)
+		} else if targetRow, ok := layout.ResolveAnchorFallback(p.anchor); ok {
+			start = minInt(maxInt(0, targetRow), maxInt(0, totalRows-transcriptHeight))
+			scroll = maxInt(0, totalRows-transcriptHeight-start)
+			p.anchor = layout.AnchorAt(start)
+		} else {
+			if scroll > maxScroll {
+				scroll = maxScroll
+			}
+			if scroll < 0 {
+				scroll = 0
+			}
+			start = maxInt(0, totalRows-transcriptHeight-scroll)
+			p.anchor = layout.AnchorAt(start)
+		}
+	} else {
+		if scroll > maxScroll {
+			scroll = maxScroll
+		}
+		if scroll < 0 {
+			scroll = 0
+		}
+		start = maxInt(0, totalRows-transcriptHeight-scroll)
+		p.anchor = layout.AnchorAt(start)
 	}
+
 	p.mu.Lock()
 	p.scroll = scroll
 	p.lastMaxScroll = maxScroll
-	p.follow = scroll == 0
+	p.follow = (scroll == 0)
 	p.mu.Unlock()
 
-	start := len(rows) - transcriptHeight - scroll
-	if start < 0 {
-		start = 0
-	}
-	end := minInt(len(rows), start+transcriptHeight)
+	end := minInt(totalRows, start+transcriptHeight)
+	visibleRows := layout.Slice(start, end)
 	actionTargets := map[string]footerbar.Rect{}
-	for i := start; i < end; i++ {
-		row := rows[i]
-		y := transcriptTop + i - start
+	for i, row := range visibleRows {
+		y := transcriptTop + i
 		if len(row.spans) > 0 {
 			drawSpans(screen, 2, y, width-4, row.spans)
 		} else {
@@ -2553,6 +2644,18 @@ func (p *Page) renderRows(state State, width int, styles PageStyles) []renderRow
 }
 
 func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styles PageStyles) []renderRow {
+	layout := p.getOrCreateLayout(state, width, availableHeight, styles)
+	return layout.AllRows()
+}
+
+func (p *Page) getOrCreateLayout(state State, width, availableHeight int, styles PageStyles) *TranscriptLayout {
+	if p.itemCache == nil {
+		p.itemCache = newItemLayoutCache(1024)
+	}
+	if p.markdownCache == nil {
+		p.markdownCache = newMarkdownRowCache(512)
+	}
+
 	permissions := SelectPermissions(state)
 	items := make([]timelineRenderItem, 0, len(state.Messages)+len(state.Tools)+len(state.Live)+len(state.Reasoning)+len(permissions))
 	for _, message := range SelectMessages(state) {
@@ -2614,28 +2717,72 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		permissionInteraction = p.permissionInteractionViewLocked(pendingPermissions[interactionIndex])
 	}
 	showThinkingTags := p.showThinkingTags
+	workerReviewOpen := p.workerReviewOpen
+	workerReviewIndex := p.workerReviewIndex
+	workerReviewBusy := p.workerReviewBusy
+	workerReviewError := p.workerReviewError
+	handoffFocus, handoffMessageID, handoffControl := p.handoffFocus, p.handoffMessageID, p.handoffControl
 	p.mu.Unlock()
+
 	selectedPermissionID := ""
 	if len(pendingPermissions) > 0 {
 		permissionIndex = maxInt(0, minInt(permissionIndex, len(pendingPermissions)-1))
 		selectedPermissionID = pendingPermissions[permissionIndex].ID
 	}
 
-	rows := make([]renderRow, 0, len(items)*3+len(state.Pending)*2+4)
+	contentRev := uint64(0)
+	if p.runtime != nil && p.runtime.Store() != nil {
+		contentRev = p.runtime.Store().ContentRevision()
+	}
+
+	dynamicKey := fmt.Sprintf("%s:%d:%s:%s:%t:%s:%d:%t:%s:%t:%d:%t:%d:%t:%s:%t:%s:%d",
+		selectedPermissionID, permissionIndex, string(permissionNote), permissionPrefix,
+		permissionBusy, permissionError, permissionContentScroll,
+		permissionPlanReview, permissionPlanReviewID, showThinkingTags,
+		len(pendingPermissions), workerReviewOpen, workerReviewIndex, workerReviewBusy, workerReviewError,
+		handoffFocus, handoffMessageID, handoffControl)
+
+	if p.cachedLayout != nil &&
+		p.cachedLayout.Width == width &&
+		p.cachedLayout.AvailableHeight == availableHeight &&
+		p.cachedLayout.ContentRev == contentRev &&
+		p.cachedLayout.DynamicStateKey == dynamicKey {
+		return p.cachedLayout
+	}
+
+	layout := &TranscriptLayout{
+		Width:           width,
+		AvailableHeight: availableHeight,
+		ContentRev:      contentRev,
+		DynamicStateKey: dynamicKey,
+		Items:           make([]ItemLayout, 0, len(items)+len(state.Pending)+4),
+		KeyToIndex:      make(map[string]int, len(items)+len(state.Pending)+4),
+	}
+
 	if draft, ok := SelectRoutedDraft(state); ok && draft.Status != RoutedDraftResolved {
+		draftRows := make([]renderRow, 0, 4)
 		if strings.TrimSpace(draft.Prompt) != "" {
-			rows = append(rows, p.renderUserRows("routed-draft:"+draft.ClientRequestID, draft.Prompt, width, styles)...)
+			draftRows = append(draftRows, p.renderUserRows("routed-draft:"+draft.ClientRequestID, draft.Prompt, width, styles)...)
 		}
 		flags := []string{"Plan: " + map[bool]string{true: "on", false: "off"}[draft.PlanModeRequested]}
 		statusStyle := styles.Muted
 		if draft.Status == RoutedDraftFailed {
 			statusStyle = styles.Error
 		}
-		rows = append(rows, renderRow{text: routedDraftStatusLine(draft), style: statusStyle})
-		rows = append(rows, renderRow{text: strings.Join(flags, " • "), style: styles.Muted}, renderRow{text: "", style: styles.Text})
+		draftRows = append(draftRows, renderRow{text: routedDraftStatusLine(draft), style: statusStyle})
+		draftRows = append(draftRows, renderRow{text: strings.Join(flags, " • "), style: styles.Muted}, renderRow{text: "", style: styles.Text})
+		layout.Items = append(layout.Items, ItemLayout{
+			Key:       "draft",
+			Kind:      "draft",
+			Signature: fmt.Sprintf("%s:%s:%t", draft.Status, draft.Error, draft.PlanModeRequested),
+			Rows:      draftRows,
+			RowCount:  len(draftRows),
+		})
 	}
+
 	boundedPermissionID, boundedPermissionMaxScroll := "", 0
 	copyBlockBaseIndex := 0
+
 	for _, item := range items {
 		switch item.kind {
 		case "permission":
@@ -2649,55 +2796,206 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 			if record.ID == permissionPlanReviewID {
 				manualReview = &permissionPlanReview
 			}
-			if isAskUserPermission(record) || isWorkspaceScopePermission(record) {
-				interaction := permissionInteraction
-				if interaction == nil || interaction.PermissionID != record.ID {
-					interaction = &permissionInteractionView{PermissionID: record.ID}
-				}
-				rows = append(rows, specializedPermissionCardRows(record, len(pendingPermissions), width, styles, selected, permissionBusy, permissionError, interaction)...)
-			} else if selected && isBashPermissionRequest(record) && availableHeight > 0 {
-				contentScroll := 0
-				if permissionContentID == record.ID {
-					contentScroll = permissionContentScroll
-				}
-				cardRows, maxScroll := inlinePermissionCardRowsBounded(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, availableHeight, contentScroll)
-				rows = append(rows, cardRows...)
-				boundedPermissionID, boundedPermissionMaxScroll = record.ID, maxScroll
-			} else {
-				rows = append(rows, inlinePermissionCardRowsWithPlanReview(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, manualReview)...)
+			contentScroll := 0
+			if permissionContentID == record.ID {
+				contentScroll = permissionContentScroll
 			}
+
+			itemKey := "perm:" + record.ID
+			sig := fmt.Sprintf("%d:%s:%s:%t:%s:%t:%d:%d", item.permission.GlobalSeq, record.Status, prefix, selected, string(permissionNote), manualReview != nil && *manualReview, availableHeight, contentScroll)
+			cacheKey := fmt.Sprintf("%s:%s:%d", itemKey, sig, width)
+
+			var rows []renderRow
+			if cached, ok := p.itemCache.Get(cacheKey); ok {
+				rows = cached.rows
+			} else {
+				if isAskUserPermission(record) || isWorkspaceScopePermission(record) {
+					interaction := permissionInteraction
+					if interaction == nil || interaction.PermissionID != record.ID {
+						interaction = &permissionInteractionView{PermissionID: record.ID}
+					}
+					rows = specializedPermissionCardRows(record, len(pendingPermissions), width, styles, selected, permissionBusy, permissionError, interaction)
+				} else if selected && isBashPermissionRequest(record) && availableHeight > 0 {
+					cardRows, maxScroll := inlinePermissionCardRowsBounded(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, availableHeight, contentScroll)
+					rows = cardRows
+					boundedPermissionID, boundedPermissionMaxScroll = record.ID, maxScroll
+				} else {
+					rows = inlinePermissionCardRowsWithPlanReview(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, manualReview)
+				}
+				p.itemCache.Put(cacheKey, cachedItemEntry{rows: rows})
+			}
+			if selected && isBashPermissionRequest(record) && availableHeight > 0 && boundedPermissionID == "" {
+				_, maxScroll := inlinePermissionCardRowsBounded(record, len(pendingPermissions), width, styles, prefix, selected, permissionNote, permissionBusy, permissionError, availableHeight, contentScroll)
+				boundedPermissionID, boundedPermissionMaxScroll = record.ID, maxScroll
+			}
+			layout.Items = append(layout.Items, ItemLayout{
+				Key:       itemKey,
+				Kind:      "permission",
+				Signature: sig,
+				Rows:      rows,
+				RowCount:  len(rows),
+			})
+
 		case "tool":
-			rows = append(rows, p.renderToolRowsForHeight(item.tool, width, availableHeight, styles)...)
+			itemKey := "tool:" + item.tool.ID
+			sig := fmt.Sprintf("%d:%s:%d:%s:%t:%d", item.tool.GlobalSeq, item.tool.Status, len(item.tool.Output), item.tool.Error, item.tool.TaskStream != nil, availableHeight)
+			cacheKey := fmt.Sprintf("%s:%s:%d", itemKey, sig, width)
+			var rows []renderRow
+			if cached, ok := p.itemCache.Get(cacheKey); ok {
+				rows = cached.rows
+			} else {
+				rows = p.renderToolRowsForHeight(item.tool, width, availableHeight, styles)
+				p.itemCache.Put(cacheKey, cachedItemEntry{rows: rows})
+			}
+			layout.Items = append(layout.Items, ItemLayout{
+				Key:       itemKey,
+				Kind:      "tool",
+				Signature: sig,
+				Rows:      rows,
+				RowCount:  len(rows),
+			})
+
 		case "live":
-			rows = append(rows, p.renderCopyAwareAssistantRows(item.live.Text, copyBlockBaseIndex, width, styles)...)
-			copyBlockBaseIndex += copyBlockCount(item.live.Text)
+			itemKey := "live:" + item.live.StreamID
+			sig := fmt.Sprintf("%d:%d:%s", item.live.GlobalSeq, len(item.live.Text), item.live.RunID)
+			copyCount := copyBlockCount(item.live.Text)
+			cacheKey := fmt.Sprintf("%s:%s:%d:%d", itemKey, sig, width, copyBlockBaseIndex)
+			var rows []renderRow
+			if cached, ok := p.itemCache.Get(cacheKey); ok {
+				rows = cached.rows
+			} else {
+				rows = p.renderCopyAwareAssistantRows(item.live.Text, copyBlockBaseIndex, width, styles)
+				p.itemCache.Put(cacheKey, cachedItemEntry{rows: rows, copyCount: copyCount})
+			}
+			copyBlockBaseIndex += copyCount
+			layout.Items = append(layout.Items, ItemLayout{
+				Key:       itemKey,
+				Kind:      "live",
+				Signature: sig,
+				Rows:      rows,
+				RowCount:  len(rows),
+				CopyCount: copyCount,
+			})
+
 		case "reasoning":
-			rows = append(rows, p.renderReasoningRows(item.reasoning, showThinkingTags, width, styles)...)
+			itemKey := "reasoning:" + firstNonEmpty(item.reasoning.Key, item.reasoning.ReasoningID, item.reasoning.ReasoningKey, fmt.Sprint(item.reasoning.GlobalSeq))
+			sig := fmt.Sprintf("%d:%s:%d:%d:%t", item.reasoning.GlobalSeq, item.reasoning.Status, len(item.reasoning.Text), len(item.reasoning.Summary), showThinkingTags)
+			cacheKey := fmt.Sprintf("%s:%s:%d", itemKey, sig, width)
+			var rows []renderRow
+			if cached, ok := p.itemCache.Get(cacheKey); ok {
+				rows = cached.rows
+			} else {
+				rows = p.renderReasoningRows(item.reasoning, showThinkingTags, width, styles)
+				p.itemCache.Put(cacheKey, cachedItemEntry{rows: rows})
+			}
+			layout.Items = append(layout.Items, ItemLayout{
+				Key:       itemKey,
+				Kind:      "reasoning",
+				Signature: sig,
+				Rows:      rows,
+				RowCount:  len(rows),
+			})
+
 		case "message":
 			message := item.message
+			itemKey := "msg:" + message.ID
 			if isStructuredFinalHandoffMessage(message) {
-				rows = append(rows, p.renderFinalHandoffRows(message, width, styles)...)
+				sig := fmt.Sprintf("%d:%s:%d", message.GlobalSeq, message.ID, len(message.Content))
+				cacheKey := fmt.Sprintf("%s:%s:%d", itemKey, sig, width)
+				var rows []renderRow
+				if cached, ok := p.itemCache.Get(cacheKey); ok {
+					rows = cached.rows
+				} else {
+					rows = p.renderFinalHandoffRows(message, width, styles)
+					p.itemCache.Put(cacheKey, cachedItemEntry{rows: rows})
+				}
+				layout.Items = append(layout.Items, ItemLayout{
+					Key:       itemKey,
+					Kind:      "message",
+					Signature: sig,
+					Rows:      rows,
+					RowCount:  len(rows),
+				})
 				continue
 			}
 			if strings.EqualFold(message.Role, "user") {
-				if len(rows) == 0 {
-					rows = append(rows, renderRow{text: "", style: styles.Text})
+				sig := fmt.Sprintf("%d:%d:%s", message.GlobalSeq, len(message.Content), message.Content)
+				cacheKey := fmt.Sprintf("%s:%s:%d", itemKey, sig, width)
+				var rows []renderRow
+				if cached, ok := p.itemCache.Get(cacheKey); ok {
+					rows = cached.rows
+				} else {
+					userRows := make([]renderRow, 0)
+					if len(layout.Items) == 0 {
+						userRows = append(userRows, renderRow{text: "", style: styles.Text})
+					}
+					userRows = append(userRows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
+					rows = userRows
+					p.itemCache.Put(cacheKey, cachedItemEntry{rows: rows})
 				}
-				rows = append(rows, p.renderUserRows("message:"+message.ID, message.Content, width, styles)...)
+				layout.Items = append(layout.Items, ItemLayout{
+					Key:       itemKey,
+					Kind:      "message",
+					Signature: sig,
+					Rows:      rows,
+					RowCount:  len(rows),
+				})
 				continue
 			}
-			rows = append(rows, p.renderCopyAwareAssistantRows(message.Content, copyBlockBaseIndex, width, styles)...)
-			copyBlockBaseIndex += copyBlockCount(message.Content)
-			rows = append(rows, renderRow{text: "", style: styles.Text})
+			copyCount := copyBlockCount(message.Content)
+			sig := fmt.Sprintf("%d:%d:%s", message.GlobalSeq, len(message.Content), message.RunID)
+			cacheKey := fmt.Sprintf("%s:%s:%d:%d", itemKey, sig, width, copyBlockBaseIndex)
+			var rows []renderRow
+			if cached, ok := p.itemCache.Get(cacheKey); ok {
+				rows = cached.rows
+			} else {
+				asstRows := p.renderCopyAwareAssistantRows(message.Content, copyBlockBaseIndex, width, styles)
+				asstRows = append(asstRows, renderRow{text: "", style: styles.Text})
+				rows = asstRows
+				p.itemCache.Put(cacheKey, cachedItemEntry{rows: rows, copyCount: copyCount})
+			}
+			copyBlockBaseIndex += copyCount
+			layout.Items = append(layout.Items, ItemLayout{
+				Key:       itemKey,
+				Kind:      "message",
+				Signature: sig,
+				Rows:      rows,
+				RowCount:  len(rows),
+				CopyCount: copyCount,
+			})
 		}
 	}
 
 	pending := SelectPending(state)
 	sort.SliceStable(pending, func(i, j int) bool { return pending[i].ID < pending[j].ID })
 	for _, message := range pending {
-		rows = append(rows, p.renderUserRows("pending:"+message.ID, message.Content, width, styles)...)
+		itemKey := "pending:" + message.ID
+		rows := p.renderUserRows("pending:"+message.ID, message.Content, width, styles)
+		layout.Items = append(layout.Items, ItemLayout{
+			Key:      itemKey,
+			Kind:     "pending",
+			Rows:     rows,
+			RowCount: len(rows),
+		})
 	}
-	rows = append(rows, p.workerReviewRows(state, width, styles)...)
+
+	if reviewRows := p.workerReviewRows(state, width, styles); len(reviewRows) > 0 {
+		layout.Items = append(layout.Items, ItemLayout{
+			Key:      "worker_review",
+			Kind:     "worker_review",
+			Rows:     reviewRows,
+			RowCount: len(reviewRows),
+		})
+	}
+
+	offset := 0
+	for i := range layout.Items {
+		layout.Items[i].RowOffset = offset
+		offset += layout.Items[i].RowCount
+		layout.KeyToIndex[layout.Items[i].Key] = i
+	}
+	layout.TotalRowsCount = offset
+
 	p.mu.Lock()
 	if boundedPermissionID != "" && (p.permissionContentID == "" || p.permissionContentID == boundedPermissionID) {
 		p.permissionContentID = boundedPermissionID
@@ -2708,7 +3006,9 @@ func (p *Page) renderRowsForHeight(state State, width, availableHeight int, styl
 		p.permissionContentScroll = 0
 	}
 	p.mu.Unlock()
-	return rows
+
+	p.cachedLayout = layout
+	return layout
 }
 
 // Approval-gated control-plane tools are one timeline interaction. Their
@@ -2799,6 +3099,16 @@ func (p *Page) renderAssistantRows(content string, width int, styles PageStyles)
 		}
 		return rows
 	}
+	return p.cachedMarkdownRows(content, width, styles)
+}
+
+func (p *Page) cachedMarkdownRows(content string, width int, styles PageStyles) []renderRow {
+	if p.markdownCache != nil {
+		key := markdownCacheKey(width, content)
+		if cached, ok := p.markdownCache.Get(key); ok {
+			return cached
+		}
+	}
 	lines := styles.RenderMarkdown(content, width)
 	rows := make([]renderRow, 0, len(lines))
 	for _, line := range lines {
@@ -2812,6 +3122,10 @@ func (p *Page) renderAssistantRows(content string, width int, styles PageStyles)
 		for _, wrapped := range wrapStyledSpans(spans, width, 0) {
 			rows = append(rows, renderRow{text: renderSpansText(wrapped), style: line.Style, spans: wrapped})
 		}
+	}
+	if p.markdownCache != nil {
+		key := markdownCacheKey(width, content)
+		p.markdownCache.Put(key, rows)
 	}
 	return rows
 }
@@ -3426,7 +3740,18 @@ func (p *Page) cachedWrap(key, text string, width int) []string {
 	}
 	lines := wrapText(text, width)
 	if _, exists := p.rowCache[key]; !exists && len(p.rowCache) >= maxRowCacheItems {
-		clear(p.rowCache)
+		evictCount := maxRowCacheItems / 10
+		if evictCount < 1 {
+			evictCount = 1
+		}
+		count := 0
+		for k := range p.rowCache {
+			delete(p.rowCache, k)
+			count++
+			if count >= evictCount {
+				break
+			}
+		}
 	}
 	p.rowCache[key] = cachedRows{signature: signature, width: width, lines: lines}
 	return lines

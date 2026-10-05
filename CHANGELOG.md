@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Optimize TUI scrollback performance, reading viewport anchoring, and input responsiveness. Implement structured item layout caching, incremental Markdown rendering, stable timeline item viewport anchoring during streaming and appends, change domain tracking and transport-only wake suppression in V3 chat store, non-blocking render requests, and bounded event batching in the terminal application event loop. Docs impact: none.
+
 - Persist revision-guarded task environment attachments, source-bound per-consumer access, durable task invalidations and finite managed review cleanup; distinguish preparation handoff from task execution and lease ownership. Docs impact: `docs/managed-local-systemd-environments.md` documents task attach/acquire/release, explicit rebuild/reassignment and retention; live qualification remains separate.
 
 - Expose environment management to Orchestrator while preserving saved capability denials; enforce durable Swarm/Orchestrator session admission on environment tools and HTTP routes, and add an internal source-bound independent-consumer lease foundation. Docs impact: none; task attachment wiring and live environment qualification remain separate.

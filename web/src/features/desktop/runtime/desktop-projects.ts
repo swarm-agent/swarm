@@ -375,6 +375,12 @@ export class DesktopProjectsRuntime {
     this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: tasks => tasks, archivedReceipt: receipt })
   }
 
+  unarchiveReceipt(projectId: string, receipt: { id: string; revision: number; archived: false; status: string }): void {
+    if (receipt.archived !== false || !receipt.id || !Number.isSafeInteger(receipt.revision) || receipt.revision <= 0) throw new Error('Invalid task unarchive receipt')
+    const restored = mapBackendTask(receipt)
+    this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: tasks => [...tasks.filter(task => task.id !== restored.id), restored] })
+  }
+
   setOptimisticTasks(
     projectId: string,
     tasks: RunningTask[] | ((prev: RunningTask[]) => RunningTask[])

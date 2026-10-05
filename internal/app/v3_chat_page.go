@@ -55,7 +55,9 @@ func (a *App) requestV3ChatRender() {
 	}
 	select {
 	case a.pendingV3ChatRender <- struct{}{}:
-		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptV3Chat))
+		if err := a.screen.PostEvent(tcell.NewEventInterrupt(interruptV3Chat)); err != nil {
+			go a.screen.PostEventWait(tcell.NewEventInterrupt(interruptV3Chat))
+		}
 	default:
 	}
 }

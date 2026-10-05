@@ -10,21 +10,138 @@ import (
 // Store is the sole mutable owner. State snapshots remain detached and can be
 // rendered without holding the store lock.
 type Store struct {
-	mu    sync.RWMutex
-	state State
+	mu              sync.RWMutex
+	state           State
+	revision        uint64
+	contentRevision uint64
+	sessionRevision uint64
 }
 
-func NewStore() *Store { return &Store{state: NewState()} }
+func NewStore() *Store {
+	return &Store{
+		state:           NewState(),
+		revision:        1,
+		contentRevision: 1,
+		sessionRevision: 1,
+	}
+}
 
 func (s *Store) Dispatch(action Action) State {
+	next, _ := s.DispatchWithDomain(action)
+	return next
+}
+
+// DispatchWithDomain reduces action, updates revisions accordingly, and returns
+// a detached next state plus the modified change domain(s).
+func (s *Store) DispatchWithDomain(action Action) (State, ChangeDomain) {
 	if s == nil {
-		return NewState()
+		return NewState(), DomainNone
 	}
 	s.mu.Lock()
-	s.state = Reduce(s.state, action)
-	next := cloneState(s.state)
-	s.mu.Unlock()
-	return next
+	defer s.mu.Unlock()
+
+	next, domain := ReduceWithDomain(s.state, action)
+	if domain != DomainNone {
+		s.revision++
+		if domain.HasContentChange() {
+			s.contentRevision++
+		}
+		if domain&DomainSession != 0 {
+			s.sessionRevision++
+		}
+		s.state = next
+	}
+	return cloneState(s.state), domain
+}
+
+func (s *Store) Revisions() (rev, contentRev, sessionRev uint64) {
+	if s == nil {
+		return 0, 0, 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revision, s.contentRevision, s.sessionRevision
+}
+
+func (s *Store) ContentRevision() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.contentRevision
+}
+
+func (s *Store) Revision() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revision
+}
+
+func (s *Store) SelectActiveRun() (RunState, bool) {
+	if s == nil {
+		return RunState{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return SelectActiveRun(s.state)
+}
+
+func (s *Store) SelectPendingPermissions() []client.PermissionRecord {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return SelectPendingPermissions(s.state)
+}
+
+func (s *Store) SelectPendingWorkerReviews() []client.PermissionRecord {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return SelectPendingWorkerReviews(s.state)
+}
+
+func (s *Store) SelectModel() ModelState {
+	if s == nil {
+		return ModelState{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.Model
+}
+
+func (s *Store) SelectSessionID() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.TrimSpace(s.state.Session.ID)
+}
+
+func (s *Store) SelectTitle() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return strings.TrimSpace(s.state.Session.Title)
+}
+
+func (s *Store) Read(fn func(state *State)) {
+	if s == nil || fn == nil {
+		return
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	fn(&s.state)
 }
 
 func (s *Store) Snapshot() State {

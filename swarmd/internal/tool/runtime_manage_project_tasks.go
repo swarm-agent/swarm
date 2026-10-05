@@ -197,7 +197,7 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			}
 			result["plan"] = plan
 		}
-	case "update_task", "archive_task", "delete_task":
+	case "update_task", "archive_task", "unarchive_task", "delete_task":
 		if taskID == "" {
 			return "", errors.New("task_id is required")
 		}
@@ -217,6 +217,20 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			}
 			result["deleted"] = true
 			result["task_id"] = taskID
+			break
+		}
+		if action == "unarchive_task" {
+			restorer, ok := r.projects.(interface {
+				UnarchiveProjectTaskIfRevision(string, string, string, int) (*pebblestore.ProjectTaskRecord, error)
+			})
+			if !ok {
+				return "", errors.New("atomic guarded task unarchive unavailable")
+			}
+			updated, err := restorer.UnarchiveProjectTaskIfRevision(account, projectID, taskID, revision)
+			if err != nil {
+				return "", err
+			}
+			result["task"] = projectTaskSummary(*updated)
 			break
 		}
 		if action == "archive_task" {

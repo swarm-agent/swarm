@@ -1,3 +1,4 @@
+import { ArchivedTaskList } from './archived-task-list'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { subscribeDesktopSessionReset } from '../../../app/api'
 import { DesignMediaTasks, useProjectDesigns } from '../tools/media-library/design-media'
@@ -13,12 +14,14 @@ import { mediaSelectionCards, type MediaSelectionCard } from './media-selection'
 // navigation state only; never remove cards optimistically or delete artifacts.
 export function ProjectMediaTasks({ projectId, tasks, actions, onPreviewDesign, onLibrary, loading, error, onRetry,
   archivedTasks, archivedLoading, archivedError, onLoadArchived, active = true, selectionScope = '',
+  onUnarchive, unarchiveBusy = false, unarchiveErrors = {},
 }: {
   projectId: string; tasks: readonly RunningTask[]; actions: (task: RunningTask) => MediaTaskActions
   onPreviewDesign: (item: MediaLibraryItem) => void; onLibrary: () => void
   loading?: boolean; error?: string; onRetry: () => void
   archivedTasks: readonly RunningTask[]; archivedLoading: boolean; archivedError: string; onLoadArchived: () => void
   active?: boolean; selectionScope?: string
+  onUnarchive?: (tasks: RunningTask[]) => void; unarchiveBusy?: boolean; unarchiveErrors?: Record<string, string>
 }) {
   const [archived, setArchived] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -111,6 +114,8 @@ export function ProjectMediaTasks({ projectId, tasks, actions, onPreviewDesign, 
       <DesignMediaTasks projectId={projectId} archived onPreview={onPreviewDesign} />
       {archivedLoading && <p role="status">Loading archived media…</p>}
       {archivedError && <p role="alert">{archivedError} <button type="button" onClick={onLoadArchived}>Retry archived media</button></p>}
+      <button type="button" disabled={unarchiveBusy || archivedLoading} onClick={onLoadArchived}>Refresh archived tasks</button>
+      {onUnarchive && <ArchivedTaskList tasks={archivedMedia} busy={unarchiveBusy} errors={unarchiveErrors} onUnarchive={onUnarchive} />}
       <MediaTaskThreads tasks={archivedMedia} visibleTaskIds={new Set(archivedMedia.map(task => task.id))} actions={task => ({ onPreview: actions(task).onPreview })} />
     </section>}
   </>

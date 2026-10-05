@@ -500,238 +500,263 @@ func (a *App) Run() error {
 		}
 
 		ev := a.screen.PollEvent()
-		switch e := ev.(type) {
-		case *tcell.EventResize:
-			a.screen.Sync()
-			dirty = true
-		case *tcell.EventInterrupt:
-			key, _ := e.Data().(string)
-			switch key {
-			case interruptTick:
-				if a.handleTick() {
-					dirty = true
-				}
-			case interruptChatAsync:
-				requestedRender := a.consumePendingChatRender()
-				if a.handleChatAsync() || requestedRender {
-					dirty = true
-				}
-			case interruptReloadReady:
-				a.consumeReloadResult()
-				dirty = true
-			case interruptAuthReady:
-				a.consumeAuthLoginResult()
-				dirty = true
-			case interruptOnboardingReady:
-				a.consumeOnboardingWorkspaceResult()
-				dirty = true
-			case interruptVoiceReady:
-				a.consumeVoiceCaptureEvents()
-				dirty = true
-			case interruptStreamReady:
-				if a.consumeStreamReadyForRender(time.Now(), true) {
-					dirty = true
-				}
-			case interruptGitStatusReady:
-				if a.consumeGitStatusRefreshResults() {
-					dirty = true
-				}
-			case interruptNotificationReady:
-				a.consumeNotificationCountResult()
-				dirty = true
-			case interruptTaskCommandReady:
-				a.consumeTaskCommandResults()
-				dirty = true
-			case interruptV3Chat:
-				a.consumeV3ChatRender()
-				dirty = true
-			case interruptQuit:
-				if a.devUpdateRequested {
-					return updatehandoff.ErrDevUpdateRequested
-				}
-				if a.releaseUpdateRequested {
-					return updatehandoff.ErrReleaseUpdateRequested
-				}
-				return nil
+		if ev == nil {
+			return nil
+		}
+		quit, err := a.processAppEvent(ev, &dirty)
+		if quit {
+			return err
+		}
+
+		// Coalesce rapid bursts (mouse wheel, keystrokes, interrupt batches)
+		// without starving the screen or reordering events.
+		const maxBatchEvents = 16
+		for i := 0; i < maxBatchEvents && a.screen != nil && a.screen.HasPendingEvent(); i++ {
+			nextEv := a.screen.PollEvent()
+			if nextEv == nil {
+				break
 			}
-		case *tcell.EventMouse:
-			if a.startupNetworkWarningModalActive() {
-				if a.handleStartupNetworkWarningModalMouse(e) {
-					dirty = true
-					continue
-				}
+			quit, err := a.processAppEvent(nextEv, &dirty)
+			if quit {
+				return err
 			}
-			if a.permissionsBypassModalActive() {
-				if a.handlePermissionsBypassModalMouse(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.permissionsPolicyModalActive() {
-				if a.handlePermissionsPolicyModalMouse(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.quitRequested {
-				continue
-			}
-			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
-				if a.home.HandleChatOverlayMouse(e) {
-					a.consumeHomeOverlayActions()
-				}
-				dirty = true
-				continue
-			}
-			if a.config.Input.MouseEnabled && !a.mouseHintShown {
-				a.mouseHintShown = true
-				message := "mouse capture on: use /mouse off (or F8) to disable; Shift+drag to select/copy"
-				if a.route == "chat" && a.chat != nil {
-					a.chat.SetStatus(message)
-				} else {
-					a.home.SetStatus(message)
-				}
-				a.showToast(ui.ToastInfo, message)
-			}
-			if a.route == "v3chat" && a.v3Chat != nil {
-				a.v3Chat.HandleMouse(e)
-				if a.v3Chat.ConsumeOpenAgentsRequest() {
-					a.openAgentsModal()
-				}
-				dirty = true
-				continue
-			}
-			if a.route == "chat" && a.chat != nil {
-				a.chat.HandleMouse(e)
-				a.consumeChatActions()
-				dirty = true
-				continue
-			}
-			if a.route == "home" {
-				a.home.HandleMouse(e)
-				a.consumeHomeActions()
-				dirty = true
-			}
-		case *tcell.EventPaste:
-			if a.quitRequested {
-				continue
-			}
-			a.setPasteActive(e.Start())
-			dirty = true
-		case *tcell.EventKey:
-			// Onboarding exit precedes modal and paste dispatch, even while pending.
-			if a.home != nil && a.home.OnboardingVisible() && e.Key() == tcell.KeyCtrlC {
-				a.requestQuit()
-				continue
-			}
-			if a.startupNetworkWarningModalActive() {
-				if a.handleStartupNetworkWarningModalKey(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.permissionsBypassModalActive() {
-				if a.handlePermissionsBypassModalKey(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.permissionsPolicyModalActive() {
-				if a.handlePermissionsPolicyModalKey(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.quitRequested {
-				continue
-			}
-			if a.pasteActive {
-				if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
-					if a.home.HandlePasteKey(e) {
-						a.consumeHomeOverlayActions()
-						dirty = true
-					}
-					continue
-				}
-				if a.route == "chat" && a.chat != nil {
-					if a.chat.HandlePasteKey(e) {
-						dirty = true
-					}
-					continue
-				}
-				if a.route == "home" && a.home != nil {
-					if a.home.HandlePasteKey(e) {
-						dirty = true
-					}
-					a.consumeHomeActions()
-					continue
-				}
-				if a.route == "v3chat" && a.v3Chat != nil {
-					if a.v3Chat.HandlePasteKey(e) {
-						dirty = true
-					}
-					continue
-				}
-				a.setPasteActive(false)
-				dirty = true
-			}
-			if (a.route == "chat" || a.route == "v3chat") && a.home != nil {
-				if a.home.HandleChatOverlayKey(e) {
-					a.consumeHomeOverlayActions()
-					a.consumeHomeActions()
-					dirty = true
-					continue
-				}
-			}
-			if handled := a.handleGlobalKey(e); handled {
-				dirty = true
-				continue
-			}
-			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
-				dirty = true
-				continue
-			}
-			if a.voiceInputLocked() {
-				dirty = true
-				continue
-			}
-			if a.route == "v3chat" && a.v3Chat != nil {
-				switch a.v3Chat.HandleKey(e) {
-				case v3chat.PageActionHome:
-					a.closeV3Chat()
-					a.route = "home"
-					a.home.SelectNextHomeTip()
-					a.home.SetStatus("home")
-				case v3chat.PageActionCommand:
-					a.handleV3ChatCommand()
-				case v3chat.PageActionOpenCurrentPlan:
-					a.showV3CurrentPlan()
-				}
-				dirty = true
-				continue
-			}
-			if a.route == "chat" && a.chat != nil {
-				if handled := a.handleChatKey(e); handled {
-					a.consumeChatActions()
-					dirty = true
-					continue
-				}
-				a.chat.HandleKey(e)
-				a.consumeChatActions()
-				dirty = true
-				continue
-			}
-			if handled := a.handleHomeKey(e); handled {
-				a.consumeHomeActions()
-				dirty = true
-				continue
-			}
-			a.refreshOnboardingWorkspaceGitReadinessBeforeSubmit(e)
-			a.home.HandleKey(e)
-			a.consumeHomeActions()
-			dirty = true
 		}
 	}
+}
+
+func (a *App) processAppEvent(ev tcell.Event, dirty *bool) (bool, error) {
+	switch e := ev.(type) {
+	case *tcell.EventResize:
+		a.screen.Sync()
+		*dirty = true
+	case *tcell.EventInterrupt:
+		key, _ := e.Data().(string)
+		switch key {
+		case interruptTick:
+			if a.handleTick() {
+				*dirty = true
+			}
+		case interruptChatAsync:
+			requestedRender := a.consumePendingChatRender()
+			if a.handleChatAsync() || requestedRender {
+				*dirty = true
+			}
+		case interruptReloadReady:
+			a.consumeReloadResult()
+			*dirty = true
+		case interruptAuthReady:
+			a.consumeAuthLoginResult()
+			*dirty = true
+		case interruptOnboardingReady:
+			a.consumeOnboardingWorkspaceResult()
+			*dirty = true
+		case interruptVoiceReady:
+			a.consumeVoiceCaptureEvents()
+			*dirty = true
+		case interruptStreamReady:
+			if a.consumeStreamReadyForRender(time.Now(), true) {
+				*dirty = true
+			}
+		case interruptGitStatusReady:
+			if a.consumeGitStatusRefreshResults() {
+				*dirty = true
+			}
+		case interruptNotificationReady:
+			a.consumeNotificationCountResult()
+			*dirty = true
+		case interruptTaskCommandReady:
+			a.consumeTaskCommandResults()
+			*dirty = true
+		case interruptV3Chat:
+			a.consumeV3ChatRender()
+			*dirty = true
+		case interruptQuit:
+			if a.devUpdateRequested {
+				return true, updatehandoff.ErrDevUpdateRequested
+			}
+			if a.releaseUpdateRequested {
+				return true, updatehandoff.ErrReleaseUpdateRequested
+			}
+			return true, nil
+		}
+	case *tcell.EventMouse:
+		if a.startupNetworkWarningModalActive() {
+			if a.handleStartupNetworkWarningModalMouse(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsBypassModalActive() {
+			if a.handlePermissionsBypassModalMouse(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsPolicyModalActive() {
+			if a.handlePermissionsPolicyModalMouse(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.quitRequested {
+			return false, nil
+		}
+		if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
+			if a.home.HandleChatOverlayMouse(e) {
+				a.consumeHomeOverlayActions()
+			}
+			*dirty = true
+			return false, nil
+		}
+		if a.config.Input.MouseEnabled && !a.mouseHintShown {
+			a.mouseHintShown = true
+			message := "mouse capture on: use /mouse off (or F8) to disable; Shift+drag to select/copy"
+			if a.route == "chat" && a.chat != nil {
+				a.chat.SetStatus(message)
+			} else {
+				a.home.SetStatus(message)
+			}
+			a.showToast(ui.ToastInfo, message)
+		}
+		if a.route == "v3chat" && a.v3Chat != nil {
+			a.v3Chat.HandleMouse(e)
+			if a.v3Chat.ConsumeOpenAgentsRequest() {
+				a.openAgentsModal()
+			}
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "chat" && a.chat != nil {
+			a.chat.HandleMouse(e)
+			a.consumeChatActions()
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "home" {
+			a.home.HandleMouse(e)
+			a.consumeHomeActions()
+			*dirty = true
+		}
+	case *tcell.EventPaste:
+		if a.quitRequested {
+			return false, nil
+		}
+		a.setPasteActive(e.Start())
+		*dirty = true
+	case *tcell.EventKey:
+		// Onboarding exit precedes modal and paste dispatch, even while pending.
+		if a.home != nil && a.home.OnboardingVisible() && e.Key() == tcell.KeyCtrlC {
+			a.requestQuit()
+			return false, nil
+		}
+		if a.startupNetworkWarningModalActive() {
+			if a.handleStartupNetworkWarningModalKey(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsBypassModalActive() {
+			if a.handlePermissionsBypassModalKey(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsPolicyModalActive() {
+			if a.handlePermissionsPolicyModalKey(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.quitRequested {
+			return false, nil
+		}
+		if a.pasteActive {
+			if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
+				if a.home.HandlePasteKey(e) {
+					a.consumeHomeOverlayActions()
+					*dirty = true
+				}
+				return false, nil
+			}
+			if a.route == "chat" && a.chat != nil {
+				if a.chat.HandlePasteKey(e) {
+					*dirty = true
+				}
+				return false, nil
+			}
+			if a.route == "home" && a.home != nil {
+				if a.home.HandlePasteKey(e) {
+					*dirty = true
+				}
+				a.consumeHomeActions()
+				return false, nil
+			}
+			if a.route == "v3chat" && a.v3Chat != nil {
+				if a.v3Chat.HandlePasteKey(e) {
+					*dirty = true
+				}
+				return false, nil
+			}
+			a.setPasteActive(false)
+			*dirty = true
+		}
+		if (a.route == "chat" || a.route == "v3chat") && a.home != nil {
+			if a.home.HandleChatOverlayKey(e) {
+				a.consumeHomeOverlayActions()
+				a.consumeHomeActions()
+				*dirty = true
+				return false, nil
+			}
+		}
+		if handled := a.handleGlobalKey(e); handled {
+			*dirty = true
+			return false, nil
+		}
+		if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
+			*dirty = true
+			return false, nil
+		}
+		if a.voiceInputLocked() {
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "v3chat" && a.v3Chat != nil {
+			switch a.v3Chat.HandleKey(e) {
+			case v3chat.PageActionHome:
+				a.closeV3Chat()
+				a.route = "home"
+				a.home.SelectNextHomeTip()
+				a.home.SetStatus("home")
+			case v3chat.PageActionCommand:
+				a.handleV3ChatCommand()
+			case v3chat.PageActionOpenCurrentPlan:
+				a.showV3CurrentPlan()
+			}
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "chat" && a.chat != nil {
+			if handled := a.handleChatKey(e); handled {
+				a.consumeChatActions()
+				*dirty = true
+				return false, nil
+			}
+			a.chat.HandleKey(e)
+			a.consumeChatActions()
+			*dirty = true
+			return false, nil
+		}
+		if handled := a.handleHomeKey(e); handled {
+			a.consumeHomeActions()
+			*dirty = true
+			return false, nil
+		}
+		a.refreshOnboardingWorkspaceGitReadinessBeforeSubmit(e)
+		a.home.HandleKey(e)
+		a.consumeHomeActions()
+		*dirty = true
+	}
+	return false, nil
 }
 
 func (a *App) setPasteActive(active bool) {

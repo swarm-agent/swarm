@@ -460,6 +460,14 @@ export class SwarmProjectsNamespace {
     return res.data.task;
   }
 
+  /** Restores task visibility without changing execution or linked sessions. */
+  async unarchiveTask(projectId: string, taskId: string, revision: number, options?: RequestOptions): Promise<ProjectTaskRecord> {
+    const path = `/v3/projects/${encodeURIComponent(projectId.trim())}/tasks/${encodeURIComponent(taskId.trim())}/unarchive`;
+    const res = await this.transport.request<{ task: ProjectTaskRecord }>(path, { method: 'POST', body: { revision }, ...options });
+    if (!res.data?.task) throw new SwarmApiError('Malformed response: missing unarchived task', { status: res.status, details: res.data });
+    return res.data.task;
+  }
+
   /** Deletes only an archived, unlaunched task at the supplied revision. */
   async deleteTask(projectId: string, taskId: string, revision: number, options?: RequestOptions): Promise<DeleteProjectTaskResult> {
     const pId = encodeURIComponent(projectId.trim());

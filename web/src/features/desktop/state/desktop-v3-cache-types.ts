@@ -1084,7 +1084,7 @@ export type DesktopV3CacheAction =
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
   | { type: 'desktopInitialHydrate.update'; patch: Partial<DesktopInitialHydrateState> }
   | { type: 'session.select'; sessionId?: string }
-  | { type: 'projectConversations.applySummaries'; projectId: string; sessions: SessionSnapshot[]; attention?: Record<string, DesktopV3SessionView> }
+  | { type: 'projectConversations.applySummaries'; projectId: string; sessions: SessionSnapshot[]; requestSessionIds?: string[]; attention?: Record<string, DesktopV3SessionView> }
   | { type: 'projectConversations.applyArchiveSummaries'; projectId: string; tombstones: V3SessionTombstone[] }
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
