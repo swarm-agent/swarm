@@ -247,8 +247,14 @@ func (p *HomePage) HandleTick() bool {
 			p.pressedTopAction = ""
 		}
 	}
-	if p.onboarding.Visible && p.onboarding.Personalizing {
+	if p.onboarding.Visible && (p.onboarding.Personalizing || p.onboarding.PreFinish) {
 		p.onboarding.Tick++
+		if p.onboarding.PreFinish {
+			p.onboarding.PreFinishTicks++
+			if p.onboarding.PreFinishTicks >= 20 {
+				p.FinishOnboardingPreFinish()
+			}
+		}
 		changed = true
 	}
 	now := time.Now()

@@ -131,6 +131,7 @@ type onboardingWorkspaceResult struct {
 	projectCreated bool
 	projectID      string
 	projectName    string
+	workspacePaths []string
 	err            error
 }
 
@@ -5222,6 +5223,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.createOnboardingWorkspace(action.WorkspacePath)
 	case ui.HomeActionCreateOnboardingProject:
 		a.handleCreateOnboardingProject(action.ProjectName, action.ProjectDescription, action.WorkspacePaths)
+	case ui.HomeActionFinishOnboardingProject:
+		a.completeOnboardingWithProject(action.ProjectID, action.ProjectName)
 	case ui.HomeActionKind("skip-onboarding-workspace"):
 		a.handleSkipOnboardingWorkspace()
 	case ui.HomeActionOpenFinishSetup:
@@ -6606,9 +6609,11 @@ func (a *App) handleCreateOnboardingProject(name, description string, workspaceP
 	if len(workspacePaths) == 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		reqID := fmt.Sprintf("onboarding-project-%d", time.Now().UnixNano())
 		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
-			Name:        name,
-			Description: strings.TrimSpace(description),
+			ClientRequestID: reqID,
+			Name:            name,
+			Description:     strings.TrimSpace(description),
 		})
 		if err != nil {
 			a.home.SetOnboardingError(fmt.Sprintf("Failed to create project: %v", err))
@@ -6661,15 +6666,18 @@ func (a *App) handleCreateOnboardingProject(name, description string, workspaceP
 			}
 		}
 
+		reqID := fmt.Sprintf("onboarding-project-%d", time.Now().UnixNano())
 		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
-			Name:        name,
-			Description: strings.TrimSpace(description),
-			Workspaces:  wsRefs,
+			ClientRequestID: reqID,
+			Name:            name,
+			Description:     strings.TrimSpace(description),
+			Workspaces:      wsRefs,
 		})
 		if err != nil {
 			log.Printf("onboarding: create project with workspaces failed: %v, falling back to clean project", err)
 			project, err = a.api.CreateProject(ctx, client.CreateProjectInput{
-				Name: name,
+				ClientRequestID: reqID + "-fallback",
+				Name:            name,
 			})
 			if err != nil {
 				a.onboardingWorkspaceCh <- onboardingWorkspaceResult{err: fmt.Errorf("failed to create project: %w", err)}
@@ -6700,6 +6708,9 @@ func (a *App) handleCreateOnboardingProject(name, description string, workspaceP
 					break
 				}
 			}
+			if a.screen != nil {
+				_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptTick))
+			}
 			time.Sleep(300 * time.Millisecond)
 		}
 
@@ -6707,6 +6718,7 @@ func (a *App) handleCreateOnboardingProject(name, description string, workspaceP
 			projectCreated: true,
 			projectID:      project.ID,
 			projectName:    project.Name,
+			workspacePaths: workspacePaths,
 		}
 		if a.screen != nil {
 			_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
@@ -6727,8 +6739,10 @@ func (a *App) handleSkipOnboardingWorkspace() {
 		if name == "" {
 			name = "project"
 		}
+		reqID := fmt.Sprintf("onboarding-project-%d", time.Now().UnixNano())
 		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
-			Name: name,
+			ClientRequestID: reqID,
+			Name:            name,
 		})
 		if err == nil {
 			projectID = project.ID
@@ -6982,7 +6996,19 @@ func (a *App) consumeOnboardingWorkspaceResult() {
 			return
 		}
 		if result.projectCreated {
-			a.completeOnboardingWithProject(result.projectID, result.projectName)
+			a.onboardingProjectID = result.projectID
+			a.onboardingProjectName = result.projectName
+			a.home.ShowOnboardingPreFinish(result.projectID, result.projectName, result.workspacePaths)
+			if a.screen != nil {
+				go func() {
+					for i := 0; i < 20; i++ {
+						time.Sleep(250 * time.Millisecond)
+						if a.screen != nil {
+							_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptTick))
+						}
+					}
+				}()
+			}
 			return
 		}
 		if result.discovered {

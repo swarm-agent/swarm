@@ -10,6 +10,7 @@ import (
 )
 
 type CreateProjectInput struct {
+	ClientRequestID string                `json:"client_request_id"`
 	Name           string                `json:"name"`
 	Description    string                `json:"description,omitempty"`
 	IconPNGDataURL string                `json:"icon_png_data_url,omitempty"`
@@ -49,6 +50,10 @@ func (c *API) CreateProject(ctx context.Context, input CreateProjectInput) (Proj
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		return ProjectRecord{}, errors.New("project name is required")
+	}
+	input.ClientRequestID = strings.TrimSpace(input.ClientRequestID)
+	if input.ClientRequestID == "" {
+		input.ClientRequestID = newSessionV3ClientRequestID("project-create")
 	}
 	var resp struct {
 		Project ProjectRecord `json:"project"`

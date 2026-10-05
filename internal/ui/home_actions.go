@@ -33,6 +33,7 @@ const (
 	HomeActionSetupOnboardingRepository      HomeActionKind = "setup-onboarding-repository"
 	HomeActionCreateOnboardingFolder         HomeActionKind = "create-onboarding-folder"
 	HomeActionCreateOnboardingProject        HomeActionKind = "create-onboarding-project"
+	HomeActionFinishOnboardingProject        HomeActionKind = "finish-onboarding-project"
 	HomeActionOpenFinishSetup                HomeActionKind = "open-finish-setup"
 )
 
@@ -53,6 +54,7 @@ type HomeAction struct {
 	WorkspaceIndex   int
 	ResetCreditID      string
 	IdempotencyKey     string
+	ProjectID          string
 	ProjectName        string
 	ProjectDescription string
 	AttachWorkspace    bool

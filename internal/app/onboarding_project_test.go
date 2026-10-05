@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gdamore/tcell/v2"
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 	"swarm-refactor/swarmtui/internal/ui"
@@ -68,6 +69,11 @@ func TestOnboardingProjectFirstFlowWithoutWorkspaces(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v3/projects":
 			var input client.CreateProjectInput
 			_ = json.NewDecoder(r.Body).Decode(&input)
+			if strings.TrimSpace(input.ClientRequestID) == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "client_request_id is required"})
+				return
+			}
 			createdProjectName = input.Name
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(client.ProjectRecord{
@@ -183,6 +189,13 @@ func TestOnboardingProjectFirstFlowSkipWorkspace(t *testing.T) {
 				NeedsOnboarding: !onboardingComplete,
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v3/projects":
+			var input client.CreateProjectInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			if strings.TrimSpace(input.ClientRequestID) == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "client_request_id is required"})
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(client.ProjectRecord{
 				ID:   "proj_default",
@@ -396,6 +409,13 @@ func TestOnboardingProjectWithWorkspacesPersonalizesAndCreatesProjectMD(t *testi
 				},
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v3/projects":
+			var input client.CreateProjectInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			if strings.TrimSpace(input.ClientRequestID) == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "client_request_id is required"})
+				return
+			}
 			projectCreated = true
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -496,6 +516,13 @@ func TestOnboardingProjectWorkspaceRouterFailureDoesNotLockUserOut(t *testing.T)
 				},
 			})
 		case r.Method == http.MethodPost && r.URL.Path == "/v3/projects":
+			var input client.CreateProjectInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			if strings.TrimSpace(input.ClientRequestID) == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "client_request_id is required"})
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"project": client.ProjectRecord{
@@ -559,6 +586,162 @@ func TestOnboardingProjectWorkspaceRouterFailureDoesNotLockUserOut(t *testing.T)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for graceful recovery after router failure")
+	}
+}
+
+func TestOnboardingProjectPersonalizingTransitionsToPreFinishAndCompletes(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "prefinish-code")
+	_ = os.MkdirAll(wsDir, 0755)
+
+	var (
+		receivedClientRequestID string
+		onboardingComplete      bool
+		sessionLaunched         bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspace/add":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace": map[string]any{
+					"workspace_id":   "ws-prefinish",
+					"resolved_path":  wsDir,
+					"workspace_name": "prefinish-code",
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/projects":
+			var input client.CreateProjectInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			receivedClientRequestID = input.ClientRequestID
+			if strings.TrimSpace(input.ClientRequestID) == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "client_request_id is required"})
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project": client.ProjectRecord{
+					ID:   "proj-prefinish-123",
+					Name: input.Name,
+					ContextGeneration: &client.ProjectContextGeneration{
+						Status:  "ready",
+						Attempt: 1,
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-prefinish-123":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project": client.ProjectRecord{
+					ID:             "proj-prefinish-123",
+					Name:           "apex-app",
+					ProjectContext: "# Apex Guidelines",
+					ContextGeneration: &client.ProjectContextGeneration{
+						Status:  "ready",
+						Attempt: 1,
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/onboarding":
+			var input client.SaveOnboardingInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			if input.DesktopOnboardingComplete != nil && *input.DesktopOnboardingComplete {
+				onboardingComplete = true
+			}
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{OK: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{OK: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"projects": []client.ProjectRecord{
+					{ID: "proj-prefinish-123", Name: "apex-app"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/providers":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"providers": []client.ProviderStatus{
+					{
+						ID:       "google",
+						Ready:    true,
+						Runnable: true,
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/sessions":
+			sessionLaunched = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"session": map[string]any{
+					"id": "sess-prefinish-123",
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/sessions":
+			_ = json.NewEncoder(w).Encode(map[string]any{"sessions": []any{}})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	api := client.New(server.URL)
+	api.SetToken("test-token")
+	home := ui.NewHomePage(model.HomeModel{
+		OnboardingRequired: true,
+		AuthConfigured:     true,
+	})
+
+	app := &App{
+		api:                   api,
+		home:                  home,
+		onboardingWorkspaceCh: make(chan onboardingWorkspaceResult, 1),
+	}
+
+	// 1. Initiate project creation with workspaces (triggers personalization)
+	app.handleCreateOnboardingProject("apex-app", "Build apex", []string{wsDir})
+
+	// 2. Consume from channel and verify client_request_id was sent
+	select {
+	case res := <-app.onboardingWorkspaceCh:
+		if res.err != nil {
+			t.Fatalf("unexpected error: %v", res.err)
+		}
+		if !res.projectCreated || res.projectID != "proj-prefinish-123" {
+			t.Fatalf("expected projectCreated with id 'proj-prefinish-123', got %+v", res)
+		}
+		if receivedClientRequestID == "" {
+			t.Fatal("expected client_request_id to be populated in CreateProject request")
+		}
+		// Put back on channel to let consumeOnboardingWorkspaceResult process it
+		app.onboardingWorkspaceCh <- res
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for project creation")
+	}
+
+	// 3. Process the result: must transition to PreFinish screen (not immediately complete!)
+	app.consumeOnboardingWorkspaceResult()
+	if !app.home.OnboardingPreFinishActive() {
+		t.Fatal("expected Step 4 to transition to PreFinish screen post-personalization")
+	}
+	if onboardingComplete {
+		t.Fatal("onboarding completion must NOT be called before user confirms PreFinish")
+	}
+
+	// 4. User confirms PreFinish via Enter
+	app.home.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+	action, ok := app.home.PopHomeAction()
+	if !ok || action.Kind != ui.HomeActionFinishOnboardingProject {
+		t.Fatalf("expected HomeActionFinishOnboardingProject, got %+v", action)
+	}
+
+	// 5. App processes finish action: complete onboarding & launch session
+	app.handleHomeAction(action)
+	if !onboardingComplete {
+		t.Fatal("expected onboarding completion to be saved after PreFinish confirmation")
+	}
+	if !sessionLaunched {
+		t.Fatal("expected session to be launched after completing onboarding")
 	}
 }
 
