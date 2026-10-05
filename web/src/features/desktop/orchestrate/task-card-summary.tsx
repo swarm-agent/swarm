@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { TaskEnvironments } from './task-environments'
 import { taskPreviewURL } from './task-preview-url'
 import { TaskThumbnail } from './task-thumbnail'
 import { Code2, Film, Image as ImageIcon, Layers, Music } from 'lucide-react'
@@ -49,7 +50,7 @@ export function taskCardFacts(task: RunningTask) {
   }
 }
 
-export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, extraBadges }: {
+export function TaskCardSummary({ task, projectId, onPreview, statusBadge, timer, actions, extraBadges }: {
   projectId?: string
   expanded?: boolean
   task: RunningTask
@@ -112,6 +113,7 @@ export function TaskCardSummary({ task, onPreview, statusBadge, timer, actions, 
           {outcome.delivery && <span>{outcome.delivery}</span>}
           {(task.taskProgramStatus?.state === 'completed' || task.status === 'completed' || outcome.blocker) && <span>{outcome.verification}</span>}
         </div>}
+        <TaskEnvironments task={task} projectId={projectId} />
         {extraBadges && <div className="swarm-task-extra">{extraBadges}</div>}
       </div>
     </div>

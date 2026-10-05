@@ -87,6 +87,7 @@ export class DesktopProjectsRuntime {
     if (invalidateGit) {
       this.taskVersions.set(key, (this.taskVersions.get(key) ?? 0) + 1)
       this.deps.dispatch({ type: 'projects.invalidateGit', projectId, taskId: task.id })
+      this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: tasks => tasks.map(item => item.id === task.id ? { ...item, environmentsStale: true } : item) })
     }
     authoritative ||= this.taskQueue.get(key)?.authoritative ?? false
     this.taskQueue.set(key, { projectId, task, epoch: this.taskEpoch, authoritative })
@@ -300,6 +301,15 @@ export class DesktopProjectsRuntime {
   }
 
   invalidate(projectId?: string): void {
+    for (const { projectId: id } of this.demand.values()) {
+      if (!projectId || id === projectId) {
+        for (const task of this.deps.getState()[id]?.tasks ?? []) {
+          const key = JSON.stringify([id, task.id])
+          this.taskVersions.set(key, (this.taskVersions.get(key) ?? 0) + 1)
+        }
+        this.deps.dispatch({ type: 'projects.updateTasks', projectId: id, tasks: tasks => tasks.map(task => ({ ...task, environmentsStale: true })) })
+      }
+    }
     this.deps.dispatch({ type: 'projects.invalidate', projectId })
     for (const { projectId: id } of this.demand.values()) {
       if (!projectId || id === projectId) {
@@ -308,7 +318,19 @@ export class DesktopProjectsRuntime {
     }
   }
 
-  acceptFrame(frame: { kind: string; project_id?: string; projectId?: string; event?: { payload?: unknown } }): void {
+  acceptFrame(frame: { kind: string; project_id?: string; projectId?: string; payload?: unknown; event_type?: string; event?: { type?: string; event_type?: string; payload?: unknown } }): void {
+    if (frame.kind === 'environment.updated' || (frame.event?.type ?? frame.event?.event_type ?? frame.event_type) === 'environment.updated') {
+      const payload = (frame.event?.payload ?? frame.payload) as { workspace_id?: string; task_environment_workspace_invalidated?: boolean; task_environment_targets?: Array<{ project_id: string; task_id: string }> } | undefined
+      if (!payload?.workspace_id) return
+      for (const { projectId } of this.demand.values()) {
+        const tasks = this.deps.getState()[projectId]?.tasks ?? []
+        const relevant = tasks.filter(task =>
+          payload.task_environment_targets?.some(target => target.project_id === projectId && target.task_id === task.id) ||
+          (payload.task_environment_workspace_invalidated && (task.sourceWorkspaceId === payload.workspace_id || task.environmentAttachments?.some(a => a.source.workspace_id === payload.workspace_id))))
+        if (relevant.length || payload.task_environment_targets?.some(target => target.project_id === projectId)) this.invalidate(projectId)
+      }
+      return
+    }
     const projectId = frame.project_id || frame.projectId
     if (frame.kind === 'project.updated') {
       const payload = frame.event?.payload
@@ -333,6 +355,7 @@ export class DesktopProjectsRuntime {
       this.invalidate(projectId)
       for (const listener of this.projectUpdateListeners) listener(projectId)
     } else if (
+      frame.kind === 'replay.complete' ||
       frame.kind === 'cursor.error' ||
       frame.kind === 'rehydrate.required' ||
       frame.kind === 'auth.credentials.updated'

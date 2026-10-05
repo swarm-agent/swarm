@@ -35,6 +35,7 @@ import type {
 } from '../types/environments'
 
 export interface DeploymentsViewProps {
+  selectedDeploymentId?: string
   workspaceId: string
   workspacePath?: string
   deployments: Deployment[]
@@ -61,6 +62,7 @@ export interface DeploymentsViewProps {
 
 export function DeploymentsView({
   workspaceId: _workspaceId,
+  selectedDeploymentId,
   workspacePath: _workspacePath = '',
   deployments,
   activeLeases,
@@ -390,7 +392,8 @@ export function DeploymentsView({
         </div>
       ) : (
         <div className="grid gap-4" data-testid="deployments-list">
-          {deployments.map((dep) => {
+          {selectedDeploymentId && !deployments.some(dep => dep.id === selectedDeploymentId && dep.workspace_id === _workspaceId) && <p role="alert">Selected deployment unavailable in this workspace. Refresh or ask Orchestrator to prepare it.</p>}
+        {deployments.filter(dep => !selectedDeploymentId || (dep.id === selectedDeploymentId && dep.workspace_id === _workspaceId)).map((dep) => {
             const lease = activeLeases[dep.id]
             const isActing = actingId === dep.id
             const isRunning = dep.status === 'running' || dep.status === 'ready' || dep.status === 'busy'

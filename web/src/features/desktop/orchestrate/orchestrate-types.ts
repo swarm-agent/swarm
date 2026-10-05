@@ -342,6 +342,8 @@ export interface ProjectTaskBoardSummary {
 }
 
 export interface RunningTask {
+  environmentAttachments?: import('../environments/types/environments').TaskEnvironmentAttachment[]
+  environmentsStale?: boolean
   boardSummary?: ProjectTaskBoardSummary
   detailLoaded?: boolean
   currentRunId?: string

@@ -126,6 +126,7 @@ export interface ResourceRequirements {
 }
 
 export interface Environment {
+  frontend_endpoints?: FrontendEndpoint[]
   id: string
   account_scope_id: string
   workspace_id: string
@@ -373,4 +374,40 @@ export interface StopDeploymentResponse {
   operation?: EnvironmentOperation
   operation_id?: string
   status?: OperationStatus
+}
+
+export interface TaskEnvironmentAttachment {
+  id: string
+  revision: number
+  account_scope_id: string
+  project_id: string
+  task_id: string
+  attempt_id?: string
+  environment_id: string
+  environment_name: string
+  state: 'preparing' | 'building' | 'ready' | 'failed' | 'stopped' | 'stale'
+  operation_id?: string
+  error_message?: string
+  expires_at: number
+  retain_for_review?: boolean
+  source: { workspace_id: string; deployment_id?: string; created_at?: number }
+}
+
+export interface FrontendEndpoint {
+  id: string
+  name: string
+  container_port: number
+  scheme: 'http' | 'https'
+  path?: string
+  health_path: string
+}
+
+export interface TaskBrowserEndpoint {
+  id: string
+  name: string
+  url?: string
+  container_port: number
+  host_port?: number
+  ready: boolean
+  error?: string
 }

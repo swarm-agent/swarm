@@ -180,6 +180,8 @@ export function mapBackendTask(t: any): RunningTask {
     priority: 'high',
     sessionId: t.session_id,
     activeAttemptId: t.active_attempt_id,
+    environmentAttachments: Array.isArray(t.environment_attachments) ? t.environment_attachments : [],
+    environmentsStale: false,
     attempts: t.attempts,
     integration: t.integration,
     handoffSummary: t.status === 'needs_review' && t.active_attempt_id

@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import type { EnvironmentsSearch } from './environments-search'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router'
 import {
@@ -33,10 +34,6 @@ import { EnvironmentsView } from '../components/environments-view'
 
 export type EnvironmentsTabID = 'environments' | 'connections' | 'deployments'
 
-interface EnvironmentsSearch {
-  tab?: string
-}
-
 export function EnvironmentsPage() {
   const params = useParams({ strict: false }) as { workspaceSlug?: string }
   const search = useSearch({ strict: false }) as EnvironmentsSearch
@@ -50,15 +47,22 @@ export function EnvironmentsPage() {
   })
 
   const workspace = useMemo(() => {
+    if (search.workspace_id) {
+      const exact = workspaces.find(w => w.workspaceId === search.workspace_id)
+      if (params.workspaceSlug && resolveWorkspaceBySlug(workspaces, params.workspaceSlug)?.workspaceId !== exact?.workspaceId) return undefined
+      return exact
+    }
+    if (search.deployment_id) return undefined
     if (params.workspaceSlug) {
       return resolveWorkspaceBySlug(workspaces, params.workspaceSlug)
     }
-    return workspaces.find((w) => w.path === currentWorkspacePath) ?? workspaces[0]
-  }, [currentWorkspacePath, params.workspaceSlug, workspaces])
+    return workspaces.find((w) => w.path === currentWorkspacePath)
+  }, [currentWorkspacePath, params.workspaceSlug, workspaces, search.workspace_id, search.deployment_id])
 
   const initialTab: EnvironmentsTabID =
     search.tab === 'connections' || search.tab === 'deployments' ? search.tab : 'environments'
   const [activeTab, setActiveTab] = useState<EnvironmentsTabID>(initialTab)
+  useEffect(() => setActiveTab(initialTab), [initialTab])
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   const workspaceId = workspace?.workspaceId ?? ''
@@ -101,13 +105,13 @@ export function EnvironmentsPage() {
       void navigate({
         to: '/$workspaceSlug/environments',
         params: { workspaceSlug },
-        search: { tab },
+        search: { ...search, tab },
         replace: true,
       })
     } else {
       void navigate({
         to: '/environments',
-        search: { tab },
+        search: { ...search, tab },
         replace: true,
       })
     }
@@ -449,6 +453,7 @@ export function EnvironmentsPage() {
 
         {activeTab === 'deployments' && (
           <DeploymentsView
+            selectedDeploymentId={search.deployment_id}
             workspaceId={workspaceId}
             workspacePath={workspacePath}
             deployments={deployments}
