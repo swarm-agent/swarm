@@ -58,7 +58,9 @@ func TestTaskDeliveryAssessment(t *testing.T) {
 	}
 	check("empty")
 	write(filepath.Join(child, "change"), "change")
-	check("dirty")
+	if got := check("empty"); !got.SourceDirty || got.Freshness != "observed" || len(got.AllowedActions) != 0 {
+		t.Fatalf("uncommitted work must not fabricate commits: %+v", got)
+	}
 	run(child, "add", ".")
 	run(child, "commit", "-m", "task")
 	head := run(child, "rev-parse", "HEAD")
@@ -281,11 +283,11 @@ func TestTaskDeliveryTopology(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(in.TargetPath, "dirty"), []byte("uncommitted"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				want = "dirty"
+				want = "candidate_work"
 			}
 			refs := git(in.SourcePath, "show-ref")
 			got := AssessTaskDelivery(context.Background(), in)
-			if got.State != want || (len(got.AllowedActions) > 0) != (want == "candidate_work" || want == "history_rewritten" || want == "history_equivalent") || refs != git(in.SourcePath, "show-ref") {
+			if got.State != want || (len(got.AllowedActions) > 0) != (scenario != "dirty-target" && (want == "candidate_work" || want == "history_rewritten" || want == "history_equivalent")) || refs != git(in.SourcePath, "show-ref") {
 				t.Fatalf("unsafe topology result: %+v", got)
 			}
 			if scenario == "rewritten" && (got.CandidateCommits != 1 || len(got.Files) != 1 || got.Files[0] != "feature") {
@@ -300,5 +302,43 @@ func TestTaskDeliveryTopology(t *testing.T) {
 				t.Fatal("source content changed")
 			}
 		})
+	}
+}
+
+// Purpose: AssessTaskDelivery must report committed ancestry independently from
+// source/target dirtiness while withholding write actions. Real isolated Git is
+// the narrowest layer proving ancestry, unchanged refs and preserved dirty bytes.
+func TestTaskDeliveryDirtyAncestry(t *testing.T) {
+	for _, integrated := range []bool{false, true} {
+		for _, lane := range []string{"source", "target"} {
+			t.Run(fmt.Sprintf("integrated=%t/%s", integrated, lane), func(t *testing.T) {
+				in, git := deliveryFixture(t)
+				want := "candidate_work"
+				if integrated {
+					git(in.TargetPath, "merge", "--ff-only", "agent/task")
+					want = "integrated"
+				}
+				path := in.SourcePath
+				if lane == "target" {
+					path = in.TargetPath
+				}
+				file := filepath.Join(path, "base")
+				if err := os.WriteFile(file, []byte("uncommitted"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				refs := git(in.SourcePath, "show-ref")
+				got := AssessTaskDelivery(context.Background(), in)
+				if got.State != want || got.Freshness != "observed" || got.SourceDirty != (lane == "source") || got.TargetDirty != (lane == "target") || len(got.AllowedActions) != 0 {
+					t.Fatalf("dirtiness obscured ancestry or authorized writes: %+v", got)
+				}
+				if !integrated && got.CandidateCommits != 1 {
+					t.Fatalf("lost committed candidate: %+v", got)
+				}
+				data, err := os.ReadFile(file)
+				if err != nil || string(data) != "uncommitted" || refs != git(in.SourcePath, "show-ref") {
+					t.Fatal("assessment mutated Git state")
+				}
+			})
+		}
 	}
 }

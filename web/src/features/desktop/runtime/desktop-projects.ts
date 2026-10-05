@@ -67,9 +67,9 @@ export class DesktopProjectsRuntime {
   }
 
   acceptSessionMutation(mutation?: DesktopV3CacheMutation): void {
-    // Card mounts hydrate permissions/plans, not Git. Initial project acquisition
-    // reads the collection only; durable events and reconnect repair own later
-    // invalidations. Re-reading Git for cache enrichment creates a feedback loop.
+    // Card hydration is not a Git invalidation. Initial collection identities
+    // receive one bounded inspection; durable events and reconnect repair own
+    // subsequent invalidations, never cache enrichment or recurring timers.
     if (mutation?.action.type === 'hydrate.apply') return
     for (const { projectId } of this.demand.values()) {
       for (const task of this.deps.getState()[projectId]?.tasks ?? []) {
@@ -95,7 +95,9 @@ export class DesktopProjectsRuntime {
 
   private drainTasks(): void {
     for (const [key, entry] of this.taskQueue) {
-      if (this.taskReads.size >= 4) break
+      // Match the assessor's per-repository admission bound even when all cards
+      // share one repository; avoid turning initial hydration into capacity errors.
+      if (this.taskReads.size >= 2) break
       if (this.taskReads.has(key)) continue
       this.taskQueue.delete(key)
       if (!this.demand.has(entry.projectId)) continue
@@ -249,9 +251,8 @@ export class DesktopProjectsRuntime {
               // An unchanged card already being inspected needs no second read.
               const read = this.taskReads.get(key)
               const queued = this.taskQueue.get(key)
-              // Collection entry never starts Git inspection. Preserve an already
-              // requested inspection when its owner changes during the read.
-              if (!inspectGit && !read && !queued) continue
+              // Hydrate each new execution identity once, including initial entry.
+              // Collection refreshes retain observations; no timer retries reads.
               if (queued ? taskGitIdentity(queued.task) !== taskGitIdentity(task) :
                 (!read || read.identity !== taskGitIdentity(task) || read.demand !== this.demand.get(projectId) || read.epoch !== this.taskEpoch)) {
                 this.queueTask(projectId, task)

@@ -33,8 +33,7 @@ test('task Git refresh reuses scoped session events and coalesces without collec
   await lease.ready
   assert.equal(state.project.loading, false)
   assert.equal(state.project.tasks.length, 1)
-  assert.equal(reads.length, 0, 'entry does not inspect Git')
-  runtime.inspectTask('project', 'task') // Explicit disclosure seeds observed facts.
+  assert.equal(reads.length, 1, 'entry inspects Git once')
   assert.equal(reads.length, 1)
   reads[0].resolve({ task: { ...task, git_status: 'dirty', is_dirty: true, dirty_count: 2 } })
   await flush()
@@ -157,9 +156,7 @@ test('durable task updates are card-scoped, coalesced and safe across session re
   const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve() }
   const lease = runtime.acquire('project')
   await lease.ready
-  assert.equal(reads.length, 0, 'entry does not inspect Git')
-  runtime.inspectTask('project', 'first')
-  runtime.inspectTask('project', 'second')
+  assert.equal(reads.length, 2, 'entry inspects deployed cards only')
   assert.deepEqual(reads.map(read => read.id), ['first', 'second'])
   reads[0].resolve({ task: tasks[0] })
   reads[1].resolve({ task: tasks[1] })

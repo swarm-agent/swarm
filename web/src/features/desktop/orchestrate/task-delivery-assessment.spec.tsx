@@ -56,3 +56,19 @@ test('current candidate delta is actionable, stale attempts and equivalent trees
   assert.equal(taskIntegrationPhase(failed), 'error')
   assert.equal(taskOutcome(failed).blocker?.message, 'Retained failure')
 })
+
+// Purpose: taskDelivery must keep committed integration visible independently of
+// dirty source/target files, but never authorize writes on a dirty or stale lane.
+// Pure canonical mapping and card projections prove both display and action inputs.
+test('dirty lanes retain committed integration and block actions independently', () => {
+  for (const lane of ['source_dirty', 'target_dirty']) {
+    const task = mapBackendTask({ ...backend, git_status: 'dirty', is_dirty: lane === 'source_dirty',
+      delivery_assessment: { ...backend.delivery_assessment, state: 'integrated', [lane]: true } })
+    assert.equal(taskDelivery(task)?.integrated, true)
+    assert.match(taskCardFacts(task).git, /^Integrated · /)
+    assert.equal(taskOutcome(task).delivery, 'Integrated into dev')
+    const candidate = { ...task, deliveryAssessment: { ...task.deliveryAssessment!, state: 'candidate_work', allowed_actions: ['integrate'] } }
+    assert.equal(taskDelivery(candidate)?.actionable, false)
+    assert.equal(taskDelivery({ ...task, gitStatus: 'stale' })?.integrated, false)
+  }
+})

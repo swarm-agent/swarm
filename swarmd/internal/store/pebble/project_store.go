@@ -395,6 +395,8 @@ type TaskDeliveryAssessment struct {
 	Reason              string   `json:"reason"`
 	Freshness           string   `json:"freshness"`
 	ObservedAt          int64    `json:"observed_at,omitempty"`
+	SourceDirty         bool     `json:"source_dirty"`
+	TargetDirty         bool     `json:"target_dirty"`
 	CandidateCommits    int      `json:"candidate_commits"`
 	Files               []string `json:"files,omitempty"`
 	AllowedActions      []string `json:"allowed_actions"`

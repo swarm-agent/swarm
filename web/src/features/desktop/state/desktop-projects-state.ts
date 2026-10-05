@@ -290,7 +290,8 @@ export function reduceDesktopProjectsState(
     const tasks = previous.tasks.map(task => {
       if (action.taskId && task.id !== action.taskId) return task
       delete gitObservations[task.id]
-      return { ...task, gitStatus: 'stale' as const }
+      return { ...task, gitStatus: 'stale' as const,
+        deliveryAssessment: task.deliveryAssessment ? { ...task.deliveryAssessment, freshness: 'stale', allowed_actions: [] } : undefined }
     })
     return { ...state, [action.projectId]: { ...previous, tasks, gitObservations } }
   }

@@ -174,11 +174,20 @@ func (d *deliveryInspector) finish(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	}
 	// Check cleanliness before the final OID reads so a commit made while
 	// reading status cannot escape the end-of-observation movement check.
-	for _, path := range []string{in.SourcePath, in.TargetPath} {
+	for i, path := range []string{in.SourcePath, in.TargetPath} {
 		status, err := d.run(path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-		if err != nil || status != "" {
-			return deliveryUnknown(a, "worktree_changed", "Worktree changed during assessment; refresh", "stale")
+		if err != nil {
+			return deliveryUnknown(a, "inspection_failed", "Could not inspect working tree", "unknown")
 		}
+		if i == 0 {
+			a.SourceDirty = status != ""
+		} else {
+			a.TargetDirty = status != ""
+		}
+	}
+	// Dirtiness blocks writes, not the committed ancestry observation.
+	if a.SourceDirty || a.TargetDirty {
+		a.AllowedActions = []string{}
 	}
 	source, sourceRepo, e1 := d.lane(in.SourcePath, a.SourceBranch)
 	target, targetRepo, e2 := d.lane(in.TargetPath, a.TargetBranch)
@@ -200,16 +209,6 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	base, err := d.run(in.SourcePath, "rev-parse", "--verify", a.BaseOID+"^{commit}")
 	if err != nil || base != a.BaseOID {
 		return fail()
-	}
-	for _, path := range []string{in.SourcePath, in.TargetPath} {
-		status, err := d.run(path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-		if err != nil {
-			return fail()
-		}
-		if status != "" {
-			a.State, a.ReasonCode, a.Reason = "dirty", "uncommitted_changes", "Source or target has uncommitted changes"
-			return a
-		}
 	}
 	ancestor := func(left, right string) (bool, error) {
 		_, err := d.run(in.SourcePath, "merge-base", "--is-ancestor", left, right)

@@ -15,7 +15,7 @@ const flush = () => new Promise<void>(resolve => setImmediate(resolve))
 // Purpose: DesktopProjectsRuntime.refresh + the canonical reducer must publish
 // task rows without waiting for media. Controlled promises prove ordering and
 // failure isolation, not latency or live-provider performance.
-test('tasks publish before media, acquisition does not inspect Git, explicit refresh shares detail work', async () => {
+test('tasks publish before media and Git, explicit refresh shares detail work', async () => {
   let state: DesktopProjectsState = {}
   const tasks = [deferred<{ tasks: any[] }>(), deferred<{ tasks: any[] }>()]
   const media = [deferred<{ media: any[] }>(), deferred<{ media: any[] }>()]
@@ -35,7 +35,9 @@ test('tasks publish before media, acquisition does not inspect Git, explicit ref
   assert.equal(state.p.tasks.length, 1)
   assert.equal(state.p.loading, false)
   assert.equal(state.p.mediaLoading, true)
-  assert.equal(detailReads, 0, 'acquisition must not inspect individual tasks')
+  assert.equal(detailReads, 1, 'acquisition starts bounded detail inspection without delaying the board')
+  details[0].resolve({ task: row })
+  await flush()
   await lease.ready
   assert.equal(state.p.mediaLoading, true, 'readiness resolves while optional media remains pending')
   media[0].reject(new Error('media unavailable'))
@@ -49,12 +51,12 @@ test('tasks publish before media, acquisition does not inspect Git, explicit ref
   assert.equal(state.p.tasks.length, 1, 'existing rows stay visible')
   tasks[1].resolve({ tasks: [row] })
   await flush()
-  assert.equal(detailReads, 1, 'collection cannot queue a duplicate of the explicit refresh detail')
-  details[0].resolve({ task: row })
+  assert.equal(detailReads, 2, 'collection cannot queue a duplicate of the explicit refresh detail')
+  details[1].resolve({ task: row })
   media[1].resolve({ media: [] })
   await first
   await flush()
-  assert.deepEqual([lists, mediaReads, detailReads], [2, 2, 1])
+  assert.deepEqual([lists, mediaReads, detailReads], [2, 2, 2])
   assert.equal(state.p.mediaError, undefined)
   lease.release()
 })

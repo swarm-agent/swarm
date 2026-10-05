@@ -62,6 +62,11 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 	case "history_equivalent", "history_rewritten", "ambiguous":
 		res.gitStatus = "diverged"
 	}
+	res.isDirty = assessment.SourceDirty
+	if assessment.SourceDirty || assessment.TargetDirty {
+		res.gitStatus = "dirty"
+		res.actionNeeded = "Source or target has uncommitted changes"
+	}
 	if res.isIntegrated && (task.TaskProgramID != "" || task.TaskProgram != nil) {
 		programID := task.TaskProgramID
 		if programID == "" && task.TaskProgram != nil {

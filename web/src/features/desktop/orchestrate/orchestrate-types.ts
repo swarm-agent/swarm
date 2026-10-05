@@ -422,6 +422,7 @@ export interface RunningTask {
     source_branch: string; target_branch: string
     state: string; reason_code: string; reason: string; freshness: string
     candidate_commits: number; allowed_actions: string[]
+    source_dirty?: boolean; target_dirty?: boolean
   }
   unintegratedCommits?: number
   behindCommits?: number
