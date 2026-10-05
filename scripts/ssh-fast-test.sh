@@ -469,10 +469,14 @@ SUDO_SHIM
 chmod 0700 "${sudo_shim_dir}/sudo"
 SWARM_SKIP_SYSTEMD_UNIT=1 PATH="${sudo_shim_dir}:${PATH}" ./rebuild f
 rm -rf -- "${sudo_shim_dir}"
+pkill -x swarmd >/dev/null 2>&1 || true
+pkill -x swarm >/dev/null 2>&1 || true
 trap - EXIT
 REMOTE_SSH_FAST_TEST
 
 if [[ "${RESTART_SERVICE}" == "true" ]]; then
+  remote_service_action stop || true
+  sleep 1
   remote_service_action reload
   remote_service_action restart
   sleep 2
