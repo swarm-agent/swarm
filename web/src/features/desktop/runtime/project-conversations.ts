@@ -5,7 +5,7 @@ import { requestStartupJson } from '../../../app/api'
 import { compareProjectSessionRows, projectSessionRow } from '../state/project-session-rows'
 import type { SessionSnapshot, V3SessionTombstone, DesktopV3SessionView } from '../state/desktop-v3-cache-types'
 import { useDesktopV3CacheSelector, subscribeDesktopV3Cache } from '../state/desktop-v3-cache-store'
-import { dispatchDesktopV3Cache } from '../state/desktop-v3-cache-store'
+import { dispatchDesktopV3Cache, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { requireProjectConversation, conversationProjectId } from '../orchestrate/project-conversations'
 import { desktopProjects } from './desktop-projects'
 
@@ -34,13 +34,14 @@ export function useProjectConversations(projectId: string) {
       try {
         do {
           dirty = false
+          const requestSessionIds = (getDesktopV3CacheSnapshot().projectConversationSummaries?.[projectId] || []).map(session => session.id)
           const [response, archived] = await Promise.all([
             requestStartupJson<{ sessions: Array<{ session: SessionSnapshot; attention?: DesktopV3SessionView }> }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200&view=summary`, { signal: controller.signal }),
             includeArchived ? requestStartupJson<{ tombstones: V3SessionTombstone[] }>(`/v3/projects/${encodeURIComponent(projectId)}/sessions?limit=200&archived_mode=only`, { signal: controller.signal }) : Promise.resolve({ tombstones: [] }),
           ])
           if (!active) return
           for (const { session } of response.sessions || []) requireProjectConversation(projectId, session)
-          dispatchDesktopV3Cache({ type: 'projectConversations.applySummaries', projectId, sessions: (response.sessions || []).map(item => item.session), attention: Object.fromEntries((response.sessions || []).flatMap(item => item.attention ? [[item.session.id, item.attention]] : [])) })
+          dispatchDesktopV3Cache({ type: 'projectConversations.applySummaries', projectId, requestSessionIds, sessions: (response.sessions || []).map(item => item.session), attention: Object.fromEntries((response.sessions || []).flatMap(item => item.attention ? [[item.session.id, item.attention]] : [])) })
           setLoadedProject(projectId)
           setLoadingProject('')
           if (includeArchived) {
