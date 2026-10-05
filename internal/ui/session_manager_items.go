@@ -71,6 +71,25 @@ func sessionManagerFilterCounts(items []ChatSessionPaletteItem) []int {
 	return counts
 }
 
+func initialSessionManagerFilter(items []ChatSessionPaletteItem) int {
+	counts := sessionManagerFilterCounts(items)
+	if len(counts) > 0 && counts[0] > 0 {
+		return 0
+	}
+	if len(counts) > 1 && counts[1] > 0 {
+		return 1
+	}
+	if len(counts) > 2 && counts[2] > 0 {
+		return 2
+	}
+	for i, c := range counts {
+		if c > 0 {
+			return i
+		}
+	}
+	return 0
+}
+
 func prepareSessionManagerItems(items []ChatSessionPaletteItem) []ChatSessionPaletteItem {
 	ordered := append([]ChatSessionPaletteItem(nil), items...)
 	itemByID := make(map[string]ChatSessionPaletteItem, len(ordered))

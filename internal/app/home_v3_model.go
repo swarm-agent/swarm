@@ -287,7 +287,7 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		next.TipLine = "/auth"
 	case next.ActiveProjectID != "":
 		next.HintLine = fmt.Sprintf("Project: %s · Type to plan or press Enter on a task", next.ActiveProjectName)
-		next.TipLine = "Ctrl+X: Orchestrator Chat  •  Alt+W: Switch Project  •  ↑/↓: Select Task"
+		next.TipLine = "Ctrl+X: Sessions  •  Alt+W: Switch Project  •  ↑/↓: Select Task"
 	default:
 		next.HintLine = ""
 		next.TipLine = ""

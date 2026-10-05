@@ -67,7 +67,7 @@ func (p *HomePage) OpenSessionsModal(items []ChatSessionPaletteItem, query strin
 	p.sessionsModal.Visible = true
 	p.sessionsModal.Items = prepareSessionManagerItems(items)
 	p.sessionsModal.Expanded = make(map[string]bool)
-	p.sessionsModal.Filter = 0
+	p.sessionsModal.Filter = initialSessionManagerFilter(p.sessionsModal.Items)
 	p.sessionsModal.Query = strings.TrimSpace(query)
 	p.sessionsModal.Selection = 0
 	p.sessionsModal.Scroll = 0
@@ -259,7 +259,7 @@ func (p *HomePage) handleSessionsModalKey(ev *tcell.EventKey) {
 	}
 
 	switch {
-	case p.keybinds.Match(ev, KeybindModalClose):
+	case p.keybinds.Match(ev, KeybindModalClose), p.keybinds.Match(ev, KeybindHomeOpenSessions):
 		p.HideSessionsModal()
 		p.statusLine = "session manager closed"
 		return
@@ -350,9 +350,13 @@ func (p *HomePage) drawSessionsModal(s tcell.Screen) {
 	DrawBox(s, modal, p.theme.BorderActive)
 
 	matches := p.syncSessionsModalSelection()
-	header := fmt.Sprintf("Sessions (%d)", len(p.sessionsModal.Items))
+	titlePrefix := "Orchestration Sessions"
+	if p.model.ActiveProjectName != "" {
+		titlePrefix = fmt.Sprintf("Orchestration Sessions · %s", p.model.ActiveProjectName)
+	}
+	header := fmt.Sprintf("%s (%d)", titlePrefix, len(p.sessionsModal.Items))
 	if strings.TrimSpace(p.sessionsModal.Query) != "" {
-		header = fmt.Sprintf("Sessions (%d/%d)", len(matches), len(p.sessionsModal.Items))
+		header = fmt.Sprintf("%s (%d/%d)", titlePrefix, len(matches), len(p.sessionsModal.Items))
 	}
 	DrawText(s, modal.X+2, modal.Y+1, modal.W-4, onPanel(p.theme.Warning.Bold(true)), clampEllipsis(header, modal.W-4))
 	counts := sessionManagerFilterCounts(p.sessionsModal.Items)

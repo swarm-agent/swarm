@@ -86,7 +86,7 @@ func (p *HomePage) drawProjectTasks(s tcell.Screen, rect Rect, centered bool) {
 		emptyMsg = clampEllipsis(emptyMsg, innerW-4)
 		DrawText(s, boxRect.X+2, boxRect.Y+1, innerW-4, p.theme.TextMuted, emptyMsg)
 		if boxRect.H >= 4 {
-			hintMsg := "Ctrl+X: Orchestrator Chat  •  Alt+W: Switch Project"
+			hintMsg := "Ctrl+X: Sessions  •  Alt+W: Switch Project"
 			hintMsg = clampEllipsis(hintMsg, innerW-4)
 			DrawText(s, boxRect.X+2, boxRect.Y+2, innerW-4, p.theme.Secondary, hintMsg)
 		}

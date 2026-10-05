@@ -1905,13 +1905,13 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 	}
 	if keybinds.Match(ev, ui.KeybindHomeOpenSessions) {
-		if (a.route == "chat" || a.route == "v3chat") && a.homeModel.ActiveProjectID != "" {
-			if a.route == "v3chat" {
-				a.closeV3Chat()
-			}
-			a.chat = nil
-			a.route = "home"
-			a.home.SelectNextHomeTip()
+		if a.home != nil && a.home.SessionsModalVisible() {
+			a.home.HideSessionsModal()
+			a.home.SetStatus("session manager closed")
+			return true
+		}
+		if a.chat != nil && a.chat.SessionsPaletteActive() {
+			a.chat.CloseSessionsPalette()
 			return true
 		}
 		if a.route == "chat" || a.route == "v3chat" {
@@ -1919,11 +1919,6 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return true
 		}
 		if a.route == "home" && a.home != nil {
-			if a.home.SessionsModalVisible() {
-				a.home.HideSessionsModal()
-				a.home.SetStatus("session manager closed")
-				return true
-			}
 			if a.home.AuthModalVisible() ||
 				a.home.VaultModalVisible() ||
 				a.home.WorkspaceModalVisible() ||
@@ -1933,12 +1928,6 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 				a.home.VoiceModalVisible() ||
 				a.home.ThemeModalVisible() ||
 				a.home.KeybindsModalVisible() {
-				return true
-			}
-			if a.homeModel.ActiveProjectID != "" {
-				if err := a.openOrchestratorChat(""); err != nil {
-					a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
-				}
 				return true
 			}
 			a.openHomeSessionsModal("")
@@ -3762,6 +3751,133 @@ func sessionSummaryPlanComplete(document *client.SessionPlanDocument, normalized
 	return true
 }
 
+func isOrchestrationSession(summary model.SessionSummary, activeProjectID string) bool {
+	if summary.Depth > 0 {
+		return false
+	}
+	if summary.Metadata != nil {
+		if parentID := strings.TrimSpace(fmt.Sprint(summary.Metadata["parent_session_id"])); parentID != "" && parentID != "<nil>" {
+			return false
+		}
+		if taskID := strings.TrimSpace(fmt.Sprint(summary.Metadata["task_id"])); taskID != "" && taskID != "<nil>" {
+			return false
+		}
+		if workerID := strings.TrimSpace(fmt.Sprint(summary.Metadata["worker_id"])); workerID != "" && workerID != "<nil>" {
+			return false
+		}
+		if role := strings.TrimSpace(fmt.Sprint(summary.Metadata["role"])); role == "project_task" || role == "task" {
+			return false
+		}
+	}
+
+	activeProjectID = strings.TrimSpace(activeProjectID)
+	if activeProjectID != "" {
+		if summary.Metadata != nil {
+			projID := strings.TrimSpace(fmt.Sprint(summary.Metadata["project_id"]))
+			swarmProjID := strings.TrimSpace(fmt.Sprint(summary.Metadata["swarm_v3_project_id"]))
+			if projID != "" && projID != "<nil>" && projID != activeProjectID {
+				return false
+			}
+			if swarmProjID != "" && swarmProjID != "<nil>" && swarmProjID != activeProjectID {
+				return false
+			}
+		}
+	}
+
+	agentName := ""
+	resolvedAgent := ""
+	role := ""
+	if summary.Metadata != nil {
+		agentName = strings.TrimSpace(fmt.Sprint(summary.Metadata["agent_name"]))
+		if agentName == "<nil>" {
+			agentName = ""
+		}
+		resolvedAgent = strings.TrimSpace(fmt.Sprint(summary.Metadata["resolved_agent_name"]))
+		if resolvedAgent == "<nil>" {
+			resolvedAgent = ""
+		}
+		role = strings.TrimSpace(fmt.Sprint(summary.Metadata["role"]))
+		if role == "<nil>" {
+			role = ""
+		}
+
+		if agentName == "coder" || agentName == "system-coder" ||
+			agentName == "finder" || agentName == "system-finder" ||
+			agentName == "designer" || agentName == "system-designer" {
+			return false
+		}
+
+		if agentName == "system-orchestrator" || resolvedAgent == "system-orchestrator" || role == "project_orchestrator" {
+			return true
+		}
+	}
+
+	title := strings.ToLower(strings.TrimSpace(summary.Title))
+	if strings.Contains(title, "orchestrat") {
+		return true
+	}
+
+	if activeProjectID == "" && agentName == "" {
+		return true
+	}
+
+	return false
+}
+
+func orchestrationSessionTabsFromSummaries(summaries []model.SessionSummary, activeProjectID string) []ui.ChatSessionTab {
+	tabs := make([]ui.ChatSessionTab, 0, len(summaries))
+	seen := make(map[string]struct{}, len(summaries))
+
+	for _, summary := range summaries {
+		if !isOrchestrationSession(summary, activeProjectID) {
+			continue
+		}
+		id := strings.TrimSpace(summary.ID)
+		title := strings.TrimSpace(summary.Title)
+		if id == "" && title == "" {
+			continue
+		}
+		if id == "" {
+			id = title
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		tabs = append(tabs, ui.ChatSessionTab{
+			ID:              id,
+			Title:           title,
+			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
+			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
+			WorktreeEnabled: summary.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(summary.WorktreeBranch),
+			Mode:            strings.TrimSpace(summary.Mode),
+			CreatedAt:       summary.CreatedAt,
+			UpdatedAt:       summary.UpdatedAt,
+			ActiveStartedAt: sessionSummaryActiveStartedAt(summary),
+			UpdatedAgo:      strings.TrimSpace(summary.UpdatedAgo),
+			Active:          sessionSummaryActive(summary),
+			NeedsAttention:  summary.PendingPermissionCount > 0,
+			ActivityLabel:   sessionSummaryActivityLabel(summary),
+			Group:           sessionSummarySidebarGroup(summary),
+			ProgressLabel:   sessionSummaryPlanProgress(summary),
+			Provider:        strings.TrimSpace(summary.Preference.Provider),
+			ModelName:       strings.TrimSpace(summary.Preference.Model),
+			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
+			ContextMode:     strings.TrimSpace(summary.Preference.ContextMode),
+			Background:      false,
+			ParentSessionID: "",
+			LineageKind:     "",
+			LineageLabel:    "",
+			AssignmentLabel: "",
+			TargetKind:      "",
+			TargetName:      "",
+			Depth:           0,
+		})
+	}
+	return tabs
+}
+
 func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSessionTab {
 	tabs := make([]ui.ChatSessionTab, 0, len(summaries))
 	seen := make(map[string]struct{}, len(summaries))
@@ -5070,9 +5186,19 @@ func (a *App) queueSessionManagerOpen(query, openRoute string) error {
 	if a.home != nil {
 		a.home.SetStatus("loading V3 sessions...")
 	}
+	activeProjID := ""
+	if a.homeModel.ActiveProjectID != "" {
+		activeProjID = a.homeModel.ActiveProjectID
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
+		var projSessions []client.SessionSummary
+		if activeProjID != "" {
+			if list, err := a.api.ListProjectSessions(ctx, activeProjID); err == nil {
+				projSessions = list
+			}
+		}
 		snapshot, err := a.api.GetSessionV3SyncBootstrap(ctx, client.SessionV3SyncBootstrapRequest{
 			Surface: "tui",
 			Selector: client.SessionV3SyncSelector{
@@ -5091,7 +5217,29 @@ func (a *App) queueSessionManagerOpen(query, openRoute string) error {
 		})
 		result := homeReloadResult{sessionQuery: query, sessionOpenRoute: openRoute, err: err}
 		if err == nil {
+			if len(projSessions) > 0 {
+				if snapshot.SessionsByID == nil {
+					snapshot.SessionsByID = make(map[string]client.SessionSummary)
+				}
+				for _, ps := range projSessions {
+					if _, exists := snapshot.SessionsByID[ps.ID]; !exists {
+						snapshot.SessionsByID[ps.ID] = ps
+						snapshot.SessionOrder = append([]string{ps.ID}, snapshot.SessionOrder...)
+					}
+				}
+			}
 			result.sessionSnapshot = &snapshot
+		} else if len(projSessions) > 0 {
+			minimal := client.SessionV3SyncSnapshot{
+				OK:           true,
+				SessionsByID: make(map[string]client.SessionSummary),
+			}
+			for _, ps := range projSessions {
+				minimal.SessionsByID[ps.ID] = ps
+				minimal.SessionOrder = append(minimal.SessionOrder, ps.ID)
+			}
+			result.sessionSnapshot = &minimal
+			result.err = nil
 		}
 		select {
 		case a.reloadCh <- result:
@@ -5105,7 +5253,8 @@ func (a *App) queueSessionManagerOpen(query, openRoute string) error {
 }
 
 func (a *App) openLoadedHomeSessionsModal(query string) {
-	items := chatSessionPaletteItemsFromTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	tabs := orchestrationSessionTabsFromSummaries(a.homeModel.RecentSessions, a.homeModel.ActiveProjectID)
+	items := chatSessionPaletteItemsFromTabs(tabs)
 	if !a.home.OpenSessionsModal(items, strings.TrimSpace(query)) {
 		a.home.SetStatus("session manager unavailable while another modal is open")
 		return
@@ -5116,6 +5265,12 @@ func (a *App) openLoadedHomeSessionsModal(query string) {
 func (a *App) openHomeSessionsModal(query string) {
 	a.home.ClearCommandOverlay()
 	if err := a.queueSessionManagerOpen(query, "home"); err != nil {
+		tabs := orchestrationSessionTabsFromSummaries(a.homeModel.RecentSessions, a.homeModel.ActiveProjectID)
+		items := chatSessionPaletteItemsFromTabs(tabs)
+		if len(items) > 0 {
+			a.home.OpenSessionsModal(items, strings.TrimSpace(query))
+			return
+		}
 		a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
 	}
 }
@@ -5124,7 +5279,8 @@ func (a *App) openLoadedChatSessionsPalette(query string) {
 	if a.chat == nil {
 		return
 	}
-	a.chat.SetSessionTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	tabs := orchestrationSessionTabsFromSummaries(a.homeModel.RecentSessions, a.homeModel.ActiveProjectID)
+	a.chat.SetSessionTabs(tabs)
 	if !a.chat.OpenSessionsPalette(a.chat.SessionPaletteItems(), strings.TrimSpace(query)) {
 		a.home.SetStatus("sessions palette unavailable while another modal is open")
 		return

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 
@@ -125,6 +126,7 @@ func TestOrchestratorTUIFocusMode(t *testing.T) {
 		tuiRealtimeFrames:   make(chan client.V3RealtimeFrame, 256),
 		tuiRealtimeStatuses: make(chan tuiRealtimeStatus, 32),
 		tuiRealtimeClientID: "tui:test",
+		reloadCh:            make(chan homeReloadResult, 1),
 	}
 	ctx := context.Background()
 
@@ -162,25 +164,42 @@ func TestOrchestratorTUIFocusMode(t *testing.T) {
 		t.Fatalf("expected route 'chat' or 'v3chat', got %q", app.route)
 	}
 
-	// 3. Ctrl+X from chat returns back to Home (task board)
+	// 3. Ctrl+X opens session manager palette/modal (showing only orchestration sessions)
 	ctrlXEv := tcell.NewEventKey(tcell.KeyCtrlX, 0, tcell.ModNone)
 	if !app.handleGlobalKey(ctrlXEv) {
-		t.Fatal("expected Ctrl+X in chat to return to home")
+		t.Fatal("expected Ctrl+X to be handled")
 	}
-	if app.route != "home" {
-		t.Fatalf("expected route 'home' after Ctrl+X from v3chat, got %q", app.route)
+	deadline := time.Now().Add(time.Second)
+	for len(app.reloadCh) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
 	}
-
-	// 4. Ctrl+X from Home navigates back to orchestrator chat
-	openedSessionID = ""
+	app.consumeReloadResult()
+	if !app.chat.SessionsPaletteActive() && !app.home.SessionsModalVisible() {
+		t.Fatal("expected session manager palette/modal to be visible after Ctrl+X")
+	}
+	// Pressing Ctrl+X again toggles the session manager closed
 	if !app.handleGlobalKey(ctrlXEv) {
-		t.Fatal("expected Ctrl+X on home to open orchestrator session")
+		t.Fatal("expected Ctrl+X to toggle session manager closed")
 	}
-	if openedSessionID != "new-sess-1" {
-		t.Fatalf("expected Ctrl+X to open orchestrator session 'new-sess-1', got %q", openedSessionID)
+	if app.chat.SessionsPaletteActive() || app.home.SessionsModalVisible() {
+		t.Fatal("expected session manager to be closed after second Ctrl+X")
 	}
 
-	// Return to home again
+	// 4. Return to home from chat
+	if app.v3Chat != nil {
+		app.closeV3Chat()
+	}
+	app.chat = nil
+	app.route = "home"
+
+	// Ctrl+X from Home opens session manager modal
+	if !app.handleGlobalKey(ctrlXEv) {
+		t.Fatal("expected Ctrl+X on home to open session manager")
+	}
+	app.openLoadedHomeSessionsModal("")
+	if !app.home.SessionsModalVisible() {
+		t.Fatal("expected session manager modal to be visible on home after Ctrl+X")
+	}
 	app.handleGlobalKey(ctrlXEv)
 
 	// 5. Focus starts on prompt: pressing Enter when prompt is empty opens orchestrator, NOT the top task
@@ -469,14 +488,9 @@ func TestHomepageTypingPromptCreatesNewSessionNotPriorSession(t *testing.T) {
 		t.Fatalf("expected active project primary session updated to 'new-brand-sess-123', got %q", app.homeModel.ActiveProjectPrimarySessionID)
 	}
 
-	// 2. Return to home via Ctrl+X
-	ctrlXEv := tcell.NewEventKey(tcell.KeyCtrlX, 0, tcell.ModNone)
-	if !app.handleGlobalKey(ctrlXEv) {
-		t.Fatal("expected Ctrl+X to return to home")
-	}
-	if app.route != "home" {
-		t.Fatalf("expected route 'home', got %q", app.route)
-	}
+	// 2. Return to home
+	app.closeV3Chat()
+	app.route = "home"
 
 	// 3. User navigates into tasks via Ctrl+Up
 	ctrlUpEv := tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl)
@@ -492,5 +506,101 @@ func TestHomepageTypingPromptCreatesNewSessionNotPriorSession(t *testing.T) {
 	}
 	if openedSessionID != "task-sess-99" {
 		t.Fatalf("expected Enter on task-99 to open 'task-sess-99', got %q", openedSessionID)
+	}
+}
+
+func TestCtrlXShowsOnlyOrchestrationSessions(t *testing.T) {
+	app := &App{
+		home:   ui.NewHomePage(model.EmptyHome()),
+		route:  "home",
+		config: defaultAppConfig(),
+	}
+	app.homeModel.ActiveProjectID = "proj-alpha"
+	app.homeModel.ActiveProjectName = "Alpha"
+
+	app.homeModel.RecentSessions = []model.SessionSummary{
+		{
+			ID:    "orch-1",
+			Title: "Orchestrator · Alpha",
+			Metadata: map[string]any{
+				"project_id": "proj-alpha",
+				"agent_name": "system-orchestrator",
+			},
+		},
+		{
+			ID:    "orch-2",
+			Title: "Refactor Architecture",
+			Metadata: map[string]any{
+				"project_id": "proj-alpha",
+				"agent_name": "system-orchestrator",
+			},
+		},
+		{
+			ID:    "task-session-1",
+			Title: "Fix Database Migrations",
+			Metadata: map[string]any{
+				"project_id": "proj-alpha",
+				"task_id":    "task-123",
+				"agent_name": "coder",
+				"role":       "project_task",
+			},
+		},
+		{
+			ID:    "subagent-1",
+			Title: "Subagent coder 1",
+			Depth: 1,
+			Metadata: map[string]any{
+				"project_id":        "proj-alpha",
+				"parent_session_id": "orch-1",
+				"agent_name":        "coder",
+			},
+		},
+		{
+			ID:    "worker-1",
+			Title: "Background build",
+			Metadata: map[string]any{
+				"worker_id":  "worker-abc",
+				"agent_name": "system-orchestrator",
+			},
+		},
+		{
+			ID:    "other-proj-orch",
+			Title: "Beta Orchestrator",
+			Metadata: map[string]any{
+				"project_id": "proj-beta",
+				"agent_name": "system-orchestrator",
+			},
+		},
+	}
+
+	// 1. Verify orchestrationSessionTabsFromSummaries filters to ONLY the 2 orchestration sessions for proj-alpha
+	tabs := orchestrationSessionTabsFromSummaries(app.homeModel.RecentSessions, app.homeModel.ActiveProjectID)
+	if len(tabs) != 2 {
+		t.Fatalf("expected exactly 2 orchestration tabs, got %d", len(tabs))
+	}
+	if tabs[0].ID != "orch-1" || tabs[1].ID != "orch-2" {
+		t.Fatalf("unexpected tabs: %+v", tabs)
+	}
+
+	// 2. Open session modal and verify items
+	app.openLoadedHomeSessionsModal("")
+	if !app.home.SessionsModalVisible() {
+		t.Fatal("expected sessions modal to be visible")
+	}
+	items := app.home.SessionsModalItems()
+	if len(items) != 2 {
+		t.Fatalf("expected exactly 2 items in modal, got %d", len(items))
+	}
+	if items[0].ID != "orch-1" || items[1].ID != "orch-2" {
+		t.Fatalf("unexpected items in modal: %+v", items)
+	}
+
+	// 3. Verify Ctrl+X toggles modal closed
+	ctrlXEv := tcell.NewEventKey(tcell.KeyCtrlX, 0, tcell.ModNone)
+	if !app.handleGlobalKey(ctrlXEv) {
+		t.Fatal("expected Ctrl+X to handle modal close")
+	}
+	if app.home.SessionsModalVisible() {
+		t.Fatal("expected sessions modal to close on Ctrl+X")
 	}
 }

@@ -16,7 +16,7 @@ func (p *HomePage) drawMeta(s tcell.Screen, rect Rect, variant layoutVariant) {
 		return
 	}
 	if strings.TrimSpace(p.model.ActiveProjectID) != "" {
-		hintLine := "Ctrl+Up: Tasks Box  •  Ctrl+X: Orchestrator  •  Alt+W: Switch Project  •  /new: New Session"
+		hintLine := "Ctrl+Up: Tasks Box  •  Ctrl+X: Sessions  •  Alt+W: Switch Project  •  /new: New Session"
 		if p.taskBoxFocused {
 			hintLine = "Ctrl+Down / Esc: Prompt Box  •  Up/Down: Select Task  •  Enter: Open Task"
 		}
@@ -114,7 +114,7 @@ func (p *HomePage) drawInputBar(s tcell.Screen, rect Rect, centered bool) {
 
 	cursorX, cursorY, ok := drawWrappedInputArea(s, lineStart, contentY, innerW, contentH, p.theme.Text, prefix, p.prompt, p.promptCursor)
 	if len(p.prompt) == 0 && strings.TrimSpace(p.model.ActiveProjectName) != "" && innerW > 4 {
-		placeholder := "Type a prompt to orchestrate tasks... (Enter to send, Ctrl+X to chat)"
+		placeholder := "Type a prompt to orchestrate tasks... (Enter to send, Ctrl+X for sessions)"
 		availW := innerW - len(prefix)
 		if availW > 0 {
 			DrawText(s, lineStart+len(prefix), contentY, availW, p.theme.TextMuted, clampEllipsis(placeholder, availW))

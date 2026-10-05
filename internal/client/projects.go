@@ -182,7 +182,7 @@ func (c *API) ListProjectSessions(ctx context.Context, projectID string) ([]Sess
 	if projectID == "" {
 		return nil, errors.New("project id is required")
 	}
-	path := "/v3/sessions?project_id=" + url.QueryEscape(projectID) + "&limit=10"
+	path := "/v3/sessions?project_id=" + url.QueryEscape(projectID) + "&limit=100"
 	var resp struct {
 		OK       bool `json:"ok"`
 		Sessions []struct {
