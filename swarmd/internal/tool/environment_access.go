@@ -35,13 +35,15 @@ func EnvironmentToolAllowed(metadata map[string]any, toolName string) bool {
 		return false
 	}
 	for _, name := range []string{profile.Name, asString(metadata["agent_name"]), asString(metadata["subagent"])} {
-		if agentruntime.IsCoderAgentName(name) {
+		if agentruntime.IsCoderAgentName(name) || strings.EqualFold(strings.TrimSpace(name), "clone") || strings.EqualFold(strings.TrimSpace(name), "system-clone") {
 			return false
 		}
 	}
 	if profile.ToolContract != nil {
-		if cfg, ok := profile.ToolContract.Tools[toolName]; ok && cfg.Enabled != nil && !*cfg.Enabled {
-			return false
+		for _, name := range []string{toolName, strings.ReplaceAll(toolName, "_", "-")} {
+			if cfg, ok := profile.ToolContract.Tools[name]; ok && cfg.Enabled != nil && !*cfg.Enabled {
+				return false
+			}
 		}
 	}
 	return strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.SwarmAgentID) || agentruntime.IsOrchestratorAgentName(profile.Name)

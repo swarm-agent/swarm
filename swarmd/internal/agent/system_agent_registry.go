@@ -418,28 +418,28 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 	return &pebblestore.AgentToolContract{
 		Preset: "custom",
 		Tools: map[string]pebblestore.AgentToolConfig{
-			"read":              {Enabled: pebblestore.BoolPtr(true)},
-			"media_inspect":     {Enabled: pebblestore.BoolPtr(true)},
-			"search":            {Enabled: pebblestore.BoolPtr(true)},
-			"websearch":         {Enabled: pebblestore.BoolPtr(true)},
-			"webfetch":          {Enabled: pebblestore.BoolPtr(true)},
-			"find":              {Enabled: pebblestore.BoolPtr(true)},
-			"list":              {Enabled: pebblestore.BoolPtr(true)},
-			"bash":              {Enabled: pebblestore.BoolPtr(true)},
-			"manage_design":     {Enabled: pebblestore.BoolPtr(true)},
-			"manage_artifact":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage_video":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_projects":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage_sessions":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage_worktree":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage-theme":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
-			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
+			"read":                {Enabled: pebblestore.BoolPtr(true)},
+			"media_inspect":       {Enabled: pebblestore.BoolPtr(true)},
+			"search":              {Enabled: pebblestore.BoolPtr(true)},
+			"websearch":           {Enabled: pebblestore.BoolPtr(true)},
+			"webfetch":            {Enabled: pebblestore.BoolPtr(true)},
+			"find":                {Enabled: pebblestore.BoolPtr(true)},
+			"list":                {Enabled: pebblestore.BoolPtr(true)},
+			"bash":                {Enabled: pebblestore.BoolPtr(true)},
+			"manage_design":       {Enabled: pebblestore.BoolPtr(true)},
+			"manage_artifact":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_video":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_projects":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage-theme":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_workers":      {Enabled: pebblestore.BoolPtr(true)},
+			"manage_automation":   {Enabled: pebblestore.BoolPtr(true)},
 			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
-			"manage_connections": {Enabled: pebblestore.BoolPtr(true)},
-			"plan_manage":       {Enabled: pebblestore.BoolPtr(false)},
-			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
-			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(false)},
+			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":         {Enabled: pebblestore.BoolPtr(false)},
+			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
 }
@@ -1130,8 +1130,10 @@ func preserveEnvironmentToolDenials(profile *pebblestore.AgentProfile, snapshot 
 		return
 	}
 	for _, name := range []string{"manage_environments", "manage_connections"} {
-		if cfg, ok := snapshot.ToolContract.Tools[name]; ok && cfg.Enabled != nil && !*cfg.Enabled {
-			profile.ToolContract.Tools[name] = cfg
+		for _, key := range []string{name, strings.ReplaceAll(name, "_", "-")} {
+			if cfg, ok := snapshot.ToolContract.Tools[key]; ok && cfg.Enabled != nil && !*cfg.Enabled {
+				profile.ToolContract.Tools[name] = cfg
+			}
 		}
 	}
 }

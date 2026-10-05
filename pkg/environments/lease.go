@@ -27,21 +27,21 @@ const (
 // DeploymentLease provides atomic ownership tracking for an environment deployment.
 // Strictly scoped to AccountScopeID and WorkspaceID.
 type DeploymentLease struct {
-	PreparedSource *PreparedDeploymentSource `json:"prepared_source,omitempty"`
-	Shared bool `json:"shared,omitempty"` // Only explicit prepared-source acquisition may set this.
-	ID               string            `json:"id"`
-	AccountScopeID   string            `json:"account_scope_id"`
-	WorkspaceID      string            `json:"workspace_id"`
-	DeploymentID     string            `json:"deployment_id"`
-	EnvironmentID    string            `json:"environment_id"`
-	ConsumerType     ConsumerType      `json:"consumer_type"`
-	ConsumerID       string            `json:"consumer_id"`
-	ConsumerMetadata map[string]string `json:"consumer_metadata,omitempty"`
-	AcquiredAt       int64             `json:"acquired_at"`
-	ReleasedAt       int64             `json:"released_at,omitempty"`
-	ExpiresAt        int64             `json:"expires_at,omitempty"` // 0 indicates no expiration (held until explicitly released)
-	Active           bool              `json:"active"`
-	ReleaseReason    string            `json:"release_reason,omitempty"`
+	PreparedSource   *PreparedDeploymentSource `json:"prepared_source,omitempty"`
+	Shared           bool                      `json:"shared,omitempty"` // Only explicit prepared-source acquisition may set this.
+	ID               string                    `json:"id"`
+	AccountScopeID   string                    `json:"account_scope_id"`
+	WorkspaceID      string                    `json:"workspace_id"`
+	DeploymentID     string                    `json:"deployment_id"`
+	EnvironmentID    string                    `json:"environment_id"`
+	ConsumerType     ConsumerType              `json:"consumer_type"`
+	ConsumerID       string                    `json:"consumer_id"`
+	ConsumerMetadata map[string]string         `json:"consumer_metadata,omitempty"`
+	AcquiredAt       int64                     `json:"acquired_at"`
+	ReleasedAt       int64                     `json:"released_at,omitempty"`
+	ExpiresAt        int64                     `json:"expires_at,omitempty"` // 0 indicates no expiration (held until explicitly released)
+	Active           bool                      `json:"active"`
+	ReleaseReason    string                    `json:"release_reason,omitempty"`
 }
 
 // Validate checks that the DeploymentLease conforms to domain rules and scoping requirements.

@@ -111,7 +111,7 @@ func TestProjectInspectionExactResult(t *testing.T) {
 	if err := db.PutProjectTask(p.AccountScopeID, consumer); err != nil {
 		t.Fatal(err)
 	}
-	caller := pebblestore.SessionSnapshot{ID: consumer.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Mode: "auto", Metadata: map[string]any{"project_id": proj.ID, "task_id": consumer.ID, "swarm_v3_source_workspace_path": repo, "swarm_v3_source_workspace_id": binding.WorkspaceID, "swarm_v3_source_workspace_generation": binding.WorkspaceGeneration}}
+	caller := pebblestore.SessionSnapshot{ID: consumer.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Mode: "auto", Metadata: map[string]any{"project_id": proj.ID, "task_id": consumer.ID, "agent_profile": pebblestore.AgentProfile{Name: "swarm"}, "swarm_v3_source_workspace_path": repo, "swarm_v3_source_workspace_id": binding.WorkspaceID, "swarm_v3_source_workspace_generation": binding.WorkspaceGeneration}}
 	if _, err := applyProjectLifecycleFixture(f.server, sessionruntime.SessionMutationInput{SessionID: caller.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: caller.ID, IdempotencyKey: caller.ID, PayloadHash: caller.ID, RequestHash: caller.ID, Kind: sessionruntime.SessionMutationCreateSession, Session: &caller}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +132,20 @@ func TestProjectInspectionExactResult(t *testing.T) {
 	}
 	if out, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: caller.ID, Principal: p}, tool.Call{Name: "manage_environments", Arguments: string(envArgs)}); err != nil || !strings.Contains(out, binding.WorkspaceID) {
 		t.Fatalf("cross-task environment resolution: %s %v", out, err)
+	}
+	// Environment source selection uses the same real project/catalog authority,
+	// without borrowing the originating conversation or its lease.
+	for _, callerID := range []string{parent.ID, caller.ID} {
+		for _, name := range []string{"manage_environments", "manage-environments"} {
+			args, _ := json.Marshal(map[string]any{"action": "list", "workspace_id": binding.WorkspaceID})
+			if out, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: callerID, Principal: p, RejectScopeExpansion: true}, tool.Call{Name: name, Arguments: string(args)}); err != nil || !strings.Contains(out, binding.WorkspaceID) {
+				t.Fatalf("no-cwd environment resolution: %s %v", out, err)
+			}
+			args, _ = json.Marshal(map[string]any{"action": "list", "workspace_id": "nonmember"})
+			if _, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, tool.WorkspaceScope{SessionID: callerID, Principal: p, RejectScopeExpansion: true}, tool.Call{Name: name, Arguments: string(args)}); err == nil {
+				t.Fatal("nonmember environment source accepted")
+			}
+		}
 	}
 	for _, change := range []func(*pebblestore.SessionSnapshot){
 		func(s *pebblestore.SessionSnapshot) { s.ID = "forged-session" },

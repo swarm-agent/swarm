@@ -16,7 +16,7 @@ func TestEnvironmentToolProfileDefaultsAndDenials(t *testing.T) {
 			if disabled {
 				snapshot.ToolContract = &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{
 					"manage_environments": {Enabled: pebblestore.BoolPtr(false)},
-					"manage_connections": {Enabled: pebblestore.BoolPtr(false)},
+					"manage_connections":  {Enabled: pebblestore.BoolPtr(false)},
 				}}
 			}
 			profile := reconcile(snapshot)

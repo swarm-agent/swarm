@@ -75,8 +75,12 @@ func (s *LeaseStore) GetActiveLease(accountScopeID, workspaceID, deploymentID st
 	}
 
 	shared, err := s.sharedHeld(accountScopeID, workspaceID, deploymentID)
-	if err != nil { return environments.DeploymentLease{}, false, err }
-	if len(shared) > 0 { return shared[0], true, nil }
+	if err != nil {
+		return environments.DeploymentLease{}, false, err
+	}
+	if len(shared) > 0 {
+		return shared[0], true, nil
+	}
 	activeKey := KeyDeploymentActiveLeaseForAccount(accountScopeID, workspaceID, deploymentID)
 	activeLeaseIDBytes, ok, err := s.store.GetBytes(activeKey)
 	if err != nil || !ok {
@@ -122,8 +126,12 @@ func (s *LeaseStore) AcquireLease(lease environments.DeploymentLease) (environme
 	}
 
 	shared, err := s.sharedHeld(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
-	if err != nil { return environments.DeploymentLease{}, err }
-	if len(shared) > 0 { return environments.DeploymentLease{}, ErrDeploymentLeaseHeld }
+	if err != nil {
+		return environments.DeploymentLease{}, err
+	}
+	if len(shared) > 0 {
+		return environments.DeploymentLease{}, ErrDeploymentLeaseHeld
+	}
 	// Check if active lease already exists
 	activeKey := KeyDeploymentActiveLeaseForAccount(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
 	existingActiveIDBytes, hasActive, err := s.store.GetBytes(activeKey)
@@ -229,6 +237,12 @@ func (s *LeaseStore) ReleaseLease(accountScopeID, workspaceID, leaseID string, r
 	leaseKey := KeyDeploymentLeaseForAccount(accountScopeID, workspaceID, lease.ID)
 	if err := batch.Set([]byte(leaseKey), leaseRaw, nil); err != nil {
 		return environments.DeploymentLease{}, fmt.Errorf("batch set released lease: %w", err)
+	}
+
+	if lease.Shared {
+		if err := s.removeSharedIndex(batch, lease); err != nil {
+			return environments.DeploymentLease{}, err
+		}
 	}
 
 	// If the active pointer points to this lease, delete it
@@ -347,7 +361,16 @@ func (s *LeaseStore) ExpireStaleLeases(accountScopeID, workspaceID string, nowMi
 				return expiredCount, fmt.Errorf("marshal expired lease: %w", err)
 			}
 			leaseKey := KeyDeploymentLeaseForAccount(accountScopeID, workspaceID, l.ID)
-			_ = batch.Set([]byte(leaseKey), raw, nil)
+			if err := batch.Set([]byte(leaseKey), raw, nil); err != nil {
+				batch.Close()
+				return expiredCount, err
+			}
+			if l.Shared {
+				if err := s.removeSharedIndex(batch, l); err != nil {
+					batch.Close()
+					return expiredCount, err
+				}
+			}
 
 			activeKey := KeyDeploymentActiveLeaseForAccount(accountScopeID, workspaceID, l.DeploymentID)
 			activeLeaseIDBytes, ok, err := s.store.GetBytes(activeKey)
@@ -383,14 +406,24 @@ func sharedLeaseKey(account, workspace, deployment string) string {
 func (s *LeaseStore) sharedHeld(account, workspace, deployment string) ([]environments.DeploymentLease, error) {
 	var ids []string
 	_, err := s.store.GetJSON(sharedLeaseKey(account, workspace, deployment), &ids)
-	if err != nil { return nil, err }
-	if len(ids) > 64 { return nil, errors.New("shared lease index exceeds capacity") }
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) > 64 {
+		return nil, errors.New("shared lease index exceeds capacity")
+	}
 	var held []environments.DeploymentLease
 	for _, id := range ids {
 		lease, found, err := s.Get(account, workspace, id)
-		if err != nil { return nil, err }
-		if !found || lease.DeploymentID != deployment || !lease.Shared { return nil, errors.New("invalid shared lease index") }
-		if lease.IsHeld(time.Now().UnixMilli()) { held = append(held, lease) }
+		if err != nil {
+			return nil, err
+		}
+		if !found || lease.DeploymentID != deployment || !lease.Shared {
+			return nil, errors.New("invalid shared lease index")
+		}
+		if lease.IsHeld(time.Now().UnixMilli()) {
+			held = append(held, lease)
+		}
 	}
 	return held, nil
 }
@@ -399,43 +432,99 @@ func (s *LeaseStore) sharedHeld(account, workspace, deployment string) ([]enviro
 // authorized attachment and exact live deployment provenance under lifecycle locks.
 // It never converts an exclusive lease to shared ownership.
 func (s *LeaseStore) AcquireSharedLease(lease environments.DeploymentLease) (environments.DeploymentLease, error) {
-	if s == nil || s.store == nil { return environments.DeploymentLease{}, errors.New("lease store is not configured") }
+	if s == nil || s.store == nil {
+		return environments.DeploymentLease{}, errors.New("lease store is not configured")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UnixMilli()
 	lease.ID = "lease_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	lease.AcquiredAt, lease.Active, lease.Shared = now, true, true
-	if lease.ExpiresAt <= now { return environments.DeploymentLease{}, errors.New("shared lease requires future expiry") }
-	if err := lease.Validate(); err != nil { return environments.DeploymentLease{}, err }
+	if lease.ExpiresAt <= now {
+		return environments.DeploymentLease{}, errors.New("shared lease requires future expiry")
+	}
+	if err := lease.Validate(); err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	key := KeyDeploymentActiveLeaseForAccount(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
 	id, found, err := s.store.GetBytes(key)
-	if err != nil { return environments.DeploymentLease{}, err }
+	if err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	if found {
 		exclusive, ok, err := s.Get(lease.AccountScopeID, lease.WorkspaceID, string(id))
-		if err != nil { return environments.DeploymentLease{}, err }
-		if !ok { return environments.DeploymentLease{}, errors.New("invalid exclusive lease index") }
-		if exclusive.IsHeld(now) { return environments.DeploymentLease{}, ErrDeploymentLeaseHeld }
+		if err != nil {
+			return environments.DeploymentLease{}, err
+		}
+		if !ok {
+			return environments.DeploymentLease{}, errors.New("invalid exclusive lease index")
+		}
+		if exclusive.IsHeld(now) {
+			return environments.DeploymentLease{}, ErrDeploymentLeaseHeld
+		}
 	}
 	held, err := s.sharedHeld(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
-	if err != nil { return environments.DeploymentLease{}, err }
+	if err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	ids := make([]string, 0, len(held)+1)
 	for _, existing := range held {
-		if (existing.PreparedSource == nil) != (lease.PreparedSource == nil) || (existing.PreparedSource != nil && *existing.PreparedSource != *lease.PreparedSource) { return environments.DeploymentLease{}, errors.New("shared deployment source conflict") }
+		if (existing.PreparedSource == nil) != (lease.PreparedSource == nil) || (existing.PreparedSource != nil && *existing.PreparedSource != *lease.PreparedSource) {
+			return environments.DeploymentLease{}, errors.New("shared deployment source conflict")
+		}
 		if existing.ConsumerType == lease.ConsumerType && existing.ConsumerID == lease.ConsumerID {
 			return existing, nil
 		}
 		ids = append(ids, existing.ID)
 	}
-	if len(ids) >= 64 { return environments.DeploymentLease{}, errors.New("shared lease capacity reached") }
+	if len(ids) >= 64 {
+		return environments.DeploymentLease{}, errors.New("shared lease capacity reached")
+	}
 	ids = append(ids, lease.ID)
 	raw, err := json.Marshal(lease)
-	if err != nil { return environments.DeploymentLease{}, err }
+	if err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	index, err := json.Marshal(ids)
-	if err != nil { return environments.DeploymentLease{}, err }
+	if err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
-	if err := batch.Set([]byte(KeyDeploymentLeaseForAccount(lease.AccountScopeID, lease.WorkspaceID, lease.ID)), raw, nil); err != nil { return environments.DeploymentLease{}, err }
-	if err := batch.Set([]byte(sharedLeaseKey(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)), index, nil); err != nil { return environments.DeploymentLease{}, err }
-	if err := batch.Commit(pebble.Sync); err != nil { return environments.DeploymentLease{}, err }
+	if err := batch.Set([]byte(KeyDeploymentLeaseForAccount(lease.AccountScopeID, lease.WorkspaceID, lease.ID)), raw, nil); err != nil {
+		return environments.DeploymentLease{}, err
+	}
+	if err := batch.Set([]byte(sharedLeaseKey(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)), index, nil); err != nil {
+		return environments.DeploymentLease{}, err
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	return lease, nil
+}
+
+// Called under the store stripe lock; receipt state and index change atomically.
+func (s *LeaseStore) removeSharedIndex(batch *pebble.Batch, lease environments.DeploymentLease) error {
+	key := sharedLeaseKey(lease.AccountScopeID, lease.WorkspaceID, lease.DeploymentID)
+	var ids []string
+	if _, err := s.store.GetJSON(key, &ids); err != nil {
+		return err
+	}
+	if len(ids) > 64 {
+		return errors.New("shared lease index exceeds capacity")
+	}
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != lease.ID {
+			kept = append(kept, id)
+		}
+	}
+	if len(kept) == 0 {
+		return batch.Delete([]byte(key), nil)
+	}
+	raw, err := json.Marshal(kept)
+	if err != nil {
+		return err
+	}
+	return batch.Set([]byte(key), raw, nil)
 }

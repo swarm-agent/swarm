@@ -22,7 +22,7 @@ func (s environmentAccessSessions) GetSession(string) (pebblestore.SessionSnapsh
 // store/provider access, even after resume or with forged arguments. Handler-level
 // tests are the narrowest boundary proving tool visibility cannot grant authority.
 func TestEnvironmentAccessDirectHandlers(t *testing.T) {
-	for _, role := range []string{"coder", "clone", "system-coder"} {
+	for _, role := range []string{"coder", "clone", "system-clone", "system-coder", " CoDeR "} {
 		for _, key := range []string{"agent_name", "subagent"} {
 			t.Run(role+"/"+key, func(t *testing.T) {
 				scope := WorkspaceScope{SessionID: "child", Principal: identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "user"}}
@@ -87,5 +87,16 @@ func TestEnvironmentProjectSourceResolution(t *testing.T) {
 	resolver.err = nil
 	if _, _, _, err := r.resolveWorkspaceScopeForEnvironments(scope, map[string]any{"workspace_id": "workspace"}, "manage_environments"); err == nil {
 		t.Fatal("foreign account accepted")
+	}
+}
+
+// Purpose: saved hyphenated capability denials must survive direct handler
+// admission; aliases are not a second authority permitting environment execution.
+func TestEnvironmentAccessAliasDenial(t *testing.T) {
+	for _, name := range []string{"manage-environments", "manage-connections"} {
+		metadata := map[string]any{"agent_profile": pebblestore.AgentProfile{Name: "swarm", ToolContract: &pebblestore.AgentToolContract{Tools: map[string]pebblestore.AgentToolConfig{name: {Enabled: pebblestore.BoolPtr(false)}}}}}
+		if EnvironmentToolAllowed(metadata, strings.ReplaceAll(name, "-", "_")) {
+			t.Fatalf("ignored denial %s", name)
+		}
 	}
 }

@@ -166,8 +166,8 @@ func setupEnvironmentsToolHarness(t *testing.T) *toolTestHarness {
 		Roots:       []string{wsPath},
 		Principal: identity.Principal{
 			AccountScopeID: "test-account",
-			Type: identity.PrincipalTypeUser,
-			UserID: "test-user",
+			Type:           identity.PrincipalTypeUser,
+			UserID:         "test-user",
 		},
 		SessionID: "test-session-001",
 	}

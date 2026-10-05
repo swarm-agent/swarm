@@ -306,22 +306,44 @@ func TestLeaseStore_SharedConsumers(t *testing.T) {
 			defer wg.Done()
 			lease := base
 			lease.ConsumerID = fmt.Sprintf("consumer-%d", i)
-			if _, err := NewLeaseStore(store).AcquireSharedLease(lease); err != nil { t.Errorf("acquire: %v", err) }
+			if _, err := NewLeaseStore(store).AcquireSharedLease(lease); err != nil {
+				t.Errorf("acquire: %v", err)
+			}
 		}(i)
 	}
 	wg.Wait()
 	all, err := ls.ListForDeployment("account", "workspace", "deployment", 100)
-	if err != nil || len(all) != 8 { t.Fatalf("leases=%d err=%v", len(all), err) }
+	if err != nil || len(all) != 8 {
+		t.Fatalf("leases=%d err=%v", len(all), err)
+	}
 	base.ConsumerID = "exclusive"
-	if _, err := ls.AcquireLease(base); !errors.Is(err, ErrDeploymentLeaseHeld) { t.Fatalf("exclusive sharing: %v", err) }
+	if _, err := ls.AcquireLease(base); !errors.Is(err, ErrDeploymentLeaseHeld) {
+		t.Fatalf("exclusive sharing: %v", err)
+	}
 	for _, lease := range all[:7] {
-		if _, err := ls.ReleaseLease("account", "workspace", lease.ID, "done"); err != nil { t.Fatal(err) }
+		if _, err := ls.ReleaseLease("account", "workspace", lease.ID, "done"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var indexed []string
+	if _, err := store.GetJSON(sharedLeaseKey("account", "workspace", "deployment"), &indexed); err != nil || len(indexed) != 1 {
+		t.Fatalf("released receipts remain indexed: %v %v", indexed, err)
 	}
 	active, found, err := NewLeaseStore(store).GetActiveLease("account", "workspace", "deployment")
-	if err != nil || !found || active.ID != all[7].ID { t.Fatalf("reload: %+v %v", active, err) }
-	if _, err := ls.ExpireStaleLeases("account", "workspace", time.Now().Add(2*time.Hour).UnixMilli()); err != nil { t.Fatal(err) }
-	if _, found, err := ls.GetActiveLease("account", "workspace", "deployment"); err != nil || found { t.Fatalf("expired shared lease held: %v", err) }
-	if _, err := ls.AcquireLease(base); err != nil { t.Fatal(err) }
+	if err != nil || !found || active.ID != all[7].ID {
+		t.Fatalf("reload: %+v %v", active, err)
+	}
+	if _, err := ls.ExpireStaleLeases("account", "workspace", time.Now().Add(2*time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := ls.GetActiveLease("account", "workspace", "deployment"); err != nil || found {
+		t.Fatalf("expired shared lease held: %v", err)
+	}
+	if _, err := ls.AcquireLease(base); err != nil {
+		t.Fatal(err)
+	}
 	base.ConsumerID = "shared"
-	if _, err := ls.AcquireSharedLease(base); !errors.Is(err, ErrDeploymentLeaseHeld) { t.Fatalf("shared borrowed exclusive: %v", err) }
+	if _, err := ls.AcquireSharedLease(base); !errors.Is(err, ErrDeploymentLeaseHeld) {
+		t.Fatalf("shared borrowed exclusive: %v", err)
+	}
 }
