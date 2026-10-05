@@ -778,15 +778,24 @@ func (p *HomePage) drawOnboardingPersonalizing(s tcell.Screen, content Rect) {
 		DrawText(s, cardRect.X+3, cardRect.Y+7, cardRect.W-6, step4Style, fmt.Sprintf("%s %s", step4Icon, step4Text))
 	}
 
-	if content.H > cardH+2 {
+	if cardH >= 11 {
 		tickerMsgs := []string{
-			"Personalizing your Project.. Synthesizing architecture & rules for Swarm.",
-			"Scanning repository structure and source roles for orchestrator…",
-			"AI Router creating durable project context in Swarm database…",
-			"Aligning orchestrator behavior with your project standards…",
+			"Synthesizing architecture & rules for Swarm…",
+			"Scanning repository structure & source files…",
+			"Creating durable project context in Pebble store…",
+			"Aligning orchestrator with project standards…",
 		}
 		tickerIdx := (st.Tick / 16) % len(tickerMsgs)
-		DrawText(s, content.X+1, cardRect.Y+cardRect.H+1, content.W-2, p.theme.TextMuted, tickerMsgs[tickerIdx])
+		DrawText(s, cardRect.X+3, cardRect.Y+9, cardRect.W-6, p.theme.TextMuted, fmt.Sprintf("✦ %s", tickerMsgs[tickerIdx]))
+	} else if content.H > cardH+1 {
+		tickerMsgs := []string{
+			"Synthesizing architecture & rules for Swarm…",
+			"Scanning repository structure & source files…",
+			"Creating durable project context in Pebble store…",
+			"Aligning orchestrator with project standards…",
+		}
+		tickerIdx := (st.Tick / 16) % len(tickerMsgs)
+		DrawText(s, cardRect.X+3, cardRect.Y+cardRect.H+1, cardRect.W-6, p.theme.TextMuted, fmt.Sprintf("✦ %s", tickerMsgs[tickerIdx]))
 	}
 }
 

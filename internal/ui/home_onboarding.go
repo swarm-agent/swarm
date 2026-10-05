@@ -619,7 +619,7 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 		status = errText
 		statusStyle = p.theme.Error
 	}
-	if status != "" {
+	if status != "" && (!p.onboarding.Personalizing || p.onboarding.Error != "") && !p.onboarding.PreFinish {
 		lines := Wrap(status, rect.W-6)
 		for i, line := range lines {
 			if i >= 2 {
@@ -637,7 +637,7 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 		if p.onboarding.PreFinish {
 			help = "Enter launch project · Space launch · Esc back"
 		} else if p.onboarding.Personalizing {
-			help = "Personalizing your Project.. Please wait while AI Router synthesizes context"
+			help = "AI Router is personalizing Swarm. Please wait…"
 		} else if p.onboarding.CreatingFolder {
 			help = "Type folder path · Enter create · Esc cancel"
 		} else if p.onboarding.AddingWorkspaces {
