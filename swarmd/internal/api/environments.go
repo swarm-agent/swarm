@@ -153,6 +153,10 @@ type connectionMutationRequest struct {
 }
 
 func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authorizeEnvironmentHTTPSession(r, "", "manage_connections"); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	if s.connections == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("connection service not configured"))
 		return
@@ -466,6 +470,10 @@ type environmentMutationRequest struct {
 }
 
 func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authorizeEnvironmentHTTPSession(r, "", "manage_environments"); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	if s.environments == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("environment service not configured"))
 		return
@@ -796,14 +804,14 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 
 			principal, _ := PrincipalFromRequest(r)
 			callerActor := principal.UserID
-			callerSessionID := ""
-			if req.SessionID != "" && s.sessions != nil {
-				if sess, found, _ := s.sessions.GetSession(strings.TrimSpace(req.SessionID)); found && sess.AccountScopeID == accountScopeID && sess.UserID == principal.UserID {
-					callerSessionID = sess.ID
-					if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
-						workspacePath = sess.WorktreeRootPath
-					}
-				}
+			sess, authErr := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments")
+			if authErr != nil {
+				writeError(w, http.StatusForbidden, authErr)
+				return
+			}
+			callerSessionID := sess.ID
+			if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+				workspacePath = sess.WorktreeRootPath
 			}
 
 			subReq := lifecycle.SubmitOperationRequest{
@@ -832,6 +840,13 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 					Actor:     callerActor,
 					SessionID: callerSessionID,
 				},
+			}
+			if callerSessionID != "" {
+				subReq.ConsumerType = environments.ConsumerTypeSession
+				subReq.ConsumerID = callerSessionID
+			} else {
+				subReq.ConsumerType = environments.ConsumerTypeCustom
+				subReq.ConsumerID = callerActor
 			}
 			if action == "build" {
 				subReq.WorkspacePath = ""
@@ -1024,6 +1039,10 @@ type deploymentMutationRequest struct {
 }
 
 func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authorizeEnvironmentHTTPSession(r, "", "manage_environments"); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	if s.deployments == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("deployment service not configured"))
 		return
@@ -1110,14 +1129,14 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 
 		principal, _ := PrincipalFromRequest(r)
 		callerActor := principal.UserID
-		callerSessionID := ""
-		if req.SessionID != "" && s.sessions != nil {
-			if sess, found, _ := s.sessions.GetSession(strings.TrimSpace(req.SessionID)); found && sess.AccountScopeID == accountScopeID && sess.UserID == principal.UserID {
-				callerSessionID = sess.ID
-				if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
-					workspacePath = sess.WorktreeRootPath
-				}
-			}
+		sess, authErr := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments")
+		if authErr != nil {
+			writeError(w, http.StatusForbidden, authErr)
+			return
+		}
+		callerSessionID := sess.ID
+		if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+			workspacePath = sess.WorktreeRootPath
 		}
 
 		action := strings.ToLower(strings.TrimSpace(req.Action))
@@ -1149,6 +1168,13 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 				Actor:     callerActor,
 				SessionID: callerSessionID,
 			},
+		}
+		if callerSessionID != "" {
+			subReq.ConsumerType = environments.ConsumerTypeSession
+			subReq.ConsumerID = callerSessionID
+		} else {
+			subReq.ConsumerType = environments.ConsumerTypeCustom
+			subReq.ConsumerID = callerActor
 		}
 		if req.TimeoutMS > 0 {
 			subReq.Timeout = time.Duration(req.TimeoutMS) * time.Millisecond

@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Expose environment management to Orchestrator while preserving saved capability denials; enforce durable Swarm/Orchestrator session admission on environment tools and HTTP routes, and add an internal source-bound independent-consumer lease foundation. Docs impact: none; task attachment wiring and live environment qualification remain separate.
+
 - Add supervised local managed image builds from exact catalog-authorized committed product/recipe inputs, bounded clean contexts, operation-owned cancellation/cleanup and immutable deployment provenance. Preserve manual onboarding state on lease release. Docs impact: `docs/managed-local-systemd-environments.md` and environment tool help describe admission, action flow and live-validation limits.
 
 - Preserve bounded, redacted local-engine failure diagnostics and add an explicit rootless Podman/systemd managed-environment contract with capability admission, private cgroups, PID limits, no host mounts, and loopback-only ports. Docs impact: managed-environment tool schema/help documents the typed runtime and host prerequisites; live runtime qualification remains separate.
