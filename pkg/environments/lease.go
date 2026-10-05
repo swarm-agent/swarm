@@ -27,6 +27,8 @@ const (
 // DeploymentLease provides atomic ownership tracking for an environment deployment.
 // Strictly scoped to AccountScopeID and WorkspaceID.
 type DeploymentLease struct {
+	PreparedSource *PreparedDeploymentSource `json:"prepared_source,omitempty"`
+	Shared bool `json:"shared,omitempty"` // Only explicit prepared-source acquisition may set this.
 	ID               string            `json:"id"`
 	AccountScopeID   string            `json:"account_scope_id"`
 	WorkspaceID      string            `json:"workspace_id"`
@@ -134,6 +136,10 @@ func (l *DeploymentLease) Clone() *DeploymentLease {
 		return nil
 	}
 	cp := *l
+	if l.PreparedSource != nil {
+		source := *l.PreparedSource
+		cp.PreparedSource = &source
+	}
 	if l.ConsumerMetadata != nil {
 		cp.ConsumerMetadata = make(map[string]string, len(l.ConsumerMetadata))
 		for k, v := range l.ConsumerMetadata {

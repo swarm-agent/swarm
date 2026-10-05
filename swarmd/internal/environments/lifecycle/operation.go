@@ -396,7 +396,8 @@ func (m *DeploymentManager) validateAdmission(
 			if lease.DeploymentID != dep.ID {
 				return nil, nil, nil, fmt.Errorf("lease %q does not match deployment %q", req.LeaseID, dep.ID)
 			}
-			if lease.ConsumerID != "" && callerID != "" && lease.ConsumerID != callerID && req.ConsumerID != lease.ConsumerID {
+			if lease.Shared && (lease.PreparedSource == nil || !lease.PreparedSource.Matches(*dep)) { return nil, nil, nil, ErrDeploymentUnusable }
+			if !ownsLease(req.Attribution, lease) {
 				return nil, nil, nil, fmt.Errorf("%w: lease held by consumer %q, caller is %q", ErrDeploymentLeaseHeld, lease.ConsumerID, callerID)
 			}
 		} else {
@@ -407,7 +408,7 @@ func (m *DeploymentManager) validateAdmission(
 			if !hasActive || !activeLease.Active || activeLease.IsExpired(now) {
 				return nil, nil, nil, fmt.Errorf("active lease required to exec in deployment %q", dep.ID)
 			}
-			if activeLease.ConsumerID != "" && callerID != "" && activeLease.ConsumerID != callerID && req.ConsumerID != activeLease.ConsumerID {
+			if activeLease.Shared || !ownsLease(req.Attribution, activeLease) {
 				return nil, nil, nil, fmt.Errorf("%w: active lease held by consumer %q, caller is %q", ErrDeploymentLeaseHeld, activeLease.ConsumerID, callerID)
 			}
 			req.LeaseID = activeLease.ID
@@ -429,6 +430,17 @@ func (m *DeploymentManager) validateAdmission(
 		}
 		dep = &d
 
+		if req.Action != environments.OperationActionRelease {
+			lease, held, err := m.deployments.GetActiveLease(req.AccountScopeID, req.WorkspaceID, dep.ID)
+			if err != nil { return nil, nil, nil, err }
+			if held && lease.Shared && lease.IsHeld(time.Now().UnixMilli()) { return nil, nil, nil, ErrDeploymentLeaseHeld }
+		}
+		if req.Action == environments.OperationActionRelease {
+			if req.LeaseID == "" || m.deployments.Leases() == nil { return nil, nil, nil, ErrLeaseNotFound }
+			lease, found, err := m.deployments.Leases().Get(req.AccountScopeID, req.WorkspaceID, req.LeaseID)
+			if err != nil { return nil, nil, nil, err }
+			if !found || lease.DeploymentID != dep.ID || !ownsLease(req.Attribution, lease) { return nil, nil, nil, ErrDeploymentLeaseHeld }
+		}
 		if m.connections != nil && dep.ConnectionID != "" {
 			c, foundConn, err := m.connections.Get(req.AccountScopeID, req.WorkspaceID, dep.ConnectionID)
 			if err == nil && foundConn {
@@ -476,6 +488,9 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		activeOp, hasActive, _ := m.operations.GetActiveOperationForDeployment(req.AccountScopeID, req.WorkspaceID, dep.ID)
 		if hasActive && req.IdempotencyKey != "" && activeOp.IdempotencyKey == req.IdempotencyKey && activeOp.Action != req.Action {
 			return nil, fmt.Errorf("%w: idempotency key %q reused with different action (%s vs %s)", environments.ErrIdempotencyConflict, req.IdempotencyKey, req.Action, activeOp.Action)
+		}
+		if hasActive && req.Action == environments.OperationActionRelease && activeOp.LeaseID != req.LeaseID {
+			return nil, environments.ErrDeploymentOperationConflict
 		}
 		if hasActive && activeOp.Action == environments.OperationActionExec && activeOp.IsActive() {
 			_, _ = m.Cancel(admissionCtx, CancelOperationRequest{
@@ -997,6 +1012,15 @@ func (m *DeploymentManager) executeAction(
 		if conn == nil || dep == nil {
 			return nil, errors.New("connection or deployment not resolved for exec")
 		}
+		lease, found, err := m.deployments.Leases().Get(req.AccountScopeID, req.WorkspaceID, req.LeaseID)
+		if err != nil { return nil, err }
+		if !found || !lease.IsHeld(time.Now().UnixMilli()) || !ownsLease(req.Attribution, lease) { return nil, ErrDeploymentLeaseHeld }
+		if lease.Shared {
+			current, found, err := m.deployments.Get(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
+			if err != nil { return nil, err }
+			if !found || lease.PreparedSource == nil || !lease.PreparedSource.Matches(current) { return nil, ErrDeploymentUnusable }
+			dep = &current
+		}
 		prov, ok := m.registry.Get(conn.Kind)
 		if !ok {
 			return nil, fmt.Errorf("provider for kind %q: %w", conn.Kind, ErrProviderNotRegistered)
@@ -1092,6 +1116,7 @@ func (m *DeploymentManager) executeAction(
 			AccountScopeID: req.AccountScopeID,
 			WorkspaceID:    req.WorkspaceID,
 			LeaseID:        req.LeaseID,
+			Attribution:    req.Attribution,
 			Reason:         req.Reason,
 		})
 		if err != nil {

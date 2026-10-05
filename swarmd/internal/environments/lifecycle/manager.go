@@ -138,6 +138,8 @@ type EnsureDeploymentResult struct {
 
 // ReleaseDeploymentRequest specifies parameters for releasing a held lease.
 type ReleaseDeploymentRequest struct {
+	// Required for shared leases; authenticated by the calling service.
+	Attribution environments.OperationAttribution `json:"-"`
 	AccountScopeID string `json:"account_scope_id"`
 	WorkspaceID    string `json:"workspace_id"`
 	LeaseID        string `json:"lease_id"`
@@ -905,7 +907,8 @@ func (m *DeploymentManager) ReleaseDeployment(ctx context.Context, req ReleaseDe
 	if !found {
 		return nil, fmt.Errorf("lease %q: %w", req.LeaseID, ErrLeaseNotFound)
 	}
-	if !lease.Active {
+	if lease.Shared && !ownsLease(req.Attribution, lease) { return nil, ErrDeploymentLeaseHeld }
+	if !lease.Active && !lease.Shared {
 		return nil, fmt.Errorf("lease %q: %w", req.LeaseID, ErrLeaseAlreadyReleased)
 	}
 
@@ -937,6 +940,16 @@ func (m *DeploymentManager) ReleaseDeployment(ctx context.Context, req ReleaseDe
 	}
 	defer depLock.Unlock()
 
+	// Shared consumers only release their own receipt. Never mutate provider or
+	// deployment health/status, even when this was the last consumer.
+	if lease.Shared {
+		released, err := m.deployments.ReleaseLease(req.AccountScopeID, req.WorkspaceID, req.LeaseID, req.Reason)
+		if err != nil { return nil, err }
+		return &ReleaseDeploymentResult{Lease: released, Deployment: dep, ReleaseBehavior: environments.ReleaseBehaviorNone, ActionTaken: "retained"}, nil
+	}
+	active, held, leaseErr := m.deployments.GetActiveLease(req.AccountScopeID, req.WorkspaceID, dep.ID)
+	if leaseErr != nil { return nil, leaseErr }
+	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) { return nil, ErrDeploymentLeaseHeld }
 	releaseBehavior := environments.ReleaseBehaviorNone
 	if m.environments != nil {
 		env, foundEnv, _ := m.environments.Get(req.AccountScopeID, req.WorkspaceID, dep.EnvironmentID)
@@ -1073,7 +1086,9 @@ func (m *DeploymentManager) DestroyDeployment(ctx context.Context, req DestroyDe
 
 	// 1. Release active lease if held
 	activeLease, hasActive, err := m.deployments.GetActiveLease(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
-	if err == nil && hasActive && activeLease.Active {
+	if err != nil { return err }
+	if hasActive && activeLease.Shared && activeLease.IsHeld(time.Now().UnixMilli()) { return ErrDeploymentLeaseHeld }
+	if hasActive && activeLease.Active {
 		reason := "deployment_destroyed"
 		if req.Reason != "" {
 			reason += ": " + req.Reason
@@ -1137,6 +1152,9 @@ func (m *DeploymentManager) StopDeployment(ctx context.Context, accountScopeID, 
 	}
 	defer depLock.Unlock()
 
+	active, held, leaseErr := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
+	if leaseErr != nil { return leaseErr }
+	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) { return ErrDeploymentLeaseHeld }
 	if m.connections != nil && m.registry != nil {
 		conn, foundConn, err := m.connections.Get(accountScopeID, workspaceID, dep.ConnectionID)
 		if err != nil {
@@ -1191,6 +1209,9 @@ func (m *DeploymentManager) StartDeployment(ctx context.Context, accountScopeID,
 	}
 	defer depLock.Unlock()
 
+	active, held, leaseErr := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
+	if leaseErr != nil { return leaseErr }
+	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) { return ErrDeploymentLeaseHeld }
 	if m.connections != nil && m.registry != nil {
 		conn, foundConn, err := m.connections.Get(accountScopeID, workspaceID, dep.ConnectionID)
 		if err != nil {
