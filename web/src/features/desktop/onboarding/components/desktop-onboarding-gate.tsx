@@ -16,7 +16,9 @@ import { CodexDeviceCode } from '../../settings/auth/components/codex-device-cod
 import { codexSetupRecommendation } from '../../settings/auth/codex-setup-recommendation'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
 import { applyWorkspaceTheme, workspaceThemeDefaultId } from '../../../workspaces/launcher/services/workspace-theme'
+import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
+import { ArrowUp, ChevronRight, FileText, FolderPlus, GitBranch, RefreshCw, Search } from 'lucide-react'
 
 import { completeAccountOnboarding } from '../../orchestrate/project-entry-policy'
 import { requestJson } from '../../../../app/api'
@@ -29,7 +31,23 @@ import type { CreationProject, CreationWorkspace } from '../../state/project-cre
 type OnboardingStep = 'identity' | 'provider' | 'project' | 'workspaces'
 type CodexOAuthMode = StartCodexOAuthInput['method']
 type ProviderSetupMode = 'api' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | null
-type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'project-create' | 'folder-add' | null
+type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'project-create' | 'folder-add' | 'folder-create' | null
+
+interface WorkspaceItem {
+  id?: string
+  path: string
+  name: string
+  isGitRepo: boolean
+  hasSwarm: boolean
+  hasClaude?: boolean
+  isSaved?: boolean
+  isLaunchFolder?: boolean
+}
+
+function fallbackFolderName(path: string): string {
+  const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path.trim() || 'workspace'
+}
 
 type OnboardingView = OnboardingStep | 'setup' | 'personalizing'
 
@@ -122,6 +140,8 @@ function pendingMessage(action: PendingAction): string | null {
       return 'Creating your project…'
     case 'folder-add':
       return 'Registering workspace folder…'
+    case 'folder-create':
+      return 'Creating workspace folder…'
     default:
       return null
   }
@@ -243,6 +263,89 @@ function OnboardingButtonLabel({ idle, pending, isPending }: { idle: string; pen
   )
 }
 
+function WorkspaceCard({
+  item,
+  selected,
+  onToggle,
+  onBrowse,
+}: {
+  item: WorkspaceItem
+  selected: boolean
+  onToggle: () => void
+  onBrowse?: () => void
+}) {
+  return (
+    <div
+      onClick={onToggle}
+      className={[
+        'group relative flex items-start gap-3 rounded-xl border p-3 cursor-pointer transition-all select-none',
+        selected
+          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] shadow-xs'
+          : 'border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_40%,transparent)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]',
+      ].join(' ')}
+    >
+      <div className="pt-0.5">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => {
+            e.stopPropagation()
+            onToggle()
+          }}
+          className="size-4 rounded accent-[var(--app-primary)] cursor-pointer"
+        />
+      </div>
+
+      <div className="grid min-w-0 flex-1 gap-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="truncate text-sm font-semibold text-[var(--app-text)]">
+            {item.name}
+          </span>
+          {item.hasSwarm ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[color-mix(in_oklab,var(--app-primary)_60%,transparent)] bg-[color-mix(in_oklab,var(--app-primary)_18%,transparent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-text)] shadow-xs">
+              <FileText size={10} className="text-[var(--app-primary)]" />
+              AGENTS.md
+            </span>
+          ) : null}
+          {item.isGitRepo ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+              <GitBranch size={10} />
+              git
+            </span>
+          ) : null}
+          {item.isLaunchFolder ? (
+            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+              launch folder
+            </span>
+          ) : null}
+          {item.isSaved ? (
+            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+              saved
+            </span>
+          ) : null}
+        </div>
+        <span className="truncate font-mono text-xs text-[var(--app-text-muted)]" title={item.path}>
+          {formatWorkspacePath(item.path)}
+        </span>
+      </div>
+
+      {onBrowse ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onBrowse()
+          }}
+          title={`Browse ${item.path}`}
+          className="shrink-0 p-1 rounded-md text-[var(--app-text-muted)] opacity-60 hover:opacity-100 hover:text-[var(--app-text)] hover:bg-[var(--app-surface)]"
+        >
+          <ChevronRight size={16} />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 export function DesktopOnboardingGate({ status: initialStatus, restart = false, onReload, onComplete }: DesktopOnboardingGateProps) {
   const navigate = useNavigate()
   const [status, setStatus] = useState(initialStatus)
@@ -266,9 +369,31 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
   const [projectName, setProjectName] = useState('')
   const [projectDescription, setProjectDescription] = useState('')
-  const [workspaceCatalog, setWorkspaceCatalog] = useState<Array<{ id: string; path: string; label: string }>>([])
-  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<string[]>([])
+
+  // Step 4 Rich Workspaces State
+  const [workspaceItems, setWorkspaceItems] = useState<WorkspaceItem[]>([])
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([])
+  const [workspaceSearch, setWorkspaceSearch] = useState('')
+  const [workspacesLoading, setWorkspacesLoading] = useState(false)
+  const [workspacesError, setWorkspacesError] = useState<string | null>(null)
+  const [workspaceTab, setWorkspaceTab] = useState<'discovered' | 'browse'>('discovered')
+
+  // Directory Browser State
+  const [currentBrowsePath, setCurrentBrowsePath] = useState('')
+  const [browseEntries, setBrowseEntries] = useState<WorkspaceItem[]>([])
+  const [browseParentPath, setBrowseParentPath] = useState<string | null>(null)
+  const [browseLoading, setBrowseLoading] = useState(false)
+
+  // Folder Creation State
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [newFolderBusy, setNewFolderBusy] = useState(false)
+  const [newFolderError, setNewFolderError] = useState<string | null>(null)
+
+  // Custom path manual input
   const [customFolderPath, setCustomFolderPath] = useState('')
+  const [addingCustomFolder, setAddingCustomFolder] = useState(false)
+
   const [createdProject, setCreatedProject] = useState<CreationProject | null>(null)
   const [personalizingBusy, setPersonalizingBusy] = useState(false)
   const autoOpenedRef = useRef(false)
@@ -567,39 +692,227 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
+  const loadWorkspaceData = useCallback(async () => {
+    setWorkspacesLoading(true)
+    setWorkspacesError(null)
+    try {
+      const [listRes, discRes] = await Promise.all([
+        requestJson<{ workspaces?: Array<{ id?: string; workspace_id?: string; path: string; name?: string; is_git_repo?: boolean }> }>('/v1/workspace/list?limit=200').catch(() => ({ workspaces: [] })),
+        requestJson<{ directories?: Array<{ path: string; name: string; is_git_repo: boolean; has_swarm: boolean; has_claude?: boolean; last_modified?: number }> }>('/v1/workspace/discover?limit=200').catch(() => ({ directories: [] })),
+      ])
+
+      const map = new Map<string, WorkspaceItem>()
+      const homePath = status.workspaceGuidance?.home_path || ''
+
+      for (const w of (listRes.workspaces || [])) {
+        const id = w.id || w.workspace_id
+        const p = (w.path || '').trim()
+        if (!p) continue
+        map.set(p, {
+          id,
+          path: p,
+          name: w.name || fallbackFolderName(p),
+          isGitRepo: Boolean(w.is_git_repo),
+          hasSwarm: false,
+          isSaved: true,
+          isLaunchFolder: Boolean(homePath && p === homePath),
+        })
+      }
+
+      for (const d of (discRes.directories || [])) {
+        const p = (d.path || '').trim()
+        if (!p) continue
+        const existing = map.get(p)
+        if (existing) {
+          existing.hasSwarm = Boolean(d.has_swarm)
+          existing.hasClaude = Boolean(d.has_claude)
+          existing.isGitRepo = existing.isGitRepo || Boolean(d.is_git_repo)
+        } else {
+          map.set(p, {
+            path: p,
+            name: d.name || fallbackFolderName(p),
+            isGitRepo: Boolean(d.is_git_repo),
+            hasSwarm: Boolean(d.has_swarm),
+            hasClaude: Boolean(d.has_claude),
+            isSaved: false,
+            isLaunchFolder: Boolean(homePath && p === homePath),
+          })
+        }
+      }
+
+      if (homePath && !map.has(homePath)) {
+        map.set(homePath, {
+          path: homePath,
+          name: fallbackFolderName(homePath),
+          isGitRepo: false,
+          hasSwarm: false,
+          isSaved: false,
+          isLaunchFolder: true,
+        })
+      }
+
+      const all = Array.from(map.values())
+      all.sort((a, b) => {
+        if (a.hasSwarm !== b.hasSwarm) return a.hasSwarm ? -1 : 1
+        if (a.isLaunchFolder !== b.isLaunchFolder) return a.isLaunchFolder ? -1 : 1
+        if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+
+      setWorkspaceItems(all)
+      if (!currentBrowsePath && homePath) {
+        setCurrentBrowsePath(homePath)
+      }
+    } catch (err) {
+      setWorkspacesError(err instanceof Error ? err.message : 'Unable to discover workspaces')
+    } finally {
+      setWorkspacesLoading(false)
+    }
+  }, [currentBrowsePath, status.workspaceGuidance?.home_path])
+
   useEffect(() => {
     if (step !== 'workspaces') return
-    let active = true
-    void requestJson<{ workspaces?: Array<{ id?: string; workspace_id?: string; path: string; name?: string }> }>('/v1/workspace/list?limit=200')
-      .then(({ workspaces = [] }) => {
-        if (!active) return
-        const rows = workspaces.flatMap(w => (w.id || w.workspace_id) ? [{ id: (w.id || w.workspace_id)!, path: w.path, label: w.name || w.path }] : [])
-        setWorkspaceCatalog(rows)
+    void loadWorkspaceData()
+  }, [step, loadWorkspaceData])
+
+  const handleBrowsePath = useCallback(async (targetPath: string) => {
+    if (!targetPath.trim()) return
+    setBrowseLoading(true)
+    setError(null)
+    try {
+      const res = await requestJson<{
+        browser?: {
+          requested_path: string
+          resolved_path: string
+          parent_path: string | null
+          home_path: string
+          entries: Array<{
+            path: string
+            name: string
+            is_directory: boolean
+            is_git_repo: boolean
+            has_swarm: boolean
+            has_claude?: boolean
+          }>
+        }
+      }>(`/v1/workspace/browse?path=${encodeURIComponent(targetPath.trim())}`)
+
+      if (res.browser) {
+        setCurrentBrowsePath(res.browser.resolved_path)
+        setBrowseParentPath(res.browser.parent_path)
+        const entries: WorkspaceItem[] = (res.browser.entries || [])
+          .filter((e) => e.is_directory)
+          .map((e) => ({
+            path: e.path,
+            name: e.name,
+            isGitRepo: Boolean(e.is_git_repo),
+            hasSwarm: Boolean(e.has_swarm),
+            hasClaude: Boolean(e.has_claude),
+            isSaved: false,
+          }))
+        entries.sort((a, b) => {
+          if (a.hasSwarm !== b.hasSwarm) return a.hasSwarm ? -1 : 1
+          if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
+        setBrowseEntries(entries)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Unable to browse ${targetPath}`)
+    } finally {
+      setBrowseLoading(false)
+    }
+  }, [])
+
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim()
+    if (!name || newFolderBusy) return
+    const parent = currentBrowsePath || status.workspaceGuidance?.home_path || '.'
+    setNewFolderBusy(true)
+    setNewFolderError(null)
+    try {
+      const res = await requestJson<{ ok: boolean; folder?: { path: string; name: string } }>('/v1/workspace/folders/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_path: parent, name }),
       })
-      .catch(() => { /* non-fatal */ })
-    return () => { active = false }
-  }, [step])
+      const createdPath = res.folder?.path || `${parent.replace(/\/+$/, '')}/${name}`
+      const registered = await registerProjectFolder(createdPath)
+      const newItem: WorkspaceItem = {
+        id: registered.workspace_id,
+        path: registered.path,
+        name: registered.label || name,
+        isGitRepo: false,
+        hasSwarm: false,
+        isSaved: true,
+      }
+      setWorkspaceItems((prev) => [newItem, ...prev.filter((w) => w.path !== newItem.path)])
+      setSelectedPaths((prev) => [...new Set([...prev, newItem.path])])
+      setNewFolderName('')
+      setShowNewFolderInput(false)
+      setNotice(`Created and selected folder: ${newItem.path}`)
+      if (currentBrowsePath) {
+        void handleBrowsePath(currentBrowsePath)
+      }
+    } catch (err) {
+      setNewFolderError(err instanceof Error ? err.message : 'Unable to create folder')
+    } finally {
+      setNewFolderBusy(false)
+    }
+  }
 
   const handleAddCustomFolder = async () => {
     const raw = customFolderPath.trim()
-    if (!raw || submitting) return
-    setPendingAction('folder-add')
+    if (!raw || submitting || addingCustomFolder) return
+    setAddingCustomFolder(true)
     setError(null)
     try {
       const reg = await registerProjectFolder(raw)
-      setWorkspaceCatalog(prev => {
-        const next = [...prev.filter(w => w.id !== reg.workspace_id), { id: reg.workspace_id, path: reg.path, label: reg.label }]
-        return next
-      })
-      setSelectedWorkspaceIds(ids => [...new Set([...ids, reg.workspace_id])])
+      const newItem: WorkspaceItem = {
+        id: reg.workspace_id,
+        path: reg.path,
+        name: reg.label || fallbackFolderName(reg.path),
+        isGitRepo: false,
+        hasSwarm: false,
+        isSaved: true,
+      }
+      setWorkspaceItems((prev) => [newItem, ...prev.filter((w) => w.path !== newItem.path)])
+      setSelectedPaths((prev) => [...new Set([...prev, newItem.path])])
       setCustomFolderPath('')
-      setNotice(`Folder registered: ${reg.path}`)
+      setNotice(`Folder registered and selected: ${reg.path}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to register folder')
     } finally {
-      setPendingAction(null)
+      setAddingCustomFolder(false)
     }
   }
+
+  const togglePathSelection = (path: string) => {
+    setSelectedPaths((prev) =>
+      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path]
+    )
+  }
+
+  const filteredWorkspaces = useMemo(() => {
+    const q = workspaceSearch.trim().toLowerCase()
+    if (!q) return workspaceItems
+    return workspaceItems.filter((w) =>
+      w.name.toLowerCase().includes(q) ||
+      w.path.toLowerCase().includes(q) ||
+      (w.hasSwarm && 'agents.md'.includes(q)) ||
+      (w.isGitRepo && 'git'.includes(q))
+    )
+  }, [workspaceItems, workspaceSearch])
+
+  const agentsWorkspaces = useMemo(
+    () => filteredWorkspaces.filter((w) => w.hasSwarm),
+    [filteredWorkspaces]
+  )
+
+  const otherWorkspaces = useMemo(
+    () => filteredWorkspaces.filter((w) => !w.hasSwarm),
+    [filteredWorkspaces]
+  )
 
   const finishAndOpenProjectChat = async (project: CreationProject) => {
     setPendingAction('finalize')
@@ -620,13 +933,24 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const handleCreateAndPersonalize = async () => {
     if (submitting || !projectName.trim()) return
-    const chosenWorkspaces: CreationWorkspace[] = workspaceCatalog
-      .filter(w => selectedWorkspaceIds.includes(w.id))
-      .map(w => ({ workspace_id: w.id, path: w.path, label: w.label, role: 'auxiliary' }))
     setPendingAction('project-create')
     setError(null)
     setNotice(null)
     try {
+      const chosenWorkspaces: CreationWorkspace[] = await Promise.all(
+        selectedPaths.map(async (path) => {
+          const item = workspaceItems.find((w) => w.path === path)
+          if (item?.id) {
+            return {
+              workspace_id: item.id,
+              path: item.path,
+              label: item.name,
+              role: 'auxiliary' as const,
+            }
+          }
+          return await registerProjectFolder(path)
+        }),
+      )
       const clientRequestId = `desktop-project:${crypto.randomUUID()}`
       const { project } = await requestJson<{ project: CreationProject }>('/v3/projects', {
         method: 'POST',
@@ -1319,95 +1643,308 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
               ) : null}
 
               {view === 'workspaces' ? (
-                <div className="grid h-full content-start gap-5">
-                  <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-4 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
-                        Project folders
-                      </h2>
-                      <span className="text-xs text-[var(--app-text-muted)]">
-                        {selectedWorkspaceIds.length} selected
-                      </span>
+                <div className="grid h-full content-start gap-4">
+                  {/* Top toolbar: Search + Tabs + New Folder + Selected Count */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-1 items-center gap-2">
+                      <div className="relative flex-1 max-w-xs">
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+                        <Input
+                          value={workspaceSearch}
+                          onChange={(e) => setWorkspaceSearch(e.target.value)}
+                          placeholder="Search workspaces or folders…"
+                          className="pl-8 text-sm"
+                          disabled={submitting}
+                        />
+                      </div>
+                      <div className="flex rounded-lg border border-[var(--app-border)] p-0.5 bg-[var(--app-surface-subtle)] text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setWorkspaceTab('discovered')}
+                          className={[
+                            'px-3 py-1.5 rounded-md font-medium transition-colors',
+                            workspaceTab === 'discovered'
+                              ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-xs'
+                              : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]',
+                          ].join(' ')}
+                        >
+                          Discovered ({workspaceItems.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWorkspaceTab('browse')
+                            if (browseEntries.length === 0 && currentBrowsePath) {
+                              void handleBrowsePath(currentBrowsePath)
+                            }
+                          }}
+                          className={[
+                            'px-3 py-1.5 rounded-md font-medium transition-colors',
+                            workspaceTab === 'browse'
+                              ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-xs'
+                              : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]',
+                          ].join(' ')}
+                        >
+                          Browse folders
+                        </button>
+                      </div>
                     </div>
 
-                    {workspaceCatalog.length > 0 ? (
-                      <div className="grid gap-2 max-h-48 overflow-y-auto pr-1">
-                        {workspaceCatalog.map((w) => {
-                          const isChecked = selectedWorkspaceIds.includes(w.id)
-                          return (
-                            <label
-                              key={w.id}
-                              className={[
-                                'flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors',
-                                isChecked
-                                  ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)]'
-                                  : 'border-[var(--app-border)] bg-transparent hover:border-[var(--app-border-accent)]',
-                              ].join(' ')}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={(e) => {
-                                  setSelectedWorkspaceIds(ids =>
-                                    e.target.checked ? [...ids, w.id] : ids.filter(id => id !== w.id)
-                                  )
-                                }}
-                                className="mt-0.5"
-                              />
-                              <div className="grid gap-0.5 overflow-hidden">
-                                <span className="text-sm font-medium text-[var(--app-text)] truncate">{w.label}</span>
-                                <span className="text-xs font-mono text-[var(--app-text-muted)] truncate">{w.path}</span>
-                              </div>
-                            </label>
-                          )
-                        })}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-[var(--app-text-muted)]">
-                        No registered folders found. Add a folder below or skip straight to chatting with Swarm.
-                      </p>
-                    )}
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowNewFolderInput((prev) => !prev)}
+                        disabled={submitting}
+                        className="flex items-center gap-1.5 text-xs"
+                      >
+                        <FolderPlus size={14} />
+                        New folder
+                      </Button>
+                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)]">
+                        {selectedPaths.length} selected
+                      </span>
+                    </div>
+                  </div>
 
-                    <div className="grid gap-2 pt-2 border-t border-[var(--app-border)]">
-                      <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-add-folder">
-                        Add folder path
-                      </label>
+                  {/* Inline New Folder Form */}
+                  {showNewFolderInput ? (
+                    <div className="grid gap-2 rounded-xl border border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_6%,transparent)] p-3">
+                      <div className="flex items-center justify-between text-xs font-medium text-[var(--app-text)]">
+                        <span>
+                          Create new folder in: <span className="font-mono text-[var(--app-primary)]">{formatWorkspacePath(currentBrowsePath || status.workspaceGuidance?.home_path || '.')}</span>
+                        </span>
+                      </div>
                       <div className="flex gap-2">
                         <Input
-                          id="desktop-onboarding-add-folder"
-                          value={customFolderPath}
-                          onChange={(e) => setCustomFolderPath(e.target.value)}
+                          autoFocus
+                          value={newFolderName}
+                          onChange={(e) => setNewFolderName(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
                               e.preventDefault()
-                              void handleAddCustomFolder()
+                              void handleCreateFolder()
+                            } else if (e.key === 'Escape') {
+                              setShowNewFolderInput(false)
                             }
                           }}
-                          placeholder="/path/to/my/project"
-                          disabled={submitting}
+                          placeholder="new-project-folder"
+                          disabled={newFolderBusy}
+                          className="flex-1 text-sm"
                         />
                         <Button
                           type="button"
-                          variant="outline"
-                          disabled={!customFolderPath.trim() || submitting}
-                          onClick={() => void handleAddCustomFolder()}
+                          variant="primary"
+                          disabled={!newFolderName.trim() || newFolderBusy}
+                          onClick={() => void handleCreateFolder()}
                         >
-                          <OnboardingButtonLabel idle="Add folder" pending="Adding…" isPending={pendingAction === 'folder-add'} />
+                          <OnboardingButtonLabel idle="Create folder" pending="Creating…" isPending={newFolderBusy} />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={newFolderBusy}
+                          onClick={() => setShowNewFolderInput(false)}
+                        >
+                          Cancel
                         </Button>
                       </div>
+                      {newFolderError ? <p className="text-xs text-[var(--app-danger)]">{newFolderError}</p> : null}
                     </div>
+                  ) : null}
+
+                  {/* Main Workspaces Area */}
+                  {workspaceTab === 'discovered' ? (
+                    <div className="grid gap-4 max-h-[18rem] overflow-y-auto pr-1">
+                      {workspacesError ? (
+                        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-danger)]">
+                          {workspacesError}
+                        </div>
+                      ) : null}
+
+                      {workspacesLoading ? (
+                        <div className="flex items-center justify-center p-8 text-sm text-[var(--app-text-muted)] gap-2">
+                          <RefreshCw size={16} className="animate-spin" />
+                          Scanning system for workspaces and repositories…
+                        </div>
+                      ) : null}
+
+                      {/* AGENTS.md Section (Show FIRST!) */}
+                      {agentsWorkspaces.length > 0 ? (
+                        <div className="grid gap-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex size-2 rounded-full bg-[var(--app-primary)] animate-pulse" />
+                              <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--app-primary)]">
+                                Workspaces with AGENTS.md ({agentsWorkspaces.length})
+                              </h3>
+                            </div>
+                            <span className="text-[11px] text-[var(--app-text-muted)]">
+                              Prioritized with AI instructions
+                            </span>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {agentsWorkspaces.map((item) => (
+                              <WorkspaceCard
+                                key={item.path}
+                                item={item}
+                                selected={selectedPaths.includes(item.path)}
+                                onToggle={() => togglePathSelection(item.path)}
+                                onBrowse={() => {
+                                  setWorkspaceTab('browse')
+                                  void handleBrowsePath(item.path)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {/* Other Discovered Directories & Repositories */}
+                      {otherWorkspaces.length > 0 ? (
+                        <div className="grid gap-2">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">
+                              Directories &amp; Repositories ({otherWorkspaces.length})
+                            </h3>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {otherWorkspaces.map((item) => (
+                              <WorkspaceCard
+                                key={item.path}
+                                item={item}
+                                selected={selectedPaths.includes(item.path)}
+                                onToggle={() => togglePathSelection(item.path)}
+                                onBrowse={() => {
+                                  setWorkspaceTab('browse')
+                                  void handleBrowsePath(item.path)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {!workspacesLoading && filteredWorkspaces.length === 0 ? (
+                        <div className="rounded-xl border border-[var(--app-border)] p-6 text-center text-sm text-[var(--app-text-muted)]">
+                          {workspaceSearch.trim()
+                            ? 'No workspaces match your search.'
+                            : 'No discovered workspaces found yet. Use Browse folders or add a folder path below.'}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    /* Directory Browser Tab */
+                    <div className="grid gap-3 max-h-[18rem] overflow-y-auto pr-1">
+                      <div className="flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!browseParentPath || browseLoading}
+                          onClick={() => {
+                            if (browseParentPath) void handleBrowsePath(browseParentPath)
+                          }}
+                          className="flex items-center gap-1 text-xs"
+                          title="Navigate to parent directory"
+                        >
+                          <ArrowUp size={13} />
+                          Up
+                        </Button>
+                        <span className="font-mono text-xs text-[var(--app-text)] truncate flex-1" title={currentBrowsePath}>
+                          {formatWorkspacePath(currentBrowsePath || '—')}
+                        </span>
+                        {selectedPaths.includes(currentBrowsePath) ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => togglePathSelection(currentBrowsePath)}
+                            className="text-xs"
+                          >
+                            Deselect folder
+                          </Button>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="primary"
+                            size="sm"
+                            disabled={!currentBrowsePath}
+                            onClick={() => togglePathSelection(currentBrowsePath)}
+                            className="text-xs"
+                          >
+                            + Select this folder
+                          </Button>
+                        )}
+                      </div>
+
+                      {browseLoading ? (
+                        <div className="flex items-center justify-center p-6 text-sm text-[var(--app-text-muted)] gap-2">
+                          <RefreshCw size={14} className="animate-spin" />
+                          Loading directory contents…
+                        </div>
+                      ) : browseEntries.length > 0 ? (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {browseEntries.map((item) => (
+                            <WorkspaceCard
+                              key={item.path}
+                              item={item}
+                              selected={selectedPaths.includes(item.path)}
+                              onToggle={() => togglePathSelection(item.path)}
+                              onBrowse={() => void handleBrowsePath(item.path)}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-[var(--app-border)] p-4 text-center text-sm text-[var(--app-text-muted)]">
+                          No subdirectories found in this folder. You can select this folder directly or create a new folder.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Add Folder by Path input */}
+                  <div className="flex items-center gap-2 pt-2 border-t border-[var(--app-border)]">
+                    <span className="text-xs font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)] whitespace-nowrap">
+                      Path:
+                    </span>
+                    <Input
+                      id="desktop-onboarding-add-folder"
+                      value={customFolderPath}
+                      onChange={(e) => setCustomFolderPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void handleAddCustomFolder()
+                        }
+                      }}
+                      placeholder="/path/to/my/project"
+                      disabled={submitting}
+                      className="text-sm"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!customFolderPath.trim() || submitting || addingCustomFolder}
+                      onClick={() => void handleAddCustomFolder()}
+                      className="whitespace-nowrap text-xs"
+                    >
+                      <OnboardingButtonLabel idle="Add path" pending="Adding…" isPending={addingCustomFolder} />
+                    </Button>
                   </div>
 
                   <p className="text-xs text-[var(--app-text-muted)]">
                     Swarm AI Router will synthesize project context directly into Swarm’s durable Pebble database. Zero files will be written to disk.
                   </p>
 
+                  {/* Action Footer */}
                   <div className="mt-auto flex items-center justify-between gap-3 pt-1">
                     <Button type="button" variant="outline" onClick={() => transitionToStep('project')} disabled={submitting}>
                       Back
                     </Button>
                     <div className="flex items-center gap-3">
-                      {selectedWorkspaceIds.length > 0 ? (
+                      {selectedPaths.length > 0 ? (
                         <>
                           <Button
                             type="button"
@@ -1423,7 +1960,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                             onClick={() => void handleCreateAndPersonalize()}
                             disabled={submitting}
                           >
-                            <OnboardingButtonLabel idle="Personalize &amp; Talk to Swarm" pending="Creating…" isPending={pendingAction === 'project-create'} />
+                            <OnboardingButtonLabel
+                              idle={`Personalize & Talk to Swarm (${selectedPaths.length})`}
+                              pending="Creating…"
+                              isPending={pendingAction === 'project-create'}
+                            />
                           </Button>
                         </>
                       ) : (
@@ -1433,7 +1974,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                           onClick={() => void handleCreateWithoutWorkspaces()}
                           disabled={submitting}
                         >
-                          <OnboardingButtonLabel idle="Skip to Talk to Swarm" pending="Creating…" isPending={pendingAction === 'project-create'} />
+                          <OnboardingButtonLabel
+                            idle="Skip to Talk to Swarm"
+                            pending="Creating…"
+                            isPending={pendingAction === 'project-create'}
+                          />
                         </Button>
                       )}
                     </div>

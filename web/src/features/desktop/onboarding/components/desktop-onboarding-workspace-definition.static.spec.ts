@@ -13,3 +13,13 @@ test('Desktop account setup cannot restore the retired workspace wizard', async 
   assert.match(source, /openProjects: \(\) => navigate\(\{ to: '\/projects' \}\)/)
   assert.match(source, /acceptOnboardingProviderCredential\(payload\)/)
 })
+
+test('Desktop Step 4 provides rich workspace picker with AGENTS.md prioritization, multi-select, and folder creation', async () => {
+  const source = await readFile(new URL('./desktop-onboarding-gate.tsx', import.meta.url), 'utf8')
+  assert.match(source, /agentsWorkspaces/)
+  assert.match(source, /Workspaces with AGENTS\.md/)
+  assert.match(source, /togglePathSelection/)
+  assert.match(source, /\/v1\/workspace\/browse/)
+  assert.match(source, /\/v1\/workspace\/folders\/create/)
+  assert.match(source, /Personalize & Talk to Swarm/)
+})
