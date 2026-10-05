@@ -10195,15 +10195,68 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 		return "", "", "", fmt.Errorf("%s requires an authenticated account scope", toolName)
 	}
 
+	snapshot, authErr := r.authorizeEnvironmentAccess(scope, toolName)
+	if authErr != nil {
+		return "", "", "", authErr
+	}
 	requestedPath := strings.TrimSpace(asString(args["workspace_path"]))
+	projectID := pebblestore.ProjectConversationID(snapshot)
+	if projectID == "" {
+		projectID = asString(snapshot.Metadata["project_id"])
+	}
+	if projectID != "" {
+		selection := map[string]any{"project_id": projectID, "workspace_path": requestedPath, "workspace_id": args["workspace_id"]}
+		if requestedPath == "" && asString(args["workspace_id"]) == "" && scope.WorktreeEnabled {
+			selection["workspace_path"] = scope.SourceWorkspacePath
+		}
+		if asString(selection["workspace_path"]) == "" && asString(selection["workspace_id"]) == "" {
+			return "", "", "", fmt.Errorf("%s requires an explicit project workspace selection", toolName)
+		}
+		target, resolveErr := r.resolveProjectInspection(context.Background(), scope, selection)
+		if resolveErr != nil {
+			return "", "", "", resolveErr
+		}
+		if scope.WorktreeEnabled && scope.WorktreeRootPath != "" {
+			if filepath.Clean(target.Root) != filepath.Clean(scope.SourceWorkspacePath) {
+				return "", "", "", fmt.Errorf("%s cannot retarget an isolated worktree", toolName)
+			}
+			target.Root = scope.WorktreeRootPath
+		}
+		return accountScopeID, target.Reference.WorkspaceID, target.Root, nil
+	}
+	if requestedPath == "" && scope.PrimaryPath == "" && asString(args["workspace_id"]) != "" {
+		if r.workspace == nil {
+			return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
+		}
+		entries, listErr := r.workspace.ListKnownForPrincipal(scope.Principal, 1000)
+		if listErr != nil {
+			return "", "", "", listErr
+		}
+		for _, entry := range entries {
+			if entry.WorkspaceID == asString(args["workspace_id"]) {
+				requestedPath = entry.Path
+				break
+			}
+		}
+		if requestedPath == "" {
+			return "", "", "", fmt.Errorf("%s workspace ID is not in the authorized catalog", toolName)
+		}
+	}
 	if requestedPath == "" {
 		requestedPath = "."
 	}
-	workspacePath, err = resolveWorkspacePath(scope, requestedPath)
+	if scope.PrimaryPath == "" && filepath.IsAbs(requestedPath) {
+		workspacePath = filepath.Clean(requestedPath)
+	} else {
+		workspacePath, err = resolveWorkspacePath(scope, requestedPath)
+	}
 	if err != nil {
 		return "", "", "", err
 	}
 	if scope.WorktreeEnabled && strings.TrimSpace(scope.WorktreeRootPath) != "" {
+		if requestedPath != "." && filepath.Clean(workspacePath) != filepath.Clean(scope.WorktreeRootPath) && filepath.Clean(workspacePath) != filepath.Clean(scope.SourceWorkspacePath) {
+			return "", "", "", fmt.Errorf("%s cannot retarget an isolated worktree", toolName)
+		}
 		workspacePath = filepath.Clean(scope.WorktreeRootPath)
 	}
 
@@ -10219,13 +10272,7 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 						wsScope = srcScope
 					}
 				}
-				if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
-					if current, ok, cErr := r.workspace.CurrentBindingForPrincipal(scope.Principal); cErr == nil && ok {
-						if curScope, curErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, current.WorkspacePath); curErr == nil && curScope.Matched && strings.TrimSpace(curScope.WorkspaceID) != "" {
-							wsScope = curScope
-						}
-					}
-				}
+
 			}
 		}
 		if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
@@ -10236,13 +10283,7 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 			workspacePath = wsScope.WorkspacePath
 		}
 	} else {
-		if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" {
-			workspaceID = wsID
-		} else if len(scope.Roots) > 0 {
-			workspaceID = "ws-test"
-		} else {
-			return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
-		}
+		return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
 	}
 
 	if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" && wsID != workspaceID {

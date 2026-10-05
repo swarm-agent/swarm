@@ -435,6 +435,8 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"manage-theme":      {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workers":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_automation": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
+			"manage_connections": {Enabled: pebblestore.BoolPtr(true)},
 			"plan_manage":       {Enabled: pebblestore.BoolPtr(false)},
 			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
 			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(false)},
@@ -449,6 +451,7 @@ func SwarmOrchestratorAgentProfileForContext(context pebblestore.AgentProfile) p
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: SwarmOrchestratorAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})
 	profile.Protected = true
+	preserveEnvironmentToolDenials(&profile, context)
 	return profile
 }
 
@@ -836,6 +839,7 @@ func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.A
 		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})
 	profile.Protected = true
+	preserveEnvironmentToolDenials(&profile, context)
 	return profile
 }
 
@@ -1118,4 +1122,16 @@ func firstNonEmptyProfileValue(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// Missing environment defaults migrate; explicit saved capability denials do not.
+func preserveEnvironmentToolDenials(profile *pebblestore.AgentProfile, snapshot pebblestore.AgentProfile) {
+	if snapshot.ToolContract == nil {
+		return
+	}
+	for _, name := range []string{"manage_environments", "manage_connections"} {
+		if cfg, ok := snapshot.ToolContract.Tools[name]; ok && cfg.Enabled != nil && !*cfg.Enabled {
+			profile.ToolContract.Tools[name] = cfg
+		}
+	}
 }

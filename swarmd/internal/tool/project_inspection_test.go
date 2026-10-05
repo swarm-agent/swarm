@@ -11,6 +11,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type inspectionLifecycle struct {
@@ -102,6 +103,7 @@ func TestProjectInspectionValidationBinding(t *testing.T) {
 	resolver := &inspectionLifecycle{target: ProjectInspectionTarget{Root: root, Reference: ProjectInspectionRequest{WorkspaceID: "workspace", HeadCommit: "head"}}}
 	r.projectTaskLifecycle = resolver
 	r.environmentsStore = &inspectionEnvironmentStore{}
+	r.sessions = environmentAccessSessions{snapshot: pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: "account", UserID: "user", Metadata: map[string]any{"agent_profile": pebblestore.AgentProfile{Name: "swarm"}}}}
 	manager := &inspectionDeploymentManager{dep: environments.Deployment{WorkspacePath: root}}
 	r.deploymentManager = manager
 	scope := WorkspaceScope{SessionID: "parent", Principal: identity.Principal{Type: "user", UserID: "user", AccountScopeID: "account"}, RejectScopeExpansion: true}

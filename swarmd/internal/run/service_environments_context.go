@@ -38,7 +38,8 @@ type ActiveDeploymentSummary struct {
 	DeploymentID  string `json:"deployment_id"`
 	EnvironmentID string `json:"environment_id"`
 	Status        string `json:"status"`
-	LeaseID       string `json:"lease_id,omitempty"`
+	LeaseID       string `json:"-"` // Legacy in-process input; never serialize a receipt.
+	Leased        bool   `json:"leased,omitempty"`
 	ConsumerType  string `json:"consumer_type,omitempty"`
 	ConsumerID    string `json:"consumer_id,omitempty"`
 }
@@ -202,7 +203,7 @@ func (s *Service) ResolveDefaultTestbench(ctx context.Context, accountScopeID, w
 						Status:        string(dep.Status),
 					}
 					if isLeased {
-						summary.LeaseID = activeLease.ID
+						summary.Leased = true
 						summary.ConsumerType = string(activeLease.ConsumerType)
 						summary.ConsumerID = activeLease.ConsumerID
 					}
@@ -282,12 +283,12 @@ func FormatWorkspaceEnvironmentPromptBlock(envCtx *WorkspaceEnvironmentContext) 
 				break
 			}
 			leaseInfo := "unleased"
-			if dep.LeaseID != "" {
+			if dep.Leased || dep.LeaseID != "" {
 				consumer := dep.ConsumerID
 				if dep.ConsumerType != "" {
 					consumer = dep.ConsumerType + ":" + dep.ConsumerID
 				}
-				leaseInfo = fmt.Sprintf("leased by %s (lease: %s)", consumer, dep.LeaseID)
+				leaseInfo = fmt.Sprintf("leased by %s", consumer)
 			}
 			sb.WriteString(fmt.Sprintf("  - %s (env: %s, status: %s, %s)\n", dep.DeploymentID, dep.EnvironmentID, dep.Status, leaseInfo))
 		}
@@ -314,6 +315,13 @@ func (s *Service) WorkspaceEnvironmentPromptBlock(ctx context.Context, scope too
 	}
 	accountScopeID := strings.TrimSpace(scope.Principal.AccountScopeID)
 	if accountScopeID == "" {
+		return ""
+	}
+	if scope.SessionID == "" || s.sessions == nil {
+		return ""
+	}
+	snapshot, found, err := s.sessions.GetSession(scope.SessionID)
+	if err != nil || !found || snapshot.AccountScopeID != accountScopeID || snapshot.UserID != scope.Principal.UserID || !tool.EnvironmentToolAllowed(snapshot.Metadata, "manage_environments") {
 		return ""
 	}
 	workspaceID := s.resolveWorkspaceIDForScope(scope)

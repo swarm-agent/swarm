@@ -129,6 +129,8 @@ type toolTestHarness struct {
 	tmpDir      string
 }
 
+// The shared handler fixture supplies authenticated session and catalog authority;
+// environment tests must not depend on anonymous or synthetic workspace admission.
 func setupEnvironmentsToolHarness(t *testing.T) *toolTestHarness {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -164,9 +166,14 @@ func setupEnvironmentsToolHarness(t *testing.T) *toolTestHarness {
 		Roots:       []string{wsPath},
 		Principal: identity.Principal{
 			AccountScopeID: "test-account",
+			Type: identity.PrincipalTypeUser,
+			UserID: "test-user",
 		},
 		SessionID: "test-session-001",
 	}
+
+	rt.sessions = environmentAccessSessions{snapshot: pebblestore.SessionSnapshot{ID: scope.SessionID, AccountScopeID: "test-account", UserID: "test-user", Metadata: map[string]any{"agent_profile": pebblestore.AgentProfile{Name: "swarm"}}}}
+	rt.workspace = &mockEnvWorkspaceService{workspaceID: "ws-test", workspacePath: wsPath}
 
 	return &toolTestHarness{
 		rt:          rt,

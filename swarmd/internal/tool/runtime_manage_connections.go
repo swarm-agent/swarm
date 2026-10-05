@@ -39,6 +39,9 @@ func manageConnectionsDefinition() Definition {
 }
 
 func (r *Runtime) executeManageConnections(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	if _, err := r.authorizeEnvironmentAccess(scope, "manage_connections"); err != nil {
+		return "", err
+	}
 	if r == nil || r.connections == nil {
 		return "", errors.New("manage_connections connection store is not configured")
 	}

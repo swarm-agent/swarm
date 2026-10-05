@@ -99,6 +99,9 @@ func manageEnvironmentsDefinition() Definition {
 }
 
 func (r *Runtime) executeManageEnvironments(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
+	if _, err := r.authorizeEnvironmentAccess(scope, "manage_environments"); err != nil {
+		return "", err
+	}
 	if r == nil || r.environmentsStore == nil {
 		return "", errors.New("manage_environments environment store is not configured")
 	}
