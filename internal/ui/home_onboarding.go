@@ -38,6 +38,11 @@ type onboardingState struct {
 	Status             string
 	Error              string
 	Pending            bool
+	Personalizing      bool
+	Tick               int
+	AddingWorkspaces   bool
+	CreatingFolder     bool
+	NewFolderPath      string
 	WorkspacePath      string
 	WorkspaceReady     bool
 	SetupConsent       bool
@@ -105,6 +110,13 @@ func (p *HomePage) OnboardingProviderActive() bool {
 
 func (p *HomePage) OnboardingProjectActive() bool {
 	return p != nil && p.onboarding.Visible && (p.onboarding.Phase == onboardingPhaseProject || p.onboarding.NamingProject)
+}
+
+func (p *HomePage) OnboardingProjectName() string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.onboarding.ProjectName)
 }
 
 func (p *HomePage) OnboardingWorkspaceActive() bool {
@@ -193,6 +205,9 @@ func (p *HomePage) ShowOnboardingWorkspace(status string) {
 	p.onboarding.Phase = onboardingPhaseWorkspace
 	p.onboarding.ActionIndex = 0
 	p.onboarding.Pending = false
+	p.onboarding.Personalizing = false
+	p.onboarding.AddingWorkspaces = false
+	p.onboarding.CreatingFolder = false
 	p.onboarding.Error = ""
 	if strings.TrimSpace(status) != "" {
 		p.onboarding.Status = strings.TrimSpace(status)
@@ -566,11 +581,21 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 	if p.onboarding.Phase == onboardingPhaseProvider {
 		help = "Ctrl+C exit • ←/→ select • Enter connect • s/Esc skip"
 	} else if p.onboarding.Phase == onboardingPhaseProject {
-		help = "Tab/↑/↓ move · Enter select/next · Esc back"
+		help = "Enter continue to workspaces · Esc back to provider"
 	} else if p.onboarding.Phase == onboardingPhaseWorkspace {
-		help = "Tab/↑/↓ choose · Enter activate · Esc back · s skip"
-		if p.onboarding.EditingPath {
-			help = "Type path · Ctrl+U clear · Enter select · Esc cancel"
+		if p.onboarding.Personalizing {
+			help = "Personalizing project with AI Router… Please wait"
+		} else if p.onboarding.CreatingFolder {
+			help = "Type folder path · Enter create · Esc cancel"
+		} else if p.onboarding.AddingWorkspaces {
+			help = "Space/Enter toggle · Enter on Finish to submit · Esc back · s skip"
+		} else if strings.TrimSpace(p.onboarding.ProjectName) != "" {
+			help = "Enter choose · ↑/↓ navigate · Esc back to project name"
+		} else {
+			help = "Tab/↑/↓ choose · Enter activate · Esc back · s skip"
+			if p.onboarding.EditingPath {
+				help = "Type path · Ctrl+U clear · Enter select · Esc cancel"
+			}
 		}
 	}
 	DrawText(s, rect.X+3, rect.Y+rect.H-2, rect.W-6, p.theme.TextMuted, clampEllipsis(help, rect.W-6))
@@ -594,12 +619,18 @@ func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 		}
 		DrawText(s, rect.X+3+i*(barW+1), rect.Y+3, barW, style, marker)
 	}
-	titles := []string{"Name your Swarm.", "Connect your AI provider.", "Create your first project.", "Attach a workspace folder."}
+	step4Title := "Attach a workspace folder."
+	step4Subtitle := "Optional: attach a folder now, or let Swarm Orchestrator manage workspaces."
+	if strings.TrimSpace(p.onboarding.ProjectName) != "" {
+		step4Title = fmt.Sprintf("Add workspaces into %s?", strings.TrimSpace(p.onboarding.ProjectName))
+		step4Subtitle = "Add workspaces to your project or skip straight to Swarm."
+	}
+	titles := []string{"Name your Swarm.", "Connect your AI provider.", "Create your first project.", step4Title}
 	subtitles := []string{
 		"Start with your name and the name of this Swarm.",
 		"Connect now, or skip ahead. Provider can be added later.",
-		"Projects organize your chats, plans, and tasks. No Git or folder required.",
-		"Optional: attach a folder now, or let Swarm Orchestrator manage workspaces.",
+		"Projects organize your chats, plans, and tasks. Enter a name to get started.",
+		step4Subtitle,
 	}
 	DrawText(s, rect.X+3, rect.Y+4, rect.W-6, p.theme.Text, titles[step-1])
 	DrawText(s, rect.X+3, rect.Y+5, rect.W-6, p.theme.TextMuted, clampEllipsis(subtitles[step-1], rect.W-6))

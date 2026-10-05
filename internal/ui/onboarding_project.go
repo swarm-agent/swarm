@@ -20,10 +20,11 @@ func (p *HomePage) handleOnboardingProjectKey(ev *tcell.EventKey) {
 	case tcell.KeyEnter:
 		name := strings.TrimSpace(s.ProjectName)
 		if name == "" {
-			name = "default"
-			s.ProjectName = name
+			s.Error = "Project name is required. Please enter a name for your project."
+			return
 		}
-		p.ShowOnboardingWorkspace("Select workspaces to add to " + name + ", or skip.")
+		s.ProjectName = name
+		p.ShowOnboardingWorkspace("")
 		return
 	case tcell.KeyCtrlU:
 		s.ProjectName = ""
@@ -54,7 +55,7 @@ func (p *HomePage) drawOnboardingProject(screen tcell.Screen, content Rect) {
 	value := s.ProjectName
 	valueStyle := p.theme.Primary
 	if value == "" {
-		value = "default (or type your project name)"
+		value = "Type project name..."
 		valueStyle = p.theme.TextMuted
 	}
 	DrawText(screen, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valueStyle, clampTail(value, fieldRect.W-4))

@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
@@ -369,6 +373,192 @@ func TestOnboardingProviderSaveTransitionsToProject(t *testing.T) {
 	}
 	if app.home.OnboardingWorkspaceActive() {
 		t.Fatal("saving provider must NOT skip directly to OnboardingWorkspaceActive")
+	}
+}
+
+func TestOnboardingProjectWithWorkspacesPersonalizesAndCreatesProjectMD(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "my-code")
+	_ = os.MkdirAll(wsDir, 0755)
+	_ = os.WriteFile(filepath.Join(wsDir, "AGENTS.md"), []byte("# Agent Guidelines"), 0644)
+
+	var projectCreated bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspace/add":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace": map[string]any{
+					"workspace_id":   "ws-123",
+					"resolved_path":  wsDir,
+					"workspace_name": "my-code",
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/projects":
+			projectCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project": client.ProjectRecord{
+					ID:   "proj-abc",
+					Name: "super-app",
+					ContextGeneration: &client.ProjectContextGeneration{
+						Status:  "running",
+						Attempt: 1,
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-abc":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project": client.ProjectRecord{
+					ID:             "proj-abc",
+					Name:           "super-app",
+					ProjectContext: "# Generated PROJECT.md Guidelines\nFrom AGENTS.md",
+					ContextGeneration: &client.ProjectContextGeneration{
+						Status:  "ready",
+						Attempt: 1,
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{OK: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{OK: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"projects": []client.ProjectRecord{
+					{ID: "proj-abc", Name: "super-app"},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	api := client.New(server.URL)
+	api.SetToken("test-token")
+	home := ui.NewHomePage(model.HomeModel{OnboardingRequired: true})
+	home.ShowOnboardingWorkspace("Select workspaces")
+
+	app := &App{
+		api:                   api,
+		home:                  home,
+		onboardingWorkspaceCh: make(chan onboardingWorkspaceResult, 1),
+	}
+
+	app.handleCreateOnboardingProject("super-app", "", []string{wsDir})
+
+	// Wait for completion from goroutine
+	select {
+	case res := <-app.onboardingWorkspaceCh:
+		if res.err != nil {
+			t.Fatalf("unexpected error: %v", res.err)
+		}
+		if !res.projectCreated || res.projectID != "proj-abc" {
+			t.Fatalf("expected projectCreated with id 'proj-abc', got %+v", res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for personalizing project creation")
+	}
+
+	if !projectCreated {
+		t.Fatal("expected project to be created on daemon")
+	}
+
+	// Verify PROJECT.md was created in wsDir from generated context
+	projMD := filepath.Join(wsDir, "PROJECT.md")
+	content, err := os.ReadFile(projMD)
+	if err != nil {
+		t.Fatalf("expected PROJECT.md to be created in workspace root: %v", err)
+	}
+	if !strings.Contains(string(content), "Generated PROJECT.md Guidelines") {
+		t.Fatalf("expected generated guidelines in PROJECT.md, got %q", string(content))
+	}
+}
+
+func TestOnboardingProjectWorkspaceRouterFailureDoesNotLockUserOut(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+
+	tmpDir := t.TempDir()
+	wsDir := filepath.Join(tmpDir, "failed-router-code")
+	_ = os.MkdirAll(wsDir, 0755)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspace/add":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workspace": map[string]any{
+					"workspace_id":   "ws-failed",
+					"resolved_path":  wsDir,
+					"workspace_name": "failed-router-code",
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v3/projects":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project": client.ProjectRecord{
+					ID:   "proj-fail",
+					Name: "fail-safe-app",
+					ContextGeneration: &client.ProjectContextGeneration{
+						Status:  "running",
+						Attempt: 1,
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects/proj-fail":
+			// Router fails!
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"project": client.ProjectRecord{
+					ID:   "proj-fail",
+					Name: "fail-safe-app",
+					ContextGeneration: &client.ProjectContextGeneration{
+						Status: "failed",
+						Error:  "model provider quota exceeded",
+					},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{OK: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{OK: true})
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/projects":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"projects": []client.ProjectRecord{
+					{ID: "proj-fail", Name: "fail-safe-app"},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	api := client.New(server.URL)
+	api.SetToken("test-token")
+	home := ui.NewHomePage(model.HomeModel{OnboardingRequired: true})
+
+	app := &App{
+		api:                   api,
+		home:                  home,
+		onboardingWorkspaceCh: make(chan onboardingWorkspaceResult, 1),
+	}
+
+	app.handleCreateOnboardingProject("fail-safe-app", "", []string{wsDir})
+
+	// Must finish and NOT lock the user out!
+	select {
+	case res := <-app.onboardingWorkspaceCh:
+		if res.err != nil {
+			t.Fatalf("expected graceful completion, got error: %v", res.err)
+		}
+		if !res.projectCreated || res.projectID != "proj-fail" {
+			t.Fatalf("expected projectCreated with id 'proj-fail', got %+v", res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for graceful recovery after router failure")
 	}
 }
 

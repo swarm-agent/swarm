@@ -247,6 +247,10 @@ func (p *HomePage) HandleTick() bool {
 			p.pressedTopAction = ""
 		}
 	}
+	if p.onboarding.Visible && p.onboarding.Personalizing {
+		p.onboarding.Tick++
+		changed = true
+	}
 	now := time.Now()
 	if p.toast.tick(now) {
 		changed = true

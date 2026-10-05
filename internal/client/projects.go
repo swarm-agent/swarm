@@ -17,17 +17,26 @@ type CreateProjectInput struct {
 	Workspaces     []ProjectWorkspaceRef `json:"workspaces,omitempty"`
 }
 
+type ProjectContextGeneration struct {
+	Status      string `json:"status"`
+	Attempt     int    `json:"attempt"`
+	LeaseUntil  int64  `json:"lease_until,omitempty"`
+	Error       string `json:"error,omitempty"`
+	RouterAlert string `json:"router_alert,omitempty"`
+}
+
 type ProjectRecord struct {
-	ID             string                `json:"id"`
-	AccountID      string                `json:"account_id"`
-	Name           string                `json:"name"`
-	Description    string                `json:"description,omitempty"`
-	IconPNGDataURL string                `json:"icon_png_data_url,omitempty"`
-	ThemeID        string                `json:"theme_id,omitempty"`
-	Workspaces     []ProjectWorkspaceRef `json:"workspaces,omitempty"`
-	ProjectContext string                `json:"project_context,omitempty"`
-	CreatedAt      int64                 `json:"created_at"`
-	UpdatedAt      int64                 `json:"updated_at"`
+	ID                string                    `json:"id"`
+	AccountID         string                    `json:"account_id"`
+	Name              string                    `json:"name"`
+	Description       string                    `json:"description,omitempty"`
+	IconPNGDataURL    string                    `json:"icon_png_data_url,omitempty"`
+	ThemeID           string                    `json:"theme_id,omitempty"`
+	Workspaces        []ProjectWorkspaceRef     `json:"workspaces,omitempty"`
+	ProjectContext    string                    `json:"project_context,omitempty"`
+	ContextGeneration *ProjectContextGeneration `json:"context_generation,omitempty"`
+	CreatedAt         int64                     `json:"created_at"`
+	UpdatedAt         int64                     `json:"updated_at"`
 }
 
 type ProjectWorkspaceRef struct {
@@ -41,11 +50,21 @@ func (c *API) CreateProject(ctx context.Context, input CreateProjectInput) (Proj
 	if input.Name == "" {
 		return ProjectRecord{}, errors.New("project name is required")
 	}
-	var rec ProjectRecord
-	if err := c.postJSON(ctx, "/v3/projects", input, &rec, true); err != nil {
+	var resp struct {
+		Project ProjectRecord `json:"project"`
+		ID      string        `json:"id"`
+		Name    string        `json:"name"`
+	}
+	if err := c.postJSON(ctx, "/v3/projects", input, &resp, true); err != nil {
 		return ProjectRecord{}, err
 	}
-	return rec, nil
+	if resp.Project.ID != "" {
+		return resp.Project, nil
+	}
+	if resp.ID != "" {
+		return ProjectRecord{ID: resp.ID, Name: resp.Name}, nil
+	}
+	return ProjectRecord{}, errors.New("empty project response")
 }
 
 func (c *API) ListProjects(ctx context.Context) ([]ProjectRecord, error) {
@@ -63,11 +82,20 @@ func (c *API) GetProject(ctx context.Context, id string) (ProjectRecord, error) 
 	if id == "" {
 		return ProjectRecord{}, errors.New("project id is required")
 	}
-	var rec ProjectRecord
-	if err := c.getJSON(ctx, "/v3/projects/"+id, &rec, true); err != nil {
+	var resp struct {
+		Project ProjectRecord `json:"project"`
+		ID      string        `json:"id"`
+	}
+	if err := c.getJSON(ctx, "/v3/projects/"+id, &resp, true); err != nil {
 		return ProjectRecord{}, err
 	}
-	return rec, nil
+	if resp.Project.ID != "" {
+		return resp.Project, nil
+	}
+	if resp.ID != "" {
+		return ProjectRecord{ID: resp.ID}, nil
+	}
+	return ProjectRecord{}, errors.New("empty project response")
 }
 
 func (c *API) UpdateProject(ctx context.Context, id string, patch map[string]any) (ProjectRecord, error) {

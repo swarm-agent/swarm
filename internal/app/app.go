@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,14 +121,17 @@ func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 }
 
 type onboardingWorkspaceResult struct {
-	repositories []client.WorkspaceDiscoverEntry
-	discovered   bool
-	repository   *client.OnboardingRepository
-	review       *client.OnboardingReview
-	prepared     bool
-	model        model.HomeModel
-	path         string
-	err          error
+	repositories   []client.WorkspaceDiscoverEntry
+	discovered     bool
+	repository     *client.OnboardingRepository
+	review         *client.OnboardingReview
+	prepared       bool
+	model          model.HomeModel
+	path           string
+	projectCreated bool
+	projectID      string
+	projectName    string
+	err            error
 }
 
 type homeReloadResult struct {
@@ -6595,53 +6599,119 @@ func (a *App) saveOnboarding(username, swarmName string) {
 func (a *App) handleCreateOnboardingProject(name, description string, workspacePaths []string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		name = "default"
+		a.home.SetOnboardingError("Project name is required")
+		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
 
-	var wsRefs []client.ProjectWorkspaceRef
-	for _, wsPath := range workspacePaths {
-		wsPath = strings.TrimSpace(wsPath)
-		if wsPath == "" {
-			continue
+	if len(workspacePaths) == 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
+			Name:        name,
+			Description: strings.TrimSpace(description),
+		})
+		if err != nil {
+			a.home.SetOnboardingError(fmt.Sprintf("Failed to create project: %v", err))
+			return
 		}
-		res, err := a.api.AddWorkspace(ctx, wsPath, "", "", false)
-		if err == nil && res.WorkspaceID != "" {
-			wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
-				WorkspaceID:   res.WorkspaceID,
-				Path:          res.WorkspacePath,
-				WorkspaceName: res.WorkspaceName,
-			})
-		} else {
-			if list, lErr := a.api.ListWorkspaces(ctx, 200); lErr == nil {
-				for _, w := range list {
-					if pathsEqual(w.Path, wsPath) {
-						wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
-							WorkspaceID:   w.WorkspaceID,
-							Path:          w.Path,
-							WorkspaceName: w.WorkspaceName,
-						})
-						break
+		a.onboardingProjectID = project.ID
+		a.onboardingProjectName = project.Name
+		a.completeOnboardingWithProject(project.ID, project.Name)
+		return
+	}
+
+	a.home.SetOnboardingStatus(fmt.Sprintf("Personalizing %s...", name))
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		defer cancel()
+
+		var wsRefs []client.ProjectWorkspaceRef
+		for _, wsPath := range workspacePaths {
+			wsPath = strings.TrimSpace(wsPath)
+			if wsPath == "" {
+				continue
+			}
+			res, err := a.api.AddWorkspace(ctx, wsPath, "", "", false)
+			if err == nil && res.WorkspaceID != "" {
+				resolvedPath := res.WorkspacePath
+				if resolvedPath == "" {
+					resolvedPath = res.ResolvedPath
+				}
+				if resolvedPath == "" {
+					resolvedPath = wsPath
+				}
+				wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
+					WorkspaceID:   res.WorkspaceID,
+					Path:          resolvedPath,
+					WorkspaceName: res.WorkspaceName,
+				})
+			} else {
+				if list, lErr := a.api.ListWorkspaces(ctx, 200); lErr == nil {
+					for _, w := range list {
+						if pathsEqual(w.Path, wsPath) {
+							wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
+								WorkspaceID:   w.WorkspaceID,
+								Path:          w.Path,
+								WorkspaceName: w.WorkspaceName,
+							})
+							break
+						}
 					}
 				}
 			}
 		}
-	}
 
-	project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
-		Name:        name,
-		Description: strings.TrimSpace(description),
-		Workspaces:  wsRefs,
-	})
-	if err != nil {
-		a.home.SetOnboardingError(fmt.Sprintf("Failed to create project: %v", err))
-		return
-	}
+		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
+			Name:        name,
+			Description: strings.TrimSpace(description),
+			Workspaces:  wsRefs,
+		})
+		if err != nil {
+			log.Printf("onboarding: create project with workspaces failed: %v, falling back to clean project", err)
+			project, err = a.api.CreateProject(ctx, client.CreateProjectInput{
+				Name: name,
+			})
+			if err != nil {
+				a.onboardingWorkspaceCh <- onboardingWorkspaceResult{err: fmt.Errorf("failed to create project: %w", err)}
+				if a.screen != nil {
+					_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
+				}
+				return
+			}
+		}
 
-	a.onboardingProjectID = project.ID
-	a.onboardingProjectName = project.Name
-	a.completeOnboardingWithProject(project.ID, project.Name)
+		a.onboardingProjectID = project.ID
+		a.onboardingProjectName = project.Name
+
+		pollDeadline := time.Now().Add(15 * time.Second)
+		for time.Now().Before(pollDeadline) {
+			rec, gErr := a.api.GetProject(ctx, project.ID)
+			if gErr == nil && rec.ContextGeneration != nil {
+				if rec.ContextGeneration.Status == "ready" || rec.ContextGeneration.Status == "failed" {
+					if rec.ContextGeneration.Status == "ready" && rec.ProjectContext != "" && len(wsRefs) > 0 {
+						primaryPath := strings.TrimSpace(wsRefs[0].Path)
+						if primaryPath != "" {
+							projectMDPath := filepath.Join(primaryPath, "PROJECT.md")
+							if _, statErr := os.Stat(projectMDPath); os.IsNotExist(statErr) {
+								_ = os.WriteFile(projectMDPath, []byte(rec.ProjectContext), 0644)
+							}
+						}
+					}
+					break
+				}
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+
+		a.onboardingWorkspaceCh <- onboardingWorkspaceResult{
+			projectCreated: true,
+			projectID:      project.ID,
+			projectName:    project.Name,
+		}
+		if a.screen != nil {
+			_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
+		}
+	}()
 }
 
 func (a *App) handleSkipOnboardingWorkspace() {
@@ -6650,8 +6720,15 @@ func (a *App) handleSkipOnboardingWorkspace() {
 	if projectID == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		name := projectName
+		if name == "" {
+			name = strings.TrimSpace(a.home.OnboardingProjectName())
+		}
+		if name == "" {
+			name = "project"
+		}
 		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
-			Name: "default",
+			Name: name,
 		})
 		if err == nil {
 			projectID = project.ID
@@ -6902,6 +6979,10 @@ func (a *App) consumeOnboardingWorkspaceResult() {
 	case result := <-a.onboardingWorkspaceCh:
 		if result.err != nil {
 			a.home.SetOnboardingError(fmt.Sprintf("workspace setup failed: %v", result.err))
+			return
+		}
+		if result.projectCreated {
+			a.completeOnboardingWithProject(result.projectID, result.projectName)
 			return
 		}
 		if result.discovered {

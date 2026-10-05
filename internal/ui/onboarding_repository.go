@@ -2,7 +2,11 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"swarm-refactor/swarmtui/internal/client"
@@ -10,23 +14,19 @@ import (
 
 type onboardingControl struct{ label, action, path string }
 
+func hasAgentsMD(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(dir, "AGENTS.md"))
+	return err == nil && !info.IsDir()
+}
+
 func (p *HomePage) repositoryControls() []onboardingControl {
 	s := &p.onboarding
 	if s.SetupConsent {
 		return []onboardingControl{{"Create folder + Git first commit + open workspace", "setup", ""}, {"Cancel", "cancel", ""}}
-	}
-	if s.ChoosingRepository {
-		controls := []onboardingControl{}
-		for _, repo := range s.Repositories {
-			controls = append(controls, onboardingControl{"Git repo: " + repo.Path, "repository", repo.Path})
-		}
-		return append(controls,
-			onboardingControl{"Enter repository path", "edit", ""},
-			onboardingControl{"[ Add Selected Workspaces & Finish ]", "save", ""},
-			onboardingControl{"[ Continue without Workspaces (Skip) ]", "skip", ""},
-			onboardingControl{"Refresh repository list", "discover", ""},
-			onboardingControl{"Back", "cancel", ""},
-		)
 	}
 	if s.Review != nil {
 		controls := []onboardingControl{}
@@ -54,6 +54,54 @@ func (p *HomePage) repositoryControls() []onboardingControl {
 		}
 		return append(controls, onboardingControl{"Refresh review (discard selection)", "review", ""}, onboardingControl{"Cancel review", "cancel", ""})
 	}
+
+	if s.AddingWorkspaces {
+		controls := []onboardingControl{}
+		for _, repo := range s.Repositories {
+			mark := "[ ]"
+			if s.Selected != nil && s.Selected[repo.Path] {
+				mark = "[x]"
+			}
+			tags := ""
+			if hasAgentsMD(repo.Path) || repo.HasSwarm {
+				tags += " · [AGENTS.md]"
+			}
+			if p.model.CWD != "" && filepath.Clean(repo.Path) == filepath.Clean(p.model.CWD) {
+				tags += " · [launch folder]"
+			}
+			label := fmt.Sprintf("%s %s%s", mark, repo.Path, tags)
+			controls = append(controls, onboardingControl{label: label, action: "toggle_workspace", path: repo.Path})
+		}
+		controls = append(controls,
+			onboardingControl{label: "[ + Create a new folder… ]", action: "create_folder"},
+			onboardingControl{label: "[ Add Selected Workspaces & Finish ]", action: "finish_workspaces"},
+			onboardingControl{label: "[ Back ]", action: "back_to_choice"},
+		)
+		return controls
+	}
+
+	if strings.TrimSpace(s.ProjectName) != "" && s.ProjectParent == "" {
+		projName := strings.TrimSpace(s.ProjectName)
+		return []onboardingControl{
+			{label: fmt.Sprintf("[ Add workspaces into %s ]", projName), action: "open_workspace_menu"},
+			{label: "[ Skip to Talk to Swarm ]", action: "skip_to_swarm"},
+		}
+	}
+
+	if s.ChoosingRepository {
+		controls := []onboardingControl{}
+		for _, repo := range s.Repositories {
+			controls = append(controls, onboardingControl{"Git repo: " + repo.Path, "repository", repo.Path})
+		}
+		return append(controls,
+			onboardingControl{"Enter repository path", "edit", ""},
+			onboardingControl{"[ Add Selected Workspaces & Finish ]", "save", ""},
+			onboardingControl{"[ Continue without Workspaces (Skip) ]", "skip", ""},
+			onboardingControl{"Refresh repository list", "discover", ""},
+			onboardingControl{"Back", "cancel", ""},
+		)
+	}
+
 	primary := onboardingControl{"Inspect selected folder", "inspect", ""}
 	if s.Error != "" {
 		primary.label = "Retry selected folder"
@@ -96,6 +144,36 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		p.handleOnboardingProjectFolderKey(ev)
 		return
 	}
+	if s.CreatingFolder {
+		switch ev.Key() {
+		case tcell.KeyEscape:
+			s.CreatingFolder = false
+			s.NewFolderPath = ""
+			s.Error = ""
+			return
+		case tcell.KeyCtrlU:
+			s.NewFolderPath = ""
+			s.Error = ""
+			return
+		case tcell.KeyBackspace, tcell.KeyBackspace2:
+			_, size := utf8.DecodeLastRuneInString(s.NewFolderPath)
+			if size > 0 {
+				s.NewFolderPath = s.NewFolderPath[:len(s.NewFolderPath)-size]
+			}
+			s.Error = ""
+			return
+		case tcell.KeyEnter:
+			p.submitNewOnboardingFolder()
+			return
+		case tcell.KeyRune:
+			if unicode.IsPrint(ev.Rune()) {
+				s.NewFolderPath += string(ev.Rune())
+			}
+			s.Error = ""
+			return
+		}
+		return
+	}
 	if s.EditingPath {
 		p.handleOnboardingWorkspaceShortcut(ev)
 		return
@@ -116,7 +194,8 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	}
 
 	if ev.Key() == tcell.KeyEscape {
-		if s.Review != nil || s.SetupConsent || s.ChoosingRepository {
+		if s.Review != nil || s.SetupConsent || s.AddingWorkspaces || s.ChoosingRepository {
+			s.AddingWorkspaces = false
 			s.ChoosingRepository = false
 			s.ConfirmOmissions = false
 			s.BaselineAttempt = nil
@@ -124,6 +203,7 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 			wasConsent := s.SetupConsent
 			s.SetupConsent = false
 			s.ActionIndex = 0
+			s.Error = ""
 			if wasConsent && s.ProjectName != "" && s.WorkspacePath == p.onboardingProjectDestination() {
 				s.NamingProject = true
 			}
@@ -142,9 +222,15 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		return
 	}
 
+	// 's' or 'S' skips workspace addition directly to Swarm (when not in folder input)
+	if !s.AddingWorkspaces && ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S') {
+		p.submitOnboardingProjectWorkspaces(nil)
+		return
+	}
+
 	// Space toggles selection on repository items in multi-select mode
 	if ev.Key() == tcell.KeyRune && ev.Rune() == ' ' {
-		if s.ActionIndex < len(controls) && controls[s.ActionIndex].action == "repository" {
+		if (s.AddingWorkspaces || s.ChoosingRepository) && s.ActionIndex < len(controls) && (controls[s.ActionIndex].action == "toggle_workspace" || controls[s.ActionIndex].action == "repository") {
 			if s.Selected == nil {
 				s.Selected = make(map[string]bool)
 			}
@@ -166,8 +252,22 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	c := controls[s.ActionIndex]
 	kind := HomeActionKind("")
 	switch c.action {
-	case "discover":
-		kind = HomeActionDiscoverOnboardingRepositories
+	case "open_workspace_menu":
+		s.AddingWorkspaces = true
+		s.ChoosingRepository = true
+		s.ActionIndex = 0
+		s.Error = ""
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionDiscoverOnboardingRepositories}
+		return
+	case "skip_to_swarm", "skip":
+		p.submitOnboardingProjectWorkspaces(nil)
+		return
+	case "toggle_workspace":
+		if s.Selected == nil {
+			s.Selected = make(map[string]bool)
+		}
+		s.Selected[c.path] = !s.Selected[c.path]
+		return
 	case "repository", "home":
 		s.ChoosingRepository = false
 		s.WorkspacePath = c.path
@@ -177,6 +277,50 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 		s.BaselineAttempt = nil
 		s.ActionIndex = 0
 		kind = HomeActionInspectOnboardingRepository
+	case "create_folder":
+		s.CreatingFolder = true
+		s.NewFolderPath = ""
+		s.Error = ""
+		return
+	case "finish_workspaces", "save":
+		if s.Review != nil && !s.ConfirmOmissions {
+			p.SetOnboardingError("Acknowledge omitted content before continuing.")
+			return
+		}
+		if s.Repository != nil {
+			kind = HomeActionCreateOnboardingWorkspace
+			p.pendingHomeAction = &HomeAction{Kind: kind, WorkspacePath: s.WorkspacePath}
+			return
+		}
+		var selected []string
+		for _, r := range s.Repositories {
+			if s.Selected != nil && s.Selected[r.Path] {
+				selected = append(selected, r.Path)
+			}
+		}
+		if s.WorkspacePath != "" && (s.Selected == nil || !s.Selected[s.WorkspacePath]) {
+			selected = append(selected, s.WorkspacePath)
+		}
+		p.submitOnboardingProjectWorkspaces(selected)
+		return
+	case "back_to_choice":
+		s.AddingWorkspaces = false
+		s.ChoosingRepository = false
+		s.ActionIndex = 0
+		s.Error = ""
+		return
+	case "cancel":
+		s.AddingWorkspaces = false
+		s.ChoosingRepository = false
+		s.BaselineAttempt = nil
+		s.Review = nil
+		s.SetupConsent = false
+		s.ConfirmOmissions = false
+		s.ActionIndex = 0
+		s.Error = ""
+		return
+	case "discover":
+		kind = HomeActionDiscoverOnboardingRepositories
 	case "new":
 		p.beginOnboardingProject()
 		return
@@ -193,30 +337,6 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	case "setup":
 		kind = HomeActionSetupOnboardingRepository
 		s.SetupConsent = false
-	case "save":
-		if s.Review != nil && !s.ConfirmOmissions {
-			p.SetOnboardingError("Acknowledge omitted content before continuing.")
-			return
-		}
-		if s.Repository != nil {
-			kind = HomeActionCreateOnboardingWorkspace
-			p.pendingHomeAction = &HomeAction{Kind: kind, WorkspacePath: s.WorkspacePath}
-			return
-		}
-		var selected []string
-		for _, r := range s.Repositories {
-			if s.Selected != nil && s.Selected[r.Path] {
-				selected = append(selected, r.Path)
-			}
-		}
-		if s.WorkspacePath != "" {
-			selected = append(selected, s.WorkspacePath)
-		}
-		p.submitOnboardingProjectWorkspaces(selected)
-		return
-	case "skip":
-		p.submitOnboardingProjectWorkspaces(nil)
-		return
 	case "baseline":
 		if !s.ConfirmOmissions {
 			p.SetOnboardingError("Acknowledge omitted content before creating a baseline.")
@@ -239,14 +359,6 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 			s.ConfirmOmissions = !s.ConfirmOmissions
 		}
 		return
-	case "cancel":
-		s.ChoosingRepository = false
-		s.BaselineAttempt = nil
-		s.Review = nil
-		s.SetupConsent = false
-		s.ConfirmOmissions = false
-		s.ActionIndex = 0
-		return
 	case "edit":
 		s.ChoosingRepository = false
 		s.Review = nil
@@ -267,15 +379,74 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 	p.pendingHomeAction = &HomeAction{Kind: kind, WorkspacePath: s.WorkspacePath}
 }
 
+func (p *HomePage) submitNewOnboardingFolder() {
+	s := &p.onboarding
+	folder := strings.TrimSpace(s.NewFolderPath)
+	if folder == "" {
+		s.Error = "Folder path cannot be empty."
+		return
+	}
+	if strings.HasPrefix(folder, "~/") || folder == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			if folder == "~" {
+				folder = home
+			} else {
+				folder = filepath.Join(home, folder[2:])
+			}
+		}
+	}
+	absPath, err := filepath.Abs(folder)
+	if err != nil {
+		s.Error = fmt.Sprintf("Invalid path: %v", err)
+		return
+	}
+	if err := os.MkdirAll(absPath, 0755); err != nil {
+		s.Error = fmt.Sprintf("Failed to create directory: %v", err)
+		return
+	}
+	absPath = filepath.Clean(absPath)
+	has := false
+	for _, r := range s.Repositories {
+		if filepath.Clean(r.Path) == absPath {
+			has = true
+			break
+		}
+	}
+	if !has {
+		entry := client.WorkspaceDiscoverEntry{
+			Path:      absPath,
+			Name:      filepath.Base(absPath),
+			IsGitRepo: false,
+			HasSwarm:  hasAgentsMD(absPath),
+		}
+		s.Repositories = append([]client.WorkspaceDiscoverEntry{entry}, s.Repositories...)
+	}
+	if s.Selected == nil {
+		s.Selected = make(map[string]bool)
+	}
+	s.Selected[absPath] = true
+	s.CreatingFolder = false
+	s.NewFolderPath = ""
+	s.Error = ""
+	s.Status = fmt.Sprintf("Created folder: %s", absPath)
+}
+
 func (p *HomePage) submitOnboardingProjectWorkspaces(paths []string) {
 	s := &p.onboarding
 	name := strings.TrimSpace(s.ProjectName)
 	if name == "" {
-		name = "default"
+		s.Error = "Project name is required."
+		return
 	}
 	s.Pending = true
 	s.Error = ""
-	s.Status = "Creating project and completing setup…"
+	if len(paths) > 0 {
+		s.Personalizing = true
+		s.Status = fmt.Sprintf("Personalizing %s...", name)
+	} else {
+		s.Personalizing = false
+		s.Status = "Creating project and completing setup…"
+	}
 	p.pendingHomeAction = &HomeAction{
 		Kind:           HomeActionCreateOnboardingProject,
 		ProjectName:    name,
@@ -286,27 +457,81 @@ func (p *HomePage) submitOnboardingProjectWorkspaces(paths []string) {
 func (p *HomePage) SetOnboardingRepositories(entries []client.WorkspaceDiscoverEntry) {
 	s := &p.onboarding
 	s.Repositories = nil
-	candidates := make([]client.WorkspaceDiscoverEntry, 0, len(entries)+len(p.model.Directories))
-	for _, directory := range p.model.Directories {
-		if directory.HasGit {
-			candidates = append(candidates, client.WorkspaceDiscoverEntry{Path: directory.ResolvedPath, Name: directory.Name, IsGitRepo: true})
+
+	if strings.TrimSpace(s.ProjectName) == "" {
+		candidates := make([]client.WorkspaceDiscoverEntry, 0, len(entries)+len(p.model.Directories))
+		for _, directory := range p.model.Directories {
+			if directory.HasGit {
+				candidates = append(candidates, client.WorkspaceDiscoverEntry{Path: directory.ResolvedPath, Name: directory.Name, IsGitRepo: true})
+			}
 		}
+		candidates = append(candidates, entries...)
+		seen := map[string]bool{}
+		for _, entry := range candidates {
+			if entry.IsGitRepo && entry.Path != "" && !seen[entry.Path] {
+				s.Repositories = append(s.Repositories, entry)
+				seen[entry.Path] = true
+			}
+		}
+		s.Pending = false
+		s.ChoosingRepository = true
+		s.ActionIndex = 0
+		s.Error = ""
+		s.Status = "Select a repository to verify it, or press s to skip."
+		if len(s.Repositories) == 0 {
+			s.Status = "No Git repositories found. Enter a repository path, or press s to continue without one."
+		}
+		return
+	}
+
+	candidates := make([]client.WorkspaceDiscoverEntry, 0, len(entries)+len(p.model.Directories)+1)
+	for _, directory := range p.model.Directories {
+		candidates = append(candidates, client.WorkspaceDiscoverEntry{
+			Path:      directory.ResolvedPath,
+			Name:      directory.Name,
+			IsGitRepo: directory.HasGit,
+			HasSwarm:  hasAgentsMD(directory.ResolvedPath),
+		})
 	}
 	candidates = append(candidates, entries...)
+	if p.model.CWD != "" {
+		candidates = append(candidates, client.WorkspaceDiscoverEntry{
+			Path:      p.model.CWD,
+			Name:      filepath.Base(p.model.CWD),
+			IsGitRepo: p.model.WorkspaceSetupHasGit,
+			HasSwarm:  hasAgentsMD(p.model.CWD),
+		})
+	}
 	seen := map[string]bool{}
+	var withAgentsMD []client.WorkspaceDiscoverEntry
+	var launchFolder []client.WorkspaceDiscoverEntry
+	var others []client.WorkspaceDiscoverEntry
+
 	for _, entry := range candidates {
-		if entry.IsGitRepo && entry.Path != "" && !seen[entry.Path] {
-			s.Repositories = append(s.Repositories, entry)
-			seen[entry.Path] = true
+		entry.Path = filepath.Clean(strings.TrimSpace(entry.Path))
+		if entry.Path == "" || seen[entry.Path] {
+			continue
+		}
+		seen[entry.Path] = true
+		if hasAgentsMD(entry.Path) {
+			entry.HasSwarm = true
+		}
+		if entry.HasSwarm {
+			withAgentsMD = append(withAgentsMD, entry)
+		} else if p.model.CWD != "" && entry.Path == filepath.Clean(p.model.CWD) {
+			launchFolder = append(launchFolder, entry)
+		} else {
+			others = append(others, entry)
 		}
 	}
+	s.Repositories = append(s.Repositories, withAgentsMD...)
+	s.Repositories = append(s.Repositories, launchFolder...)
+	s.Repositories = append(s.Repositories, others...)
 	s.Pending = false
-	s.ChoosingRepository = true
 	s.ActionIndex = 0
 	s.Error = ""
-	s.Status = "Select a repository to verify it, or press s to skip."
-	if len(s.Repositories) == 0 {
-		s.Status = "No Git repositories found. Enter a repository path, or press s to continue without one."
+	if s.AddingWorkspaces {
+		s.Status = "Select workspaces to add, or space to toggle selection."
 	}
 }
 
@@ -350,25 +575,65 @@ func (p *HomePage) OnboardingBaselineRequest() client.OnboardingBaseline {
 
 func (p *HomePage) ClearOnboardingReview() { p.onboarding.Review = nil }
 
+var personalizingSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
 func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	st := &p.onboarding
-	DrawText(s, content.X, content.Y, content.W, p.theme.TextMuted, clampEllipsis("Runtime account: "+st.RuntimeAccount+" (not terminal identity)", content.W))
-	DrawText(s, content.X, content.Y+1, content.W, p.theme.Primary, clampTail(st.WorkspacePath, content.W))
-	if st.NamingProject {
-		p.drawOnboardingProjectFolder(s, content)
+	if st.Personalizing {
+		frame := personalizingSpinnerFrames[(st.Tick/2)%len(personalizingSpinnerFrames)]
+		projName := strings.TrimSpace(st.ProjectName)
+		if projName == "" {
+			projName = "your project"
+		}
+		DrawText(s, content.X+1, content.Y+2, content.W-2, p.theme.Primary.Bold(true), fmt.Sprintf("%s Personalizing %s...", frame, projName))
+		DrawText(s, content.X+1, content.Y+4, content.W-2, p.theme.Text, "Analyzing workspaces and compiling project.md guidelines from AGENTS.md...")
+		DrawText(s, content.X+1, content.Y+6, content.W-2, p.theme.TextMuted, "Swarm will open your project chat as soon as personalizing finishes.")
 		return
 	}
-	if st.WorkspacePath == "" {
-		DrawText(s, content.X, content.Y+1, content.W, p.theme.Text, "A separate project folder is recommended; home is also supported.")
-	}
-	if st.EditingPath {
-		DrawText(s, content.X, content.Y+3, content.W, p.theme.Text, "Edit path: Enter select and verify · Esc cancel · Ctrl+U clear")
+
+	if st.CreatingFolder {
+		DrawText(s, content.X+1, content.Y+2, content.W-2, p.theme.Text, "Create new workspace folder")
+		fieldRect := Rect{X: content.X, Y: content.Y + 3, W: content.W, H: 3}
+		DrawBox(s, fieldRect, p.theme.BorderActive)
+		val := st.NewFolderPath
+		valStyle := p.theme.Primary
+		if val == "" {
+			val = "Enter folder path (e.g. ~/my-project)..."
+			valStyle = p.theme.TextMuted
+		}
+		DrawText(s, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valStyle, clampTail(val, fieldRect.W-4))
+		DrawText(s, content.X+1, content.Y+7, content.W-2, p.theme.TextMuted, "Directory will be created on disk if it does not exist.")
+		DrawText(s, content.X+1, content.Y+content.H-1, content.W-2, p.theme.Primary, "Enter create and select · Esc cancel")
 		return
 	}
+
 	controls := p.repositoryControls()
-	if st.ChoosingRepository {
-		DrawText(s, content.X, content.Y+2, content.W, p.theme.TextMuted, fmt.Sprintf("Git repositories · %d found · ↑/↓ scroll · s skip", len(st.Repositories)))
+	if st.ProjectName != "" && st.ProjectParent == "" {
+		if st.AddingWorkspaces {
+			projName := strings.TrimSpace(st.ProjectName)
+			DrawText(s, content.X+1, content.Y+1, content.W-2, p.theme.TextMuted, fmt.Sprintf("Workspaces for %s · Space toggle · Enter on Finish", projName))
+		} else {
+			DrawText(s, content.X+1, content.Y+1, content.W-2, p.theme.TextMuted, fmt.Sprintf("Project: %s", st.ProjectName))
+		}
+	} else {
+		DrawText(s, content.X, content.Y, content.W, p.theme.TextMuted, clampEllipsis("Runtime account: "+st.RuntimeAccount+" (not terminal identity)", content.W))
+		DrawText(s, content.X, content.Y+1, content.W, p.theme.Primary, clampTail(st.WorkspacePath, content.W))
+		if st.NamingProject {
+			p.drawOnboardingProjectFolder(s, content)
+			return
+		}
+		if st.WorkspacePath == "" {
+			DrawText(s, content.X, content.Y+1, content.W, p.theme.Text, "A separate project folder is recommended; home is also supported.")
+		}
+		if st.EditingPath {
+			DrawText(s, content.X, content.Y+3, content.W, p.theme.Text, "Edit path: Enter select and verify · Esc cancel · Ctrl+U clear")
+			return
+		}
+		if st.ChoosingRepository {
+			DrawText(s, content.X, content.Y+2, content.W, p.theme.TextMuted, fmt.Sprintf("Git repositories · %d found · ↑/↓ scroll · s skip", len(st.Repositories)))
+		}
 	}
+
 	height := maxInt(1, content.H-3)
 	start := maxInt(0, st.ActionIndex-height+1)
 	for i := start; i < len(controls) && i < start+height; i++ {
