@@ -80,10 +80,10 @@ func (p *HomePage) repositoryControls() []onboardingControl {
 		return controls
 	}
 
-	if strings.TrimSpace(s.ProjectName) != "" && s.ProjectParent == "" {
+	if s.ProjectNamed && strings.TrimSpace(s.ProjectName) != "" {
 		projName := strings.TrimSpace(s.ProjectName)
 		return []onboardingControl{
-			{label: fmt.Sprintf("[ Add workspaces into %s ]", projName), action: "open_workspace_menu"},
+			{label: fmt.Sprintf("[ Add workspaces into %s? ]", projName), action: "open_workspace_menu"},
 			{label: "[ Skip to Talk to Swarm ]", action: "skip_to_swarm"},
 		}
 	}
@@ -211,6 +211,9 @@ func (p *HomePage) handleOnboardingWorkspaceKey(ev *tcell.EventKey) {
 			s.WorkspacePath = ""
 			s.Repository = nil
 			s.ActionIndex = 0
+		} else if s.ProjectNamed {
+			s.ProjectNamed = false
+			p.ShowOnboardingProject("Enter project name.")
 		} else {
 			p.ShowOnboardingProject("Enter project name.")
 		}
@@ -608,7 +611,7 @@ func (p *HomePage) drawOnboardingWorkspace(s tcell.Screen, content Rect) {
 	}
 
 	controls := p.repositoryControls()
-	if st.ProjectName != "" && st.ProjectParent == "" {
+	if st.ProjectNamed && st.ProjectName != "" {
 		if st.AddingWorkspaces {
 			projName := strings.TrimSpace(st.ProjectName)
 			DrawText(s, content.X+1, content.Y+1, content.W-2, p.theme.TextMuted, fmt.Sprintf("Workspaces for %s · Space toggle · Enter on Finish", projName))

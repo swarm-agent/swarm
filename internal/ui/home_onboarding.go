@@ -49,6 +49,7 @@ type onboardingState struct {
 	EditingPath        bool
 	RuntimeAccount     string
 	HomePath           string
+	ProjectNamed       bool
 	ProjectName        string
 	ProjectParent      string
 	ProjectDescription string
@@ -187,6 +188,7 @@ func (p *HomePage) ShowOnboardingProject(status string) {
 	p.onboarding.Phase = onboardingPhaseProject
 	p.onboarding.ProjectFocus = 0
 	p.onboarding.ActionIndex = 0
+	p.onboarding.ProjectNamed = false
 	p.onboarding.Pending = false
 	p.onboarding.Error = ""
 	if strings.TrimSpace(status) != "" {

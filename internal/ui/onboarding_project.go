@@ -24,6 +24,7 @@ func (p *HomePage) handleOnboardingProjectKey(ev *tcell.EventKey) {
 			return
 		}
 		s.ProjectName = name
+		s.ProjectNamed = true
 		p.ShowOnboardingWorkspace("")
 		return
 	case tcell.KeyCtrlU:

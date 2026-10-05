@@ -74,6 +74,9 @@ func TestStreamlinedStep4InitialTwoChoices(t *testing.T) {
 	if controls[0].action != "open_workspace_menu" || !strings.Contains(controls[0].label, "rocket-ship") {
 		t.Fatalf("expected first option to be 'Add workspaces into rocket-ship', got %+v", controls[0])
 	}
+	if !strings.Contains(controls[0].label, "?") {
+		t.Fatalf("expected first option to contain '?', got %+v", controls[0])
+	}
 	if controls[1].action != "skip_to_swarm" || !strings.Contains(controls[1].label, "Skip to Talk to Swarm") {
 		t.Fatalf("expected second option to be 'Skip to Talk to Swarm', got %+v", controls[1])
 	}
@@ -242,5 +245,71 @@ func TestStreamlinedStep4CreateNewFolder(t *testing.T) {
 	// Verify it was selected
 	if !page.onboarding.Selected[newTarget] {
 		t.Fatalf("expected %q to be selected in onboarding state", newTarget)
+	}
+}
+
+func TestStreamlinedStep4WithWorkspaceGuidanceDoesNotShowLegacyControls(t *testing.T) {
+	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
+	// Simulate daemon startup guidance which sets ProjectParent to HomePath
+	page.SetOnboardingWorkspaceGuidance("developer", "/home/developer")
+	if page.onboarding.ProjectParent == "" {
+		t.Fatal("expected ProjectParent to be populated by SetOnboardingWorkspaceGuidance")
+	}
+
+	page.ShowOnboardingProject("Name project")
+	page.onboarding.ProjectName = "quantum-core"
+	page.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
+
+	if !page.OnboardingWorkspaceActive() {
+		t.Fatal("expected workspace phase to be active")
+	}
+
+	// Must have EXACTLY 2 controls
+	controls := page.repositoryControls()
+	if len(controls) != 2 {
+		t.Fatalf("expected exactly 2 initial controls in Step 4 even with guidance, got %d: %+v", len(controls), controls)
+	}
+	if controls[0].action != "open_workspace_menu" || !strings.Contains(controls[0].label, "quantum-core") {
+		t.Fatalf("expected open_workspace_menu with quantum-core, got %+v", controls[0])
+	}
+	if controls[1].action != "skip_to_swarm" || !strings.Contains(controls[1].label, "Skip to Talk to Swarm") {
+		t.Fatalf("expected skip_to_swarm, got %+v", controls[1])
+	}
+
+	// Must NOT contain any legacy controls
+	for _, c := range controls {
+		switch c.action {
+		case "new", "home", "discover", "consent", "inspect":
+			t.Fatalf("unexpected legacy control %q in Step 4: %+v", c.action, c)
+		}
+	}
+
+	// Test rendered output via simulation screen
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(80, 24)
+	page.Draw(screen)
+	rendered := dumpHomeTestScreen(screen, 80, 24)
+
+	if !strings.Contains(rendered, "Project: quantum-core") {
+		t.Fatalf("expected 'Project: quantum-core' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Add workspaces into quantum-core?") {
+		t.Fatalf("expected 'Add workspaces into quantum-core?' in rendered output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "Skip to Talk to Swarm") {
+		t.Fatalf("expected 'Skip to Talk to Swarm' in rendered output:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Runtime account:") {
+		t.Fatalf("rendered output must not contain 'Runtime account:':\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Create a new project folder") {
+		t.Fatalf("rendered output must not contain legacy 'Create a new project folder':\n%s", rendered)
+	}
+	if strings.Contains(rendered, "Use home folder") {
+		t.Fatalf("rendered output must not contain legacy 'Use home folder':\n%s", rendered)
 	}
 }
