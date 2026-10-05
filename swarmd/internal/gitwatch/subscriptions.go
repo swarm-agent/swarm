@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// ErrSubscriptionCapacity is safe to classify without returning paths or backend errors.
+var ErrSubscriptionCapacity = errors.New("Git subscription capacity reached")
+
 // Notice carries invalidation, never Git truth. Consumers inspect after ready
 // (including reconnect/rebuild) and changed; loss immediately fences old facts.
 type Notice struct {
@@ -49,7 +52,7 @@ func (s *Subscriptions) Acquire(config Config, branch string) (<-chan Notice, fu
 	r := s.roots[key]
 	if r == nil {
 		if len(s.roots) >= 256 {
-			return nil, nil, errors.New("Git watcher capacity reached")
+			return nil, nil, ErrSubscriptionCapacity
 		}
 		r = &subscriptionRoot{owner: s, config: config, listeners: make(map[chan Notice]string), stop: make(chan struct{}), done: make(chan struct{})}
 		s.roots[key] = r
@@ -58,7 +61,7 @@ func (s *Subscriptions) Acquire(config Config, branch string) (<-chan Notice, fu
 		return nil, nil, errors.New("Git watcher identity changed")
 	}
 	if len(r.listeners) >= 256 {
-		return nil, nil, errors.New("Git subscriber capacity reached")
+		return nil, nil, ErrSubscriptionCapacity
 	}
 	ch := make(chan Notice, 1)
 	r.listeners[ch] = branch

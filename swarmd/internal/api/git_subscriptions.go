@@ -19,13 +19,16 @@ type gitSubscriptionSelector struct {
 }
 
 type gitSubscriptionNotice struct {
-	Index int    `json:"index"`
-	Kind  string `json:"kind"`
+	Index      int    `json:"index"`
+	Kind       string `json:"kind"`
+	ReasonCode string `json:"reason_code,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
-// Push-only, bounded multiplexer. Unlike the compatibility realtime long poll,
-// this route never reads snapshots or periodically invokes Git. Authorization is
-// checked before watcher allocation and again before every delivered notice.
+// Push-only, bounded multiplexer. Request/transport failures are HTTP errors;
+// selector failures are bounded, opaque SSE notices, never whole-stream failures.
+// Authorization precedes Git inspection/allocation and every delivered notice.
+// Failed lanes are retried on a new subscription, not by a Git inspection timer.
 func (s *Server) handleGitSubscriptions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -52,81 +55,123 @@ func (s *Server) handleGitSubscriptions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, 400, errors.New("one to 256 repository selectors required"))
 		return
 	}
+	if _, ok := w.(http.Flusher); !ok {
+		writeError(w, 500, errors.New("streaming unavailable"))
+		return
+	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	requests := make([]*http.Request, len(body.Repositories))
 	paths := make([]string, len(body.Repositories))
-	// Authorize the whole request first: foreign selectors allocate no watchers.
+	releases := make([]func(), len(body.Repositories))
+	defer func() {
+		for _, release := range releases {
+			if release != nil {
+				release()
+			}
+		}
+	}()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	controller := http.NewResponseController(w)
+	send := func(notice gitSubscriptionNotice) bool {
+		_ = controller.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		defer controller.SetWriteDeadline(time.Time{})
+		payload, _ := json.Marshal(notice)
+		if _, err := w.Write(append(append([]byte("data: "), payload...), '\n', '\n')); err != nil {
+			return false
+		}
+		return controller.Flush() == nil
+	}
+	if err := controller.Flush(); err != nil {
+		return
+	}
+	fail := func(index int, code, message string) bool {
+		if release := releases[index]; release != nil {
+			release()
+			releases[index] = nil
+		}
+		return send(gitSubscriptionNotice{Index: index, Kind: "lost", ReasonCode: code, Error: message})
+	}
+	notices := make(chan gitSubscriptionNotice, 256)
 	for i, selector := range body.Repositories {
+		if ctx.Err() != nil {
+			return
+		}
 		req := r.Clone(ctx)
 		u := *r.URL
 		u.RawQuery = url.Values{"workspace_path": {selector.WorkspacePath}, "session_id": {selector.SessionID}}.Encode()
 		req.URL = &u
 		path, err := s.resolveGitStatusWorkspacePath(req, p)
 		if err != nil {
-			writeError(w, 403, err)
-			return
+			// Do not distinguish foreign, absent and stale authorization records,
+			// or echo resolver errors containing paths/account/session information.
+			if !fail(i, "selector_unavailable", "Git repository selector is missing, stale, or not authorized; retry on reconnect") {
+				return
+			}
+			continue
 		}
 		requests[i], paths[i] = req, path
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, 500, errors.New("streaming unavailable"))
-		return
-	}
-	notices := make(chan gitSubscriptionNotice, 256)
-	for i, selector := range body.Repositories {
 		resolveCtx, resolveCancel := context.WithTimeout(ctx, 2*time.Second)
-		pathsResolved, err := gitstatus.ResolveWatchPaths(resolveCtx, paths[i])
+		pathsResolved, err := gitstatus.ResolveWatchPaths(resolveCtx, path)
 		resolveCancel()
 		if err != nil {
-			writeError(w, 400, err)
-			return
+			if !fail(i, "repository_unavailable", "Git repository is unavailable or no longer a worktree; retry on reconnect") {
+				return
+			}
+			continue
 		}
 		ch, release, err := s.gitRealtime.subscriptions.Acquire(gitwatch.Config{WorktreeRoot: pathsResolved.RepoRoot, GitDir: pathsResolved.GitDir, CommonDir: pathsResolved.CommonDir}, selector.Branch)
 		if err != nil {
-			writeError(w, 503, err)
-			return
+			code, message := "watch_unavailable", "Git watch could not be acquired; retry on reconnect"
+			if errors.Is(err, gitwatch.ErrSubscriptionCapacity) {
+				code, message = "watch_capacity", "Git watch capacity reached; retry after other subscriptions are released"
+			}
+			if !fail(i, code, message) {
+				return
+			}
+			continue
 		}
-		defer release()
+		laneCtx, stop := context.WithCancel(ctx)
+		releases[i] = func() { stop(); release() }
 		go func(index int, changes <-chan gitwatch.Notice) {
 			for {
 				select {
-				case <-ctx.Done():
+				case <-laneCtx.Done():
 					return
-				case notice := <-changes:
+				case notice, open := <-changes:
+					if !open {
+						return
+					}
 					select {
 					case notices <- gitSubscriptionNotice{Index: index, Kind: notice.Kind}:
-					case <-ctx.Done():
+					case <-laneCtx.Done():
 						return
 					}
 				}
 			}
 		}(i, ch)
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case notice := <-notices:
+			if releases[notice.Index] == nil {
+				continue // discard queued facts after authorization was lost
+			}
 			resolved, err := s.resolveGitStatusWorkspacePath(requests[notice.Index], p)
 			if err != nil || resolved != paths[notice.Index] {
+				if !fail(notice.Index, "selector_unavailable", "Git repository selector is missing, stale, or not authorized; retry on reconnect") {
+					return
+				}
+				continue
+			}
+			if !send(notice) {
 				return
 			}
-			// Set only a write deadline; an idle stream has no heartbeat/Git timer.
-			controller := http.NewResponseController(w)
-			_ = controller.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			payload, _ := json.Marshal(notice)
-			if _, err := w.Write(append(append([]byte("data: "), payload...), '\n', '\n')); err != nil {
-				return
-			}
-			flusher.Flush()
-			_ = controller.SetWriteDeadline(time.Time{})
 		}
 	}
 }

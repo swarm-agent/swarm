@@ -26,6 +26,17 @@ import (
 // no watcher, assessment, session event or Git command is mocked. The temporary
 // store/worktrees and Node process are bounded; no provider/daemon is launched.
 func TestProjectGitSubscriptionsBoard(t *testing.T) {
+	runProjectGitSubscriptionsBoard(t, false)
+}
+
+// Requirement: handleGitSubscriptions must isolate pruned and foreign selectors
+// while the native HTTP-to-board path keeps healthy ancestry/OIDs current. Keep
+// the original producer, fencing and 65-second idle-read assertions in both runs.
+func TestProjectGitSubscriptionsSelectorIsolation(t *testing.T) {
+	runProjectGitSubscriptionsBoard(t, true)
+}
+
+func runProjectGitSubscriptionsBoard(t *testing.T, isolation bool) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
 	t.Setenv("HOME", t.TempDir())
@@ -83,7 +94,11 @@ func TestProjectGitSubscriptionsBoard(t *testing.T) {
 		t.Fatal(err)
 	}
 	allocations := make(map[string]worktree.Allocation)
-	for _, id := range []string{"integrated", "candidate"} {
+	ids := []string{"integrated", "candidate"}
+	if isolation {
+		ids = append(ids, "deleted")
+	}
+	for _, id := range ids {
 		alloc, err := svc.AllocateProjectTaskFollowup(p, repo, id, "agent/"+id, base, "dev")
 		if err != nil {
 			t.Fatal(err)
@@ -101,6 +116,14 @@ func TestProjectGitSubscriptionsBoard(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if isolation {
+		git(repo, "worktree", "remove", allocations["deleted"].WorkspacePath)
+		git(repo, "worktree", "prune")
+		foreign := pebblestore.SessionSnapshot{ID: "foreign-selector", UserID: "foreign-user", AccountScopeID: "foreign-account", Mode: "auto"}
+		if _, err := applyProjectLifecycleFixture(f.server, sessionruntime.SessionMutationInput{SessionID: foreign.ID, UserID: foreign.UserID, AccountScopeID: foreign.AccountScopeID, ClientRequestID: foreign.ID, IdempotencyKey: foreign.ID, PayloadHash: foreign.ID, RequestHash: foreign.ID, Kind: sessionruntime.SessionMutationCreateSession, Session: &foreign}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := db.BackfillProjectTaskSummaries(f.accountID, "project"); err != nil {
 		t.Fatal(err)
 	}
@@ -113,10 +136,15 @@ func TestProjectGitSubscriptionsBoard(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/fixture" {
 			switch r.URL.Query().Get("action") {
+			case "prune":
+				git(repo, "worktree", "remove", allocations["deleted"].WorkspacePath)
+				git(repo, "worktree", "prune")
+			case "restore":
+				git(repo, "worktree", "add", allocations["deleted"].WorkspacePath, allocations["deleted"].BranchName)
 			case "source":
 				write(candidate, "external", "external\n")
 				git(candidate, "add", ".")
-				git(candidate, "commit", "-m", "external")
+				git(candidate, "commit", "--allow-empty", "-m", "external")
 			case "integrate":
 				git(repo, "merge", "--no-edit", allocations["candidate"].BranchName)
 			case "reset":
@@ -157,6 +185,9 @@ func TestProjectGitSubscriptionsBoard(t *testing.T) {
 		mux.ServeHTTP(w, r.WithContext(ctx))
 	}))
 	defer server.Close()
+	if isolation {
+		testGitSubscriptionCapacityHTTP(t, server.URL, candidate, f.server.gitRealtime.subscriptions, logPath)
+	}
 	web, err := filepath.Abs("../../../web")
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +197,9 @@ func TestProjectGitSubscriptionsBoard(t *testing.T) {
 	cmd := exec.CommandContext(ctx, "node", "--import", "tsx", "src/features/desktop/runtime/desktop-projects-native-git.fixture.ts")
 	cmd.Dir = web
 	cmd.Env = append(os.Environ(), "SWARM_GIT_FIXTURE_URL="+server.URL)
+	if isolation {
+		cmd.Env = append(cmd.Env, "SWARM_GIT_FIXTURE_ISOLATION=1")
+	}
 	var output bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &output, &output
 	if err := cmd.Run(); err != nil {

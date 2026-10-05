@@ -9,6 +9,7 @@ import { taskCardFacts } from '../orchestrate/task-card-summary'
 
 async function main() {
   const base = process.env.SWARM_GIT_FIXTURE_URL!
+  const isolation = process.env.SWARM_GIT_FIXTURE_ISOLATION === '1'
   assert.ok(base?.startsWith('http://127.0.0.1:'))
   const nativeFetch = globalThis.fetch
   let detailReads = 0
@@ -63,6 +64,14 @@ async function main() {
   try {
     await lease.ready
     await wait(() => observed('integrated', 'integrated') && observed('candidate', 'candidate_work'))
+    const assertDeleted = () => {
+      if (!isolation) return
+      assert.equal(task('deleted')?.gitStatus, 'stale')
+      assert.match(task('deleted')?.syncWarning ?? '', /selector is missing, stale, or not authorized|repository is unavailable/)
+      assert.deepEqual(task('deleted')?.deliveryAssessment?.allowed_actions ?? [], [])
+    }
+    if (isolation) await wait(() => task('deleted')?.gitStatus === 'stale' && !!task('deleted')?.syncWarning)
+    assertDeleted()
     assert.equal(taskCardFacts(task('integrated')!).git, 'Integrated')
     assert.notEqual(task('candidate')!.deliveryAssessment!.reason_code, 'not_assessed')
     assert.ok(publications.some(snapshot => snapshot.project?.tasks.some(task => task.deliveryAssessment?.reason_code === 'not_assessed')), 'first-load placeholder was hydrated, not relabeled')
@@ -75,12 +84,16 @@ async function main() {
     await delay(65_000) // Exceeds the compatibility realtime reconciler's 30–60s interval.
     assert.equal(detailReads, reads, 'zero periodic task assessments')
     assert.equal((await mutate('count')).count, before.count, 'zero periodic Git commands')
+    assert.equal(streamStarts, 1, 'failed selectors cannot recreate the healthy transport')
+    assertDeleted()
 
     let oids = await mutate('source')
     await wait(() => observed('candidate', 'candidate_work') && task('candidate')!.deliveryAssessment!.source_oid === oids.source)
     assert.equal(task('candidate')!.deliveryAssessment!.target_oid, oids.target)
+    assertDeleted()
     oids = await mutate('integrate')
     await wait(() => observed('candidate', 'integrated') && task('candidate')!.deliveryAssessment!.target_oid === oids.target)
+    assertDeleted()
     oids = await mutate('reset')
     await wait(() => observed('candidate', 'candidate_work') && task('candidate')!.deliveryAssessment!.target_oid === oids.target)
     await mutate('dirty-source')
@@ -121,11 +134,41 @@ async function main() {
     assert.equal(task('candidate')!.syncWarning, undefined)
 
     const repositories = [{ workspace_path: task('candidate')!.workspacePath, session_id: 'candidate', branch: 'agent/candidate' }]
+    const foreignController = new AbortController()
     const foreign = await nativeFetch(`${base}/v1/workspace/git/subscriptions`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Fixture-Foreign': '1' }, body: JSON.stringify({ repositories }),
+      method: 'POST', signal: foreignController.signal, headers: { 'Content-Type': 'application/json', 'X-Fixture-Foreign': '1' }, body: JSON.stringify({ repositories }),
     })
-    assert.equal(foreign.status, 403)
-    assert.ok(!(await foreign.text()).includes('data: '), 'foreign caller received no filesystem notice')
+    try {
+      assert.equal(foreign.status, 200, 'selector rejection is scoped even when every selector fails')
+      const reader = foreign.body!.getReader()
+      let frame = ''
+      while (!frame.includes('\n\n')) frame += new TextDecoder().decode((await reader.read()).value)
+      const notice = JSON.parse(frame.split('\n\n')[0].slice(6))
+      assert.deepEqual(notice, { index: 0, kind: 'lost', reason_code: 'selector_unavailable',
+        error: 'Git repository selector is missing, stale, or not authorized; retry on reconnect' })
+      await reader.cancel()
+    } finally { foreignController.abort() }
+    assertDeleted()
+    if (isolation) {
+      await mutate('restore')
+      // Restoring the path alone does not invent knowledge. A supported explicit
+      // reconnect repairs setup, after which ready triggers a new assessment.
+      assertDeleted()
+      runtime.acceptFrame({ kind: 'rehydrate.required' })
+      await wait(() => observed('deleted', 'candidate_work'))
+      assert.equal(task('deleted')!.syncWarning, undefined)
+      await wait(() => observed('integrated', 'integrated'))
+      assert.equal(streamStarts, 3)
+      // Failure after ready/SSE must release only this lane, not terminate the
+      // shared stream or keep the now-unwatched observation fresh.
+      await mutate('prune')
+      await wait(() => task('deleted')?.gitStatus === 'stale' && !!task('deleted')?.syncWarning)
+      assertDeleted()
+      oids = await mutate('source')
+      await wait(() => observed('candidate', 'candidate_work') && task('candidate')!.deliveryAssessment!.source_oid === oids.source)
+      assert.equal(streamStarts, 3, 'post-header selector loss kept healthy stream live')
+      assertDeleted()
+    }
   } finally {
     releaseHeld?.()
     hold?.release()
