@@ -723,6 +723,11 @@ func TestOnboardingProjectPersonalizingTransitionsToPreFinishAndCompletes(t *tes
 	if onboardingComplete {
 		t.Fatal("onboarding completion must NOT be called before user confirms PreFinish")
 	}
+	// Verify PROJECT.md is NEVER written to workspace
+	projMD := filepath.Join(wsDir, "PROJECT.md")
+	if _, err := os.Stat(projMD); !os.IsNotExist(err) {
+		t.Fatalf("PROJECT.md must NOT be created in workspace")
+	}
 
 	// 4. User confirms PreFinish via Enter
 	app.home.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))

@@ -637,7 +637,7 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 		if p.onboarding.PreFinish {
 			help = "Enter launch project · Space launch · Esc back"
 		} else if p.onboarding.Personalizing {
-			help = "Personalizing project with AI Router… Please wait"
+			help = "Personalizing your Project.. Please wait while AI Router synthesizes context"
 		} else if p.onboarding.CreatingFolder {
 			help = "Type folder path · Enter create · Esc cancel"
 		} else if p.onboarding.AddingWorkspaces {

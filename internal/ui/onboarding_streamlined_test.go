@@ -319,7 +319,7 @@ func TestStreamlinedStep4PersonalizingRendersCoolAnimation(t *testing.T) {
 	page.ShowOnboardingWorkspace("Set up project")
 	page.onboarding.ProjectName = "nebula-gateway"
 	page.onboarding.Personalizing = true
-	page.onboarding.Tick = 8
+	page.onboarding.Tick = 16
 
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
@@ -330,20 +330,20 @@ func TestStreamlinedStep4PersonalizingRendersCoolAnimation(t *testing.T) {
 	page.Draw(screen)
 	rendered := dumpHomeTestScreen(screen, 80, 24)
 
-	if !strings.Contains(rendered, "PERSONALIZING NEBULA-GATEWAY") {
-		t.Fatalf("expected 'PERSONALIZING NEBULA-GATEWAY' in rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "Personalizing your Project..") {
+		t.Fatalf("expected 'Personalizing your Project..' in rendered output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "%") {
 		t.Fatalf("expected percentage progress in rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "Linked workspaces indexed & mapped") {
+	if !strings.Contains(rendered, "Linked workspaces mapped & indexed") {
 		t.Fatalf("expected workspace indexing step in rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "AGENTS.md guidelines and rules extracted") {
-		t.Fatalf("expected AGENTS.md extraction step in rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "AGENTS.md guidelines & context analyzed") {
+		t.Fatalf("expected AGENTS.md analysis step in rendered output:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "Synthesizing PROJECT.md with AI Router") {
-		t.Fatalf("expected PROJECT.md synthesis step in rendered output:\n%s", rendered)
+	if !strings.Contains(rendered, "AI Router synthesizing project architecture") {
+		t.Fatalf("expected AI Router synthesis step in rendered output:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, "Priming autonomous agent orchestrator") {
 		t.Fatalf("expected agent priming step in rendered output:\n%s", rendered)

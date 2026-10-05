@@ -685,50 +685,108 @@ func (p *HomePage) drawOnboardingPersonalizing(s tcell.Screen, content Rect) {
 	frame := personalizingSpinnerFrames[(st.Tick/2)%len(personalizingSpinnerFrames)]
 	projName := strings.TrimSpace(st.ProjectName)
 	if projName == "" {
-		projName = "your project"
+		projName = "Project"
 	}
 
 	cardH := minInt(11, maxInt(6, content.H-2))
 	cardRect := Rect{X: content.X + 1, Y: content.Y + 1, W: content.W - 2, H: cardH}
 	DrawBox(s, cardRect, p.theme.BorderActive)
 
-	title := fmt.Sprintf(" %s PERSONALIZING %s ", frame, strings.ToUpper(projName))
+	title := fmt.Sprintf(" %s Personalizing your Project.. ", frame)
+	if cardRect.W >= len(projName)+38 {
+		title = fmt.Sprintf(" %s Personalizing your Project.. [%s] ", frame, projName)
+	}
 	DrawText(s, cardRect.X+2, cardRect.Y, cardRect.W-4, p.theme.Primary.Bold(true), title)
 
-	pct := (st.Tick * 7) % 100
-	if pct < 20 {
-		pct = 20
+	// Smooth monotonic progress curve: never wraps around or bounces backwards.
+	pct := 15
+	if st.Tick < 10 {
+		pct = 15 + st.Tick*3 // 15% -> 45% (first ~2.5s)
+	} else if st.Tick < 25 {
+		pct = 45 + (st.Tick-10)*4/3 // 45% -> 65% (up to ~6s)
+	} else if st.Tick < 55 {
+		pct = 65 + (st.Tick-25)*2/3 // 65% -> 85% (up to ~14s)
+	} else if st.Tick < 115 {
+		pct = 85 + (st.Tick-55)/6 // 85% -> 95% (up to ~29s)
+	} else {
+		pct = 95 + minInt(3, (st.Tick-115)/20) // 95% -> 98%
 	}
+	if pct > 98 {
+		pct = 98
+	}
+
 	barWidth := maxInt(10, cardRect.W-16)
 	filled := (pct * barWidth) / 100
 	bar := "[" + strings.Repeat("■", filled) + strings.Repeat("·", barWidth-filled) + "]"
 	DrawText(s, cardRect.X+3, cardRect.Y+2, cardRect.W-6, p.theme.Primary, fmt.Sprintf("%s %3d%%", bar, pct))
 
-	step1Style := p.theme.Success
-	step2Style := p.theme.Success
-	step3Style := p.theme.Primary
+	// Progressive router checklist reflecting background synthesis stages
+	step1Style := p.theme.Primary
+	step1Icon := frame
+	step1Text := "Indexing linked workspaces & source files…"
+
+	step2Style := p.theme.TextMuted
+	step2Icon := "·"
+	step2Text := "Ingesting project instructions & repository rules"
+
+	step3Style := p.theme.TextMuted
+	step3Icon := "·"
+	step3Text := "Synthesizing project architecture with AI Router"
+
 	step4Style := p.theme.TextMuted
-	step3Icon := frame
-	if st.Tick > 6 {
-		step3Style = p.theme.Success
-		step3Icon = "✓"
-		step4Style = p.theme.Primary
+	step4Icon := "·"
+	step4Text := "Priming autonomous agent orchestrator"
+
+	if st.Tick >= 4 {
+		step1Style = p.theme.Success
+		step1Icon = "✓"
+		step1Text = "Linked workspaces mapped & indexed"
+
+		step2Style = p.theme.Primary
+		step2Icon = frame
+		step2Text = "Analyzing project guidelines & AGENTS.md…"
 	}
+	if st.Tick >= 14 {
+		step2Style = p.theme.Success
+		step2Icon = "✓"
+		step2Text = "AGENTS.md guidelines & context analyzed"
+
+		step3Style = p.theme.Primary
+		step3Icon = frame
+		if st.Tick >= 50 {
+			step3Text = "AI Router distilling operational constraints & roles…"
+		} else {
+			step3Text = "AI Router synthesizing project architecture & context…"
+		}
+	}
+	if st.Tick >= 70 {
+		step4Style = p.theme.Secondary
+		step4Icon = frame
+		step4Text = "Priming orchestrator with synthesized context…"
+	}
+
 	if cardH >= 7 {
-		DrawText(s, cardRect.X+3, cardRect.Y+4, cardRect.W-6, step1Style, "✓ Linked workspaces indexed & mapped")
+		DrawText(s, cardRect.X+3, cardRect.Y+4, cardRect.W-6, step1Style, fmt.Sprintf("%s %s", step1Icon, step1Text))
 	}
 	if cardH >= 8 {
-		DrawText(s, cardRect.X+3, cardRect.Y+5, cardRect.W-6, step2Style, "✓ AGENTS.md guidelines and rules extracted")
+		DrawText(s, cardRect.X+3, cardRect.Y+5, cardRect.W-6, step2Style, fmt.Sprintf("%s %s", step2Icon, step2Text))
 	}
 	if cardH >= 9 {
-		DrawText(s, cardRect.X+3, cardRect.Y+6, cardRect.W-6, step3Style, fmt.Sprintf("%s Synthesizing PROJECT.md with AI Router", step3Icon))
+		DrawText(s, cardRect.X+3, cardRect.Y+6, cardRect.W-6, step3Style, fmt.Sprintf("%s %s", step3Icon, step3Text))
 	}
 	if cardH >= 10 {
-		DrawText(s, cardRect.X+3, cardRect.Y+7, cardRect.W-6, step4Style, "· Priming autonomous agent orchestrator")
+		DrawText(s, cardRect.X+3, cardRect.Y+7, cardRect.W-6, step4Style, fmt.Sprintf("%s %s", step4Icon, step4Text))
 	}
 
 	if content.H > cardH+2 {
-		DrawText(s, content.X+1, cardRect.Y+cardRect.H+1, content.W-2, p.theme.TextMuted, "Configuring project context… Preparing your launch screen.")
+		tickerMsgs := []string{
+			"Personalizing your Project.. Synthesizing architecture & rules for Swarm.",
+			"Scanning repository structure and source roles for orchestrator…",
+			"AI Router creating durable project context in Swarm database…",
+			"Aligning orchestrator behavior with your project standards…",
+		}
+		tickerIdx := (st.Tick / 16) % len(tickerMsgs)
+		DrawText(s, content.X+1, cardRect.Y+cardRect.H+1, content.W-2, p.theme.TextMuted, tickerMsgs[tickerIdx])
 	}
 }
 

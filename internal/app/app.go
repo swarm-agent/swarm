@@ -6625,9 +6625,9 @@ func (a *App) handleCreateOnboardingProject(name, description string, workspaceP
 		return
 	}
 
-	a.home.SetOnboardingStatus(fmt.Sprintf("Personalizing %s...", name))
+	a.home.SetOnboardingStatus("Personalizing your Project..")
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		var wsRefs []client.ProjectWorkspaceRef
@@ -6691,7 +6691,7 @@ func (a *App) handleCreateOnboardingProject(name, description string, workspaceP
 		a.onboardingProjectID = project.ID
 		a.onboardingProjectName = project.Name
 
-		pollDeadline := time.Now().Add(15 * time.Second)
+		pollDeadline := time.Now().Add(45 * time.Second)
 		for time.Now().Before(pollDeadline) {
 			rec, gErr := a.api.GetProject(ctx, project.ID)
 			if gErr == nil && rec.ContextGeneration != nil {
