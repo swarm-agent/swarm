@@ -1,3 +1,4 @@
+import { requireProjectConversation } from './project-conversation-identity'
 import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
 import { reduceUsagePages } from './desktop-usage-state'
@@ -185,11 +186,17 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
       // Archive display rows are not canonical hydrated tombstones or sessions.
       state.projectArchiveSummaries = { ...state.projectArchiveSummaries, [action.projectId]: action.tombstones }
       return state
-    case 'projectConversations.applySummaries':
+    case 'projectConversations.applySummaries': {
+      // Replace the requested membership, but retain creations committed while the
+      // read was in flight. A subsequent read can still remove stale membership.
+      const requested = new Set(action.requestSessionIds)
+      const concurrent = action.requestSessionIds ? (state.projectConversationSummaries?.[action.projectId] || []).filter(session => !requested.has(session.id)) : []
+      const sessions = [...new Map([...concurrent, ...action.sessions].map(session => [session.id, session])).values()]
       // Display-only membership: never mark a partial session or transcript fully hydrated.
-      state.projectConversationSummaries = { ...state.projectConversationSummaries, [action.projectId]: action.sessions }
+      state.projectConversationSummaries = { ...state.projectConversationSummaries, [action.projectId]: sessions }
       if (action.attention) applySessionViews(state, action.attention, new Set(action.sessions.map(session => session.id)), { clearMissing: false })
       return state
+    }
     case 'session.select':
       state.selectedSessionId = action.sessionId?.trim() || undefined
       touchSessionTranscript(state, state.selectedSessionId)
@@ -919,6 +926,19 @@ export function applySessionCreateMutationResult(
   const sessionId = raw.session_id.trim()
   if (!sessionId || raw.session.id !== sessionId) {
     throw new Error('Desktop V3 create response has inconsistent session identity')
+  }
+
+  const projectId = sidebarScopeId.startsWith('project:') ? sidebarScopeId.slice('project:'.length) : undefined
+  if (projectId !== undefined) requireProjectConversation(projectId, raw.session)
+  // An idempotent create receipt must not undo a later archive/delete.
+  if (projectId !== undefined && state.tombstonesBySession[sessionId]) return state
+
+  if (projectId !== undefined) {
+    const summaries = state.projectConversationSummaries?.[projectId] || []
+    state.projectConversationSummaries = {
+      ...state.projectConversationSummaries,
+      [projectId]: summaries.some(session => session.id === sessionId) ? summaries : [...summaries, raw.session],
+    }
   }
 
   const existingProjection = state.projectionsBySession[sessionId]
