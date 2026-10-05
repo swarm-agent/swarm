@@ -23,6 +23,7 @@ type TaskEnvironmentRequest struct {
 	WorkspaceID                string            `json:"workspace_id,omitempty"`
 	DeploymentID               string            `json:"deployment_id,omitempty"`
 	EnvironmentID              string            `json:"environment_id,omitempty"`
+	ConnectionID               string            `json:"connection_id,omitempty"`
 	BuildOperationID           string            `json:"build_operation_id,omitempty"`
 	OperationID                string            `json:"operation_id,omitempty"`
 	ExpiresAt                  int64             `json:"expires_at,omitempty"`

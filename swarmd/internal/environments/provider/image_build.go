@@ -13,6 +13,15 @@ import (
 	"swarm-refactor/swarmtui/pkg/environments"
 )
 
+// BuildCleanupError retains the primary failure and cleanup classification while
+// bounding and redacting the secondary diagnostic before it reaches durable state.
+func BuildCleanupError(primary, cleanup error) error {
+	if cleanup == nil {
+		return primary
+	}
+	return errors.Join(primary, fmt.Errorf("%w: managed build cleanup unconfirmed: %s", ErrOperationCleanupFailed, commandDiagnostic(cleanup.Error())))
+}
+
 // ImageBuilder is optional: Docker/SSH never silently substitute for this local contract.
 type ImageBuilder interface {
 	BuildImage(context.Context, ImageBuildRequest) (*environments.ImageBuildResult, error)
@@ -75,12 +84,12 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
 		defer cancel()
 		if err := p.cleanupBuildFiles(cleanupCtx, req.OperationID); err != nil {
-			retErr = fmt.Errorf("%w: %v", ErrOperationCleanupFailed, err)
+			retErr = BuildCleanupError(retErr, err)
 			result = nil
 		}
 		if retErr != nil {
 			if err := p.cleanupBuildImages(cleanupCtx, req.OperationID); err != nil {
-				retErr = fmt.Errorf("%w: %v", ErrOperationCleanupFailed, err)
+				retErr = BuildCleanupError(retErr, err)
 				result = nil
 			}
 		}
@@ -178,20 +187,55 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil
+	}
+	if err != nil || !info.IsDir() {
+		return errors.New("owned build scratch is unavailable or not a directory")
 	}
 	unit := "swarm-build-" + id + ".service"
 	// Stop only the server-generated operation unit, then prove it no longer runs.
 	_, stopErr := p.runner.Run(ctx, "systemctl", "--user", "stop", unit)
-	out, err := p.runner.Run(ctx, "systemctl", "--user", "show", unit, "--property=ActiveState", "--value")
-	state := strings.TrimSpace(string(out))
-	if err != nil || (state != "inactive" && state != "failed") {
+	out, err := p.runner.Run(ctx, "systemctl", "--user", "show", unit, "--property=LoadState", "--property=ActiveState")
+	// --collect unloads completed units; show may exit nonzero for not-found.
+	// Require explicit structured inactive evidence, never just a failed stop.
+	properties := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if ok {
+			properties[key] = value
+		}
+	}
+	absent := properties["LoadState"] == "not-found" && properties["ActiveState"] == "inactive"
+	stopped := err == nil && properties["LoadState"] == "loaded" && (properties["ActiveState"] == "inactive" || properties["ActiveState"] == "failed")
+	if !absent && !stopped {
 		return fmt.Errorf("build unit termination unconfirmed (stop failed: %t)", stopErr != nil)
 	}
 	// The storage is private to this operation. Podman unmounts only its own
 	// external build containers before recursive removal; no shared store touched.
-	if _, err := os.Stat(filepath.Join(root, "storage")); err == nil {
+	storage := filepath.Join(root, "storage")
+	storageInfo, statErr := os.Lstat(storage)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return errors.New("owned build storage inspection failed")
+	}
+	if statErr == nil && !storageInfo.IsDir() {
+		return errors.New("owned build storage is not a directory")
+	}
+	populated := false
+	if statErr == nil {
+		dir, err := os.Open(storage)
+		if err != nil {
+			return errors.New("owned build storage inventory unavailable")
+		}
+		entries, readErr := dir.ReadDir(1)
+		_ = dir.Close()
+		if readErr != nil && readErr != io.EOF {
+			return errors.New("owned build storage inventory unavailable")
+		}
+		populated = len(entries) > 0
+	}
+	if populated {
 		_, err = p.runner.Run(ctx, "podman", "--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "unmount", "--all", "--force")
 		if err != nil {
 			return errors.New("owned build storage unmount failed")
@@ -221,10 +265,11 @@ func (p *LocalDockerProvider) CleanupBuild(ctx context.Context, id string) error
 			return errors.New("build action has not confirmed termination")
 		}
 	}
-	if err := p.cleanupBuildFiles(ctx, id); err != nil {
-		return err
-	}
-	return p.cleanupBuildImages(ctx, id)
+	// Scratch and imported images are independent owned resources. A failed
+	// unmount must not prevent attempting removal of an already imported image.
+	filesErr := p.cleanupBuildFiles(ctx, id)
+	imagesErr := p.cleanupBuildImages(ctx, id)
+	return errors.Join(filesErr, imagesErr)
 }
 
 // Only bounded, regular engine receipts can become durable provenance.

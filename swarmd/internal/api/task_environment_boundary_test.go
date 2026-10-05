@@ -178,7 +178,8 @@ func (f *taskAttachmentLifecycleFixture) Submit(_ context.Context, req lifecycle
 // explicit CAS assignment, independent consumer receipts, self attach and cleanup.
 // Real Git/catalog/session/task state proves exact source checks; the counting
 // lifecycle double confines this test to API authority (not provider or lease-store
-// concurrency evidence). Failed generation/source/owner requests have no effects.
+// concurrency evidence). Preparation forwards connection selection to the lifecycle
+// authority. Failed generation/source/owner requests have no effects.
 func TestTaskEnvironmentAttachmentWorkflow(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
@@ -231,6 +232,27 @@ func TestTaskEnvironmentAttachmentWorkflow(t *testing.T) {
 	// Attach reads only definition identity, not a mutable definition as build authority.
 	f.server.environments = &taskAttachmentDefinitionFixture{env: environments.Environment{ID: "environment", Name: "Review"}}
 	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	// Preparation uses the same task/catalog checks before forwarding selection.
+	preparer := &taskPreparationFixture{}
+	f.server.deployments = preparer
+	f.server.environments = &taskAttachmentDefinitionFixture{env: environments.Environment{ID: "environment", Name: "Review", Build: &environments.ImageBuildDefinition{Product: product, Recipe: product}}}
+	for _, connection := range []string{"", "selected-connection"} {
+		prepare := tool.TaskEnvironmentRequest{Action: "build", ProjectID: proj.ID, TaskID: task.ID, WorkspaceID: entry.WorkspaceID, EnvironmentID: "environment", ConnectionID: connection}
+		if _, err := f.server.ManageTaskEnvironment(ctx, p, "", prepare); err != nil {
+			t.Fatal(err)
+		}
+		if preparer.request.ConnectionID != connection || preparer.request.AccountScopeID != p.AccountScopeID || preparer.request.WorkspaceID != entry.WorkspaceID {
+			t.Fatalf("preparation routing changed: %+v", preparer.request)
+		}
+		before := preparer.effects
+		foreign := p
+		foreign.AccountScopeID = "foreign-account"
+		if _, err := f.server.ManageTaskEnvironment(ctx, foreign, "", prepare); err == nil || preparer.effects != before {
+			t.Fatal("foreign preparation reached lifecycle")
+		}
+	}
+	f.server.deployments = manager
+	f.server.environments = &taskAttachmentDefinitionFixture{env: environments.Environment{ID: "environment", Name: "Review"}}
 	req := tool.TaskEnvironmentRequest{Action: "attach_task", ProjectID: proj.ID, TaskID: task.ID, AttachmentID: "review", WorkspaceID: entry.WorkspaceID, DeploymentID: "candidate", ExpectedTaskRevision: task.Revision, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 	w := projectConversationRequest(t, f.server, p, http.MethodPost, ProjectsPath+"/"+proj.ID+"/sessions", map[string]any{"client_request_id": "attachment-parent", "mode": "auto"})
 	if w.Code != http.StatusOK {
@@ -380,6 +402,7 @@ type taskPreparationFixture struct {
 	op      environments.EnvironmentOperation
 	lease   environments.DeploymentLease
 	effects int
+	request lifecycle.SubmitOperationRequest
 }
 
 func (f *taskPreparationFixture) Get(context.Context, string, string, string) (environments.EnvironmentOperation, bool, error) {
@@ -390,6 +413,7 @@ func (f *taskPreparationFixture) GetLease(string, string, string) (environments.
 }
 func (f *taskPreparationFixture) Submit(_ context.Context, r lifecycle.SubmitOperationRequest) (*environments.EnvironmentOperation, error) {
 	f.effects++
+	f.request = r
 	return &environments.EnvironmentOperation{Action: r.Action, LeaseID: r.LeaseID}, nil
 }
 

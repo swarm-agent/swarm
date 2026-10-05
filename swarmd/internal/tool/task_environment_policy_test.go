@@ -12,13 +12,15 @@ import (
 
 type taskEnvironmentRoutingFixture struct {
 	ProjectTaskLifecycleService
-	calls  int
-	action string
+	calls      int
+	action     string
+	connection string
 }
 
 func (f *taskEnvironmentRoutingFixture) ManageTaskEnvironment(_ context.Context, _ identity.Principal, _ string, req TaskEnvironmentRequest) (TaskEnvironmentResult, error) {
 	f.calls++
 	f.action = req.Action
+	f.connection = req.ConnectionID
 	return TaskEnvironmentResult{}, errors.New("receipt boundary rejection")
 }
 
@@ -96,5 +98,24 @@ func TestTaskEnvironmentOrchestratorRouting(t *testing.T) {
 	before := f.calls
 	if _, err := r.executeTaskEnvironment(context.Background(), scope, map[string]any{"action": "exec", "project_result": map[string]any{}}); err == nil || f.calls != before {
 		t.Fatal("alternate source authority silently accepted")
+	}
+}
+
+// Purpose: executeManageEnvironments must pass the existing connection override
+// through strict task decoding, not reject it or fall back to generic execution.
+// The rejecting service proves both exact forwarding and boundary enforcement.
+func TestTaskEnvironmentConnectionRouting(t *testing.T) {
+	f := &taskEnvironmentRoutingFixture{}
+	metadata := map[string]any{"project_id": "project", "task_id": "task", "agent_profile": pebblestore.AgentProfile{Name: "swarm"}}
+	r := &Runtime{sessions: environmentAccessSessions{snapshot: pebblestore.SessionSnapshot{ID: "session", AccountScopeID: "account", UserID: "user", Metadata: metadata}}, projectTaskLifecycle: f, environmentsStore: &inspectionEnvironmentStore{}}
+	scope := WorkspaceScope{SessionID: "session", Principal: identity.Principal{Type: "user", AccountScopeID: "account", UserID: "user"}}
+	for _, action := range []string{"build", "ensure", "deploy"} {
+		for _, connection := range []string{"", "selected-connection"} {
+			before := f.calls
+			_, err := r.executeManageEnvironments(context.Background(), scope, "call", map[string]any{"action": action, "connection_id": connection})
+			if err == nil || !strings.Contains(err.Error(), "receipt boundary rejection") || f.calls != before+1 || f.connection != connection {
+				t.Fatalf("override not forwarded: %v calls=%d connection=%q", err, f.calls, f.connection)
+			}
+		}
 	}
 }
