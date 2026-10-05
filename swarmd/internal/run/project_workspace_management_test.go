@@ -112,7 +112,7 @@ func TestProjectConversationWorkspaceCatalogManagement(t *testing.T) {
 		t.Fatalf("unapproved mutation changed catalog: %+v %v", entries, err)
 	}
 	assertCheckoutFree()
-	result := call(map[string]any{"action": "create", "workspace_path": root, "workspace_name": "Disposable", "intent": "Register repository", "permission_scope": "workspace_create"})
+	result := call(map[string]any{"action": "create", "workspace_path": root, "workspace_name": "Disposable", "intent": "Register repository"})
 	target := result["target"].(map[string]any)
 	id := target["workspace_id"].(string)
 	generation := target["workspace_generation"]
@@ -125,7 +125,7 @@ func TestProjectConversationWorkspaceCatalogManagement(t *testing.T) {
 	}
 	originalRoot := root
 	root = programFixtureRepo(t)
-	result = call(map[string]any{"action": "update", "workspace_id": id, "workspace_generation": generation, "workspace_path": root, "workspace_name": "Renamed", "intent": "Rename registration", "permission_scope": "workspace_update"})
+	result = call(map[string]any{"action": "update", "workspace_id": id, "workspace_generation": generation, "workspace_path": root, "workspace_name": "Renamed", "intent": "Rename registration"})
 	currentGeneration := result["target"].(map[string]any)["workspace_generation"]
 	entry, ok, err := workspaceSvc.GetByWorkspaceIDForPrincipal(p, id)
 	if err != nil || !ok || entry.Name != "Renamed" {
@@ -159,14 +159,32 @@ func TestProjectConversationWorkspaceCatalogManagement(t *testing.T) {
 			assertCheckoutFree()
 		})
 	}
-	for _, action := range []string{"set_session", "adopt_worktree", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"} {
+	for _, action := range []string{"set_session", "adopt_worktree"} {
 		_, err := svc.executeManageWorkspaceTool(parent.ID, mustJSON(t, map[string]any{"action": action}), p, sessions.ApplySessionMutation)
 		if err == nil || !strings.Contains(err.Error(), "checkout-free project conversation") {
 			t.Fatalf("%s did not clearly reject project retargeting: %v", action, err)
 		}
 		assertCheckoutFree()
 	}
-	call(map[string]any{"action": "delete", "workspace_id": id, "workspace_generation": currentGeneration, "intent": "Unlink registration only", "permission_scope": "workspace_delete"})
+	for _, action := range []string{"reclaim_worktree", "copy_worktree", "cancel_worktree_recovery"} {
+		payload := map[string]any{
+			"action":             action,
+			"owner_session_id":   "owner",
+			"ownership_revision": 1,
+			"head":               "head",
+			"fingerprint":        strings.Repeat("0", 64),
+			"operation_id":       "op",
+		}
+		if action == "copy_worktree" {
+			payload["files"] = []any{"file"}
+		}
+		_, err := svc.executeManageWorkspaceTool(parent.ID, mustJSON(t, payload), p, sessions.ApplySessionMutation)
+		if err == nil || !strings.Contains(err.Error(), "checkout-free project conversation") {
+			t.Fatalf("%s did not clearly reject project retargeting: %v", action, err)
+		}
+		assertCheckoutFree()
+	}
+	call(map[string]any{"action": "delete", "workspace_id": id, "workspace_generation": currentGeneration, "intent": "Unlink registration only"})
 	entries, err := workspaceSvc.ListKnownForPrincipal(p, 10)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("deleted registration remains: %+v %v", entries, err)
