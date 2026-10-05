@@ -576,6 +576,7 @@ type CommandRunner interface {
 type OSCommandRunner struct {
 	MaxOutputBytes int
 	WaitDelay      time.Duration
+	commandEnv     func() ([]string, error)
 }
 
 func (r *OSCommandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -588,6 +589,13 @@ func (r *OSCommandRunner) Run(ctx context.Context, name string, args ...string) 
 		waitDelay = DefaultWaitDelay
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	if r.commandEnv != nil {
+		env, err := r.commandEnv()
+		if err != nil {
+			return nil, err
+		}
+		cmd.Env = env
+	}
 	cmd.WaitDelay = waitDelay
 
 	var stdout bytes.Buffer
@@ -613,6 +621,13 @@ func (r *OSCommandRunner) RunCombined(ctx context.Context, name string, args ...
 		waitDelay = DefaultWaitDelay
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	if r.commandEnv != nil {
+		env, err := r.commandEnv()
+		if err != nil {
+			return nil, err
+		}
+		cmd.Env = env
+	}
 	cmd.WaitDelay = waitDelay
 
 	var combined bytes.Buffer
@@ -629,6 +644,13 @@ func (r *OSCommandRunner) RunWithIO(ctx context.Context, stdin io.Reader, stdout
 		waitDelay = DefaultWaitDelay
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
+	if r.commandEnv != nil {
+		env, err := r.commandEnv()
+		if err != nil {
+			return err
+		}
+		cmd.Env = env
+	}
 	cmd.WaitDelay = waitDelay
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout

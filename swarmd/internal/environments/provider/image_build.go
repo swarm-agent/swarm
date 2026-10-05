@@ -105,7 +105,25 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	// systemd manager here could move descendants into sibling user scopes.
 	// Runtime containers still use the separately admitted systemd manager.
 	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--runtime=crun"}
-	cleanEnv := []string{"env", "-i", "PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(root, "home"), "XDG_RUNTIME_DIR=" + os.Getenv("XDG_RUNTIME_DIR"), "DBUS_SESSION_BUS_ADDRESS=" + os.Getenv("DBUS_SESSION_BUS_ADDRESS"), "TMPDIR=" + filepath.Join(root, "tmp"), "CONTAINERS_CONF=" + filepath.Join(root, "containers.conf"), "CONTAINERS_REGISTRIES_CONF=" + filepath.Join(root, "registries.conf"), "CONTAINERS_MOUNTS_CONF=" + filepath.Join(root, "mounts.conf"), "podman"}
+	// env -i below must retain the same resolved user session as systemd-run,
+	// rather than reintroducing the daemon's missing session variables.
+	sessionEnv := os.Environ()
+	if runner, ok := p.runner.(*OSCommandRunner); ok && runner.commandEnv != nil {
+		sessionEnv, err = runner.commandEnv()
+		if err != nil {
+			return nil, err
+		}
+	}
+	var runtimeDir, busAddress string
+	for _, entry := range sessionEnv {
+		if strings.HasPrefix(entry, "XDG_RUNTIME_DIR=") {
+			runtimeDir = strings.TrimPrefix(entry, "XDG_RUNTIME_DIR=")
+		}
+		if strings.HasPrefix(entry, "DBUS_SESSION_BUS_ADDRESS=") {
+			busAddress = strings.TrimPrefix(entry, "DBUS_SESSION_BUS_ADDRESS=")
+		}
+	}
+	cleanEnv := []string{"env", "-i", "PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(root, "home"), "XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=" + busAddress, "TMPDIR=" + filepath.Join(root, "tmp"), "CONTAINERS_CONF=" + filepath.Join(root, "containers.conf"), "CONTAINERS_REGISTRIES_CONF=" + filepath.Join(root, "registries.conf"), "CONTAINERS_MOUNTS_CONF=" + filepath.Join(root, "mounts.conf"), "podman"}
 	build := append(append([]string{}, isolated...), "build", "--jobs=1", "--ignorefile", filepath.Join(root, "ignore"), "--layers=false", "--force-rm=true", "--http-proxy=false", "--isolation=oci", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--memory=8g", "--cpu-period=100000", "--cpu-quota=200000", "--ulimit=nofile=4096:4096", "--no-hosts", "--hooks-dir", filepath.Join(root, "hooks"), "--authfile", filepath.Join(root, "auth.json"), "--tls-verify=true", "--retry=0", "--iidfile", filepath.Join(root, "image-id"), "--build-arg", "SWARM_BUILD_SHA="+req.Definition.Product.Commit, "--label", "io.swarm.build.operation="+req.OperationID, "--label", "org.opencontainers.image.revision="+req.Definition.Product.Commit, "--label", "io.swarm.build.inputs="+req.Definition.Digest(), "--file", filepath.Join(root, "context", ".swarm-recipe", filepath.FromSlash(req.Definition.RecipeFile)), filepath.Join(root, "context"))
 	args := []string{"--user", "--wait", "--pipe", "--collect", "--unit=swarm-build-" + req.OperationID, "--property=Delegate=yes", "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=5", "--property=KillMode=control-group", "--property=MemoryMax=10G", "--property=TasksMax=1024", "--property=CPUQuota=200%", "--property=LimitFSIZE=8G", "--"}
 	args = append(args, cleanEnv...)

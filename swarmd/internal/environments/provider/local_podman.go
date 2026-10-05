@@ -15,6 +15,12 @@ import (
 func NewLocalPodmanProvider(runner CommandRunner) *LocalDockerProvider {
 	p := NewLocalDockerProvider(runner)
 	p.kind = environments.ConnectionKindLocalPodman
+	if osRunner, ok := p.runner.(*OSCommandRunner); ok {
+		// Copy rather than changing a runner shared with another provider.
+		localRunner := *osRunner
+		localRunner.commandEnv = localPodmanEnvironment
+		p.runner = &localRunner
+	}
 	return p
 }
 
