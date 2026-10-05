@@ -19,5 +19,5 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.spec.tsx", "src/features/desktop/orchestrate/project-test-styles.ts"]
+  "exclude": ["src/**/*.spec.ts", "src/**/*.spec.tsx", "src/features/desktop/orchestrate/project-test-styles.ts", "src/features/desktop/runtime/desktop-projects-native-git.fixture.ts"]
 }
