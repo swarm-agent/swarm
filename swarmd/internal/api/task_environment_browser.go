@@ -21,10 +21,10 @@ import (
 var errTaskBrowserUnavailable = errors.New("browser access unavailable; refresh attachment and inspect or rebuild the deployment")
 
 type taskBrowserSnapshot struct {
-	attachment environments.TaskEnvironmentAttachment
-	deployment environments.Deployment
+	attachment  environments.TaskEnvironmentAttachment
+	deployment  environments.Deployment
 	environment environments.Environment
-	connection environments.Connection
+	connection  environments.Connection
 }
 
 // Read authority both before and after network I/O. This action creates no lease,

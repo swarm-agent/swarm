@@ -18,6 +18,7 @@ export function verifiedBrowserURL(endpoint: TaskBrowserEndpoint): string | null
 export async function checkTaskBrowserAccess(attachment: TaskEnvironmentAttachment): Promise<TaskBrowserEndpoint[]> {
   const response = await requestJson<{ browser_endpoints: TaskBrowserEndpoint[] }>('/v1/task-environments', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'browser_endpoints', project_id: attachment.project_id,
       task_id: attachment.task_id, workspace_id: attachment.source.workspace_id,
       attachment_id: attachment.id, expected_attachment_revision: attachment.revision }),
