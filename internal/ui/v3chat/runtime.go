@@ -333,8 +333,10 @@ func (r *Runtime) connect(ctx context.Context, startAtCurrent bool) error {
 			r.store.Dispatch(ConnectionAction{Status: ConnectionReady})
 			r.signalWake()
 		}}, func(frame client.V3RealtimeFrame) {
-			next := r.store.Dispatch(RealtimeFrameAction{Frame: frame})
-			r.signalWake()
+			next, domain := r.store.DispatchWithDomain(RealtimeFrameAction{Frame: frame})
+			if domain.HasVisibleChange() {
+				r.signalWake()
+			}
 			if next.NeedsRehydrate {
 				cancel()
 				go r.autoRecover()

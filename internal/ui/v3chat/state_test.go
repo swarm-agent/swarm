@@ -684,3 +684,63 @@ func TestLivePatchInitialOffsetGapAndOverlapStreamProperly(t *testing.T) {
 		t.Fatalf("live text = %q, want partial text more done", got)
 	}
 }
+
+func TestChangeDomainAndRevisions(t *testing.T) {
+	store := NewStore()
+	rev0, cRev0, sRev0 := store.Revisions()
+
+	// 1. Keepalive with identical cursor produces DomainNone, no revision bump
+	_, domain := store.DispatchWithDomain(RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind: "keepalive",
+	}})
+	if domain != DomainNone {
+		t.Fatalf("keepalive domain = %v, want DomainNone", domain)
+	}
+	rev1, cRev1, sRev1 := store.Revisions()
+	if rev1 != rev0 || cRev1 != cRev0 || sRev1 != sRev0 {
+		t.Fatalf("keepalive bumped revisions: %d,%d,%d", rev1, cRev1, sRev1)
+	}
+
+	// 2. Transport watermark with new cursor produces DomainTransport
+	_, domain = store.DispatchWithDomain(RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind:           "endpoint.watermark",
+		EndpointCursor: "cur-1",
+	}})
+	if domain != DomainTransport {
+		t.Fatalf("watermark domain = %v, want DomainTransport", domain)
+	}
+	if domain.HasVisibleChange() {
+		t.Fatalf("DomainTransport should not have visible change")
+	}
+	rev2, cRev2, sRev2 := store.Revisions()
+	if rev2 <= rev1 {
+		t.Fatalf("transport cursor did not bump general revision: %d <= %d", rev2, rev1)
+	}
+	if cRev2 != cRev1 || sRev2 != sRev1 {
+		t.Fatalf("transport cursor bumped content/session revision: c=%d, s=%d", cRev2, sRev2)
+	}
+
+	// 3. Content change bumps content revision
+	_, domain = store.DispatchWithDomain(RealtimeFrameAction{Frame: client.V3RealtimeFrame{
+		Kind: "live.patch",
+		Live: &client.V3RealtimeLivePatch{RunID: "r", StreamID: "s", OffsetEnd: 4, Text: "test"},
+	}})
+	if !domain.HasContentChange() || !domain.HasVisibleChange() {
+		t.Fatalf("live patch domain = %v, want Content and Visible", domain)
+	}
+	_, cRev3, _ := store.Revisions()
+	if cRev3 <= cRev2 {
+		t.Fatalf("content did not bump content revision: %d <= %d", cRev3, cRev2)
+	}
+
+	// 4. Safe readers on store
+	if store.SelectSessionID() != "" {
+		t.Fatalf("expected empty session ID")
+	}
+	if len(store.SelectPendingPermissions()) != 0 {
+		t.Fatalf("expected 0 pending permissions")
+	}
+	if _, active := store.SelectActiveRun(); active {
+		t.Fatalf("expected inactive run")
+	}
+}
