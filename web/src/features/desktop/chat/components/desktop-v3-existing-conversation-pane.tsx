@@ -3367,7 +3367,8 @@ export function DesktopV3ExistingConversationPane({
       {cacheSession?.automation && <AutomationSessionPanel key={`${normalizedSessionId}:${cacheSession.automation.automation_id}`} workspaceId={cacheSession.automation.workspace_id} id={cacheSession.automation.automation_id} />}
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
-        title={orchestratorHeader?.projectName || session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
+        title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
+        projectName={orchestratorHeader?.projectName}
         workspaceName={
           sessionWorkspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
@@ -3378,7 +3379,7 @@ export function DesktopV3ExistingConversationPane({
         runStatus={startPresentation?.runStatus ?? runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
-        sessionActions={orchestratorHeader && headerSessionActions ? { ...headerSessionActions, onRename: undefined } : headerSessionActions}
+        sessionActions={headerSessionActions}
         studioMode={presentation === "page" ? studioMode : null}
         onToggleStudioMode={presentation === "page" ? onToggleStudioMode : undefined}
       />

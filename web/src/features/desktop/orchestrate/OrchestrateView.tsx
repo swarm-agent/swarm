@@ -2840,7 +2840,7 @@ function OrchestratorChatSidebar({
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const navigate = useNavigate()
-  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(projectSegment || project.id, project.primarySessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
+  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(projectSegment || project.id, sessionId || project.primarySessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const [clearingContext, setClearingContext] = useState(false)
   const [clearSuccess, setClearSuccess] = useState(false)
 
