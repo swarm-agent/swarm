@@ -2099,6 +2099,12 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 				}
 				return true
 			}
+			if a.homeModel.ActiveProjectID != "" {
+				if err := a.createNewProjectSession(a.homeModel.ActiveProjectID, "auto", task.Title); err != nil {
+					a.home.SetStatus(fmt.Sprintf("start task session failed: %v", err))
+				}
+				return true
+			}
 			if err := a.openChatSession(task.Title, task.Title); err != nil {
 				a.home.SetStatus(fmt.Sprintf("start task session failed: %v", err))
 			}
@@ -2130,8 +2136,8 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 
 	a.home.ClearCommandOverlay()
 	if a.homeModel.ActiveProjectID != "" {
-		if err := a.openOrchestratorChat(prompt); err != nil {
-			a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
+		if err := a.createNewProjectSession(a.homeModel.ActiveProjectID, "auto", prompt); err != nil {
+			a.home.SetStatus(fmt.Sprintf("start session failed: %v", err))
 			return true
 		}
 		a.home.ClearPrompt()
@@ -3095,6 +3101,9 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		}
 		if scopePath == "" {
 			scopePath = strings.TrimSpace(a.startupCWD)
+		}
+		if scopePath == "" {
+			scopePath = "."
 		}
 		if strings.TrimSpace(a.activeWorkspacePath()) != "" {
 			workspaceScope = scopePath
