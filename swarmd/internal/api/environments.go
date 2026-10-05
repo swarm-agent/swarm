@@ -435,6 +435,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 type environmentMutationRequest struct {
+	BuildOperationID string `json:"build_operation_id,omitempty"`
 	Action                   string                    `json:"action"`
 	WorkspaceID              string                    `json:"workspace_id"`
 	WorkspacePath            string                    `json:"workspace_path"`
@@ -787,7 +788,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 
-		case "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
+		case "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
 			if s.deployments == nil {
 				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
 				return
@@ -806,6 +807,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			}
 
 			subReq := lifecycle.SubmitOperationRequest{
+				BuildOperationID: req.BuildOperationID,
 				AccountScopeID: accountScopeID,
 				WorkspaceID:    workspaceID,
 				Action:         action,
@@ -831,6 +833,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 					SessionID: callerSessionID,
 				},
 			}
+			if action == "build" { subReq.WorkspacePath = "" }
 			if req.TimeoutMS > 0 {
 				subReq.Timeout = time.Duration(req.TimeoutMS) * time.Millisecond
 			}

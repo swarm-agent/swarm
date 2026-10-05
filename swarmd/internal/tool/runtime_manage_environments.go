@@ -30,7 +30,7 @@ func manageEnvironmentsDefinition() Definition {
 					"type": "string",
 					"enum": []string{
 						"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
-						"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
+						"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 						"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
 					},
 					"description": "Operation action to perform",
@@ -40,7 +40,8 @@ func manageEnvironmentsDefinition() Definition {
 				// Explicit entity identifiers (no ambiguous cross-object aliasing)
 				"environment_id": map[string]any{"type": "string", "description": "Environment definition ID"},
 				"deployment_id":  map[string]any{"type": "string", "description": "Deployment instance ID for runtime actions (exec, stop, start, destroy, release, get_deployment)"},
-				"operation_id":   map[string]any{"type": "string", "description": "Operation ID for get_operation or cancel_operation"},
+				"build_operation_id": map[string]any{"type":"string", "description":"Exact successful managed build operation for ensure/deploy; image substitution is forbidden"},
+			"operation_id":   map[string]any{"type": "string", "description": "Operation ID for get_operation or cancel_operation"},
 				"id":             map[string]any{"type": "string", "description": "Environment ID alias for backward compatibility with definition get/update/delete/export"},
 				// Definition fields
 				"name":                    map[string]any{"type": "string", "description": "Environment display name"},
@@ -161,14 +162,15 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		response["instructions"] = "manage_environments unified reference:\n" +
 			"1. Definition actions: list, get, create, update, delete, set_default_test, export, import.\n" +
 			"2. Runtime instance inspection: list_deployments (reads deployments with active leases; no lazy reap), get_deployment (deployment_id required).\n" +
-			"3. Supervised runtime mutations: ensure (environment_id, deliberate receipt execution), deploy, exec (deployment_id, command), start, stop, destroy, release (deployment_id or lease_id).\n" +
+			"3. Managed build: save environment.build with exact product/recipe catalog workspace_id, workspace_generation and commit; recipe_directory/recipe_file are relative committed paths. Use managed-build image, local_podman, reuse=true, release_behavior=none. build(environment_id) returns an operation; pass its successful build_operation_id to ensure/deploy. Product context is at root; recipe tree is under .swarm-recipe. No live worktree, credentials, arbitrary build flags or mutable tags are accepted.\n" +
+			"   Supervised runtime mutations: ensure (environment_id, deliberate receipt execution), deploy, exec (deployment_id, command), start, stop, destroy, release (deployment_id or lease_id).\n" +
 			"   Mutations return an immediate bounded operation receipt with operation_id and status within 2 seconds. Do not busy-poll; inspect receipts and use realtime updates.\n" +
 			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id)."
 		response["definition_schema"] = manageEnvironmentsDefinition().Parameters
 		response["definition_help"] = "Create accepts top-level definition fields or one environment object; import accepts exactly one environment object or json string containing an exported definition. Nested fields are JSON objects, not JSON-encoded strings. Unknown fields, nulls and wrong types are rejected. Exported account_scope_id/workspace_id are rebound to authorized caller scope, never trusted. Update accepts top-level fields only: container and deployment_policy merge supplied fields; provisioning, health_check, resources and labels replace the supplied section. image/ports and max_instances/release_behavior/reuse are aliases and cannot accompany their canonical section. Omitted create provisioning defaults to local_mount at /app; explicit provisioning requires a valid strategy. Container keys: image, command, args, env_vars, exposed_ports, privileged, user, working_dir, setup_commands, rootless_systemd. Explicit local_podman connections support rootless_systemd={cgroup_namespace:private,network:slirp4netns,pids_limit:1024}; this requires registry_image provisioning, no host mounts, no privileged/GPU mode, and a pre-existing local image. Capabilities require rootless Linux Podman, crun, slirp4netns, systemd cgroup v2 and delegated cpu/memory/pids controllers. Ports remain 127.0.0.1-only; no host environment expansion, proxy inheritance, remote or privileged fallback. No arbitrary runtime flags are supported. Connection checks diagnose prerequisites without changing host configuration. Strategy availability is provider-dependent; schema describes stored definitions, not a guarantee of provider support."
 		response["available_actions"] = []string{
 			"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
-			"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
+			"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 			"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
 		}
 
@@ -481,7 +483,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		response["status"] = op.Status
 
 	// Supervised runtime mutations (all wired to supervised admission via Submit)
-	case "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
+	case "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
 		if r.deploymentManager == nil {
 			return "", errors.New("manage_environments deployment manager is not configured")
 		}
@@ -508,6 +510,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		}
 
 		subReq := lifecycle.SubmitOperationRequest{
+			BuildOperationID: strings.TrimSpace(asString(args["build_operation_id"])),
 			AccountScopeID: accountScopeID,
 			WorkspaceID:    workspaceID,
 			Action:         actionName,
@@ -525,6 +528,9 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		}
 
 		switch actionName {
+		case "build":
+			subReq.EnvironmentID = strings.TrimSpace(asString(args["environment_id"]))
+			subReq.ConnectionID = strings.TrimSpace(asString(args["connection_id"]))
 		case "ensure":
 			envID := strings.TrimSpace(asString(args["environment_id"]))
 			if envID == "" && r.workspaceSettings != nil {

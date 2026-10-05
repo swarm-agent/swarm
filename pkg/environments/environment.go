@@ -110,6 +110,7 @@ type DeploymentPolicy struct {
 // Invariant: strictly contains NO ephemeral runtime state (container IDs, runtime IPs,
 // provider resource IDs, assigned ports, live status). Runtime instance state belongs in Deployment.
 type Environment struct {
+	Build *ImageBuildDefinition `json:"build,omitempty"`
 	ID                    string                `json:"id"`
 	AccountScopeID        string                `json:"account_scope_id"`
 	WorkspaceID           string                `json:"workspace_id"`
@@ -184,6 +185,12 @@ func (e *Environment) Validate() error {
 		return fmt.Errorf("unsupported environment role: %q", e.Role)
 	}
 
+	if e.Build != nil {
+		if err := e.Build.Validate(); err != nil { return err }
+		if e.Container.RootlessSystemd == nil || e.Container.Image != ManagedBuildImage || e.Provisioning.Strategy.RegistryImage == nil || e.Provisioning.Strategy.RegistryImage.Image != ManagedBuildImage || e.DeploymentPolicy.ReleaseBehavior != ReleaseBehaviorNone || !e.DeploymentPolicy.Reuse || e.DeploymentPolicy.IdleTimeoutSeconds != 0 {
+			return errors.New("managed build requires rootless_systemd, managed-build image, reuse=true, release_behavior=none and disabled idle cleanup")
+		}
+	}
 	e.Container.Image = strings.TrimSpace(e.Container.Image)
 	if e.Container.Image == "" {
 		return errors.New("container image cannot be empty")
@@ -252,6 +259,7 @@ func (e *Environment) Clone() *Environment {
 		return nil
 	}
 	cp := *e
+	if e.Build != nil { b := *e.Build; cp.Build = &b }
 	if e.Container.RootlessSystemd != nil {
 		s := *e.Container.RootlessSystemd
 		cp.Container.RootlessSystemd = &s
