@@ -457,7 +457,7 @@ type ProjectTaskRecord struct {
 	Priority                        string                       `json:"priority,omitempty"` // low | medium | high | urgent
 	Group                           string                       `json:"group,omitempty"`
 	Order                           int                          `json:"order,omitempty"`
-	Archived                        bool                         `json:"archived,omitempty"`
+	Archived                        bool                         `json:"archived"`
 	LastError                       string                       `json:"last_error,omitempty"`
 	FeedbackHistory                 []string                     `json:"feedback_history,omitempty"`
 	AspectRatio                     string                       `json:"aspect_ratio,omitempty"`
@@ -778,6 +778,12 @@ func (s *SessionStore) putProjectTaskLocked(accountScopeID string, task *Project
 // persistProjectTaskLocked uses the same durable event boundary for ordinary
 // validated writes and archival of historical records with invalid contracts.
 func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *ProjectTaskRecord, validate bool) (*projectRealtimeMutation, error) {
+	return s.persistProjectTaskMetadataLocked(accountScopeID, task, validate, true)
+}
+
+// captureAttempt is false only for visibility restoration: do not hydrate or
+// recapture historical attempts from the current linked-session state.
+func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, task *ProjectTaskRecord, validate, captureAttempt bool) (*projectRealtimeMutation, error) {
 	if task == nil {
 		return nil, errors.New("project task definition required")
 	}
@@ -806,11 +812,11 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 		_, _ = rand.Read(b)
 		task.ID = "task_" + hex.EncodeToString(b)
 	}
-	if task.CreatedAt == 0 {
+	if captureAttempt && task.CreatedAt == 0 {
 		task.CreatedAt = now
 	}
 	if task.ID != "" {
-		prior, found, err := s.GetProjectTask(accountScopeID, task.ProjectID, task.ID)
+		prior, found, err := s.getProjectTask(accountScopeID, task.ProjectID, task.ID, captureAttempt)
 		if err != nil {
 			return nil, err
 		}
@@ -841,15 +847,19 @@ func (s *SessionStore) persistProjectTaskLocked(accountScopeID string, task *Pro
 			}
 		}
 	}
-	task.EnsureTaskAttempts()
-	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
+	if captureAttempt {
+		task.EnsureTaskAttempts()
+	}
+	if captureAttempt && task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		a := task.ActiveAttempt()
 		if a == nil || a.SessionID != task.SessionID {
 			return nil, errors.New("active task attempt/session mismatch")
 		}
 	}
-	task.CaptureActiveAttempt()
-	if a := task.ActiveAttempt(); a != nil {
+	if captureAttempt {
+		task.CaptureActiveAttempt()
+	}
+	if a := task.ActiveAttempt(); captureAttempt && a != nil {
 		state, found, err := s.GetV3SessionRunState(task.SessionID)
 		if err != nil {
 			return nil, err
@@ -935,6 +945,10 @@ func (s *SessionStore) ReserveProjectTaskIfAbsent(accountScopeID string, task *P
 
 // GetProjectTask fetches a project task by ID.
 func (s *SessionStore) GetProjectTask(accountScopeID, projectID, taskID string) (*ProjectTaskRecord, bool, error) {
+	return s.getProjectTask(accountScopeID, projectID, taskID, true)
+}
+
+func (s *SessionStore) getProjectTask(accountScopeID, projectID, taskID string, hydrate bool) (*ProjectTaskRecord, bool, error) {
 	if s == nil || s.store == nil || s.store.db == nil {
 		return nil, false, errors.New("database not available")
 	}
@@ -957,9 +971,11 @@ func (s *SessionStore) GetProjectTask(accountScopeID, projectID, taskID string) 
 	if err := json.Unmarshal(val, &rec); err != nil {
 		return nil, false, err
 	}
-	rec.EnsureTaskAttempts()
-	s.hydrateTaskAttemptOutcome(&rec)
-	s.hydrateProjectTaskPlanDocument(&rec)
+	if hydrate {
+		rec.EnsureTaskAttempts()
+		s.hydrateTaskAttemptOutcome(&rec)
+		s.hydrateProjectTaskPlanDocument(&rec)
+	}
 	return &rec, true, nil
 }
 
@@ -1167,6 +1183,37 @@ func (s *SessionStore) ArchiveProjectTaskIfRevision(accountScopeID, projectID, t
 		record.Archived = true
 		record.Revision++
 		mut, err = s.persistProjectTaskLocked(accountScopeID, record, false)
+	}
+	s.store.projectsMu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	s.store.publishProjectRealtime(mut)
+	return record, nil
+}
+
+// UnarchiveProjectTaskIfRevision restores visibility only. Historical execution
+// contracts are retained verbatim and linked sessions are never mutated.
+func (s *SessionStore) UnarchiveProjectTaskIfRevision(accountScopeID, projectID, taskID string, revision int) (*ProjectTaskRecord, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, errors.New("database not available")
+	}
+	s.store.projectsMu.Lock()
+	record, found, err := s.getProjectTask(accountScopeID, projectID, taskID, false)
+	if err == nil && (!found || record == nil) {
+		err = errors.New("project task not found")
+	}
+	if err == nil && (revision <= 0 || record.Revision != revision) {
+		err = fmt.Errorf("stale task revision: expected %d, current %d", revision, record.Revision)
+	}
+	if err == nil && !record.Archived {
+		err = errors.New("task already unarchived")
+	}
+	var mut *projectRealtimeMutation
+	if err == nil {
+		record.Archived = false
+		record.Revision++
+		mut, err = s.persistProjectTaskMetadataLocked(accountScopeID, record, false, false)
 	}
 	s.store.projectsMu.Unlock()
 	if err != nil {

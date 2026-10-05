@@ -3484,8 +3484,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Archive a project task using its exact revision; no execution state is changed.
-	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "archive" {
+	// Change task archive visibility at its exact revision; execution is untouched.
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "archive" || segments[3] == "unarchive") {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 			return
@@ -3501,7 +3501,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("positive task revision required"))
 			return
 		}
-		archived, err := db.ArchiveProjectTaskIfRevision(p.AccountScopeID, projectID, segments[2], req.Revision)
+		var archived *pebblestore.ProjectTaskRecord
+		if segments[3] == "unarchive" {
+			archived, err = db.UnarchiveProjectTaskIfRevision(p.AccountScopeID, projectID, segments[2], req.Revision)
+		} else {
+			archived, err = db.ArchiveProjectTaskIfRevision(p.AccountScopeID, projectID, segments[2], req.Revision)
+		}
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return

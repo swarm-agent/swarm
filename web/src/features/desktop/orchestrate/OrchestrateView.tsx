@@ -109,6 +109,8 @@ import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
 import { MediaTaskCard, isCreativeMediaTask, type MediaTaskActions } from './media-task-card'
 import { ProjectMediaTasks } from './project-media-tasks'
 import { mediaSelectionCards } from './media-selection'
+import { ArchivedTaskList } from './archived-task-list'
+import { unarchiveProjectTask } from '../runtime/project-task-unarchive'
 import { archiveProjectTask, projectTaskArchiveQueue } from '../runtime/project-task-archive'
 import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { subscribeDesktopSessionReset } from '../../../app/api'
@@ -5070,7 +5072,7 @@ export function OrchestrateView({
   const managementNavigation = useRef({ activeTaskId, selectedTaskId })
   managementNavigation.current = { activeTaskId, selectedTaskId }
   // Every management mutation is guarded by the stored revision. Never remove a task optimistically.
-  const manageTasks = async (rows: RunningTask[], action: 'archive' | 'delete') => {
+  const manageTasks = async (rows: RunningTask[], action: 'archive' | 'unarchive' | 'delete') => {
     if (taskIntegrationBatches.getSnapshot().get(selectedProject?.id || '')?.pending) return
     const projectId = selectedProject?.id
     if (!projectId || rows.length === 0) return
@@ -5080,7 +5082,7 @@ export function OrchestrateView({
     if (!rows.length) return
     if (action === 'delete' && !window.confirm(`Permanently delete ${rows.length} selected task${rows.length === 1 ? '' : 's'}? This cannot be undone. Only archived, unlaunched tasks can be deleted; launched tasks and their work are retained.`)) return
     rows.forEach(row => managementPending.current.add(row.id))
-    setTaskActionErrors(prev => ({ ...prev, ...Object.fromEntries(rows.map(row => [row.id, action === 'archive' ? 'Archiving…' : 'Deleting…'])) }))
+    setTaskActionErrors(prev => ({ ...prev, ...Object.fromEntries(rows.map(row => [row.id, action === 'archive' ? 'Archiving…' : action === 'unarchive' ? 'Unarchiving…' : 'Deleting…'])) }))
     setManagementBusy(true)
     setManagementMessage('')
     const failures: string[] = []
@@ -5091,7 +5093,12 @@ export function OrchestrateView({
         if (!current()) throw new Error('Project or account changed')
         let revision = row.revision
         if (!Number.isSafeInteger(revision) || (revision ?? 0) <= 0) throw new Error('Missing task revision; refresh and retry')
-        if (action === 'delete') {
+        if (action === 'unarchive') {
+          const receipt = await unarchiveProjectTask(projectId, row, current)
+          if (!receipt) return
+          desktopProjects.unarchiveReceipt(projectId, receipt)
+          setArchivedTasks(previous => previous.filter(task => task.id !== row.id))
+        } else if (action === 'delete') {
           if (row.sessionId || row.taskProgramId || row.planBinding) {
             throw new Error('Launched task has retained execution; archive instead of deleting')
           }
@@ -5122,9 +5129,9 @@ export function OrchestrateView({
       }
     }))
     if (!current()) return
-    setManagementMessage(`${succeeded.length} ${action === 'archive' ? 'archived' : 'deleted'}, ${failures.length} failed.${failures.length ? ` Retry after refresh: ${failures.join('; ')}` : ''}`)
+    setManagementMessage(`${succeeded.length} ${action === 'archive' ? 'archived' : action === 'unarchive' ? 'unarchived' : 'deleted'}, ${failures.length} failed.${failures.length ? ` Retry after refresh: ${failures.join('; ')}` : ''}`)
     setMarkedTaskIds(prev => new Set([...prev].filter(id => !succeeded.includes(id))))
-    if (archivedOpen) void loadArchivedTasks(projectId, true)
+    if (archivedOpen && action !== 'unarchive') void loadArchivedTasks(projectId, true)
 
   }
 
@@ -6178,8 +6185,10 @@ export function OrchestrateView({
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
                 <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="swarm-local-dialog w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
                   <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>
-                  <p className="text-xs text-slate-400 my-2">Archived tasks in this project are read-only. Their sessions, branches and code remain untouched.</p>
-                  {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.filter(task => !isCreativeMediaTask(task)).length === 0 ? <p>No archived tasks.</p> : <ul className="overflow-y-auto min-h-0 space-y-2">{archivedTasks.filter(task => !isCreativeMediaTask(task)).map(row => <li key={row.id} className="p-3 rounded border border-slate-700"><strong className="block text-sm">{row.title}</strong><span className="text-xs text-slate-400">{row.status} · {row.workerName || 'Task'}</span></li>)}</ul>}
+                  <button type="button" disabled={managementBusy || archivedLoading} onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId, true)}>Refresh archived tasks</button>
+                  {managementMessage && <p role="status">{managementMessage}</p>}
+                  <p className="text-xs text-slate-400 my-2">Unarchive restores the task’s preserved status. Sessions, branches and code remain untouched.</p>
+                  {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.filter(task => !isCreativeMediaTask(task)).length === 0 ? <p>No archived tasks.</p> : <ArchivedTaskList tasks={archivedTasks.filter(task => !isCreativeMediaTask(task))} busy={managementBusy} errors={taskActionErrors} onUnarchive={rows => void manageTasks(rows, 'unarchive')} />}
                 </section>
               </div>}
 
@@ -6193,6 +6202,7 @@ export function OrchestrateView({
                   onRetry={() => void desktopProjects.refresh(selectedProject.id, false)}
                   archivedTasks={archivedTasks} archivedLoading={archivedLoading} archivedError={archivedError}
                   onLoadArchived={() => void loadArchivedTasks(selectedProject.id, true)}
+                  onUnarchive={rows => void manageTasks(rows, 'unarchive')} unarchiveBusy={managementBusy} unarchiveErrors={taskActionErrors}
                 />}
               </section>
 

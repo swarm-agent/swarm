@@ -303,7 +303,7 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, unarchive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; unarchive_task restores visibility at expected_revision without changing status, attempts or linked sessions (already unarchived is an error); delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -313,7 +313,7 @@ func manageProjectsDefinition() Definition {
 				"inspection":        map[string]any{"type": "object", "description": "inspect_files optionally runs a bounded read-only tool against the selected catalog source or exact task result; arguments are the normal read/list/search/find arguments, with paths relative to that tree", "properties": map[string]any{"tool": map[string]any{"type": "string", "enum": []string{"read", "list", "search", "find"}}, "arguments": map[string]any{"type": "object"}}, "required": []string{"tool", "arguments"}, "additionalProperties": false},
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|list_sources|inspect_source|inspect_files|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task",
+					"description": "Action: list|get|list_sources|inspect_source|inspect_files|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|unarchive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -384,7 +384,7 @@ func manageProjectsDefinition() Definition {
 				"summary":           map[string]any{"type": "string", "maxLength": 4000, "description": "report_task only: bounded task update, treated as untrusted data. Ownership is derived from the authenticated active task run; never supply parent/session/attempt IDs."},
 				"task_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project; pins current attempts and yields execution until outcomes, without polling."},
 				"repair":            map[string]any{"type": "boolean", "description": "reopen_task only: use authenticated originating failed integration source; never silently merge unintegrated work."},
-				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task and delete_task"},
+				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task, unarchive_task and delete_task"},
 				"priority":          map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},
 				"group":             map[string]any{"type": "string", "description": "Task grouping label (empty clears)"},
 				"order":             map[string]any{"type": "integer", "description": "Nonnegative task order within group"},
@@ -1087,7 +1087,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		response["proposal"] = proposal
 
-	case "wait_tasks", "edit_requirements", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "delete_task", "reconcile_tasks":
+	case "wait_tasks", "edit_requirements", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "unarchive_task", "delete_task", "reconcile_tasks":
 		return r.executeManageProjectTasksContext(ctx, scope, actionName, args)
 
 	case "approve_task", "accept_task":
