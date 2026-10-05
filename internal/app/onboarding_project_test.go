@@ -389,7 +389,7 @@ func TestOnboardingProviderSaveTransitionsToProject(t *testing.T) {
 	}
 }
 
-func TestOnboardingProjectWithWorkspacesPersonalizesAndCreatesProjectMD(t *testing.T) {
+func TestOnboardingProjectWithWorkspacesPersonalizesWithoutWorkspaceFiles(t *testing.T) {
 	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
 
 	tmpDir := t.TempDir()
@@ -487,14 +487,10 @@ func TestOnboardingProjectWithWorkspacesPersonalizesAndCreatesProjectMD(t *testi
 		t.Fatal("expected project to be created on daemon")
 	}
 
-	// Verify PROJECT.md was created in wsDir from generated context
+	// Verify PROJECT.md was NOT created in wsDir (project context lives strictly in Pebble store)
 	projMD := filepath.Join(wsDir, "PROJECT.md")
-	content, err := os.ReadFile(projMD)
-	if err != nil {
-		t.Fatalf("expected PROJECT.md to be created in workspace root: %v", err)
-	}
-	if !strings.Contains(string(content), "Generated PROJECT.md Guidelines") {
-		t.Fatalf("expected generated guidelines in PROJECT.md, got %q", string(content))
+	if _, err := os.Stat(projMD); !os.IsNotExist(err) {
+		t.Fatalf("PROJECT.md must NOT be created in the user workspace (it belongs strictly in Swarm Pebble store)")
 	}
 }
 

@@ -6696,15 +6696,6 @@ func (a *App) handleCreateOnboardingProject(name, description string, workspaceP
 			rec, gErr := a.api.GetProject(ctx, project.ID)
 			if gErr == nil && rec.ContextGeneration != nil {
 				if rec.ContextGeneration.Status == "ready" || rec.ContextGeneration.Status == "failed" {
-					if rec.ContextGeneration.Status == "ready" && rec.ProjectContext != "" && len(wsRefs) > 0 {
-						primaryPath := strings.TrimSpace(wsRefs[0].Path)
-						if primaryPath != "" {
-							projectMDPath := filepath.Join(primaryPath, "PROJECT.md")
-							if _, statErr := os.Stat(projectMDPath); os.IsNotExist(statErr) {
-								_ = os.WriteFile(projectMDPath, []byte(rec.ProjectContext), 0644)
-							}
-						}
-					}
 					break
 				}
 			}
