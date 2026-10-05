@@ -2264,6 +2264,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			board := make([]projectTaskBoardRow, len(sanitizedTasks))
 			for i := range sanitizedTasks {
+				if principal, ok := PrincipalFromRequest(r); ok && len(sanitizedTasks[i].EnvironmentAttachments) > 0 {
+					sanitizedTasks[i].EnvironmentAttachments = s.taskEnvironmentProjection(r.Context(), principal, &sanitizedTasks[i])
+				}
 				board[i] = projectTaskBoardRow{ProjectTaskRecord: sanitizedTasks[i], BoardSummary: summaries[sanitizedTasks[i].ID]}
 			}
 			writeProjectTaskBoard(w, board, stats, started, reconcileElapsed)

@@ -13,6 +13,7 @@ import (
 // account, project, source catalog generations and consumer role (never Coder).
 // Attribution must come from authenticated runtime identity, never user arguments.
 type AcquirePreparedLeaseRequest struct {
+	Binding     *environments.TaskLeaseBinding
 	Source      environments.PreparedDeploymentSource
 	Attribution environments.OperationAttribution
 	TTLMillis   int64
@@ -48,6 +49,10 @@ func (m *DeploymentManager) AcquirePreparedLease(ctx context.Context, req Acquir
 		return environments.DeploymentLease{}, errors.New("prepared lease TTL must not exceed one hour")
 	}
 	s := req.Source
+	candidate := environments.DeploymentLease{AccountScopeID: s.AccountScopeID, WorkspaceID: s.WorkspaceID, EnvironmentID: s.EnvironmentID, DeploymentID: s.DeploymentID, PreparedSource: &s, TaskBinding: req.Binding, ConsumerType: kind, ConsumerID: id}
+	if err := m.validateTaskLease(ctx, candidate); err != nil {
+		return environments.DeploymentLease{}, err
+	}
 	envLock := m.getEnvLock(s.AccountScopeID, s.WorkspaceID, s.EnvironmentID)
 	if err := envLock.Lock(ctx); err != nil {
 		return environments.DeploymentLease{}, err
@@ -62,7 +67,7 @@ func (m *DeploymentManager) AcquirePreparedLease(ctx context.Context, req Acquir
 	if err != nil {
 		return environments.DeploymentLease{}, err
 	}
-	if !found || !s.Matches(dep) {
+	if !found || !s.Matches(dep) || ManagedReviewExpired(dep, time.Now().UnixMilli()) {
 		return environments.DeploymentLease{}, errors.New("prepared deployment source is stale or unavailable")
 	}
 	if ops := m.Operations(); ops != nil {
@@ -77,8 +82,9 @@ func (m *DeploymentManager) AcquirePreparedLease(ctx context.Context, req Acquir
 	if err := ctx.Err(); err != nil {
 		return environments.DeploymentLease{}, err
 	}
-	return m.deployments.Leases().AcquireSharedLease(environments.DeploymentLease{
-		AccountScopeID: s.AccountScopeID, WorkspaceID: s.WorkspaceID, EnvironmentID: s.EnvironmentID, DeploymentID: s.DeploymentID,
-		PreparedSource: &s, ConsumerType: kind, ConsumerID: id, ExpiresAt: resolveLeaseExpiresAt(time.Now().UnixMilli(), req.TTLMillis, 0),
-	})
+	if err := m.validateTaskLease(ctx, candidate); err != nil {
+		return environments.DeploymentLease{}, err
+	}
+	candidate.ExpiresAt = resolveLeaseExpiresAt(time.Now().UnixMilli(), req.TTLMillis, 0)
+	return m.deployments.Leases().AcquireSharedLease(candidate)
 }

@@ -120,6 +120,7 @@ func (s *LeaseStore) AcquireLease(lease environments.DeploymentLease) (environme
 	lease.Active = true
 	lease.Shared = false
 	lease.PreparedSource = nil
+	lease.TaskBinding = nil
 
 	if err := lease.Validate(); err != nil {
 		return environments.DeploymentLease{}, fmt.Errorf("validate lease: %w", err)
@@ -472,7 +473,7 @@ func (s *LeaseStore) AcquireSharedLease(lease environments.DeploymentLease) (env
 		if (existing.PreparedSource == nil) != (lease.PreparedSource == nil) || (existing.PreparedSource != nil && *existing.PreparedSource != *lease.PreparedSource) {
 			return environments.DeploymentLease{}, errors.New("shared deployment source conflict")
 		}
-		if existing.ConsumerType == lease.ConsumerType && existing.ConsumerID == lease.ConsumerID {
+		if existing.ConsumerType == lease.ConsumerType && existing.ConsumerID == lease.ConsumerID && ((existing.TaskBinding == nil && lease.TaskBinding == nil) || (existing.TaskBinding != nil && lease.TaskBinding != nil && *existing.TaskBinding == *lease.TaskBinding)) {
 			return existing, nil
 		}
 		ids = append(ids, existing.ID)

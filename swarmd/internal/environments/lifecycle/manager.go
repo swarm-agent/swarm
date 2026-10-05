@@ -189,6 +189,7 @@ type DeployDeploymentResult struct {
 // DeploymentManager coordinates deployment lifecycle, connection resolution, leasing, reuse pooling,
 // limit enforcement, cancellation-aware locking, and durable supervised operations.
 type DeploymentManager struct {
+	taskLeaseValidator func(context.Context, environments.DeploymentLease) error
 	connections  ConnectionReader
 	environments EnvironmentReader
 	deployments  DeploymentManagerStore
@@ -1403,7 +1404,7 @@ func (m *DeploymentManager) Exec(ctx context.Context, accountScopeID, workspaceI
 	if err != nil {
 		return nil, fmt.Errorf("get active lease: %w", err)
 	}
-	if !hasActive || !activeLease.IsHeld(time.Now().UnixMilli()) {
+	if !hasActive || activeLease.Shared || activeLease.TaskBinding != nil || !activeLease.IsHeld(time.Now().UnixMilli()) {
 		return nil, fmt.Errorf("active lease required to exec in deployment %q", deploymentID)
 	}
 

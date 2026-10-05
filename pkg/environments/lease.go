@@ -27,6 +27,7 @@ const (
 // DeploymentLease provides atomic ownership tracking for an environment deployment.
 // Strictly scoped to AccountScopeID and WorkspaceID.
 type DeploymentLease struct {
+	TaskBinding *TaskLeaseBinding `json:"task_binding,omitempty"`
 	PreparedSource   *PreparedDeploymentSource `json:"prepared_source,omitempty"`
 	Shared           bool                      `json:"shared,omitempty"` // Only explicit prepared-source acquisition may set this.
 	ID               string                    `json:"id"`

@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,9 @@ func TestPreparedLeaseIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := AcquirePreparedLeaseRequest{Source: environments.PreparedDeploymentSource{AccountScopeID: dep.AccountScopeID, WorkspaceID: dep.WorkspaceID, EnvironmentID: dep.EnvironmentID, DeploymentID: dep.ID, CreatedAt: dep.CreatedAt, ContainerID: dep.Runtime.ContainerID, Build: *dep.Build}, Attribution: environments.OperationAttribution{SessionID: "first"}}
+	req.Binding = &environments.TaskLeaseBinding{ProjectID: "project", TaskID: "task", AttemptID: "attempt", AttachmentID: "attachment", AttachmentRevision: 1, UserID: "user"}
+	// This test isolates deployment/source fencing; API tests own durable task authorization.
+	h.manager.SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error { return nil })
 	first, err := h.manager.AcquirePreparedLease(ctx, req)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +93,13 @@ func TestPreparedLeaseIsolation(t *testing.T) {
 	active, found, err := h.deployments.GetActiveLease("account", "workspace", dep.ID)
 	if err != nil || !found || active.ID != second.ID {
 		t.Fatalf("lost other consumer: %+v %v", active, err)
+	}
+	h.manager.SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error { return errors.New("attachment detached") })
+	if _, err := h.manager.Submit(ctx, SubmitOperationRequest{AccountScopeID: "account", WorkspaceID: "workspace", DeploymentID: dep.ID, LeaseID: second.ID, Action: "exec", Command: []string{"true"}, Attribution: environments.OperationAttribution{SessionID: "second"}}); err == nil {
+		t.Fatal("revoked attachment admitted execution")
+	}
+	if _, err := h.manager.ReleaseDeployment(ctx, ReleaseDeploymentRequest{AccountScopeID: "account", WorkspaceID: "workspace", LeaseID: second.ID, Attribution: environments.OperationAttribution{SessionID: "second"}}); err != nil {
+		t.Fatalf("revoked receipt could not be released: %v", err)
 	}
 	if h.mockProv.execCalls != 0 || h.mockProv.stopCalls != 0 || h.mockProv.destroyCalls != 0 {
 		t.Fatal("unexpected provider effects")

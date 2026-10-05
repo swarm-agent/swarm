@@ -396,6 +396,9 @@ func (m *DeploymentManager) validateAdmission(
 			if lease.DeploymentID != dep.ID {
 				return nil, nil, nil, fmt.Errorf("lease %q does not match deployment %q", req.LeaseID, dep.ID)
 			}
+			if err := m.validateTaskLease(ctx, lease); err != nil {
+				return nil, nil, nil, err
+			}
 			if lease.Shared && (lease.PreparedSource == nil || !lease.PreparedSource.Matches(*dep)) {
 				return nil, nil, nil, ErrDeploymentUnusable
 			}
@@ -1030,6 +1033,9 @@ func (m *DeploymentManager) executeAction(
 		}
 		if !found || !lease.IsHeld(time.Now().UnixMilli()) || !ownsLease(req.Attribution, lease) {
 			return nil, ErrDeploymentLeaseHeld
+		}
+		if err := m.validateTaskLease(ctx, lease); err != nil {
+			return nil, err
 		}
 		if lease.Shared {
 			current, found, err := m.deployments.Get(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)

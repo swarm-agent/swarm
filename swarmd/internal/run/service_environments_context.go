@@ -324,11 +324,19 @@ func (s *Service) WorkspaceEnvironmentPromptBlock(ctx context.Context, scope too
 	if err != nil || !found || snapshot.AccountScopeID != accountScopeID || snapshot.UserID != scope.Principal.UserID || !tool.EnvironmentToolAllowed(snapshot.Metadata, "manage_environments") {
 		return ""
 	}
+	taskContext := ""
+	if projectID, ok := snapshot.Metadata["project_id"].(string); ok && projectID != "" {
+		if taskID, ok := snapshot.Metadata["task_id"].(string); ok && taskID != "" {
+			if task, found, err := s.sessions.Store().GetProjectTask(accountScopeID, projectID, taskID); err == nil && found && task.SessionID == snapshot.ID {
+				taskContext = fmt.Sprintf("Task environment discovery: project_id=%q task_id=%q attempt_id=%q; %d retained attachments. Use manage_environments list_attachments for current state, including attachments added after this turn began. Select attachment_id explicitly and acquire your own receipt; retained evidence grants no execution or workspace scope.\n", projectID, taskID, task.ActiveAttemptID, len(task.EnvironmentAttachments))
+			}
+		}
+	}
 	workspaceID := s.resolveWorkspaceIDForScope(scope)
 	if workspaceID == "" {
-		return ""
+		return taskContext
 	}
-	return s.WorkspaceEnvironmentPromptBlockForWorkspace(ctx, accountScopeID, workspaceID)
+	return taskContext + s.WorkspaceEnvironmentPromptBlockForWorkspace(ctx, accountScopeID, workspaceID)
 }
 
 // WorkspaceEnvironmentPromptBlockForWorkspace generates the formatted environment prompt block for the specified workspace.

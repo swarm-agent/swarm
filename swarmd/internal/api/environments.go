@@ -64,14 +64,17 @@ type manageProviderRegistry interface {
 
 func (s *Server) SetEnvironmentServices(
 	connections manageConnectionStore,
-	environments manageEnvironmentStore,
+	definitions manageEnvironmentStore,
 	deployments manageDeploymentLifecycleService,
 	workspaceEnvSettings manageWorkspaceSettingsStore,
 	envProviders manageProviderRegistry,
 ) {
 	s.connections = connections
-	s.environments = environments
+	s.environments = definitions
 	s.deployments = deployments
+	if bound, ok := deployments.(interface { SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error) }); ok {
+		bound.SetTaskLeaseValidator(s.ValidateTaskEnvironmentLease)
+	}
 	s.workspaceEnvSettings = workspaceEnvSettings
 	s.envProviders = envProviders
 }

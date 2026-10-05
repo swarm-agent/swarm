@@ -26,12 +26,20 @@ func manageEnvironmentsDefinition() Definition {
 			"type": "object",
 			"properties": map[string]any{
 				"project_result": projectResultDefinition(),
+				"project_id": map[string]any{"type": "string"},
+				"task_id": map[string]any{"type": "string"},
+				"attempt_id": map[string]any{"type": "string"},
+				"attachment_id": map[string]any{"type": "string"},
+				"expected_task_revision": map[string]any{"type": "integer"},
+				"expected_attachment_revision": map[string]any{"type": "integer"},
+				"expires_at": map[string]any{"type": "integer"},
 				"action": map[string]any{
 					"type": "string",
 					"enum": []string{
 						"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 						"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 						"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
+						"list_attachments", "attach_task", "detach_task", "acquire_attachment", "cleanup_review",
 					},
 					"description": "Operation action to perform",
 				},
@@ -111,6 +119,24 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		actionName = "list"
 	}
 
+	if actionName == "cleanup_review" {
+		account, workspace, _, err := r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
+		if err != nil { return "", err }
+		service, ok := r.deploymentManager.(interface { CleanupReviewDeployments(context.Context, string, string) ([]string, error) })
+		if !ok { return "", errors.New("review cleanup unavailable") }
+		stopped, err := service.CleanupReviewDeployments(ctx, account, workspace)
+		if err != nil { return "", err }
+		raw, err := json.Marshal(map[string]any{"stopped_deployments": stopped})
+		return string(raw), err
+	}
+	if asString(args["attachment_id"]) != "" {
+		return r.executeTaskEnvironment(ctx, scope, args)
+	}
+	switch actionName {
+	case "list_attachments", "attach_task", "detach_task", "acquire_attachment":
+		return r.executeTaskEnvironment(ctx, scope, args)
+	}
+
 	if actionName == "create" || actionName == "update" || actionName == "import" {
 		if err := validateEnvironmentDefinitionArgs(actionName, args); err != nil {
 			return "", err
@@ -176,6 +202,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
 			"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 			"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
+			"list_attachments", "attach_task", "detach_task", "acquire_attachment", "cleanup_review",
 		}
 
 	case "list":
