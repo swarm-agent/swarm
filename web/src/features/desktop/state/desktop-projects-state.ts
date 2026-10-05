@@ -2,6 +2,7 @@ import type { RunningTask, ProjectTaskMediaRef, ProjectTaskPlanBinding } from '.
 
 export interface DesktopProjectState {
   projectId: string
+  environmentWorkspaceCatalog?: Array<{ workspaceId?: string; path: string }>
   tasks: RunningTask[]
   archivedRevisions?: Record<string, number>
   // Detail-read provenance, owned by the canonical cache (never the collection).
@@ -21,6 +22,7 @@ export interface DesktopProjectState {
 export type DesktopProjectsState = Record<string, DesktopProjectState>
 
 export type DesktopProjectsAction =
+  | { type: 'projects.environmentCatalog'; projectId: string; workspaces: Array<{ workspaceId?: string; path: string }> }
   | { type: 'projects.beginLoad'; projectId: string; requestId: string }
   | {
       type: 'projects.loadSuccess'
@@ -265,11 +267,16 @@ export function reduceDesktopProjectsState(
     return next
   }
   const previous = state[action.projectId]
+  if (action.type === 'projects.environmentCatalog') {
+    if (!previous) return state
+    return { ...state, [action.projectId]: { ...previous, environmentWorkspaceCatalog: action.workspaces } }
+  }
   if (action.type === 'projects.beginLoad') {
     return {
       ...state,
       [action.projectId]: {
         projectId: action.projectId,
+        environmentWorkspaceCatalog: previous?.environmentWorkspaceCatalog,
         tasks: previous?.tasks ?? [],
         lastObservedAt: previous?.lastObservedAt,
         media: previous?.media ?? [],

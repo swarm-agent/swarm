@@ -23,6 +23,9 @@ import { repositoryEventInvalidates, repositoryOwnerIds } from '../state/session
 import { extractTaskSessionIds } from './desktop-projects-membership'
 export * from './desktop-projects-membership'
 
+let retainProjectsRealtime: (() => { release(): void }) | undefined
+export function setDesktopProjectsRealtimeRetainer(retain: () => { release(): void }): void { retainProjectsRealtime = retain }
+
 export interface DesktopProjectsRuntimeDeps {
   fetchTasks: (projectId: string, signal?: AbortSignal) => Promise<{ tasks?: any[] }>
   fetchTask: (projectId: string, taskId: string) => Promise<{ task?: any }>
@@ -327,7 +330,12 @@ export class DesktopProjectsRuntime {
         const relevant = tasks.filter(task =>
           payload.task_environment_targets?.some(target => target.project_id === projectId && target.task_id === task.id) ||
           (payload.task_environment_workspace_invalidated && (task.sourceWorkspaceId === payload.workspace_id || task.environmentAttachments?.some(a => a.source.workspace_id === payload.workspace_id))))
-        if (relevant.length || payload.task_environment_targets?.some(target => target.project_id === projectId)) this.invalidate(projectId)
+        // Before initial hydration there may be no task/attachment identities to
+        // match. A broad invalidation must fence that in-flight snapshot too.
+        const project = this.deps.getState()[projectId]
+        const catalog = project?.environmentWorkspaceCatalog
+        const initialUnknown = this.inFlight.has(projectId) && !project?.lastObservedAt && (!catalog?.length || catalog.some(w => w.workspaceId === payload.workspace_id))
+        if (relevant.length || (payload.task_environment_workspace_invalidated && initialUnknown) || payload.task_environment_targets?.some(target => target.project_id === projectId)) this.invalidate(projectId)
       }
       return
     }
@@ -400,12 +408,20 @@ export class DesktopProjectsRuntime {
 
 export const desktopProjects = new DesktopProjectsRuntime()
 
-export function useDesktopProject(projectId: string): DesktopProjectState | undefined {
+export function useDesktopProject(projectId: string, workspaces?: Array<{ workspace_id?: string; path: string }>): DesktopProjectState | undefined {
   useEffect(() => {
     if (!projectId) return
+    const realtime = retainProjectsRealtime?.()
     const { release } = desktopProjects.acquire(projectId)
-    return release
+    return () => { release(); realtime?.release() }
   }, [projectId])
+
+  const catalogKey = JSON.stringify(workspaces ?? [])
+  useEffect(() => {
+    if (!projectId) return
+    const catalog = JSON.parse(catalogKey) as Array<{ workspace_id?: string; path: string }>
+    dispatchDesktopV3Cache({ type: 'projects.environmentCatalog', projectId, workspaces: catalog.map(w => ({ workspaceId: w.workspace_id, path: w.path })) })
+  }, [projectId, catalogKey])
 
   return useDesktopV3CacheSelector((state) => state.projectsState?.[projectId])
 }

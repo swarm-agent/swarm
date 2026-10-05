@@ -374,6 +374,7 @@ export function DeploymentsView({
       </div>
 
       {/* 3. Deployments List */}
+      {!loading && selectedDeploymentId && !deployments.some(dep => dep.id === selectedDeploymentId && dep.workspace_id === _workspaceId) && <p role="alert">Selected deployment unavailable in this workspace. Refresh or ask Orchestrator to prepare it.</p>}
       {loading ? (
         <div className="flex items-center justify-center p-8 text-xs text-[var(--app-text-muted)] gap-2">
           <Loader2 size={16} className="animate-spin text-[var(--app-primary)]" />
@@ -392,7 +393,6 @@ export function DeploymentsView({
         </div>
       ) : (
         <div className="grid gap-4" data-testid="deployments-list">
-          {selectedDeploymentId && !deployments.some(dep => dep.id === selectedDeploymentId && dep.workspace_id === _workspaceId) && <p role="alert">Selected deployment unavailable in this workspace. Refresh or ask Orchestrator to prepare it.</p>}
         {deployments.filter(dep => !selectedDeploymentId || (dep.id === selectedDeploymentId && dep.workspace_id === _workspaceId)).map((dep) => {
             const lease = activeLeases[dep.id]
             const isActing = actingId === dep.id

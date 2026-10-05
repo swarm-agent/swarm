@@ -156,6 +156,7 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'automation.invalidate':
     case 'automation.evict':
       return { ...state, automationPages: reduceAutomationPages(state.automationPages, action) }
+    case 'projects.environmentCatalog':
     case 'projects.beginLoad':
     case 'projects.loadSuccess':
     case 'projects.loadError':
