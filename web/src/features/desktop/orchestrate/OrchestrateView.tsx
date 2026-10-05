@@ -2997,6 +2997,10 @@ function OrchestratorChatSidebar({
       <DesktopV3ExistingConversationPane
         onOpenMediaArtifact={onOpenMediaArtifact}
         presentation="sidebar"
+        orchestratorHeader={!activeTask && !repairSession ? {
+          projectName: project?.name || 'Orchestrator',
+          onOpenAgents: () => { void navigate(projectPageLink('agents')) },
+        } : undefined}
         sessionId={sessionId}
         session={currentSession}
         initialHydrateStatus={error ? 'error' : hydrating ? 'loading' : ready ? 'ready' : 'loading'}

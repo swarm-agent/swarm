@@ -20,6 +20,8 @@ export interface DesktopV3ChatHeaderProps {
   sessionId?: string
   branchName?: string
   modelLabel?: string
+  onOpenModelFavorites?: () => void
+  modelFavoritesAnchorId?: string
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
@@ -49,6 +51,8 @@ export function DesktopV3ChatHeader({
   sessionId,
   branchName,
   modelLabel,
+  onOpenModelFavorites,
+  modelFavoritesAnchorId,
   runStatus = null,
   runStatusNow: controlledRunStatusNow,
   sessionActions = null,
@@ -180,7 +184,9 @@ export function DesktopV3ChatHeader({
             {resolvedModelLabel ? (
               <>
                 <span aria-hidden="true" className="hidden shrink-0 text-[var(--app-text-subtle)] sm:inline">·</span>
-                <span className="hidden truncate sm:inline" data-testid="desktop-v3-resolved-model" title={resolvedModelLabel}>{resolvedModelLabel}</span>
+                {onOpenModelFavorites ? (
+                  <button type="button" className="min-w-0 truncate rounded hover:underline focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" data-testid="desktop-v3-resolved-model" data-model-favorites-anchor={modelFavoritesAnchorId} title={resolvedModelLabel} aria-label={`Model favorites: ${resolvedModelLabel}`} aria-haspopup="menu" onClick={onOpenModelFavorites}>{resolvedModelLabel}</button>
+                ) : <span className="hidden truncate sm:inline" data-testid="desktop-v3-resolved-model" title={resolvedModelLabel}>{resolvedModelLabel}</span>}
               </>
             ) : null}
             {mobileRunTimerLabel ? (

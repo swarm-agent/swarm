@@ -161,7 +161,7 @@ import {
   fetchSessionMessages,
   resolveSessionPermission,
 } from "../queries/chat-queries";
-import type { AgentModelControlConfirmInput } from "./agent-model-control";
+import { AgentModelControl, type AgentModelControlConfirmInput } from "./agent-model-control";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
   isAutomationPermission,
@@ -1672,6 +1672,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   artifactReviewPortalTarget?: HTMLElement | null;
   /** Reuse the canonical conversation as a constrained embedded surface. */
   presentation?: "page" | "sidebar";
+  orchestratorHeader?: { projectName: string; onOpenAgents: () => void };
   onMessageSent?: () => void;
 }
 
@@ -1789,6 +1790,7 @@ export function DesktopV3ExistingConversationPane({
   onOpenMediaArtifact,
   artifactReviewPortalTarget = null,
   presentation = "page",
+  orchestratorHeader,
   onMessageSent,
   startPresentation,
   emptyPresentation,
@@ -1968,6 +1970,8 @@ export function DesktopV3ExistingConversationPane({
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false);
   const [agentModelSaving, setAgentModelSaving] = useState(false);
+  const [headerModelRequest, setHeaderModelRequest] = useState({ sessionId: "", signal: 0 });
+  const headerModelOpenSignal = headerModelRequest.sessionId === normalizedSessionId ? headerModelRequest.signal : 0;
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<
     string | null
   >(null);
@@ -3363,19 +3367,43 @@ export function DesktopV3ExistingConversationPane({
       {cacheSession?.automation && <AutomationSessionPanel key={`${normalizedSessionId}:${cacheSession.automation.automation_id}`} workspaceId={cacheSession.automation.workspace_id} id={cacheSession.automation.automation_id} />}
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
-        title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
+        title={orchestratorHeader?.projectName || session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
         workspaceName={
           sessionWorkspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
         branchName={headerBranchLabel}
         modelLabel={canonicalHeaderModelLabel}
+        onOpenModelFavorites={orchestratorHeader ? () => setHeaderModelRequest(value => ({ sessionId: normalizedSessionId, signal: value.signal + 1 })) : undefined}
+        modelFavoritesAnchorId={`orchestrator-model:${normalizedSessionId}`}
         runStatus={startPresentation?.runStatus ?? runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
-        sessionActions={headerSessionActions}
+        sessionActions={orchestratorHeader && headerSessionActions ? { ...headerSessionActions, onRename: undefined } : headerSessionActions}
         studioMode={presentation === "page" ? studioMode : null}
         onToggleStudioMode={presentation === "page" ? onToggleStudioMode : undefined}
       />
+      {orchestratorHeader ? <AgentModelControl
+        key={normalizedSessionId}
+        currentAgent={selectedAgent || "Agent"}
+        selectedPrimaryAgent={selectedAgent || ""}
+        agents={agentState.profiles}
+        selectedModel={selectedModelOption ?? null}
+        selectedThinking={displayedPreference.thinking}
+        selectedServiceTier={displayedPreference.serviceTier}
+        modelOptions={modelOptions}
+        modelProfiles={modelProfileState.profiles}
+        activeModelProfile={composerActiveModelProfile}
+        modelLocked={selectedAgentModelLock.locked}
+        modelLockNotice={selectedAgentModelLock.disabledReason}
+        busy={agentModelSaving}
+        showTrigger={false}
+        openSignal={headerModelOpenSignal}
+        popoverAnchorId={`orchestrator-model:${normalizedSessionId}`}
+        onOpenAgents={orchestratorHeader.onOpenAgents}
+        onApplyModelFavorite={handleApplyModelFavorite}
+        onApplyModelFavoriteChatOnly={handleApplyModelFavorite}
+        onConfirmAgentSettings={handleConfirmAgentSettings}
+      /> : null}
       <WorkerSessionBanner
         sessionId={normalizedSessionId}
         workspaceSlug={routeWorkspaceSlug}
