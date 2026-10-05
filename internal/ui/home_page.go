@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"time"
 	"unicode"
 
@@ -618,6 +619,7 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		p.topBarTargets = p.topBarTargets[:0]
 	}
 
+	hasActiveProject := p != nil && strings.TrimSpace(p.model.ActiveProjectID) != ""
 	sections := p.buildHomeSections(variant)
 	if len(sections) == 0 {
 		sections = []homeSection{{kind: "input", h: 3}}
@@ -696,10 +698,13 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	if profile.CenterStack && stackH < availableMainH {
 		startY = mainTop + (availableMainH-stackH)/2 + variant.TopPadding
 		inputOffset, inputFound := inputSectionOffset(sections)
-		if variant.UseSwarmTopBar && inputFound {
+		if variant.UseSwarmTopBar && inputFound && !hasActiveProject {
 			desiredInputY := h/2 - inputHeight/2
 			startY = desiredInputY - inputOffset + variant.TopPadding
 		}
+	}
+	if hasActiveProject {
+		startY = mainTop
 	}
 	if startY < minStart {
 		startY = minStart
@@ -736,7 +741,13 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	hasInputRect := false
 	for i, sec := range sections {
 		rawRect := Rect{X: contentX, Y: y, W: contentW, H: sec.h}
-		if sec.kind == "input" {
+		if hasActiveProject {
+			if sec.kind == "input" {
+				rawRect = Rect{X: 0, Y: mainBottom - sec.h, W: w, H: sec.h}
+			} else if sec.kind == "tips" {
+				rawRect = Rect{X: contentX, Y: mainBottom - inputHeight - 1, W: contentW, H: sec.h}
+			}
+		} else if sec.kind == "input" {
 			rawRect = Rect{X: 0, Y: y, W: w, H: sec.h}
 		}
 		rect, ok := clipMainRect(rawRect)
@@ -758,9 +769,11 @@ func (p *HomePage) Draw(s tcell.Screen) {
 				p.drawTipsRow(s, rect, variant.CenterRows)
 			}
 		}
-		y += sec.h
-		if i < len(sections)-1 {
-			y += sectionGap
+		if !hasActiveProject || (sec.kind != "input" && sec.kind != "tips") {
+			y += sec.h
+			if i < len(sections)-1 {
+				y += sectionGap
+			}
 		}
 	}
 

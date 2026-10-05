@@ -20,6 +20,7 @@ const (
 	HomeActionCycleRoute                     HomeActionKind = "cycle-route"
 	HomeActionOpenWorkspaceSelector          HomeActionKind = "open-workspace-selector"
 	HomeActionSelectWorkspace                HomeActionKind = "select-workspace"
+	HomeActionSelectProject                  HomeActionKind = "select-project"
 	HomeActionSetDefaultSessionMode          HomeActionKind = "set-default-session-mode"
 	HomeActionOpenAlertSession               HomeActionKind = "open-alert-session"
 	HomeActionClearAlerts                    HomeActionKind = "clear-alerts"
@@ -52,6 +53,7 @@ type HomeAction struct {
 	SwarmName        string
 	ModelProfileID   string
 	WorkspaceIndex   int
+	ProjectIndex     int
 	ResetCreditID      string
 	IdempotencyKey     string
 	ProjectID          string

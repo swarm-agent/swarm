@@ -1952,6 +1952,10 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		if a.workspaceSwitchHotkeyBlocked() {
 			return true
 		}
+		if len(a.homeModel.Projects) > 1 {
+			a.cycleNextProject()
+			return true
+		}
 		a.showWorkspaceSelector()
 		return true
 	}
@@ -5279,6 +5283,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		}
 	case ui.HomeActionOpenWorkspaceSelector:
 		a.showWorkspaceSelector()
+	case ui.HomeActionSelectProject:
+		a.activateProjectIndex(action.ProjectIndex)
 	case ui.HomeActionSelectWorkspace:
 		a.activateWorkspaceAtIndex(action.WorkspaceIndex)
 	case ui.HomeActionOpenAgentsModal:
@@ -9323,6 +9329,49 @@ func (a *App) activateWorkspaceAtIndex(index int) {
 	}
 	a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.WorkspaceName))
 	a.queueReload(false)
+}
+
+func (a *App) activateProjectIndex(index int) {
+	if a == nil || index < 0 || index >= len(a.homeModel.Projects) {
+		return
+	}
+	target := a.homeModel.Projects[index]
+	a.activeProjectID = target.ID
+	a.homeModel.ActiveProjectID = target.ID
+	a.homeModel.ActiveProjectName = target.Name
+	primarySessID := strings.TrimSpace(target.PrimarySessionID)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if primarySessID == "" && a.api != nil {
+		if sessList, err := a.api.ListProjectSessions(ctx, target.ID); err == nil && len(sessList) > 0 {
+			primarySessID = strings.TrimSpace(sessList[0].ID)
+		}
+	}
+	a.homeModel.ActiveProjectPrimarySessionID = primarySessID
+	if a.api != nil {
+		if tasks, err := a.api.ListProjectTasks(ctx, target.ID); err == nil {
+			a.homeModel.ProjectTasks = tasks
+		} else {
+			a.homeModel.ProjectTasks = nil
+		}
+	}
+	a.home.SetModel(a.homeModel)
+	a.home.SetStatus(fmt.Sprintf("switched to project %s", target.Name))
+}
+
+func (a *App) cycleNextProject() {
+	if a == nil || len(a.homeModel.Projects) <= 1 {
+		return
+	}
+	curIdx := -1
+	for i, p := range a.homeModel.Projects {
+		if p.ID == a.homeModel.ActiveProjectID {
+			curIdx = i
+			break
+		}
+	}
+	nextIdx := (curIdx + 1) % len(a.homeModel.Projects)
+	a.activateProjectIndex(nextIdx)
 }
 
 func (a *App) userFacingSessionPath(workspacePath string, worktreeEnabled bool, worktreeRootPath string) string {

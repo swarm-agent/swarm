@@ -67,15 +67,13 @@ func TestHomepageOutsideWorkspaceWarningRendersBelowTipsAndKeepsWorkspaceRow(t *
 	for _, want := range []string{
 		"Default",
 		"Shift+Tab toggles Plan on/off • Ctrl+X sessions • / for commands",
-		"Opened from unsaved Git repository /outside/project. Using workspace Default. Run /workspace",
-		"save to save the launch directory and switch to it.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("outside-workspace homepage missing %q:\n%s", want, text)
 		}
 	}
-	if tipsAt, warningAt := strings.Index(text, "Shift+Tab toggles Plan on/off"), strings.Index(text, "Opened from unsaved Git repository"); tipsAt < 0 || warningAt <= tipsAt {
-		t.Fatalf("outside-workspace warning was not rendered below tips:\n%s", text)
+	if strings.Contains(text, "Opened from unsaved Git repository") || strings.Contains(text, "cannot be added yet") {
+		t.Fatalf("outside-workspace warning was not suppressed:\n%s", text)
 	}
 }
 
@@ -107,13 +105,11 @@ func TestHomepageWarnsForRealInstallerHomeWorkspaceWithoutGit(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 120, 32)
-	for _, want := range []string{
-		"Saved workspace installer at ~ has no Git repository. Ask Swarm to create a Git repository",
-		"in this workspace.",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("installer home workspace guidance missing %q:\n%s", want, text)
-		}
+	if !strings.Contains(text, "installer") {
+		t.Fatalf("installer home workspace missing installer label:\n%s", text)
+	}
+	if strings.Contains(text, "has no Git repository") {
+		t.Fatalf("installer workspace git warning should be suppressed:\n%s", text)
 	}
 	if strings.Contains(text, "/workspace save") {
 		t.Fatalf("saved installer workspace was incorrectly described as unsaved:\n%s", text)

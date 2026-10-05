@@ -261,6 +261,17 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 	if len(next.Workspaces) == 0 {
 		next.FinishSetupNeeded = true
 		next.FinishSetupMissingWorkspace = true
+	} else {
+		hasActive := false
+		for i := range next.Workspaces {
+			if next.Workspaces[i].Active {
+				hasActive = true
+				break
+			}
+		}
+		if !hasActive {
+			next.Workspaces[0].Active = true
+		}
 	}
 
 	next.QuickActions = homeQuickActions(next)

@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Resolve TUI message dispatch to project orchestrator and checkout-free sessions by allowing project-scoped and unscoped sessions through TUI path visibility and workset filtering. Dock prompt box at bottom of TUI screen, remove Git workspace setup warning, default workspace selection to first workspace, and upgrade top header to Project Box with workspace display (or count if > 4) and project switcher integration. Docs impact: none.
+
 - Implement TUI orchestration focus mode with active project task board display on initial load, keyboard task selection and session launching, direct prompt submission to project orchestrator, Ctrl+X project orchestrator toggling, automatic primary orchestrator resolution, empty-task board guidance, and project switching integration via workspace switcher modal. Docs impact: none.
 
 - Optimize TUI scrollback performance, reading viewport anchoring, and input responsiveness. Implement structured item layout caching, incremental Markdown rendering, stable timeline item viewport anchoring during streaming and appends, change domain tracking and transport-only wake suppression in V3 chat store, non-blocking render requests, and bounded event batching in the terminal application event loop. Docs impact: none.

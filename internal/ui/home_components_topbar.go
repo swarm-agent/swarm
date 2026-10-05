@@ -2,11 +2,13 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -66,10 +68,10 @@ func (p *HomePage) drawSwarmTopBar(s tcell.Screen, rect Rect) {
 		contentW = rect.W - 2
 	}
 
-	workspaces := p.workspaceItems()
+	headerItems := p.projectItems()
 	y0 := rect.Y
 
-	p.drawTopItemRow(s, y0, contentX, contentW, workspaces, true)
+	p.drawTopItemRow(s, y0, contentX, contentW, headerItems, true)
 
 	infoRect := Rect{
 		X: contentX,
@@ -77,9 +79,118 @@ func (p *HomePage) drawSwarmTopBar(s tcell.Screen, rect Rect) {
 		W: contentW,
 		H: rect.H - 2,
 	}
-	p.drawWorkspaceInfoBox(s, infoRect)
+	p.drawProjectInfoBox(s, infoRect)
 
 	DrawHLine(s, rect.X, rect.Y+rect.H-1, rect.W, p.theme.Border)
+}
+
+func (p *HomePage) drawProjectInfoBox(s tcell.Screen, rect Rect) {
+	if rect.W < 24 || rect.H < 3 {
+		return
+	}
+	projectName := strings.TrimSpace(p.model.ActiveProjectName)
+	if projectName == "" {
+		projectName = "Project"
+	}
+	nameW := rect.W - 4 - utf8.RuneCountInString(" project:  ")
+	if nameW < 1 {
+		nameW = 1
+	}
+	projectLabel := fmt.Sprintf(" project:%s ", clampEllipsis(projectName, nameW))
+
+	var activeProject *client.ProjectRecord
+	for i := range p.model.Projects {
+		if p.model.Projects[i].ID == p.model.ActiveProjectID {
+			activeProject = &p.model.Projects[i]
+			break
+		}
+	}
+
+	var wsNames []string
+	if activeProject != nil && len(activeProject.Workspaces) > 0 {
+		for _, ws := range activeProject.Workspaces {
+			name := strings.TrimSpace(ws.WorkspaceName)
+			if name == "" {
+				name = filepath.Base(strings.TrimSpace(ws.Path))
+			}
+			if name != "" && name != "." {
+				wsNames = append(wsNames, name)
+			}
+		}
+	}
+	if len(wsNames) == 0 && len(p.model.Workspaces) > 0 {
+		for _, ws := range p.model.Workspaces {
+			name := strings.TrimSpace(ws.Name)
+			if name == "" {
+				name = filepath.Base(strings.TrimSpace(ws.Path))
+			}
+			if name != "" && name != "." {
+				wsNames = append(wsNames, name)
+			}
+		}
+	}
+
+	var wsLine string
+	switch {
+	case len(wsNames) == 0:
+		wsLine = "workspaces: none attached"
+	case len(wsNames) <= 4:
+		wsLine = "workspaces: " + strings.Join(wsNames, ", ")
+	default:
+		wsLine = fmt.Sprintf("workspaces: %d workspaces", len(wsNames))
+	}
+
+	innerW := rect.W - 4
+	if innerW < 8 {
+		innerW = rect.W - 2
+	}
+	leftW := innerW / 2
+	if leftW < 12 {
+		leftW = 12
+	}
+	if leftW > innerW-12 {
+		leftW = innerW - 12
+	}
+	if leftW < 12 {
+		leftW = innerW
+	}
+	rightW := innerW - leftW - 1
+	if rightW < 0 {
+		rightW = 0
+	}
+
+	lineY := rect.Y + 1
+	wsLine = clampEllipsis(wsLine, leftW)
+
+	d := p.primaryDirectory()
+	gitSummary := p.homeGitSummarySpans(d)
+
+	DrawBox(s, rect, p.theme.BorderActive)
+	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.TextMuted, projectLabel)
+	DrawText(s, rect.X+2, lineY, leftW, p.theme.Text, wsLine)
+
+	if rect.H > 3 {
+		subLine := ""
+		if path := strings.TrimSpace(d.Path); path != "" {
+			subLine = "path " + path
+		}
+		if len(p.model.ProjectTasks) > 0 {
+			if subLine != "" {
+				subLine += fmt.Sprintf("  ·  %d tasks", len(p.model.ProjectTasks))
+			} else {
+				subLine = fmt.Sprintf("%d tasks", len(p.model.ProjectTasks))
+			}
+		}
+		if subLine != "" {
+			DrawText(s, rect.X+2, rect.Y+2, rect.W-4, p.theme.Secondary, clampEllipsis(subLine, rect.W-4))
+		}
+	}
+
+	if rightW > 0 {
+		gitX := rect.X + 2 + leftW + 1
+		p.drawRightAlignedHomeSpans(s, gitX+rightW-1, lineY, rightW, gitSummary)
+		p.registerTopTarget(Rect{X: gitX, Y: lineY, W: rightW, H: 1}, "open-git", 0)
+	}
 }
 
 func (p *HomePage) drawWorkspaceInfoBox(s tcell.Screen, rect Rect) {
@@ -391,67 +502,51 @@ func headerWorkspaceIndexes(workspaces []model.Workspace, limit int) ([]int, boo
 }
 
 func (p *HomePage) workspaceSetupWarning() string {
-	setupPath := strings.TrimSpace(p.model.WorkspaceSetupPath)
-	if setupPath != "" {
-		switch p.model.WorkspaceSetupGitReadiness {
-		case model.GitReadinessUnavailable:
-			return "Git is required for Swarm managed worktrees. Install Git before adding or opening a workspace."
-		case model.GitReadinessNotRepository:
-			return fmt.Sprintf("%s cannot be added yet: Swarm requires a Git repository with an initial commit. Empty folders can be initialized from Desktop; existing files require ignore-rule review and permission before Git mutations.", setupPath)
-		case model.GitReadinessNeedsCommit:
-			return fmt.Sprintf("%s cannot be added yet: create an initial commit after reviewing files and ignore rules; staging and commits require explicit permission.", setupPath)
-		case model.GitReadinessReady:
-			name := strings.TrimSpace(p.activeWorkspaceName())
-			if name == "" {
-				name = "the default workspace"
-			} else {
-				name = "workspace " + name
-			}
-			return fmt.Sprintf("Opened from unsaved Git repository %s. Using %s. Run /workspace save to save the launch directory and switch to it.", setupPath, name)
-		case model.GitReadinessCheckFailed:
-			return fmt.Sprintf("Swarm could not verify Git readiness for %s. Check that Git can run there before saving it as a managed workspace.", setupPath)
-		default:
-			if p.model.WorkspaceSetupHasGit {
-				name := strings.TrimSpace(p.activeWorkspaceName())
-				if name == "" {
-					name = "the default workspace"
-				} else {
-					name = "workspace " + name
-				}
-				return fmt.Sprintf("Opened from unsaved Git repository %s. Using %s. Run /workspace save to save the launch directory and switch to it.", setupPath, name)
-			}
-			return fmt.Sprintf("%s cannot be used as a Swarm workspace until it is a Git repository with an initial commit.", setupPath)
+	// Warning removed because AI can now properly help install Git in a workspace if necessary.
+	return ""
+}
+
+func (p *HomePage) projectItems() []topItem {
+	shortcut := "Alt+W"
+	if p.keybinds != nil {
+		if label := strings.TrimSpace(p.keybinds.Label(KeybindGlobalWorkspaceSelect)); label != "" {
+			shortcut = label
+		}
+	}
+	projects := p.model.Projects
+	if len(projects) == 0 {
+		name := strings.TrimSpace(p.model.ActiveProjectName)
+		if name == "" {
+			name = "Project"
+		}
+		return []topItem{
+			{Label: fmt.Sprintf("[%s: project]", shortcut), Style: p.theme.Secondary, Action: "project-selector", Index: -1},
+			{Label: fmt.Sprintf("[* %s]", name), Style: p.theme.Primary.Bold(true), Action: "project-select", Index: 0},
 		}
 	}
 
-	directory := p.primaryDirectory()
-	gitNotReady := !directory.HasGit || (directory.GitReadiness != model.GitReadinessUnknown && directory.GitReadiness != model.GitReadinessReady)
-	if directory.IsWorkspace && gitNotReady {
-		name := strings.TrimSpace(p.activeWorkspaceName())
-		if name == "" {
-			name = "selected"
-		}
-		path := strings.TrimSpace(directory.Path)
-		if path == "" {
-			path = strings.TrimSpace(directory.ResolvedPath)
-		}
-		if path == "" {
-			path = "."
-		}
-		switch directory.GitReadiness {
-		case model.GitReadinessUnavailable:
-			return "Git is required for Swarm managed worktrees. Reinstall or repair Swarm so the mandatory Git prerequisite is available."
-		case model.GitReadinessNeedsCommit:
-			return fmt.Sprintf("Workspace %s at %s needs an initial commit before Swarm can isolate agent work in managed worktrees.", name, path)
-		case model.GitReadinessCheckFailed:
-			return fmt.Sprintf("Swarm could not verify Git readiness for saved workspace %s at %s. Check that Git can run there before using managed worktrees.", name, path)
-		default:
-			if !directory.HasGit {
-				return fmt.Sprintf("Saved workspace %s at %s has no Git repository. Ask Swarm to create a Git repository in this workspace.", name, path)
-			}
-		}
+	items := make([]topItem, 0, len(projects)+1)
+	if len(projects) > 1 {
+		items = append(items, topItem{Label: fmt.Sprintf("[%s: switch]", shortcut), Style: p.theme.Secondary, Action: "project-selector", Index: -1})
+	} else {
+		items = append(items, topItem{Label: fmt.Sprintf("[%s: project]", shortcut), Style: p.theme.Secondary, Action: "project-selector", Index: -1})
 	}
-	return ""
+	for i, proj := range projects {
+		name := strings.TrimSpace(proj.Name)
+		if name == "" {
+			name = "project"
+		}
+		active := proj.ID == p.model.ActiveProjectID || (p.model.ActiveProjectID == "" && i == 0)
+		icon := "+"
+		style := p.theme.TextMuted
+		if active {
+			icon = "*"
+			style = p.theme.Primary.Bold(true)
+		}
+		label := fmt.Sprintf("[%s %s]", icon, name)
+		items = append(items, topItem{Label: label, Style: style, Action: "project-select", Index: i})
+	}
+	return items
 }
 
 func (p *HomePage) workspaceItems() []topItem {

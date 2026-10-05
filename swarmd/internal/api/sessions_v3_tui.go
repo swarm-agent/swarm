@@ -365,9 +365,9 @@ func (s *Server) handleSessionV3TUIRebind(w http.ResponseWriter, r *http.Request
 		return
 	}
 	metadata := sessionsV3CreateServerMetadata(session.Metadata, agent, binding)
-	delete(metadata, "swarm_v3_tui_directory_session")
+	metadata["swarm_v3_tui_directory_session"] = false
+	metadata["swarm_v3_tui_original_cwd_path"] = cwdPath
 	delete(metadata, "swarm_v3_tui_cwd_path")
-	delete(metadata, "swarm_v3_tui_original_cwd_path")
 	session.WorkspacePath = binding.SourceWorkspacePath
 	session.WorkspaceName = binding.SourceWorkspaceName
 	if strings.TrimSpace(session.WorkspaceName) == "" {
@@ -593,11 +593,29 @@ func sessionsV3TUISessionVisibleForPaths(session pebblestore.SessionSnapshot, pr
 	if strings.TrimSpace(session.UserID) == "" || strings.TrimSpace(session.UserID) != strings.TrimSpace(principal.UserID) {
 		return false
 	}
+	// Project-scoped sessions (project orchestrator, project tasks) intentionally have no ambient checkout or single workspace path.
+	if projectID := firstNonEmpty(sessionsV3MetadataString(session.Metadata, "project_id"), sessionsV3MetadataString(session.Metadata, "swarm_v3_project_id")); projectID != "" {
+		return true
+	}
+	if role := sessionsV3MetadataString(session.Metadata, "role"); role == "project_orchestrator" || role == "project_task" {
+		return true
+	}
+	// Checkout-free sessions without workspace path or worktree are visible to the user.
+	if strings.TrimSpace(session.WorkspacePath) == "" && strings.TrimSpace(session.WorktreeRootPath) == "" &&
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path") == "" &&
+		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_worktree_path") == "" {
+		return true
+	}
 	candidates := []string{
 		strings.TrimSpace(session.WorkspacePath),
 		strings.TrimSpace(session.WorktreeRootPath),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_cwd_path"),
 		sessionsV3MetadataString(session.Metadata, "swarm_v3_tui_worktree_path"),
+	}
+	for _, grant := range session.WorkspaceGrants {
+		if strings.TrimSpace(grant.Path) != "" {
+			candidates = append(candidates, strings.TrimSpace(grant.Path))
+		}
 	}
 	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate) == "" {

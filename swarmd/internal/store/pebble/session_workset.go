@@ -477,6 +477,15 @@ func v3SessionWorksetSessionVisibleForWorkspaces(
 	if !v3SessionWorksetSessionVisible(session, accountScopeID, userID, "") {
 		return false
 	}
+	if projectID := firstNonEmptyString(sessionMetadataString(session.Metadata, "project_id"), sessionMetadataString(session.Metadata, "swarm_v3_project_id")); projectID != "" {
+		return true
+	}
+	if role := sessionMetadataString(session.Metadata, "role"); role == "project_orchestrator" || role == "project_task" {
+		return true
+	}
+	if strings.TrimSpace(session.WorkspacePath) == "" && strings.TrimSpace(session.WorktreeRootPath) == "" {
+		return true
+	}
 	paths := workspacePaths
 	if len(paths) == 0 {
 		paths = normalizeV3SessionWorksetWorkspacePaths(workspacePath, nil)

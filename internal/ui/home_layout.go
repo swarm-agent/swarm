@@ -71,8 +71,8 @@ func (p *HomePage) buildHomeSections(variant layoutVariant) []homeSection {
 			tasksH := len(p.model.ProjectTasks) + 2
 			if len(p.model.ProjectTasks) == 0 {
 				tasksH = 4
-			} else if tasksH > 7 {
-				tasksH = 7
+			} else if tasksH > 10 {
+				tasksH = 10
 			}
 			sections = append(sections, homeSection{kind: "tasks", h: tasksH})
 		} else if variant.ShowHero {
@@ -81,10 +81,10 @@ func (p *HomePage) buildHomeSections(variant layoutVariant) []homeSection {
 		if variant.ShowPresets {
 			sections = append(sections, homeSection{kind: "presets", h: 1})
 		}
-		sections = append(sections, homeSection{kind: "input", h: 3})
 		if variant.ShowTips {
 			sections = append(sections, homeSection{kind: "tips", h: 1})
 		}
+		sections = append(sections, homeSection{kind: "input", h: 3})
 		return sections
 	}
 
