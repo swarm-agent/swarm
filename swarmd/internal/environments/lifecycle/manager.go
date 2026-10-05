@@ -582,6 +582,7 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	newDep := environments.Deployment{
+		Frontend:       environments.SnapshotDeploymentFrontend(&env),
 		Build:          buildResult,
 		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,
@@ -778,6 +779,7 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 	}
 
 	newDep := environments.Deployment{
+		Frontend:       environments.SnapshotDeploymentFrontend(&env),
 		Build:          buildResult,
 		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,

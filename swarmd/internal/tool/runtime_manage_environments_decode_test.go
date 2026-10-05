@@ -317,3 +317,37 @@ func TestLocalPodmanConnectionRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: strict definition decoding must retain explicit frontend intent through
+// nested create/import and top-level updates without silently dropping fields or
+// mutating the original on rejection. The decoder is the narrow input boundary;
+// no schema/prompt changes or lifecycle execution are needed to prove it.
+func TestEnvironmentFrontendDecode(t *testing.T) {
+	endpoint := map[string]any{"id": "web", "name": "Web", "container_port": 8080, "scheme": "http", "health_path": "/health"}
+	fields := strictEnvironmentFixture(t)
+	fields["frontend_endpoints"] = []any{endpoint}
+	created, err := parseEnvironmentInput(map[string]any{"environment": fields}, "account", "workspace")
+	if err != nil || len(created.FrontendEndpoints) != 1 {
+		t.Fatalf("nested create lost frontend: %+v %v", created, err)
+	}
+	imported, err := decodeEnvironmentImport(map[string]any{"environment": fields})
+	if err != nil || !reflect.DeepEqual(imported.FrontendEndpoints, created.FrontendEndpoints) {
+		t.Fatalf("nested import lost frontend: %+v %v", imported, err)
+	}
+	args := map[string]any{"frontend_endpoints": []any{}}
+	if err := validateEnvironmentDefinitionArgs("update", args); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := applyEnvironmentUpdates(created, args)
+	if err != nil || len(updated.FrontendEndpoints) != 0 || len(created.FrontendEndpoints) != 1 {
+		t.Fatal("explicit empty update did not replace independently")
+	}
+	if _, err := parseEnvironmentInput(map[string]any{"environment": fields, "frontend_endpoints": []any{}}, "account", "workspace"); err == nil {
+		t.Fatal("mixed frontend authorities admitted")
+	}
+	for _, invalid := range []any{nil, "[]", []any{map[string]any{"unknown": true}}} {
+		if _, err := applyEnvironmentUpdates(created, map[string]any{"frontend_endpoints": invalid}); err == nil || len(created.FrontendEndpoints) != 1 || created.FrontendEndpoints[0].ID != "web" {
+			t.Fatal("malformed frontend accepted or mutated source")
+		}
+	}
+}

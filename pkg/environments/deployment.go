@@ -65,6 +65,8 @@ type DeploymentLifecycle struct {
 // Deployment represents an instantiated, running or historical execution environment.
 // Strictly scoped to AccountScopeID and WorkspaceID.
 type Deployment struct {
+	// Frontend is the deployed HTTP intent. Nil legacy records grant no browser access.
+	Frontend *DeploymentFrontend `json:"frontend,omitempty"`
 	// ReviewDeadline is immutable for this deployment generation. Zero is legacy.
 	ReviewDeadline int64               `json:"review_deadline,omitempty"`
 	Build          *ImageBuildResult   `json:"build,omitempty"`
@@ -232,6 +234,12 @@ func (d *Deployment) Clone() *Deployment {
 		return nil
 	}
 	cp := *d
+	if d.Frontend != nil {
+		frontend := *d.Frontend
+		frontend.Endpoints = append([]FrontendEndpoint(nil), d.Frontend.Endpoints...)
+		frontend.Ports = append([]PortMapping(nil), d.Frontend.Ports...)
+		cp.Frontend = &frontend
+	}
 	if d.Build != nil {
 		build := *d.Build
 		cp.Build = &build

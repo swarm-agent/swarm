@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
@@ -52,7 +53,7 @@ func (s *Server) taskBrowserSnapshot(p identity.Principal, sessionID string, req
 		return nil, snap, errTaskBrowserUnavailable
 	}
 	e, found, err := s.environments.Get(p.AccountScopeID, req.WorkspaceID, d.EnvironmentID)
-	if err != nil || !found || e.AccountScopeID != p.AccountScopeID || e.WorkspaceID != req.WorkspaceID || e.ID != d.EnvironmentID || e.Build == nil || e.Build.Digest() != a.Source.Build.DefinitionDigest || environments.ValidateFrontendEndpoints(e.FrontendEndpoints, e.Container.ExposedPorts) != nil {
+	if err != nil || !found || e.AccountScopeID != p.AccountScopeID || e.WorkspaceID != req.WorkspaceID || e.ID != d.EnvironmentID || e.Build == nil || e.Build.Digest() != a.Source.Build.DefinitionDigest || d.Frontend == nil || environments.ValidateFrontendEndpoints(d.Frontend.Endpoints, d.Frontend.Ports) != nil {
 		return nil, snap, errTaskBrowserUnavailable
 	}
 	c, found, err := s.connections.Get(p.AccountScopeID, req.WorkspaceID, d.ConnectionID)
@@ -67,27 +68,43 @@ func (s *Server) taskBrowserSnapshot(p identity.Principal, sessionID string, req
 }
 
 func (s *Server) taskBrowserEndpoints(ctx context.Context, p identity.Principal, sessionID string, req tool.TaskEnvironmentRequest) (tool.TaskEnvironmentResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	result := tool.TaskEnvironmentResult{BrowserEndpoints: []tool.TaskBrowserEndpoint{}}
-	task, before, err := s.taskBrowserSnapshot(p, sessionID, req)
+	_, before, err := s.taskBrowserSnapshot(p, sessionID, req)
 	if err != nil {
 		return result, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	if ctx.Err() != nil {
+		return tool.TaskEnvironmentResult{}, errTaskBrowserUnavailable
+	}
 	// No ambient proxies, cookies, authentication or redirect following. HTTPS
 	// retains the standard certificate/hostname verification.
 	transport := &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: time.Second}).DialContext, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: time.Second, MaxResponseHeaderBytes: 16 << 10, DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	for _, endpoint := range before.environment.FrontendEndpoints {
-		result.BrowserEndpoints = append(result.BrowserEndpoints, probeTaskBrowserEndpoint(ctx, client, endpoint, before.deployment.Runtime.AssignedPorts))
+	// Validation caps the snapshot at eight endpoints. Each independent probe has
+	// a one-second budget; slow services cannot starve later healthy endpoints.
+	endpoints := before.deployment.Frontend.Endpoints
+	result.BrowserEndpoints = make([]tool.TaskBrowserEndpoint, len(endpoints))
+	var probes sync.WaitGroup
+	for i, endpoint := range endpoints {
+		probes.Add(1)
+		go func(i int, endpoint environments.FrontendEndpoint) {
+			defer probes.Done()
+			result.BrowserEndpoints[i] = probeTaskBrowserEndpoint(ctx, client, endpoint, before.deployment.Runtime.AssignedPorts)
+		}(i, endpoint)
 	}
-	_, after, err := s.taskBrowserSnapshot(p, sessionID, req)
+	probes.Wait()
+	task, after, err := s.taskBrowserSnapshot(p, sessionID, req)
 	if err != nil || ctx.Err() != nil || !reflect.DeepEqual(before, after) {
 		return tool.TaskEnvironmentResult{}, errTaskBrowserUnavailable
 	}
 	result.TaskRevision = task.Revision
 	result.Attachments = s.taskEnvironmentProjection(ctx, p, task)
+	if ctx.Err() != nil {
+		return tool.TaskEnvironmentResult{}, errTaskBrowserUnavailable
+	}
 	return result, nil
 }
 
@@ -107,7 +124,7 @@ func taskBrowserOrigin(ports []environments.AssignedPort, containerPort int, sch
 		return nil, 0, false
 	}
 	ip := net.ParseIP(u.Hostname())
-	if ip == nil || !ip.IsLoopback() || u.Port() != strconv.Itoa(selected.HostPort) {
+	if ip == nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "::1") || u.Port() != strconv.Itoa(selected.HostPort) {
 		return nil, 0, false
 	}
 	return &url.URL{Scheme: scheme, Host: net.JoinHostPort(ip.String(), strconv.Itoa(selected.HostPort))}, selected.HostPort, true

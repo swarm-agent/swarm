@@ -35,7 +35,7 @@ func (f *browserConnectionFixture) Get(string, string, string) (environments.Con
 // as browser authority. Direct unit assertions prove malicious mappings cannot
 // reach the probe, while preserving exact dynamically assigned host ports.
 func TestTaskBrowserOrigin(t *testing.T) {
-	for _, raw := range []string{"javascript:alert(1)", "file:///etc/passwd", "http://user:pass@127.0.0.1:49152", "http://127.0.0.1:49153", "http://192.0.2.1:49152", "http://localhost:49152", "http://127.0.0.1:49152?secret=x", "http://127.0.0.1:49152/#fragment", "http://127.0.0.1:49152//evil"} {
+	for _, raw := range []string{"javascript:alert(1)", "file:///etc/passwd", "http://user:pass@127.0.0.1:49152", "http://127.0.0.1:49153", "http://192.0.2.1:49152", "http://localhost:49152", "http://127.0.0.2:49152", "http://[::ffff:127.0.0.1]:49152", "http://127.0.0.1:49152?secret=x", "http://127.0.0.1:49152/#fragment", "http://127.0.0.1:49152//evil"} {
 		if _, _, ok := taskBrowserOrigin([]environments.AssignedPort{{ContainerPort: 8080, HostPort: 49152, Protocol: "tcp", EndpointURL: raw}}, 8080, "http"); ok {
 			t.Fatalf("unsafe mapping admitted: %s", raw)
 		}
@@ -47,6 +47,10 @@ func TestTaskBrowserOrigin(t *testing.T) {
 	}
 	if _, _, ok := taskBrowserOrigin([]environments.AssignedPort{port, port}, 8080, "http"); ok {
 		t.Fatal("ambiguous mapping admitted")
+	}
+	port.EndpointURL = "tcp://[::1]:49152"
+	if origin, _, ok := taskBrowserOrigin([]environments.AssignedPort{port}, 8080, "http"); !ok || origin.String() != "http://[::1]:49152" {
+		t.Fatal("canonical IPv6 loopback rejected")
 	}
 	port.Protocol = "udp"
 	if _, _, ok := taskBrowserOrigin([]environments.AssignedPort{port}, 8080, "http"); ok {
@@ -109,16 +113,33 @@ func TestTaskBrowserEndpointsBoundary(t *testing.T) {
 	f.server.deployments = manager
 	defs := &taskAttachmentDefinitionFixture{env: environments.Environment{ID: "environment", Name: "Web", AccountScopeID: f.accountID, WorkspaceID: entry.WorkspaceID, Build: definition, Container: environments.ContainerDefinition{ExposedPorts: []environments.PortMapping{{ContainerPort: 8080}}}, FrontendEndpoints: []environments.FrontendEndpoint{{ID: "web", Name: "Web", ContainerPort: 8080, Scheme: "http", Path: "/app", HealthPath: "/health"}}}}
 	f.server.environments = defs
+	manager.dep.Frontend = environments.SnapshotDeploymentFrontend(&defs.env)
 	connection := &browserConnectionFixture{connection: environments.Connection{ID: "local", AccountScopeID: f.accountID, WorkspaceID: entry.WorkspaceID, Kind: environments.ConnectionKindLocalPodman}}
 	f.server.connections = connection
 	var hits, escaped atomic.Int32
 	var mode atomic.Int32
+	var arrivals atomic.Int32
+	allProbes := make(chan struct{})
 	var stopped atomic.Bool
 	detachErrors := make(chan error, 1)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { escaped.Add(1) }))
 	defer target.Close()
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
+		if mode.Load() == 6 {
+			if arrivals.Add(1) == 8 {
+				close(allProbes)
+			}
+			select {
+			case <-allProbes:
+			case <-r.Context().Done():
+				return
+			}
+			if r.URL.Path != "/ready" {
+				w.WriteHeader(503)
+			}
+			return
+		}
 		if r.URL.Path != "/health" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
 			w.WriteHeader(400)
 			return
@@ -130,8 +151,16 @@ func TestTaskBrowserEndpointsBoundary(t *testing.T) {
 			w.WriteHeader(503)
 		case 3:
 			stopped.Store(true)
+		case 5:
+			current, _, err := db.GetProjectTask(f.accountID, project.ID, task.ID)
+			if err == nil {
+				current.Revision++
+				current.Title = "Updated during probe"
+				err = db.PutProjectTask(f.accountID, current)
+			}
+			detachErrors <- err
 		case 4:
-			_, err := db.MutateProjectTaskEnvironment(f.accountID, project.ID, task.ID, pebblestore.TaskEnvironmentMutation{ExpectedTaskRevision: 2, ExpectedAttachmentRevision: 1, AttachmentID: "web"})
+			_, err := db.MutateProjectTaskEnvironment(f.accountID, project.ID, task.ID, pebblestore.TaskEnvironmentMutation{ExpectedTaskRevision: 3, ExpectedAttachmentRevision: 1, AttachmentID: "web"})
 			detachErrors <- err
 		default:
 			w.WriteHeader(204)
@@ -175,23 +204,31 @@ func TestTaskBrowserEndpointsBoundary(t *testing.T) {
 	tlsPort, _ := strconv.Atoi(tlsURL.Port())
 	originalPorts := manager.dep.Runtime.AssignedPorts
 	manager.dep.Runtime.AssignedPorts = []environments.AssignedPort{{ContainerPort: 8080, HostPort: tlsPort, Protocol: "tcp", EndpointURL: tlsServer.URL}}
-	defs.env.FrontendEndpoints[0].Scheme = "https"
+	manager.dep.Frontend.Endpoints[0].Scheme = "https"
 	result, err = f.server.ManageTaskEnvironment(ctx, p, "", req)
 	if err != nil || result.BrowserEndpoints[0].Ready || result.BrowserEndpoints[0].URL != "" {
 		t.Fatal("untrusted HTTPS service admitted")
 	}
 	manager.dep.Runtime.AssignedPorts = originalPorts
-	defs.env.FrontendEndpoints[0].Scheme = "http"
-	endpoints := defs.env.FrontendEndpoints
-	defs.env.FrontendEndpoints = nil
+	manager.dep.Frontend.Endpoints[0].Scheme = "http"
+	endpoints := manager.dep.Frontend.Endpoints
+	manager.dep.Frontend.Endpoints = nil
 	beforeHits := hits.Load()
 	result, err = f.server.ManageTaskEnvironment(ctx, p, "", req)
 	if err != nil || result.BrowserEndpoints == nil || len(result.BrowserEndpoints) != 0 || hits.Load() != beforeHits {
 		t.Fatal("backend-only definition inferred HTTP")
 	}
-	defs.env.FrontendEndpoints = endpoints
+	manager.dep.Frontend.Endpoints = endpoints
+	// Mutable definitions must not replace deployed browser intent.
+	defs.env.FrontendEndpoints[0].Path = "/edited"
+	result, err = f.server.ManageTaskEnvironment(ctx, p, "", req)
+	if err != nil || result.BrowserEndpoints[0].URL != httpServer.URL+"/app" {
+		t.Fatalf("definition edit changed deployed intent: %+v %v", result, err)
+	}
+	defs.env.FrontendEndpoints[0].Path = "/app"
 	for _, change := range []func(){
 		func() { req.ExpectedAttachmentRevision = 2 },
+		func() { manager.dep.Frontend = nil },
 		func() { p.AccountScopeID = "foreign" },
 		func() { manager.dep.Status = environments.DeploymentStatusStopped },
 		func() { manager.dep.Runtime.ContainerID = "replacement" },
@@ -208,12 +245,60 @@ func TestTaskBrowserEndpointsBoundary(t *testing.T) {
 		}
 		req, p, manager.dep, connection.connection, *definition = originalReq, originalP, originalDep, originalConnection, originalDefinition
 	}
+	// Purpose: eight independent probes must start together and preserve order
+	// and partial readiness; a barrier catches sequential starvation without sleeps.
+	originalFrontend := manager.dep.Frontend
+	manager.dep.Frontend = &environments.DeploymentFrontend{}
+	manager.dep.Runtime.AssignedPorts = nil
+	for i := 0; i < 8; i++ {
+		endpoint := endpoints[0]
+		endpoint.ID = "web" + strconv.Itoa(i)
+		endpoint.ContainerPort = 8080 + i
+		if i == 7 {
+			endpoint.HealthPath = "/ready"
+		}
+		manager.dep.Frontend.Endpoints = append(manager.dep.Frontend.Endpoints, endpoint)
+		manager.dep.Frontend.Ports = append(manager.dep.Frontend.Ports, environments.PortMapping{ContainerPort: endpoint.ContainerPort})
+		manager.dep.Runtime.AssignedPorts = append(manager.dep.Runtime.AssignedPorts, environments.AssignedPort{ContainerPort: endpoint.ContainerPort, HostPort: hostPort, Protocol: "tcp", EndpointURL: httpServer.URL})
+	}
+	mode.Store(6)
+	result, err = f.server.ManageTaskEnvironment(ctx, p, "", req)
+	if err != nil || len(result.BrowserEndpoints) != 8 || arrivals.Load() != 8 {
+		t.Fatalf("bounded parallel probes failed: %+v %v", result, err)
+	}
+	for i, endpoint := range result.BrowserEndpoints {
+		if endpoint.ID != "web"+strconv.Itoa(i) || endpoint.Ready != (i == 7) || (i != 7 && endpoint.URL != "") {
+			t.Fatalf("partial readiness/order: %+v", result)
+		}
+	}
+	manager.dep.Frontend = originalFrontend
+	manager.dep.Runtime.AssignedPorts = originalPorts
+	cancelled, stop := context.WithCancel(ctx)
+	stop()
+	if result, err := f.server.ManageTaskEnvironment(cancelled, p, "", req); err == nil || len(result.BrowserEndpoints) != 0 {
+		t.Fatal("cancelled probe returned browser access")
+	}
+	// Purpose: the post-network task read must supply the returned revision and
+	// projection even when an unrelated task edit leaves browser authority intact.
+	mode.Store(5)
+	result, err = f.server.ManageTaskEnvironment(ctx, p, "", req)
+	select {
+	case writeErr := <-detachErrors:
+		if writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	case <-ctx.Done():
+		t.Fatal("task edit probe did not execute")
+	}
+	if err != nil || result.TaskRevision != 3 || len(result.Attachments) != 1 {
+		t.Fatalf("stale post-probe task projection: %+v %v", result, err)
+	}
 	mode.Store(3)
 	if result, err := f.server.ManageTaskEnvironment(ctx, p, "", req); err == nil || len(result.BrowserEndpoints) != 0 {
 		t.Fatal("concurrent stop returned browser access")
 	}
 	stored, _, err := db.GetProjectTask(f.accountID, project.ID, task.ID)
-	if err != nil || stored.Revision != 2 || manager.effects != 0 || len(manager.leases) != 0 {
+	if err != nil || stored.Revision != 3 || manager.effects != 0 || len(manager.leases) != 0 {
 		t.Fatal("browser inspection mutated lifecycle/task state")
 	}
 	stopped.Store(false)
@@ -230,7 +315,7 @@ func TestTaskBrowserEndpointsBoundary(t *testing.T) {
 		t.Fatal("detach probe did not execute")
 	}
 	stored, _, err = db.GetProjectTask(f.accountID, project.ID, task.ID)
-	if err != nil || stored.Revision != 3 || len(stored.EnvironmentAttachments) != 0 || manager.effects != 0 {
+	if err != nil || stored.Revision != 4 || len(stored.EnvironmentAttachments) != 0 || manager.effects != 0 {
 		t.Fatal("detach was undone or browser mutated lifecycle")
 	}
 }

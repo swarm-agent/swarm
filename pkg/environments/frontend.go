@@ -59,3 +59,17 @@ func ValidateFrontendEndpoints(endpoints []FrontendEndpoint, ports []PortMapping
 	}
 	return nil
 }
+
+// DeploymentFrontend pins explicit HTTP intent and its declared TCP ports to a
+// deployment generation. It is not refreshed when the environment is edited.
+type DeploymentFrontend struct {
+	Endpoints []FrontendEndpoint `json:"endpoints,omitempty"`
+	Ports     []PortMapping      `json:"ports,omitempty"`
+}
+
+func SnapshotDeploymentFrontend(e *Environment) *DeploymentFrontend {
+	return &DeploymentFrontend{
+		Endpoints: append([]FrontendEndpoint(nil), e.FrontendEndpoints...),
+		Ports:     append([]PortMapping(nil), e.Container.ExposedPorts...),
+	}
+}

@@ -787,6 +787,7 @@ func applyEnvironmentFields(env environments.Environment, args map[string]any) (
 		{"preferred_connection_id", &env.PreferredConnectionID},
 		{"container", &env.Container}, {"image", &env.Container.Image},
 		{"ports", &env.Container.ExposedPorts},
+		{"frontend_endpoints", &env.FrontendEndpoints},
 		{"deployment_policy", &env.DeploymentPolicy},
 		{"max_instances", &env.DeploymentPolicy.MaxInstances},
 		{"release_behavior", &env.DeploymentPolicy.ReleaseBehavior},
@@ -843,7 +844,7 @@ func applyEnvironmentFields(env environments.Environment, args map[string]any) (
 }
 
 func rejectEnvironmentFieldMix(args map[string]any) error {
-	for _, field := range []string{"name", "description", "mode", "role", "preferred_connection_id", "container", "image", "ports", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "id", "environment_id"} {
+	for _, field := range []string{"name", "description", "mode", "role", "preferred_connection_id", "container", "image", "ports", "frontend_endpoints", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "id", "environment_id"} {
 		if _, supplied := args[field]; supplied {
 			return fmt.Errorf("%s: cannot combine definition fields with environment or json; supply one definition", field)
 		}
@@ -1000,7 +1001,7 @@ func validateEnvironmentDefinitionArgs(action string, args map[string]any) error
 	if action == "import" {
 		allowed["json"], allowed["environment"] = true, true
 	} else {
-		for _, key := range []string{"environment_id", "id", "name", "description", "mode", "role", "preferred_connection_id", "image", "container", "ports", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "set_default_test"} {
+		for _, key := range []string{"environment_id", "id", "name", "description", "mode", "role", "preferred_connection_id", "image", "container", "ports", "frontend_endpoints", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "set_default_test"} {
 			allowed[key] = true
 		}
 		if action == "create" {
