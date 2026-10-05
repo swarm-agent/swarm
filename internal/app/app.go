@@ -5353,8 +5353,8 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 		}
 		a.refreshAuthModalData("")
 		if a.home.OnboardingProviderActive() {
-			a.refreshOnboardingWorkspaceGitReadiness()
-			a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
+			a.home.HideAuthModal()
+			a.home.ShowOnboardingProject("Provider connected. Enter a project name to continue.")
 		}
 		if record.Connection != nil {
 			method := strings.TrimSpace(record.Connection.Method)
@@ -6067,8 +6067,7 @@ func (a *App) consumeAuthLoginResult() {
 		if result.hideAuthModal {
 			a.home.HideAuthModal()
 			if a.home.OnboardingProviderActive() {
-				a.refreshOnboardingWorkspaceGitReadiness()
-				a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
+				a.home.ShowOnboardingProject("Provider connected. Enter a project name to continue.")
 			}
 		} else {
 			a.home.SetAuthModalLoading(false)

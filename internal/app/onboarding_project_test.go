@@ -305,3 +305,70 @@ func TestOnboardingFreshDaemonStartsAtStepOneWithout401(t *testing.T) {
 		t.Fatal("providers API should not be called before identity bootstrap")
 	}
 }
+
+func TestOnboardingProviderSaveTransitionsToProject(t *testing.T) {
+	t.Setenv("SWARMD_LOCAL_TRANSPORT_SOCKET", "")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/onboarding":
+			_ = json.NewEncoder(w).Encode(client.OnboardingStatus{
+				OK:              true,
+				NeedsOnboarding: true,
+				Identity: client.OnboardingIdentity{
+					Bootstrapped: true,
+					Username:     "testbench",
+				},
+				Heuristics: client.OnboardingHeuristics{
+					CredentialCount: 0,
+					AgentCount:      0,
+				},
+			})
+		case r.Method == http.MethodPost && (r.URL.Path == "/v1/onboarding/provider/credential" || r.URL.Path == "/v1/auth/credentials"):
+			_ = json.NewEncoder(w).Encode(client.AuthCredential{
+				Provider: "openrouter",
+				ID:       "cred_1",
+				Connection: &client.AuthConnectionStatus{
+					Connected: true,
+					Method:    "api_key",
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
+	defer server.Close()
+
+	api := client.New(server.URL)
+	api.SetToken("test-token")
+	home := ui.NewHomePage(model.HomeModel{
+		OnboardingRequired: true,
+	})
+	home.ShowOnboardingProvider("Select a provider")
+
+	app := &App{
+		api:  api,
+		home: home,
+	}
+
+	if !app.home.OnboardingProviderActive() {
+		t.Fatal("expected OnboardingProviderActive to be true")
+	}
+
+	app.handleAuthModalAction(ui.AuthModalAction{
+		Kind: ui.AuthModalActionUpsert,
+		Upsert: &ui.AuthModalUpsert{
+			Provider: "openrouter",
+			APIKey:   "sk-test",
+		},
+	})
+
+	if !app.home.OnboardingProjectActive() {
+		t.Fatalf("expected OnboardingProjectActive to be true after saving provider, but got phase=%v", app.home.OnboardingProjectActive())
+	}
+	if app.home.OnboardingWorkspaceActive() {
+		t.Fatal("saving provider must NOT skip directly to OnboardingWorkspaceActive")
+	}
+}
+
