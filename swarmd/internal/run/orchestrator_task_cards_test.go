@@ -92,7 +92,7 @@ func TestOrchestratorMasterHarnessExcludesSessionPlanning(t *testing.T) {
 }
 
 // Requirement: Orchestrator's compiled session deploy/commit and worktree
-// promotion tools and websearch/webfetch reach provider definitions without
+// promotion, account workspace management and websearch/webfetch reach provider definitions without
 // bypassing canonical permission routing. ResolveAgentToolContract and
 // filterToolDefinitions own exposure. Threat: runtime filtering can hide enabled aliases or
 // accidentally expose privileged tools to restricted agents. This is the
@@ -109,6 +109,7 @@ func TestOrchestratorSessionIntegrationProviderTools(t *testing.T) {
 	for _, tc := range []struct{ canonical, provider string }{
 		{canonical: "manage_sessions", provider: "manage-sessions"},
 		{canonical: "manage_worktree", provider: "manage-worktree"},
+		{canonical: "manage_workspace", provider: "manage_workspace"},
 		{canonical: "websearch", provider: "websearch"},
 		{canonical: "webfetch", provider: "webfetch"},
 	} {
@@ -147,7 +148,7 @@ func TestOrchestratorSessionIntegrationProviderTools(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, name := range []string{"manage_sessions", "manage_worktree"} {
+		for _, name := range []string{"manage_sessions", "manage_worktree", "manage_workspace"} {
 			if other.Tools[name].Enabled || !otherDisabled[name] || slices.Contains(other.AvailableTools, name) {
 				t.Fatalf("restricted agent %s exposed %s", restricted.Name, name)
 			}

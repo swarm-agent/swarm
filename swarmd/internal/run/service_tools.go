@@ -2128,8 +2128,8 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 	case "manage_workspace":
 		// This single-purpose control-plane tool owns account workspace selection
 		// and canonical V3 session routing; standalone runtime execution is rejected.
-		if !strings.EqualFold(strings.TrimSpace(agentProfile.Name), "swarm") || !strings.EqualFold(strings.TrimSpace(agentProfile.Mode), "primary") {
-			return true, result, errors.New("manage_workspace is restricted to the compiled Swarm primary agent")
+		if (!strings.EqualFold(strings.TrimSpace(agentProfile.Name), "swarm") && !agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name)) || !strings.EqualFold(strings.TrimSpace(agentProfile.Mode), "primary") {
+			return true, result, errors.New("manage_workspace is restricted to the compiled Swarm primary agent or Orchestrator")
 		}
 		principal, _ := identity.PrincipalFromContext(ctx)
 		if !principal.Valid() && s.sessions != nil {

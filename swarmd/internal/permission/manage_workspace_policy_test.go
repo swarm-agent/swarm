@@ -307,3 +307,23 @@ func TestManageWorkspacePermissionNotificationMetadata(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: exposing manage_workspace to Orchestrator must not turn its generic
+// tool allow into catalog-mutation approval. ExplainPolicy owns action-specific
+// policy routing; this narrow policy test proves each explicit denial overrides
+// generic exposure, including bypass, without invoking a mutating service.
+func TestManageWorkspaceExposurePreservesMutationDenials(t *testing.T) {
+	for _, action := range []string{"create", "update", "delete"} {
+		policy := DefaultPolicy()
+		policy.Rules = append(policy.Rules,
+			PolicyRule{Kind: PolicyRuleKindTool, Tool: "manage_workspace", Decision: PolicyDecisionAllow},
+			PolicyRule{Kind: PolicyRuleKindTool, Tool: "workspace_" + action, Decision: PolicyDecisionDeny},
+		)
+		for _, mode := range []string{"auto", "auto+bypass_permissions"} {
+			got := ExplainPolicy(mode, "manage_workspace", `{"action":"`+action+`"}`, policy)
+			if got.Decision != PolicyDecisionDeny || got.ToolName != "workspace_"+action {
+				t.Fatalf("%s %s escaped mutation denial: %+v", mode, action, got)
+			}
+		}
+	}
+}

@@ -71,6 +71,15 @@ func (s *Service) executeManageWorkspaceTool(sessionID, arguments string, princi
 	if !ok || ownedSession.UserID != principal.UserID || ownedSession.AccountScopeID != principal.AccountScopeID {
 		return "", errors.New("manage_workspace session ownership does not match the authenticated principal")
 	}
+	if pebblestore.ProjectConversationID(ownedSession) != "" {
+		if err := s.sessions.Store().ValidateProjectConversation(ownedSession, principal.AccountScopeID, principal.UserID); err != nil {
+			return "", err
+		}
+		switch args.Action {
+		case "set_session", "adopt_worktree", "reclaim_worktree", "copy_worktree", "cancel_worktree_recovery":
+			return "", fmt.Errorf("manage_workspace %s is unavailable in a checkout-free project conversation; select an explicit authorized source for delegation instead", args.Action)
+		}
+	}
 	if args.Action == "inspect_map" || args.Action == "get_map" {
 		return s.inspectWorkspaceMap(strings.TrimSpace(sessionID), principal, args)
 	}
@@ -631,6 +640,11 @@ func (s *Service) ensureCreatedWorkspaceGrant(sessionID string, principal identi
 	}
 	if !ok {
 		return fmt.Errorf("session %q not found", sessionID)
+	}
+	// Catalog registration is not filesystem authority for a project chat.
+	// Ordinary workspace sessions retain their existing additional-grant behavior.
+	if pebblestore.ProjectConversationID(session) != "" {
+		return s.sessions.Store().ValidateProjectConversation(session, principal.AccountScopeID, principal.UserID)
 	}
 	for _, grant := range pebblestore.NormalizeSessionWorkspaceGrants(session) {
 		if grant.WorkspaceID == workspaceID {
