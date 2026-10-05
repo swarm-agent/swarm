@@ -8,9 +8,11 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 )
@@ -246,5 +248,74 @@ func TestManagedBuildOutputBounds(t *testing.T) {
 	}
 	if _, err := readBuildImageID(link); err == nil {
 		t.Fatal("symlink receipt accepted")
+	}
+}
+
+// Purpose: ExportCommittedBuild must export the selected commit, not ambient
+// dirty/untracked files or a moved branch. Two hermetic Git repositories prove
+// the actual archive command semantics without any engine, network or provider.
+func TestManagedBuildExactCommittedExport(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	git := func(root string, args ...string) string {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_AUTHOR_NAME=Test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=Test", "GIT_COMMITTER_EMAIL=test@example.invalid")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git fixture: %v %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	product, recipe := t.TempDir(), t.TempDir()
+	git(product, "init")
+	git(recipe, "init")
+	if err := os.WriteFile(filepath.Join(product, "source.go"), []byte("selected"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(product, "add", "source.go")
+	git(product, "commit", "-m", "selected")
+	b := buildDefinitionFixture()
+	b.Product.Commit = git(product, "rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(product, "source.go"), []byte("newer"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(product, "add", "source.go")
+	git(product, "commit", "-m", "newer")
+	if err := os.WriteFile(filepath.Join(product, "untracked"), []byte("private"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(recipe, "recipe"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(recipe, "recipe", "Containerfile"), []byte("FROM scratch"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(recipe, "add", "recipe")
+	git(recipe, "commit", "-m", "recipe")
+	b.Recipe.Commit = git(recipe, "rev-parse", "HEAD")
+	dest := t.TempDir()
+	digest, err := ExportCommittedBuild(ctx, &OSCommandRunner{}, product, recipe, dest, b)
+	if err != nil || len(digest) != 64 {
+		t.Fatalf("archive: %s %v", digest, err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dest, "source.go"))
+	if string(data) != "selected" {
+		t.Fatal("wrong commit exported")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "untracked")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("live file exported")
+	}
+	if data, err := os.ReadFile(filepath.Join(dest, ".swarm-recipe", "recipe", "Containerfile")); err != nil || string(data) != "FROM scratch" {
+		t.Fatal("recipe missing")
+	}
+	b.Product.Commit = strings.Repeat("f", 40)
+	empty := t.TempDir()
+	if _, err := ExportCommittedBuild(ctx, &OSCommandRunner{}, product, recipe, empty, b); err == nil {
+		t.Fatal("missing commit accepted")
+	}
+	entries, _ := os.ReadDir(empty)
+	if len(entries) != 0 {
+		t.Fatal("missing commit partially wrote context")
 	}
 }

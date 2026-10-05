@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,8 +14,10 @@ import (
 
 type managedBuildProvider struct {
 	*mockProvider
-	calls    int
-	mismatch bool
+	calls        int
+	mismatch     bool
+	cleanupCalls int
+	cleanupErr   error
 }
 
 func (p *managedBuildProvider) BuildImage(_ context.Context, r provider.ImageBuildRequest) (*environments.ImageBuildResult, error) {
@@ -25,7 +28,10 @@ func (p *managedBuildProvider) BuildImage(_ context.Context, r provider.ImageBui
 	}
 	return b, nil
 }
-func (p *managedBuildProvider) CleanupBuild(context.Context, string) error { return nil }
+func (p *managedBuildProvider) CleanupBuild(context.Context, string) error {
+	p.cleanupCalls++
+	return p.cleanupErr
+}
 func buildLifecycleFixture(t *testing.T) (*supervisedTestHarness, environments.Environment, environments.Connection, *managedBuildProvider) {
 	t.Helper()
 	h := setupSupervisedHarness(t)
@@ -143,5 +149,39 @@ func TestManagedBuildResultAdmission(t *testing.T) {
 	deps, err := h.deployments.ListByEnvironment("account", "workspace", env.ID, 10)
 	if err != nil || len(deps) != 0 {
 		t.Fatal("receipt lookup mutated deployments")
+	}
+}
+
+// Purpose: durable running build operations must recover by exact owned cleanup,
+// never replay a recipe or invent success. DeploymentManager.Recover and the
+// real operation store prove cancelled versus unknown cleanup outcomes.
+func TestManagedBuildRecoveryNoReplay(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "confirmed", true: "unconfirmed"}[fail], func(t *testing.T) {
+			h, env, conn, p := buildLifecycleFixture(t)
+			if fail {
+				p.cleanupErr = errors.New("injected termination uncertainty")
+			}
+			now := time.Now().UnixMilli()
+			op, _, err := h.opStore.AdmitOperation(environments.EnvironmentOperation{OperationID: "op_recover", AccountScopeID: "account", WorkspaceID: "workspace", Action: environments.OperationActionBuild, EnvironmentID: env.ID, BuildConnectionID: conn.ID, BuildDefinition: env.Build, Status: environments.OperationStatusQueued, CreatedAt: now, ObservedAt: now, Deadline: now + 60000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			op, err = h.opStore.TransitionOperation(pebblestore.OperationTransitionInput{AccountScopeID: "account", WorkspaceID: "workspace", OperationID: op.OperationID, ExpectedRevision: op.Revision, TargetStatus: environments.OperationStatusRunning, ObservedAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := h.manager.Recover(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := h.opStore.Get("account", "workspace", op.OperationID)
+			want := environments.OperationStatusCancelled
+			if fail {
+				want = environments.OperationStatusUnknown
+			}
+			if err != nil || !found || got.Status != want || got.Result.Build != nil || p.calls != 0 || p.cleanupCalls != 1 {
+				t.Fatalf("recovery: %+v calls=%d cleanup=%d err=%v", got, p.calls, p.cleanupCalls, err)
+			}
+		})
 	}
 }
