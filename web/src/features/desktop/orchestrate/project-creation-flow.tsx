@@ -85,11 +85,10 @@ export function ProjectCreationFlow({ project, onSaved, onOpen, onCancel }: {
     autoOpen.current = true
     void runtime.create(state.draft ?? { client_request_id: `desktop-project:${crypto.randomUUID()}`, name: name.trim(), description: description.trim(), workspaces: chosen })
   }
-  const generation = state.project?.context_generation
   const controlClass = 'grid gap-3 rounded-2xl border border-[var(--app-border)] p-4'
   return <section aria-label="Project creation" className="min-h-0 flex-1 overflow-y-auto p-6 space-y-5">
     <header className="flex items-center justify-between gap-4"><h1 className="text-xl font-semibold">{state.project ? state.project.name : 'Create your project'}</h1><Button variant="outline" onClick={onCancel}>Back to projects</Button></header>
-    <p>Select registered folders, confirm, then Swarm generates project.md before opening your project chat.</p>
+    <p>Select registered folders, confirm, then Swarm personalizes your project context before opening your project chat. Zero files are written to disk.</p>
     {state.error && <p role="alert">{state.error}</p>}
     {!state.project ? <>
       <fieldset disabled={locked || adding} className={controlClass}>
@@ -109,23 +108,220 @@ export function ProjectCreationFlow({ project, onSaved, onOpen, onCancel }: {
       {confirming || state.draft ? <div className={controlClass}>
         <h2>Confirm project</h2><p>{state.draft?.name || name} · {(state.draft?.workspaces || chosen).length} folders</p>
         <ul>{(state.draft?.workspaces || chosen).map(w => <li key={w.workspace_id} className="break-all">{w.path}</li>)}</ul>
-        <p>Swarm will read bounded workspace documentation and structure to generate project.md with your configured provider. No Git initialization or source changes.</p>
-        <Button disabled={state.busy || adding || !name.trim() || !chosen.length} onClick={create}>{state.busy ? 'Creating project…' : state.draft ? 'Retry project creation' : 'Create project and generate context'}</Button>
+        <p>{(state.draft?.workspaces || chosen).length > 0 ? "Swarm AI Router will synthesize project context directly into Swarm's durable Pebble database. Zero files will be written to disk." : "Creating project without attached workspaces. You can attach workspaces at any time from project settings."}</p>
+        <Button disabled={state.busy || adding || !name.trim()} onClick={create}>{state.busy ? 'Creating project…' : state.draft ? 'Retry project creation' : 'Create project and generate context'}</Button>
         {!locked && <Button variant="outline" onClick={() => setConfirming(false)}>Back</Button>}
-      </div> : <Button disabled={adding || !name.trim() || !chosen.length} onClick={() => setConfirming(true)}>Review project</Button>}
-    </> : <div className={controlClass}>
-      <h2>Project context · project.md</h2>
-      <p role="status">{generation?.status === 'ready' ? 'Project context ready' : generation?.status === 'failed' ? 'Context generation failed' : 'Generating project context…'}</p>
-      {generation?.error && <p role="alert">{generation.error}</p>}
-      {generation?.router_alert && <p role="status">{generation.router_alert}</p>}
-      {generation?.status === 'ready' ? <>
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words text-sm">{state.project.project_context}</pre>
-        <Button disabled={state.busy} onClick={() => { void runtime.open().then(id => { if (id && mounted.current) openRef.current(runtime.snapshot().project!, id) }) }}>{state.busy ? 'Opening chat…' : 'Continue to project chat'}</Button>
-      </> : <>
-        <p>You can return from the project list. Retry resumes this project, not a duplicate. For provider failures, check credentials and model settings before retrying.</p>
-        <Button disabled={state.busy} onClick={() => void runtime.retry()}>{state.busy ? 'Resuming…' : 'Retry / resume generation'}</Button>
-      </>}
-      <Button variant="outline" disabled={state.busy} onClick={() => void runtime.refresh()}>Refresh status</Button>
-    </div>}
+      </div> : <div className="flex items-center gap-3">
+        <Button disabled={adding || !name.trim()} onClick={() => setConfirming(true)}>Review project</Button>
+        {!chosen.length && (
+          <Button variant="outline" disabled={adding || !name.trim() || state.busy} onClick={create}>
+            Skip workspaces &amp; Talk to Swarm
+          </Button>
+        )}
+      </div>}
+    </> : <PersonalizingCard
+      project={state.project}
+      busy={state.busy}
+      onRetry={() => void runtime.retry()}
+      onRefresh={() => void runtime.refresh()}
+      onOpen={() => { void runtime.open().then(id => { if (id && mounted.current) openRef.current(runtime.snapshot().project!, id) }) }}
+    />}
   </section>
+}
+
+const TICKER_MESSAGES = [
+  '✦ Synthesizing architecture & rules for Swarm…',
+  '✦ Scanning repository structure & source files…',
+  '✦ Ingesting AGENTS.md instructions for orchestrator…',
+  '✦ Creating durable project context in Pebble store…',
+  '✦ Tailoring AI assistance specifically for this codebase…',
+]
+
+const SYNTHESIS_STAGES = [
+  'Registering project & workspaces in Pebble store',
+  'AI Router scanning workspace structure & AGENTS.md',
+  'Synthesizing architecture, conventions & instructions',
+  'Preparing personalized Swarm orchestrator context',
+]
+
+function PersonalizingCard({
+  project,
+  busy,
+  onRetry,
+  onRefresh,
+  onOpen,
+}: {
+  project: CreationProject
+  busy: boolean
+  onRetry: () => void
+  onRefresh: () => void
+  onOpen: () => void
+}) {
+  const generation = project.context_generation
+  const isReady = generation?.status === 'ready'
+  const isFailed = generation?.status === 'failed'
+  const [progress, setProgress] = useState(20)
+  const [tickerIndex, setTickerIndex] = useState(0)
+
+  useEffect(() => {
+    if (isReady) {
+      setProgress(100)
+      return
+    }
+    if (isFailed) return
+
+    const timer = setInterval(() => {
+      setProgress((prev) => {
+        if (prev >= 92) return 92
+        const delta = Math.max(1, Math.round((92 - prev) * 0.15))
+        return Math.min(92, prev + delta)
+      })
+    }, 450)
+
+    const tickerTimer = setInterval(() => {
+      setTickerIndex((prev) => (prev + 1) % TICKER_MESSAGES.length)
+    }, 2400)
+
+    return () => {
+      clearInterval(timer)
+      clearInterval(tickerTimer)
+    }
+  }, [isReady, isFailed])
+
+  const stage = isReady ? 5 : progress < 35 ? 1 : progress < 65 ? 2 : progress < 90 ? 3 : 4
+
+  return (
+    <div className="grid gap-4 rounded-2xl border border-[var(--app-border)] p-6 bg-[color-mix(in_oklab,var(--app-surface)_92%,black)]">
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="size-9 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] grid place-items-center font-bold text-sm text-[var(--app-primary)]">
+            {isReady ? '✓' : '✦'}
+          </div>
+          <div>
+            <h2 className="text-lg font-bold tracking-tight text-[var(--app-text)]">
+              Personalizing your Project..
+            </h2>
+            <p className="text-xs text-[var(--app-text-muted)]">
+              Project: <span className="font-semibold text-[var(--app-text)]">{project.name}</span>
+            </p>
+          </div>
+        </div>
+        <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-0.5 text-[11px] font-mono font-medium text-[var(--app-text-muted)]">
+          {isReady ? 'Ready' : isFailed ? 'Failed' : `${progress}%`}
+        </span>
+      </div>
+
+      <div role="status" className="sr-only">
+        {isReady ? 'Project context ready' : isFailed ? 'Context generation failed' : 'Generating project context…'}
+      </div>
+
+      {!isReady && !isFailed && (
+        <>
+          <div className="grid gap-1.5">
+            <div className="flex items-center justify-between text-xs text-[var(--app-text-muted)]">
+              <span>Personalizing context…</span>
+              <span className="font-mono">{progress}%</span>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-[var(--app-surface-subtle)] border border-[var(--app-border)]">
+              <div
+                className="h-full bg-[var(--app-primary)] transition-all duration-300 ease-out"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="grid gap-2 rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs">
+            <div className="font-semibold uppercase tracking-wider text-[var(--app-text-muted)] text-[10px]">
+              AI Synthesis Stages
+            </div>
+            {SYNTHESIS_STAGES.map((label, idx) => {
+              const isDone = stage > idx + 1 || (idx === 0)
+              const isCurrent = stage === idx + 1
+              return (
+                <div key={label} className="flex items-center gap-2">
+                  <span className={isDone ? 'text-emerald-400 font-bold' : isCurrent ? 'text-[var(--app-primary)] animate-pulse' : 'text-slate-500'}>
+                    {isDone ? '✓' : isCurrent ? '✦' : '○'}
+                  </span>
+                  <span className={isDone ? 'text-[var(--app-text)] font-medium' : isCurrent ? 'text-[var(--app-text)] font-semibold' : 'text-[var(--app-text-muted)]'}>
+                    {label}
+                  </span>
+                  {isCurrent && <span className="ml-auto text-[10px] text-[var(--app-primary)] animate-pulse">active…</span>}
+                </div>
+              )
+            })}
+          </div>
+
+          <div className="rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-3 py-2 text-xs text-[var(--app-text-muted)] font-mono flex items-center gap-2 overflow-hidden">
+            <span className="text-[var(--app-primary)] inline-block animate-spin text-sm">⚙</span>
+            <span className="truncate">{TICKER_MESSAGES[tickerIndex]}</span>
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-xs text-[var(--app-text-muted)]">
+              Context stored strictly in Pebble store · Zero files written to disk
+            </p>
+            <Button variant="outline" size="sm" disabled={busy} onClick={onRefresh}>
+              Refresh status
+            </Button>
+          </div>
+        </>
+      )}
+
+      {isFailed && (
+        <div className="grid gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4">
+          <p role="alert" className="text-xs text-rose-300">
+            {generation?.error || 'Context generation failed'}
+          </p>
+          {generation?.router_alert && (
+            <p role="status" className="text-xs text-amber-300">
+              {generation.router_alert}
+            </p>
+          )}
+          <p className="text-xs text-[var(--app-text-muted)]">
+            You can return from the project list. Retry resumes this project, not a duplicate. For provider failures, check credentials and model settings before retrying.
+          </p>
+          <div className="flex items-center gap-3">
+            <Button disabled={busy} onClick={onRetry}>
+              {busy ? 'Resuming…' : 'Retry / resume generation'}
+            </Button>
+            <Button variant="outline" disabled={busy} onClick={onRefresh}>
+              Refresh status
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {isReady && (
+        <div className="grid gap-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-5">
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">✨</span>
+            <div>
+              <h3 className="text-sm font-bold text-white">Project Ready: {project.name}</h3>
+              <p className="text-xs text-emerald-300/80">
+                Personalized project context stored cleanly in Pebble store.
+              </p>
+            </div>
+          </div>
+          {project.project_context && (
+            <details className="text-xs text-[var(--app-text-muted)]">
+              <summary className="cursor-pointer font-medium hover:text-[var(--app-text)]">
+                View synthesized project context
+              </summary>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-black/50 p-3 font-mono text-[11px] text-slate-300">
+                {project.project_context}
+              </pre>
+            </details>
+          )}
+          <div className="flex items-center gap-3 pt-1">
+            <Button disabled={busy} onClick={onOpen} className="font-semibold">
+              {busy ? 'Opening chat…' : 'Continue to project chat'}
+            </Button>
+            <Button variant="outline" disabled={busy} onClick={onRefresh}>
+              Refresh status
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }

@@ -6043,7 +6043,7 @@ export function OrchestrateView({
               <div>
                 <h2 className="text-base font-bold text-white">Project Charter: {selectedProject?.name}</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Authoritative project.md context injected into Swarm Orchestrator prompt
+                  Authoritative project context injected into Swarm Orchestrator prompt
                 </p>
               </div>
               <div className="flex items-center gap-2">

@@ -51,7 +51,7 @@ interface DesktopOnboardingGateProps {
 }
 
 function deriveInitialStep(status: DesktopOnboardingStatus): OnboardingStep {
-  return status.identity.bootstrapped && status.config.swarmName ? 'provider' : 'identity'
+  return status.identity.bootstrapped ? 'provider' : 'identity'
 }
 
 function apiCompatibleMethods(provider: ProviderStatus): AuthMethod[] {
@@ -449,12 +449,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const persistIdentity = async () => {
     const normalizedUsername = username.trim()
-    const normalizedName = swarmName.trim()
+    const normalizedName = swarmName.trim() || 'default'
     if (!status.identity.bootstrapped && !normalizedUsername) {
       throw new Error('Username is required for the product owner identity.')
-    }
-    if (!normalizedName) {
-      throw new Error('Swarm name is required.')
     }
     // A previous request can succeed even if its response was lost.
     const current = await onReload()
@@ -511,9 +508,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const handleIdentityContinue = async () => {
     if (pendingActionRef.current !== null) return
-    const invalid = !status.identity.bootstrapped && !username.trim() ? 'desktop-onboarding-username' : !swarmName.trim() ? 'desktop-onboarding-swarm-name' : null
+    const invalid = !status.identity.bootstrapped && !username.trim() ? 'desktop-onboarding-username' : null
     if (invalid) {
-      setError(invalid === 'desktop-onboarding-username' ? 'Your name is required.' : 'Swarm name is required.')
+      setError('Your name is required.')
       document.getElementById(invalid)?.focus()
       return
     }
@@ -730,18 +727,18 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-swarm-name">
-                      Name your Swarm.
+                      Name your Swarm (optional).
                     </label>
                     <Input
                       id="desktop-onboarding-swarm-name"
                       autoFocus={Boolean(status.identity.username)}
                       value={swarmName}
                       onChange={(event) => setSwarmName(event.target.value)}
-                      placeholder="Studio MacBook"
+                      placeholder="default"
                       disabled={submitting}
                     />
                     <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                      This is the device label Swarm shows in launcher screens. It does not change your username.
+                      This is the device label Swarm shows in launcher screens. It defaults to &apos;default&apos; if omitted.
                     </p>
                   </div>
 
