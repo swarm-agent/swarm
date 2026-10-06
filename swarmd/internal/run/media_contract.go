@@ -57,7 +57,11 @@ type SessionMediaContractInput struct {
 	AgentAuthorized bool
 	ExecutionMode   string
 	WorkspaceScope  string
-	SessionScope    string
+
+	// ProjectScope is supplied only after durable project-conversation ownership validation.
+	// It permits retained media access, never filesystem access.
+	ProjectScope string
+	SessionScope string
 }
 
 func ResolveMediaAdapterDeclaration(ctx context.Context, providerID string, runner provideriface.Runner) provideriface.MediaAdapterDeclaration {
@@ -91,6 +95,7 @@ func CompileSessionMediaContract(input SessionMediaContractInput) provideriface.
 		ExecutionMode:         strings.ToLower(strings.TrimSpace(input.ExecutionMode)),
 		WorkspaceScope:        strings.TrimSpace(input.WorkspaceScope),
 		SessionScope:          strings.TrimSpace(input.SessionScope),
+		ProjectScope:          strings.TrimSpace(input.ProjectScope),
 	}
 	if input.Catalog != nil {
 		contract.SnapshotID = strings.TrimSpace(input.Catalog.SourceSnapshotID)
@@ -145,8 +150,8 @@ func CompileSessionMediaContract(input SessionMediaContractInput) provideriface.
 	if contract.ExecutionMode != "plan" && contract.ExecutionMode != "auto" {
 		deny("execution mode does not admit conversational media")
 	}
-	if contract.WorkspaceScope == "" || contract.SessionScope == "" {
-		deny("workspace or session scope is unresolved")
+	if (contract.WorkspaceScope == "" && contract.ProjectScope == "") || contract.SessionScope == "" {
+		deny("workspace/project or session scope is unresolved")
 	}
 
 	catalogInputs := map[string]pebblestore.ModelCatalogMediaDirection{}

@@ -988,11 +988,17 @@ func (s *Service) executeProviderManagedMediaInspect(ctx context.Context, config
 	if err != nil {
 		return result, err
 	}
+	projectScope := pebblestore.ProjectConversationID(session)
+	if projectScope != "" {
+		if err := s.sessions.Store().ValidateProjectConversation(session, principal.AccountScopeID, principal.UserID); err != nil {
+			return result, err
+		}
+	}
 	currentContract := CompileSessionMediaContract(SessionMediaContractInput{
 		ProviderID: providerID, Model: modelID, Catalog: catalog, CatalogMeta: meta,
 		Adapter:         ResolveMediaAdapterDeclaration(ctx, providerID, runner),
 		AgentAuthorized: AgentProfileAuthorizesMedia(config.agentProfile), ExecutionMode: firstNonEmptyString(config.mediaExecutionMode, config.sessionMode),
-		WorkspaceScope: config.workspacePath, SessionScope: config.sessionID,
+		WorkspaceScope: config.workspacePath, SessionScope: config.sessionID, ProjectScope: projectScope,
 	})
 	if currentContract.Hash != config.mediaContract.Hash {
 		return result, errors.New("media_inspect call is stale or forged for the current run contract")

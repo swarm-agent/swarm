@@ -91,6 +91,7 @@ type SessionMediaContract struct {
 	ExecutionMode         string                    `json:"execution_mode,omitempty"`
 	WorkspaceScope        string                    `json:"workspace_scope,omitempty"`
 	SessionScope          string                    `json:"session_scope,omitempty"`
+	ProjectScope          string                    `json:"project_scope,omitempty"`
 	Capabilities          []MediaContractCapability `json:"capabilities,omitempty"`
 	DenialReasons         []string                  `json:"denial_reasons,omitempty"`
 	Hash                  string                    `json:"hash"`
