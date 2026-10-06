@@ -883,9 +883,11 @@ func applyProjectLifecycleFixture(server *Server, input sessionruntime.SessionMu
 // remains covered below; it is not the default Orchestrator routing contract.
 
 func TestProjectTask_ReconcilePlanningRun_PlanAuthored_TransitionsToPendingApproval(t *testing.T) {
-	// Requirement: When a plan agent session completes with an active plan,
-	// reconcileProjectTaskRunLifecycle transitions the task from 'planning'
-	// to 'pending_approval' with PlanBinding and PlanDocument, emitting project.updated.
+	// Purpose: explicit backend Plan compatibility requires canonical publication,
+	// not an active session plan or a stale terminal callback, before task approval.
+	// SubmitProjectTaskStructuredPlan owns the atomic binding; reconciliation must
+	// preserve it. This temporary API/store layer asserts the binding, receipt,
+	// invalidation and zero execution admissions, plus the unpublished negative case.
 	server, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
 	accountID := testPrincipal().AccountScopeID
 	now := time.Now().UnixMilli()
@@ -945,27 +947,61 @@ func TestProjectTask_ReconcilePlanningRun_PlanAuthored_TransitionsToPendingAppro
 	}
 
 	planDoc := &pebblestore.SessionPlanDocument{
-		ID:    "plan-v1",
-		Title: "Engine Architecture Plan",
-		Info:  pebblestore.SessionPlanInfo{Goal: "Architect engine"},
+		ID:           "plan-v1",
+		Title:        "Engine Architecture Plan",
+		Info:         pebblestore.SessionPlanInfo{Goal: "Architect engine"},
+		Requirements: []pebblestore.SessionPlanRequirement{{ID: "core-tested", Text: "Tests pass", CheckpointID: "cp-1"}},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
 			{ID: "cp-1", Order: 1, Title: "Core Engine", Tasks: []string{"Build core"}, AcceptanceCriteria: []string{"Tests pass"}},
 		},
 	}
+	// An active session plan alone must not manufacture a reviewed task binding.
+	unpublishedDoc := *planDoc
+	unpublishedDoc.ID = "unpublished"
 	if err := sessionStore.PutPlan(pebblestore.SessionPlanSnapshot{
-		ID:             "plan-v1",
-		SessionID:      sessID,
-		UserID:         testPrincipal().UserID,
-		AccountScopeID: accountID,
-		Version:        1,
-		Document:       planDoc,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		ID: "unpublished", SessionID: sessID, UserID: testPrincipal().UserID,
+		AccountScopeID: accountID, Version: 1, Document: &unpublishedDoc,
+		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := sessionStore.SetActivePlan(sessID, "plan-v1", now); err != nil {
+	if err := sessionStore.SetActivePlan(sessID, "unpublished", now); err != nil {
 		t.Fatal(err)
+	}
+	runID := task.ExecutionRunID()
+	recordProjectPlanningTerminal(t, server, sessID, runID, pebblestore.V3RunIntentCompleted, now)
+	if err := server.reconcileProjectTaskRunLifecycle(sessionV3ExecutorJob{
+		Principal: testPrincipal(), SessionID: sessID, RunID: runID,
+	}, sessionruntime.RunIntentCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+	unpublished, found, err := sessionStore.GetProjectTask(accountID, proj.ID, taskID)
+	if err != nil || !found || unpublished.Status != "failed" || unpublished.PlanBinding != nil || unpublished.PlanDocument != nil || unpublished.LastError != "Planning run ended without publishing a durable task plan" {
+		t.Fatalf("active plan incorrectly qualified as task publication: %+v %v", unpublished, err)
+	}
+	for len(outboxChan) > 0 {
+		<-outboxChan
+	}
+	lifecycle := sessionruntime.NewPlanLifecycleService(server.sessions)
+	published, err := lifecycle.SubmitProjectTaskStructuredPlan(sessionruntime.ProjectTaskPlanSubmissionInput{
+		AccountScopeID: accountID, UserID: testPrincipal().UserID,
+		ProjectID: proj.ID, TaskID: taskID, SessionID: sessID,
+		WorkspacePath: t.TempDir(), Document: planDoc,
+		ApplySessionMutation: server.applySessionV3PrimaryMutation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.Receipt == "" {
+		t.Fatal("publication returned no exact definition receipt")
+	}
+	select {
+	case rec := <-outboxChan:
+		if rec.Event.EventType != pebblestore.ProjectUpdatedEventType {
+			t.Fatalf("expected project.updated publication invalidation, got %q", rec.Event.EventType)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for project.updated publication invalidation")
 	}
 
 	for len(outboxChan) > 0 {
@@ -975,7 +1011,7 @@ func TestProjectTask_ReconcilePlanningRun_PlanAuthored_TransitionsToPendingAppro
 	job := sessionV3ExecutorJob{
 		Principal: testPrincipal(),
 		SessionID: sessID,
-		RunID:     "run-plan-1",
+		RunID:     runID,
 	}
 
 	if err := server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, ""); err != nil {
@@ -989,26 +1025,53 @@ func TestProjectTask_ReconcilePlanningRun_PlanAuthored_TransitionsToPendingAppro
 	if updatedTask.Status != "pending_approval" {
 		t.Fatalf("expected status 'pending_approval', got %q", updatedTask.Status)
 	}
-	if updatedTask.PlanBinding == nil || updatedTask.PlanBinding.PlanID != "plan-v1" {
+	if updatedTask.PlanBinding == nil || updatedTask.PlanBinding.PlanID != "plan-v1" || updatedTask.PlanBinding.Receipt != published.Receipt || updatedTask.PlanBinding.DefinitionRevision != 1 {
 		t.Fatalf("expected PlanBinding for plan-v1, got %#v", updatedTask.PlanBinding)
 	}
 	if updatedTask.PlanDocument == nil || updatedTask.PlanDocument.Title != "Engine Architecture Plan" {
 		t.Fatalf("expected PlanDocument populated, got %#v", updatedTask.PlanDocument)
 	}
 
-	select {
-	case rec := <-outboxChan:
-		if rec.Event.EventType != pebblestore.ProjectUpdatedEventType {
-			t.Fatalf("expected event type %q, got %q", pebblestore.ProjectUpdatedEventType, rec.Event.EventType)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for project.updated outbox invalidation")
+	// Terminal callbacks cannot revise an already published review or admit work.
+	beforeRevision := updatedTask.Revision
+	if err := server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentCompleted, ""); err != nil {
+		t.Fatal(err)
+	}
+	again, _, err := sessionStore.GetProjectTask(accountID, proj.ID, taskID)
+	if err != nil || again.Revision != beforeRevision || again.Status != "pending_approval" {
+		t.Fatalf("duplicate callback changed published review: %+v %v", again, err)
+	}
+	intents, err := sessionStore.ListRunIntents(sessID, 10)
+	if err != nil || len(intents) != 1 || intents[0].RunID != runID || intents[0].Status != pebblestore.V3RunIntentCompleted {
+		t.Fatalf("publication admitted execution: %+v %v", intents, err)
+	}
+}
+
+// Purpose: canonical run-state freshness is required by planning reconciliation.
+// This helper crosses the same mutation boundary as the executor, not a direct
+// run-state write, so missing/stale callbacks remain meaningful negative cases.
+func recordProjectPlanningTerminal(t *testing.T, server *Server, sessionID, runID, status string, now int64) {
+	t.Helper()
+	key := "planning-terminal:" + runID
+	if _, err := applyProjectLifecycleFixture(server, sessionruntime.SessionMutationInput{
+		SessionID: sessionID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID,
+		ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key,
+		Kind: sessionruntime.SessionMutationRecordRunIntent,
+		RunIntent: &pebblestore.V3SessionRunIntent{
+			SessionID: sessionID, RunID: runID, Status: status,
+			UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID,
+			CreatedAt: now, UpdatedAt: now + 1,
+		}, NowUnixMs: now + 1,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestProjectTask_ReconcilePlanningRun_Failure_TransitionsToFailed(t *testing.T) {
-	// Requirement: When a plan agent session fails or cancels, reconcileProjectTaskRunLifecycle
-	// transitions the task from 'planning' to 'failed' with LastError.
+	// Purpose: reconcileProjectTaskRunLifecycle must fail only the current owned
+	// planning run. Missing/stale callbacks must not mutate the task, and a real
+	// failed terminal state must preserve its error without publishing a binding.
+	// The temporary API/store fixture is the narrowest current-run authority layer.
 	server, _, dbStore := newWorkspaceOverviewTopologyTestServer(t)
 	accountID := testPrincipal().AccountScopeID
 	now := time.Now().UnixMilli()
@@ -1066,9 +1129,32 @@ func TestProjectTask_ReconcilePlanningRun_Failure_TransitionsToFailed(t *testing
 	job := sessionV3ExecutorJob{
 		Principal: testPrincipal(),
 		SessionID: sessID,
-		RunID:     "run-plan-fail-1",
+		RunID:     task.ExecutionRunID(),
 	}
 
+	// Missing durable state is not authority to fail a planning task.
+	if err := server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentFailed, "stale error"); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, found, err := sessionStore.GetProjectTask(accountID, proj.ID, taskID)
+	if err != nil || !found || unchanged.Status != "planning" || unchanged.LastError != "" || unchanged.PlanBinding != nil {
+		t.Fatalf("missing run state changed task: %+v %v", unchanged, err)
+	}
+	recordProjectPlanningTerminal(t, server, sessID, job.RunID, pebblestore.V3RunIntentFailed, now)
+	stale := job
+	stale.RunID = "stale-run"
+	if err := server.reconcileProjectTaskRunLifecycle(stale, sessionruntime.RunIntentFailed, "stale error"); err != nil {
+		t.Fatal(err)
+	}
+	foreign := job
+	foreign.Principal.AccountScopeID = "foreign-account"
+	if err := server.reconcileProjectTaskRunLifecycle(foreign, sessionruntime.RunIntentFailed, "foreign error"); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, found, err = sessionStore.GetProjectTask(accountID, proj.ID, taskID)
+	if err != nil || !found || unchanged.Status != "planning" || unchanged.LastError != "" || unchanged.PlanBinding != nil {
+		t.Fatalf("stale or foreign callback changed task: %+v %v", unchanged, err)
+	}
 	if err := server.reconcileProjectTaskRunLifecycle(job, sessionruntime.RunIntentFailed, "Model quota exceeded"); err != nil {
 		t.Fatalf("reconcile failed: %v", err)
 	}
@@ -1082,6 +1168,9 @@ func TestProjectTask_ReconcilePlanningRun_Failure_TransitionsToFailed(t *testing
 	}
 	if updatedTask.LastError != "Model quota exceeded" {
 		t.Fatalf("expected LastError 'Model quota exceeded', got %q", updatedTask.LastError)
+	}
+	if updatedTask.PlanBinding != nil || updatedTask.PlanDocument != nil {
+		t.Fatalf("failed run published a review: %+v", updatedTask)
 	}
 }
 

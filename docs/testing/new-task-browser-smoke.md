@@ -98,3 +98,152 @@ timeout --kill-after=10s 240s node scripts/run-new-task-smoke-isolated.mjs \
 Safe output uses fixed step/error identifiers and HTTP status only, no API bodies, URLs, tokens or raw Playwright diagnostics. Internal process output is capped at 64 KiB; bootstrap 15 seconds, readiness 25 seconds, browser 120 seconds, wrapper hard deadline 180 seconds, outer containment 240 seconds. Processes are terminated/escalated and reaped; pending task/session records remain intact until the wrapper disposes its **entire exact unique daemon root**. No backend deletion guards are weakened. Cleanup errors do not replace the first assertion; any cleanup failure prevents final PASS. External fixture/build/browser/install inputs are never deleted by the wrapper; parent removes those exact run-owned paths or disposes the managed deployment at release.
 
 Evidence must include exact candidate SHA, deployment receipt, command exit code **zero**, and affirmative `SMOKE_ISOLATED_PASS tests=1 cleanup=disposed`. Internally the browser runner requires private success IPC **plus nonzero TAP tests**, all passed, zero failed/cancelled/skipped/todo. Early exit, missing marker, readiness-only output, HTTP failure, assertion, deadline, interrupted or cleanup failure is **nonzero**. Never count `ISOLATED_DAEMON_READY`, a successful build or an auth token as a browser pass. Capture no storage state/traces/screenshots/auth bodies; keep exact durable IDs out of public tracked evidence. Reload assertions are not pixel/aesthetic inspection.
+
+## PR selection and qualification consumer contract
+
+`bash scripts/run-orchestrator-pr-checks.sh` is the explicit hermetic PR entrypoint:
+existing `run-critical-tests.sh fast` (including supported direct session, write,
+auth/hydration/realtime, backend and TUI security), runner-protocol unit tests,
+then the existing seven-file Orchestrator selection. `web` also exposes `test:pr`
+for frontend-only critical + selection + Orchestrator. No live/browser/provider
+journey is added to a hermetic tier. The critical manifest is unchanged; promote
+new assertions only after parent repeated focused runs and independent first/second
+assertion reviews. No CI workflow is changed by this product-side contract.
+
+### Inventory / deliberate reuse
+
+- `web/scripts/orchestrator-test-suite.mjs`: seven reviewed deterministic cases;
+  no missing happy path requires another JSX/source-string suite.
+- `scripts/run-new-task-smoke-isolated.mjs`, `run-new-task-smoke.mjs`, their unit
+  tests, `web/e2e/new-task-smoke.test.mjs`, `swarmd/tests/newtaskbootstrap`: actual
+  New Task UI → backend creation → duplicate guard → pending/zero intents/reload.
+  `orchestrator-pr-browser.mjs` adapts this unchanged owned lifecycle, not API-only proof.
+- `project_swarm_routing_test.go`: Auto/pending Swarm, direct Coder admission,
+  explicit Plan compatibility and structured refinement. Planning reconciliation
+  fixtures now use current-run evidence and `SubmitProjectTaskStructuredPlan`;
+  an active session plan alone is explicitly insufficient, and stale callbacks
+  cannot fail the current planning task.
+- `basic-plan-auto.mjs`, `task-program-worktrees.mjs`: supported direct session /
+  delegation checks retained separately, not mislabelled Orchestrator UI proofs.
+- `artifact-v3-edit-repair.mjs`: reuse the maintained deadline/progress observer.
+  Existing `designer-artifact-flow.mjs`, `video-studio-multi-turn.mjs`,
+  `image-swarm-benchmark.mjs`, `video-benchmark.mjs`, project media/design suites
+  and artifact capability/tool registration remain available for their contracts.
+  The old benchmark runners are **not** PR adapters: they mutate assignments,
+  hardcode defaults or run multiple generations. The new runner adds only single
+  configured-account image/video/audio happy paths; no benchmark/latency claims.
+
+### Paid attach-only runner
+
+Run from the exact product candidate checkout with Node 24 and a parent-acquired
+managed environment lease. Parent verifies the daemon binary/build/deployment
+receipt matches that same candidate; Git verification inside the runner checks
+its HEAD and clean checkout only, not a remote daemon's identity. The daemon must already have
+an authenticated token, canonical configured models, runnable providers and an
+explicit saved authorized source binding. No provisioning, onboarding, credential
+bootstrap, workspace registration, model settings or permission mutation occurs.
+Endpoint is loopback (or an approved existing tunnel), token **environment only**.
+Choose exactly one scenario; no default/all selector or model/provider override.
+
+<copy label="One live scenario (explicit paid selection)">
+node scripts/runners/orchestrator-pr.mjs \
+  --api-url "$RUNNER_API_URL" --workspace-path "$RUNNER_SOURCE" \
+  --scenario session-api --timeout-ms 180000 \
+  --candidate-revision "$CANDIDATE_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+  --output "$TMPDIR/session-api-receipt.json"
+</copy>
+
+Required environment: absolute existing writable `TMPDIR`, nonempty
+`SWARM_RUNNER_TOKEN`. Other inputs have no environment defaults. Run identity:
+1–200 ASCII letters/digits/underscore/dot/colon/hyphen; candidate: full lowercase
+40-hex SHA. Output: fresh canonical absolute path directly below TMPDIR or its
+canonical subdirectory (exclusive create, mode 0600; existing/symlink targets fail).
+`--timeout-ms`: 30,000–900,000. Scenarios: `session-api`, `orchestrator-chat`,
+`image`, `video`, `audio`. `task-routing.mjs` is a stable adapter accepting these
+**same** arguments; old `new-router`, `existing-session`, `all`, `--provider`,
+`--action-model`, `--plan-model` inputs fail before paid work, with nonzero exit.
+Downstream swarmcrit must stop sending those retired inputs.
+
+`session-api` creates an owned Auto session, sends one actual provider request,
+waits for its exact durable completed run, asserts user/assistant persistence and
+rehydrates history again. `orchestrator-chat` creates one owned project conversation,
+sends an actual AI request to propose one Big Swarm task without approval, and
+requires run-scoped `session.tool.completed` manage_projects proposal output plus
+matching durable pending task/source and zero execution intents. It never POSTs
+`/tasks` directly to manufacture AI evidence. Media sends one creative request to
+an owned project conversation; requires one generate tool completion, canonical
+image/audio capability discovery and exact token, no provider/model overrides,
+one ready same-session four-field reference and matching MIME/size/SHA-256 bytes.
+A missing/denied capability, unavailable redacted tool output, tool/run failure,
+stall, partial response or missing exact reference cannot qualify. These checks
+are transport/content integrity proofs, not visual/audio quality judgments.
+
+Bounds: one explicit scenario, one user send, at most 12 completed tool calls,
+1,800 HTTP calls, 15-second per-request deadline within the whole-run deadline,
+2 MiB per JSON response and 64 MiB aggregate metadata, 64 MiB media maximum.
+The progress observer polls durable hydration only while this explicitly selected
+qualification run is pending, aborts after 90 seconds without snapshot progress,
+and never sleep-stubs a workload. Tool-start observation rejects unexpected
+mutation/delegation routes and repeated generation, but is not a permission
+sandbox: a provider tool may already be admitted before hydration sees it. Use an
+isolated managed deployment with existing canonical permissions; never attach
+qualification to production or rely on prompts for authorization. This is not production Git/session freshness
+polling. No subprocess agent fan-out is launched by the runner. On failure it
+requests stop only for its exact admitted session/run/runtime (5-second bound).
+Owned project/task/session/artifact records are retained; no task DELETE or
+unrelated account/session/project cleanup. Parent owns managed deployment release
+and disposal and outer process containment; use an outer timeout exceeding the
+chosen deadline by 15 seconds. SIGINT/SIGTERM are propagated to exact-run stop.
+
+### Browser adapter argv
+
+Same prerequisites, offline fixture and denied provider egress described above.
+No token is passed to this adapter; offline bootstrap creates its exclusively owned
+account. It accepts the existing wrapper inputs plus candidate/run/output:
+
+<copy label="New Task browser receipt adapter">
+node scripts/runners/orchestrator-pr-browser.mjs \
+  --candidate-revision "$CANDIDATE_SHA" --run-id "$QUALIFICATION_RUN_ID" \
+  --output "$TMPDIR/new-task-browser-receipt.json" \
+  --daemon-bin "$SMOKE_BUILD_ROOT/swarmd" --bootstrap-bin "$SMOKE_BUILD_ROOT/newtaskbootstrap" \
+  --desktop-url http://127.0.0.1:15655/ --api-port 17881 --peer-port 17882 \
+  --fixture-repo "$FIXTURE_REPO" --model-settings-file "$SMOKE_MODEL_SETTINGS_FILE" \
+  --isolated-no-provider-egress --timeout-ms 120000
+</copy>
+
+`new-task-browser` is a receipt scenario only; select it through this separate
+adapter, never through the paid API runner. Existing wrapper validation, private
+nonzero-browser assertion protocol and exact owned daemon disposal remain the
+success authority. Readiness/build/process receipts alone do not set PASS.
+
+### JSON receipt schema / consumer rules
+
+Both adapters emit one private JSON **file**, never JSON mixed with stdout logs.
+Schema: `swarm.orchestrator-pr.v1`; fields:
+`scenario`, `candidate_revision`, `run_id`, `status` (`PASS|FAIL|NOT_RUN`),
+`native_exit` (0 or 2), `assertion_count`, ordered `assertions` (`name`, `passed`),
+`failures` (bounded safe identifiers), `evidence` (owned IDs / retained flag /
+exact artifact reference with MIME/size/digest; no tokens or raw user/tool output).
+Required assertion names are exported by `requiredAssertions(scenario)` in
+`orchestrator-pr.mjs`. Consumer must call the equivalent of
+`validateReceipt(receipt, {scenario, candidate, runID}, observedProcessExit)`:
+matching schema/identity, observed exit **0**, native_exit **0**, status **PASS**,
+zero failures, exact nonzero count and every ordered required name passed.
+No receipt, malformed JSON, identity mismatch, skipped/missing capability,
+process error/signal/deadline, partial assertions or nonzero exit is PASS.
+`NOT_RUN` is a required-check failure, never an optional successful skip.
+Private evidence references are not public documentation/telemetry.
+
+Focused parent checks (not run by Coder; no live pass claimed):
+
+<copy label="Runner and retained fixture validation">
+node --test --test-concurrency=1 --test-timeout=10000 scripts/runners/orchestrator-pr.test.mjs
+node --test --test-timeout=20000 scripts/run-new-task-smoke.test.mjs scripts/run-new-task-smoke-isolated.test.mjs
+(cd web; pnpm run test:pr)
+(cd swarmd; go test -p 2 ./internal/api -run '^TestProjectTask_ReconcilePlanningRun_' -count=1 -timeout=30s)
+(cd swarmd; go test -p 2 ./internal/api -run '^Test(ProjectFeatureRoutingUsesSwarmAuto|OrchestratorStructuredRefinementKeepsCardPending)$' -count=1 -timeout=60s)
+</copy>
+
+Repeat focused runs and independently review assertions before any critical-manifest
+promotion. Node protocol fixtures test admission/dispatch/receipt rejection only:
+not live agent executions, synthetic benchmarks, provider receipts or E2E success.

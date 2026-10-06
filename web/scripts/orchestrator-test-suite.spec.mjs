@@ -99,3 +99,23 @@ test('retired Desktop launch runner fails before any browser/provider work', { t
   assert.equal(help.status, 0)
   assert.match(help.stdout, /No replacement browser suite exists yet/)
 })
+
+// Purpose: PR composition must add the exact Orchestrator suite without replacing
+// still-supported session API/auth/hydration/realtime coverage or adding paid
+// journeys. package.json is the script-selection authority, not app security;
+// this narrow manifest test asserts composition and retained explicit filenames.
+test('PR frontend entrypoint preserves critical session API coverage', { timeout: 5000 }, async () => {
+  const { readFileSync } = await import('node:fs')
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.scripts['test:pr'], 'pnpm run test:critical && pnpm run test:orchestrator:selection && pnpm run test:orchestrator')
+  const tokens = pkg.scripts['test:critical'].split(/\s+/)
+  for (const file of [
+    './src/features/desktop/session-v3/new-session-flow.spec.ts',
+    './src/features/desktop/session-v3/existing-session-flow.spec.ts',
+    './src/features/desktop/session-v3/write-api.spec.ts',
+    './src/features/desktop/realtime/local-session-auth.spec.ts',
+    './src/features/desktop/state/desktop-v3-sync-api.spec.ts',
+    './src/features/desktop/state/session-snapshot-hydration.spec.ts',
+  ]) assert.ok(tokens.includes(file), `PR selection lost supported coverage: ${file}`)
+  assert.ok(!tokens.some(token => /browser|e2e|runners|orchestrator-pr/.test(token)))
+})
