@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Separate Favorites into This chat, Default, and Default + this chat in Desktop and TUI; target Orchestrator's Plan default separately from deployed Swarm's Action default and report partial combined-save failures. Rename TUI `/profiles` to `/favorites`. Docs impact: command help updated.
+
 - Restore Orchestrator chat header project identity in place of generic Workspaces, enable opening model favorites and updating Orchestrator model via canonical session API with rehydration, and route Agents to Orchestrator-owned agents settings. Docs impact: none.
 
 - Fix TUI Ctrl+X shortcut so it opens the session switcher modal across home and chat views, and filter the switcher to display only orchestration sessions (excluding task and subagent worker sessions). Default initial filter to active chats when review is empty, and support Ctrl+X toggle close. Docs impact: none.

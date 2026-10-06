@@ -298,6 +298,7 @@ createRoot(document.getElementById('root')).render(<RouterProvider router={route
     page.setDefaultTimeout(5000)
 
     const modelPuts: any[] = []
+    const defaultPatches: any[] = []
     const titlePosts: any[] = []
     const unexpectedCalls: string[] = []
 
@@ -316,6 +317,9 @@ createRoot(document.getElementById('root')).render(<RouterProvider router={route
       }
       if (p === '/v1/agent-model-settings') {
         const asgn = { provider: 'google', model: 'gemini-3.8-flash', thinking: 'high', serviceTier: '', contextMode: '' }
+        const action = { ...asgn, model: 'deployed-action' }
+        const patch = request.method() === 'PATCH' ? request.postDataJSON() : null
+        if (patch) defaultPatches.push(patch)
         await route.fulfill({
           json: {
             roles: [
@@ -324,7 +328,7 @@ createRoot(document.getElementById('root')).render(<RouterProvider router={route
               { id: 'system-coder', label: 'Coder', group: 'system_agents', slot: 'coder' },
             ],
             agent_model_settings: {
-              swarm: { action: asgn, plan: asgn },
+              swarm: patch?.swarm ?? { action, plan: asgn },
               system_agents: { compact: asgn, finder: asgn, coder: asgn, designer: asgn, router: asgn },
             },
             updated_at: 1,
@@ -439,6 +443,19 @@ createRoot(document.getElementById('root')).render(<RouterProvider router={route
     const taskModel = page.locator('#task-repair-surface [data-testid="desktop-v3-resolved-model"]')
     assert.equal(await taskModel.evaluate((el) => el.tagName), 'SPAN')
 
+    // Purpose: AgentModelControl's rendered scope buttons must isolate default
+    // writes from session writes and preserve Swarm Action when Orchestrator is
+    // selected. This browser layer proves actual button wiring, API payloads,
+    // and unchanged canonical header identity, beyond the service unit tests.
+    await orchModelBtn.click()
+    await page.getByRole('button', { name: 'Make Favorite Sonnet the default model for future chats' }).click()
+    await page.getByRole('menu', { name: 'Model favorites' }).waitFor({ state: 'hidden' })
+    assert.equal(defaultPatches.length, 1)
+    assert.equal(defaultPatches[0].swarm.action.model, 'deployed-action')
+    assert.equal(defaultPatches[0].swarm.plan.model, 'claude-3-7-sonnet')
+    assert.equal(modelPuts.length, 0, 'Default does not mutate this chat')
+    assert.equal(await orchModelBtn.innerText(), 'gemini-3.8-flash')
+
     // 3. Open favorites via keyboard activation and verify rejected save preserves identity/model
     await orchModelBtn.focus()
     await page.keyboard.press('Enter')
@@ -475,6 +492,18 @@ createRoot(document.getElementById('root')).render(<RouterProvider router={route
     assert.equal(cacheAfter?.action?.thinking, 'high')
     assert.equal(cacheAfter?.action?.service_tier, 'fast')
     assert.equal(cacheAfter?.action?.context_mode, 'long')
+
+    // Combined scope explicitly saves both authorities; neither agent nor mode
+    // is changed. Chat-only attempts above must not add account-default writes.
+    assert.equal(defaultPatches.length, 1, 'This chat does not save a default')
+    await page.getByRole('button', { name: 'Model favorites: claude-3-7-sonnet' }).click()
+    await page.getByRole('button', { name: 'Make Favorite Sonnet the default and use it in this chat' }).click()
+    await page.getByRole('menu', { name: 'Model favorites' }).waitFor({ state: 'hidden' })
+    assert.equal(defaultPatches.length, 2)
+    assert.equal(defaultPatches[1].swarm.action.model, 'deployed-action')
+    assert.equal(defaultPatches[1].swarm.plan.model, 'claude-3-7-sonnet')
+    assert.equal(modelPuts.length, 3)
+    assert.deepEqual(unexpectedCalls, [])
 
     // 5. Open favorites and click Agents -> navigates to Orchestrator agents with Orchestrator selected
     await page.getByRole('button', { name: 'Model favorites: claude-3-7-sonnet' }).click()

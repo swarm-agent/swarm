@@ -52,6 +52,7 @@ type HomeAction struct {
 	Username           string
 	SwarmName          string
 	ModelProfileID     string
+	FavoriteScope      FavoriteScope
 	WorkspaceIndex     int
 	ProjectIndex       int
 	ResetCreditID      string
@@ -97,11 +98,15 @@ func (p *HomePage) queueOpenSessionAction(session model.SessionSummary) {
 }
 
 func (p *HomePage) QueueSelectModelProfile(profileID string) bool {
+	return p.QueueSelectModelProfileScope(profileID, FavoriteScopeDefault)
+}
+
+func (p *HomePage) QueueSelectModelProfileScope(profileID string, scope FavoriteScope) bool {
 	profileID = strings.TrimSpace(profileID)
 	if p == nil || profileID == "" {
 		return false
 	}
-	p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectModelProfile, ModelProfileID: profileID}
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectModelProfile, ModelProfileID: profileID, FavoriteScope: scope}
 	p.statusLine = "selecting profile..."
 	return true
 }

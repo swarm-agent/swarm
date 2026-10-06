@@ -53,7 +53,10 @@ test('new-session composer resolves the active chosen profile when mode changes'
   assert.match(newSessionSource, /onUseAgentModelDefault=\{\(\) => \{[\s\S]*preferenceFromAgentModelLock\(selectedAgentModelLock, current, modelOptions\)/)
 })
 
-test('agent setup favorites switch both the canonical Swarm default and current chat', () => {
+// Purpose: guard the composer wiring to the tested favorite-scopes service and
+// canonical session mutation helper; source checks supplement, not replace,
+// favorite-scopes.spec.ts behavioral assertions.
+test('agent setup favorites expose distinct default and current-chat scopes', () => {
   assert.match(controlSource, /aria-label=\{screen === 'favorites' \? 'Model favorites'/)
   assert.match(controlSource, /createModelProfile\(favorite\)/)
   assert.match(controlSource, /Save Default Model as a favorite/)
@@ -62,10 +65,11 @@ test('agent setup favorites switch both the canonical Swarm default and current 
   assert.match(controlSource, /Delete favorite \$\{profile\.name\}/)
   assert.match(controlSource, /Confirm deletion of \$\{profile\.name\}/)
   assert.match(controlSource, /invalidateModelProfiles\(queryClient\)/)
-  assert.match(controlSource, /saveSwarmAgentModelSettings\(\{[\s\S]*action: isOrchestrator \? settings\.swarm\.action : \{[\s\S]*plan: isOrchestrator \? \{[\s\S]*: settings\.swarm\.plan/)
-  assert.match(controlSource, /await onApplyModelFavorite\?\.\(profile\)/)
-  assert.match(existingSessionSource, /updateSessionV3ModelProfile\(normalizedSessionId, \{[\s\S]*kind: 'temporary',[\s\S]*provider: profile\.provider/)
-  assert.match(existingSessionSource, /setPreference\(nextPreference\)/)
+  assert.match(controlSource, /saveSwarmAgentModelSettings\(favoriteDefaultPatch\(settings/)
+  assert.match(controlSource, /applyFavoriteScope\(scope/)
+  assert.match(controlSource, /Default \+ this chat/)
+  assert.match(existingSessionSource, /applySessionModelFavorite\(\{/)
+  assert.match(existingSessionSource, /setPreference\(result\.nextPreference\)/)
   assert.match(controlSource, /title="Default Model"/)
   assert.match(controlSource, /title="Plan \/ Orchestrator Model"/)
   assert.match(controlSource, /saveSystemAgentModelSettings/)
