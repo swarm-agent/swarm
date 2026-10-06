@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -25,10 +26,16 @@ import (
 // dispatch is the narrowest boundary proving reads and rejection postconditions.
 // Cross-task callers must prove durable ownership without becoming project
 // mutation owners; real environment tool dispatch exercises that admission.
-// This is a hermetic contract test, not provider or live-environment evidence.
+// Canonical conversation admission uses the real stored-contract compiler;
+// only provider execution is absent. This is not live-environment evidence.
 func TestProjectInspectionExactResult(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
+	// Match project_task_lineage_test.go: retain compiler admission without
+	// starting an executor or substituting a permissive compiler double.
+	runner := runruntime.NewService(f.server.sessions, f.server.model, nil, tool.NewRuntime(1), nil, f.server.agents, nil, nil)
+	runner.SetAgentModelSettingsService(f.server.agentModelSettings)
+	f.server.runner = runner
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")

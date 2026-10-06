@@ -15,6 +15,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -179,10 +180,16 @@ func (f *taskAttachmentLifecycleFixture) Submit(_ context.Context, req lifecycle
 // Real Git/catalog/session/task state proves exact source checks; the counting
 // lifecycle double confines this test to API authority (not provider or lease-store
 // concurrency evidence). Preparation forwards connection selection to the lifecycle
-// authority. Failed generation/source/owner requests have no effects.
+// authority. Failed generation/source/owner requests have no effects. Conversation
+// admission retains the real stored-contract compiler, not a permissive stub.
 func TestTaskEnvironmentAttachmentWorkflow(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
+	// Use the same admission wiring as project_task_lineage_test.go; the
+	// matrix fixture still leaves asynchronous provider execution disabled.
+	runner := runruntime.NewService(f.server.sessions, f.server.model, nil, tool.NewRuntime(1), nil, f.server.agents, nil, nil)
+	runner.SetAgentModelSettingsService(f.server.agentModelSettings)
+	f.server.runner = runner
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	t.Setenv("HOME", t.TempDir())
