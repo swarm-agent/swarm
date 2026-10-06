@@ -165,6 +165,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		if parseErr == nil && ins.State.Running && req.Environment.DeploymentPolicy.Reuse {
 			// Container is already running and reusable
 			insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
+				Build:         req.Deployment.Build,
 				ID:            req.Deployment.ID,
 				EnvironmentID: req.Environment.ID,
 				Runtime: environments.RuntimeMetadata{
@@ -451,7 +452,10 @@ func (p *LocalDockerProvider) Inspect(ctx context.Context, conn *environments.Co
 		var records []struct {
 			Image string `json:"Image"`
 		}
-		if json.Unmarshal(out, &records) != nil || len(records) != 1 || records[0].Image != deployment.Build.ImageID {
+		// Engines may omit sha256: in inspect, but only full validated identities
+		// are equivalent. In particular, two malformed IDs must never compare equal.
+		imageID := normalizedBuildImageID(deployment.Build.ImageID)
+		if imageID == "" || json.Unmarshal(out, &records) != nil || len(records) != 1 || normalizedBuildImageID(records[0].Image) != imageID {
 			return nil, errors.New("deployment image does not match authenticated build result")
 		}
 	}
