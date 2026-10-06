@@ -121,8 +121,8 @@ func deploymentImageRequest(kind environments.ConnectionKind, image string) Depl
 	q.Deployment.Build = &environments.ImageBuildResult{
 		OperationID: "build-operation", ConnectionID: q.Connection.ID,
 		ImageID: image, DefinitionDigest: strings.Repeat("a", 64), ContextDigest: strings.Repeat("b", 64),
-		Product: environments.CommittedBuildSource{WorkspaceID: "product", WorkspaceGeneration: 1, Commit: strings.Repeat("c", 40)},
-		Recipe: environments.CommittedBuildSource{WorkspaceID: "recipe", WorkspaceGeneration: 1, Commit: strings.Repeat("d", 40)},
+		Product:    environments.CommittedBuildSource{WorkspaceID: "product", WorkspaceGeneration: 1, Commit: strings.Repeat("c", 40)},
+		Recipe:     environments.CommittedBuildSource{WorkspaceID: "recipe", WorkspaceGeneration: 1, Commit: strings.Repeat("d", 40)},
 		RecipeFile: "scripts/Containerfile", ProductResult: "authenticated-product-result",
 	}
 	return q
@@ -192,7 +192,7 @@ func TestLocalDeploymentInspectBuildImageIdentity(t *testing.T) {
 func TestLocalDeploymentDeployBuildImageIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name, receipt, observed, old, replacement, wantError string
-		cleanupFailure                                     bool
+		cleanupFailure                                       bool
 	}{
 		{name: "bare-inspect", receipt: "sha256:" + deploymentImageDigest, observed: deploymentImageDigest},
 		{name: "prefixed-inspect", receipt: "sha256:" + deploymentImageDigest, observed: "sha256:" + deploymentImageDigest},

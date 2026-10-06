@@ -18,14 +18,14 @@ import (
 // without depending on the machine's login session or changing its environment.
 func TestLocalPodmanEnvironmentDiscovery(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		env             []string
-		uid             int
+		name             string
+		env              []string
+		uid              int
 		dirMode, busMode os.FileMode
-		owner           int
-		missing         bool
+		owner            int
+		missing          bool
 		wantDir, wantBus string
-		wantErr         bool
+		wantErr          bool
 	}{
 		{name: "absent", uid: 1234, owner: 1234, dirMode: os.ModeDir | 0700, busMode: os.ModeSocket | 0600, wantDir: "/run/user/1234", wantBus: "unix:path=/run/user/1234/bus"},
 		{name: "empty", env: []string{"XDG_RUNTIME_DIR=", "DBUS_SESSION_BUS_ADDRESS="}, uid: 1234, owner: 1234, dirMode: os.ModeDir | 0700, busMode: os.ModeSocket, wantDir: "/run/user/1234", wantBus: "unix:path=/run/user/1234/bus"},

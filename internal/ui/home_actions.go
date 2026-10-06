@@ -39,21 +39,21 @@ const (
 )
 
 type HomeAction struct {
-	Kind             HomeActionKind
-	SessionID        string
-	SessionTitle     string
-	SessionMode      string
-	WorkspacePath    string
-	WorkspaceName    string
-	WorktreeBranch   string
-	WorktreeEnabled  bool
-	WorktreeRootPath string
-	NotificationID   string
-	Username         string
-	SwarmName        string
-	ModelProfileID   string
-	WorkspaceIndex   int
-	ProjectIndex     int
+	Kind               HomeActionKind
+	SessionID          string
+	SessionTitle       string
+	SessionMode        string
+	WorkspacePath      string
+	WorkspaceName      string
+	WorktreeBranch     string
+	WorktreeEnabled    bool
+	WorktreeRootPath   string
+	NotificationID     string
+	Username           string
+	SwarmName          string
+	ModelProfileID     string
+	WorkspaceIndex     int
+	ProjectIndex       int
 	ResetCreditID      string
 	IdempotencyKey     string
 	ProjectID          string

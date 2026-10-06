@@ -186,18 +186,18 @@ const (
 
 func NewPage(runtime *Runtime, styles PageStyles) *Page {
 	return &Page{
-		runtime:               runtime,
-		styles:                styles,
-		showHeader:            true,
-		showThinkingTags:      true,
-		follow:                true,
-		lastMaxScroll:         -1,
-		rowCache:              make(map[string]cachedRows),
-		taskProgramCollapsed:  make(map[string]bool),
-		handoffTargets:        make(map[string]footerbar.Rect),
-		matchKey:              defaultKeyMatcher,
-		markdownCache:         newMarkdownRowCache(512),
-		itemCache:             newItemLayoutCache(1024),
+		runtime:              runtime,
+		styles:               styles,
+		showHeader:           true,
+		showThinkingTags:     true,
+		follow:               true,
+		lastMaxScroll:        -1,
+		rowCache:             make(map[string]cachedRows),
+		taskProgramCollapsed: make(map[string]bool),
+		handoffTargets:       make(map[string]footerbar.Rect),
+		matchKey:             defaultKeyMatcher,
+		markdownCache:        newMarkdownRowCache(512),
+		itemCache:            newItemLayoutCache(1024),
 	}
 }
 

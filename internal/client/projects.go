@@ -12,11 +12,11 @@ import (
 
 type CreateProjectInput struct {
 	ClientRequestID string                `json:"client_request_id"`
-	Name           string                `json:"name"`
-	Description    string                `json:"description,omitempty"`
-	IconPNGDataURL string                `json:"icon_png_data_url,omitempty"`
-	ThemeID        string                `json:"theme_id,omitempty"`
-	Workspaces     []ProjectWorkspaceRef `json:"workspaces,omitempty"`
+	Name            string                `json:"name"`
+	Description     string                `json:"description,omitempty"`
+	IconPNGDataURL  string                `json:"icon_png_data_url,omitempty"`
+	ThemeID         string                `json:"theme_id,omitempty"`
+	Workspaces      []ProjectWorkspaceRef `json:"workspaces,omitempty"`
 }
 
 type ProjectContextGeneration struct {
@@ -216,4 +216,3 @@ func (c *API) CreateProjectSession(ctx context.Context, projectID, title string)
 		Mode:      "auto",
 	})
 }
-

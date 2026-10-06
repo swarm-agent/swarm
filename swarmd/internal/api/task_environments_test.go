@@ -80,7 +80,7 @@ func TestTaskEnvironmentRevokedBinding(t *testing.T) {
 	}
 	for _, stale := range []struct {
 		taskRevision, attachmentRevision int
-		want                            string
+		want                             string
 	}{
 		{baseline.Revision + 1, a.Revision, "stale task revision"},
 		{baseline.Revision, a.Revision + 1, "stale attachment revision"},

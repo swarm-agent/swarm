@@ -307,8 +307,8 @@ func TestOrchestratorResolutionAndEmptyTaskEnter(t *testing.T) {
 				"sessions": []map[string]any{
 					{
 						"session": map[string]any{
-							"id":         "orch-sess-gamma",
-							"title":      "Project Gamma Orchestrator",
+							"id":          "orch-sess-gamma",
+							"title":       "Project Gamma Orchestrator",
 							"session_api": "v3",
 							"metadata": map[string]any{
 								"agent_name": "system-orchestrator",

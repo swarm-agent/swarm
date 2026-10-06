@@ -745,4 +745,3 @@ func TestOnboardingProjectPersonalizingTransitionsToPreFinishAndCompletes(t *tes
 		t.Fatal("expected session to be launched after completing onboarding")
 	}
 }
-

@@ -2700,9 +2700,9 @@ func (a *App) createNewProjectSession(projectID string, mode string, initialProm
 	}
 
 	if err := a.openSessionSummary(model.SessionSummary{
-		ID:        sessionID,
-		Title:     title,
-		Mode:      mode,
+		ID:    sessionID,
+		Title: title,
+		Mode:  mode,
 		Metadata: map[string]any{
 			"project_id":          projectID,
 			"swarm_v3_project_id": projectID,
@@ -7243,10 +7243,10 @@ func (a *App) completeOnboardingWithProject(projectID, projectName string) {
 	if next.AuthConfigured && projectID != "" {
 		activeProvider, activeModel, activeThinking, activeServiceTier, activeContextMode, _ := a.currentModelPreferenceState()
 		sess, err := a.api.CreateSessionV3WithOptions(ctx, client.SessionCreateOptions{
-			ProjectID:  projectID,
-			Title:      projectName,
-			Mode:       "auto",
-			AgentName:  "system-orchestrator",
+			ProjectID: projectID,
+			Title:     projectName,
+			Mode:      "auto",
+			AgentName: "system-orchestrator",
 			Preference: client.ModelPreference{
 				Provider:    activeProvider,
 				Model:       activeModel,

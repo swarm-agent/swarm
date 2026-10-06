@@ -31,45 +31,45 @@ const (
 )
 
 type onboardingState struct {
-	Visible            bool
-	Locked             bool
-	Phase              onboardingPhase
-	Focus              onboardingFocus
-	Status             string
-	Error              string
-	Pending            bool
-	Personalizing      bool
-	PreFinish          bool
-	PreFinishTicks     int
-	PreFinishProjectID string
+	Visible              bool
+	Locked               bool
+	Phase                onboardingPhase
+	Focus                onboardingFocus
+	Status               string
+	Error                string
+	Pending              bool
+	Personalizing        bool
+	PreFinish            bool
+	PreFinishTicks       int
+	PreFinishProjectID   string
 	PreFinishProjectName string
-	PreFinishWorkspaces []string
-	Tick               int
-	AddingWorkspaces   bool
-	CreatingFolder     bool
-	NewFolderPath      string
-	WorkspacePath      string
-	WorkspaceReady     bool
-	SetupConsent       bool
-	EditingPath        bool
-	RuntimeAccount     string
-	HomePath           string
-	ProjectNamed       bool
-	ProjectName        string
-	ProjectParent      string
-	ProjectDescription string
-	ProjectFocus       int
-	NamingProject      bool
-	ProjectField       int
-	PreviousPath       string
-	ActionIndex        int
-	ChoosingRepository bool
-	Repositories       []client.WorkspaceDiscoverEntry
-	Repository         *client.OnboardingRepository
-	Review             *client.OnboardingReview
-	Selected           map[string]bool
-	ConfirmOmissions   bool
-	BaselineAttempt    *client.OnboardingBaseline
+	PreFinishWorkspaces  []string
+	Tick                 int
+	AddingWorkspaces     bool
+	CreatingFolder       bool
+	NewFolderPath        string
+	WorkspacePath        string
+	WorkspaceReady       bool
+	SetupConsent         bool
+	EditingPath          bool
+	RuntimeAccount       string
+	HomePath             string
+	ProjectNamed         bool
+	ProjectName          string
+	ProjectParent        string
+	ProjectDescription   string
+	ProjectFocus         int
+	NamingProject        bool
+	ProjectField         int
+	PreviousPath         string
+	ActionIndex          int
+	ChoosingRepository   bool
+	Repositories         []client.WorkspaceDiscoverEntry
+	Repository           *client.OnboardingRepository
+	Review               *client.OnboardingReview
+	Selected             map[string]bool
+	ConfirmOmissions     bool
+	BaselineAttempt      *client.OnboardingBaseline
 }
 
 func (p *HomePage) SetOnboardingRequired(required bool, username, swarmName string) {
