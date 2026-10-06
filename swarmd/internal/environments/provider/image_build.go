@@ -2,13 +2,17 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 )
@@ -35,12 +39,118 @@ type ImageBuildRequest struct {
 }
 
 func (p *LocalDockerProvider) ConfigureBuildRoot(root string) { p.buildRoot = root }
+func (p *LocalDockerProvider) ConfigureRuntimeDir(dir string) { p.runtimeDir = dir }
+
+const buildRunrootPrefix = "sbr-"
 
 func (p *LocalDockerProvider) buildDirectory(id string) (string, error) {
 	if !strings.HasPrefix(id, "op_") || ValidateOperationID(id) != nil || !filepath.IsAbs(p.buildRoot) {
 		return "", errors.New("managed build root or operation identity unavailable")
 	}
 	return filepath.Join(p.buildRoot, id), nil
+}
+
+// buildRunrootPath derives a deterministic, bounded per-operation runroot directly
+// under the verified runtime directory. Length is guaranteed to be <= 50 characters.
+func buildRunrootPath(runtimeDir, id string) (string, error) {
+	if !strings.HasPrefix(id, "op_") || ValidateOperationID(id) != nil {
+		return "", errors.New("managed build root or operation identity unavailable")
+	}
+	if !filepath.IsAbs(runtimeDir) || filepath.Clean(runtimeDir) != runtimeDir {
+		return "", errors.New("managed build runtime directory must be an absolute clean path")
+	}
+	hash := sha256.Sum256([]byte(id))
+	token := hex.EncodeToString(hash[:6]) // 12 lowercase hex characters (48 bits entropy)
+	runroot := filepath.Join(runtimeDir, buildRunrootPrefix+token)
+	if len(runroot) > 50 {
+		return "", fmt.Errorf("managed build runroot %q exceeds Podman limit of 50 characters (length %d)", runroot, len(runroot))
+	}
+	return runroot, nil
+}
+
+func (p *LocalDockerProvider) resolveRuntimeDir() (string, error) {
+	if p.runtimeDir != "" {
+		if !filepath.IsAbs(p.runtimeDir) || filepath.Clean(p.runtimeDir) != p.runtimeDir {
+			return "", errors.New("local Podman user runtime directory must be an absolute clean path")
+		}
+		info, err := os.Lstat(p.runtimeDir)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0700 {
+			return "", errors.New("local Podman user runtime directory unavailable or unsafe; host configuration unchanged")
+		}
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			if int(stat.Uid) != os.Geteuid() {
+				return "", errors.New("local Podman user runtime directory not owned by effective user")
+			}
+		}
+		return p.runtimeDir, nil
+	}
+
+	sessionEnv := os.Environ()
+	if runner, ok := p.runner.(*OSCommandRunner); ok && runner.commandEnv != nil {
+		var err error
+		sessionEnv, err = runner.commandEnv()
+		if err != nil {
+			return "", err
+		}
+	}
+	var runtimeDir string
+	for _, entry := range sessionEnv {
+		if strings.HasPrefix(entry, "XDG_RUNTIME_DIR=") {
+			runtimeDir = strings.TrimPrefix(entry, "XDG_RUNTIME_DIR=")
+			break
+		}
+	}
+	if runtimeDir == "" {
+		runtimeDir = os.Getenv("XDG_RUNTIME_DIR")
+	}
+	if runtimeDir == "" {
+		runtimeDir = filepath.Join("/run/user", strconv.Itoa(os.Geteuid()))
+	}
+	if !filepath.IsAbs(runtimeDir) || filepath.Clean(runtimeDir) != runtimeDir {
+		return "", errors.New("local Podman user runtime directory must be an absolute clean path")
+	}
+	info, err := os.Lstat(runtimeDir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0700 {
+		return "", errors.New("local Podman user runtime directory unavailable or unsafe; host configuration unchanged")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if int(stat.Uid) != os.Geteuid() {
+			return "", errors.New("local Podman user runtime directory not owned by effective user")
+		}
+	}
+	return runtimeDir, nil
+}
+
+func (p *LocalDockerProvider) resolveSessionEnvironment() (string, string, error) {
+	runtimeDir, err := p.resolveRuntimeDir()
+	if err != nil {
+		return "", "", err
+	}
+	sessionEnv := os.Environ()
+	if runner, ok := p.runner.(*OSCommandRunner); ok && runner.commandEnv != nil {
+		if env, envErr := runner.commandEnv(); envErr == nil {
+			sessionEnv = env
+		}
+	}
+	var busAddress string
+	for _, entry := range sessionEnv {
+		if strings.HasPrefix(entry, "DBUS_SESSION_BUS_ADDRESS=") {
+			busAddress = strings.TrimPrefix(entry, "DBUS_SESSION_BUS_ADDRESS=")
+			break
+		}
+	}
+	if busAddress == "" {
+		busAddress = os.Getenv("DBUS_SESSION_BUS_ADDRESS")
+	}
+	return runtimeDir, busAddress, nil
+}
+
+func (p *LocalDockerProvider) buildRunroot(id string) (string, error) {
+	runtimeDir, err := p.resolveRuntimeDir()
+	if err != nil {
+		return "", err
+	}
+	return buildRunrootPath(runtimeDir, id)
 }
 
 func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequest) (result *environments.ImageBuildResult, retErr error) {
@@ -73,6 +183,10 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	if err != nil {
 		return nil, err
 	}
+	runroot, err := p.buildRunroot(req.OperationID)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(p.buildRoot, 0700); err != nil {
 		return nil, err
 	}
@@ -94,7 +208,13 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 			}
 		}
 	}()
-	for _, dir := range []string{"context", "home", "run", "storage", "hooks", "tmp"} {
+	if err := os.Mkdir(runroot, 0700); err != nil {
+		return nil, errors.New("build operation runroot already exists or cannot be created")
+	}
+	if err := os.WriteFile(filepath.Join(root, "runroot"), []byte(runroot), 0600); err != nil {
+		return nil, err
+	}
+	for _, dir := range []string{"context", "home", "storage", "hooks", "tmp"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
 		}
@@ -113,24 +233,10 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	// Build containers stay below the delegated transient unit: using the
 	// systemd manager here could move descendants into sibling user scopes.
 	// Runtime containers still use the separately admitted systemd manager.
-	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--runtime=crun"}
-	// env -i below must retain the same resolved user session as systemd-run,
-	// rather than reintroducing the daemon's missing session variables.
-	sessionEnv := os.Environ()
-	if runner, ok := p.runner.(*OSCommandRunner); ok && runner.commandEnv != nil {
-		sessionEnv, err = runner.commandEnv()
-		if err != nil {
-			return nil, err
-		}
-	}
-	var runtimeDir, busAddress string
-	for _, entry := range sessionEnv {
-		if strings.HasPrefix(entry, "XDG_RUNTIME_DIR=") {
-			runtimeDir = strings.TrimPrefix(entry, "XDG_RUNTIME_DIR=")
-		}
-		if strings.HasPrefix(entry, "DBUS_SESSION_BUS_ADDRESS=") {
-			busAddress = strings.TrimPrefix(entry, "DBUS_SESSION_BUS_ADDRESS=")
-		}
+	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", runroot, "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--runtime=crun"}
+	runtimeDir, busAddress, err := p.resolveSessionEnvironment()
+	if err != nil {
+		return nil, err
 	}
 	cleanEnv := []string{"env", "-i", "PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(root, "home"), "XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=" + busAddress, "TMPDIR=" + filepath.Join(root, "tmp"), "CONTAINERS_CONF=" + filepath.Join(root, "containers.conf"), "CONTAINERS_REGISTRIES_CONF=" + filepath.Join(root, "registries.conf"), "CONTAINERS_MOUNTS_CONF=" + filepath.Join(root, "mounts.conf"), "podman"}
 	build := append(append([]string{}, isolated...), "build", "--jobs=1", "--ignorefile", filepath.Join(root, "ignore"), "--layers=false", "--force-rm=true", "--http-proxy=false", "--isolation=oci", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--memory=8g", "--cpu-period=100000", "--cpu-quota=200000", "--ulimit=nofile=4096:4096", "--no-hosts", "--hooks-dir", filepath.Join(root, "hooks"), "--authfile", filepath.Join(root, "auth.json"), "--tls-verify=true", "--retry=0", "--iidfile", filepath.Join(root, "image-id"), "--build-arg", "SWARM_BUILD_SHA="+req.Definition.Product.Commit, "--label", "io.swarm.build.operation="+req.OperationID, "--label", "org.opencontainers.image.revision="+req.Definition.Product.Commit, "--label", "io.swarm.build.inputs="+req.Definition.Digest(), "--file", filepath.Join(root, "context", ".swarm-recipe", filepath.FromSlash(req.Definition.RecipeFile)), filepath.Join(root, "context"))
@@ -195,6 +301,9 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 	}
 	info, err := os.Lstat(root)
 	if errors.Is(err, os.ErrNotExist) {
+		if runroot, rErr := p.buildRunroot(id); rErr == nil {
+			_ = p.cleanupRunroot(runroot)
+		}
 		return nil
 	}
 	if err != nil || !info.IsDir() {
@@ -241,13 +350,67 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 		}
 		populated = len(entries) > 0
 	}
+	runroot, runrootErr := p.buildRunroot(id)
+	if runrootErr != nil {
+		return runrootErr
+	}
+	markerPath := filepath.Join(root, "runroot")
+	if markerData, readErr := os.ReadFile(markerPath); readErr == nil {
+		if strings.TrimSpace(string(markerData)) != runroot {
+			return errors.New("owned build runroot marker mismatch")
+		}
+	}
 	if populated {
-		_, err = p.runner.Run(ctx, "podman", "--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", filepath.Join(root, "run"), "--storage-driver=vfs", "unmount", "--all", "--force")
+		_, err = p.runner.Run(ctx, "podman", "--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", runroot, "--storage-driver=vfs", "unmount", "--all", "--force")
 		if err != nil {
 			return errors.New("owned build storage unmount failed")
 		}
 	}
-	return os.RemoveAll(root)
+	runErr := p.cleanupRunroot(runroot)
+	rootErr := os.RemoveAll(root)
+	return errors.Join(runErr, rootErr)
+}
+
+func (p *LocalDockerProvider) cleanupRunroot(runroot string) error {
+	if runroot == "" {
+		return nil
+	}
+	if !filepath.IsAbs(runroot) || filepath.Clean(runroot) != runroot {
+		return errors.New("owned build runroot is not an absolute clean path")
+	}
+	runtimeDir, err := p.resolveRuntimeDir()
+	if err != nil {
+		return err
+	}
+	if filepath.Dir(runroot) != runtimeDir {
+		return errors.New("owned build runroot escaped runtime directory")
+	}
+	base := filepath.Base(runroot)
+	if !strings.HasPrefix(base, buildRunrootPrefix) || len(base) != len(buildRunrootPrefix)+12 {
+		return errors.New("owned build runroot does not match expected operation name format")
+	}
+	info, err := os.Lstat(runroot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return errors.New("owned build runroot inspection failed")
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("owned build runroot is an unsafe symlink")
+	}
+	if !info.IsDir() {
+		return errors.New("owned build runroot is not a directory")
+	}
+	if info.Mode().Perm() != 0700 {
+		return errors.New("owned build runroot has unsafe permissions")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		if int(stat.Uid) != os.Geteuid() {
+			return errors.New("owned build runroot is not owned by the current user")
+		}
+	}
+	return os.RemoveAll(runroot)
 }
 
 type imageBuildRun struct {

@@ -202,10 +202,16 @@ func TestManagedBuildProviderContract(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			r := &imageBuildRunner{t: t, definition: buildDefinitionFixture(), operation: "op_test", id: "sha256:" + strings.Repeat("c", 64), failBuild: mode == "failure" || mode == "both-fail", failCleanup: mode == "cleanup-failure" || mode == "both-fail", cancelBuild: mode == "cancel", cancel: cancel}
+			opID := "op_" + strings.ReplaceAll(mode, "-", "_")
+			r := &imageBuildRunner{t: t, definition: buildDefinitionFixture(), operation: opID, id: "sha256:" + strings.Repeat("c", 64), failBuild: mode == "failure" || mode == "both-fail", failCleanup: mode == "cleanup-failure" || mode == "both-fail", cancelBuild: mode == "cancel", cancel: cancel}
 			p := NewLocalPodmanProvider(r)
 			root := t.TempDir()
 			p.ConfigureBuildRoot(root)
+			runroot, rErr := p.buildRunroot(opID)
+			if rErr != nil {
+				t.Fatalf("buildRunroot: %v", rErr)
+			}
+			t.Cleanup(func() { _ = p.cleanupRunroot(runroot) })
 			result, err := p.BuildImage(ctx, ImageBuildRequest{OperationID: r.operation, Connection: podmanConnectionForTest(environments.ConnectionKindLocalPodman), Definition: r.definition, ProductRoot: filepath.Join(root, "product"), RecipeRoot: filepath.Join(root, "recipe")})
 			if mode == "success" {
 				if err != nil || result == nil || result.ImageID != r.id || result.Product != r.definition.Product || len(result.ContextDigest) != 64 {
@@ -224,6 +230,9 @@ func TestManagedBuildProviderContract(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(root, r.operation)); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("owned scratch retained")
 				}
+				if _, err := os.Stat(runroot); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("owned runroot retained")
+				}
 			} else if !errors.Is(err, ErrOperationCleanupFailed) {
 				t.Fatalf("cleanup uncertainty hidden: %v", err)
 			}
@@ -233,10 +242,13 @@ func TestManagedBuildProviderContract(t *testing.T) {
 					build = strings.Join(c.Args, " ")
 				}
 			}
-			for _, want := range []string{"--jobs=1", "--ignorefile", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--property=TasksMax=1024", "--property=KillMode=control-group", "env -i", "--http-proxy=false", "--authfile", "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--property=Delegate=yes", "SWARM_BUILD_SHA=" + r.definition.Product.Commit} {
+			for _, want := range []string{"--jobs=1", "--ignorefile", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--property=TasksMax=1024", "--property=KillMode=control-group", "env -i", "--http-proxy=false", "--authfile", "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--property=Delegate=yes", "SWARM_BUILD_SHA=" + r.definition.Product.Commit, "--runroot " + runroot} {
 				if !strings.Contains(build, want) {
 					t.Fatalf("missing %s", want)
 				}
+			}
+			if len(runroot) > 50 {
+				t.Fatalf("runroot %q length %d exceeds 50", runroot, len(runroot))
 			}
 			for _, bad := range []string{"--privileged", "--network=host", "--volume", "--secret", "--ssh"} {
 				if strings.Contains(build, bad) {
@@ -548,4 +560,346 @@ func TestManagedBuildRealCommandDiagnostic(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled runner lost context: %v", err)
 	}
+}
+
+// Purpose: buildRunrootPath and buildRunroot must guarantee that any allocated
+// runroot is an absolute, clean path directly beneath the verified user runtime
+// directory, with total path length <= 50 characters (as enforced by Podman 4.9.3).
+// If a runtime directory would cause the runroot to exceed 50 characters, or is
+// un-clean/relative, it must fail closed before executing commands.
+func TestManagedBuildRunrootLengthAndFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		runtimeDir string
+		opID       string
+		wantErr    bool
+		maxLen     int
+	}{
+		{"standard-uid-1000", "/run/user/1000", "op_e5b458d5f2ac455a9775d51ff1220ab5", false, 50},
+		{"large-uid-100000", "/run/user/100000", "op_test_123", false, 50},
+		{"max-uid-4294967295", "/run/user/4294967295", "op_max_uid", false, 50},
+		{"short-runtime-custom", "/run/user/500", "op_abc", false, 50},
+		{"excessively-long-runtime", "/run/user/this_path_is_far_too_long_to_ever_fit_within_fifty_chars", "op_toolong", true, 0},
+		{"relative-runtime", "run/user/1000", "op_relative", true, 0},
+		{"dirty-runtime", "/run/user/1000/../1000", "op_dirty", true, 0},
+		{"invalid-op-id", "/run/user/1000", "invalid_no_op_prefix", true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildRunrootPath(tc.runtimeDir, tc.opID)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %s, got %q", tc.name, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %s: %v", tc.name, err)
+			}
+			if len(got) > tc.maxLen {
+				t.Fatalf("runroot length %d exceeds max %d: %q", len(got), tc.maxLen, got)
+			}
+			if filepath.Dir(got) != tc.runtimeDir {
+				t.Fatalf("runroot %q not direct child of %q", got, tc.runtimeDir)
+			}
+			base := filepath.Base(got)
+			if !strings.HasPrefix(base, buildRunrootPrefix) {
+				t.Fatalf("runroot base %q missing prefix %q", base, buildRunrootPrefix)
+			}
+			if len(base) != len(buildRunrootPrefix)+12 {
+				t.Fatalf("runroot base %q invalid length %d", base, len(base))
+			}
+		})
+	}
+}
+
+// Purpose: BuildImage, image save (export), and cleanupBuildFiles (unmount) must
+// use the exact same per-operation runroot. An inconsistency between phases
+// would leave mounts uncleaned or export from the wrong storage driver state.
+// The runner call inspection proves argument consistency across all phases.
+func TestManagedBuildRunrootConsistency(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opID := "op_consistency_test"
+	r := &imageBuildRunner{t: t, definition: buildDefinitionFixture(), operation: opID, id: "sha256:" + strings.Repeat("d", 64)}
+	p := NewLocalPodmanProvider(r)
+	root := t.TempDir()
+	p.ConfigureBuildRoot(root)
+	expectedRunroot, err := p.buildRunroot(opID)
+	if err != nil {
+		t.Fatalf("buildRunroot: %v", err)
+	}
+	t.Cleanup(func() { _ = p.cleanupRunroot(expectedRunroot) })
+
+	result, err := p.BuildImage(ctx, ImageBuildRequest{
+		OperationID: opID,
+		Connection:  podmanConnectionForTest(environments.ConnectionKindLocalPodman),
+		Definition:  r.definition,
+		ProductRoot: filepath.Join(root, "product"),
+		RecipeRoot:  filepath.Join(root, "recipe"),
+	})
+	if err != nil || result == nil {
+		t.Fatalf("BuildImage failed: %v", err)
+	}
+
+	// Verify build phase systemd-run received the runroot
+	var buildRunroot, saveRunroot string
+	for _, c := range r.calls {
+		if c.Name == "systemd-run" {
+			for i, a := range c.Args {
+				if a == "--runroot" && i+1 < len(c.Args) {
+					buildRunroot = c.Args[i+1]
+				}
+			}
+		}
+		if c.Name == "env" && len(c.Args) > 1 && c.Args[len(c.Args)-1] != "" {
+			for i, a := range c.Args {
+				if a == "--runroot" && i+1 < len(c.Args) {
+					saveRunroot = c.Args[i+1]
+				}
+			}
+		}
+	}
+	if buildRunroot != expectedRunroot {
+		t.Fatalf("build runroot mismatch: got %q, want %q", buildRunroot, expectedRunroot)
+	}
+	if saveRunroot != expectedRunroot {
+		t.Fatalf("save runroot mismatch: got %q, want %q", saveRunroot, expectedRunroot)
+	}
+
+	// Verify unmount call in cleanup received the identical runroot
+	cleanupRoot := filepath.Join(root, opID)
+	// Recreate mock populated storage so cleanup invokes unmount
+	if err := os.MkdirAll(filepath.Join(cleanupRoot, "storage"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cleanupRoot, "storage", "sentinel"), []byte("data"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cleanupRoot, "runroot"), []byte(expectedRunroot), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.calls = nil
+	if err := p.cleanupBuildFiles(context.Background(), opID); err != nil {
+		t.Fatalf("cleanupBuildFiles: %v", err)
+	}
+	var unmountRunroot string
+	for _, c := range r.calls {
+		if strings.Contains(strings.Join(c.Args, " "), "unmount") {
+			for i, a := range c.Args {
+				if a == "--runroot" && i+1 < len(c.Args) {
+					unmountRunroot = c.Args[i+1]
+				}
+			}
+		}
+	}
+	if unmountRunroot != expectedRunroot {
+		t.Fatalf("unmount runroot mismatch: got %q, want %q", unmountRunroot, expectedRunroot)
+	}
+
+	// Verify runroot directory was cleaned up on disk
+	if _, err := os.Stat(expectedRunroot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("runroot %q was not removed after cleanup", expectedRunroot)
+	}
+}
+
+// Purpose: Concurrent operations must allocate distinct runroots and their cleanups
+// must never clobber each other. cleanupRunroot must enforce symlink, boundary and
+// ownership defenses. Pre-existing runroot directories must cause build admission rejection.
+func TestManagedBuildRunrootCollisionAndConcurrency(t *testing.T) {
+	op1 := "op_concurrent_one"
+	op2 := "op_concurrent_two"
+	r := &imageBuildRunner{t: t, definition: buildDefinitionFixture()}
+	p := NewLocalPodmanProvider(r)
+	root := t.TempDir()
+	p.ConfigureBuildRoot(root)
+
+	runroot1, err := p.buildRunroot(op1)
+	if err != nil {
+		t.Fatalf("buildRunroot op1: %v", err)
+	}
+	runroot2, err := p.buildRunroot(op2)
+	if err != nil {
+		t.Fatalf("buildRunroot op2: %v", err)
+	}
+	if runroot1 == runroot2 {
+		t.Fatalf("concurrent operations produced identical runroot: %q", runroot1)
+	}
+
+	// Create both runroots
+	if err := os.Mkdir(runroot1, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.cleanupRunroot(runroot1) })
+	if err := os.Mkdir(runroot2, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.cleanupRunroot(runroot2) })
+
+	// Pre-existing collision defense: BuildImage for op1 must reject because runroot1 exists
+	ctx := context.Background()
+	_, buildErr := p.BuildImage(ctx, ImageBuildRequest{
+		OperationID: op1,
+		Connection:  podmanConnectionForTest(environments.ConnectionKindLocalPodman),
+		Definition:  r.definition,
+		ProductRoot: filepath.Join(root, "product"),
+		RecipeRoot:  filepath.Join(root, "recipe"),
+	})
+	if buildErr == nil || !strings.Contains(buildErr.Error(), "build operation runroot already exists") {
+		t.Fatalf("expected collision error, got %v", buildErr)
+	}
+
+	// Clean up op1 only: op2 must remain untouched
+	if err := p.cleanupRunroot(runroot1); err != nil {
+		t.Fatalf("cleanupRunroot op1: %v", err)
+	}
+	if _, err := os.Stat(runroot1); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("runroot1 was not removed")
+	}
+	if _, err := os.Stat(runroot2); err != nil {
+		t.Fatalf("runroot2 was unexpectedly touched during op1 cleanup: %v", err)
+	}
+
+	// Symlink defense: symlink at runroot path must be rejected by cleanupRunroot
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "target_file")
+	if err := os.WriteFile(outsideFile, []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, runroot1); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(runroot1)
+	if err := p.cleanupRunroot(runroot1); err == nil {
+		t.Fatal("cleanupRunroot accepted symlink")
+	}
+	if _, err := os.Stat(outsideFile); err != nil {
+		t.Fatal("symlink target was destroyed by cleanup")
+	}
+
+	// Path escape defense: cleanupRunroot must reject paths escaping runtime directory
+	escapedRunroot := filepath.Join(filepath.Dir(filepath.Dir(runroot1)), filepath.Base(runroot1))
+	if err := p.cleanupRunroot(escapedRunroot); err == nil {
+		t.Fatal("cleanupRunroot accepted escaped runroot path")
+	}
+}
+
+// Purpose: When Podman fails with engine exit 125 and the exact stderr
+// 'Error: the specified runroot is longer than 50 characters', buildInfrastructureHint
+// must return the actionable fixed troubleshooting hint without leaking secrets or paths.
+func TestManagedBuildRunrootDiagnosticHint(t *testing.T) {
+	exactStderr := "Error: the specified runroot is longer than 50 characters"
+	hint := buildInfrastructureHint(exactStderr)
+	if !strings.Contains(hint, "untrusted output hint:") || !strings.Contains(hint, "runroot path length") {
+		t.Fatalf("unexpected hint for exact stderr: %q", hint)
+	}
+
+	adversarialStderr := "Error: the specified runroot is longer than 50 characters: PRIVATE_SECRET_TOKEN=xyz123"
+	advHint := buildInfrastructureHint(adversarialStderr)
+	if strings.Contains(advHint, "PRIVATE_SECRET_TOKEN") || strings.Contains(advHint, "xyz123") {
+		t.Fatalf("secret leaked in diagnostic hint: %q", advHint)
+	}
+	if advHint != hint {
+		t.Fatalf("hint varied for adversarial input: got %q, want %q", advHint, hint)
+	}
+}
+
+// Purpose: Lifecycle cancellation during an active build and crash recovery on a fresh
+// provider instance must identify the identical runroot resource, unmount storage using
+// that runroot, and clean up without orphaned state or affecting sibling operations.
+func TestManagedBuildRunrootLifecycleCancellationAndCrashCleanup(t *testing.T) {
+	// Subtest 1: Lifecycle cancellation during active build
+	t.Run("cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		opID := "op_cancel_runroot_test"
+		r := &imageBuildRunner{
+			t:           t,
+			definition:  buildDefinitionFixture(),
+			operation:   opID,
+			id:          "sha256:" + strings.Repeat("e", 64),
+			cancelBuild: true,
+			cancel:      cancel,
+		}
+		p := NewLocalPodmanProvider(r)
+		root := t.TempDir()
+		p.ConfigureBuildRoot(root)
+		expectedRunroot, err := p.buildRunroot(opID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = p.cleanupRunroot(expectedRunroot) })
+
+		_, err = p.BuildImage(ctx, ImageBuildRequest{
+			OperationID: opID,
+			Connection:  podmanConnectionForTest(environments.ConnectionKindLocalPodman),
+			Definition:  r.definition,
+			ProductRoot: filepath.Join(root, "product"),
+			RecipeRoot:  filepath.Join(root, "recipe"),
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+		if _, err := os.Stat(expectedRunroot); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("runroot %q was not removed after cancellation", expectedRunroot)
+		}
+		if _, err := os.Stat(filepath.Join(root, opID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("operation scratch was not removed after cancellation")
+		}
+	})
+
+	// Subtest 2: Crash recovery cleanup on fresh provider instance
+	t.Run("crash-recovery", func(t *testing.T) {
+		opID := "op_crash_recovery_test"
+		r := &imageBuildRunner{t: t, definition: buildDefinitionFixture(), operation: opID}
+		pFresh := NewLocalPodmanProvider(r)
+		root := t.TempDir()
+		pFresh.ConfigureBuildRoot(root)
+		expectedRunroot, err := pFresh.buildRunroot(opID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = pFresh.cleanupRunroot(expectedRunroot) })
+
+		// Simulate crashed state on disk: root and runroot exist, storage populated
+		opRoot := filepath.Join(root, opID)
+		if err := os.MkdirAll(filepath.Join(opRoot, "storage"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(opRoot, "storage", "sentinel"), []byte("crashed"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(expectedRunroot, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(opRoot, "runroot"), []byte(expectedRunroot), 0600); err != nil {
+			t.Fatal(err)
+		}
+
+		// Fresh provider instance calls CleanupBuild (as crash recovery would)
+		if err := pFresh.CleanupBuild(context.Background(), opID); err != nil {
+			t.Fatalf("CleanupBuild crash recovery failed: %v", err)
+		}
+
+		// Verify unmount called with exact expectedRunroot
+		unmounted := false
+		for _, c := range r.calls {
+			if strings.Contains(strings.Join(c.Args, " "), "unmount") {
+				for i, a := range c.Args {
+					if a == "--runroot" && i+1 < len(c.Args) && c.Args[i+1] == expectedRunroot {
+						unmounted = true
+					}
+				}
+			}
+		}
+		if !unmounted {
+			t.Fatalf("unmount was not called with expected runroot %q", expectedRunroot)
+		}
+
+		// Verify both runroot and opRoot removed
+		if _, err := os.Stat(expectedRunroot); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("runroot was not cleaned up during crash recovery")
+		}
+		if _, err := os.Stat(opRoot); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("operation scratch was not cleaned up during crash recovery")
+		}
+	})
 }

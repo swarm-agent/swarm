@@ -24,4 +24,8 @@ proxy configuration, or disable isolation to make a reproduction succeed.
 
 These diagnostics do not establish the cause of a particular engine exit 125.
 Real Podman/systemd reproduction is still required; injected tests establish
-failure reporting and cleanup contracts, not host compatibility.
+failure reporting and cleanup contracts, not host compatibility. Podman 4.9.3
+strictly limits the `--runroot` parameter to at most 50 characters due to UNIX
+domain socket path limits; managed builds allocate a short, private, per-operation
+runroot directly beneath the verified user runtime directory (`XDG_RUNTIME_DIR`),
+which is cleaned up along with isolated storage during operation teardown.

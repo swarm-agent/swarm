@@ -24,11 +24,12 @@ var _ OperationCanceler = (*LocalDockerProvider)(nil)
 
 // LocalDockerProvider manages environment deployments on a local Docker daemon.
 type LocalDockerProvider struct {
-	buildRoot string
-	buildRuns sync.Map
-	kind      environments.ConnectionKind
-	runner    CommandRunner
-	httpGet   func(ctx context.Context, url string) (int, error)
+	buildRoot  string
+	runtimeDir string
+	buildRuns  sync.Map
+	kind       environments.ConnectionKind
+	runner     CommandRunner
+	httpGet    func(ctx context.Context, url string) (int, error)
 }
 
 // NewLocalDockerProvider creates a new LocalDockerProvider using the supplied CommandRunner.

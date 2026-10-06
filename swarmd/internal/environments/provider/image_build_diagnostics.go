@@ -78,6 +78,7 @@ func buildInfrastructureHint(output string) string {
 		{"cgroup", "check user-service cgroup delegation and resource limits"},
 		{"short-name", "use a fully qualified base image name in the committed recipe"},
 		{"tls handshake", "check registry connectivity and certificate trust"},
+		{"runroot", "check engine runroot path length and runtime directory configuration"},
 	} {
 		if strings.Contains(output, candidate.match) {
 			return "untrusted output hint: " + candidate.hint
