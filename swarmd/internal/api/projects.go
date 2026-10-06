@@ -1308,7 +1308,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			}
 			if err == nil {
 				for _, ref := range task.ActiveAttempt().RepositoryContinuations {
-					if ref.Source.SameIdentity(task.SourceWorkspace) { alloc.BaseCommit = ref.Lane.BaseCommit }
+					if ref.Source.SameIdentity(task.SourceWorkspace) {
+						alloc.BaseCommit = ref.Lane.BaseCommit
+					}
 				}
 			}
 		} else {

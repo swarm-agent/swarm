@@ -3797,7 +3797,9 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 	if err != nil {
 		return "", "", err
 	}
-	if err := s.validateTaskRepositoryContinuationBases(parentSession, principal); err != nil { return "", "", err }
+	if err := s.validateTaskRepositoryContinuationBases(parentSession, principal); err != nil {
+		return "", "", err
+	}
 	scope, err := s.resolveRunWorkspaceScope(parentSession, principal)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve parent shared workspace roots: %w", err)

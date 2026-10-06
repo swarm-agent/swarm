@@ -981,7 +981,9 @@ func (p *taskProgramScheduler) coderSourceForJob(def pebblestore.TaskProgramJobS
 	for _, item := range sessionWorktreeHistory(p.parentSession.Metadata["swarm_v3_worktree_history"]) {
 		if sameTaskProgramPath(path, mapString(item, "path")) {
 			source := mapString(item, "source_workspace_path")
-			if _, _, err := p.canonicalRepositorySource(source); err != nil { return "", err }
+			if _, _, err := p.canonicalRepositorySource(source); err != nil {
+				return "", err
+			}
 			return source, nil
 		}
 	}

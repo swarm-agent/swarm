@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	pebblestore "swarm/packages/swarmd/internal/store/pebble"
-	worktree "swarm/packages/swarmd/internal/worktree"
-	"swarm/packages/swarmd/internal/workspace"
 	"swarm/packages/swarmd/internal/identity"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/workspace"
+	worktree "swarm/packages/swarmd/internal/worktree"
 )
 
 // Purpose: multi-repository admission must reject aliases of one actual Git
@@ -85,7 +85,9 @@ func multiRepoProgramFixture(t *testing.T, dependent bool) (*taskProgramSchedule
 	entries := make([]pebblestore.WorkspaceEntry, 0, 2)
 	for _, source := range sources {
 		entry, err := catalog.AddForAccount(parent.AccountScopeID, source, "Fixture")
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		entries = append(entries, entry)
 		parent.WorkspaceGrants = append(parent.WorkspaceGrants, pebblestore.WorkspaceGrant{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: source})
 	}

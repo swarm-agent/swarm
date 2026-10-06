@@ -85,11 +85,17 @@ func (p *taskProgramScheduler) repositoryLaneForSource(requested string, multi b
 	if lane == nil {
 		allocationSource := target
 		refs, err := p.service.sessions.Store().TaskRepositoryContinuationsForSession(p.parentSession)
-		if err != nil { return "", err }
+		if err != nil {
+			return "", err
+		}
 		for _, ref := range refs {
-			if ref.Source.Path != target { continue }
+			if ref.Source.Path != target {
+				continue
+			}
 			allocationSource, _, err = p.service.resolveTaskTargetWorkspace(p.parentSession, p.req.Principal, &taskLaunchSpec{RequestedSubagentType: "coder", TargetWorkspacePath: target})
-			if err != nil { return "", err }
+			if err != nil {
+				return "", err
+			}
 		}
 		base, err := p.service.worktrees.ResolveTaskBase(allocationSource)
 		if err != nil {

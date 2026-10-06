@@ -306,11 +306,17 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		repositories = active.RepositoryContinuations
 	} else if !req.Repair {
 		repositories, err = s.resolveTaskRepositoryContinuations(p, task, sources)
-		if err != nil { return nil, &projectTaskFollowupError{409, err} }
-		if recovery != nil && len(repositories) > 0 { return nil, &projectTaskFollowupError{409, errors.New("coordinator and repository results require explicit reconciliation")} }
+		if err != nil {
+			return nil, &projectTaskFollowupError{409, err}
+		}
+		if recovery != nil && len(repositories) > 0 {
+			return nil, &projectTaskFollowupError{409, errors.New("coordinator and repository results require explicit reconciliation")}
+		}
 	}
 	for _, ref := range repositories {
-		if err := s.validateTaskRepositoryContinuation(p, task, ref); err != nil { return nil, &projectTaskFollowupError{403, err} }
+		if err := s.validateTaskRepositoryContinuation(p, task, ref); err != nil {
+			return nil, &projectTaskFollowupError{403, err}
+		}
 	}
 	// Source provenance is backend-only and persisted before external effects.
 	task, err = db.ReserveTaskFollowupWithRepositories(p.AccountScopeID, projectID, taskID, p.UserID, req.ClientRequestID, req.Feedback, req.Revision, time.Now().UnixMilli(), recovery, repositories, origin)
@@ -358,7 +364,9 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	if a.BaseCommit == "" {
 		base, target := state.HeadCommit, state.BranchName
 		for _, ref := range a.RepositoryContinuations {
-			if ref.Source.SameIdentity(task.SourceWorkspace) { base, target = ref.HeadCommit, ref.TargetBranch }
+			if ref.Source.SameIdentity(task.SourceWorkspace) {
+				base, target = ref.HeadCommit, ref.TargetBranch
+			}
 		}
 		if a.Recovery != nil {
 			base, target = a.Recovery.HeadCommit, a.Recovery.TargetBranch
@@ -375,7 +383,9 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 				t.BaseCommit = projectTaskRepairBase(t.ActiveAttempt().Recovery)
 			}
 			for _, ref := range t.ActiveAttempt().RepositoryContinuations {
-				if ref.Source.SameIdentity(t.SourceWorkspace) { t.BaseCommit = ref.Lane.BaseCommit }
+				if ref.Source.SameIdentity(t.SourceWorkspace) {
+					t.BaseCommit = ref.Lane.BaseCommit
+				}
 			}
 			t.ActiveAttempt().AllocationHead = base
 			return nil

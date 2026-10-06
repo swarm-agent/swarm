@@ -80,35 +80,61 @@ func (s *Server) ResolveProjectInspection(ctx context.Context, p identity.Princi
 	// Preserve coordinator ownership and Git guards even when its HEAD has no
 	// delta and the actual committed result is in a program lane.
 	coordinatorClaims, err := s.sessions.Store().InspectWorktreeOwnership(p.AccountScopeID, p.UserID, []string{child.WorktreeRootPath})
-	if err != nil || len(coordinatorClaims) != 1 || coordinatorClaims[0].OwnerSessionID != child.ID || coordinatorClaims[0].ClaimantSessionID != "" { return result, errors.New("task result ownership missing, changed or reserved") }
-	coordinatorValidator, ok := s.worktrees.(interface { ValidateSessionRepositoryLane(string, string, string, string) error })
-	if !ok { return result, errors.New("task result Git ownership validator unavailable") }
-	if err := coordinatorValidator.ValidateSessionRepositoryLane(source.Path, child.WorktreeRootPath, child.ID, child.WorktreeBranch); err != nil { return result, err }
+	if err != nil || len(coordinatorClaims) != 1 || coordinatorClaims[0].OwnerSessionID != child.ID || coordinatorClaims[0].ClaimantSessionID != "" {
+		return result, errors.New("task result ownership missing, changed or reserved")
+	}
+	coordinatorValidator, ok := s.worktrees.(interface {
+		ValidateSessionRepositoryLane(string, string, string, string) error
+	})
+	if !ok {
+		return result, errors.New("task result Git ownership validator unavailable")
+	}
+	if err := coordinatorValidator.ValidateSessionRepositoryLane(source.Path, child.WorktreeRootPath, child.ID, child.WorktreeBranch); err != nil {
+		return result, err
+	}
 	coordinatorState, err := s.worktrees.InspectTaskWorkspace(child.WorktreeRootPath)
-	if err != nil || !coordinatorState.Clean || coordinatorState.BranchName != child.WorktreeBranch { return result, errors.New("task result coordinator dirty, missing or changed") }
+	if err != nil || !coordinatorState.Clean || coordinatorState.BranchName != child.WorktreeBranch {
+		return result, errors.New("task result coordinator dirty, missing or changed")
+	}
 	// Program results live in repository-specific integration lanes, not the
 	// unchanged coordinator. Use the same authenticated historical selector as
 	// follow-up admission; workspace/head arguments constrain, never authorize.
 	sources, err := s.sessions.Store().ResolveTaskFollowupSources(task, p.UserID)
-	if err != nil { return result, err }
+	if err != nil {
+		return result, err
+	}
 	refs, err := s.resolveTaskRepositoryContinuations(p, task, sources)
-	if err != nil { return result, err }
+	if err != nil {
+		return result, err
+	}
 	if len(refs) > 0 {
 		comparisonBase := task.BaseCommit
-		if len(a.RepositoryContinuations) > 0 { comparisonBase = a.AllocationHead }
-		if comparisonBase == "" || coordinatorState.HeadCommit != comparisonBase { return result, errors.New("coordinator and repository results require explicit reconciliation") }
+		if len(a.RepositoryContinuations) > 0 {
+			comparisonBase = a.AllocationHead
+		}
+		if comparisonBase == "" || coordinatorState.HeadCommit != comparisonBase {
+			return result, errors.New("coordinator and repository results require explicit reconciliation")
+		}
 		selected := -1
 		for i, ref := range refs {
 			matches := ref.Source.SameIdentity(source)
 			if req.WorkspacePath != "" || req.WorkspaceID != "" {
 				matches = (req.WorkspacePath == "" || req.WorkspacePath == ref.Source.Path) && (req.WorkspaceID == "" || req.WorkspaceID == ref.Source.WorkspaceID)
 			}
-			if matches && (req.WorkspaceGeneration == 0 || req.WorkspaceGeneration == ref.Source.WorkspaceGeneration) { selected = i }
+			if matches && (req.WorkspaceGeneration == 0 || req.WorkspaceGeneration == ref.Source.WorkspaceGeneration) {
+				selected = i
+			}
 		}
-		if selected < 0 { return result, errors.New("task source identity mismatch") }
+		if selected < 0 {
+			return result, errors.New("task source identity mismatch")
+		}
 		ref := refs[selected]
-		if _, err := s.resolveProjectTaskSource(p, proj, ref.Source.Path, ref.Source.WorkspaceID, ref.Source.WorkspaceGeneration, true); err != nil { return result, err }
-		if req.HeadCommit != "" && req.HeadCommit != ref.HeadCommit { return result, errors.New("task result head_commit mismatch") }
+		if _, err := s.resolveProjectTaskSource(p, proj, ref.Source.Path, ref.Source.WorkspaceID, ref.Source.WorkspaceGeneration, true); err != nil {
+			return result, err
+		}
+		if req.HeadCommit != "" && req.HeadCommit != ref.HeadCommit {
+			return result, errors.New("task result head_commit mismatch")
+		}
 		req.WorkspacePath, req.WorkspaceID, req.WorkspaceGeneration = ref.Source.Path, ref.Source.WorkspaceID, ref.Source.WorkspaceGeneration
 		req.HeadCommit = ref.HeadCommit
 		return tool.ProjectInspectionTarget{Reference: req, Root: ref.Lane.WorkspacePath, Base: ref.Lane.BaseCommit, Branch: ref.Lane.Branch}, nil
@@ -116,7 +142,9 @@ func (s *Server) ResolveProjectInspection(ctx context.Context, p identity.Princi
 	if req.WorkspacePath != "" && req.WorkspacePath != source.Path || req.WorkspaceID != "" && req.WorkspaceID != source.WorkspaceID || req.WorkspaceGeneration != 0 && req.WorkspaceGeneration != source.WorkspaceGeneration {
 		return result, errors.New("task source identity mismatch")
 	}
-	if _, err := s.resolveProjectTaskSource(p, proj, source.Path, source.WorkspaceID, source.WorkspaceGeneration, true); err != nil { return result, err }
+	if _, err := s.resolveProjectTaskSource(p, proj, source.Path, source.WorkspaceID, source.WorkspaceGeneration, true); err != nil {
+		return result, err
+	}
 	claims, err := s.sessions.Store().InspectWorktreeOwnership(p.AccountScopeID, p.UserID, []string{child.WorktreeRootPath})
 	if err != nil || len(claims) != 1 || claims[0].OwnerSessionID != child.ID || claims[0].ClaimantSessionID != "" {
 		return result, errors.New("task result ownership missing, changed or reserved")

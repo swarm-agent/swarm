@@ -12,32 +12,32 @@ import (
 // ProjectTaskAttempt records a coordinator reservation, not a copy of its transcript.
 // Zero legacy timestamps mean unknown; migration never dates old feedback.
 type ProjectTaskAttempt struct {
-	ID              string                     `json:"id"`
-	ClientRequestID string                     `json:"client_request_id,omitempty"`
-	PayloadHash     string                     `json:"payload_hash,omitempty"`
-	RequestRevision int                        `json:"request_revision,omitempty"`
-	UserID          string                     `json:"user_id,omitempty"`
-	Request         string                     `json:"request,omitempty"`
-	SessionID       string                     `json:"session_id"`
-	RunID           string                     `json:"run_id,omitempty"`
-	Role            string                     `json:"role"`
-	CreatedAt       int64                      `json:"created_at,omitempty"`
-	Status          string                     `json:"status"`
-	LaunchState     string                     `json:"launch_state,omitempty"`
-	LastError       string                     `json:"last_error,omitempty"`
-	Summary         string                     `json:"summary,omitempty"`
-	SummaryRunID    string                     `json:"summary_run_id,omitempty"`
-	Recovery        *ProjectTaskRecoverySource `json:"recovery,omitempty"`
+	ID                      string                              `json:"id"`
+	ClientRequestID         string                              `json:"client_request_id,omitempty"`
+	PayloadHash             string                              `json:"payload_hash,omitempty"`
+	RequestRevision         int                                 `json:"request_revision,omitempty"`
+	UserID                  string                              `json:"user_id,omitempty"`
+	Request                 string                              `json:"request,omitempty"`
+	SessionID               string                              `json:"session_id"`
+	RunID                   string                              `json:"run_id,omitempty"`
+	Role                    string                              `json:"role"`
+	CreatedAt               int64                               `json:"created_at,omitempty"`
+	Status                  string                              `json:"status"`
+	LaunchState             string                              `json:"launch_state,omitempty"`
+	LastError               string                              `json:"last_error,omitempty"`
+	Summary                 string                              `json:"summary,omitempty"`
+	SummaryRunID            string                              `json:"summary_run_id,omitempty"`
+	Recovery                *ProjectTaskRecoverySource          `json:"recovery,omitempty"`
 	RepositoryContinuations []ProjectTaskRepositoryContinuation `json:"repository_continuations,omitempty"`
-	PlanBinding     *ProjectTaskPlanBinding    `json:"plan_binding,omitempty"`
-	TaskProgramID   string                     `json:"task_program_id,omitempty"`
-	Deliverables    []ProjectTaskDeliverable   `json:"deliverables,omitempty"`
-	Integration     *ProjectTaskIntegration    `json:"integration,omitempty"`
-	WorkspacePath   string                     `json:"workspace_path,omitempty"`
-	WorktreeBranch  string                     `json:"worktree_branch,omitempty"`
-	BaseBranch      string                     `json:"base_branch,omitempty"`
-	BaseCommit      string                     `json:"base_commit,omitempty"`
-	AllocationHead  string                     `json:"allocation_head,omitempty"`
+	PlanBinding             *ProjectTaskPlanBinding             `json:"plan_binding,omitempty"`
+	TaskProgramID           string                              `json:"task_program_id,omitempty"`
+	Deliverables            []ProjectTaskDeliverable            `json:"deliverables,omitempty"`
+	Integration             *ProjectTaskIntegration             `json:"integration,omitempty"`
+	WorkspacePath           string                              `json:"workspace_path,omitempty"`
+	WorktreeBranch          string                              `json:"worktree_branch,omitempty"`
+	BaseBranch              string                              `json:"base_branch,omitempty"`
+	BaseCommit              string                              `json:"base_commit,omitempty"`
+	AllocationHead          string                              `json:"allocation_head,omitempty"`
 }
 
 // ProjectTaskRecoverySource is backend-inspected Git evidence, never UI grants.
@@ -247,14 +247,22 @@ func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, tas
 		if err != nil {
 			return err
 		}
-		if len(repositories) > 64 { return errors.New("repository continuation inventory exceeds bound") }
+		if len(repositories) > 64 {
+			return errors.New("repository continuation inventory exceeds bound")
+		}
 		seenRepositories := map[string]bool{}
 		for _, retained := range repositories {
-			if seenRepositories[retained.Source.Path] { return errors.New("duplicate repository continuation") }
+			if seenRepositories[retained.Source.Path] {
+				return errors.New("duplicate repository continuation")
+			}
 			seenRepositories[retained.Source.Path] = true
 			admitted := retained.Source.SameIdentity(t.SourceWorkspace)
-			for _, source := range sources { admitted = admitted || retained.Source.SameIdentity(source) }
-			if !admitted { return errors.New("repository continuation source is not admitted") }
+			for _, source := range sources {
+				admitted = admitted || retained.Source.SameIdentity(source)
+			}
+			if !admitted {
+				return errors.New("repository continuation source is not admitted")
+			}
 			if _, err := s.AuthenticateTaskRepositoryContinuation(t, user, retained); err != nil {
 				return err
 			}
