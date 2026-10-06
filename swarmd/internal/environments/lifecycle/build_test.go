@@ -18,10 +18,14 @@ type managedBuildProvider struct {
 	mismatch     bool
 	cleanupCalls int
 	cleanupErr   error
+	buildErr     error
 }
 
 func (p *managedBuildProvider) BuildImage(_ context.Context, r provider.ImageBuildRequest) (*environments.ImageBuildResult, error) {
 	p.calls++
+	if p.buildErr != nil {
+		return nil, p.buildErr
+	}
 	b := &environments.ImageBuildResult{OperationID: r.OperationID, ConnectionID: r.Connection.ID, DefinitionDigest: r.Definition.Digest(), ImageID: "sha256:" + strings.Repeat("c", 64), ContextDigest: strings.Repeat("d", 64), Product: r.Definition.Product, Recipe: r.Definition.Recipe, RecipeFile: r.Definition.RecipeFile}
 	if p.mismatch {
 		b.Product.Commit = strings.Repeat("e", 40)
@@ -183,5 +187,42 @@ func TestManagedBuildRecoveryNoReplay(t *testing.T) {
 				t.Fatalf("recovery: %+v calls=%d cleanup=%d err=%v", got, p.calls, p.cleanupCalls, err)
 			}
 		})
+	}
+}
+
+// Purpose: executeBuild must retain the actionable build/admission rejection when
+// cleanup also fails. This service-level test proves nil receipts, original cause
+// identity and cleanup_failed classification without running an engine.
+func TestManagedBuildRejectionDiagnostics(t *testing.T) {
+	for _, admission := range []bool{false, true} {
+		for _, cleanupFails := range []bool{false, true} {
+			h, env, conn, p := buildLifecycleFixture(t)
+			primary := errors.New("exact committed build source is unavailable")
+			want := primary.Error()
+			if admission {
+				p.mismatch = true
+				want = "provider returned mismatched build provenance"
+			} else {
+				p.buildErr = primary
+			}
+			if cleanupFails {
+				p.cleanupErr = errors.New("owned build storage unmount failed")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			out, err := h.manager.executeBuild(ctx, "op_rejection", SubmitOperationRequest{AccountScopeID: "account"}, &env, &conn)
+			cancel()
+			if out != nil || err == nil || !strings.Contains(err.Error(), want) || p.cleanupCalls != 1 {
+				t.Fatalf("rejection lost: out=%+v err=%v cleanup=%d", out, err, p.cleanupCalls)
+			}
+			if !admission && !errors.Is(err, primary) {
+				t.Fatal("original error identity lost")
+			}
+			if errors.Is(err, provider.ErrOperationCleanupFailed) != cleanupFails {
+				t.Fatalf("wrong cleanup classification: %v", err)
+			}
+			if cleanupFails && !strings.Contains(err.Error(), p.cleanupErr.Error()) {
+				t.Fatalf("cleanup cause lost: %v", err)
+			}
+		}
 	}
 }

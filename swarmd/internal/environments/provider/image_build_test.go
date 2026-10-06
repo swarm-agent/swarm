@@ -106,6 +106,8 @@ type imageBuildRunner struct {
 	calls                               []mockCall
 	failBuild, failCleanup, cancelBuild bool
 	cancel                              context.CancelFunc
+	unitState                           string
+	unitErr                             error
 }
 
 func (r *imageBuildRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -124,7 +126,10 @@ func (r *imageBuildRunner) Run(ctx context.Context, name string, args ...string)
 		if r.failCleanup {
 			return nil, errors.New("injected cleanup failure")
 		}
-		return []byte("inactive"), nil
+		if r.unitState != "" || r.unitErr != nil {
+			return []byte(r.unitState), r.unitErr
+		}
+		return []byte("LoadState=loaded\nActiveState=inactive\n"), nil
 	}
 	if strings.Contains(joined, "info --format=json") {
 		return []byte(podmanInfoFixture), nil
@@ -177,11 +182,11 @@ func (r *imageBuildRunner) RunWithIO(ctx context.Context, _ io.Reader, stdout, s
 // success, failure and cancellation. The injected engine proves emitted argv
 // and postconditions, not actual Podman/systemd host compatibility.
 func TestManagedBuildProviderContract(t *testing.T) {
-	for _, mode := range []string{"success", "failure", "cancel", "cleanup-failure"} {
+	for _, mode := range []string{"success", "failure", "cancel", "cleanup-failure", "both-fail"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			r := &imageBuildRunner{t: t, definition: buildDefinitionFixture(), operation: "op_test", id: "sha256:" + strings.Repeat("c", 64), failBuild: mode == "failure", failCleanup: mode == "cleanup-failure", cancelBuild: mode == "cancel", cancel: cancel}
+			r := &imageBuildRunner{t: t, definition: buildDefinitionFixture(), operation: "op_test", id: "sha256:" + strings.Repeat("c", 64), failBuild: mode == "failure" || mode == "both-fail", failCleanup: mode == "cleanup-failure" || mode == "both-fail", cancelBuild: mode == "cancel", cancel: cancel}
 			p := NewLocalPodmanProvider(r)
 			root := t.TempDir()
 			p.ConfigureBuildRoot(root)
@@ -193,7 +198,10 @@ func TestManagedBuildProviderContract(t *testing.T) {
 			} else if err == nil || result != nil || strings.Contains(err.Error(), "PRIVATE_RECIPE_SECRET") {
 				t.Fatalf("failure not closed/redacted: %+v %v", result, err)
 			}
-			if mode != "cleanup-failure" {
+			if mode == "both-fail" && (!strings.Contains(err.Error(), "isolated image build failed") || !strings.Contains(err.Error(), "build unit termination unconfirmed")) {
+				t.Fatalf("combined failure lost: %v", err)
+			}
+			if mode != "cleanup-failure" && mode != "both-fail" {
 				if _, err := os.Stat(filepath.Join(root, r.operation)); !errors.Is(err, os.ErrNotExist) {
 					t.Fatal("owned scratch retained")
 				}
@@ -317,5 +325,115 @@ func TestManagedBuildExactCommittedExport(t *testing.T) {
 	entries, _ := os.ReadDir(empty)
 	if len(entries) != 0 {
 		t.Fatal("missing commit partially wrote context")
+	}
+}
+
+// Purpose: cleanupBuildFiles must handle pre-launch/collected units and empty
+// storage idempotently, but retain scratch on uncertain termination. Injected
+// systemd responses prove this failure boundary without host services.
+func TestManagedBuildPartialCleanup(t *testing.T) {
+	for _, state := range []string{"LoadState=not-found\nActiveState=inactive", "LoadState=loaded\nActiveState=active", ""} {
+		root := t.TempDir()
+		r := &imageBuildRunner{unitState: state, unitErr: errors.New("unit query failed")}
+		p := NewLocalPodmanProvider(r)
+		p.ConfigureBuildRoot(root)
+		owned := filepath.Join(root, "op_partial")
+		if err := os.MkdirAll(filepath.Join(owned, "storage"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := p.CleanupBuild(ctx, "op_partial")
+		confirmed := strings.Contains(state, "not-found")
+		if (err == nil) != confirmed {
+			t.Fatalf("state %q: %v", state, err)
+		}
+		_, statErr := os.Stat(owned)
+		if errors.Is(statErr, os.ErrNotExist) != confirmed {
+			t.Fatalf("scratch removal disagrees with termination evidence: %v", statErr)
+		}
+		inventory := false
+		for _, call := range r.calls {
+			args := strings.Join(call.Args, " ")
+			inventory = inventory || strings.Contains(args, "images --filter label=io.swarm.build.operation=op_partial")
+			if strings.Contains(args, "unmount") {
+				t.Fatal("empty storage invoked engine initialization")
+			}
+		}
+		if !inventory {
+			t.Fatal("scratch failure prevented independent image cleanup")
+		}
+		r.unitState, r.unitErr = "LoadState=not-found\nActiveState=inactive", errors.New("collected")
+		for i := 0; i < 2; i++ {
+			if err := p.CleanupBuild(ctx, "op_partial"); err != nil {
+				t.Fatalf("cleanup retry: %v", err)
+			}
+		}
+		cancel()
+	}
+}
+
+// Purpose: BuildCleanupError must not persist credentials or unbounded cleanup
+// output while preserving primary error identity and cleanup classification.
+// The diagnostic helper is the narrowest layer proving these postconditions.
+func TestManagedBuildCleanupDiagnosticBounds(t *testing.T) {
+	primary := errors.New("committed source unavailable")
+	err := BuildCleanupError(primary, errors.New("password=PRIVATE_VALUE\n"+strings.Repeat("x", 4096)))
+	if !errors.Is(err, primary) || !errors.Is(err, ErrOperationCleanupFailed) || strings.Contains(err.Error(), "PRIVATE_VALUE") || len(err.Error()) > 1300 {
+		t.Fatalf("unsafe cleanup diagnostic: %v", err)
+	}
+	if BuildCleanupError(primary, nil) != primary {
+		t.Fatal("confirmed cleanup replaced original error")
+	}
+}
+
+// Purpose: cleanupBuildFiles must never follow redirected storage, and must
+// unmount populated owned storage before removing it. The filesystem and command
+// boundary test proves confinement without invoking a real rootless engine.
+func TestManagedBuildCleanupStorageOwnership(t *testing.T) {
+	for _, redirected := range []bool{false, true} {
+		root, outside := t.TempDir(), t.TempDir()
+		r := &imageBuildRunner{}
+		p := NewLocalPodmanProvider(r)
+		p.ConfigureBuildRoot(root)
+		owned := filepath.Join(root, "op_storage")
+		if err := os.Mkdir(owned, 0700); err != nil {
+			t.Fatal(err)
+		}
+		storage := filepath.Join(owned, "storage")
+		if redirected {
+			if err := os.Symlink(outside, storage); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.Mkdir(storage, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(storage, "sentinel"), []byte("owned"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := p.cleanupBuildFiles(ctx, "op_storage")
+		cancel()
+		if (err != nil) != redirected {
+			t.Fatalf("redirect=%t cleanup=%v", redirected, err)
+		}
+		unmounted := false
+		for _, call := range r.calls {
+			if strings.Contains(strings.Join(call.Args, " "), "unmount --all --force") {
+				unmounted = true
+				if !strings.Contains(strings.Join(call.Args, " "), "--root "+storage) {
+					t.Fatal("unmount escaped owned storage")
+				}
+			}
+		}
+		if unmounted == redirected {
+			t.Fatal("unmount did not respect storage ownership")
+		}
+		if redirected {
+			if data, err := os.ReadFile(filepath.Join(outside, "sentinel")); err != nil || string(data) != "owned" {
+				t.Fatal("redirected storage mutated")
+			}
+		} else if _, err := os.Stat(owned); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("owned scratch retained after confirmed cleanup")
+		}
 	}
 }

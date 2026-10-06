@@ -75,7 +75,7 @@ func (s *Server) prepareTaskEnvironment(ctx context.Context, p identity.Principa
 	if sessionID != "" {
 		kind, consumer = environments.ConsumerTypeSession, sessionID
 	}
-	op, err := s.deployments.Submit(ctx, lifecycle.SubmitOperationRequest{AccountScopeID: p.AccountScopeID, WorkspaceID: req.WorkspaceID, EnvironmentID: env.ID, Action: req.Action, EnvOverrides: req.EnvOverrides, IdempotencyKey: req.IdempotencyKey, BuildOperationID: req.BuildOperationID, ConsumerType: kind, ConsumerID: consumer, TTLMillis: req.TTLMillis, Attribution: environments.OperationAttribution{Actor: p.UserID, SessionID: sessionID}})
+	op, err := s.deployments.Submit(ctx, lifecycle.SubmitOperationRequest{AccountScopeID: p.AccountScopeID, WorkspaceID: req.WorkspaceID, EnvironmentID: env.ID, ConnectionID: req.ConnectionID, Action: req.Action, EnvOverrides: req.EnvOverrides, IdempotencyKey: req.IdempotencyKey, BuildOperationID: req.BuildOperationID, ConsumerType: kind, ConsumerID: consumer, TTLMillis: req.TTLMillis, Attribution: environments.OperationAttribution{Actor: p.UserID, SessionID: sessionID}})
 	if err != nil {
 		return result, err
 	}

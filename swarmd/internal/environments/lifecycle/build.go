@@ -3,7 +3,6 @@ package lifecycle
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 
 	"swarm-refactor/swarmtui/pkg/environments"
@@ -75,7 +74,7 @@ func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req S
 			defer cancel()
 			if err := builder.CleanupBuild(cleanupCtx, opID); err != nil {
 				out = nil
-				retErr = fmt.Errorf("%w: managed build rejection cleanup unconfirmed", provider.ErrOperationCleanupFailed)
+				retErr = provider.BuildCleanupError(retErr, err)
 			}
 		}
 	}()
