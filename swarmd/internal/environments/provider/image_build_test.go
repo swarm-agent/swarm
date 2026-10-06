@@ -111,6 +111,7 @@ type imageBuildRunner struct {
 	failurePhase                        string
 	commandErr                          error
 	commandOutput                       string
+	onBuild                             func([]string) error
 }
 
 func (r *imageBuildRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -171,6 +172,11 @@ func (r *imageBuildRunner) RunWithIO(ctx context.Context, _ io.Reader, stdout, s
 		return err
 	}
 	if name == "systemd-run" {
+		if r.onBuild != nil {
+			if err := r.onBuild(args); err != nil {
+				return err
+			}
+		}
 		if r.cancelBuild {
 			r.cancel()
 			return ctx.Err()
@@ -207,11 +213,12 @@ func TestManagedBuildProviderContract(t *testing.T) {
 			p := NewLocalPodmanProvider(r)
 			root := t.TempDir()
 			p.ConfigureBuildRoot(root)
+			configureBuildRuntimeFixture(t, p)
 			runroot, rErr := p.buildRunroot(opID)
 			if rErr != nil {
 				t.Fatalf("buildRunroot: %v", rErr)
 			}
-			t.Cleanup(func() { _ = p.cleanupRunroot(runroot) })
+
 			result, err := p.BuildImage(ctx, ImageBuildRequest{OperationID: r.operation, Connection: podmanConnectionForTest(environments.ConnectionKindLocalPodman), Definition: r.definition, ProductRoot: filepath.Join(root, "product"), RecipeRoot: filepath.Join(root, "recipe")})
 			if mode == "success" {
 				if err != nil || result == nil || result.ImageID != r.id || result.Product != r.definition.Product || len(result.ContextDigest) != 64 {
@@ -368,10 +375,12 @@ func TestManagedBuildPartialCleanup(t *testing.T) {
 		r := &imageBuildRunner{unitState: state, unitErr: errors.New("unit query failed")}
 		p := NewLocalPodmanProvider(r)
 		p.ConfigureBuildRoot(root)
+		configureBuildRuntimeFixture(t, p)
 		owned := filepath.Join(root, "op_partial")
 		if err := os.MkdirAll(filepath.Join(owned, "storage"), 0700); err != nil {
 			t.Fatal(err)
 		}
+		allocateBuildRuntimeFixture(t, p, "op_partial")
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		err := p.CleanupBuild(ctx, "op_partial")
 		confirmed := strings.Contains(state, "not-found")
@@ -426,10 +435,12 @@ func TestManagedBuildCleanupStorageOwnership(t *testing.T) {
 		r := &imageBuildRunner{}
 		p := NewLocalPodmanProvider(r)
 		p.ConfigureBuildRoot(root)
+		configureBuildRuntimeFixture(t, p)
 		owned := filepath.Join(root, "op_storage")
 		if err := os.Mkdir(owned, 0700); err != nil {
 			t.Fatal(err)
 		}
+		allocateBuildRuntimeFixture(t, p, "op_storage")
 		storage := filepath.Join(owned, "storage")
 		if redirected {
 			if err := os.Symlink(outside, storage); err != nil {
@@ -479,6 +490,7 @@ func TestManagedBuildCommandFailures(t *testing.T) {
 			p := NewLocalPodmanProvider(r)
 			root := t.TempDir()
 			p.ConfigureBuildRoot(root)
+			configureBuildRuntimeFixture(t, p)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			result, err := p.BuildImage(ctx, ImageBuildRequest{OperationID: r.operation, Connection: podmanConnectionForTest(environments.ConnectionKindLocalPodman), Definition: r.definition, ProductRoot: filepath.Join(root, "product"), RecipeRoot: filepath.Join(root, "recipe")})
@@ -547,6 +559,10 @@ func TestManagedBuildRealCommandDiagnostic(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	p := NewLocalPodmanProvider(&OSCommandRunner{})
+	// This is a shell pipe/status test, not a rootless session probe.
+	p.runner.(*OSCommandRunner).commandEnv = func() ([]string, error) {
+		return []string{"PATH=" + os.Getenv("PATH")}, nil
+	}
 	err := p.runBuildCommand(ctx, "build", io.Discard, "sh", "-c", `printf 'PRIVATE_STDOUT'; printf 'failed to connect to bus PRIVATE_UNLABELLED_SECRET\n' >&2; exit 125`)
 	var failure *BuildCommandError
 	if !errors.As(err, &failure) || failure.Code != 125 || failure.Kind != "exit" || !strings.Contains(err.Error(), "user session bus") || strings.Contains(err.Error(), "PRIVATE") {
@@ -585,7 +601,7 @@ func TestManagedBuildRunrootLengthAndFormat(t *testing.T) {
 		{"invalid-op-id", "/run/user/1000", "invalid_no_op_prefix", true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := buildRunrootPath(tc.runtimeDir, tc.opID)
+			got, err := buildRunrootPath(tc.runtimeDir, "/build/account", tc.opID)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for %s, got %q", tc.name, got)
@@ -605,10 +621,18 @@ func TestManagedBuildRunrootLengthAndFormat(t *testing.T) {
 			if !strings.HasPrefix(base, buildRunrootPrefix) {
 				t.Fatalf("runroot base %q missing prefix %q", base, buildRunrootPrefix)
 			}
-			if len(base) != len(buildRunrootPrefix)+12 {
+			if len(base) != len(buildRunrootPrefix)+24 {
 				t.Fatalf("runroot base %q invalid length %d", base, len(base))
 			}
 		})
+	}
+	first, err := buildRunrootPath("/run/user/4294967295", "/build/account-one", "op_same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := buildRunrootPath("/run/user/4294967295", "/build/account-two", "op_same")
+	if err != nil || first == second {
+		t.Fatalf("account build roots alias: %q %q %v", first, second, err)
 	}
 }
 
@@ -624,11 +648,11 @@ func TestManagedBuildRunrootConsistency(t *testing.T) {
 	p := NewLocalPodmanProvider(r)
 	root := t.TempDir()
 	p.ConfigureBuildRoot(root)
+	configureBuildRuntimeFixture(t, p)
 	expectedRunroot, err := p.buildRunroot(opID)
 	if err != nil {
 		t.Fatalf("buildRunroot: %v", err)
 	}
-	t.Cleanup(func() { _ = p.cleanupRunroot(expectedRunroot) })
 
 	result, err := p.BuildImage(ctx, ImageBuildRequest{
 		OperationID: opID,
@@ -675,9 +699,7 @@ func TestManagedBuildRunrootConsistency(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cleanupRoot, "storage", "sentinel"), []byte("data"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cleanupRoot, "runroot"), []byte(expectedRunroot), 0600); err != nil {
-		t.Fatal(err)
-	}
+	allocateBuildRuntimeFixture(t, p, opID)
 	r.calls = nil
 	if err := p.cleanupBuildFiles(context.Background(), opID); err != nil {
 		t.Fatalf("cleanupBuildFiles: %v", err)
@@ -702,84 +724,42 @@ func TestManagedBuildRunrootConsistency(t *testing.T) {
 	}
 }
 
-// Purpose: Concurrent operations must allocate distinct runroots and their cleanups
-// must never clobber each other. cleanupRunroot must enforce symlink, boundary and
-// ownership defenses. Pre-existing runroot directories must cause build admission rejection.
+// Purpose: BuildImage must preserve a pre-existing runroot and its contents
+// after exclusive allocation rejects a collision. cleanupBuildFiles must also
+// refuse to delete it when the scratch root is absent. Private filesystem
+// fixtures prove both rejection and zero mutations, not just an error string.
 func TestManagedBuildRunrootCollisionAndConcurrency(t *testing.T) {
-	op1 := "op_concurrent_one"
-	op2 := "op_concurrent_two"
 	r := &imageBuildRunner{t: t, definition: buildDefinitionFixture()}
 	p := NewLocalPodmanProvider(r)
-	root := t.TempDir()
-	p.ConfigureBuildRoot(root)
-
-	runroot1, err := p.buildRunroot(op1)
+	p.ConfigureBuildRoot(t.TempDir())
+	configureBuildRuntimeFixture(t, p)
+	opID := "op_collision"
+	runroot, err := p.buildRunroot(opID)
 	if err != nil {
-		t.Fatalf("buildRunroot op1: %v", err)
-	}
-	runroot2, err := p.buildRunroot(op2)
-	if err != nil {
-		t.Fatalf("buildRunroot op2: %v", err)
-	}
-	if runroot1 == runroot2 {
-		t.Fatalf("concurrent operations produced identical runroot: %q", runroot1)
-	}
-
-	// Create both runroots
-	if err := os.Mkdir(runroot1, 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = p.cleanupRunroot(runroot1) })
-	if err := os.Mkdir(runroot2, 0700); err != nil {
+	if err := os.Mkdir(runroot, 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = p.cleanupRunroot(runroot2) })
-
-	// Pre-existing collision defense: BuildImage for op1 must reject because runroot1 exists
-	ctx := context.Background()
-	_, buildErr := p.BuildImage(ctx, ImageBuildRequest{
-		OperationID: op1,
-		Connection:  podmanConnectionForTest(environments.ConnectionKindLocalPodman),
-		Definition:  r.definition,
-		ProductRoot: filepath.Join(root, "product"),
-		RecipeRoot:  filepath.Join(root, "recipe"),
-	})
-	if buildErr == nil || !strings.Contains(buildErr.Error(), "build operation runroot already exists") {
-		t.Fatalf("expected collision error, got %v", buildErr)
-	}
-
-	// Clean up op1 only: op2 must remain untouched
-	if err := p.cleanupRunroot(runroot1); err != nil {
-		t.Fatalf("cleanupRunroot op1: %v", err)
-	}
-	if _, err := os.Stat(runroot1); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("runroot1 was not removed")
-	}
-	if _, err := os.Stat(runroot2); err != nil {
-		t.Fatalf("runroot2 was unexpectedly touched during op1 cleanup: %v", err)
-	}
-
-	// Symlink defense: symlink at runroot path must be rejected by cleanupRunroot
-	outside := t.TempDir()
-	outsideFile := filepath.Join(outside, "target_file")
-	if err := os.WriteFile(outsideFile, []byte("preserve"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(runroot, "sentinel"), []byte("preserve"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, runroot1); err != nil {
-		t.Fatal(err)
+	result, err := p.BuildImage(context.Background(), ImageBuildRequest{OperationID: opID, Connection: podmanConnectionForTest(environments.ConnectionKindLocalPodman), Definition: r.definition})
+	if result != nil || err == nil || !strings.Contains(err.Error(), "runroot already exists") {
+		t.Fatalf("collision accepted: %+v %v", result, err)
 	}
-	defer os.Remove(runroot1)
-	if err := p.cleanupRunroot(runroot1); err == nil {
-		t.Fatal("cleanupRunroot accepted symlink")
+	assertBuildSentinel(t, runroot)
+	root, _ := p.buildDirectory(opID)
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("rejected invocation scratch leaked")
 	}
-	if _, err := os.Stat(outsideFile); err != nil {
-		t.Fatal("symlink target was destroyed by cleanup")
+	r.calls = nil
+	if err := p.cleanupBuildFiles(context.Background(), opID); err == nil {
+		t.Fatal("missing root authorized foreign cleanup")
 	}
-
-	// Path escape defense: cleanupRunroot must reject paths escaping runtime directory
-	escapedRunroot := filepath.Join(filepath.Dir(filepath.Dir(runroot1)), filepath.Base(runroot1))
-	if err := p.cleanupRunroot(escapedRunroot); err == nil {
-		t.Fatal("cleanupRunroot accepted escaped runroot path")
+	assertBuildSentinel(t, runroot)
+	if len(r.calls) != 0 {
+		t.Fatal("collision cleanup issued engine commands")
 	}
 }
 
@@ -822,11 +802,11 @@ func TestManagedBuildRunrootLifecycleCancellationAndCrashCleanup(t *testing.T) {
 		p := NewLocalPodmanProvider(r)
 		root := t.TempDir()
 		p.ConfigureBuildRoot(root)
+		configureBuildRuntimeFixture(t, p)
 		expectedRunroot, err := p.buildRunroot(opID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = p.cleanupRunroot(expectedRunroot) })
 
 		_, err = p.BuildImage(ctx, ImageBuildRequest{
 			OperationID: opID,
@@ -853,11 +833,11 @@ func TestManagedBuildRunrootLifecycleCancellationAndCrashCleanup(t *testing.T) {
 		pFresh := NewLocalPodmanProvider(r)
 		root := t.TempDir()
 		pFresh.ConfigureBuildRoot(root)
+		configureBuildRuntimeFixture(t, pFresh)
 		expectedRunroot, err := pFresh.buildRunroot(opID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = pFresh.cleanupRunroot(expectedRunroot) })
 
 		// Simulate crashed state on disk: root and runroot exist, storage populated
 		opRoot := filepath.Join(root, opID)
@@ -867,12 +847,7 @@ func TestManagedBuildRunrootLifecycleCancellationAndCrashCleanup(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(opRoot, "storage", "sentinel"), []byte("crashed"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Mkdir(expectedRunroot, 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(opRoot, "runroot"), []byte(expectedRunroot), 0600); err != nil {
-			t.Fatal(err)
-		}
+		allocateBuildRuntimeFixture(t, pFresh, opID)
 
 		// Fresh provider instance calls CleanupBuild (as crash recovery would)
 		if err := pFresh.CleanupBuild(context.Background(), opID); err != nil {

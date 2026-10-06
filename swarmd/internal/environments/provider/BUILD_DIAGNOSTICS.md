@@ -29,3 +29,20 @@ strictly limits the `--runroot` parameter to at most 50 characters due to UNIX
 domain socket path limits; managed builds allocate a short, private, per-operation
 runroot directly beneath the verified user runtime directory (`XDG_RUNTIME_DIR`),
 which is cleaned up along with isolated storage during operation teardown.
+
+Runroot names use a 144-bit digest of the account-scoped build root and full
+operation ID. The name is only a locator: cleanup requires matching private,
+bounded ownership receipts in scratch and runroot, including full identity and
+directory device/inode bindings. Missing or mismatched receipts fail closed
+before stopping units, unmounting storage or deleting directories. Existing
+runroots survive rejected exclusive allocation.
+
+An allocation intent is written before creating the runroot; engines start only
+after both ownership receipts are published. A crash in that publication window
+retains the intent and partial receipts, but does not grant automated deletion
+authority. Likewise, uncertain teardown retains receipts for recovery and
+reports cleanup failure. A private operator must verify the full operation,
+account build root, directory identity, and terminated unit before removing an
+incomplete allocation. Never infer ownership from a short digest or synthesize a
+missing receipt just to force cleanup. Older path-only markers are intentionally
+not accepted as ownership evidence.

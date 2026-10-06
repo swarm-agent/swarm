@@ -3,7 +3,7 @@ package provider
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -44,7 +44,7 @@ func (p *LocalDockerProvider) ConfigureRuntimeDir(dir string) { p.runtimeDir = d
 const buildRunrootPrefix = "sbr-"
 
 func (p *LocalDockerProvider) buildDirectory(id string) (string, error) {
-	if !strings.HasPrefix(id, "op_") || ValidateOperationID(id) != nil || !filepath.IsAbs(p.buildRoot) {
+	if !strings.HasPrefix(id, "op_") || ValidateOperationID(id) != nil || !filepath.IsAbs(p.buildRoot) || filepath.Clean(p.buildRoot) != p.buildRoot {
 		return "", errors.New("managed build root or operation identity unavailable")
 	}
 	return filepath.Join(p.buildRoot, id), nil
@@ -52,15 +52,20 @@ func (p *LocalDockerProvider) buildDirectory(id string) (string, error) {
 
 // buildRunrootPath derives a deterministic, bounded per-operation runroot directly
 // under the verified runtime directory. Length is guaranteed to be <= 50 characters.
-func buildRunrootPath(runtimeDir, id string) (string, error) {
+func buildRunrootPath(runtimeDir, buildRoot, id string) (string, error) {
 	if !strings.HasPrefix(id, "op_") || ValidateOperationID(id) != nil {
 		return "", errors.New("managed build root or operation identity unavailable")
 	}
 	if !filepath.IsAbs(runtimeDir) || filepath.Clean(runtimeDir) != runtimeDir {
 		return "", errors.New("managed build runtime directory must be an absolute clean path")
 	}
-	hash := sha256.Sum256([]byte(id))
-	token := hex.EncodeToString(hash[:6]) // 12 lowercase hex characters (48 bits entropy)
+	if !filepath.IsAbs(buildRoot) || filepath.Clean(buildRoot) != buildRoot {
+		return "", errors.New("managed build root must be an absolute clean path")
+	}
+	// 144 bits distinguish operations and account-scoped build roots without
+	// exceeding Podman's limit, even under /run/user/4294967295 (49 bytes).
+	hash := sha256.Sum256([]byte(buildRoot + "\x00" + id))
+	token := base64.RawURLEncoding.EncodeToString(hash[:18])
 	runroot := filepath.Join(runtimeDir, buildRunrootPrefix+token)
 	if len(runroot) > 50 {
 		return "", fmt.Errorf("managed build runroot %q exceeds Podman limit of 50 characters (length %d)", runroot, len(runroot))
@@ -150,7 +155,7 @@ func (p *LocalDockerProvider) buildRunroot(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return buildRunrootPath(runtimeDir, id)
+	return buildRunrootPath(runtimeDir, p.buildRoot, id)
 }
 
 func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequest) (result *environments.ImageBuildResult, retErr error) {
@@ -193,6 +198,20 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	if err := os.Mkdir(root, 0700); err != nil {
 		return nil, errors.New("build operation scratch already exists or cannot be created")
 	}
+	// Publish an allocation intent before touching runtime resources. A crash
+	// before ownership publication leaves private evidence, never deletion
+	// authority inferred from the short pathname.
+	if err := writeBuildAllocationIntent(root, req.OperationID+"\n"+p.buildRoot+"\n"+runroot); err != nil {
+		return nil, BuildCleanupError(err, errors.New("build allocation evidence unavailable; scratch retained"))
+	}
+	if err := os.Mkdir(runroot, 0700); err != nil {
+		// Only root was allocated by this invocation. In particular, never
+		// install runroot cleanup after a rejected exclusive allocation.
+		return nil, BuildCleanupError(errors.New("build operation runroot already exists or cannot be created"), os.RemoveAll(root))
+	}
+	if err := p.publishBuildOwnership(req.OperationID, runroot); err != nil {
+		return nil, BuildCleanupError(err, errors.New("build ownership publication incomplete; allocation evidence retained"))
+	}
 	// Cleanup is operation-specific; no global image/container prune is ever used.
 	defer func() {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
@@ -208,12 +227,6 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 			}
 		}
 	}()
-	if err := os.Mkdir(runroot, 0700); err != nil {
-		return nil, errors.New("build operation runroot already exists or cannot be created")
-	}
-	if err := os.WriteFile(filepath.Join(root, "runroot"), []byte(runroot), 0600); err != nil {
-		return nil, err
-	}
 	for _, dir := range []string{"context", "home", "storage", "hooks", "tmp"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0700); err != nil {
 			return nil, err
@@ -233,6 +246,9 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	// Build containers stay below the delegated transient unit: using the
 	// systemd manager here could move descendants into sibling user scopes.
 	// Runtime containers still use the separately admitted systemd manager.
+	if _, err := p.verifyActiveBuildOwnership(req.OperationID); err != nil {
+		return nil, err
+	}
 	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", runroot, "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--runtime=crun"}
 	runtimeDir, busAddress, err := p.resolveSessionEnvironment()
 	if err != nil {
@@ -257,6 +273,9 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	id := strings.TrimSpace(string(raw))
 	if !environments.ValidBuildImageID(id) {
 		return nil, errors.New("build returned invalid image identity")
+	}
+	if _, err := p.verifyActiveBuildOwnership(req.OperationID); err != nil {
+		return nil, err
 	}
 	archive := filepath.Join(root, "image.tar")
 	save := append(append([]string{}, cleanEnv[1:]...), isolated...)
@@ -301,14 +320,23 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 	}
 	info, err := os.Lstat(root)
 	if errors.Is(err, os.ErrNotExist) {
-		if runroot, rErr := p.buildRunroot(id); rErr == nil {
-			_ = p.cleanupRunroot(runroot)
+		runroot, rErr := p.buildRunroot(id)
+		if rErr != nil {
+			return rErr
 		}
-		return nil
+		if _, rErr = os.Lstat(runroot); errors.Is(rErr, os.ErrNotExist) {
+			return nil
+		}
+		return errors.New("build scratch ownership unavailable; runtime resource retained")
 	}
-	if err != nil || !info.IsDir() {
-		return errors.New("owned build scratch is unavailable or not a directory")
+	if err != nil || !privateBuildDirectory(info) {
+		return errors.New("owned build scratch is unavailable or unsafe")
 	}
+	owner, err := p.verifyBuildOwnership(id)
+	if err != nil {
+		return err
+	}
+	runroot := owner.Runroot
 	unit := "swarm-build-" + id + ".service"
 	// Stop only the server-generated operation unit, then prove it no longer runs.
 	_, stopErr := p.runner.Run(ctx, "systemctl", "--user", "stop", unit)
@@ -350,44 +378,42 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 		}
 		populated = len(entries) > 0
 	}
-	runroot, runrootErr := p.buildRunroot(id)
-	if runrootErr != nil {
-		return runrootErr
-	}
-	markerPath := filepath.Join(root, "runroot")
-	if markerData, readErr := os.ReadFile(markerPath); readErr == nil {
-		if strings.TrimSpace(string(markerData)) != runroot {
-			return errors.New("owned build runroot marker mismatch")
-		}
-	}
 	if populated {
+		if _, err := os.Lstat(runroot); err != nil {
+			return errors.New("populated build storage requires owned runtime resource; scratch retained")
+		}
+		if _, err := p.verifyActiveBuildOwnership(id); err != nil {
+			return err
+		}
 		_, err = p.runner.Run(ctx, "podman", "--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", runroot, "--storage-driver=vfs", "unmount", "--all", "--force")
 		if err != nil {
 			return errors.New("owned build storage unmount failed")
 		}
 	}
-	runErr := p.cleanupRunroot(runroot)
-	rootErr := os.RemoveAll(root)
-	return errors.Join(runErr, rootErr)
+	// Remove unmounted storage before runtime teardown so a partial scratch
+	// cleanup remains retryable without recreating a runroot to unmount it.
+	if err := os.RemoveAll(storage); err != nil {
+		return errors.New("owned build storage removal unconfirmed; ownership retained")
+	}
+	if err := p.cleanupRunroot(id); err != nil {
+		// Keep the scratch receipt for recovery; never erase it after an
+		// unconfirmed runtime cleanup.
+		return err
+	}
+	return removeBuildScratch(root)
 }
 
-func (p *LocalDockerProvider) cleanupRunroot(runroot string) error {
+func (p *LocalDockerProvider) cleanupRunroot(id string) error {
+	owner, err := p.verifyBuildOwnership(id)
+	if err != nil {
+		return err
+	}
+	runroot := owner.Runroot
 	if runroot == "" {
 		return nil
 	}
 	if !filepath.IsAbs(runroot) || filepath.Clean(runroot) != runroot {
 		return errors.New("owned build runroot is not an absolute clean path")
-	}
-	runtimeDir, err := p.resolveRuntimeDir()
-	if err != nil {
-		return err
-	}
-	if filepath.Dir(runroot) != runtimeDir {
-		return errors.New("owned build runroot escaped runtime directory")
-	}
-	base := filepath.Base(runroot)
-	if !strings.HasPrefix(base, buildRunrootPrefix) || len(base) != len(buildRunrootPrefix)+12 {
-		return errors.New("owned build runroot does not match expected operation name format")
 	}
 	info, err := os.Lstat(runroot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -410,7 +436,7 @@ func (p *LocalDockerProvider) cleanupRunroot(runroot string) error {
 			return errors.New("owned build runroot is not owned by the current user")
 		}
 	}
-	return os.RemoveAll(runroot)
+	return removeBuildScratch(runroot)
 }
 
 type imageBuildRun struct {
