@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -13,15 +14,17 @@ import (
 
 // Purpose: CreateProjectTask/deployProjectTaskExecution must preserve big-feature
 // Swarm auto routing (including intent defaults), small Coder routing and explicit
-// Plan mode. The hermetic API/store layer proves real session mode and absence of
-// unapproved structured execution, while direct Coder requests admit exactly one
-// run without plan approval, without a provider or permission-setting mutation.
+// Plan compatibility. Authority: CreateProjectTask, projectTaskExecutionAgent and
+// deployProjectTaskExecution. The hermetic HTTP/store layer is the narrowest proof
+// of real session mode, isolated allocation and no unapproved run admission (the
+// negative case). Direct Coder requests still admit exactly one run; no provider
+// is invoked and no permission setting is mutated.
 func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 	for _, tc := range []struct{ name, agent, intent, size, wantAgent, wantMode, wantStatus string }{
 		{"big-explicit", "swarm", "code", "big", "swarm", "auto", "pending_approval"},
 		{"big-default", "", "code", "big", "swarm", "auto", "pending_approval"},
 		{"small", "coder", "code", "small", "coder", "auto", "in_progress"},
-		{"explicit-plan", "plan", "", "big", "plan", "plan", "planning"},
+		{"explicit-plan-compatibility", "plan", "", "big", "plan", "plan", "planning"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := setupMatrixTestFixture(t)
@@ -32,7 +35,8 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 			if err := f.server.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			created := requireMatrixTaskResponse(t, f.callAPI(http.MethodPost, "/"+project+"/tasks", map[string]any{"title": "Feature", "prompt": "Implement feature", "agent": tc.agent, "intent": tc.intent, "feature_size": tc.size}, p), http.StatusCreated)
+			sourcePath := filepath.Join(f.dir, "repo")
+			created := requireMatrixTaskResponse(t, f.callAPI(http.MethodPost, "/"+project+"/tasks", map[string]any{"title": "Feature", "prompt": "Implement feature", "workspace_path": sourcePath, "agent": tc.agent, "intent": tc.intent, "feature_size": tc.size}, p), http.StatusCreated)
 			task, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, project, created["id"].(string))
 			if err != nil || !found {
 				t.Fatalf("created task missing: %v", err)
@@ -41,8 +45,11 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 				t.Fatalf("route: %+v", task)
 			}
 			sess, found, err := f.server.sessions.Store().GetSession(task.SessionID)
-			if err != nil || !found || sess.Mode != tc.wantMode || !sess.WorktreeEnabled {
+			if err != nil || !found || sess.Mode != tc.wantMode || !sess.WorktreeEnabled || sess.WorktreeRootPath == "" || sess.WorktreeBranch == "" || sess.WorktreeRootPath == sourcePath {
 				t.Fatalf("session: %+v %v", sess, err)
+			}
+			if task.SourceWorkspace.Path != sourcePath || task.SourceWorkspace.WorkspaceID == "" || task.WorkspacePath != sess.WorktreeRootPath {
+				t.Fatalf("source/allocation identity: task=%+v session=%+v", task, sess)
 			}
 			if tc.wantAgent == "swarm" {
 				if sess.Preference.Model != "gemini-2.5-action" {
@@ -74,7 +81,9 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 // through SubmitProjectTaskStructuredPlan and the atomic V3 plan/task publication.
 // Combined document/definition guards must coexist after integration: stale
 // document or definition revisions, cross-account, changed-plan-ID and missing guards must leave the plan,
-// card and run intents unchanged. Authored requirement changes persist with their
+// card and run intents unchanged. The fixture selects its authorized repository
+// explicitly rather than treating project membership as execution authority.
+// Authored requirement changes persist with their
 // exact acceptance criteria and require fresh approval. This API/store fixture is narrower than live AI.
 func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	f := setupMatrixTestFixture(t)
@@ -86,7 +95,7 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := &pebblestore.SessionPlanDocument{ID: "card-plan", Title: "Feature plan", Info: pebblestore.SessionPlanInfo{Goal: "Implement feature"}, Requirements: []pebblestore.SessionPlanRequirement{{ID: "behavior", Text: "Behavior works", CheckpointID: "cp-1"}}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Feature", Tasks: []string{"Implement old behavior"}, AcceptanceCriteria: []string{"Behavior works"}}}}
-	task, err := f.server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "Feature", Prompt: "Implement feature", Agent: "swarm", FeatureSize: "big", Document: doc})
+	task, err := f.server.CreateProjectTask(context.Background(), p, project, tool.ProjectTaskCreateInput{Title: "Feature", Prompt: "Implement feature", WorkspacePath: filepath.Join(f.dir, "repo"), Agent: "swarm", FeatureSize: "big", Document: doc})
 	if err != nil {
 		t.Fatal(err)
 	}

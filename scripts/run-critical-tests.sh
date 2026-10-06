@@ -136,15 +136,19 @@ run_fast() {
     './internal/mediastaging ./internal/imagegen ./internal/videosource ./internal/videorender' \
     '^Test(ServiceUsesAccountScopedStoreWithoutSessionAuthority|CleanupAbandonedPreflightsAccountAndProtectsBoundRecords|ResolveAssetPathRejectsPathOutsideManagedStorage|GenerateRejectsNonPNGPayloadBeforeSaving|ServiceRejectsTraversalUnknownRootAndSymlink|AudioReferencesRejectUnregisteredRootsAndStaleFiles|RenderJobSecurityAndRejections|EscapeFFmpegDrawText)$'
 
-  echo "[critical/fast] auth, origin, privacy, signed cursor failures, and background task routing"
+  # BackgroundRouterSessionStart remains backend compatibility/security coverage,
+  # not current Orchestrator UI journey coverage. Preserve its rejection checks.
+  echo "[critical/fast] auth, origin, privacy, signed cursors, and backend background-Router compatibility"
   run_swarmd_tests 60s \
     './internal/api' \
     'Test(DesktopBoundary|ProtectedCreateAPIsRequire|ProtectedCreateAPIsReject|ProtectedCreateAPIsSucceed|DesktopSessionBootstrapFails|DesktopSessionBootstrapIssues|DesktopSessionRejects|XSwarmTokenPrincipal|ExtractAttachToken|PanicRecovery|VaultGate|V3SyncCursor|V3RealtimeRejects|BackgroundRouterSessionStart)'
 
-  echo "[critical/fast] TUI and client /task workspace routing"
+  echo "[critical/fast] TUI/client /task compatibility workspace authority (not Orchestrator)"
   run_tui_task_routing_tests
 
-  echo "[critical/fast] Desktop V3 durable state, realtime repair, and /task workspace routing"
+  # The standalone test:orchestrator suite is intentionally not a critical gate
+  # until focused repeated execution and independent assertion reviews qualify it.
+  echo "[critical/fast] Desktop V3 state/auth/realtime and saved-workspace compatibility rejections"
   run_web_critical_tests
 }
 
