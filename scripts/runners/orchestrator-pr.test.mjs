@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { SCENARIOS, parseOptions, createReceipt, validateReceipt, requiredAssertions, toolEvidence, mediaEvidence, runScenario, assertSafeToolRouting } from './orchestrator-pr.mjs'
 
 import { runBrowserAdapter, parseBrowserOptions } from './orchestrator-pr-browser.mjs'
+import { parseOptions as parseLiveOptions, createReceipt as createLiveReceipt, validateReceipt as validateLiveReceipt, REQUIRED_ASSERTIONS as LIVE_ASSERTIONS, runLiveE2E } from './orchestrator-live-e2e.mjs'
 
 const candidate = 'a'.repeat(40)
 function fixture(t) {
@@ -261,4 +262,52 @@ test('browser adapter forwards maintained inputs and rejects unsafe adapter sele
   assert.throws(() => parseBrowserOptions([...args, '--owner', 'invented'], env), /owner/)
   assert.throws(() => parseBrowserOptions([...args, '--model', 'override'], env))
   assert.throws(() => parseBrowserOptions(args.filter(a => a !== '--isolated-no-provider-egress'), env))
+})
+
+// Purpose: orchestrator-live-e2e runner option parsing and receipt validation
+// must strictly enforce candidate identity, tmpdir containment, and all 6 named assertions.
+test('orchestrator live e2e runner parses options, validates receipt schema and handles fail-closed lifecycle', { timeout: 5000 }, async t => {
+  const { root, env } = fixture(t)
+  const args = [
+    '--api-url', 'http://127.0.0.1:15555',
+    '--workspace-path', path.join(root, 'source'),
+    '--scenario', 'orchestrator-live-e2e',
+    '--timeout-ms', '60000',
+    '--output', path.join(root, 'live-receipt.json'),
+    '--candidate-revision', candidate,
+    '--run-id', 'live-test-run',
+  ]
+  const o = parseLiveOptions(args, env)
+  assert.equal(o.scenario, 'orchestrator-live-e2e')
+  assert.equal(o.candidate, candidate)
+  assert.equal(o.runID, 'live-test-run')
+  assert.equal(o.timeoutMs, 60000)
+
+  // Invalid options fail closed
+  assert.throws(() => parseLiveOptions([...args, '--timeout-ms', '20000'], env), /invalid_deadline/)
+  assert.throws(() => parseLiveOptions([...args, '--candidate-revision', 'invalid'], env), /candidate_and_run_identity/)
+  assert.throws(() => parseLiveOptions([...args, '--scenario', 'unknown'], env), /invalid_scenario/)
+
+  // requiredAssertions returns the 6 contract assertions
+  assert.equal(requiredAssertions('orchestrator-live-e2e').length, 6)
+
+  // Receipt creation and validation lifecycle
+  const r = createLiveReceipt(o)
+  assert.equal(r.schema, 'swarm.orchestrator-live-e2e.v1')
+  assert.equal(r.status, 'NOT_RUN')
+  assert.equal(r.native_exit, 2)
+  assert.equal(r.assertions.length, LIVE_ASSERTIONS.length)
+  assert.throws(() => validateLiveReceipt(r, o, 0))
+
+  // When all assertions pass, validateLiveReceipt succeeds
+  r.status = 'PASS'
+  r.native_exit = 0
+  r.assertion_count = LIVE_ASSERTIONS.length
+  r.assertions.forEach(a => { a.passed = true })
+  assert.equal(validateLiveReceipt(r, o, 0), true)
+
+  // Receipt mutation fails closed
+  const mutated = structuredClone(r)
+  mutated.assertions[0].passed = false
+  assert.throws(() => validateLiveReceipt(mutated, o, 0))
 })

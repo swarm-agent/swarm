@@ -194,10 +194,12 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	isDirectVideo := input.Agent == "video" || reqOp == pebblestore.VideoOperationEdit || reqOp == pebblestore.VideoOperationExtend || (reqOp == pebblestore.VideoOperationCreate && input.Agent == "video")
 	requiresRepo := input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || (!isDirectVideo && input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio")
 	isImage := input.Agent == "image" || input.Intent == "image"
+	isDirectSound := input.Agent == "sound" || input.Intent == "sound" || input.Agent == "audio" || input.Intent == "audio"
+	isDirectSimpleMedia := isImage || isDirectSound || (isDirectVideo && len(input.CoderAssignments) == 0 && input.Document == nil && input.PlanDocument == nil && input.TaskProgram == nil)
 	var source pebblestore.ProjectTaskSource
-	if isImage {
-		if input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || input.TaskProgramID != "" || len(input.CoderAssignments) > 0 || input.SessionID != "" || input.Operation != "" {
-			return nil, errors.New("image tasks cannot carry source execution, sessions, plans, or task programs")
+	if isDirectSimpleMedia {
+		if input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || input.TaskProgramID != "" || len(input.CoderAssignments) > 0 || input.SessionID != "" {
+			return nil, errors.New("direct media tasks cannot carry source execution, sessions, plans, or task programs")
 		}
 		if _, err := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{Prompt: prompt, Agent: input.Agent, Intent: input.Intent, OutcomeType: input.OutcomeType, Tier: input.Tier, FeatureSize: input.FeatureSize, VariantCount: input.VariantCount}); err != nil {
 			return nil, err
@@ -546,10 +548,13 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		task.ActionNeeded = "Plan agent investigating and authoring structured plan..."
 		task.WhatDidDo = []string{"Started planning investigation"}
 	} else if task.Agent == "coder" && task.TaskProgram == nil && len(task.CoderAssignments) == 0 && task.FeatureSize != "big" {
-		// A direct Coder request is already an execution request, not a plan
-		// proposal. Structured documents and planning requests are handled above.
-		task.Status = "in_progress"
-		task.ActionNeeded = ""
+		if input.AutoApprove {
+			task.Status = "in_progress"
+			task.ActionNeeded = ""
+		} else {
+			task.Status = "pending_approval"
+			task.ActionNeeded = "Review task and click Approve to start Coder execution"
+		}
 	} else if task.TaskProgram == nil && (task.Agent == "coder" || (len(task.CoderAssignments) == 0 && (task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch"))) {
 		task.Status = "pending_approval"
 		task.ActionNeeded = "Review task and click Approve to start execution"

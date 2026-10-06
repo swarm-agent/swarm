@@ -46,6 +46,7 @@ export function validateOutput(output, tmpdir) {
 
 export function requiredAssertions(scenario) {
   if (scenario === 'new-task-browser') return ['candidate_revision', 'browser_creation_persistence', 'owned_cleanup']
+  if (scenario === 'orchestrator-live-e2e') return ['candidate_revision', 'configured_models', 'in_chat_proposals_no_self_approval', 'structured_plan_handoff_completion', 'multistage_task_program_dependency_completion', 'owned_cleanup']
   check(SCENARIOS.includes(scenario), 'unknown_scenario')
   return ['candidate_revision', 'configured_models', 'workspace_binding', 'session_identity', 'run_admitted',
     'provider_response', 'history_rehydrate', 'run_completed', ...(scenario === 'orchestrator-chat'

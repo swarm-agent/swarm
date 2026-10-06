@@ -918,7 +918,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 					}
 				}
 				if videoModel == "" {
-					return errors.New("no default video model configured for account; select a model or configure one in Settings")
+					videoModel = "veo-3.1-generate-preview"
 				}
 				vOpts := s.getVideoModelOptions(videoModel)
 				ar := task.AspectRatio
@@ -2369,7 +2369,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				req.VariantCount = count
 			}
-			if !isMediaRequest || req.Agent == "image" || req.Intent == "image" {
+			isDirectSimpleMedia := (req.Agent == "image" || req.Intent == "image" || req.Agent == "sound" || req.Intent == "sound" || req.Agent == "audio" || req.Intent == "audio" || req.Agent == "video" || req.Intent == "video") &&
+				(req.Operation == "" || req.Operation == pebblestore.VideoOperationCreate) &&
+				req.VideoType != "multipart" && req.VideoType != "story" && req.ScenesCount <= 1 && len(req.Scenes) <= 1
+			if !isMediaRequest || isDirectSimpleMedia {
 				input := tool.ProjectTaskCreateInput{
 					ID:                  req.ID,
 					Title:               req.Title,

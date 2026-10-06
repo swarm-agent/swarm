@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Author comprehensive E2E tests for New Task creation across all 6 modal flows (small coder feature, big swarm feature, audit finder, image, video, and sound) with Chromium form submission, durable store verification, UI card rendering, and reload persistence. Add live Orchestrator E2E test suite and runner covering in-chat task proposals without self-approval, structured plan suggestion handoff to Swarm Default, and multi-stage Task Program dependency consumption. Docs impact: none.
+
 - Correct the retained repository-continuation scheduler fixture to use the correction attempt's run identity for Task Program admission, preserving exact-head and sentinel assertions. Docs impact: none.
 
 - Accept canonical successful Task Program integration receipts after child worktree cleanup, including nonblocking cleanup failure, when authenticating retained repository continuation results; preserve exact result provenance and isolated correction bases. Docs impact: none.
