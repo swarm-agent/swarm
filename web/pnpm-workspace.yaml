@@ -6,6 +6,8 @@ minimumReleaseAgeExclude:
   - esbuild
   - '@esbuild/*'
   - nanoid
+  # Reviewed security fix GHSA-68fv-2mgg-jv7q; remove after 2026-10-07T14:08:10Z (seven-day eligibility).
+  - 'source-map-js@1.2.2'
 blockExoticSubdeps: true
 overrides:
   nanoid: 3.3.18
