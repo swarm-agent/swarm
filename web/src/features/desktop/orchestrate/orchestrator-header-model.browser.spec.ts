@@ -7,6 +7,16 @@ import { build } from 'esbuild'
 import { build as buildStyles } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 import { chromium } from 'playwright'
+import type { resolveCanonicalHeaderModelLabel } from './orchestrator-header-actions'
+import type { modelOptionKey } from '../chat/services/model-options'
+import type { ModelOptionRecord } from '../chat/types/chat'
+
+declare global {
+  interface Window {
+    resolveCanonicalHeaderModelLabel: typeof resolveCanonicalHeaderModelLabel
+    modelOptionKey: typeof modelOptionKey
+  }
+}
 
 // Purpose: In Orchestrator chat, the header must present the current project identity in the
 // Workspaces slot (rather than generic 'Workspaces'), open model favorites on clicking the model
@@ -19,7 +29,9 @@ import { chromium } from 'playwright'
 // Regular Chat and task/repair sessions must not regress to showing project identity or model buttons.
 // Boundary/ownership: DesktopV3ChatHeader, AgentModelControl, OrchestrateAgents,
 // orchestrator-header-actions (applySessionModelFavorite, navigateToProjectAgents, useCanonicalSessionModelLabel),
-// and Desktop V3 cache store hydration.
+// and Desktop V3 cache store hydration. Unknown cached preferences (flat or wrapped, camel/snake
+// context fields) must resolve safely without overriding authoritative metadata; malformed cache
+// values must not crash the header. These cases exercise the actual header resolver in the browser.
 // Browser integration with compiled theme CSS and TanStack Router is the narrowest layer proving geometry, DOM identity,
 // real event handlers, and intercepted HTTP/cache contracts together.
 test('orchestrator header shows project name, opens favorites, persists model, and routes to Orchestrator agents', { timeout: 60000 }, async () => {
@@ -50,7 +62,9 @@ import {
   applySessionModelFavorite,
   navigateToProjectAgents,
   useCanonicalSessionModelLabel,
+  resolveCanonicalHeaderModelLabel,
 } from './src/features/desktop/orchestrate/orchestrator-header-actions';
+import { modelOptionKey } from './src/features/desktop/chat/services/model-options';
 import {
   dispatchDesktopV3Cache,
   getDesktopV3CacheSnapshot,
@@ -61,6 +75,8 @@ import { hydrateResponseToAction } from './src/features/desktop/state/desktop-v3
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 window.client = client;
 window.getDesktopV3CacheSnapshot = getDesktopV3CacheSnapshot;
+window.resolveCanonicalHeaderModelLabel = resolveCanonicalHeaderModelLabel;
+window.modelOptionKey = modelOptionKey;
 
 const assignment = { provider: 'google', model: 'gemini-3.8-flash', thinking: 'high', serviceTier: '', contextMode: '' };
 client.setQueryData(agentModelSettingsQueryKey, {
@@ -377,6 +393,39 @@ createRoot(document.getElementById('root')).render(<RouterProvider router={route
     assert.equal(await orchModelBtn.evaluate((el) => el.tagName), 'BUTTON')
     assert.equal(await orchModelBtn.innerText(), 'gemini-3.8-flash')
 
+    // Unknown cache wire values are narrowed at the presentation boundary, not cast to a preference.
+    const cacheLabels = await page.evaluate(() => {
+      const resolve = window.resolveCanonicalHeaderModelLabel
+      const key = window.modelOptionKey('openai', 'gpt-4o', 'long')
+      const modelOptions: ModelOptionRecord[] = [{
+        key, label: 'Long-context favorite', provider: 'openai', model: 'gpt-4o',
+        contextMode: 'long', thinking: '', thinkingOptions: [], defaultThinking: '',
+        thinkingProviderParameter: '', thinkingMappings: [], favorite: true,
+        contextWindow: 0, pricing: null, serviceTiers: [], defaultServiceTier: '',
+        serviceTierMappings: [], contextModes: [],
+      }]
+      const cachedPreference = { provider: 'openai', model: 'gpt-4o', context_mode: 'long' }
+      return {
+        flat: resolve({ cachedPreference, modelOptions }),
+        wrapped: resolve({ cachedPreference: { preference: cachedPreference }, modelOptions }),
+        camel: resolve({ cachedPreference: { ...cachedPreference, contextMode: 'long' }, modelOptions }),
+        authoritative: resolve({
+          cachedPreference,
+          metadata: { agent_name: 'system-orchestrator', model_profile: {
+            action: { provider: 'openai', model: 'action-model' },
+            plan: { provider: 'google', model: 'plan-model' },
+          } },
+        }),
+        malformed: [undefined, null, [], 'invalid', { provider: 42, model: 'invalid' },
+          { provider: 'openai', model: {} }, { preference: null }].map(
+          value => resolve({ cachedPreference: value })),
+      }
+    })
+    assert.deepEqual(cacheLabels, {
+      flat: 'Long-context favorite', wrapped: 'Long-context favorite', camel: 'Long-context favorite',
+      authoritative: 'plan-model', malformed: ['', '', '', '', '', '', ''],
+    })
+
     // 2. Non-regression: Regular Chat and task/repair headers do not show project name and retain plain model span
     const regRow = page.locator('#regular-chat-surface [data-testid="session-workspace-row"]')
     assert.equal(await regRow.locator('[data-testid="desktop-v3-project-name"]').count(), 0)
@@ -410,6 +459,7 @@ createRoot(document.getElementById('root')).render(<RouterProvider router={route
 
     assert.equal(modelPuts.length, 2, 'second PUT succeeded')
     const lastPut = modelPuts[1]
+    assert.match(lastPut.client_request_id, /^desktop-model-profile:.+/)
     assert.equal(lastPut.choice.kind, 'temporary')
     assert.equal(lastPut.choice.profile.provider, 'anthropic')
     assert.equal(lastPut.choice.profile.model, 'claude-3-7-sonnet')

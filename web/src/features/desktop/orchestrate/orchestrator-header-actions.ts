@@ -4,19 +4,15 @@ import {
   preferenceFromModelProfileMetadata,
 } from '../chat/services/model-profiles'
 import { modelOptionKey } from '../chat/services/model-options'
-import type { ModelOptionRecord } from '../chat/types/chat'
+import type { ModelOptionRecord, ModelProfileRecord, SessionPreferenceRecord } from '../chat/types/chat'
 import {
   sessionV3ModelProfileSettingsMutationResponse,
   updateSessionV3ModelProfile,
   type SessionV3ModelProfileMutationResponseWire,
 } from '../session-v3/api'
 import { dispatchDesktopV3Cache, useDesktopV3CacheSelector } from '../state/desktop-v3-cache-store'
-import type {
-  DesktopV3CacheMutation,
-  DesktopSessionMode,
-  SessionPreferenceRecord,
-} from '../state/desktop-v3-cache-types'
-import type { ModelProfileRecord } from '../settings/models/types/model-profile-types'
+import type { DesktopV3CacheAction } from '../state/desktop-v3-cache-types'
+import type { DesktopSessionMode } from '../settings/swarm/types/swarm-settings'
 import { projectConversationLink } from './project-conversations'
 import { swarmPageLink } from './swarm-navigation'
 
@@ -25,7 +21,7 @@ export interface ApplySessionModelFavoriteInput {
   profile: ModelProfileRecord
   mode: DesktopSessionMode | string
   now?: number
-  dispatch?: (action: DesktopV3CacheMutation) => void
+  dispatch?: (action: DesktopV3CacheAction) => void
 }
 
 export interface ApplySessionModelFavoriteResult {
@@ -71,7 +67,7 @@ export async function applySessionModelFavorite({
 export interface ResolveCanonicalHeaderModelLabelOptions {
   metadata?: unknown
   mode?: DesktopSessionMode | string
-  cachedPreference?: SessionPreferenceRecord
+  cachedPreference?: unknown
   modelOptions?: ModelOptionRecord[]
 }
 
@@ -89,17 +85,18 @@ export function resolveCanonicalHeaderModelLabel({
     metadata,
     mode === 'plan' ? 'plan' : 'auto',
   )
-  const canonicalHeaderPreference = sessionProfilePreference ?? cachedPreference
-  if (!canonicalHeaderPreference?.provider?.trim() || !canonicalHeaderPreference?.model?.trim()) {
-    return ''
-  }
-  const key = modelOptionKey(
-    canonicalHeaderPreference.provider,
-    canonicalHeaderPreference.model,
-    canonicalHeaderPreference.contextMode,
-  )
+  const preference = sessionProfilePreference ?? cachedPreference
+  if (!preference || typeof preference !== 'object' || Array.isArray(preference)) return ''
+  const selection = 'preference' in preference ? preference.preference : preference
+  if (!selection || typeof selection !== 'object' || Array.isArray(selection)) return ''
+  const provider = 'provider' in selection && typeof selection.provider === 'string' ? selection.provider.trim() : ''
+  const model = 'model' in selection && typeof selection.model === 'string' ? selection.model.trim() : ''
+  if (!provider || !model) return ''
+  const contextMode = 'contextMode' in selection ? selection.contextMode
+    : 'context_mode' in selection ? selection.context_mode : ''
+  const key = modelOptionKey(provider, model, typeof contextMode === 'string' ? contextMode : '')
   const option = modelOptions.find((opt) => opt.key === key)
-  return option?.label || canonicalHeaderPreference.model
+  return option?.label || model
 }
 
 /**
