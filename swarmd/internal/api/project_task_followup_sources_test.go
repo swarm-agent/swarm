@@ -277,7 +277,7 @@ func followupSourcesFixture(t *testing.T) (*matrixTestFixture, identity.Principa
 	seedTaskSessionBinding(t, f, primary)
 	program := &pebblestore.TaskProgramDefinition{ID: "approved-cross", Stages: []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "committed sources"}}}
 	for i, repo := range repos[:2] {
-		program.Jobs = append(program.Jobs, pebblestore.TaskProgramJobSpec{ID: fmt.Sprintf("job-%d", i), StageID: "build", AgentType: "coder", WorkspacePath: repo, Title: "Implement", MetaPrompt: "Implement scoped change", Deliverable: "Commit", OwnedScope: []string{"value.txt"}, AcceptanceCriteria: []string{"Committed"}, DependencyEvidence: "Source committed"})
+		program.Jobs = append(program.Jobs, pebblestore.TaskProgramJobSpec{ID: fmt.Sprintf("job-%d", i), StageID: "build", AgentType: "coder", WorkspacePath: repo, Title: fmt.Sprintf("Repository %d implementation", i), MetaPrompt: fmt.Sprintf("Implement repository %d value.txt at %s and commit its isolated repository-specific change", i, repo), Deliverable: fmt.Sprintf("Repository %d value.txt commit", i), OwnedScope: []string{"value.txt"}, AcceptanceCriteria: []string{"Committed"}, DependencyEvidence: "Source committed"})
 	}
 	doc := &pebblestore.SessionPlanDocument{Requirements: []pebblestore.SessionPlanRequirement{{ID: "req-1", Text: "Committed", CheckpointID: "cp-1"}}, Title: "Two repositories", Info: pebblestore.SessionPlanInfo{Goal: "Implement approved scope"}, Checkpoints: []pebblestore.SessionPlanCheckpoint{{ID: "cp-1", Title: "Implement", Order: 1, Tasks: []string{"Implement"}, AcceptanceCriteria: []string{"Committed"}, TaskProgram: program}}}
 	task, err := f.server.CreateProjectTask(context.Background(), p, proj.ID, tool.ProjectTaskCreateInput{ID: "two-repos", Title: "Two repos", WorkspacePath: repos[0], Document: doc})
@@ -365,7 +365,7 @@ func assertFollowupSources(t *testing.T, f *matrixTestFixture, p identity.Princi
 	record := pebblestore.TaskProgramRecord{ParentSessionID: owned.ID, ProgramID: definition.ID, DefinitionHash: "admission", State: pebblestore.TaskProgramStateBlocked, ActiveStageID: "build"}
 	for i, repo := range repos {
 		id := fmt.Sprintf("job-%d", i)
-		definition.Jobs = append(definition.Jobs, pebblestore.TaskProgramJobSpec{ID: id, StageID: "build", AgentType: "coder", WorkspacePath: repo, Title: "Admission", MetaPrompt: "Admission", Deliverable: "Admission", OwnedScope: []string{"value.txt"}, AcceptanceCriteria: []string{"ready"}, DependencyEvidence: "ready"})
+		definition.Jobs = append(definition.Jobs, pebblestore.TaskProgramJobSpec{ID: id, StageID: "build", AgentType: "coder", WorkspacePath: repo, Title: fmt.Sprintf("Repository %d admission", i), MetaPrompt: fmt.Sprintf("Inspect repository %d at %s and report its value.txt source admission without modifying files", i, repo), Deliverable: fmt.Sprintf("Repository %d admission report", i), OwnedScope: []string{"value.txt"}, AcceptanceCriteria: []string{"ready"}, DependencyEvidence: "ready"})
 		record.Jobs = append(record.Jobs, pebblestore.TaskProgramJobRecord{JobID: id, StageID: "build", State: pebblestore.TaskProgramJobDeclared})
 	}
 	record.Definition = definition

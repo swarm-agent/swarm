@@ -29,7 +29,7 @@ func TestTaskProgramRepositoryLaneConsumesCorrectionBase(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	original := p.parentSession
 	original.Metadata["project_id"], original.Metadata["task_id"] = "project", "task"
-	original.Metadata["swarm_v3_source_workspace_id"] = "repo-a"
+	original.Metadata["swarm_v3_source_workspace_id"] = old.RepositoryLanes[sources[0]].WorkspaceID
 	original.Metadata["swarm_v3_source_workspace_generation"] = int64(1)
 	if err := p.service.sessions.Store().CompleteRepositoryHistoryMaintenance(context.Background()); err != nil { t.Fatal(err) }
 	if _, err := p.service.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{
@@ -57,16 +57,16 @@ func TestTaskProgramRepositoryLaneConsumesCorrectionBase(t *testing.T) {
 			p.parentSession.Metadata["swarm_v3_runtime_workspace_path"] = correction.WorkspacePath
 			p.parentSession.Metadata["swarm_v3_worktree_base_commit"] = bases[i]
 		} else {
-			histories = append(histories, map[string]any{"path": correction.WorkspacePath, "workspace_id": "repo-b", "workspace_generation": int64(1), "source_workspace_path": source, "owner_session_id": p.parentSession.ID, "branch": correction.BranchName, "base_branch": "dev", "base_commit": bases[i]})
+			histories = append(histories, map[string]any{"path": correction.WorkspacePath, "workspace_id": old.RepositoryLanes[source].WorkspaceID, "workspace_generation": int64(1), "source_workspace_path": source, "owner_session_id": p.parentSession.ID, "branch": correction.BranchName, "base_branch": "dev", "base_commit": bases[i]})
 		}
 	}
 	p.parentSession.Metadata["swarm_v3_worktree_history"] = histories
 	p.parentSession.Metadata["task_attempt_id"] = "correction"
-	p.parentSession.Metadata["swarm_v3_source_workspace_id"] = "repo-a"
+	p.parentSession.Metadata["swarm_v3_source_workspace_id"] = old.RepositoryLanes[sources[0]].WorkspaceID
 	p.parentSession.Metadata["swarm_v3_source_workspace_generation"] = int64(1)
-	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Correction", Agent: "swarm", AccountID: original.AccountScopeID, SessionID: p.parentSession.ID, ActiveAttemptID: "correction", SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: "repo-a", WorkspaceGeneration: 1, Path: sources[0], Provenance: "explicit"}, Attempts: []pebblestore.ProjectTaskAttempt{{ID: "initial", SessionID: original.ID}, {ID: "correction", SessionID: p.parentSession.ID, UserID: original.UserID}}}
+	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Correction", Agent: "swarm", AccountID: original.AccountScopeID, SessionID: p.parentSession.ID, ActiveAttemptID: "correction", SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: old.RepositoryLanes[sources[0]].WorkspaceID, WorkspaceGeneration: 1, Path: sources[0], Provenance: "explicit"}, Attempts: []pebblestore.ProjectTaskAttempt{{ID: "initial", SessionID: original.ID, RunID: old.ReservationRunID}, {ID: "correction", SessionID: p.parentSession.ID, UserID: original.UserID}}}
 	for i, source := range sources {
-		ref := pebblestore.ProjectTaskRepositoryContinuation{Source: pebblestore.ProjectTaskSource{WorkspaceID: []string{"repo-a", "repo-b"}[i], WorkspaceGeneration: 1, Path: source, Provenance: "explicit"}, AttemptID: "initial", SessionID: original.ID, ProgramID: old.ProgramID, ProgramRevision: old.Revision, Lane: old.RepositoryLanes[source], HeadCommit: old.LaneHeads[source], TargetBranch: "dev", TargetHead: bases[i]}
+		ref := pebblestore.ProjectTaskRepositoryContinuation{Source: pebblestore.ProjectTaskSource{WorkspaceID: old.RepositoryLanes[source].WorkspaceID, WorkspaceGeneration: 1, Path: source, Provenance: "explicit"}, AttemptID: "initial", SessionID: original.ID, ProgramID: old.ProgramID, ProgramRevision: old.Revision, Lane: old.RepositoryLanes[source], HeadCommit: old.LaneHeads[source], TargetBranch: "dev", TargetHead: bases[i]}
 		task.Attempts[1].RepositoryContinuations = append(task.Attempts[1].RepositoryContinuations, ref)
 	}
 	if err := p.service.sessions.Store().PutProject(original.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil { t.Fatal(err) }
