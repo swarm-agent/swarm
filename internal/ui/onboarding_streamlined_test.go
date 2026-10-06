@@ -350,9 +350,14 @@ func TestStreamlinedStep4PersonalizingRendersCoolAnimation(t *testing.T) {
 	}
 }
 
+// Requirement: pre-finish renders the linked workspace basename and launches the named project.
+// Threat: a machine-specific fixture blocks portability checks or masks rendering/action regressions.
+// Owners: ShowOnboardingPreFinish, drawOnboardingPreFinish, and FinishOnboardingPreFinish;
+// a simulated UI screen plus the emitted action is the narrowest layer proving this contract.
 func TestStreamlinedStep4PreFinishScreenRendersAndLaunches(t *testing.T) {
+	workspacePath := filepath.Join(t.TempDir(), "repo")
 	page := NewHomePage(model.HomeModel{OnboardingRequired: true})
-	page.ShowOnboardingPreFinish("proj_nebula", "nebula-gateway", []string{"/home/developer/code/repo"})
+	page.ShowOnboardingPreFinish("proj_nebula", "nebula-gateway", []string{workspacePath})
 
 	if !page.OnboardingPreFinishActive() {
 		t.Fatal("expected PreFinish to be active")
