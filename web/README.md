@@ -126,15 +126,27 @@ The seven old `/new`, `/task`, `/task plan` and Plan-to-Auto browser/provider ca
 now throws an explicit retirement error; `scripts/run-desktop-launch-test.sh`
 retains its caller entrypoint but exits nonzero before network/provider work.
 `scripts/run-testbench-desktop-e2e.sh` therefore also fails clearly rather than
-reporting an empty passing suite. No replacement browser/provider journey exists.
+reporting an empty passing suite. The separate opt-in New Task browser smoke now
+covers current creation/persistence, not those retired journeys.
 Durability/permission/isolation assertions remain in deterministic owning suites;
 the removed end-to-end evidence is a gap, not migrated browser coverage.
 
-**Remaining qualification dependency:** `scripts/runners/task-routing.mjs` is
-still externally referenced by swarmcrit and is intentionally unchanged. It is a
-legacy qualification dependency, not proof of current Orchestrator/+ New Task.
-A future coordinated runner and external-selector replacement is required before
-retiring it. No live runner, GCP qualification or provider changes are made here.
+**PR entrypoints:** `pnpm run test:pr` preserves frontend critical session API
+coverage and runs the seven-file Orchestrator selector separately. Repository-wide
+`bash scripts/run-orchestrator-pr-checks.sh` retains the existing fast security
+manifest plus runner protocol tests and the Orchestrator seed suite, without
+adding live tests to a hermetic tier. New manifest members still require repeated
+parent execution and independent assertion reviews.
+
+`task-routing.mjs` now adapts `orchestrator-pr.mjs` with explicit single scenarios:
+`session-api`, `orchestrator-chat`, `image`, `video`, `audio`. Old UI/default-Plan
+selectors fail before provider work; supported direct session/delegation runners
+remain separate. `orchestrator-pr-browser.mjs` reuses the existing exclusively
+owned real New Task browser smoke. Both emit identity-bound JSON receipt files;
+missing capability, empty assertions, nonzero native exit or stale identity cannot
+qualify. CLI/env/receipt details and existing-suite inventory are in
+[`new-task-browser-smoke.md`](../docs/testing/new-task-browser-smoke.md).
+Live browser/provider/GCP pass remains unverified; parent validation is required.
 
 ### Focused backend validation
 

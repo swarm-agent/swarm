@@ -14,6 +14,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Retain authenticated per-repository Task Program results across project-task follow-ups, including intervening no-op attempts; pin correction bases before allocation and preserve isolated downstream Coder sources without promoting unvalidated changes. Docs impact: none.
 
+- Add explicit PR selection preserving session API/security coverage and the existing Orchestrator seed suite; replace obsolete UI/default-Plan runner selectors with bounded, identity-bound session/chat/media qualification and an adapter to the owned New Task browser smoke. Repair explicit Plan reconciliation fixtures against durable publication/current-run authority. Docs impact: `web/README.md` and `docs/testing/new-task-browser-smoke.md` document runner argv, receipt validation, reuse and unverified live-proof limits.
+
 - Preserve exact authorized repository sources across task reopen and recover previously cleared bindings from retained approved definitions and owned session grants, with fresh catalog/readiness validation and fail-closed reapproval guidance. Keep new attempt/session/run identities and scheduler guards intact. Docs impact: none.
 
 - Add SSH Docker exact committed-context image builds and receipt-bound remote test deployments with connection-edit fencing, strict external SSH authentication, loopback port publication and explicit uncertain remote build cleanup; preserve local Podman contracts and task consumer leases. Docs impact: `docs/managed-ssh-test-environments.md` documents the generic operator-owned host workflow, provenance, cleanup limits and cloud-access separation; no live cloud validation is claimed.
