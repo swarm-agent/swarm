@@ -161,7 +161,11 @@ import {
   fetchSessionMessages,
   resolveSessionPermission,
 } from "../queries/chat-queries";
-import type { AgentModelControlConfirmInput } from "./agent-model-control";
+import { AgentModelControl, type AgentModelControlConfirmInput } from "./agent-model-control";
+import {
+  applySessionModelFavorite,
+  resolveCanonicalHeaderModelLabel,
+} from "../../orchestrate/orchestrator-header-actions";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
   isAutomationPermission,
@@ -1672,6 +1676,7 @@ export interface DesktopV3ExistingConversationPaneProps {
   artifactReviewPortalTarget?: HTMLElement | null;
   /** Reuse the canonical conversation as a constrained embedded surface. */
   presentation?: "page" | "sidebar";
+  orchestratorHeader?: { projectName: string; onOpenAgents: () => void };
   onMessageSent?: () => void;
 }
 
@@ -1789,6 +1794,7 @@ export function DesktopV3ExistingConversationPane({
   onOpenMediaArtifact,
   artifactReviewPortalTarget = null,
   presentation = "page",
+  orchestratorHeader,
   onMessageSent,
   startPresentation,
   emptyPresentation,
@@ -1968,6 +1974,8 @@ export function DesktopV3ExistingConversationPane({
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false);
   const [agentModelSaving, setAgentModelSaving] = useState(false);
+  const [headerModelRequest, setHeaderModelRequest] = useState({ sessionId: "", signal: 0 });
+  const headerModelOpenSignal = headerModelRequest.sessionId === normalizedSessionId ? headerModelRequest.signal : 0;
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<
     string | null
   >(null);
@@ -2036,19 +2044,12 @@ export function DesktopV3ExistingConversationPane({
     : (sessionProfilePreference ?? sessionAgentPreference ?? preference);
   // Header identity is presentation-only and must come from the hydrated session
   // snapshot/view. Local profile-picker state must never appear before resolution.
-  const canonicalHeaderPreference = sessionProfilePreference ?? cachedPreference;
-  const canonicalHeaderModelKey = modelOptionKey(
-    canonicalHeaderPreference.provider,
-    canonicalHeaderPreference.model,
-    canonicalHeaderPreference.contextMode,
-  );
-  const canonicalHeaderModelOption = modelOptions.find(
-    (option) => option.key === canonicalHeaderModelKey,
-  ) ?? null;
-  const canonicalHeaderModelLabel = canonicalHeaderPreference.provider.trim()
-    && canonicalHeaderPreference.model.trim()
-      ? canonicalHeaderModelOption?.label || canonicalHeaderPreference.model
-      : "";
+  const canonicalHeaderModelLabel = resolveCanonicalHeaderModelLabel({
+    metadata: sessionMetadata,
+    mode,
+    cachedPreference,
+    modelOptions,
+  });
   const selectedModelKey = modelOptionKey(
     displayedPreference.provider,
     displayedPreference.model,
@@ -2760,25 +2761,14 @@ export function DesktopV3ExistingConversationPane({
 
   async function handleApplyModelFavorite(profile: ModelProfileRecord) {
     if (!normalizedSessionId) return;
-    const nextPreference = preferenceFromModelProfile(profile, mode, Date.now());
-    if (!nextPreference) throw new Error("Model favorite does not resolve for the current chat mode");
-    const response = await updateSessionV3ModelProfile(normalizedSessionId, {
-      kind: 'temporary',
-      profile: {
-        name: profile.name,
-        provider: profile.provider,
-        model: profile.model,
-        thinking: profile.thinking,
-        serviceTier: profile.serviceTier,
-        contextMode: profile.contextMode,
-      },
+    const result = await applySessionModelFavorite({
+      sessionId: normalizedSessionId,
+      profile,
+      mode,
     });
-    dispatchDesktopV3Cache({
-      type: "mutation.sessionSettingsResult",
-      raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId),
-    });
-    setPreference(nextPreference);
-    unlockedPreferenceRef.current = nextPreference;
+    if (!result) return;
+    setPreference(result.nextPreference);
+    unlockedPreferenceRef.current = result.nextPreference;
     localSettingsDirtyRef.current.preference = false;
   }
 
@@ -3364,11 +3354,14 @@ export function DesktopV3ExistingConversationPane({
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
         title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
+        projectName={orchestratorHeader?.projectName}
         workspaceName={
           sessionWorkspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
         branchName={headerBranchLabel}
         modelLabel={canonicalHeaderModelLabel}
+        onOpenModelFavorites={orchestratorHeader ? () => setHeaderModelRequest(value => ({ sessionId: normalizedSessionId, signal: value.signal + 1 })) : undefined}
+        modelFavoritesAnchorId={`orchestrator-model:${normalizedSessionId}`}
         runStatus={startPresentation?.runStatus ?? runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
@@ -3376,6 +3369,28 @@ export function DesktopV3ExistingConversationPane({
         studioMode={presentation === "page" ? studioMode : null}
         onToggleStudioMode={presentation === "page" ? onToggleStudioMode : undefined}
       />
+      {orchestratorHeader ? <AgentModelControl
+        key={normalizedSessionId}
+        currentAgent={selectedAgent || "Agent"}
+        selectedPrimaryAgent={selectedAgent || ""}
+        agents={agentState.profiles}
+        selectedModel={selectedModelOption ?? null}
+        selectedThinking={displayedPreference.thinking}
+        selectedServiceTier={displayedPreference.serviceTier}
+        modelOptions={modelOptions}
+        modelProfiles={modelProfileState.profiles}
+        activeModelProfile={composerActiveModelProfile}
+        modelLocked={selectedAgentModelLock.locked}
+        modelLockNotice={selectedAgentModelLock.disabledReason}
+        busy={agentModelSaving}
+        showTrigger={false}
+        openSignal={headerModelOpenSignal}
+        popoverAnchorId={`orchestrator-model:${normalizedSessionId}`}
+        onOpenAgents={orchestratorHeader.onOpenAgents}
+        onApplyModelFavorite={handleApplyModelFavorite}
+        onApplyModelFavoriteChatOnly={handleApplyModelFavorite}
+        onConfirmAgentSettings={handleConfirmAgentSettings}
+      /> : null}
       <WorkerSessionBanner
         sessionId={normalizedSessionId}
         workspaceSlug={routeWorkspaceSlug}

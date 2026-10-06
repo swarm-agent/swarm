@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Restore Orchestrator chat header project identity in place of generic Workspaces, enable opening model favorites and updating Orchestrator model via canonical session API with rehydration, and route Agents to Orchestrator-owned agents settings. Docs impact: none.
+
 - Fix TUI Ctrl+X shortcut so it opens the session switcher modal across home and chat views, and filter the switcher to display only orchestration sessions (excluding task and subagent worker sessions). Default initial filter to active chats when review is empty, and support Ctrl+X toggle close. Docs impact: none.
 
 - Ensure typing prompts on the TUI homepage creates and opens a completely new canonical project session instead of reusing prior sessions or sending messages to an existing thread. Preserve task session resumption when explicitly navigated into the task board via Ctrl+Up. Docs impact: none.

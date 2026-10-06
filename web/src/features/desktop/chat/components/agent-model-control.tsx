@@ -52,6 +52,8 @@ interface AgentModelControlProps {
   openSignal?: number
   setupOpenSignal?: number
   onOpenAgentSettings?: () => void
+  /** Section-owned destination for the favorites menu's Agents entry. */
+  onOpenAgents?: () => void
   onConfirmAgentSettings?: (input: AgentModelControlConfirmInput) => void | Promise<void>
   onApplyModelFavorite?: (profile: ModelProfileRecord) => void | Promise<void>
   onApplyModelFavoriteChatOnly?: (profile: ModelProfileRecord) => void | Promise<void>
@@ -257,6 +259,7 @@ export function AgentModelControl({
   openSignal = 0,
   setupOpenSignal = 0,
   onOpenAgentSettings,
+  onOpenAgents,
   onConfirmAgentSettings,
   onApplyModelFavorite,
   onApplyModelFavoriteChatOnly,
@@ -1024,12 +1027,17 @@ export function AgentModelControl({
                   setError(null)
                   cancelEditingFavorite()
                   setCreatingNewFavorite(false)
+                  if (onOpenAgents) {
+                    setOpen(false)
+                    onOpenAgents()
+                    return
+                  }
                   setSetupSection('agent')
                   setScreen('setup')
                 }}
                 className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-[var(--app-primary)] bg-[var(--app-primary)] px-4 py-2 text-xs font-semibold text-[var(--app-primary-text)] hover:bg-[var(--app-primary-hover)]"
               >
-                <Settings2 size={14} /> Agent Setup
+                <Settings2 size={14} /> {onOpenAgents ? 'Agents' : 'Agent Setup'}
               </button>
             </div>
           </>
