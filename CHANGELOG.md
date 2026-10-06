@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Correct the retained repository-continuation scheduler fixture to use the correction attempt's run identity for Task Program admission, preserving exact-head and sentinel assertions. Docs impact: none.
+
 - Accept canonical successful Task Program integration receipts after child worktree cleanup, including nonblocking cleanup failure, when authenticating retained repository continuation results; preserve exact result provenance and isolated correction bases. Docs impact: none.
 
 - Authenticate retained Task Program checkpoint runs and correction ancestry, bypass only provably empty terminal launch failures, and inspect committed repository-specific results through the existing task inspection route. Repair restart and canonical workspace regression fixtures. Docs impact: none.

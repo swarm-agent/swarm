@@ -20,6 +20,7 @@ import (
 // Real two-repository Git allocation and scheduler admission is the narrowest
 // layer proving downstream child bases after actual cleanup success or failure;
 // dirty children must remain recoverable, without invalidating integrated lanes.
+// Admission must use the correction attempt's run identity, not the prior run.
 // It does not invoke a provider or overwrite the scheduler's integration state.
 func TestTaskProgramRepositoryLaneConsumesCorrectionBase(t *testing.T) {
 	for _, cleanupFails := range []bool{false, true} {
@@ -118,9 +119,11 @@ func testTaskProgramRepositoryCorrectionBase(t *testing.T, cleanupFails bool) {
 	}
 	p.parentSession.Metadata["swarm_v3_worktree_history"] = histories
 	p.parentSession.Metadata["task_attempt_id"] = "correction"
+	const correctionRunID = "correction-run"
+	p.req.RunID = correctionRunID
 	p.parentSession.Metadata["swarm_v3_source_workspace_id"] = old.RepositoryLanes[sources[0]].WorkspaceID
 	p.parentSession.Metadata["swarm_v3_source_workspace_generation"] = int64(1)
-	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Correction", Agent: "swarm", AccountID: original.AccountScopeID, SessionID: p.parentSession.ID, ActiveAttemptID: "correction", SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: old.RepositoryLanes[sources[0]].WorkspaceID, WorkspaceGeneration: 1, Path: sources[0], Provenance: "explicit"}, Attempts: []pebblestore.ProjectTaskAttempt{{ID: "initial", SessionID: original.ID, RunID: old.ReservationRunID}, {ID: "correction", SessionID: p.parentSession.ID, UserID: original.UserID}}}
+	task := &pebblestore.ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Correction", Agent: "swarm", AccountID: original.AccountScopeID, SessionID: p.parentSession.ID, ActiveAttemptID: "correction", SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: old.RepositoryLanes[sources[0]].WorkspaceID, WorkspaceGeneration: 1, Path: sources[0], Provenance: "explicit"}, Attempts: []pebblestore.ProjectTaskAttempt{{ID: "initial", SessionID: original.ID, RunID: old.ReservationRunID}, {ID: "correction", SessionID: p.parentSession.ID, RunID: correctionRunID, UserID: original.UserID}}}
 	for i, source := range sources {
 		ref := pebblestore.ProjectTaskRepositoryContinuation{Source: pebblestore.ProjectTaskSource{WorkspaceID: old.RepositoryLanes[source].WorkspaceID, WorkspaceGeneration: 1, Path: source, Provenance: "explicit"}, AttemptID: "initial", SessionID: original.ID, ProgramID: old.ProgramID, ProgramRevision: old.Revision, Lane: old.RepositoryLanes[source], HeadCommit: old.LaneHeads[source], TargetBranch: "dev", TargetHead: bases[i]}
 		task.Attempts[1].RepositoryContinuations = append(task.Attempts[1].RepositoryContinuations, ref)
@@ -153,17 +156,17 @@ func testTaskProgramRepositoryCorrectionBase(t *testing.T, cleanupFails bool) {
 	}
 	definition := old.Definition
 	definition.ID = "correction-program"
-	record := pebblestore.TaskProgramRecord{ParentSessionID: p.parentSession.ID, ProgramID: definition.ID, DefinitionHash: "correction", Definition: definition, State: pebblestore.TaskProgramStateRunning}
+	record := pebblestore.TaskProgramRecord{ParentSessionID: p.parentSession.ID, ProgramID: definition.ID, ReservationRunID: correctionRunID, DefinitionHash: "correction", Definition: definition, State: pebblestore.TaskProgramStateRunning}
 	for _, def := range definition.Jobs {
 		record.Jobs = append(record.Jobs, pebblestore.TaskProgramJobRecord{JobID: def.ID, StageID: def.StageID, State: pebblestore.TaskProgramJobDeclared})
 	}
 	record, _, err = p.service.sessions.CreateTaskProgram(record)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("persist correction program: %v", err)
 	}
 	p.record = record
 	if _, err := p.multiRepositoryWorkspacePath(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("admit correction program and allocate repository lanes: %v", err)
 	}
 	for i, source := range sources {
 		lane := p.record.RepositoryLanes[source]
