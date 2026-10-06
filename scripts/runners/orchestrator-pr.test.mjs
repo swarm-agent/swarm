@@ -284,9 +284,10 @@ test('orchestrator live e2e runner parses options, validates receipt schema and 
   assert.equal(o.timeoutMs, 60000)
 
   // Invalid options fail closed
-  assert.throws(() => parseLiveOptions([...args, '--timeout-ms', '20000'], env), /invalid_deadline/)
-  assert.throws(() => parseLiveOptions([...args, '--candidate-revision', 'invalid'], env), /candidate_and_run_identity/)
-  assert.throws(() => parseLiveOptions([...args, '--scenario', 'unknown'], env), /invalid_scenario/)
+  const replaceArg = (flag, oldVal, newVal) => args.map(a => a === oldVal ? newVal : a)
+  assert.throws(() => parseLiveOptions(replaceArg('--timeout-ms', '60000', '20000'), env), /invalid_deadline/)
+  assert.throws(() => parseLiveOptions(replaceArg('--candidate-revision', candidate, 'invalid'), env), /candidate_and_run_identity/)
+  assert.throws(() => parseLiveOptions(replaceArg('--scenario', 'orchestrator-live-e2e', 'unknown'), env), /invalid_scenario/)
 
   // requiredAssertions returns the 6 contract assertions
   assert.equal(requiredAssertions('orchestrator-live-e2e').length, 6)

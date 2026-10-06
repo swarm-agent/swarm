@@ -69,7 +69,11 @@ test('actual dispatcher accepts complete protocol and rejects fail, skip, zero a
   const scratch = mkdtempSync(join(process.env.TMPDIR, 'new-task-dispatch-'))
   try {
     const file = join(scratch, 'protocol.test.mjs'); writeFileSync(file, protocolTest)
-    const invoke = scenario => dispatch(process.execPath, ['--test', '--test-isolation=none', '--test-reporter=tap', file], { env: { ...process.env, PROTOCOL_SCENARIO: scenario } }, 5000)
+    const invoke = scenario => {
+      const cleanEnv = { ...process.env, PROTOCOL_SCENARIO: scenario }
+      delete cleanEnv.NODE_TEST_CONTEXT
+      return dispatch(process.execPath, ['--test', '--test-isolation=none', '--test-reporter=tap', file], { env: cleanEnv }, 5000)
+    }
     assert.deepEqual(await invoke('success'), { success: true, tests: 1 })
     for (const scenario of ['empty', 'skip', 'no-receipt']) await assert.rejects(invoke(scenario), /receipt/)
     await assert.rejects(invoke('failed'), /step=patch_model_assignments error=http_status http=404/)

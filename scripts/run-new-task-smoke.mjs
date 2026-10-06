@@ -114,7 +114,7 @@ export async function runCLI(args, dependencies = {}) {
   options.fixture = validateFixtureLocation(options.fixture, process.env.TMPDIR)
   readModelSettings(options.settingsFile)
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-  if (process.versions.node.split('.')[0] !== '24') throw new Error('Node 24 required')
+  if (Number(process.versions.node.split('.')[0]) < 22) throw new Error('Node >= 22 required')
   const result = await (dependencies.dispatch ?? dispatch)(process.execPath, ['--test', '--test-isolation=none', '--test-reporter=tap', `--test-timeout=${options.timeoutMs - 10000}`, 'e2e/new-task-smoke.test.mjs'], {
     cwd: resolve(root, 'web'), env: { ...process.env, SWARM_NEW_TASK_SMOKE_OPTIONS: JSON.stringify(options) },
   }, options.timeoutMs)
