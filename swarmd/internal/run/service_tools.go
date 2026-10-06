@@ -5253,7 +5253,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if targetErr != nil {
 			return "", fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
-		retainTaskResolvedWorkspace(&launchSpecs[i], parsed.Program, i, targetPath)
+		retainTaskResolvedWorkspace(parentSession, &launchSpecs[i], parsed.Program, i, targetPath)
 	}
 	parsed.Launches = append([]taskLaunchSpec(nil), launchSpecs...)
 	if parsed.Program != nil {
