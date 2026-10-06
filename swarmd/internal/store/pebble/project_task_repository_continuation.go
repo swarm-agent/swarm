@@ -129,6 +129,19 @@ func (s *SessionStore) AuthenticateTaskRepositoryProgram(task *ProjectTaskRecord
 	return program, nil
 }
 
+// taskRepositoryIntegrationSucceeded recognizes only the scheduler's canonical
+// successful integration receipts. Cleanup is subsequent, nonblocking work:
+// failure retains the child checkout but does not undo the recorded lane result.
+// This predicate is not authority without the job, program and provenance checks.
+func taskRepositoryIntegrationSucceeded(state string) bool {
+	switch state {
+	case "integrated", "integrated_worktree_removed", "integrated_worktree_cleanup_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 // AuthenticateTaskRepositoryContinuation binds immutable evidence to the recorded
 // same-task attempt and terminal durable program, never caller-supplied Git facts.
 // The caller must additionally verify catalog identity and real Git ownership.
@@ -177,7 +190,7 @@ func (s *SessionStore) AuthenticateTaskRepositoryContinuation(task *ProjectTaskR
 		if !coder {
 			continue
 		}
-		if job.State != TaskProgramJobIntegrated || job.IntegrationState != "integrated" || job.ChildHead == "" || job.ChildHead == job.ImmutableStageBase {
+		if job.State != TaskProgramJobIntegrated || !taskRepositoryIntegrationSucceeded(job.IntegrationState) || job.ChildHead == "" || job.ChildHead == job.ImmutableStageBase {
 			return zero, fail
 		}
 		integrated = true
@@ -191,7 +204,7 @@ func (s *SessionStore) AuthenticateTaskRepositoryContinuation(task *ProjectTaskR
 		}
 		matched := false
 		for _, job := range program.Jobs {
-			matched = matched || (job.JobID == def.ID && job.SourceWorkspacePath == ref.Source.Path && job.State == TaskProgramJobIntegrated && job.IntegrationState == "integrated" && job.ChildHead != "" && job.ChildHead != job.ImmutableStageBase)
+			matched = matched || (job.JobID == def.ID && job.SourceWorkspacePath == ref.Source.Path && job.State == TaskProgramJobIntegrated && taskRepositoryIntegrationSucceeded(job.IntegrationState) && job.ChildHead != "" && job.ChildHead != job.ImmutableStageBase)
 		}
 		if !matched {
 			return zero, fail

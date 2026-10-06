@@ -218,7 +218,12 @@ func retainContinuationProgram(t *testing.T, f *matrixTestFixture, task *pebbles
 		record.RepositoryLanes[repo] = pebblestore.TaskProgramRepositoryLane{WorkspaceID: source.WorkspaceID, WorkspaceGeneration: source.WorkspaceGeneration, SourcePath: repo, WorkspacePath: lane.WorkspacePath, Branch: lane.BranchName, BaseCommit: base.BaseCommit}
 		record.LaneHeads[repo] = result.ResultingParentHead
 		definition.Jobs = append(definition.Jobs, pebblestore.TaskProgramJobSpec{ID: jobID, StageID: "build", AgentType: "coder", WorkspacePath: repo, Title: "Fixture", MetaPrompt: "Fixture", Deliverable: "Commit", OwnedScope: []string{file}, AcceptanceCriteria: []string{"sentinel"}, DependencyEvidence: "committed"})
-		record.Jobs = append(record.Jobs, pebblestore.TaskProgramJobRecord{JobID: jobID, StageID: "build", State: pebblestore.TaskProgramJobIntegrated, IntegrationState: "integrated", SourceWorkspacePath: repo, ChildSessionID: jobID, ChildHead: head, ImmutableStageBase: base.BaseCommit, ParentBranch: lane.BranchName})
+		// Mirror successful scheduler cleanup after real integration, rather than
+		// leaving every API fixture at the intermediate "integrated" receipt.
+		if err := trees.RemoveIntegratedTaskWorkspace(lane.WorkspacePath, child.WorkspacePath, jobID, child.BranchName, base.BaseCommit, head); err != nil {
+			t.Fatal(err)
+		}
+		record.Jobs = append(record.Jobs, pebblestore.TaskProgramJobRecord{JobID: jobID, StageID: "build", State: pebblestore.TaskProgramJobIntegrated, IntegrationState: "integrated_worktree_removed", SourceWorkspacePath: repo, ChildSessionID: jobID, ChildHead: head, ImmutableStageBase: base.BaseCommit, ParentBranch: lane.BranchName})
 	}
 	record.Definition = definition
 	record.State = pebblestore.TaskProgramStateCompleted

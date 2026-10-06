@@ -18,9 +18,27 @@ import (
 // Purpose: repositoryLaneForSource must capture the authenticated correction
 // runtime HEAD returned by resolveTaskTargetWorkspace, not current catalog HEAD.
 // Real two-repository Git allocation and scheduler admission is the narrowest
-// layer proving downstream child bases; it does not invoke a provider.
+// layer proving downstream child bases after actual cleanup success or failure;
+// dirty children must remain recoverable, without invalidating integrated lanes.
+// It does not invoke a provider or overwrite the scheduler's integration state.
 func TestTaskProgramRepositoryLaneConsumesCorrectionBase(t *testing.T) {
+	for _, cleanupFails := range []bool{false, true} {
+		name := "removed"
+		if cleanupFails {
+			name = "cleanup_failed"
+		}
+		t.Run(name, func(t *testing.T) {
+			testTaskProgramRepositoryCorrectionBase(t, cleanupFails)
+		})
+	}
+}
+
+func testTaskProgramRepositoryCorrectionBase(t *testing.T, cleanupFails bool) {
+	t.Helper()
 	p, sources, bases := multiRepoProgramFixture(t, false)
+	if cleanupFails {
+		p.service.worktrees = &continuationDirtyCleanupWorktrees{Service: p.service.worktrees.(*worktree.Service)}
+	}
 	multiRepoCommitChild(t, p, sources[0], "job-a", "a.txt")
 	multiRepoCommitChild(t, p, sources[1], "job-b", "b.txt")
 	if err := p.integrateMultiRepositoryStage(0); err != nil {
@@ -30,6 +48,25 @@ func TestTaskProgramRepositoryLaneConsumesCorrectionBase(t *testing.T) {
 	old, _, err := p.service.sessions.TransitionTaskProgram(p.parentSession.ID, p.record.ProgramID, pebblestore.TaskProgramTransition{ExpectedRevision: p.record.Revision, MutationID: "finish", State: &completed})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if programFixtureGit(t, p.parentSession.WorktreeRootPath, "rev-parse", "HEAD") != bases[0] {
+		t.Fatal("coordinator changed instead of repository lanes")
+	}
+	wantIntegration := "integrated_worktree_removed"
+	if cleanupFails {
+		wantIntegration = "integrated_worktree_cleanup_failed"
+	}
+	for _, job := range old.Jobs {
+		if job.State != pebblestore.TaskProgramJobIntegrated || job.IntegrationState != wantIntegration {
+			t.Fatalf("scheduler cleanup receipt: %+v", job)
+		}
+		if cleanupFails {
+			if bytes, err := os.ReadFile(filepath.Join(job.WorkspacePath, "unfinished-cleanup.txt")); err != nil || string(bytes) != "preserve" {
+				t.Fatal("failed cleanup destroyed dirty child data")
+			}
+		} else if _, err := os.Stat(job.WorkspacePath); !os.IsNotExist(err) {
+			t.Fatalf("integrated child checkout not removed: %v", err)
+		}
 	}
 	original := p.parentSession
 	original.Metadata["project_id"], original.Metadata["task_id"] = "project", "task"
@@ -141,6 +178,9 @@ func TestTaskProgramRepositoryLaneConsumesCorrectionBase(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if programFixtureGit(t, child.WorkspacePath, "rev-parse", "HEAD") != old.LaneHeads[source] {
+			t.Fatal("downstream child lost exact retained head")
+		}
 		file := []string{"a.txt", "b.txt"}[i]
 		if bytes, err := os.ReadFile(filepath.Join(child.WorkspacePath, file)); err != nil || len(bytes) == 0 {
 			t.Fatal("downstream child missing retained sentinel")
@@ -149,4 +189,22 @@ func TestTaskProgramRepositoryLaneConsumesCorrectionBase(t *testing.T) {
 			t.Fatal("scheduler changed captured source")
 		}
 	}
+	if cleanupFails {
+		for _, job := range old.Jobs {
+			if bytes, err := os.ReadFile(filepath.Join(job.WorkspacePath, "unfinished-cleanup.txt")); err != nil || string(bytes) != "preserve" {
+				t.Fatal("continuation destroyed retained dirty child data")
+			}
+		}
+	}
+}
+
+// Fault injection happens only after real integration. The production remover
+// must reject a genuinely dirty checkout; no cleanup receipt or head is spoofed.
+type continuationDirtyCleanupWorktrees struct{ *worktree.Service }
+
+func (s *continuationDirtyCleanupWorktrees) RemoveIntegratedTaskWorkspace(parent, child, owner, branch, base, head string) error {
+	if err := os.WriteFile(filepath.Join(child, "unfinished-cleanup.txt"), []byte("preserve"), 0600); err != nil {
+		return err
+	}
+	return s.Service.RemoveIntegratedTaskWorkspace(parent, child, owner, branch, base, head)
 }
