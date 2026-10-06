@@ -151,6 +151,11 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 			if a.ID != t.ActiveAttemptID {
 				return errors.New("follow-up is historical; retrieve history instead of relaunching")
 			}
+			sources, err := s.ResolveTaskFollowupSources(t, user)
+			if err != nil {
+				return err
+			}
+			t.ProgramSources = sources
 			return nil
 		}
 		if t.Status == "in_progress" && t.SessionID != "" {
@@ -230,6 +235,10 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 		if recovery != nil && recovery.Kind != "" && recovery.Kind != "retained_continuation" {
 			return errors.New("unknown follow-up source provenance")
 		}
+		sources, err := s.ResolveTaskFollowupSources(t, user)
+		if err != nil {
+			return err
+		}
 		t.CaptureActiveAttempt()
 		if origin != "" {
 			t.OriginSessionID = origin
@@ -253,7 +262,8 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 		t.TaskProgramID, t.FullPlanMarkdown, t.PlanSummary, t.FeatureSize = "", "", "", "small"
 		t.OutcomeType, t.Tier = "general", "direct"
 		t.WorkerID, t.WorkerName, t.WorkerRunID, t.AutomationID = "", "", "", ""
-		t.ProgramSources = nil
+		// Carry only authenticated source identities, not prior execution bindings.
+		t.ProgramSources = sources
 		t.CoderAssignments = nil
 		t.Model, t.Provider, t.Thinking, t.ServiceTier, t.ContextMode = "", "", "", "", ""
 		t.IsIntegrated, t.IsDirty = false, false

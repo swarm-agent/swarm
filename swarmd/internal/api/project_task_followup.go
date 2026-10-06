@@ -194,7 +194,13 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	if task.Archived {
 		return nil, &projectTaskFollowupError{409, errors.New("archived task cannot be reopened")}
 	}
-	if err := s.revalidateProjectTaskSource(p, proj, task); err != nil {
+	sources, err := db.ResolveTaskFollowupSources(task, p.UserID)
+	if err != nil {
+		return nil, &projectTaskFollowupError{403, err}
+	}
+	validated := *task
+	validated.ProgramSources = sources
+	if err := s.revalidateProjectTaskSource(p, proj, &validated); err != nil {
 		return nil, &projectTaskFollowupError{403, err}
 	}
 	if s.runner == nil {
@@ -206,6 +212,15 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	state, err := s.worktrees.InspectTaskWorkspace(task.SourceWorkspace.Path)
 	if err != nil || !state.Clean || state.HeadCommit == "" {
 		return nil, &projectTaskFollowupError{409, errors.New("follow-up source must be clean and committed")}
+	}
+	for _, source := range sources {
+		if source.SameIdentity(task.SourceWorkspace) {
+			continue
+		}
+		secondary, inspectErr := s.worktrees.InspectTaskWorkspace(source.Path)
+		if inspectErr != nil || !secondary.Clean || secondary.HeadCommit == "" {
+			return nil, &projectTaskFollowupError{409, fmt.Errorf("follow-up program source %q must be clean and committed", source.Path)}
+		}
 	}
 	// Retained committed work is a source, not an integration prerequisite.
 	// Retries reuse durable provenance rather than inspecting a new source HEAD.
@@ -287,6 +302,14 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	if err != nil {
 		return nil, &projectTaskFollowupError{409, err}
 	}
+	if len(task.ProgramSources) != len(sources) {
+		return nil, &projectTaskFollowupError{409, errors.New("follow-up source admission changed during reservation; reload before allocation")}
+	}
+	for i, source := range sources {
+		if !source.SameIdentity(task.ProgramSources[i]) || source.Provenance != task.ProgramSources[i].Provenance {
+			return nil, &projectTaskFollowupError{409, errors.New("follow-up source admission changed during reservation; reload before allocation")}
+		}
+	}
 	a := task.ActiveAttempt()
 	if a == nil {
 		return nil, &projectTaskFollowupError{500, errors.New("missing durable attempt reservation")}
@@ -298,6 +321,21 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		task.BaseCommit = projectTaskRepairBase(a.Recovery)
 	}
 	if a.LaunchState == "launched" {
+		// A pre-fix attempt may have launched without secondary grants. Repair
+		// only its authenticated source projection, never wake/replay its run.
+		owned, found, readErr := db.GetSession(task.SessionID)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if !found || owned.UserID != p.UserID {
+			return nil, &projectTaskFollowupError{403, errors.New("follow-up session owner unavailable")}
+		}
+		if err := verifyProjectTaskSession(task, owned, p.AccountScopeID); err != nil {
+			return nil, &projectTaskFollowupError{403, err}
+		}
+		if err := s.reconcileTaskFollowupSourceGrants(p, task, &owned); err != nil {
+			return nil, err
+		}
 		return task, nil
 	}
 	// Pin allocation source before the external allocator runs. Retry never adopts
