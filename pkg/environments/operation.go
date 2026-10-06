@@ -11,6 +11,9 @@ import (
 	"unicode/utf8"
 )
 
+// MaxOperationOutputBytes bounds each retained exec stream (also the provider cap).
+const MaxOperationOutputBytes = 4 * 1024 * 1024
+
 // Domain limits for environment operations
 const (
 	maxActionBytes             = 64
@@ -86,10 +89,13 @@ type OperationActivity struct {
 // OperationResult captures safe, bounded completion results.
 type OperationResult struct {
 	Build        *ImageBuildResult `json:"build,omitempty"`
-	ExitCode     int               `json:"exit_code,omitempty"`
+	ExitCode     int               `json:"exit_code"`
 	ErrorMessage string            `json:"error_message,omitempty"`
 	FailureKind  string            `json:"failure_kind,omitempty"`
 	Summary      string            `json:"summary,omitempty"`
+	Stdout       string            `json:"stdout,omitempty"`
+	Stderr       string            `json:"stderr,omitempty"`
+	Truncated    bool              `json:"truncated,omitempty"`
 }
 
 // EnvironmentOperation models a durable, supervised operation on an environment or deployment.
@@ -274,6 +280,11 @@ func (op *EnvironmentOperation) Validate() error {
 	}
 
 	// Validate result fields
+	for _, output := range []string{op.Result.Stdout, op.Result.Stderr} {
+		if len(output) > MaxOperationOutputBytes || !utf8.ValidString(output) {
+			return errors.New("result output exceeds limit or is invalid UTF-8")
+		}
+	}
 	if len(op.Result.ErrorMessage) > maxErrorMessageLength || !utf8.ValidString(op.Result.ErrorMessage) {
 		return fmt.Errorf("result error_message exceeds %d bytes or is invalid UTF-8", maxErrorMessageLength)
 	}

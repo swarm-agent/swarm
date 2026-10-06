@@ -99,3 +99,49 @@ system may supply the host and short-lived SSH authentication to the operator.
 The parent ensures that access lasts through execution and cleanup and revokes it
 after reconciliation. That external approval/acquisition is not implemented here.
 No live cloud readiness or test execution is implied by this implementation.
+
+## Exec deadline/output smoke test
+
+Use the rebuilt daemon at the validated commit and the existing operator-approved
+SSH connection. Check access once, then build/ensure as above. Retain the exact
+result, deployment and own lease receipts; run these managed `exec` commands with
+those same references (no direct SSH test shell):
+
+1. `command=["sh","-c","printf 'SMOKE ASSERTION OK\\n'; printf 'stderr detail\\n' >&2"], timeout_ms=10000, max_output=4096`.
+   Inspect `get_operation(operation_id)` after completion: `succeeded`, exit 0,
+   `result.stdout` includes the assertion and `result.stderr` the detail.
+2. `command=["sh","-c","printf 'failure assertion\\n'; printf 'failure detail\\n' >&2; exit 7"]`
+   with the same bounds: expect `failed`, exit 7 and both streams retained.
+3. `command=["sh","-c","printf 'before deadline\\n'; sleep 60"], timeout_ms=1000`.
+   Expect `timed_out`/124 within the deadline plus the 15-second cleanup window,
+   with partial output. Repeat with `timeout_ms=10000`, explicitly `cancel` its
+   operation ID after start: expect `cancelled`/130 within 15 seconds of cancel.
+4. Run `command=["sh","-c","printf '%0100d\\n' 0"], max_output=32`.
+   Completion must include at most 32 bytes per stream and `result.truncated=true`.
+   A smaller `get_operation(..., max_output=16)` further narrows the receipt only;
+   fetching again does not change the originally stored output.
+5. Release the own deployment lease on every settled outcome. Record exact daemon
+   revision, receipts and observed statuses privately; these checks are not proof
+   of provider-backed frontend suites until those actual suites have run.
+
+The deadline includes queue waiting and is capped at ten minutes. Managed exec
+passes its remaining deadline to the provider. Cleanup waits are independently
+bounded; an SSH disconnect or cleanup deadline with no termination confirmation
+settles as `unknown` (or a confirmed cleanup failure as `cleanup_failed`), **not**
+proof of remote termination. These unresolved states block deployment reuse.
+Retain the operation/deployment IDs and cleanup error; restore authorized access
+and reconcile that exact operation's container/process metadata before reuse.
+Confirmed cleanup releases admission capacity even if an output reader remains
+hung; unconfirmed hung work conservatively retains capacity until it returns.
+
+Exec results retain separate bounded stdout/stderr, actual command exit status,
+and an explicit truncation flag for success, failure and partial timeout/cancel
+output. `max_output` is a per-stream byte cap; nonpositive/oversized values use the
+4 MiB cap. Summary remains short. Output is credential-pattern redacted (including
+provided exec environment values) before the requested cap; do not print secrets
+or assume arbitrary application data can always be recognized as credentials.
+
+Missing/expired external SSH or cloud access is a blocker: stop, report the failed
+preflight/cleanup and ask the operator to renew access through the full execution
+and cleanup window. Do not acquire credentials, provision a VM, install frontend
+dependencies, repeatedly probe the host or silently substitute a local provider.

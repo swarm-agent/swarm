@@ -150,31 +150,21 @@ func TestProjectResultIdempotencyBinding(t *testing.T) {
 // Purpose: result-bound images must provision without host mounts, then accept
 // only the parent's held receipt for real lifecycle exec/release dispatch.
 // Real stores and an injected provider prove durable identity propagation;
-// this is deterministic contract evidence, not a live Podman test.
+// this is deterministic contract evidence, not a live Podman test. The fixture
+// creates the selected connection kind initially; immutable connection kinds
+// must not be changed to make SSH lifecycle tests pass.
 func TestProjectResultManagedLifecycle(t *testing.T) {
 	t.Run("local", func(t *testing.T) { testResultManagedLifecycle(t, false) })
 	t.Run("ssh", func(t *testing.T) { testResultManagedLifecycle(t, true) })
 }
 
 func testResultManagedLifecycle(t *testing.T, remote bool) {
-	h, env, conn, p := buildLifecycleFixture(t)
+	kind := environments.ConnectionKindLocalPodman
 	if remote {
-		conn.Kind = environments.ConnectionKindSSH
-		conn.SSH = &environments.SSHConfig{Host: "example.invalid", User: "tester", Port: 22}
-		conn.Capabilities.SupportsDocker = true
-		var err error
-		conn, err = h.connections.Save(conn)
-		if err != nil {
-			t.Fatal(err)
-		}
-		env.Container.RootlessSystemd = nil
-		env, err = h.environments.Save(env)
-		if err != nil {
-			t.Fatal(err)
-		}
-		p.mockProvider = newMockProvider(environments.ConnectionKindSSH)
-		h.manager.registry.Register(p)
-	} else {
+		kind = environments.ConnectionKindSSH
+	}
+	h, env, conn, p := buildLifecycleFixtureKind(t, kind)
+	if !remote {
 		h.manager.registry.Register(&resultPodmanProvider{p})
 	}
 	product := ResolvedBuildProduct{Source: env.Build.Product, Root: t.TempDir(), Binding: strings.Repeat("f", 64)}

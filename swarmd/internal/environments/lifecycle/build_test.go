@@ -44,6 +44,11 @@ func (p *managedBuildProvider) CleanupBuild(context.Context, string) error {
 }
 func buildLifecycleFixture(t *testing.T) (*supervisedTestHarness, environments.Environment, environments.Connection, *managedBuildProvider) {
 	t.Helper()
+	return buildLifecycleFixtureKind(t, environments.ConnectionKindLocalPodman)
+}
+
+func buildLifecycleFixtureKind(t *testing.T, kind environments.ConnectionKind) (*supervisedTestHarness, environments.Environment, environments.Connection, *managedBuildProvider) {
+	t.Helper()
 	h := setupSupervisedHarness(t)
 	product, err := h.workspaces.AddForAccount("account", t.TempDir(), "Product")
 	if err != nil {
@@ -53,20 +58,27 @@ func buildLifecycleFixture(t *testing.T) (*supervisedTestHarness, environments.E
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := h.connections.Save(environments.Connection{ID: "podman", Name: "Podman", AccountScopeID: "account", WorkspaceID: "workspace", Kind: environments.ConnectionKindLocalPodman})
+	definition := environments.Connection{ID: "build-connection", Name: "Build", AccountScopeID: "account", WorkspaceID: "workspace", Kind: kind}
+	if kind == environments.ConnectionKindSSH {
+		definition.SSH = &environments.SSHConfig{Host: "example.invalid", User: "tester", Port: 22}
+		definition.Capabilities.SupportsDocker = true
+	}
+	conn, err := h.connections.Save(definition)
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := createTestEnvironment(t, h.environments, "account", "workspace", "build-env", conn.ID, true, 1, environments.ReleaseBehaviorNone)
 	env.Container.Image = environments.ManagedBuildImage
-	env.Container.RootlessSystemd = &environments.RootlessSystemd{CgroupNamespace: "private", Network: "slirp4netns", PidsLimit: 1024}
+	if kind == environments.ConnectionKindLocalPodman {
+		env.Container.RootlessSystemd = &environments.RootlessSystemd{CgroupNamespace: "private", Network: "slirp4netns", PidsLimit: 1024}
+	}
 	env.Provisioning = environments.WorkspaceProvisioning{Strategy: environments.SourceStrategy{Kind: environments.SourceStrategyKindRegistryImage, RegistryImage: &environments.RegistryImageConfig{Image: environments.ManagedBuildImage, PullPolicy: "never"}}}
 	env.Build = &environments.ImageBuildDefinition{Product: environments.CommittedBuildSource{WorkspaceID: product.WorkspaceID, WorkspaceGeneration: product.WorkspaceGeneration, Commit: strings.Repeat("a", 40)}, Recipe: environments.CommittedBuildSource{WorkspaceID: recipe.WorkspaceID, WorkspaceGeneration: recipe.WorkspaceGeneration, Commit: strings.Repeat("b", 40)}, RecipeDirectory: "recipe", RecipeFile: "recipe/Containerfile"}
 	env, err = h.environments.Save(env)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &managedBuildProvider{mockProvider: newMockProvider(environments.ConnectionKindLocalPodman)}
+	p := &managedBuildProvider{mockProvider: newMockProvider(kind)}
 	h.manager.registry.Register(p)
 	return h, env, conn, p
 }

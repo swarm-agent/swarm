@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/privacy"
@@ -26,7 +27,7 @@ const (
 	MaxOperationTimeout     = 10 * time.Minute
 	ProbeTimeout            = 10 * time.Second
 	CleanupTimeout          = 15 * time.Second
-	DefaultMaxOutputBytes   = 4 * 1024 * 1024 // 4 MB
+	DefaultMaxOutputBytes   = environments.MaxOperationOutputBytes
 	DefaultWaitDelay        = 3 * time.Second
 	DefaultSupervisionDir   = "/run/swarm/operations"
 )
@@ -711,13 +712,16 @@ type progressWriter struct {
 	opID        string
 	onProgress  ExecProgressCallback
 	lastObsTime *time.Time
+	lastObsMu   *sync.Mutex
 }
 
 func (w *progressWriter) Write(p []byte) (int, error) {
 	n, err := w.writer.Write(p)
 	now := time.Now().UTC()
 	if w.lastObsTime != nil {
+		w.lastObsMu.Lock()
 		*w.lastObsTime = now
+		w.lastObsMu.Unlock()
 	}
 	if w.onProgress != nil && len(p) > 0 {
 		chunk := p
@@ -815,6 +819,44 @@ func commandDiagnostic(out string) string {
 	return sanitizeOutput(out)
 }
 
+// SafeExecOutput redacts complete captured output before applying the per-stream
+// byte limit. It is shared by durable lifecycle results and tool receipt views.
+func SafeExecOutput(out string, maxOutput int, env map[string]string) (string, bool) {
+	for _, value := range env {
+		if value != "" {
+			out = strings.ReplaceAll(out, value, "[REDACTED]")
+			// Capture may have ended mid-value; do not persist that prefix.
+			for n := len(value)-1; n > 0; n-- {
+				if strings.HasSuffix(out, value[:n]) {
+					out = out[:len(out)-n] + "[REDACTED]"
+					break
+				}
+			}
+		}
+	}
+	out = diagnosticPrivateKey.ReplaceAllString(out, "[REDACTED PRIVATE KEY]")
+	out = diagnosticCredentialLine.ReplaceAllString(out, "[REDACTED CREDENTIAL LINE]")
+	out = privacy.SanitizeText(privacy.SanitizeDiagnostic(out))
+	out = strings.ToValidUTF8(out, "")
+	out = strings.Map(func(r rune) rune {
+		if r < 32 && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, out)
+	if maxOutput <= 0 || maxOutput > DefaultMaxOutputBytes {
+		maxOutput = DefaultMaxOutputBytes
+	}
+	truncated := len(out) > maxOutput
+	if truncated {
+		out = out[:maxOutput]
+		for !utf8.ValidString(out) {
+			out = out[:len(out)-1]
+		}
+	}
+	return out, truncated
+}
+
 func sanitizeOutput(out string) string {
 	trimmed := strings.TrimSpace(out)
 	if len(trimmed) > 1024 {
@@ -885,15 +927,15 @@ func validateCancelParams(deployment *environments.Deployment, req CancelExecReq
 
 var (
 	cleanupMu    sync.Mutex
-	cleanupLocks = make(map[string]*sync.Mutex)
+	cleanupLocks = make(map[string]chan struct{})
 )
 
-func getCleanupLock(key string) *sync.Mutex {
+func getCleanupLock(key string) chan struct{} {
 	cleanupMu.Lock()
 	defer cleanupMu.Unlock()
 	l, ok := cleanupLocks[key]
 	if !ok {
-		l = &sync.Mutex{}
+		l = make(chan struct{}, 1)
 		cleanupLocks[key] = l
 	}
 	return l
@@ -954,10 +996,12 @@ func executeSupervised(ctx context.Context, transport ContainerExecTransport, ta
 	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	boundedStdout := &boundedBuffer{buf: &stdoutBuf, max: maxOutput}
-	boundedStderr := &boundedBuffer{buf: &stderrBuf, max: maxOutput}
+	// Redact before the requested cap; capture remains globally bounded.
+	boundedStdout := &boundedBuffer{buf: &stdoutBuf, max: DefaultMaxOutputBytes}
+	boundedStderr := &boundedBuffer{buf: &stderrBuf, max: DefaultMaxOutputBytes}
 
 	var lastObserved time.Time
+	var lastObservedMu sync.Mutex
 	var outWriter io.Writer = boundedStdout
 	var errWriter io.Writer = boundedStderr
 
@@ -968,6 +1012,7 @@ func executeSupervised(ctx context.Context, transport ContainerExecTransport, ta
 			opID:        opID,
 			onProgress:  req.OnProgress,
 			lastObsTime: &lastObserved,
+			lastObsMu:   &lastObservedMu,
 		}
 		errWriter = &progressWriter{
 			writer:      boundedStderr,
@@ -975,6 +1020,7 @@ func executeSupervised(ctx context.Context, transport ContainerExecTransport, ta
 			opID:        opID,
 			onProgress:  req.OnProgress,
 			lastObsTime: &lastObserved,
+			lastObsMu:   &lastObservedMu,
 		}
 	}
 
@@ -983,22 +1029,36 @@ func executeSupervised(ctx context.Context, transport ContainerExecTransport, ta
 		lastObserved = time.Now().UTC()
 	}
 
+	safeStdout, outTruncated := SafeExecOutput(stdoutBuf.String(), maxOutput, req.Env)
+	safeStderr, errTruncated := SafeExecOutput(stderrBuf.String(), maxOutput, req.Env)
+	result := &ExecResult{
+		Stdout:         safeStdout,
+		Stderr:         safeStderr,
+		OperationID:    opID,
+		Truncated:      boundedStdout.truncated || boundedStderr.truncated || outTruncated || errTruncated,
+		LastObservedAt: lastObserved,
+	}
+
 	// On timeout or cancellation, execute bounded container cleanup
 	if execCtx.Err() != nil {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), CleanupTimeout)
 		defer cleanupCancel()
 
+		result.ExitCode = 124
+		if ctx.Err() == context.Canceled {
+			result.ExitCode = 130
+		}
 		cancelRes, cleanupErr := cleanupOperation(cleanupCtx, transport, target, opID, 2*time.Second)
 		if cleanupErr != nil {
-			return nil, fmt.Errorf("%w for operation %s (%v): %v", ErrOperationCleanupFailed, opID, execCtx.Err(), cleanupErr)
+			return result, fmt.Errorf("%w for operation %s (%v): %w", ErrOperationCleanupFailed, opID, execCtx.Err(), cleanupErr)
 		}
-		if cancelRes != nil && !cancelRes.Terminated {
-			return nil, fmt.Errorf("%w for operation %s: %s", ErrOperationNotConfirmed, opID, cancelRes.ErrorMessage)
+		if cancelRes == nil || !cancelRes.Terminated {
+			return result, fmt.Errorf("%w for operation %s", ErrOperationNotConfirmed, opID)
 		}
 		if ctx.Err() == context.Canceled {
-			return nil, fmt.Errorf("%w: operation %s cancelled (%v)", ErrOperationCancelled, opID, ctx.Err())
+			return result, fmt.Errorf("%w: operation %s cancelled (%v)", ErrOperationCancelled, opID, ctx.Err())
 		}
-		return nil, fmt.Errorf("%w: operation %s timed out (%v)", ErrOperationTimedOut, opID, execCtx.Err())
+		return result, fmt.Errorf("%w: operation %s timed out (%v)", ErrOperationTimedOut, opID, execCtx.Err())
 	}
 
 	exitCode := 0
@@ -1006,9 +1066,18 @@ func executeSupervised(ctx context.Context, transport ContainerExecTransport, ta
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
+			if _, remote := transport.(*sshDockerTransport); remote && exitCode == 255 {
+				result.ExitCode = -1
+				return result, fmt.Errorf("%w: SSH disconnected; reconcile operation %s before deployment reuse", ErrOperationNotConfirmed, opID)
+			}
 		} else {
-			redacted := redactArgs(execArgs)
-			return nil, fmt.Errorf("docker exec failed: %w (command: %s)", err, strings.Join(redacted, " "))
+			result.ExitCode = -1 // transport failure, not a confirmed command exit
+			redacted := strings.Join(redactArgs(execArgs), " ")
+			safeError, _ := SafeExecOutput(err.Error(), 1024, req.Env)
+			if _, remote := transport.(*sshDockerTransport); remote {
+				return result, fmt.Errorf("%w: SSH exec transport failed: %s (command: %s); restore access and reconcile operation %s", ErrOperationNotConfirmed, safeError, redacted, opID)
+			}
+			return result, fmt.Errorf("docker exec failed: %s (command: %s)", safeError, redacted)
 		}
 	}
 
@@ -1017,14 +1086,8 @@ func executeSupervised(ctx context.Context, transport ContainerExecTransport, ta
 	_ = acknowledgeOperation(ackCtx, transport, target, opID)
 	ackCancel()
 
-	return &ExecResult{
-		ExitCode:       exitCode,
-		Stdout:         stdoutBuf.String(),
-		Stderr:         stderrBuf.String(),
-		OperationID:    opID,
-		Truncated:      boundedStdout.truncated || boundedStderr.truncated,
-		LastObservedAt: lastObserved,
-	}, nil
+	result.ExitCode = exitCode
+	return result, nil
 }
 
 func cancelSupervised(ctx context.Context, transport ContainerExecTransport, target string, req CancelExecRequest) (*CancelExecResult, error) {
@@ -1059,8 +1122,12 @@ func cleanupOperation(ctx context.Context, transport ContainerExecTransport, tar
 	// Guard against double races on concurrent cancellation and timeout cleanup
 	lockKey := target + ":" + opID
 	lock := getCleanupLock(lockKey)
-	lock.Lock()
-	defer lock.Unlock()
+	select {
+	case lock <- struct{}{}:
+		defer func() { <-lock }()
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: waiting for cleanup: %w", ErrOperationNotConfirmed, ctx.Err())
+	}
 
 	graceSec := int(grace.Seconds())
 	if graceSec <= 0 {
@@ -1072,7 +1139,7 @@ func cleanupOperation(ctx context.Context, transport ContainerExecTransport, tar
 	outStr := string(out)
 	now := time.Now().UTC()
 
-	if strings.Contains(outStr, "SWARM_CLEANUP:TERMINATED") {
+	if err == nil && strings.Contains(outStr, "SWARM_CLEANUP:TERMINATED") {
 		return &CancelExecResult{
 			OperationID: opID,
 			Terminated:  true,
@@ -1080,7 +1147,7 @@ func cleanupOperation(ctx context.Context, transport ContainerExecTransport, tar
 			SignalSent:  "SIGTERM/SIGKILL",
 		}, nil
 	}
-	if strings.Contains(outStr, "SWARM_CLEANUP:CANCEL_BEFORE_EXEC") {
+	if err == nil && strings.Contains(outStr, "SWARM_CLEANUP:CANCEL_BEFORE_EXEC") {
 		return &CancelExecResult{
 			OperationID: opID,
 			Terminated:  true,
@@ -1088,14 +1155,14 @@ func cleanupOperation(ctx context.Context, transport ContainerExecTransport, tar
 			SignalSent:  "FENCE_BEFORE_EXEC",
 		}, nil
 	}
-	if strings.Contains(outStr, "SWARM_CLEANUP:ALREADY_TERMINATED") || strings.Contains(outStr, "SWARM_CLEANUP:NOT_RUNNING") {
+	if err == nil && (strings.Contains(outStr, "SWARM_CLEANUP:ALREADY_TERMINATED") || strings.Contains(outStr, "SWARM_CLEANUP:NOT_RUNNING")) {
 		return &CancelExecResult{
 			OperationID: opID,
 			Terminated:  true,
 			ObservedAt:  now,
 		}, nil
 	}
-	if strings.Contains(outStr, "SWARM_CLEANUP:PID_REUSE_DETECTED") {
+	if err == nil && strings.Contains(outStr, "SWARM_CLEANUP:PID_REUSE_DETECTED") {
 		return &CancelExecResult{
 			OperationID:  opID,
 			Terminated:   true,
@@ -1133,8 +1200,8 @@ func cleanupOperation(ctx context.Context, transport ContainerExecTransport, tar
 			OperationID:  opID,
 			Terminated:   false,
 			ObservedAt:   now,
-			ErrorMessage: fmt.Sprintf("cleanup command failed: %v", err),
-		}, fmt.Errorf("%w: %v", ErrOperationCleanupFailed, err)
+			ErrorMessage: commandDiagnostic("cleanup command failed: "+err.Error()+": "+outStr),
+		}, fmt.Errorf("%w: %s", ErrOperationNotConfirmed, commandDiagnostic(err.Error()+": "+outStr))
 	}
 
 	return &CancelExecResult{
@@ -1142,7 +1209,7 @@ func cleanupOperation(ctx context.Context, transport ContainerExecTransport, tar
 		Terminated:   false,
 		ObservedAt:   now,
 		ErrorMessage: "unrecognized cleanup output",
-	}, fmt.Errorf("%w: unrecognized cleanup output", ErrOperationCleanupFailed)
+	}, fmt.Errorf("%w: unrecognized cleanup output: %s", ErrOperationNotConfirmed, commandDiagnostic(outStr))
 }
 
 func acknowledgeOperation(ctx context.Context, transport ContainerExecTransport, target, opID string) error {

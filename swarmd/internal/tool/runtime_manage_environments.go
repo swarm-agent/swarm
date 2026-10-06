@@ -15,6 +15,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
+	"swarm/packages/swarmd/internal/environments/provider"
 )
 
 func manageEnvironmentsDefinition() Definition {
@@ -509,6 +510,14 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		if projectTarget != nil && op.ProductResult != "" && op.ProductResult != projectResultBinding(*projectTarget) {
 			return "", errors.New("operation belongs to another task result")
 		}
+		// Receipt reads can narrow output, never expand the originally retained
+		// exec cap or mutate the durable record.
+		op = *op.Clone()
+		var truncated bool
+		op.Result.Stdout, truncated = provider.SafeExecOutput(op.Result.Stdout, asInt(args["max_output"], 0), nil)
+		op.Result.Truncated = op.Result.Truncated || truncated
+		op.Result.Stderr, truncated = provider.SafeExecOutput(op.Result.Stderr, asInt(args["max_output"], 0), nil)
+		op.Result.Truncated = op.Result.Truncated || truncated
 		response["operation"] = op
 		response["operation_id"] = op.OperationID
 		response["status"] = op.Status
