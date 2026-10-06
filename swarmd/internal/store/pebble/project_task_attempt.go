@@ -28,6 +28,7 @@ type ProjectTaskAttempt struct {
 	Summary         string                     `json:"summary,omitempty"`
 	SummaryRunID    string                     `json:"summary_run_id,omitempty"`
 	Recovery        *ProjectTaskRecoverySource `json:"recovery,omitempty"`
+	RepositoryContinuations []ProjectTaskRepositoryContinuation `json:"repository_continuations,omitempty"`
 	PlanBinding     *ProjectTaskPlanBinding    `json:"plan_binding,omitempty"`
 	TaskProgramID   string                     `json:"task_program_id,omitempty"`
 	Deliverables    []ProjectTaskDeliverable   `json:"deliverables,omitempty"`
@@ -105,6 +106,10 @@ func (s *SessionStore) ReserveTaskFollowup(account, project, taskID, user, key, 
 }
 
 func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource, origins ...string) (*ProjectTaskRecord, error) {
+	return s.ReserveTaskFollowupWithRepositories(account, project, taskID, user, key, request, revision, now, recovery, nil, origins...)
+}
+
+func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource, repositories []ProjectTaskRepositoryContinuation, origins ...string) (*ProjectTaskRecord, error) {
 	if strings.TrimSpace(user) == "" || strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, errors.New("user and bounded client_request_id required")
 	}
@@ -154,6 +159,9 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 			sources, err := s.ResolveTaskFollowupSources(t, user)
 			if err != nil {
 				return err
+			}
+			if !equalTaskRepositoryContinuations(a.RepositoryContinuations, repositories) {
+				return errors.New("retry repository continuation evidence changed")
 			}
 			t.ProgramSources = sources
 			return nil
@@ -239,11 +247,23 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 		if err != nil {
 			return err
 		}
+		if len(repositories) > 64 { return errors.New("repository continuation inventory exceeds bound") }
+		seenRepositories := map[string]bool{}
+		for _, retained := range repositories {
+			if seenRepositories[retained.Source.Path] { return errors.New("duplicate repository continuation") }
+			seenRepositories[retained.Source.Path] = true
+			admitted := retained.Source.SameIdentity(t.SourceWorkspace)
+			for _, source := range sources { admitted = admitted || retained.Source.SameIdentity(source) }
+			if !admitted { return errors.New("repository continuation source is not admitted") }
+			if _, err := s.AuthenticateTaskRepositoryContinuation(t, user, retained); err != nil {
+				return err
+			}
+		}
 		t.CaptureActiveAttempt()
 		if origin != "" {
 			t.OriginSessionID = origin
 		}
-		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: "reserved", Recovery: recovery}
+		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: "reserved", Recovery: recovery, RepositoryContinuations: append([]ProjectTaskRepositoryContinuation(nil), repositories...)}
 		t.Attempts = append(t.Attempts, a)
 		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", "swarm"
 		t.WorkspacePath = t.SourceWorkspace.Path

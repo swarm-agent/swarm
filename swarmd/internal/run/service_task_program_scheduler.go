@@ -978,6 +978,13 @@ func (p *taskProgramScheduler) coderSourceForJob(def pebblestore.TaskProgramJobS
 			return source, nil
 		}
 	}
+	for _, item := range sessionWorktreeHistory(p.parentSession.Metadata["swarm_v3_worktree_history"]) {
+		if sameTaskProgramPath(path, mapString(item, "path")) {
+			source := mapString(item, "source_workspace_path")
+			if _, _, err := p.canonicalRepositorySource(source); err != nil { return "", err }
+			return source, nil
+		}
+	}
 	// The launch resolver authenticates the owned parent worktree and redirects
 	// its captured source there. Source identity must still name the catalog
 	// repository, not mint a second identity for that runtime worktree.

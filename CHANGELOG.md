@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Retain authenticated per-repository Task Program results across project-task follow-ups, including intervening no-op attempts; pin correction bases before allocation and preserve isolated downstream Coder sources without promoting unvalidated changes. Docs impact: none.
+
 - Preserve exact authorized repository sources across task reopen and recover previously cleared bindings from retained approved definitions and owned session grants, with fresh catalog/readiness validation and fail-closed reapproval guidance. Keep new attempt/session/run identities and scheduler guards intact. Docs impact: none.
 
 - Add SSH Docker exact committed-context image builds and receipt-bound remote test deployments with connection-edit fencing, strict external SSH authentication, loopback port publication and explicit uncertain remote build cleanup; preserve local Podman contracts and task consumer leases. Docs impact: `docs/managed-ssh-test-environments.md` documents the generic operator-owned host workflow, provenance, cleanup limits and cloud-access separation; no live cloud validation is claimed.

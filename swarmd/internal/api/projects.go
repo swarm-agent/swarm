@@ -1306,6 +1306,11 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			if err == nil && task.ActiveAttempt().Recovery != nil {
 				alloc.BaseCommit = projectTaskRepairBase(task.ActiveAttempt().Recovery)
 			}
+			if err == nil {
+				for _, ref := range task.ActiveAttempt().RepositoryContinuations {
+					if ref.Source.SameIdentity(task.SourceWorkspace) { alloc.BaseCommit = ref.Lane.BaseCommit }
+				}
+			}
 		} else {
 			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
 		}
@@ -1350,6 +1355,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		}
 	}
 
+	if err := s.allocateTaskRepositoryContinuations(p, task, &sessionSnapshot); err != nil {
+		return fmt.Errorf("repository continuation allocation: %w", err)
+	}
 	createKey := fmt.Sprintf("project-task:create:%s:%s:%s", task.ProjectID, task.ID, task.SessionID)
 	_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		WorktreeAdmission: admission,

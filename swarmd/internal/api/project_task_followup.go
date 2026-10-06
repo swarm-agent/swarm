@@ -243,7 +243,11 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			assessment := inspectTaskGitStateContext(ctx, *task, db).deliveryAssessment
 			deltaDelivered = assessment != nil && (assessment.State == "recovered" || assessment.State == "equivalent")
 		}
-		if origin.HeadCommit != task.BaseCommit {
+		comparisonBase := task.BaseCommit
+		if active != nil && len(active.RepositoryContinuations) > 0 {
+			comparisonBase = active.AllocationHead
+		}
+		if origin.HeadCommit != comparisonBase {
 			candidate := &pebblestore.ProjectTaskRecoverySource{Kind: "retained_continuation", SessionID: task.SessionID, WorkspacePath: task.WorkspacePath, Branch: task.WorktreeBranch, BaseCommit: task.BaseCommit, HeadCommit: origin.HeadCommit, TargetBranch: task.BaseBranch, TargetHead: state.HeadCommit}
 			if err := s.validateProjectTaskRecovery(p, task, candidate); err != nil {
 				return nil, &projectTaskFollowupError{403, err}
@@ -297,8 +301,19 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			return nil, &projectTaskFollowupError{403, err}
 		}
 	}
+	var repositories []pebblestore.ProjectTaskRepositoryContinuation
+	if retry {
+		repositories = active.RepositoryContinuations
+	} else if !req.Repair {
+		repositories, err = s.resolveTaskRepositoryContinuations(p, task, sources)
+		if err != nil { return nil, &projectTaskFollowupError{409, err} }
+		if recovery != nil && len(repositories) > 0 { return nil, &projectTaskFollowupError{409, errors.New("coordinator and repository results require explicit reconciliation")} }
+	}
+	for _, ref := range repositories {
+		if err := s.validateTaskRepositoryContinuation(p, task, ref); err != nil { return nil, &projectTaskFollowupError{403, err} }
+	}
 	// Source provenance is backend-only and persisted before external effects.
-	task, err = db.ReserveTaskFollowupWithRecovery(p.AccountScopeID, projectID, taskID, p.UserID, req.ClientRequestID, req.Feedback, req.Revision, time.Now().UnixMilli(), recovery, origin)
+	task, err = db.ReserveTaskFollowupWithRepositories(p.AccountScopeID, projectID, taskID, p.UserID, req.ClientRequestID, req.Feedback, req.Revision, time.Now().UnixMilli(), recovery, repositories, origin)
 	if err != nil {
 		return nil, &projectTaskFollowupError{409, err}
 	}
@@ -342,6 +357,9 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 	// whatever branch/HEAD the source happens to have after a crash.
 	if a.BaseCommit == "" {
 		base, target := state.HeadCommit, state.BranchName
+		for _, ref := range a.RepositoryContinuations {
+			if ref.Source.SameIdentity(task.SourceWorkspace) { base, target = ref.HeadCommit, ref.TargetBranch }
+		}
 		if a.Recovery != nil {
 			base, target = a.Recovery.HeadCommit, a.Recovery.TargetBranch
 			if a.Recovery.PreparedHead != "" {
@@ -355,6 +373,9 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 			t.BaseCommit, t.BaseBranch = base, target
 			if t.ActiveAttempt().Recovery != nil {
 				t.BaseCommit = projectTaskRepairBase(t.ActiveAttempt().Recovery)
+			}
+			for _, ref := range t.ActiveAttempt().RepositoryContinuations {
+				if ref.Source.SameIdentity(t.SourceWorkspace) { t.BaseCommit = ref.Lane.BaseCommit }
 			}
 			t.ActiveAttempt().AllocationHead = base
 			return nil
