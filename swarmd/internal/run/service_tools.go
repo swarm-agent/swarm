@@ -2099,8 +2099,8 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 
 	switch name {
 	case "manage_memory":
-		if agentProfile.Name != "swarm" || agentProfile.Mode != "primary" {
-			return true, result, errors.New("memory tool requires Swarm primary")
+		if !accountMemoryAgentAllowed(agentProfile) {
+			return true, result, errors.New("memory tool requires primary Orchestrator")
 		}
 		output, err := s.executeMemoryTool(ctx, sessionID, call.Arguments)
 		result.Output = output

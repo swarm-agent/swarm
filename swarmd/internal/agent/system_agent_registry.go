@@ -374,7 +374,7 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"plan_manage":         {Enabled: pebblestore.BoolPtr(true)},
 			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
 			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(true)},
-			"manage_memory":       {Enabled: pebblestore.BoolPtr(true)},
+			"manage_memory":       {Enabled: pebblestore.BoolPtr(false)},
 			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
 			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_projects":     {Enabled: pebblestore.BoolPtr(false)},
@@ -431,6 +431,7 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_artifact":     {Enabled: pebblestore.BoolPtr(true)},
 			"manage_video":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_projects":     {Enabled: pebblestore.BoolPtr(true)},
+			"manage_memory":       {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workspace":    {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
 			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
@@ -1030,7 +1031,7 @@ func AISidechatAgentProfileForParent(parent pebblestore.AgentProfile) pebblestor
 	if profile.ToolContract.Tools == nil {
 		profile.ToolContract.Tools = map[string]pebblestore.AgentToolConfig{}
 	}
-	for _, name := range []string{"task", "plan_manage", "exit_plan_mode", "manage_agent", "ask_user"} {
+	for _, name := range []string{"task", "plan_manage", "exit_plan_mode", "manage_agent", "ask_user", "manage_memory"} {
 		profile.ToolContract.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(false)}
 	}
 	profile = pebblestore.NormalizeAgentProfile(profile)

@@ -515,3 +515,36 @@ func TestOrchestratorSessionIntegrationToolContractReconcilesSnapshot(t *testing
 		}
 	}
 }
+
+// Purpose: compiled system profiles and snapshot reconciliation must grant
+// manage_memory only to primary Orchestrator. The registry is the narrowest
+// authority layer proving stale inherited Swarm/worker contracts cannot retain
+// access, without reading private memory or invoking a provider.
+func TestSystemAgentMemoryToolOwnership(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range registry.IDs() {
+		profile, err := registry.Materialize(id, pebblestore.AgentProfile{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := id == SwarmOrchestratorAgentID
+		if agentToolEnabled(profile.ToolContract, "manage_memory") != want {
+			t.Fatalf("incorrect compiled memory ownership: %s", id)
+		}
+		profile.ToolContract = &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"manage_memory": {Enabled: pebblestore.BoolPtr(!want)}}}
+		reconciled, err := registry.ReconcileSnapshot(id, profile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if agentToolEnabled(reconciled.ToolContract, "manage_memory") != want {
+			t.Fatalf("stale memory contract survived reconciliation: %s", id)
+		}
+	}
+	parent := SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
+	if worker := AISidechatAgentProfileForParent(parent); agentToolEnabled(worker.ToolContract, "manage_memory") {
+		t.Fatal("AI sidechat inherited executive memory access")
+	}
+}

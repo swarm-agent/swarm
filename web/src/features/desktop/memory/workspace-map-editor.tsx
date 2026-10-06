@@ -10,7 +10,7 @@ export function WorkspaceMapEditor({ onDirtyChange, onBusyChange }: { onDirtyCha
  const [busy, setBusy] = useState(false)
  const load = async () => {
   const result = await requestJson<{found: boolean; workspace_map: MapRecord}>('/v1/memory/workspace-map')
-  if (!result.found) { setError('No workspace map exists. Ask Swarm to inspect the workspace map in chat.'); return }
+  if (!result.found) { setError('No workspace map exists. Ask Orchestrator to inspect the workspace map in chat.'); return }
   setRecord(result.workspace_map); setText(result.workspace_map.content); onDirtyChange(false)
  }
  useEffect(() => { void load().catch(e => setError(String(e))) }, [])
@@ -25,7 +25,7 @@ export function WorkspaceMapEditor({ onDirtyChange, onBusyChange }: { onDirtyCha
  }
  return <section aria-label="Workspace map editor">
   <p>Private account orientation, not repository instructions or an access grant. Keep portable project rules in AGENTS.md. Never include credential values.</p>
-  <p>In chat, ask “Give me an overview of my workspaces” or “Update my workspace map”. Swarm uses authorized workspace inspection and manage_workspace; changes require explicit permission.</p>
+  <p>In chat, ask “Give me an overview of my workspaces” or “Update my workspace map”. Orchestrator uses authorized workspace inspection and manage_workspace; changes require explicit permission.</p>
   {error && <p role="alert" className="memory-error">{error}</p>}
   {record && <><p>Revision {record.revision} · Updated {new Date(record.updated_at).toLocaleString()}</p>
    <textarea aria-label="Workspace map" value={text} disabled={busy} onChange={e => {setText(e.target.value); onDirtyChange(e.target.value !== record.content)}} />

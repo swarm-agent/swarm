@@ -7,17 +7,24 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
 
 func (s *Service) SetMemoryStore(m *store.MemoryStore) { s.memoryStore = m }
+
+// Account memory is executive context, never an implicit worker handoff.
+func accountMemoryAgentAllowed(profile store.AgentProfile) bool {
+	return agentruntime.IsOrchestratorAgentName(profile.Name) && strings.EqualFold(strings.TrimSpace(profile.Mode), "primary")
+}
+
 func (s *Service) accountMemoryPromptBlock(scope tool.WorkspaceScope, profile store.AgentProfile) string {
 	if s.memoryStore == nil {
 		return ""
 	}
-	if !strings.EqualFold(profile.Name, "swarm") || !strings.EqualFold(profile.Mode, "primary") {
+	if !accountMemoryAgentAllowed(profile) {
 		return ""
 	}
 	selected, err := s.memoryStore.SelectionForSession(scope.Principal.AccountScopeID, scope.Principal.UserID, scope.SessionID)

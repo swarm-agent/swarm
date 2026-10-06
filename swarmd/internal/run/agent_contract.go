@@ -274,6 +274,13 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		return ResolvedAgentToolContract{}, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	if !accountMemoryAgentAllowed(profile) {
+		// Stale snapshots, permissive presets and custom agents cannot expose
+		// private account memory outside the primary Orchestrator boundary.
+		if _, implemented := knownTools["manage_memory"]; implemented {
+			resolved.Tools["manage_memory"] = ResolvedAgentTool{Enabled: false, Source: "runtime.account_memory_boundary"}
+		}
+	}
 	if agentruntime.IsSwarmOrchestratorAgentName(profile.Name) {
 		// A persisted or forged snapshot cannot re-enable session-plan tools.
 		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
