@@ -78,6 +78,21 @@ async function main() {
     assert.equal(streamStarts, 1, 'board owns one deduplicated repository stream')
     const duplicate = runtime.acquire('project'); await duplicate.ready; duplicate.release()
     assert.equal(streamStarts, 1)
+
+    // Requirement 1: With an already hydrated board, repeatedly select/expand/switch
+    // tasks (100 interactions) and assert ZERO additional Git assessment requests,
+    // ZERO additional Git commands, and NO subscription churn.
+    const preInteractionsReads = detailReads
+    const preInteractionsGitCount = (await mutate('count')).count
+    for (let i = 0; i < 100; i++) {
+      const targetId = i % 2 === 0 ? 'integrated' : 'candidate'
+      runtime.inspectTask('project', targetId)
+    }
+    await delay(50)
+    assert.equal(detailReads, preInteractionsReads, '100 task interactions trigger zero additional Git assessment requests')
+    assert.equal((await mutate('count')).count, preInteractionsGitCount, '100 task interactions trigger zero additional Git commands')
+    assert.equal(streamStarts, 1, '100 task interactions cause zero subscription churn')
+
     await settle()
     const reads = detailReads
     const before = await mutate('count')
@@ -87,15 +102,24 @@ async function main() {
     assert.equal(streamStarts, 1, 'failed selectors cannot recreate the healthy transport')
     assertDeleted()
 
+    const t0 = performance.now()
     let oids = await mutate('source')
     await wait(() => observed('candidate', 'candidate_work') && task('candidate')!.deliveryAssessment!.source_oid === oids.source)
+    const sourceLatency = Math.round(performance.now() - t0)
+    console.error(`[telemetry] external source change observed in ${sourceLatency}ms`)
     assert.equal(task('candidate')!.deliveryAssessment!.target_oid, oids.target)
     assertDeleted()
+    const t1 = performance.now()
     oids = await mutate('integrate')
     await wait(() => observed('candidate', 'integrated') && task('candidate')!.deliveryAssessment!.target_oid === oids.target)
+    const integrateLatency = Math.round(performance.now() - t1)
+    console.error(`[telemetry] external target integrate observed in ${integrateLatency}ms`)
     assertDeleted()
+    const t2 = performance.now()
     oids = await mutate('reset')
     await wait(() => observed('candidate', 'candidate_work') && task('candidate')!.deliveryAssessment!.target_oid === oids.target)
+    const resetLatency = Math.round(performance.now() - t2)
+    console.error(`[telemetry] external target reset observed in ${resetLatency}ms`)
     await mutate('dirty-source')
     await wait(() => observed('candidate', 'candidate_work') && !!task('candidate')!.deliveryAssessment!.source_dirty)
     assert.equal(task('candidate')!.deliveryAssessment!.target_dirty, false)

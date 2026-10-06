@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,9 +51,8 @@ func runProjectGitSubscriptionsBoard(t *testing.T, isolation bool) {
 	// Count every actual Git invocation, including production inspection calls.
 	bin := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "git-reads")
-	t.Setenv("GIT_TEST_BINARY", gitBinary)
-	t.Setenv("GIT_TEST_LOG", logPath)
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nprintf x >> \"$GIT_TEST_LOG\"\nexec \"$GIT_TEST_BINARY\" \"$@\"\n"), 0700); err != nil {
+	script := fmt.Sprintf("#!/bin/sh\nprintf x >> %q\nexec %q \"$@\"\n", logPath, gitBinary)
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -205,6 +205,7 @@ func runProjectGitSubscriptionsBoard(t *testing.T, isolation bool) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("board producer-to-consumer: %v\n%s", err, output.String())
 	}
+	t.Log(output.String())
 	// No observer writes or durable task-label updates are permitted.
 	for _, id := range []string{"integrated", "candidate"} {
 		row, found, err := db.GetProjectTask(f.accountID, "project", id)

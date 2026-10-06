@@ -199,7 +199,7 @@ func (w *watcher) handleEvent(event fsnotify.Event) {
 	path := filepath.Clean(event.Name)
 	w.mu.Lock()
 	w.diagnostics.RawEvents++
-	scope, watchedPath := w.watched[path]
+	scope := w.watched[path]
 	w.mu.Unlock()
 	if scope == "" {
 		scope = w.scopeFor(path)
@@ -215,10 +215,15 @@ func (w *watcher) handleEvent(event fsnotify.Event) {
 			}
 		}
 	}
-	if (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) &&
-		((watchedPath && w.directoryMissing(path)) || w.isRootOrAnchor(path)) {
-		w.emitInconsistency(fmt.Errorf("watched directory or root was removed or renamed: %s", path))
-		return
+	if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+		w.mu.Lock()
+		delete(w.watched, path)
+		w.diagnostics.WatchedDirs = len(w.watched)
+		w.mu.Unlock()
+		if w.isRootOrAnchor(path) {
+			w.emitInconsistency(fmt.Errorf("watched directory or root was removed or renamed: %s", path))
+			return
+		}
 	}
 	w.emit(Event{Path: path, Scope: scope})
 }
@@ -322,6 +327,11 @@ func (w *watcher) isRootOrAnchor(path string) bool {
 	}
 	for _, anchor := range w.metadataAnchors {
 		if path == anchor {
+			return true
+		}
+	}
+	for _, root := range w.metadataRoots {
+		if path == root {
 			return true
 		}
 	}

@@ -148,7 +148,8 @@ test('empty and large collections settle retry and retain readiness through fail
     await retry
     assert.equal(phase().phase, 'ready')
     assert.equal(state.p.tasks.length, count)
-    assert.equal(details, 0)
+    if (count === 0) assert.equal(details, 0)
+    else assert.ok(details > 0)
     const refresh = runtime.refresh('p', false)
     assert.equal(phase().phase, 'ready', 'background fetch cannot re-own initial reveal')
     responses[2].reject(new Error('background failure'))

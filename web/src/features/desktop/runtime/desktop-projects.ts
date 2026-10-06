@@ -385,6 +385,7 @@ export class DesktopProjectsRuntime {
         if (this.deps.getState()[projectId]?.generation === generation) {
           const project = this.deps.getState()[projectId]
           for (const task of project?.tasks ?? []) {
+            if (task.status === 'pending_approval') continue
             if (project?.gitObservations?.[task.id] !== taskGitIdentity(task)) {
               const key = JSON.stringify([projectId, task.id])
               // An unchanged card already being inspected needs no second read.
@@ -436,10 +437,8 @@ export class DesktopProjectsRuntime {
 
   inspectTask(projectId: string, taskId: string): void {
     const task = this.deps.getState()[projectId]?.tasks.find(item => item.id === taskId)
-    if (task) {
-      if (this.taskWatchLost(task)) this.retryLostGitWatches()
-      this.queueTask(projectId, task, true, true)
-    }
+    if (!task || task.detailLoaded) return
+    this.queueTask(projectId, task, true, false)
   }
 
   invalidate(projectId?: string): void {
@@ -509,10 +508,10 @@ export class DesktopProjectsRuntime {
       frame.kind === 'auth.credentials.updated'
     ) {
       this.retryLostGitWatches()
+      this.invalidate()
       for (const { projectId: id } of this.demand.values()) {
         for (const task of this.deps.getState()[id]?.tasks ?? []) this.queueTask(id, task, false, true)
       }
-      this.invalidate()
       for (const listener of this.projectUpdateListeners) listener()
     }
   }
