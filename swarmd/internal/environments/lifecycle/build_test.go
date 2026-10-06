@@ -226,3 +226,25 @@ func TestManagedBuildRejectionDiagnostics(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: executeBuild must pass the observed command status to the operation
+// supervisor even when owned cleanup fails, without passing an image receipt.
+// The service boundary is the narrowest layer for this result propagation.
+func TestManagedBuildCommandExitPropagation(t *testing.T) {
+	for _, cleanupFails := range []bool{false, true} {
+		h, env, conn, p := buildLifecycleFixture(t)
+		p.buildErr = &provider.BuildCommandError{Phase: "build", Kind: "exit", Code: 125}
+		if cleanupFails {
+			p.cleanupErr = errors.New("owned build storage unmount failed")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		out, err := h.manager.executeBuild(ctx, "op_exit", SubmitOperationRequest{AccountScopeID: "account"}, &env, &conn)
+		cancel()
+		if err == nil || out == nil || out.ExitCode != 125 || out.Build != nil || p.cleanupCalls != 1 || !errors.Is(err, p.buildErr) {
+			t.Fatalf("command result lost or admitted: %+v %v", out, err)
+		}
+		if errors.Is(err, provider.ErrOperationCleanupFailed) != cleanupFails {
+			t.Fatalf("cleanup classification lost: %v", err)
+		}
+	}
+}

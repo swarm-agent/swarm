@@ -73,13 +73,19 @@ func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req S
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), m.cleanupTimeout)
 			defer cancel()
 			if err := builder.CleanupBuild(cleanupCtx, opID); err != nil {
-				out = nil
+				if out != nil {
+					out.Build = nil
+				}
 				retErr = provider.BuildCleanupError(retErr, err)
 			}
 		}
 	}()
 	result, err := builder.BuildImage(ctx, provider.ImageBuildRequest{OperationID: opID, Connection: conn, Definition: *env.Build, ProductRoot: product, RecipeRoot: recipe})
 	if err != nil {
+		var failure *provider.BuildCommandError
+		if errors.As(err, &failure) {
+			return &environments.OperationResult{ExitCode: failure.ExitCode()}, err
+		}
 		return nil, err
 	}
 	if result == nil || !environments.ValidBuildImageID(result.ImageID) || result.DefinitionDigest != env.Build.Digest() || result.OperationID != opID || result.ConnectionID != conn.ID || result.Product != env.Build.Product || result.Recipe != env.Build.Recipe || result.RecipeFile != env.Build.RecipeFile || len(result.ContextDigest) != 64 {

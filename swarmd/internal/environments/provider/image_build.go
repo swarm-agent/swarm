@@ -137,9 +137,9 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	args := []string{"--user", "--wait", "--pipe", "--collect", "--unit=swarm-build-" + req.OperationID, "--property=Delegate=yes", "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=5", "--property=KillMode=control-group", "--property=MemoryMax=10G", "--property=TasksMax=1024", "--property=CPUQuota=200%", "--property=LimitFSIZE=8G", "--"}
 	args = append(args, cleanEnv...)
 	args = append(args, build...)
-	// Discard recipe output: errors may contain source secrets even after generic redaction.
-	if err := p.runner.RunWithIO(ctx, nil, io.Discard, io.Discard, "systemd-run", args...); err != nil {
-		return nil, errors.New("isolated image build failed or was cancelled; no image accepted")
+	// Never publish recipe output, even after generic credential redaction.
+	if err := p.runBuildCommand(ctx, "build", io.Discard, "systemd-run", args...); err != nil {
+		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -160,16 +160,22 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 		return nil, errors.New("image export scratch unavailable")
 	}
 	export := &buildArchiveWriter{writer: file, remaining: 8 << 30, cancel: cancel}
-	exportErr := p.runner.RunWithIO(ctx, nil, export, io.Discard, "env", save...)
+	exportErr := p.runBuildCommand(ctx, "export", export, "env", save...)
 	closeErr := file.Close()
-	if exportErr != nil || closeErr != nil || export.exceeded {
-		return nil, errors.New("isolated image export failed or exceeded 8 GiB limit")
+	if export.exceeded {
+		return nil, errors.New("isolated image export exceeded 8 GiB limit")
+	}
+	if exportErr != nil {
+		return nil, exportErr
+	}
+	if closeErr != nil {
+		return nil, errors.New("isolated image export scratch close failed")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := p.runner.RunWithIO(ctx, nil, io.Discard, io.Discard, "podman", append(dockerHostArgs(req.Connection), "load", "--input", archive)...); err != nil {
-		return nil, errors.New("managed image import failed")
+	if err := p.runBuildCommand(ctx, "import", io.Discard, "podman", append(dockerHostArgs(req.Connection), "load", "--input", archive)...); err != nil {
+		return nil, err
 	}
 	out, err := p.runner.Run(ctx, "podman", append(dockerHostArgs(req.Connection), "image", "inspect", "--format=json", id)...)
 	var images []struct {

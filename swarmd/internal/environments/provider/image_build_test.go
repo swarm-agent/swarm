@@ -108,6 +108,9 @@ type imageBuildRunner struct {
 	cancel                              context.CancelFunc
 	unitState                           string
 	unitErr                             error
+	failurePhase                        string
+	commandErr                          error
+	commandOutput                       string
 }
 
 func (r *imageBuildRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -146,6 +149,19 @@ func (r *imageBuildRunner) RunCombined(ctx context.Context, name string, args ..
 func (r *imageBuildRunner) RunWithIO(ctx context.Context, _ io.Reader, stdout, stderr io.Writer, name string, args ...string) error {
 	r.calls = append(r.calls, mockCall{name, append([]string(nil), args...)})
 	joined := strings.Join(args, " ")
+	phase := ""
+	if name == "systemd-run" {
+		phase = "build"
+	} else if strings.Contains(joined, " save ") {
+		phase = "export"
+	} else if name == "podman" && strings.Contains(joined, " load ") {
+		phase = "import"
+	}
+	if phase != "" && phase == r.failurePhase {
+		_, _ = io.WriteString(stdout, "PRIVATE_STDOUT")
+		_, _ = io.WriteString(stderr, r.commandOutput)
+		return r.commandErr
+	}
 	if strings.Contains(joined, "archive --format=tar") {
 		file, body := "source.go", "committed product"
 		if strings.Contains(joined, r.definition.Recipe.Commit) {
@@ -197,6 +213,9 @@ func TestManagedBuildProviderContract(t *testing.T) {
 				}
 			} else if err == nil || result != nil || strings.Contains(err.Error(), "PRIVATE_RECIPE_SECRET") {
 				t.Fatalf("failure not closed/redacted: %+v %v", result, err)
+			}
+			if mode == "cancel" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation identity lost: %v", err)
 			}
 			if mode == "both-fail" && (!strings.Contains(err.Error(), "isolated image build failed") || !strings.Contains(err.Error(), "build unit termination unconfirmed")) {
 				t.Fatalf("combined failure lost: %v", err)
@@ -435,5 +454,98 @@ func TestManagedBuildCleanupStorageOwnership(t *testing.T) {
 		} else if _, err := os.Stat(owned); !errors.Is(err, os.ErrNotExist) {
 			t.Fatal("owned scratch retained after confirmed cleanup")
 		}
+	}
+}
+
+// Purpose: BuildImage must retain failure phase/status without admitting an image
+// or persisting arbitrary recipe/runner output. Injected command failures are the
+// narrowest layer proving exit propagation, bounded hints and owned cleanup.
+func TestManagedBuildCommandFailures(t *testing.T) {
+	for _, phase := range []string{"build", "export", "import"} {
+		t.Run(phase, func(t *testing.T) {
+			r := &imageBuildRunner{t: t, definition: buildDefinitionFixture(), operation: "op_failure", id: "sha256:" + strings.Repeat("c", 64), failurePhase: phase, commandErr: buildTestExit(125), commandOutput: "no space left on device: PRIVATE_SECRET\n" + strings.Repeat("PRIVATE_SECRET", 10000)}
+			p := NewLocalPodmanProvider(r)
+			root := t.TempDir()
+			p.ConfigureBuildRoot(root)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			result, err := p.BuildImage(ctx, ImageBuildRequest{OperationID: r.operation, Connection: podmanConnectionForTest(environments.ConnectionKindLocalPodman), Definition: r.definition, ProductRoot: filepath.Join(root, "product"), RecipeRoot: filepath.Join(root, "recipe")})
+			var failure *BuildCommandError
+			if result != nil || !errors.As(err, &failure) || failure.Phase != phase || failure.Code != 125 || failure.Kind != "exit" {
+				t.Fatalf("incorrect failure: %+v %v", result, err)
+			}
+			if strings.Contains(err.Error(), "PRIVATE") || !strings.Contains(err.Error(), "storage capacity") || len(err.Error()) > 512 || errors.Unwrap(failure) != nil {
+				t.Fatalf("unsafe/unhelpful diagnostic: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, r.operation)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("failed operation scratch retained")
+			}
+			inventory := false
+			for _, call := range r.calls {
+				args := strings.Join(call.Args, " ")
+				inventory = inventory || strings.Contains(args, "images --filter label=io.swarm.build.operation="+r.operation)
+				if strings.Contains(args, "image inspect") {
+					t.Fatal("failed command reached admission inspection")
+				}
+			}
+			if !inventory {
+				t.Fatal("owned image cleanup not attempted")
+			}
+		})
+	}
+}
+
+type buildTestExit int
+
+func (e buildTestExit) Error() string { return "PRIVATE_RUNNER_SECRET" }
+func (e buildTestExit) ExitCode() int { return int(e) }
+
+// Purpose: runBuildCommand must classify cancellation, deadlines and missing
+// executables independently of untrusted error text, and stop inspecting output
+// at its byte budget. This helper-level test avoids host runtime dependencies.
+func TestManagedBuildDiagnosticClassification(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		kind string
+		code int
+	}{
+		{context.Canceled, "cancelled", 130},
+		{context.DeadlineExceeded, "deadline", 124},
+		{exec.ErrNotFound, "executable-unavailable", 127},
+		{buildTestExit(-1), "signal", -1},
+		{errors.New("PRIVATE_RUNNER_SECRET"), "runner", 1},
+	} {
+		r := &imageBuildRunner{failurePhase: "build", commandErr: tc.err, commandOutput: strings.Repeat("x", 16*1024) + "no space left on device PRIVATE_SECRET"}
+		p := NewLocalPodmanProvider(r)
+		err := p.runBuildCommand(context.Background(), "build", io.Discard, "systemd-run")
+		var failure *BuildCommandError
+		if !errors.As(err, &failure) || failure.Kind != tc.kind || failure.Code != tc.code || strings.Contains(err.Error(), "PRIVATE") || strings.Contains(err.Error(), "storage capacity") {
+			t.Fatalf("classification/bound: %v", err)
+		}
+		if (tc.kind == "cancelled" || tc.kind == "deadline") && !errors.Is(err, tc.err) {
+			t.Fatal("lost context sentinel")
+		}
+	}
+}
+
+// Purpose: runBuildCommand must extract a real os/exec status while withholding
+// unlabelled secrets and forged diagnostics. A bounded local shell process proves
+// the pipe boundary; it is not a Podman compatibility or live workload test.
+func TestManagedBuildRealCommandDiagnostic(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	p := NewLocalPodmanProvider(&OSCommandRunner{})
+	err := p.runBuildCommand(ctx, "build", io.Discard, "sh", "-c", `printf 'PRIVATE_STDOUT'; printf 'failed to connect to bus PRIVATE_UNLABELLED_SECRET\n' >&2; exit 125`)
+	var failure *BuildCommandError
+	if !errors.As(err, &failure) || failure.Code != 125 || failure.Kind != "exit" || !strings.Contains(err.Error(), "user session bus") || strings.Contains(err.Error(), "PRIVATE") {
+		t.Fatalf("unsafe or missing real command diagnostic: %v", err)
+	}
+	if err := p.runBuildCommand(ctx, "build", io.Discard, "sh", "-c", "exit 0"); err != nil {
+		t.Fatalf("successful command rejected: %v", err)
+	}
+	cancel()
+	err = p.runBuildCommand(ctx, "build", io.Discard, "sh", "-c", "exit 0")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled runner lost context: %v", err)
 	}
 }
