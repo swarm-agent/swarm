@@ -206,7 +206,17 @@ func TestManagedBuildNamespaceStorageCleanup(t *testing.T) {
 					}
 					return buildTestExit(125)
 				}
-				return os.RemoveAll(storage)
+				entries, err := os.ReadDir(storage)
+				if err != nil {
+					return err
+				}
+				for _, entry := range entries {
+					if err := os.RemoveAll(filepath.Join(storage, entry.Name())); err != nil {
+						return err
+					}
+				}
+				// Preserve graph-root identity and model the shutdown lock epilogue.
+				return os.WriteFile(filepath.Join(storage, "storage.lock"), []byte("lock"), 0600)
 			}
 			err = p.cleanupBuildFiles(ctx, id)
 			if mode == "success" {
@@ -318,7 +328,8 @@ func TestManagedBuildCleanupImageIdentity(t *testing.T) {
 }
 
 // Purpose: the fixed namespace script is the smallest executable layer proving
-// pre-order permission repair, non-following links and option-safe storage paths.
+// pre-order permission repair, non-following links, option-safe storage paths
+// and preservation of the active graph-root inode for Podman Shutdown.
 // This hermetic shell fixture uses only test-owned files, not Podman, live
 // containers, root privileges or actual subordinate-ID ownership.
 func TestManagedBuildStorageRemovalScript(t *testing.T) {
@@ -341,6 +352,10 @@ func TestManagedBuildStorageRemovalScript(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(storage, "link")); err != nil {
 		t.Fatal(err)
 	}
+	original, err := os.Lstat(storage)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", buildStorageRemovalScript, "swarm-build-cleanup", storage)
@@ -348,8 +363,13 @@ func TestManagedBuildStorageRemovalScript(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("fixed storage script failed: %v", err)
 	}
-	if _, err := os.Lstat(storage); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("read-only store retained")
+	current, err := os.Lstat(storage)
+	if err != nil || !os.SameFile(original, current) {
+		t.Fatal("namespace child deleted/replaced active graph root")
+	}
+	entries, err := os.ReadDir(storage)
+	if err != nil || len(entries) != 0 {
+		t.Fatal("read-only layers retained")
 	}
 	assertBuildSentinel(t, outside)
 }

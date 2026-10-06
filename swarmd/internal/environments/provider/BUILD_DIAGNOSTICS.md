@@ -46,3 +46,32 @@ account build root, directory identity, and terminated unit before removing an
 incomplete allocation. Never infer ownership from a short digest or synthesize a
 missing receipt just to force cleanup. Older path-only markers are intentionally
 not accepted as ownership evidence.
+
+## Stopped build-store cleanup
+
+The namespace child removes VFS contents (including read-only/mapped-owner layer
+roots) but preserves the private graph-root inode. Podman storage shutdown can
+reacquire `storage.lock` and initialize layer metadata after that child exits;
+deleting the active graph root made the old absence-only postcondition fragile.
+Upstream `containers/storage` `store.Shutdown`, `startUsingGraphDriver` and
+`getLayerStoreLocked` establish this possibility, not the cause or exact leftover
+inventory of any particular live failure.
+
+Only after independent cleanup-unit stop proof does a non-engine epilogue remove
+bounded recognized metadata: graph/userns/layer locks (at most 4 KiB each), empty
+layer indexes (`[]` or `null`) and empty VFS scaffolding. It pins the original
+storage inode and revalidates both operation receipts and scratch/runroot inode
+bindings. Linux `openat2` no-follow/no-mount-crossing resolution rejects symlinks,
+including same-device bind mounts; unavailable kernel support fails closed. No
+second Podman process, recursive host deletion, host permission repair, privileged
+fallback or global reset/prune is used. Unknown files, populated indexes, layers,
+mapped owners, unexpected permissions or unsuccessful final rmdir retain receipts
+and report a fixed structural error without publishing names or contents.
+
+An interrupted retry starts with fresh stop proofs and the existing receipts.
+Do not directly delete retained live failures to work around this check. Parent
+runtime reproduction must inspect the exact private post-stop inventory if a
+new engine metadata shape is rejected; authorize any allowlist expansion only
+from reviewed engine source and bounded regression fixtures. Hermetic tests
+execute the fixed script on test-owned read-only directories and model shutdown
+metadata recreation, not live Podman mappings or mount behavior.

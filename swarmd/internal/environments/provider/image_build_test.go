@@ -188,9 +188,25 @@ func (r *imageBuildRunner) RunWithIO(ctx context.Context, _ io.Reader, stdout, s
 			return r.onCleanup(ctx, phase, args)
 		}
 		if phase == "cleanup-storage" {
-			// Model the namespace command's filesystem postcondition; this is
-			// not proof of rootless kernel capabilities or mapped-owner removal.
-			return os.RemoveAll(args[len(args)-1])
+			// Model child deletion followed by Podman Shutdown reacquiring its
+			// graph/layer locks. The graph-root inode must survive the child.
+			storage := args[len(args)-1]
+			entries, err := os.ReadDir(storage)
+			if err != nil {
+				return err
+			}
+			for _, entry := range entries {
+				if err := os.RemoveAll(filepath.Join(storage, entry.Name())); err != nil {
+					return err
+				}
+			}
+			if err := os.MkdirAll(filepath.Join(storage, "vfs-layers"), 0700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(storage, "storage.lock"), []byte("lock"), 0600); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(storage, "vfs-layers", "layers.lock"), []byte("lock"), 0600)
 		}
 		return nil
 	}

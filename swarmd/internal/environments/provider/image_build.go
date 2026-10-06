@@ -340,8 +340,11 @@ func (p *LocalDockerProvider) privateBuildEngine(root, runroot string) ([]string
 // Fixed script, never recipe/input shell text. Pre-order directory chmod handles
 // VFS 0555 roots even where namespace capabilities cannot bypass filesystem DAC.
 // One synchronous chmod child at a time; the operation deadline bounds traversal.
-// Final rm and the caller's absence check establish removal, not chmod success.
-const buildStorageRemovalScript = `find "$1" -xdev -type d -exec chmod u+rwx -- {} \; && exec rm --recursive --force --one-file-system -- "$1"`
+// Keep the graph-root inode: Podman Shutdown can reacquire storage.lock and
+// initialize the layer store after the unshare child exits. Deleting that active
+// root creates a teardown/recreation race. The stopped-engine stage below removes
+// only recognized empty metadata, without starting another Podman instance.
+const buildStorageRemovalScript = `find "$1" -xdev -type d -exec chmod u+rwx -- {} \; && find "$1" -mindepth 1 -maxdepth 1 -exec rm --recursive --force --one-file-system -- {} +`
 
 func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) error {
 	ctx, cancel := context.WithTimeout(ctx, CleanupTimeout)
@@ -402,6 +405,12 @@ func (p *LocalDockerProvider) stopBuildUnit(ctx context.Context, unit string) er
 }
 
 func (p *LocalDockerProvider) removeOwnedBuildFiles(ctx context.Context, id, root string, owner buildOwnership) error {
+	// Unit stop is an external boundary even for empty/pre-launch stores.
+	// Revalidate before inspecting or removing anything under scratch.
+	currentOwner, err := p.verifyBuildOwnership(id)
+	if err != nil || currentOwner != owner {
+		return errors.New("build ownership changed during unit stop; resources retained")
+	}
 	runroot := owner.Runroot
 	// The storage is private to this operation. Podman unmounts only its own
 	// external build containers before recursive removal; no shared store touched.
@@ -473,8 +482,8 @@ func (p *LocalDockerProvider) removeOwnedBuildFiles(ctx context.Context, id, roo
 		if err := errors.Join(removalErr, stopErr); err != nil {
 			return err
 		}
-		if _, err := os.Lstat(storage); !errors.Is(err, os.ErrNotExist) {
-			return errors.New("owned build storage removal unconfirmed; ownership retained")
+		if err := p.removeStoppedBuildMetadata(ctx, id, root, owner, storageInfo); err != nil {
+			return err
 		}
 	} else if err := os.Remove(storage); err != nil && !errors.Is(err, os.ErrNotExist) {
 		// Empty/pre-launch stores need no engine initialization or namespace.
@@ -483,10 +492,18 @@ func (p *LocalDockerProvider) removeOwnedBuildFiles(ctx context.Context, id, roo
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	current, err := p.verifyBuildOwnership(id)
+	if err != nil || current != owner {
+		return errors.New("build ownership changed after storage cleanup; resources retained")
+	}
 	if err := p.cleanupRunroot(id); err != nil {
 		// Keep the scratch receipt for recovery; never erase it after an
 		// unconfirmed runtime cleanup.
 		return err
+	}
+	current, err = p.verifyBuildOwnership(id)
+	if err != nil || current != owner {
+		return errors.New("build ownership changed during runtime cleanup; scratch retained")
 	}
 	return removeBuildScratch(root)
 }
