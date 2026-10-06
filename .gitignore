@@ -82,6 +82,7 @@ secrets.env
 /docs/testing/*
 !/docs/testing/committed-child-correction.md
 !/docs/testing/testbench-container.md
+!/docs/testing/new-task-browser-smoke.md
 !/docs/testing/multi-workspace-session-matrix.md
 !/docs/testing/worktree-reclamation-matrix.md
 !/docs/identity/
