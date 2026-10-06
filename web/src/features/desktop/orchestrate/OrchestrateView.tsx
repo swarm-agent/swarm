@@ -125,7 +125,7 @@ import { TaskCardActivity } from './task-card-activity'
 import { SessionPermissionAttention, TaskAttention, useTaskAttention } from './task-attention'
 import { TaskListHeader, TaskListToolbar, type TaskStatusFilter } from './task-list-toolbar'
 import { useQuery } from '@tanstack/react-query'
-import { fetchGitStatus, gitStatusQueryKey } from '../git/api'
+import { projectWorkspaces, taskMatchesWorkspace, useProjectWorkspaceGit } from '../runtime/use-project-workspace-git'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { createProjectThemeRefresh } from './project-theme-refresh'
 import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
@@ -3219,22 +3219,11 @@ export function OrchestrateView({
   const tasks = projectState?.tasks ?? []
   const uploadedMedia = projectState?.media ?? []
   const projectTasksError = projectState?.error
-  const projectGitPath = selectedProject?.repoPath || ''
-  const projectGit = useQuery({
-    queryKey: gitStatusQueryKey(projectGitPath),
-    queryFn: ({ signal }) => fetchGitStatus(projectGitPath, 0, '', signal),
-    enabled: Boolean(projectGitPath && projectGitPath !== '.'),
-    refetchOnWindowFocus: false,
-    refetchInterval: false,
-  })
-  const orchestratorState = useDesktopV3CacheSelector(state => {
-    const id = routeConversationId
-    if (!id) return 'inactive' as const
-    const run = state.sessionViewsById[id]?.current_run_state
-    const intent = state.currentRunIntentBySession[id]
-    if (intent) return intent.status === 'running' ? 'active' as const : 'inactive' as const
-    return run ? run.active ? 'active' as const : 'inactive' as const : 'unknown' as const
-  })
+  const headerWorkspaces = useMemo(() => projectWorkspaces(selectedProject), [selectedProject])
+  const workspaceGit = useProjectWorkspaceGit(headerWorkspaces)
+  const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null)
+  const selectedTaskWorkspace = headerWorkspaces.find(workspace => workspace.key === workspaceFilter)
+  useEffect(() => { setWorkspaceFilter(null) }, [selectedProjectId])
 
   const taskSessionCohort = useDesktopV3CacheSelector(
     state => ({ source: tasks, tasks: tasks.map(task => taskWithCurrentSessions(task, state)) }),
@@ -5358,8 +5347,9 @@ export function OrchestrateView({
     return tasksWithSessions.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))
   }, [tasksWithSessions, liveTaskSessionsData])
 
-  const codeTasks = useMemo(() => liveTasks.filter(task => !isCreativeMediaTask(task)), [liveTasks])
-  const mediaCardCount = useMemo(() => mediaSelectionCards(liveTasks, projectDesigns.data?.designs ?? []).length, [liveTasks, projectDesigns.data])
+  const workspaceTasks = useMemo(() => selectedTaskWorkspace ? liveTasks.filter(task => taskMatchesWorkspace(task, selectedTaskWorkspace)) : liveTasks, [liveTasks, selectedTaskWorkspace])
+  const codeTasks = useMemo(() => workspaceTasks.filter(task => !isCreativeMediaTask(task)), [workspaceTasks])
+  const mediaCardCount = useMemo(() => mediaSelectionCards(workspaceTasks, projectDesigns.data?.designs ?? []).length, [workspaceTasks, projectDesigns.data])
 
   // Task counts and every task layout share the same non-media projection.
   const filteredBySourceTasks = useMemo(() => {
@@ -5423,7 +5413,7 @@ export function OrchestrateView({
     isApproving: approvingTaskIds.has(task.id), error: taskActionErrors[task.id],
   })
   const markedRows = filteredTasks.filter(row => markedTaskIds.has(row.id))
-  useEffect(() => { setMarkedTaskIds(new Set()); setManagementMessage(''); setArchivedOpen(false) }, [selectedProjectId, searchQuery, taskSourceFilter, statusFilter])
+  useEffect(() => { setMarkedTaskIds(new Set()); setManagementMessage(''); setArchivedOpen(false) }, [selectedProjectId, searchQuery, taskSourceFilter, statusFilter, workspaceFilter])
   useEffect(() => {
     setMarkedTaskIds(prev => {
       const valid = new Set(filteredTasks.map(row => row.id))
@@ -6088,7 +6078,10 @@ export function OrchestrateView({
         ) : (
           /* HOME: 5-VARIANT TASK MANAGEMENT CANVAS */
           <>
-            <TaskListHeader title={selectedProject?.name || 'Swarm Local'} branch={projectGit.data?.status.branch} workspaceCount={selectedProject?.linkedWorkspaces?.length ?? 0} orchestratorState={orchestratorState} onNewTask={() => setIsDeployModalOpen(true)} />
+            <TaskListHeader workspaces={workspaceGit.workspaces} selectedWorkspace={selectedTaskWorkspace?.key ?? null}
+              onWorkspace={key => setWorkspaceFilter(previous => previous === key ? null : key)}
+              onRefreshGit={workspaceGit.refresh}
+              onNewTask={() => setIsDeployModalOpen(true)} />
 
             {/* PROJECT-TOP PENDING WORKER BANNER (SURFACES PROPOSALS FOR ASSIGNED PROJECT) */}
             {pendingReviews.length > 0 && (
@@ -6208,8 +6201,8 @@ export function OrchestrateView({
               {/* Keep media mounted across filter changes to retain selected turns and previews. */}
               <section aria-label="Project media" hidden={statusFilter !== 'media'} className="swarm-task-media">
                 {selectedProject && <ProjectMediaTasks
-                  key={selectedProject.id} projectId={selectedProject.id} tasks={liveTasks} actions={mediaActions}
-                  active={statusFilter === 'media'} selectionScope={JSON.stringify([searchQuery, taskSourceFilter, selectedTag, archivedOpen])}
+                  key={selectedProject.id} projectId={selectedProject.id} tasks={workspaceTasks} actions={mediaActions}
+                  active={statusFilter === 'media'} selectionScope={JSON.stringify([searchQuery, taskSourceFilter, selectedTag, archivedOpen, workspaceFilter])}
                   onPreviewDesign={setActiveMediaViewerItem} onLibrary={() => setShowFullMediaCenter(true)}
                   loading={projectState?.loading} error={projectTasksError || mediaSyncError || undefined}
                   onRetry={() => void desktopProjects.refresh(selectedProject.id, false)}

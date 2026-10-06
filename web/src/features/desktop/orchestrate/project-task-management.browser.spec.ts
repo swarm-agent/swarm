@@ -67,7 +67,7 @@ test('project task archive retains partial failures and isolates late archived-l
     await page.goto(`https://task-management.test/projects/${project.id}`)
     await page.addStyleTag({ content: css })
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    await page.getByRole('button', { name: 'Select all', exact: true }).click()
+    await page.getByRole('checkbox', { name: 'Select all', exact: true }).click()
     const archive = page.getByRole('button', { name: 'Archive', exact: true })
     await archive.click()
     // Release each batch only after Chromium has delivered the reserved requests.

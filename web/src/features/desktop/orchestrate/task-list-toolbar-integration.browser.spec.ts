@@ -32,7 +32,7 @@ test('Select all then Integrate selected dispatches only eligible visible rows',
     page.setDefaultTimeout(5000)
     await page.setContent('<div id="root"></div>')
     await page.addScriptTag({ content: bundle.outputFiles[0].text })
-    await page.getByRole('button', { name: 'Select all', exact: true }).click()
+    await page.getByRole('checkbox', { name: 'Select all', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => (window as any).calls), [])
     const integrate = page.getByRole('button', { name: /^Integrate selected/ })
     assert.equal(await integrate.isEnabled(), true)
