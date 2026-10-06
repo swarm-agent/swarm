@@ -182,6 +182,8 @@ func (f *taskAttachmentLifecycleFixture) Submit(_ context.Context, req lifecycle
 // concurrency evidence). Preparation forwards connection selection to the lifecycle
 // authority. Failed generation/source/owner requests have no effects. Conversation
 // admission retains the real stored-contract compiler, not a permissive stub.
+// The initial attempt and later self-attach share one canonically admitted isolated
+// session; no run intent is created and no provider execution is started.
 func TestTaskEnvironmentAttachmentWorkflow(t *testing.T) {
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
@@ -278,15 +280,30 @@ func TestTaskEnvironmentAttachmentWorkflow(t *testing.T) {
 	if _, err := f.server.ManageTaskEnvironment(ctx, p, "", acquire); err == nil || len(manager.leases) != 0 {
 		t.Fatal("unassigned preparation acquired")
 	}
-	// Explicit attempt reservation for this API-only fixture; later self-attach
-	// below supplies the real isolated session evidence.
-	reserved, err := db.UpdateProjectTask(p.AccountScopeID, proj.ID, task.ID, func(t *pebblestore.ProjectTaskRecord) error {
-		t.ActiveAttemptID = "initial"
-		t.Attempts = []pebblestore.ProjectTaskAttempt{{ID: "initial", Role: "swarm"}}
+	// Assign one real isolated session only after proving preparation cannot be
+	// acquired without an attempt. Persistence creates the canonical initial
+	// attempt from SessionID and records the task/session reverse membership.
+	alloc, err := worktrees.AllocateProjectTaskFollowup(p, repo, "attached-swarm", "agent/attached-swarm", head, "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := db.UpdateProjectTask(p.AccountScopeID, proj.ID, task.ID, func(task *pebblestore.ProjectTaskRecord) error {
+		task.SessionID, task.WorkspacePath, task.WorktreeBranch, task.BaseCommit = "attached-swarm", alloc.WorkspacePath, alloc.BranchName, head
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	snap := pebblestore.SessionSnapshot{ID: reserved.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Mode: "auto", WorkspacePath: alloc.WorkspacePath, WorktreeEnabled: true, WorktreeRootPath: alloc.WorkspacePath, WorktreeBranch: alloc.BranchName, WorktreeBaseBranch: "dev", Metadata: map[string]any{"agent_profile": pebblestore.AgentProfile{Name: "swarm"}, "project_id": proj.ID, "task_id": task.ID, "base_commit": head, "swarm_v3_source_workspace_path": repo, "swarm_v3_source_workspace_id": binding.WorkspaceID, "swarm_v3_source_workspace_generation": binding.WorkspaceGeneration, "swarm_v3_worktree_owner_session_id": reserved.SessionID, "swarm_v3_runtime_workspace_path": alloc.WorkspacePath}}
+	if _, err := applyProjectLifecycleFixture(f.server, sessionruntime.SessionMutationInput{SessionID: snap.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: snap.ID, IdempotencyKey: snap.ID, PayloadHash: snap.ID, RequestHash: snap.ID, Kind: sessionruntime.SessionMutationCreateSession, Session: &snap, WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{Kind: "allocated", Path: alloc.WorkspacePath, SourcePath: repo, OwnerSessionID: snap.ID, Branch: alloc.BranchName, AllocatedRuntimeRoot: true}}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := f.server.authorizeTaskEnvironment(p, snap.ID, proj.ID, task.ID)
+	if err != nil || current.ActiveAttempt() == nil || current.ActiveAttemptID != "initial" || current.ActiveAttempt().SessionID != snap.ID || current.SessionID != snap.ID {
+		t.Fatalf("durable current consumer: %+v %v", current, err)
+	}
+	if _, found, err := db.GetV3SessionActiveRunIntent(snap.ID); err != nil || found {
+		t.Fatalf("fixture must not start provider execution: found=%v err=%v", found, err)
 	}
 	req.ExpectedTaskRevision, req.ExpectedAttachmentRevision, req.AttemptID = reserved.Revision, 1, "initial"
 	assigned, err := f.server.ManageTaskEnvironment(ctx, p, parentID, req)
@@ -344,23 +361,11 @@ func TestTaskEnvironmentAttachmentWorkflow(t *testing.T) {
 	if manager.leases[one.Lease.ID].Active || !manager.leases[two.Lease.ID].Active {
 		t.Fatal("release affected another consumer")
 	}
-	// Assign a real isolated Swarm session and exercise self-attach on the same source.
-	alloc, err := worktrees.AllocateProjectTaskFollowup(p, repo, "attached-swarm", "agent/attached-swarm", head, "dev")
-	if err != nil {
-		t.Fatal(err)
-	}
-	task, _, err = db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	task.SessionID, task.WorkspacePath, task.WorktreeBranch, task.BaseCommit = "attached-swarm", alloc.WorkspacePath, alloc.BranchName, head
-	task.ActiveAttempt().SessionID = task.SessionID
-	if err := db.PutProjectTask(p.AccountScopeID, task); err != nil {
-		t.Fatal(err)
-	}
-	snap := pebblestore.SessionSnapshot{ID: task.SessionID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, Mode: "auto", WorkspacePath: alloc.WorkspacePath, WorktreeEnabled: true, WorktreeRootPath: alloc.WorkspacePath, WorktreeBranch: alloc.BranchName, WorktreeBaseBranch: "dev", Metadata: map[string]any{"agent_profile": pebblestore.AgentProfile{Name: "swarm"}, "project_id": proj.ID, "task_id": task.ID, "base_commit": head, "swarm_v3_source_workspace_path": repo, "swarm_v3_source_workspace_id": binding.WorkspaceID, "swarm_v3_source_workspace_generation": binding.WorkspaceGeneration, "swarm_v3_worktree_owner_session_id": task.SessionID, "swarm_v3_runtime_workspace_path": alloc.WorkspacePath}}
-	if _, err := applyProjectLifecycleFixture(f.server, sessionruntime.SessionMutationInput{SessionID: snap.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: snap.ID, IdempotencyKey: snap.ID, PayloadHash: snap.ID, RequestHash: snap.ID, Kind: sessionruntime.SessionMutationCreateSession, Session: &snap, WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{Kind: "allocated", Path: alloc.WorkspacePath, SourcePath: repo, OwnerSessionID: snap.ID, Branch: alloc.BranchName, AllocatedRuntimeRoot: true}}); err != nil {
-		t.Fatal(err)
+	// Self-attach uses the same admitted session and initial attempt, without
+	// rewriting attempt history or creating a second consumer identity.
+	task, found, err := db.GetProjectTask(p.AccountScopeID, proj.ID, task.ID)
+	if err != nil || !found || task.ActiveAttempt() == nil || task.SessionID != snap.ID || task.ActiveAttemptID != reserved.ActiveAttemptID || task.ActiveAttempt().SessionID != snap.ID || len(task.Attempts) != 1 {
+		t.Fatalf("self-attach lost initial linkage: %+v %v", task, err)
 	}
 	req.AttachmentID, req.ExpectedAttachmentRevision, req.ExpectedTaskRevision = "self-review", 0, task.Revision
 	if _, err := f.server.ManageTaskEnvironment(ctx, p, snap.ID, req); err != nil {
