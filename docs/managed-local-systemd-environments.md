@@ -107,8 +107,31 @@ resulting image by immutable ID; labels bind it to operation, inputs and product
 commit. Success returns source identities, definition/context digests and image
 ID, not claims about install/onboarding health.
 
+Imported-image admission compares only validated full lowercase SHA-256 IDs;
+Podman's bare and `sha256:`-prefixed spellings are equivalent, but short IDs,
+different digests and mismatched operation/input/revision labels are rejected.
+
 Cancellation/recovery stops and verifies only the operation unit, unmounts its
-private store and removes its owned scratch. Failed/cancelled imported images
+private store and removes populated VFS storage through scoped `podman unshare`
+with the same sanitized HOME/runtime/config/store overrides as the build.
+Namespace removal traverses only this store, adds owner traversal/write permission
+to its directories (including read-only/mapped-owner VFS layers), and refuses
+filesystem crossings. It never uses global reset/prune, sudo or host-wide
+chmod/chown. A separate operation-owned cleanup unit has control-group termination,
+a runtime/task limit and explicit stopped-state verification, including restart
+recovery and cancellation; killing only the command launcher is insufficient.
+Both directory-bound ownership receipts survive unconfirmed/partial storage
+removal so cleanup can retry after restart; foreign/missing evidence fails closed.
+Cleanup commands share a bounded deadline and withhold arbitrary output, exposing
+only phase/exit classification and fixed untrusted troubleshooting hints.
+For private operator investigation, retain the exact operation's receipts and
+review the authorized unit/engine diagnostics privately; raw recipe/layer output
+may contain secrets and must not enter task reports or durable operation output.
+Do not manually delete retained paths based on their names: verify both receipts,
+operation/build-root binding and directory identities through the reviewed cleanup
+path before recovery. This does not enable a new raw-log endpoint or automatic
+retry, and unit tests do not establish real mapped-owner kernel cleanup.
+Failed/cancelled imported images
 are selected by the operation label and removed without force; unrelated images
 are never pruned. Unconfirmed cleanup is `cleanup_failed`, not success. A
 successful image remains available to the accepted build receipt. Operators

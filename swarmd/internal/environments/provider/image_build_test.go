@@ -108,10 +108,15 @@ type imageBuildRunner struct {
 	cancel                              context.CancelFunc
 	unitState                           string
 	unitErr                             error
+	cleanupUnitState                    string
+	cleanupUnitErr                      error
 	failurePhase                        string
 	commandErr                          error
 	commandOutput                       string
 	onBuild                             func([]string) error
+	inspectJSON                         []byte
+	imagesOutput                        string
+	onCleanup                           func(context.Context, string, []string) error
 }
 
 func (r *imageBuildRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -130,6 +135,9 @@ func (r *imageBuildRunner) Run(ctx context.Context, name string, args ...string)
 		if r.failCleanup {
 			return nil, errors.New("injected cleanup failure")
 		}
+		if strings.Contains(joined, "swarm-build-cleanup-") && (r.cleanupUnitState != "" || r.cleanupUnitErr != nil) {
+			return []byte(r.cleanupUnitState), r.cleanupUnitErr
+		}
 		if r.unitState != "" || r.unitErr != nil {
 			return []byte(r.unitState), r.unitErr
 		}
@@ -138,7 +146,13 @@ func (r *imageBuildRunner) Run(ctx context.Context, name string, args ...string)
 	if strings.Contains(joined, "info --format=json") {
 		return []byte(podmanInfoFixture), nil
 	}
+	if strings.Contains(joined, "images --filter") {
+		return []byte(r.imagesOutput), nil
+	}
 	if strings.Contains(joined, "image inspect") {
+		if r.inspectJSON != nil {
+			return r.inspectJSON, nil
+		}
 		data, _ := json.Marshal([]any{map[string]any{"Id": r.id, "Labels": map[string]string{"io.swarm.build.operation": r.operation, "io.swarm.build.inputs": r.definition.Digest(), "org.opencontainers.image.revision": r.definition.Product.Commit}}})
 		return data, nil
 	}
@@ -151,17 +165,34 @@ func (r *imageBuildRunner) RunWithIO(ctx context.Context, _ io.Reader, stdout, s
 	r.calls = append(r.calls, mockCall{name, append([]string(nil), args...)})
 	joined := strings.Join(args, " ")
 	phase := ""
-	if name == "systemd-run" {
+	if name == "systemd-run" && strings.Contains(joined, "--unit=swarm-build-cleanup-") {
+		phase = "cleanup-storage"
+	} else if name == "systemd-run" {
 		phase = "build"
 	} else if strings.Contains(joined, " save ") {
 		phase = "export"
 	} else if name == "podman" && strings.Contains(joined, " load ") {
 		phase = "import"
+	} else if name == "env" && strings.Contains(joined, " unmount ") {
+		phase = "cleanup-unmount"
+	} else if name == "env" && strings.Contains(joined, " unshare ") {
+		phase = "cleanup-storage"
 	}
 	if phase != "" && phase == r.failurePhase {
 		_, _ = io.WriteString(stdout, "PRIVATE_STDOUT")
 		_, _ = io.WriteString(stderr, r.commandOutput)
 		return r.commandErr
+	}
+	if strings.HasPrefix(phase, "cleanup-") {
+		if r.onCleanup != nil {
+			return r.onCleanup(ctx, phase, args)
+		}
+		if phase == "cleanup-storage" {
+			// Model the namespace command's filesystem postcondition; this is
+			// not proof of rootless kernel capabilities or mapped-owner removal.
+			return os.RemoveAll(args[len(args)-1])
+		}
+		return nil
 	}
 	if strings.Contains(joined, "archive --format=tar") {
 		file, body := "source.go", "committed product"

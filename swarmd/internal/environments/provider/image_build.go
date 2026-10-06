@@ -249,12 +249,10 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	if _, err := p.verifyActiveBuildOwnership(req.OperationID); err != nil {
 		return nil, err
 	}
-	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", runroot, "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--runtime=crun"}
-	runtimeDir, busAddress, err := p.resolveSessionEnvironment()
+	cleanEnv, isolated, err := p.privateBuildEngine(root, runroot)
 	if err != nil {
 		return nil, err
 	}
-	cleanEnv := []string{"env", "-i", "PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(root, "home"), "XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=" + busAddress, "TMPDIR=" + filepath.Join(root, "tmp"), "CONTAINERS_CONF=" + filepath.Join(root, "containers.conf"), "CONTAINERS_REGISTRIES_CONF=" + filepath.Join(root, "registries.conf"), "CONTAINERS_MOUNTS_CONF=" + filepath.Join(root, "mounts.conf"), "podman"}
 	build := append(append([]string{}, isolated...), "build", "--jobs=1", "--ignorefile", filepath.Join(root, "ignore"), "--layers=false", "--force-rm=true", "--http-proxy=false", "--isolation=oci", "--network=slirp4netns:allow_host_loopback=false", "--cgroupns=private", "--memory=8g", "--cpu-period=100000", "--cpu-quota=200000", "--ulimit=nofile=4096:4096", "--no-hosts", "--hooks-dir", filepath.Join(root, "hooks"), "--authfile", filepath.Join(root, "auth.json"), "--tls-verify=true", "--retry=0", "--iidfile", filepath.Join(root, "image-id"), "--build-arg", "SWARM_BUILD_SHA="+req.Definition.Product.Commit, "--label", "io.swarm.build.operation="+req.OperationID, "--label", "org.opencontainers.image.revision="+req.Definition.Product.Commit, "--label", "io.swarm.build.inputs="+req.Definition.Digest(), "--file", filepath.Join(root, "context", ".swarm-recipe", filepath.FromSlash(req.Definition.RecipeFile)), filepath.Join(root, "context"))
 	args := []string{"--user", "--wait", "--pipe", "--collect", "--unit=swarm-build-" + req.OperationID, "--property=Delegate=yes", "--property=RuntimeMaxSec=600", "--property=TimeoutStopSec=5", "--property=KillMode=control-group", "--property=MemoryMax=10G", "--property=TasksMax=1024", "--property=CPUQuota=200%", "--property=LimitFSIZE=8G", "--"}
 	args = append(args, cleanEnv...)
@@ -270,8 +268,8 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 	if err != nil {
 		return nil, err
 	}
-	id := strings.TrimSpace(string(raw))
-	if !environments.ValidBuildImageID(id) {
+	id := normalizedBuildImageID(strings.TrimSpace(string(raw)))
+	if id == "" {
 		return nil, errors.New("build returned invalid image identity")
 	}
 	if _, err := p.verifyActiveBuildOwnership(req.OperationID); err != nil {
@@ -307,13 +305,50 @@ func (p *LocalDockerProvider) BuildImage(ctx context.Context, req ImageBuildRequ
 		ID     string            `json:"Id"`
 		Labels map[string]string `json:"Labels"`
 	}
-	if err != nil || json.Unmarshal(out, &images) != nil || len(images) != 1 || images[0].ID != id || images[0].Labels["io.swarm.build.operation"] != req.OperationID || images[0].Labels["io.swarm.build.inputs"] != req.Definition.Digest() || images[0].Labels["org.opencontainers.image.revision"] != req.Definition.Product.Commit {
+	if err != nil || json.Unmarshal(out, &images) != nil || len(images) != 1 || normalizedBuildImageID(images[0].ID) != id || images[0].Labels["io.swarm.build.operation"] != req.OperationID || images[0].Labels["io.swarm.build.inputs"] != req.Definition.Digest() || images[0].Labels["org.opencontainers.image.revision"] != req.Definition.Product.Commit {
 		return nil, errors.New("imported image provenance mismatch")
 	}
 	return &environments.ImageBuildResult{OperationID: req.OperationID, ConnectionID: req.Connection.ID, ImageID: id, ContextDigest: digest, DefinitionDigest: req.Definition.Digest(), Product: req.Definition.Product, Recipe: req.Definition.Recipe, RecipeFile: req.Definition.RecipeFile}, nil
 }
 
+// normalizedBuildImageID accepts only full, lowercase SHA-256 identities. Engine
+// inspect may omit the algorithm prefix; durable receipts never do. Short IDs,
+// other algorithms, whitespace and malformed digest bytes are not equivalent.
+func normalizedBuildImageID(id string) string {
+	if len(id) == 64 {
+		id = "sha256:" + id
+	}
+	if !environments.ValidBuildImageID(id) {
+		return ""
+	}
+	return id
+}
+
+// All commands that touch the private engine store share these exact overrides.
+// In particular, cleanup must not inherit the daemon's HOME/auth/proxy/config or
+// initialize a shared store merely to obtain a rootless user namespace.
+func (p *LocalDockerProvider) privateBuildEngine(root, runroot string) ([]string, []string, error) {
+	runtimeDir, busAddress, err := p.resolveSessionEnvironment()
+	if err != nil {
+		return nil, nil, err
+	}
+	isolated := []string{"--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", runroot, "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--runtime=crun"}
+	cleanEnv := []string{"env", "-i", "PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(root, "home"), "XDG_RUNTIME_DIR=" + runtimeDir, "DBUS_SESSION_BUS_ADDRESS=" + busAddress, "TMPDIR=" + filepath.Join(root, "tmp"), "CONTAINERS_CONF=" + filepath.Join(root, "containers.conf"), "CONTAINERS_REGISTRIES_CONF=" + filepath.Join(root, "registries.conf"), "CONTAINERS_MOUNTS_CONF=" + filepath.Join(root, "mounts.conf"), "podman"}
+	return cleanEnv, isolated, nil
+}
+
+// Fixed script, never recipe/input shell text. Pre-order directory chmod handles
+// VFS 0555 roots even where namespace capabilities cannot bypass filesystem DAC.
+// One synchronous chmod child at a time; the operation deadline bounds traversal.
+// Final rm and the caller's absence check establish removal, not chmod success.
+const buildStorageRemovalScript = `find "$1" -xdev -type d -exec chmod u+rwx -- {} \; && exec rm --recursive --force --one-file-system -- "$1"`
+
 func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, CleanupTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	root, err := p.buildDirectory(id)
 	if err != nil {
 		return err
@@ -336,9 +371,17 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 	if err != nil {
 		return err
 	}
-	runroot := owner.Runroot
-	unit := "swarm-build-" + id + ".service"
-	// Stop only the server-generated operation unit, then prove it no longer runs.
+	// A previous cleanup may have been interrupted by daemon/process death.
+	// Prove both operation-specific units are stopped before touching storage.
+	for _, unit := range []string{"swarm-build-" + id + ".service", "swarm-build-cleanup-" + id + ".service"} {
+		if err := p.stopBuildUnit(ctx, unit); err != nil {
+			return err
+		}
+	}
+	return p.removeOwnedBuildFiles(ctx, id, root, owner)
+}
+
+func (p *LocalDockerProvider) stopBuildUnit(ctx context.Context, unit string) error {
 	_, stopErr := p.runner.Run(ctx, "systemctl", "--user", "stop", unit)
 	out, err := p.runner.Run(ctx, "systemctl", "--user", "show", unit, "--property=LoadState", "--property=ActiveState")
 	// --collect unloads completed units; show may exit nonzero for not-found.
@@ -355,6 +398,11 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 	if !absent && !stopped {
 		return fmt.Errorf("build unit termination unconfirmed (stop failed: %t)", stopErr != nil)
 	}
+	return nil
+}
+
+func (p *LocalDockerProvider) removeOwnedBuildFiles(ctx context.Context, id, root string, owner buildOwnership) error {
+	runroot := owner.Runroot
 	// The storage is private to this operation. Podman unmounts only its own
 	// external build containers before recursive removal; no shared store touched.
 	storage := filepath.Join(root, "storage")
@@ -362,8 +410,8 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return errors.New("owned build storage inspection failed")
 	}
-	if statErr == nil && !storageInfo.IsDir() {
-		return errors.New("owned build storage is not a directory")
+	if statErr == nil && !privateBuildDirectory(storageInfo) {
+		return errors.New("owned build storage is not a private directory")
 	}
 	populated := false
 	if statErr == nil {
@@ -378,22 +426,62 @@ func (p *LocalDockerProvider) cleanupBuildFiles(ctx context.Context, id string) 
 		}
 		populated = len(entries) > 0
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if populated {
 		if _, err := os.Lstat(runroot); err != nil {
 			return errors.New("populated build storage requires owned runtime resource; scratch retained")
 		}
-		if _, err := p.verifyActiveBuildOwnership(id); err != nil {
+		activeOwner, err := p.verifyActiveBuildOwnership(id)
+		if err != nil || activeOwner != owner {
+			return errors.New("build ownership changed before cleanup; resources retained")
+		}
+		cleanEnv, isolated, err := p.privateBuildEngine(root, runroot)
+		if err != nil {
 			return err
 		}
-		_, err = p.runner.Run(ctx, "podman", "--remote=false", "--root", filepath.Join(root, "storage"), "--runroot", runroot, "--storage-driver=vfs", "unmount", "--all", "--force")
-		if err != nil {
-			return errors.New("owned build storage unmount failed")
+		engine := append(append([]string{}, cleanEnv[1:]...), isolated...)
+		if err := p.runBuildCommand(ctx, "cleanup-unmount", io.Discard, "env", append(engine, "unmount", "--all", "--force")...); err != nil {
+			return err
 		}
+		// Recheck both receipts/inodes after the engine boundary. A partial
+		// deletion retains these receipts and the runroot for restart recovery.
+		current, err := p.verifyActiveBuildOwnership(id)
+		if err != nil || current != owner {
+			return errors.New("build ownership changed during unmount; resources retained")
+		}
+		currentStorage, err := os.Lstat(storage)
+		if err != nil || !privateBuildDirectory(currentStorage) || !os.SameFile(storageInfo, currentStorage) {
+			return errors.New("build storage changed during unmount; resources retained")
+		}
+		// The engine namespace maps layer owners; only directories inside
+		// this verified store gain owner traversal/write permission. Neither
+		// find nor rm follows symlinks; traversal stays on this filesystem.
+		// No global reset/prune, host-wide chmod/chown or privileged fallback.
+		unit := "swarm-build-cleanup-" + id + ".service"
+		args := []string{"--user", "--wait", "--pipe", "--collect", "--unit=" + unit, "--property=KillMode=control-group", "--property=Delegate=yes", "--property=RuntimeMaxSec=" + strconv.Itoa(int(CleanupTimeout.Seconds())), "--property=TimeoutStopSec=5", "--property=TasksMax=64", "--"}
+		args = append(args, "env")
+		args = append(args, engine...)
+		args = append(args, "unshare", "sh", "-c", buildStorageRemovalScript, "swarm-build-cleanup", storage)
+		removalErr := p.runBuildCommand(ctx, "cleanup-storage", io.Discard, "systemd-run", args...)
+		// exec.CommandContext can kill the launcher, not namespace descendants.
+		// Independently stop/prove the unit even on timeout or cancellation.
+		stopCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
+		stopErr := p.stopBuildUnit(stopCtx, unit)
+		cancel()
+		if err := errors.Join(removalErr, stopErr); err != nil {
+			return err
+		}
+		if _, err := os.Lstat(storage); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("owned build storage removal unconfirmed; ownership retained")
+		}
+	} else if err := os.Remove(storage); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Empty/pre-launch stores need no engine initialization or namespace.
+		return errors.New("empty build storage removal unconfirmed; ownership retained")
 	}
-	// Remove unmounted storage before runtime teardown so a partial scratch
-	// cleanup remains retryable without recreating a runroot to unmount it.
-	if err := os.RemoveAll(storage); err != nil {
-		return errors.New("owned build storage removal unconfirmed; ownership retained")
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := p.cleanupRunroot(id); err != nil {
 		// Keep the scratch receipt for recovery; never erase it after an
@@ -500,7 +588,8 @@ func (p *LocalDockerProvider) cleanupBuildImages(ctx context.Context, id string)
 		return errors.New("owned build image cleanup inventory exceeds bound")
 	}
 	for _, image := range ids {
-		if !environments.ValidBuildImageID(image) {
+		image = normalizedBuildImageID(image)
+		if image == "" {
 			return errors.New("owned build image cleanup returned invalid identity")
 		}
 		if _, err := p.runner.Run(ctx, "podman", "--remote=false", "--cgroup-manager=systemd", "image", "rm", image); err != nil {
