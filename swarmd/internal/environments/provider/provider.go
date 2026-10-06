@@ -826,7 +826,7 @@ func SafeExecOutput(out string, maxOutput int, env map[string]string) (string, b
 		if value != "" {
 			out = strings.ReplaceAll(out, value, "[REDACTED]")
 			// Capture may have ended mid-value; do not persist that prefix.
-			for n := len(value)-1; n > 0; n-- {
+			for n := len(value) - 1; n > 0; n-- {
 				if strings.HasSuffix(out, value[:n]) {
 					out = out[:len(out)-n] + "[REDACTED]"
 					break
@@ -1200,7 +1200,7 @@ func cleanupOperation(ctx context.Context, transport ContainerExecTransport, tar
 			OperationID:  opID,
 			Terminated:   false,
 			ObservedAt:   now,
-			ErrorMessage: commandDiagnostic("cleanup command failed: "+err.Error()+": "+outStr),
+			ErrorMessage: commandDiagnostic("cleanup command failed: " + err.Error() + ": " + outStr),
 		}, fmt.Errorf("%w: %s", ErrOperationNotConfirmed, commandDiagnostic(err.Error()+": "+outStr))
 	}
 

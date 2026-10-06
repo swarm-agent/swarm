@@ -13,12 +13,22 @@ func TestEnvironmentOperation_OutputBounds(t *testing.T) {
 	for _, stream := range []string{"stdout", "stderr"} {
 		for _, value := range []string{strings.Repeat("x", MaxOperationOutputBytes), strings.Repeat("x", MaxOperationOutputBytes+1), string([]byte{0xff})} {
 			op := base
-			if stream == "stdout" { op.Result.Stdout = value } else { op.Result.Stderr = value }
+			if stream == "stdout" {
+				op.Result.Stdout = value
+			} else {
+				op.Result.Stderr = value
+			}
 			err := op.Validate()
 			if len(value) == MaxOperationOutputBytes {
-				if err != nil { t.Fatalf("cap rejected: %v", err) }
-			} else if err == nil { t.Fatal("unsafe output accepted") }
-			if op.Result.Stdout+op.Result.Stderr != value { t.Fatal("validation mutated diagnostics") }
+				if err != nil {
+					t.Fatalf("cap rejected: %v", err)
+				}
+			} else if err == nil {
+				t.Fatal("unsafe output accepted")
+			}
+			if op.Result.Stdout+op.Result.Stderr != value {
+				t.Fatal("validation mutated diagnostics")
+			}
 		}
 	}
 }

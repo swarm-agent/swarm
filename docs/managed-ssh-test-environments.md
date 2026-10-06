@@ -133,6 +133,10 @@ Retain the operation/deployment IDs and cleanup error; restore authorized access
 and reconcile that exact operation's container/process metadata before reuse.
 Confirmed cleanup releases admission capacity even if an output reader remains
 hung; unconfirmed hung work conservatively retains capacity until it returns.
+Queued cancellation/shutdown never claims remote termination: no provider was
+started. Manager shutdown closes admission and joins registered queued/running
+supervisors, allowing cleanup plus the bounded probe-timeout persistence/join
+window; an incomplete join returns an error rather than a successful shutdown.
 
 Exec results retain separate bounded stdout/stderr, actual command exit status,
 and an explicit truncation flag for success, failure and partial timeout/cancel

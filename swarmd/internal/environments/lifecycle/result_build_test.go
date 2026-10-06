@@ -172,9 +172,14 @@ func testResultManagedLifecycle(t *testing.T, remote bool) {
 	resolver := func(context.Context) (ResolvedBuildProduct, error) { return product, nil }
 	ctx := withBuildProduct(context.Background(), resolver)
 	selected := env.Clone()
-	res, err := h.manager.executeBuild(ctx, "op_lifecycle_result", SubmitOperationRequest{AccountScopeID: "account"}, selected, &conn)
+	// Both scopes must identify the same initial SSH connection when the
+	// post-build drift check reloads it; the mock emits that exact digest.
+	res, err := h.manager.executeBuild(ctx, "op_lifecycle_result", SubmitOperationRequest{AccountScopeID: "account", WorkspaceID: "workspace"}, selected, &conn)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if res.Build.ConnectionDigest != environments.ConnectionTransportDigest(&conn) {
+		t.Fatal("build receipt lost initial connection transport identity")
 	}
 	now := time.Now().UnixMilli()
 	op, _, err := h.opStore.AdmitOperation(environments.EnvironmentOperation{OperationID: "op_lifecycle_result", AccountScopeID: "account", WorkspaceID: "workspace", EnvironmentID: env.ID, Action: "build", BuildDefinition: selected.Build, BuildConnectionID: conn.ID, CreatedAt: now, ObservedAt: now, Deadline: now + 60000, Status: environments.OperationStatusQueued})
@@ -217,6 +222,36 @@ func testResultManagedLifecycle(t *testing.T, remote bool) {
 	lease, found, err := h.manager.GetLease("account", "workspace", ensured.Lease.ID)
 	if err != nil || !found || lease.Active || atomic.LoadInt32(&p.execCalls) != 1 {
 		t.Fatal("exec/release postconditions not observed")
+	}
+}
+
+// Purpose: executeBuild must re-read the scoped SSH connection after the mock
+// emits its captured transport digest. Actual stored transport drift must reject
+// the receipt and clean the owned build, not weaken authority to fix a fixture.
+// Real connection/deployment stores plus an injected builder prove this boundary.
+func TestProjectResultSSHConnectionDrift(t *testing.T) {
+	h, env, conn, p := buildLifecycleFixtureKind(t, environments.ConnectionKindSSH)
+	initialDigest := environments.ConnectionTransportDigest(&conn)
+	p.afterBuild = func() {
+		changed := conn
+		ssh := *conn.SSH
+		ssh.Host = "changed.example.invalid"
+		changed.SSH = &ssh
+		if _, err := h.connections.Save(changed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := h.manager.executeBuild(context.Background(), "op_drift_result",
+		SubmitOperationRequest{AccountScopeID: "account", WorkspaceID: "workspace"}, env.Clone(), &conn)
+	if err == nil || !strings.Contains(err.Error(), "SSH connection changed during build") || out != nil {
+		t.Fatalf("changed SSH transport accepted: %+v %v", out, err)
+	}
+	if environments.ConnectionTransportDigest(p.lastBuild.Connection) != initialDigest || p.calls != 1 || p.cleanupCalls != 1 {
+		t.Fatal("captured receipt identity or rejected-build cleanup lost")
+	}
+	deps, err := h.deployments.ListByEnvironment("account", "workspace", env.ID, 10)
+	if err != nil || len(deps) != 0 {
+		t.Fatal("changed transport allocated deployment")
 	}
 }
 

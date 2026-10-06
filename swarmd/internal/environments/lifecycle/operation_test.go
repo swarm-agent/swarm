@@ -95,7 +95,9 @@ func setupSupervisedHarness(t *testing.T, opts ...DeploymentManagerOption) *supe
 
 	mgr := NewDeploymentManager(cs, es, ds, ws, reg, allOpts...)
 	t.Cleanup(func() {
-		_ = mgr.Close()
+		if err := mgr.Close(); err != nil {
+			t.Errorf("join operation supervisors before store teardown: %v", err)
+		}
 	})
 
 	return &supervisedTestHarness{

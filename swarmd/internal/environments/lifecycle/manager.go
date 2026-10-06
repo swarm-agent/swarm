@@ -203,6 +203,7 @@ type DeploymentManager struct {
 
 	activeOps   map[string]*activeOpState
 	activeOpsMu sync.RWMutex
+	closing     bool // guarded by activeOpsMu; prevents launches after Close's snapshot
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
