@@ -192,3 +192,33 @@ func TestProjectResultDockerMountPreserved(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: validateProjectResultEnvironment must reject unsupported SSH managed
+// validation before Submit even with an apparently successful exact receipt.
+// This tool-level test proves build/ensure/exec/release cannot hide the missing
+// remote supervisor behind provenance or cached deployment/consumer receipts.
+func TestProjectResultSSHManagedCapability(t *testing.T) {
+	for _, action := range []string{"build", "ensure", "exec", "release"} {
+		t.Run(action, func(t *testing.T) {
+			r, scope, _, store, manager, ref := resultEnvironmentFixture(t)
+			manager.conn.Kind = environments.ConnectionKindSSH
+			args := map[string]any{"action": action, "project_result": ref, "environment_id": "env", "build_operation_id": "build"}
+			if action == "build" {
+				delete(args, "build_operation_id")
+			}
+			if action == "exec" || action == "release" {
+				args["deployment_id"], args["lease_id"] = "deployment", "lease"
+			}
+			if action == "exec" {
+				args["command"] = []string{"true"}
+			}
+			before := *store.env.Build
+			if _, err := r.executeManageEnvironments(context.Background(), scope, "ssh-"+action, args); !errors.Is(err, environments.ErrSSHManagedBuildUnavailable) {
+				t.Fatalf("unsupported SSH capability admitted: %v", err)
+			}
+			if len(manager.submissions) != 0 || *store.env.Build != before {
+				t.Fatal("unsupported capability mutated operation or definition")
+			}
+		})
+	}
+}

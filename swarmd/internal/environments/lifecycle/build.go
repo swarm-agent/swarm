@@ -33,8 +33,8 @@ func (m *DeploymentManager) validateBuild(ctx context.Context, account string, e
 	if err := env.Validate(); err != nil {
 		return err
 	}
-	if conn == nil || conn.Kind != environments.ConnectionKindLocalPodman {
-		return errors.New("managed build requires local_podman connection")
+	if err := environments.ValidateManagedBuildConnection(conn); err != nil {
+		return err
 	}
 	if _, err := m.buildSourceRoot(account, env.Build.Product); err != nil {
 		return err

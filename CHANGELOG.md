@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Reject unsupported SSH managed builds with an explicit capability error before admission/transport, including substituted managed runtime receipts; retain local provider behavior. Docs impact: `docs/managed-local-systemd-environments.md` records the unresolved remote supervision, immutable transport provenance and restart-safe cleanup contract; no SSH build or live cloud readiness is claimed.
+
 - Restore Orchestrator chat header project identity in place of generic Workspaces, enable opening model favorites and updating Orchestrator model via canonical session API with rehydration, and route Agents to Orchestrator-owned agents settings. Docs impact: none.
 
 - Fix TUI Ctrl+X shortcut so it opens the session switcher modal across home and chat views, and filter the switcher to display only orchestration sessions (excluding task and subagent worker sessions). Default initial filter to active chats when review is empty, and support Ctrl+X toggle close. Docs impact: none.

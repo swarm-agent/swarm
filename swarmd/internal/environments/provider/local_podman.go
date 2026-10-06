@@ -30,6 +30,11 @@ func ValidateRuntimeConnection(conn *environments.Connection, env *environments.
 	if conn == nil || env == nil {
 		return errors.New("connection and environment are required")
 	}
+	if env.Build != nil && conn.Kind == environments.ConnectionKindSSH {
+		if err := environments.ValidateManagedBuildConnection(conn); err != nil {
+			return err
+		}
+	}
 	if env.Container.RootlessSystemd != nil && conn.Kind != environments.ConnectionKindLocalPodman {
 		return errors.New("rootless_systemd requires an explicit local_podman connection; no fallback is supported")
 	}

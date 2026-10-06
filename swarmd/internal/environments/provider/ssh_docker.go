@@ -114,6 +114,9 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	if req.Deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
+	if req.Deployment.Build != nil {
+		return nil, environments.ErrSSHManagedBuildUnavailable
+	}
 	if req.Connection.Kind != environments.ConnectionKindSSH {
 		return nil, fmt.Errorf("unsupported connection kind: %q", req.Connection.Kind)
 	}
@@ -406,6 +409,9 @@ func (p *SSHDockerProvider) Inspect(ctx context.Context, conn *environments.Conn
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
+	if deployment.Build != nil {
+		return nil, environments.ErrSSHManagedBuildUnavailable
+	}
 	target := resolveContainerTarget(deployment)
 	if target == "" {
 		return nil, errors.New("cannot inspect deployment without container target or ID")
@@ -574,6 +580,9 @@ func (p *SSHDockerProvider) ResolveAccess(ctx context.Context, conn *environment
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
+	if deployment.Build != nil {
+		return nil, environments.ErrSSHManagedBuildUnavailable
+	}
 	target := resolveContainerTarget(deployment)
 	if target == "" {
 		return nil, errors.New("cannot resolve access without container target or ID")
@@ -635,6 +644,9 @@ func (t *sshDockerTransport) RunExecCombined(ctx context.Context, execArgs ...st
 
 // Exec executes a command inside the running remote container over SSH with supervisor process group management.
 func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
+	if deployment != nil && deployment.Build != nil {
+		return nil, environments.ErrSSHManagedBuildUnavailable
+	}
 	target, err := validateExecParams(deployment, req)
 	if err != nil {
 		return nil, err

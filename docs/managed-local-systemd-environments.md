@@ -261,3 +261,52 @@ execution belongs to the separate focused verification checkpoint. No frontend
 build, screenshot, browser run, container run or live-readiness claim accompanies
 this source implementation. Manual browser/container qualification remains a
 separately authorized follow-up.
+
+## SSH exact-result capability boundary
+
+**Unsupported; fail closed.** Existing SSH Docker deployment and container exec
+are not managed image builders. SSH build/ensure admission and substituted managed
+runtime receipts are rejected before provider effects. Local contracts are unchanged.
+Do not bypass this with remote-existing-path, sync/current-dev, arbitrary images,
+shell tests outside the manager or a local fallback.
+
+A safe remote backend must first provide:
+
+- Exact canonical `project_result` task/attempt/session/HEAD and catalog-generation
+  authority, plus the separately authorized full committed recipe reference.
+  Reuse `ExportCommittedBuild` (30,000 entries, 512 MiB; sensitive files excluded;
+  traversal, links and special files rejected), with bounded transfer overhead.
+- Noninteractive verified SSH and remotely observed engine/supervisor capability,
+  not saved booleans. Bind immutable non-secret transport identity to admission,
+  provenance and cleanup; connection IDs alone do not detect alias retargeting.
+- Durable exclusive remote scratch/builder ownership and independently confirmed
+  daemon-side termination after cancellation, partial transfer/build and restart.
+  Killing SSH is insufficient. `ImageBuilder.CleanupBuild(ctx, operationID)` carries
+  neither an immutable connection nor a remote resource receipt. Never global
+  prune; report unconfirmed cleanup, without credentials or recipe output in state.
+- Remote-observed immutable image ID with validated operation/input/revision
+  provenance and context/definition/result/connection bindings. Recheck image ID
+  before reuse/setup/access/exec. Reject changed result, recipe, generation,
+  connection, image or attachment. Port mappings must be remote loopback-only;
+  do not advertise a fabricated directly reachable browser URL.
+
+Once that backend exists, the canonical sequence is `build` with exact product,
+recipe and result references, wait for an actual successful operation, `ensure`
+with that exact build receipt, `exec` with bounded timeout/output and the
+consumer's own deployment lease, then `release` on every terminal path. Task
+consumers retain canonical attachment/acquire authority and cannot borrow the
+preparer's receipt. Current deadlines are five minutes default/ten maximum, with
+separate bounded cleanup (fifteen seconds). No busy-poll or silent rebuild/fallback.
+Managed reuse currently preserves deployments with `release_behavior=none` and
+disabled idle cleanup; explicit owned cleanup/retention is separate. Stop for
+unsupported capabilities, stale/missing/wrong receipts, consumer denial, result
+or transport drift, cancellation or cleanup uncertainty. If a result advances,
+ordinary owner-authorized cleanup does not claim stale-result validation.
+
+A **cloud IAM lease** grants temporary cloud authority; an **environment deployment
+lease** grants a consumer access to one managed deployment. Later parent-owned
+broker setup must acquire approved cloud authority, provision/identify an isolated
+host, bind verified SSH transport to its approved lease/target, ensure lease
+lifetime covers work and cleanup, supply the remote supervisor/build primitives,
+and revoke cloud authority after cleanup. Neither broker integration nor live
+cloud readiness is implemented or claimed here.

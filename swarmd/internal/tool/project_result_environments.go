@@ -53,7 +53,10 @@ func (r *Runtime) validateProjectResultEnvironment(ctx context.Context, scope Wo
 	}
 	req.ConnectionID = conn.ID
 	if env.Build != nil {
-		if conn.Kind != environments.ConnectionKindLocalPodman || env.Build.Product.WorkspaceID != target.Reference.WorkspaceID || env.Build.Product.WorkspaceGeneration != target.Reference.WorkspaceGeneration {
+		if err := environments.ValidateManagedBuildConnection(conn); err != nil {
+			return err
+		}
+		if env.Build.Product.WorkspaceID != target.Reference.WorkspaceID || env.Build.Product.WorkspaceGeneration != target.Reference.WorkspaceGeneration {
 			return errors.New("managed task-result validation requires local Podman and the exact catalog source")
 		}
 		req.BuildProductResolver = r.projectBuildProduct(scope, target)

@@ -13,6 +13,13 @@ and operation idempotency; the provider still exports exact committed Git object
 Queued build/ensure/deploy and exec re-resolve before effects; failed or stale builds
 are not admitted. Images have an empty deployment `workspace_path`.
 
+SSH managed exact-result validation remains unavailable. Deployment/exec support
+alone does not supply remote build supervision, immutable transport provenance or
+restart-safe owned cleanup receipts. See
+[SSH capability boundary](../../../docs/managed-local-systemd-environments.md#ssh-exact-result-capability-boundary)
+for the stop conditions and later broker/backend prerequisites. No remote-path,
+sync, arbitrary-image or local fallback establishes SSH result identity.
+
 ## Parent validation
 
 Tests and live dogfooding must be performed by the parent on the reviewed commit.
