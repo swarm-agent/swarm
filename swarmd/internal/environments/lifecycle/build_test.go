@@ -32,7 +32,7 @@ func (p *managedBuildProvider) BuildImage(_ context.Context, r provider.ImageBui
 	if p.buildErr != nil {
 		return nil, p.buildErr
 	}
-	b := &environments.ImageBuildResult{OperationID: r.OperationID, ConnectionID: r.Connection.ID, DefinitionDigest: r.Definition.Digest(), ImageID: "sha256:" + strings.Repeat("c", 64), ContextDigest: strings.Repeat("d", 64), Product: r.Definition.Product, Recipe: r.Definition.Recipe, RecipeFile: r.Definition.RecipeFile}
+	b := &environments.ImageBuildResult{OperationID: r.OperationID, ConnectionID: r.Connection.ID, ConnectionDigest: environments.ConnectionTransportDigest(r.Connection), DefinitionDigest: r.Definition.Digest(), ImageID: "sha256:" + strings.Repeat("c", 64), ContextDigest: strings.Repeat("d", 64), Product: r.Definition.Product, Recipe: r.Definition.Recipe, RecipeFile: r.Definition.RecipeFile}
 	if p.mismatch {
 		b.Product.Commit = strings.Repeat("e", 40)
 	}

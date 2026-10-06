@@ -1424,7 +1424,11 @@ func (m *DeploymentManager) cleanupTargetProcess(
 		if !ok {
 			return false, errors.New("build cleanup unsupported")
 		}
-		err = b.CleanupBuild(ctx, op.OperationID)
+		if remote, ok := b.(provider.ConnectionBuildCleaner); ok {
+			err = remote.CleanupConnectionBuild(ctx, &c, op.OperationID)
+		} else {
+			err = b.CleanupBuild(ctx, op.OperationID)
+		}
 		return err == nil, err
 	}
 	if (conn == nil || dep == nil) && m.connections != nil && m.deployments != nil && op.DeploymentID != "" {

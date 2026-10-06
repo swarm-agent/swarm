@@ -70,6 +70,11 @@ func (m *DeploymentManager) AcquirePreparedLease(ctx context.Context, req Acquir
 	if !found || !s.Matches(dep) || ManagedReviewExpired(dep, time.Now().UnixMilli()) {
 		return environments.DeploymentLease{}, errors.New("prepared deployment source is stale or unavailable")
 	}
+	if dep.Build != nil && dep.Build.ConnectionDigest != "" {
+		if err := m.requireDeploymentProvider(dep); err != nil {
+			return environments.DeploymentLease{}, err
+		}
+	}
 	if ops := m.Operations(); ops != nil {
 		_, active, err := ops.GetActiveOperationForDeployment(s.AccountScopeID, s.WorkspaceID, s.DeploymentID)
 		if err != nil {

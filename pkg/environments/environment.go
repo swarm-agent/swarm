@@ -190,8 +190,8 @@ func (e *Environment) Validate() error {
 		if err := e.Build.Validate(); err != nil {
 			return err
 		}
-		if e.Container.RootlessSystemd == nil || e.Container.Image != ManagedBuildImage || e.Provisioning.Strategy.RegistryImage == nil || e.Provisioning.Strategy.RegistryImage.Image != ManagedBuildImage || e.DeploymentPolicy.ReleaseBehavior != ReleaseBehaviorNone || !e.DeploymentPolicy.Reuse || e.DeploymentPolicy.IdleTimeoutSeconds != 0 {
-			return errors.New("managed build requires rootless_systemd, managed-build image, reuse=true, release_behavior=none and disabled idle cleanup")
+		if e.Container.Image != ManagedBuildImage || e.Provisioning.Strategy.RegistryImage == nil || e.Provisioning.Strategy.RegistryImage.Image != ManagedBuildImage || e.DeploymentPolicy.ReleaseBehavior != ReleaseBehaviorNone || !e.DeploymentPolicy.Reuse || e.DeploymentPolicy.IdleTimeoutSeconds != 0 {
+			return errors.New("managed build requires managed-build image, reuse=true, release_behavior=none and disabled idle cleanup")
 		}
 	}
 	e.Container.Image = strings.TrimSpace(e.Container.Image)

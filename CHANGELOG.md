@@ -6,7 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
-- Reject unsupported SSH managed builds with an explicit capability error before admission/transport, including substituted managed runtime receipts; retain local provider behavior. Docs impact: `docs/managed-local-systemd-environments.md` records the unresolved remote supervision, immutable transport provenance and restart-safe cleanup contract; no SSH build or live cloud readiness is claimed.
+- Add SSH Docker exact committed-context image builds and receipt-bound remote test deployments with connection-edit fencing, strict external SSH authentication, loopback port publication and explicit uncertain remote build cleanup; preserve local Podman contracts and task consumer leases. Docs impact: `docs/managed-ssh-test-environments.md` documents the generic operator-owned host workflow, provenance, cleanup limits and cloud-access separation; no live cloud validation is claimed.
 
 - Restore Orchestrator chat header project identity in place of generic Workspaces, enable opening model favorites and updating Orchestrator model via canonical session API with rehydration, and route Agents to Orchestrator-owned agents settings. Docs impact: none.
 

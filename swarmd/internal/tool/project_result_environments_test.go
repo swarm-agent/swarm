@@ -193,10 +193,9 @@ func TestProjectResultDockerMountPreserved(t *testing.T) {
 	}
 }
 
-// Purpose: validateProjectResultEnvironment must reject unsupported SSH managed
-// validation before Submit even with an apparently successful exact receipt.
-// This tool-level test proves build/ensure/exec/release cannot hide the missing
-// remote supervisor behind provenance or cached deployment/consumer receipts.
+// Purpose: validateProjectResultEnvironment rejects malformed SSH connections
+// before Submit even with an apparently successful exact receipt. This tool
+// layer proves caller provenance cannot authorize missing transport identity.
 func TestProjectResultSSHManagedCapability(t *testing.T) {
 	for _, action := range []string{"build", "ensure", "exec", "release"} {
 		t.Run(action, func(t *testing.T) {
@@ -213,11 +212,56 @@ func TestProjectResultSSHManagedCapability(t *testing.T) {
 				args["command"] = []string{"true"}
 			}
 			before := *store.env.Build
-			if _, err := r.executeManageEnvironments(context.Background(), scope, "ssh-"+action, args); !errors.Is(err, environments.ErrSSHManagedBuildUnavailable) {
+			if _, err := r.executeManageEnvironments(context.Background(), scope, "ssh-"+action, args); err == nil {
 				t.Fatalf("unsupported SSH capability admitted: %v", err)
 			}
 			if len(manager.submissions) != 0 || *store.env.Build != before {
 				t.Fatal("unsupported capability mutated operation or definition")
+			}
+		})
+	}
+}
+
+// Purpose: the tool result guard accepts SSH only with an authorized successful
+// receipt matching exact result and transport; tampering must not reach Submit.
+// Tool fixtures are the narrowest proof of wire-to-internal capability binding.
+func TestProjectResultSSHReceiptBinding(t *testing.T) {
+	for _, change := range []string{"", "commit", "connection", "transport", "consumer"} {
+		t.Run(change, func(t *testing.T) {
+			r, scope, resolver, _, manager, _ := resultEnvironmentFixture(t)
+			manager.conn.Kind = environments.ConnectionKindSSH
+			manager.conn.Name = "Remote"
+			manager.conn.SSH = &environments.SSHConfig{Host: "example.invalid", User: "tester", Port: 22}
+			manager.op.Result.Build.ConnectionDigest = environments.ConnectionTransportDigest(&manager.conn)
+			q := lifecycle.SubmitOperationRequest{Action: "ensure", AccountScopeID: "account", WorkspaceID: "workspace", EnvironmentID: "env", BuildOperationID: "build"}
+			switch change {
+			case "commit":
+				manager.op.Result.Build.Product.Commit = strings.Repeat("f", 40)
+			case "connection":
+				manager.op.Result.Build.ConnectionID = "other"
+			case "transport":
+				manager.conn.SSH.Host = "changed.invalid"
+			case "consumer":
+				manager.lease.ConsumerID = "other"
+				q.Action = "exec"
+				q.DeploymentID = "deployment"
+				q.LeaseID = "lease"
+			}
+			var err error
+			if q.Action == "exec" {
+				err = r.validateProjectResultDeployment(context.Background(), scope, resolver.target, &q)
+			} else {
+				err = r.validateProjectResultEnvironment(context.Background(), scope, resolver.target, &q)
+			}
+			if change == "" {
+				if err != nil || q.BuildProductResolver == nil || q.WorkspacePath != "" {
+					t.Fatal("valid SSH result not admitted", err)
+				}
+			} else if err == nil {
+				t.Fatal("tampered receipt admitted")
+			}
+			if len(manager.submissions) != 0 {
+				t.Fatal("guard mutated operations")
 			}
 		})
 	}

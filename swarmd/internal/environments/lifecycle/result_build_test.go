@@ -152,8 +152,31 @@ func TestProjectResultIdempotencyBinding(t *testing.T) {
 // Real stores and an injected provider prove durable identity propagation;
 // this is deterministic contract evidence, not a live Podman test.
 func TestProjectResultManagedLifecycle(t *testing.T) {
+	t.Run("local", func(t *testing.T) { testResultManagedLifecycle(t, false) })
+	t.Run("ssh", func(t *testing.T) { testResultManagedLifecycle(t, true) })
+}
+
+func testResultManagedLifecycle(t *testing.T, remote bool) {
 	h, env, conn, p := buildLifecycleFixture(t)
-	h.manager.registry.Register(&resultPodmanProvider{p})
+	if remote {
+		conn.Kind = environments.ConnectionKindSSH
+		conn.SSH = &environments.SSHConfig{Host: "example.invalid", User: "tester", Port: 22}
+		conn.Capabilities.SupportsDocker = true
+		var err error
+		conn, err = h.connections.Save(conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.Container.RootlessSystemd = nil
+		env, err = h.environments.Save(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.mockProvider = newMockProvider(environments.ConnectionKindSSH)
+		h.manager.registry.Register(p)
+	} else {
+		h.manager.registry.Register(&resultPodmanProvider{p})
+	}
 	product := ResolvedBuildProduct{Source: env.Build.Product, Root: t.TempDir(), Binding: strings.Repeat("f", 64)}
 	product.Source.Commit = strings.Repeat("e", 40)
 	resolver := func(context.Context) (ResolvedBuildProduct, error) { return product, nil }
@@ -185,6 +208,12 @@ func TestProjectResultManagedLifecycle(t *testing.T) {
 	}
 	for _, action := range []string{"exec", "release"} {
 		req := SubmitOperationRequest{Action: action, AccountScopeID: "account", WorkspaceID: "workspace", DeploymentID: ensured.Deployment.ID, LeaseID: ensured.Lease.ID, Attribution: environments.OperationAttribution{SessionID: "parent"}, Command: []string{"true"}, BuildProductResolver: resolver}
+		bad := req
+		bad.Attribution.SessionID = "other"
+		before := atomic.LoadInt32(&p.execCalls)
+		if _, _, _, err := h.manager.validateAdmission(context.Background(), &bad); err == nil || atomic.LoadInt32(&p.execCalls) != before {
+			t.Fatal("foreign consumer reached provider")
+		}
 		if _, _, _, err := h.manager.validateAdmission(context.Background(), &req); err != nil {
 			t.Fatalf("%s admission: %v", action, err)
 		}

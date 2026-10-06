@@ -145,6 +145,9 @@ func (m *DeploymentManager) requireDeploymentProvider(dep environments.Deploymen
 	if !found {
 		return ErrConnectionNotFound
 	}
+	if dep.Build != nil && (dep.Build.ConnectionID != conn.ID || dep.Build.ConnectionDigest != environments.ConnectionTransportDigest(&conn)) {
+		return errors.New("deployment build connection provenance changed")
+	}
 	if _, ok := m.registry.Get(conn.Kind); !ok {
 		return ErrProviderNotRegistered
 	}

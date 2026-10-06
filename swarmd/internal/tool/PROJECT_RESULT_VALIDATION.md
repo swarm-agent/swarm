@@ -5,7 +5,7 @@ The resolver rechecks the account, catalog generation, current task attempt/sess
 quiescence, ownership, clean tree and exact HEAD. Its resolved isolated root is an
 internal capability, not a caller filesystem path or a host mount.
 
-For a managed local Podman definition, `build` replaces only the saved product
+For a managed local Podman or SSH Docker definition, `build` replaces only the saved product
 commit with the selected result commit, exports from the authenticated isolated
 root and preserves the separately authorized committed recipe. The saved definition
 is not changed. A SHA-256 result-reference binding is retained in build provenance
@@ -13,12 +13,11 @@ and operation idempotency; the provider still exports exact committed Git object
 Queued build/ensure/deploy and exec re-resolve before effects; failed or stale builds
 are not admitted. Images have an empty deployment `workspace_path`.
 
-SSH managed exact-result validation remains unavailable. Deployment/exec support
-alone does not supply remote build supervision, immutable transport provenance or
-restart-safe owned cleanup receipts. See
-[SSH capability boundary](../../../docs/managed-local-systemd-environments.md#ssh-exact-result-capability-boundary)
-for the stop conditions and later broker/backend prerequisites. No remote-path,
-sync, arbitrary-image or local fallback establishes SSH result identity.
+SSH Docker uses the same exact-context exporter and successful immutable image
+receipt, with a digest fencing edits to the saved SSH connection. See the
+[remote runbook](../../../docs/managed-ssh-test-environments.md). Interrupted
+remote builds are explicitly unconfirmed, never replayed or falsely cleaned.
+No remote-path, sync, arbitrary-image or local fallback establishes identity.
 
 ## Parent validation
 

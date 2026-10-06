@@ -33,6 +33,7 @@ type ImageBuildResult struct {
 	// ProductResult binds an authenticated task/attempt/session result, not a mount.
 	ProductResult    string               `json:"product_result,omitempty"`
 	OperationID      string               `json:"operation_id"`
+	ConnectionDigest string               `json:"connection_digest,omitempty"`
 	ConnectionID     string               `json:"connection_id"`
 	DefinitionDigest string               `json:"definition_digest"`
 	ImageID          string               `json:"image_id"`

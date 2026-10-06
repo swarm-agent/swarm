@@ -57,7 +57,7 @@ func (r *Runtime) validateProjectResultEnvironment(ctx context.Context, scope Wo
 			return err
 		}
 		if env.Build.Product.WorkspaceID != target.Reference.WorkspaceID || env.Build.Product.WorkspaceGeneration != target.Reference.WorkspaceGeneration {
-			return errors.New("managed task-result validation requires local Podman and the exact catalog source")
+			return errors.New("managed task-result validation requires the exact catalog source")
 		}
 		req.BuildProductResolver = r.projectBuildProduct(scope, target)
 		req.WorkspacePath = ""
@@ -75,7 +75,7 @@ func (r *Runtime) validateProjectResultEnvironment(ctx context.Context, scope Wo
 			return errors.New("selected task result requires an authorized successful managed build")
 		}
 		result := op.Result.Build
-		if result.OperationID != req.BuildOperationID || result.ConnectionID != conn.ID || result.ProductResult != projectResultBinding(target) || result.Product != definition.Product || result.Recipe != definition.Recipe || result.RecipeFile != definition.RecipeFile || result.DefinitionDigest != definition.Digest() || !environments.ValidBuildImageID(result.ImageID) || len(result.ContextDigest) != 64 {
+		if result.OperationID != req.BuildOperationID || result.ConnectionID != conn.ID || result.ConnectionDigest != environments.ConnectionTransportDigest(conn) || result.ProductResult != projectResultBinding(target) || result.Product != definition.Product || result.Recipe != definition.Recipe || result.RecipeFile != definition.RecipeFile || result.DefinitionDigest != definition.Digest() || !environments.ValidBuildImageID(result.ImageID) || len(result.ContextDigest) != 64 {
 			return errors.New("managed build does not match selected task result, recipe or connection")
 		}
 		return nil

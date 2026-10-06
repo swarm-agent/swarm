@@ -3,8 +3,9 @@ package environments
 import "errors"
 
 // ErrSSHManagedBuildUnavailable is a capability rejection, not an SSH auth error.
-// SSH deployment/exec support alone cannot prove remote build termination,
-// operation-owned cleanup or immutable connection provenance after restart.
+// Retained for callers distinguishing unsupported configurations. Interrupted
+// SSH builds instead report explicit unconfirmed cleanup; successful SSH builds
+// use observed immutable images and fenced saved connection definitions.
 var ErrSSHManagedBuildUnavailable = errors.New("SSH managed builds unavailable: remote build supervision, durable owned cleanup receipts and immutable connection provenance are required; no local or remote-path fallback is supported")
 
 // ValidateManagedBuildConnection checks the code-owned build transport contract.
@@ -18,8 +19,8 @@ func ValidateManagedBuildConnection(conn *Connection) error {
 	case ConnectionKindLocalPodman:
 		return nil
 	case ConnectionKindSSH:
-		return ErrSSHManagedBuildUnavailable
+		return conn.Clone().Validate()
 	default:
-		return errors.New("managed build requires local_podman connection")
+		return errors.New("managed build requires local_podman or SSH Docker connection")
 	}
 }

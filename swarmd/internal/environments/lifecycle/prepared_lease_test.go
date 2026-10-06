@@ -164,3 +164,40 @@ func TestLeaseAdmissionRejectsForgedConsumer(t *testing.T) {
 		t.Fatal("unauthorized provider effects")
 	}
 }
+
+// Purpose: AcquirePreparedLease must reject SSH transport edits before creating
+// a consumer receipt. Real stores prove unchanged lease state and local prepared
+// leases remain exercised by TestPreparedLeaseIsolation.
+func TestPreparedSSHTransportFence(t *testing.T) {
+	h, env, _, p := buildLifecycleFixture(t)
+	conn, err := h.connections.Save(environments.Connection{ID: "ssh", Name: "Remote", AccountScopeID: "account", WorkspaceID: "workspace", Kind: environments.ConnectionKindSSH, SSH: &environments.SSHConfig{Host: "example.invalid", User: "tester", Port: 22}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.mockProvider = newMockProvider(environments.ConnectionKindSSH)
+	h.manager.registry.Register(p)
+	dep, err := h.deployments.Save(environments.Deployment{ID: "prepared-ssh", Name: "Prepared", AccountScopeID: "account", WorkspaceID: "workspace", EnvironmentID: env.ID, ConnectionID: conn.ID, Status: environments.DeploymentStatusReady, Health: environments.HealthStatusHealthy, Runtime: environments.RuntimeMetadata{ContainerID: "owned"}, Build: &environments.ImageBuildResult{OperationID: "build", ConnectionID: conn.ID, ConnectionDigest: environments.ConnectionTransportDigest(&conn), ImageID: "sha256:" + strings.Repeat("a", 64), DefinitionDigest: strings.Repeat("b", 64), ContextDigest: strings.Repeat("c", 64), Product: env.Build.Product, Recipe: env.Build.Recipe, RecipeFile: env.Build.RecipeFile}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.manager.SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error { return nil })
+	req := AcquirePreparedLeaseRequest{Binding: &environments.TaskLeaseBinding{ProjectID: "project", TaskID: "task", AttemptID: "attempt", AttachmentID: "attachment", AttachmentRevision: 1, UserID: "user"}, Attribution: environments.OperationAttribution{SessionID: "consumer"}, Source: environments.PreparedDeploymentSource{AccountScopeID: dep.AccountScopeID, WorkspaceID: dep.WorkspaceID, EnvironmentID: dep.EnvironmentID, DeploymentID: dep.ID, CreatedAt: dep.CreatedAt, ContainerID: dep.Runtime.ContainerID, Build: *dep.Build}}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	lease, err := h.manager.AcquirePreparedLease(ctx, req)
+	if err != nil || lease.ConsumerID != "consumer" {
+		t.Fatal("available SSH attachment not acquired", err)
+	}
+	conn.SSH.Host = "changed.invalid"
+	if _, err := h.connections.Save(conn); err != nil {
+		t.Fatal(err)
+	}
+	req.Attribution.SessionID = "second"
+	if _, err := h.manager.AcquirePreparedLease(ctx, req); err == nil {
+		t.Fatal("retargeted SSH receipt admitted")
+	}
+	leases, err := h.deployments.Leases().ListForDeployment("account", "workspace", dep.ID, 10)
+	if err != nil || len(leases) != 1 || leases[0].ID != lease.ID {
+		t.Fatal("rejection changed leases")
+	}
+}

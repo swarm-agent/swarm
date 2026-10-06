@@ -1,28 +1,26 @@
 package environments
 
-import (
-	"errors"
-	"testing"
-)
+import "testing"
 
-// Purpose: ValidateManagedBuildConnection owns transport admission. Persisted
-// capability claims cannot turn SSH deployment support into supervised builds.
-// This pure domain test is the narrowest proof of rejection and local parity.
+// Purpose: code-owned build transport admission accepts valid SSH definitions,
+// not capability flags on malformed connections; local Podman stays supported.
+// Pure domain assertions are the narrowest layer for this pre-effect contract.
 func TestManagedBuildConnectionCapability(t *testing.T) {
-	ssh := &Connection{Kind: ConnectionKindSSH, Capabilities: ConnectionCapabilities{SupportsDocker: true, SupportsPodman: true, RootlessSystemd: true}}
-	before := *ssh
-	if err := ValidateManagedBuildConnection(ssh); !errors.Is(err, ErrSSHManagedBuildUnavailable) {
-		t.Fatalf("SSH capability claims admitted: %v", err)
+	ssh := &Connection{ID: "ssh", Name: "Remote", AccountScopeID: "account", WorkspaceID: "workspace", Kind: ConnectionKindSSH, SSH: &SSHConfig{Host: "example.invalid", User: "tester", Port: 22}}
+	if err := ValidateManagedBuildConnection(ssh); err != nil {
+		t.Fatal(err)
 	}
-	if *ssh != before {
-		t.Fatal("capability rejection mutated connection")
+	before := ConnectionTransportDigest(ssh)
+	ssh.SSH.Host = "other.invalid"
+	if before == ConnectionTransportDigest(ssh) {
+		t.Fatal("transport edit not fenced")
 	}
 	if err := ValidateManagedBuildConnection(&Connection{Kind: ConnectionKindLocalPodman}); err != nil {
-		t.Fatalf("local Podman contract regressed: %v", err)
+		t.Fatal(err)
 	}
-	for _, conn := range []*Connection{nil, {Kind: ConnectionKindLocalDocker}, {Kind: "unknown"}} {
+	for _, conn := range []*Connection{nil, {Kind: ConnectionKindSSH}, {Kind: ConnectionKindLocalDocker}, {Kind: "unknown"}} {
 		if err := ValidateManagedBuildConnection(conn); err == nil {
-			t.Fatal("unsupported connection admitted")
+			t.Fatal("unsupported or malformed connection accepted")
 		}
 	}
 }

@@ -10,7 +10,7 @@ import (
 )
 
 // Purpose: SSHDockerProvider cannot admit forged/imported managed-build receipts
-// via runtime image substitution, Inspect, cached ResolveAccess or Exec. The
+// without connection provenance via Deploy, Inspect, ResolveAccess or Exec. The
 // provider layer is the narrowest boundary proving zero SSH commands/resources;
 // ordinary SSH deployments without build provenance retain their existing path.
 func TestSSHManagedBuildReceiptBeforeTransport(t *testing.T) {
@@ -22,16 +22,16 @@ func TestSSHManagedBuildReceiptBeforeTransport(t *testing.T) {
 	q.Deployment.Runtime.ContainerID = "cached-container"
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if out, err := p.Deploy(ctx, q); !errors.Is(err, environments.ErrSSHManagedBuildUnavailable) || out != nil {
+	if out, err := p.Deploy(ctx, q); err == nil || out != nil {
 		t.Fatalf("managed deployment admitted: %+v %v", out, err)
 	}
-	if out, err := p.Inspect(ctx, q.Connection, q.Deployment); !errors.Is(err, environments.ErrSSHManagedBuildUnavailable) || out != nil {
+	if out, err := p.Inspect(ctx, q.Connection, q.Deployment); err == nil || out != nil {
 		t.Fatalf("managed inspection admitted: %+v %v", out, err)
 	}
-	if out, err := p.ResolveAccess(ctx, q.Connection, q.Deployment); !errors.Is(err, environments.ErrSSHManagedBuildUnavailable) || out != nil {
+	if out, err := p.ResolveAccess(ctx, q.Connection, q.Deployment); err == nil || out != nil {
 		t.Fatalf("cached access bypassed capability: %+v %v", out, err)
 	}
-	if out, err := p.Exec(ctx, q.Connection, q.Deployment, ExecRequest{}); !errors.Is(err, environments.ErrSSHManagedBuildUnavailable) || out != nil {
+	if out, err := p.Exec(ctx, q.Connection, q.Deployment, ExecRequest{}); err == nil || out != nil {
 		t.Fatalf("managed execution admitted: %+v %v", out, err)
 	}
 	if len(runner.calls) != 0 || len(runner.containers) != 0 {

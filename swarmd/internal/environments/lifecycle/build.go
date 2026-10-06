@@ -36,6 +36,14 @@ func (m *DeploymentManager) validateBuild(ctx context.Context, account string, e
 	if err := environments.ValidateManagedBuildConnection(conn); err != nil {
 		return err
 	}
+	if err := provider.ValidateRuntimeConnection(conn, env); err != nil {
+		return err
+	}
+	if conn.Kind == environments.ConnectionKindSSH {
+		if env.Container.Privileged || len(env.Provisioning.Mounts) != 0 || env.Provisioning.Strategy.Kind != environments.SourceStrategyKindRegistryImage || len(env.FrontendEndpoints) != 0 || (env.HealthCheck != nil && env.HealthCheck.HTTPPath != "") {
+			return errors.New("SSH exact-result builds require registry_image without privileged access or host mounts")
+		}
+	}
 	if _, err := m.buildSourceRoot(account, env.Build.Product); err != nil {
 		return err
 	}
@@ -77,9 +85,19 @@ func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req S
 		// Provider success is not admission success. A stale catalog or mismatched
 		// receipt must not leave an imported image behind as an accepted build.
 		if !accepted {
+			var noEffects *provider.BuildNoEffectsError
+			if errors.As(retErr, &noEffects) {
+				return
+			}
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), m.cleanupTimeout)
 			defer cancel()
-			if err := builder.CleanupBuild(cleanupCtx, opID); err != nil {
+			var cleanupErr error
+			if remote, ok := builder.(provider.ConnectionBuildCleaner); ok {
+				cleanupErr = remote.CleanupConnectionBuild(cleanupCtx, conn, opID)
+			} else {
+				cleanupErr = builder.CleanupBuild(cleanupCtx, opID)
+			}
+			if err := cleanupErr; err != nil {
 				if out != nil {
 					out.Build = nil
 				}
@@ -95,11 +113,17 @@ func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req S
 		}
 		return nil, err
 	}
-	if result == nil || !environments.ValidBuildImageID(result.ImageID) || result.DefinitionDigest != env.Build.Digest() || result.OperationID != opID || result.ConnectionID != conn.ID || result.Product != env.Build.Product || result.Recipe != env.Build.Recipe || result.RecipeFile != env.Build.RecipeFile || len(result.ContextDigest) != 64 {
+	if result == nil || !environments.ValidBuildImageID(result.ImageID) || result.DefinitionDigest != env.Build.Digest() || result.OperationID != opID || result.ConnectionID != conn.ID || result.ConnectionDigest != environments.ConnectionTransportDigest(conn) || result.Product != env.Build.Product || result.Recipe != env.Build.Recipe || result.RecipeFile != env.Build.RecipeFile || len(result.ContextDigest) != 64 {
 		return nil, errors.New("provider returned mismatched build provenance")
 	}
 	if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
 		return nil, err
+	}
+	if conn.Kind == environments.ConnectionKindSSH {
+		current, found, err := m.connections.Get(req.AccountScopeID, req.WorkspaceID, conn.ID)
+		if err != nil || !found || environments.ConnectionTransportDigest(&current) != result.ConnectionDigest {
+			return nil, errors.New("SSH connection changed during build; receipt rejected")
+		}
 	}
 	if resolved != nil {
 		current, err := applyBuildProduct(ctx, env)
@@ -141,7 +165,7 @@ func (m *DeploymentManager) resolveBuildImage(ctx context.Context, account, work
 	if b.ProductResult != binding {
 		return nil, errors.New("build operation belongs to another task result")
 	}
-	if b.OperationID != operationID || b.ConnectionID != conn.ID || b.DefinitionDigest != env.Build.Digest() || b.Product != env.Build.Product || b.Recipe != env.Build.Recipe || b.RecipeFile != env.Build.RecipeFile || len(b.ContextDigest) != 64 || !environments.ValidBuildImageID(b.ImageID) {
+	if b.OperationID != operationID || b.ConnectionID != conn.ID || b.ConnectionDigest != environments.ConnectionTransportDigest(conn) || b.DefinitionDigest != env.Build.Digest() || b.Product != env.Build.Product || b.Recipe != env.Build.Recipe || b.RecipeFile != env.Build.RecipeFile || len(b.ContextDigest) != 64 || !environments.ValidBuildImageID(b.ImageID) {
 		return nil, errors.New("build result source or connection is stale or mismatched")
 	}
 	return &b, nil
