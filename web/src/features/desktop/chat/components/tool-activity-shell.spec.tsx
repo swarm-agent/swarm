@@ -32,6 +32,9 @@ function markup(input: Parameters<typeof message>[0]): string {
   return renderToStaticMarkup(<ToolMessageView toolMessage={message(input)} />)
 }
 
+// Purpose: ToolMessageView -> ToolActivityShell must expose a visible running
+// indicator before output without pulsing the whole card or exposing edit bodies.
+// Static React rendering is the narrowest layer for these accessibility semantics.
 test('running edit renders an accessible stable activity card without raw arguments', () => {
   const rendered = markup({ tool: 'edit', state: 'running', argumentsText: '{"path":"web/src/app.tsx","old_string":"unrendered argument body"}' })
   assert.match(rendered, /data-tool-activity-state="running"/)
@@ -44,7 +47,9 @@ test('running edit renders an accessible stable activity card without raw argume
   assert.match(rendered, /w-full/)
   assert.match(rendered, /max-w-full/)
   assert.match(rendered, /self-stretch/)
-  assert.match(rendered, /motion-safe:animate-\[pulse_2\.8s_ease-in-out_infinite\]/)
+  assert.match(rendered, /motion-safe:animate-spin/)
+  assert.match(rendered, />Running</)
+  assert.doesNotMatch(rendered, /animate-\[pulse/)
   assert.match(rendered, /motion-reduce:animate-none/)
   assert.doesNotMatch(rendered, />Active</)
   assert.doesNotMatch(rendered, /unrendered argument body/)
@@ -207,4 +212,38 @@ test('completed structured result replaces the activity shell', () => {
   assert.match(done, /Changes/)
   assert.match(done, /old/)
   assert.match(done, /new/)
+})
+
+// Purpose: project inspection/delegation uses action-specific cards throughout
+// start/delta/terminal rendering. ToolMessageView and toolActivityPresentation
+// own the boundary; SSR proves copy/privacy/failure semantics without transport.
+test('project actions remain cards with allowlisted targets and honest terminal labels', () => {
+  const args = { action: 'inspect_files', workspace_id: 'repository', inspection: { tool: 'search', arguments: { path: 'src', query: 'sidebar', secret: 'never-render-this' } }, prompt: 'private-mission-body' }
+  for (const [state, outputText] of [['running', ''], ['running', 'partial output'], ['done', '{"status":"ok"}']] as const) {
+    const rendered = markup({ tool: 'manage_projects', state, argumentsText: JSON.stringify(args), outputText })
+    assert.match(rendered, /data-testid="desktop-tool-activity-card"/)
+    assert.match(rendered, state === 'running' ? /Searching project files…/ : /Project file search complete/)
+    assert.match(rendered, /src · sidebar/)
+    assert.doesNotMatch(rendered, /never-render-this|private-mission-body|partial output/)
+  }
+  const read = markup({ tool: 'manage_projects', state: 'running', argumentsText: JSON.stringify({ ...args, inspection: { tool: 'read', arguments: { path: 'src/sidebar.tsx' } } }) })
+  assert.match(read, /Reading source…/)
+  assert.match(read, /src\/sidebar.tsx/)
+  const failed = markup({ tool: 'manage_projects', state: 'error', argumentsText: JSON.stringify(args), outputText: '{"status":"ok"}', error: 'inspection denied' })
+  assert.match(failed, /Project file search failed/)
+  assert.match(failed, />Failed</)
+  assert.doesNotMatch(failed, /search complete|>Done</)
+  const resultError = markup({ tool: 'manage_projects', state: 'done', outputText: '{"status":"error"}' })
+  assert.match(resultError, /data-tool-activity-state="error"/)
+  for (const status of ['proposed', 'queued', 'pending_review']) {
+    const pending = markup({ tool: 'manage_projects', state: 'done', argumentsText: '{"action":"deploy_task","task_id":"task-target"}', outputText: JSON.stringify({ status }) })
+    assert.match(pending, />Pending</)
+    assert.doesNotMatch(pending, /launched|deployment complete/)
+  }
+  assert.match(markup({ tool: 'manage_projects', state: 'running', argumentsText: '{"action":"wait_tasks","task_ids":["a","b"]}' }), /Waiting for tasks…/)
+  const queuedTask = markup({ tool: 'manage_projects', state: 'done', argumentsText: '{"action":"deploy_task"}', outputText: '{"status":"ok","task":{"status":"queued"}}' })
+  assert.match(queuedTask, />Pending</)
+  assert.doesNotMatch(queuedTask, /deployment complete|launched/)
+  const unknown = markup({ tool: 'manage_projects', state: 'running', argumentsText: '{"action":"toString"}' })
+  assert.match(unknown, /Working on project…/)
 })

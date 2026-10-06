@@ -76,8 +76,37 @@ export interface ToolActivityDescriptor {
   activeLabel: string;
 }
 
-export function describeToolActivity(toolName: string): ToolActivityDescriptor {
+export function describeToolActivity(toolName: string, argumentsJson?: Record<string, unknown> | null): ToolActivityDescriptor {
   const normalized = String(toolName ?? "").trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "manage_projects") {
+    const action = jsonStr(argumentsJson, "action");
+    const inspection = argumentsJson?.inspection;
+    const operation = inspection && typeof inspection === "object" && !Array.isArray(inspection)
+      ? jsonStr(inspection as Record<string, unknown>, "tool") : "";
+    if (action === "inspect_files") {
+      if (operation === "search" || operation === "find") return { kind: "investigation", label: "Project file search", activeLabel: "Searching project files" };
+      if (operation === "read") return { kind: "investigation", label: "Source read", activeLabel: "Reading source" };
+      return { kind: "investigation", label: "Project file inspection", activeLabel: "Inspecting project files" };
+    }
+    const labels: Record<string, [string, string]> = {
+      list: ["Project list", "Loading projects"], get: ["Project details", "Loading project"],
+      create: ["Project creation", "Creating project"], update: ["Project update", "Updating project"],
+      delete: ["Project removal", "Removing project"], synthesize_context: ["Project context", "Preparing project context"],
+      list_media: ["Project media", "Loading project media"], get_media: ["Media details", "Reading media"],
+      delete_task: ["Task removal", "Removing task"],
+      list_sources: ["Project sources", "Finding project sources"], inspect_source: ["Source inspection", "Inspecting source"],
+      propose_task: ["Task proposal", "Preparing task proposal"], create_task: ["Task creation", "Creating task"],
+      deploy_task: ["Task deployment", "Deploying task"], approve_task: ["Task approval", "Approving task"],
+      accept_task: ["Task acceptance", "Accepting task"], refine_task: ["Task refinement", "Refining task"],
+      wait_tasks: ["Task wait", "Waiting for tasks"], list_tasks: ["Task list", "Loading tasks"],
+      get_task: ["Task details", "Reading task"], report_task: ["Task update", "Reporting task progress"],
+      update_task: ["Task update", "Updating task"], edit_requirements: ["Task requirements", "Updating task requirements"],
+      reopen_task: ["Task reopen", "Reopening task"], archive_task: ["Task archive", "Archiving task"],
+      unarchive_task: ["Task restore", "Restoring task"], reconcile_tasks: ["Task reconciliation", "Reconciling tasks"],
+    };
+    const [label, activeLabel] = Object.prototype.hasOwnProperty.call(labels, action) ? labels[action] : ["Project activity", "Working on project"];
+    return { kind: "generic", label, activeLabel };
+  }
   if (normalized === "manage_artifact") {
     return { kind: "artifact", label: "Artifact", activeLabel: "Creating artifact" };
   }
@@ -2665,6 +2694,8 @@ export function buildStructuredToolMessage(
     "manage_artifact",
     "manage-video",
     "manage_video",
+    "manage-projects",
+    "manage_projects",
     "manage-workers",
     "manage_workers",
     "manage-automation",

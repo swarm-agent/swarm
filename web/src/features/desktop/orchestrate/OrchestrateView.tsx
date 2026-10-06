@@ -2797,7 +2797,7 @@ export function OrchestratorChatComposer({
  * Right AI Chat Panel: Supports switching between Executive Project Orchestrator
  * and individual Task Worker sessions with a back-button navigation bar.
  */
-function OrchestratorChatSidebar({
+export function OrchestratorChatSidebar({
   onOpenMediaArtifact,
   workspaceSlug,
   repairSession = false,
@@ -2927,12 +2927,22 @@ function OrchestratorChatSidebar({
 
   useEffect(() => {
     let active = true
+    let releaseDemand: (() => void) | undefined
     setError(false)
+    // The active transcript owns its demand independently of list-row leases
+    // and global selection. Reconnect restores this same canonical V3 scope.
+    void requireDesktopV3RealtimeControllerReady().then(controller => {
+      if (!active) return
+      const demand = controller.acquireSessionDemand('orchestrator-active-conversation', sessionId)
+      releaseDemand = () => demand.release()
+      return demand.ready
+    }).catch(() => { if (active) setError(true) })
     void selectAndHydrateDesktopV3Session(sessionId).catch(() => {
       if (active) setError(true)
     })
     return () => {
       active = false
+      releaseDemand?.()
     }
   }, [sessionId, attempt])
 
@@ -2940,7 +2950,7 @@ function OrchestratorChatSidebar({
     <aside
       aria-label="Swarm Orchestrator AI Chat"
       data-swarm-transcript-lane="sidebar"
-      className="swarm-ai-sidebar relative flex min-h-0 w-[440px] flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
+      className="swarm-ai-sidebar relative flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
     >
       {/* Task and integration-repair navigation */}
       {activeTask ? (

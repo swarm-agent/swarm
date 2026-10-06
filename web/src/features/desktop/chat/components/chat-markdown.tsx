@@ -3389,6 +3389,19 @@ export function ToolMessageView({
     if (isPendingWorkerProposalResult(payload) || isPendingWorkerProposalResult(parseToolJSON(toolMessage.completedOutput))) return null;
     if (parseAutomationProposal(payload)) return <AutomationProposalCard payload={payload} />;
   }
+  if (["manage_projects", "manage-projects"].includes(normalizedToolName)) {
+    return (
+      <div className="w-full min-w-0 py-1.5">
+        <ToolActivityShell toolMessage={toolMessage} lifecycleStatus={lifecycleStatus} summary={toolActivityStartSummary(toolMessage)}>
+          {toolMessage.error ? <p className="break-words px-3 py-2 text-xs text-[var(--app-danger)] [overflow-wrap:anywhere]">{toolMessage.error}</p> : null}
+          <details className="min-w-0 px-3 py-2 text-[11px] text-[var(--app-text-muted)]">
+            <summary className="cursor-pointer">Tool details</summary>
+            <div className="mt-1 break-words [overflow-wrap:anywhere]">{toolMessage.tool} · {toolJsonString(toolMessage.argumentsJson, 'action') || 'project activity'}</div>
+          </details>
+        </ToolActivityShell>
+      </div>
+    );
+  }
   if (normalizedToolName === "bash") {
     return <BashToolCard toolMessage={toolMessage} isGroupItem={isGroupItem} />;
   }
