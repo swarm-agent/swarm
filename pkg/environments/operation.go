@@ -94,6 +94,7 @@ type OperationResult struct {
 
 // EnvironmentOperation models a durable, supervised operation on an environment or deployment.
 type EnvironmentOperation struct {
+	ProductResult     string                `json:"product_result,omitempty"`
 	BuildConnectionID string                `json:"build_connection_id,omitempty"`
 	BuildDefinition   *ImageBuildDefinition `json:"build_definition,omitempty"`
 	OperationID       string                `json:"operation_id"`
@@ -402,6 +403,7 @@ type OperationHistoryQuery struct {
 // OperationRequestHashInput specifies parameters for computing an immutable request hash.
 // Secrets in env are never retained raw; values are hashed individually.
 type OperationRequestHashInput struct {
+	ProductResult     string               `json:"product_result,omitempty"`
 	BuildDigest       string               `json:"build_digest,omitempty"`
 	BuildOperationID  string               `json:"build_operation_id,omitempty"`
 	Action            string               `json:"action"`
@@ -431,6 +433,10 @@ func ComputeOperationRequestHash(in OperationRequestHashInput) string {
 	writePart := func(s string) {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
+	}
+	if in.ProductResult != "" {
+		writePart("project-result-v1")
+		writePart(in.ProductResult)
 	}
 	// Preserve legacy request hashes when no managed build is involved.
 	if in.BuildDigest != "" || in.BuildOperationID != "" {

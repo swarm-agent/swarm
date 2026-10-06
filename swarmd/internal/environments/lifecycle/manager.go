@@ -378,6 +378,9 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	// 2. Resolve Connection using 3-tier precedence
+	if _, err := applyBuildProduct(ctx, &env); err != nil {
+		return nil, err
+	}
 	conn, err := m.ResolveConnection(ctx, req.AccountScopeID, req.WorkspaceID, req.ConnectionID, &env)
 	if err != nil {
 		return nil, fmt.Errorf("resolve connection for environment %q: %w", req.EnvironmentID, err)
@@ -706,6 +709,9 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 		return nil, fmt.Errorf("environment %q: %w", req.EnvironmentID, ErrEnvironmentNotFound)
 	}
 
+	if _, err := applyBuildProduct(ctx, &env); err != nil {
+		return nil, err
+	}
 	conn, err := m.ResolveConnection(ctx, req.AccountScopeID, req.WorkspaceID, req.ConnectionID, &env)
 	if err != nil {
 		return nil, fmt.Errorf("resolve connection for environment %q: %w", req.EnvironmentID, err)

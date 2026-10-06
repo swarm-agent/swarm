@@ -100,14 +100,14 @@ func TestProjectInspectionReadBoundary(t *testing.T) {
 func TestProjectInspectionValidationBinding(t *testing.T) {
 	r := NewRuntime(1)
 	root := t.TempDir()
-	resolver := &inspectionLifecycle{target: ProjectInspectionTarget{Root: root, Reference: ProjectInspectionRequest{WorkspaceID: "workspace", HeadCommit: "head"}}}
+	resolver := &inspectionLifecycle{target: ProjectInspectionTarget{Root: root, Reference: ProjectInspectionRequest{TaskID: "task", AttemptID: "attempt", SessionID: "child", WorkspaceID: "workspace", HeadCommit: "head"}}}
 	r.projectTaskLifecycle = resolver
 	r.environmentsStore = &inspectionEnvironmentStore{}
 	r.sessions = environmentAccessSessions{snapshot: pebblestore.SessionSnapshot{ID: "parent", AccountScopeID: "account", UserID: "user", Metadata: map[string]any{"agent_profile": pebblestore.AgentProfile{Name: "swarm"}}}}
 	manager := &inspectionDeploymentManager{dep: environments.Deployment{WorkspacePath: root}}
 	r.deploymentManager = manager
 	scope := WorkspaceScope{SessionID: "parent", Principal: identity.Principal{Type: "user", UserID: "user", AccountScopeID: "account"}, RejectScopeExpansion: true}
-	args := map[string]any{"action": "exec", "project_result": map[string]any{"task_id": "task", "head_commit": "head"}, "deployment_id": "deployment", "lease_id": "lease", "command": []any{"go", "test", "./focused"}}
+	args := map[string]any{"action": "exec", "project_result": map[string]any{"project_id": "project", "task_id": "task", "attempt_id": "attempt", "source_session_id": "child", "head_commit": "head"}, "deployment_id": "deployment", "lease_id": "lease", "command": []any{"go", "test", "./focused"}}
 	if _, err := r.executeManageEnvironments(context.Background(), scope, "call", args); err != nil || !manager.submitted {
 		t.Fatalf("validation did not reach supervised admission: %v", err)
 	}

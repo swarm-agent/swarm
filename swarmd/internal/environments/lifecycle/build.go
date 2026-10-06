@@ -46,12 +46,19 @@ func (m *DeploymentManager) validateBuild(ctx context.Context, account string, e
 }
 
 func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req SubmitOperationRequest, env *environments.Environment, conn *environments.Connection) (out *environments.OperationResult, retErr error) {
+	resolved, err := applyBuildProduct(ctx, env)
+	if err != nil {
+		return nil, err
+	}
 	if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
 		return nil, err
 	}
 	product, err := m.buildSourceRoot(req.AccountScopeID, env.Build.Product)
 	if err != nil {
 		return nil, err
+	}
+	if resolved != nil {
+		product = resolved.Root
 	}
 	recipe, err := m.buildSourceRoot(req.AccountScopeID, env.Build.Recipe)
 	if err != nil {
@@ -94,6 +101,13 @@ func (m *DeploymentManager) executeBuild(ctx context.Context, opID string, req S
 	if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
 		return nil, err
 	}
+	if resolved != nil {
+		current, err := applyBuildProduct(ctx, env)
+		if err != nil || current == nil || *current != *resolved {
+			return nil, errors.New("task product changed during build; no image accepted")
+		}
+		result.ProductResult = resolved.Binding
+	}
 	accepted = true
 	return &environments.OperationResult{Build: result, Summary: "Managed image built from exact committed inputs"}, nil
 }
@@ -105,6 +119,10 @@ func (m *DeploymentManager) resolveBuildImage(ctx context.Context, account, work
 		}
 		return nil, nil
 	}
+	resolved, err := applyBuildProduct(ctx, env)
+	if err != nil {
+		return nil, err
+	}
 	if err := m.validateBuild(ctx, account, env, conn); err != nil {
 		return nil, err
 	}
@@ -112,10 +130,17 @@ func (m *DeploymentManager) resolveBuildImage(ctx context.Context, account, work
 		return nil, errors.New("managed deployment requires an exact successful build_operation_id")
 	}
 	op, found, err := m.operations.Get(account, workspace, operationID)
-	if err != nil || !found || op.Status != environments.OperationStatusSucceeded || op.Action != environments.OperationActionBuild || op.EnvironmentID != env.ID || op.Result.Build == nil {
+	if err != nil || !found || op.AccountScopeID != account || op.WorkspaceID != workspace || op.Status != environments.OperationStatusSucceeded || op.Action != environments.OperationActionBuild || op.EnvironmentID != env.ID || op.Result.Build == nil {
 		return nil, errors.New("build operation is not an authorized successful result for this environment")
 	}
 	b := *op.Result.Build
+	binding := ""
+	if resolved != nil {
+		binding = resolved.Binding
+	}
+	if b.ProductResult != binding {
+		return nil, errors.New("build operation belongs to another task result")
+	}
 	if b.OperationID != operationID || b.ConnectionID != conn.ID || b.DefinitionDigest != env.Build.Digest() || b.Product != env.Build.Product || b.Recipe != env.Build.Recipe || b.RecipeFile != env.Build.RecipeFile || len(b.ContextDigest) != 64 || !environments.ValidBuildImageID(b.ImageID) {
 		return nil, errors.New("build result source or connection is stale or mismatched")
 	}

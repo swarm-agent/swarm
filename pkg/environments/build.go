@@ -30,6 +30,8 @@ type ImageBuildDefinition struct {
 
 // ImageBuildResult is provider-observed provenance, stored only in operation/deployment records.
 type ImageBuildResult struct {
+	// ProductResult binds an authenticated task/attempt/session result, not a mount.
+	ProductResult    string               `json:"product_result,omitempty"`
 	OperationID      string               `json:"operation_id"`
 	ConnectionID     string               `json:"connection_id"`
 	DefinitionDigest string               `json:"definition_digest"`

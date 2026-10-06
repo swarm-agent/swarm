@@ -85,17 +85,19 @@ type OperationService interface {
 
 // SubmitOperationRequest specifies parameters for submitting a supervised environment operation.
 type SubmitOperationRequest struct {
-	BuildOperationID string                            `json:"build_operation_id,omitempty"`
-	AccountScopeID   string                            `json:"account_scope_id"`
-	WorkspaceID      string                            `json:"workspace_id"`
-	Action           string                            `json:"action"` // "ensure", "deploy", "exec", "stop", "start", "release", "destroy", "cancel"
-	EnvironmentID    string                            `json:"environment_id,omitempty"`
-	DeploymentID     string                            `json:"deployment_id,omitempty"`
-	LeaseID          string                            `json:"lease_id,omitempty"`
-	Attribution      environments.OperationAttribution `json:"attribution"`
-	IdempotencyKey   string                            `json:"idempotency_key,omitempty"`
-	Deadline         int64                             `json:"deadline,omitempty"` // epoch millis
-	Timeout          time.Duration                     `json:"timeout,omitempty"`
+	// Internal authenticated resolver; never decoded from API/tool arguments.
+	BuildProductResolver BuildProductResolver              `json:"-"`
+	BuildOperationID     string                            `json:"build_operation_id,omitempty"`
+	AccountScopeID       string                            `json:"account_scope_id"`
+	WorkspaceID          string                            `json:"workspace_id"`
+	Action               string                            `json:"action"` // "ensure", "deploy", "exec", "stop", "start", "release", "destroy", "cancel"
+	EnvironmentID        string                            `json:"environment_id,omitempty"`
+	DeploymentID         string                            `json:"deployment_id,omitempty"`
+	LeaseID              string                            `json:"lease_id,omitempty"`
+	Attribution          environments.OperationAttribution `json:"attribution"`
+	IdempotencyKey       string                            `json:"idempotency_key,omitempty"`
+	Deadline             int64                             `json:"deadline,omitempty"` // epoch millis
+	Timeout              time.Duration                     `json:"timeout,omitempty"`
 
 	// Deploy / Ensure specific:
 	ConnectionID     string                    `json:"connection_id,omitempty"`
@@ -297,6 +299,9 @@ func (m *DeploymentManager) validateAdmission(
 			return nil, nil, nil, fmt.Errorf("environment %q: %w", req.EnvironmentID, ErrEnvironmentNotFound)
 		}
 		env = &e
+		if _, err := applyBuildProduct(withBuildProduct(ctx, req.BuildProductResolver), env); err != nil {
+			return nil, nil, nil, err
+		}
 
 		// Resolve connection
 		c, err := m.ResolveConnection(ctx, req.AccountScopeID, req.WorkspaceID, req.ConnectionID, env)
@@ -304,6 +309,9 @@ func (m *DeploymentManager) validateAdmission(
 			return nil, nil, nil, fmt.Errorf("resolve connection: %w", err)
 		}
 		conn = c
+		if req.BuildProductResolver != nil {
+			req.ConnectionID = conn.ID
+		}
 		if req.Action == environments.OperationActionBuild {
 			if req.DeploymentID != "" || req.LeaseID != "" || req.WorkspacePath != "" || req.BuildOperationID != "" || len(req.Command) != 0 || len(req.Env) != 0 || len(req.EnvOverrides) != 0 || req.WorkingDir != "" {
 				return nil, nil, nil, errors.New("build does not accept runtime targets, commands, environment overrides or raw workspace paths")
@@ -311,7 +319,7 @@ func (m *DeploymentManager) validateAdmission(
 			if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
 				return nil, nil, nil, err
 			}
-		} else if _, err := m.resolveBuildImage(ctx, req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, env, conn); err != nil {
+		} else if _, err := m.resolveBuildImage(withBuildProduct(ctx, req.BuildProductResolver), req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, env, conn); err != nil {
 			return nil, nil, nil, err
 		}
 
@@ -562,6 +570,14 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		req.LeaseID = "lease_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
 
+	productResult := ""
+	if req.BuildProductResolver != nil {
+		p, err := req.BuildProductResolver(admissionCtx)
+		if err != nil {
+			return nil, err
+		}
+		productResult = p.Binding
+	}
 	opID := "op_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	reqHash := environments.ComputeOperationRequestHash(environments.OperationRequestHashInput{
 		BuildOperationID: req.BuildOperationID,
@@ -588,6 +604,7 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		ConsumerType:     req.ConsumerType,
 		ConsumerID:       req.ConsumerID,
 		ConsumerMetadata: req.ConsumerMetadata,
+		ProductResult:    productResult,
 		TTLMillis:        req.TTLMillis,
 		Command:          req.Command,
 		WorkingDir:       req.WorkingDir,
@@ -597,6 +614,7 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 	})
 
 	op := environments.EnvironmentOperation{
+		ProductResult:  productResult,
 		OperationID:    opID,
 		AccountScopeID: req.AccountScopeID,
 		WorkspaceID:    req.WorkspaceID,
@@ -965,7 +983,23 @@ func (m *DeploymentManager) executeAction(
 	conn *environments.Connection,
 	dep *environments.Deployment,
 ) (*environments.OperationResult, error) {
-	ctx = withOperationID(ctx, currentOp.OperationID)
+	ctx = withBuildProduct(withOperationID(ctx, currentOp.OperationID), req.BuildProductResolver)
+	if req.BuildProductResolver != nil {
+		p, err := req.BuildProductResolver(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if p.Binding != currentOp.ProductResult {
+			return nil, errors.New("task result binding changed after admission")
+		}
+		if dep != nil {
+			current, found, err := m.deployments.Get(req.AccountScopeID, req.WorkspaceID, dep.ID)
+			if err != nil || !found || current.Build == nil || current.Build.ProductResult != p.Binding || current.Build.Product != p.Source || dep.Build == nil || *current.Build != *dep.Build || current.ConnectionID != dep.ConnectionID || current.EnvironmentID != dep.EnvironmentID || current.Runtime.ContainerID != dep.Runtime.ContainerID {
+				return nil, errors.New("deployment task result changed before execution")
+			}
+			dep = &current
+		}
+	}
 	switch req.Action {
 	case environments.OperationActionBuild:
 		return m.executeBuild(ctx, currentOp.OperationID, req, env, conn)
@@ -1116,6 +1150,15 @@ func (m *DeploymentManager) executeAction(
 			return nil, ErrDeploymentUnusable
 		}
 		dep = &current
+		if req.BuildProductResolver != nil {
+			p, err := req.BuildProductResolver(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if dep.Build == nil || dep.Build.ProductResult != p.Binding || dep.Build.Product != p.Source {
+				return nil, errors.New("task product changed during provider probe")
+			}
+		}
 		execRes, err := prov.Exec(ctx, conn, dep, execReq)
 		if err != nil {
 			exitCode := 1

@@ -19,10 +19,16 @@ type managedBuildProvider struct {
 	cleanupCalls int
 	cleanupErr   error
 	buildErr     error
+	lastBuild    provider.ImageBuildRequest
+	afterBuild   func()
 }
 
 func (p *managedBuildProvider) BuildImage(_ context.Context, r provider.ImageBuildRequest) (*environments.ImageBuildResult, error) {
 	p.calls++
+	p.lastBuild = r
+	if p.afterBuild != nil {
+		p.afterBuild()
+	}
 	if p.buildErr != nil {
 		return nil, p.buildErr
 	}
