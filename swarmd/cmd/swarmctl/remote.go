@@ -19,7 +19,7 @@ Remote access is off until you initialize and enable it. The relay is a
 service you deploy (for example packages/swarm-relay on Cloudflare).
 
   status                       show relay, device and pending authorization requests
-  init --relay URL --name NAME [--allow-write] [--allow-approve]
+  init --relay URL --name NAME [--allow-write] [--allow-approve] [--allow-manage]
                                create this machine's device key (does not connect)
   enable | disable             connect to / disconnect from the relay
   approve CODE [--scopes s,..] approve an AI client's authorization request
@@ -41,6 +41,7 @@ func cmdRemote(args []string) error {
 	name := fs.String("name", "", "device name shown to AI clients")
 	allowWrite := fs.Bool("allow-write", false, "allow remote clients to create sessions, send messages and stop runs")
 	allowApprove := fs.Bool("allow-approve", false, "allow remote clients to approve or deny pending tool calls once")
+	allowManage := fs.Bool("allow-manage", false, "allow remote clients to create/update/delete workers and change daily usage limits")
 	scopes := fs.String("scopes", "", "comma-separated scopes to grant (default: everything requested that this machine allows)")
 	positional := []string{}
 	for len(rest) > 0 {
@@ -62,7 +63,7 @@ func cmdRemote(args []string) error {
 	case "status":
 		err = remoteRequest(client, http.MethodGet, "/v1/remote", nil, &out)
 	case "init":
-		err = remoteRequest(client, http.MethodPost, "/v1/remote/init", map[string]any{"relay_url": *relay, "device_name": *name, "allow_write": *allowWrite, "allow_approve": *allowApprove}, &out)
+		err = remoteRequest(client, http.MethodPost, "/v1/remote/init", map[string]any{"relay_url": *relay, "device_name": *name, "allow_write": *allowWrite, "allow_approve": *allowApprove, "allow_manage": *allowManage}, &out)
 	case "enable", "disable", "reset":
 		err = remoteRequest(client, http.MethodPost, "/v1/remote/"+command, map[string]any{}, &out)
 	case "approve", "deny":

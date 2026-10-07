@@ -20,21 +20,48 @@ unsupported protocol versions are rejected.
 
 ## Tools
 
-| Tool | Scope (relay) | API route reached |
+| Tool | Relay scope | Routes reached |
 | --- | --- | --- |
 | `swarm_list_machines` (relay only) | `swarm:read` | — |
-| `swarm_list_sessions` | `swarm:read` | `GET /v3/sessions` |
-| `swarm_get_session` | `swarm:read` | `GET /v3/sessions/{id}` |
-| `swarm_create_session` | `swarm:write` | `POST /v3/sessions` |
+| `swarm_list_workspaces` | `swarm:read` | `GET /v1/workspace/list` (tool requires `sessions:read`) |
+| `swarm_list_sessions`, `swarm_get_session` | `swarm:read` | `GET /v3/sessions[/{id}]`, `GET …/plans/active` |
+| `swarm_start_session` (prompt **or** plan) | `swarm:write` | `POST /v3/sessions` (always `auto`), then `…/messages` or the plan routes |
 | `swarm_send_message` | `swarm:write` | `POST /v3/sessions/{id}/messages` |
-| `swarm_stop_run` | `swarm:write` | `POST /v3/sessions/{id}/run/stop` |
-| `swarm_resolve_permission` (`allow_once`/`deny_once` only) | `swarm:approve` | `POST /v3/sessions/{id}/permissions/{pid}/resolve` |
+| `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
+| `swarm_stop_run` | `swarm:write` | `POST …/run/stop` |
+| `swarm_resolve_permission` (`allow_once`/`deny_once`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` |
+| `swarm_list_projects` | `swarm:read` | `GET /v3/projects` |
+| `swarm_create_project` | `swarm:manage` | `POST /v3/projects` (workspaces must be registered) |
+| `swarm_list_workers`, `swarm_get_worker` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
+| `swarm_assign_worker_task` | `swarm:write` | `POST /v3/workers/{id}/direct` |
+| `swarm_create_worker` | `swarm:manage` | `POST /v3/workers`, `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`) |
+| `swarm_update_worker` | `swarm:manage` | `PUT /v3/workers/{id}` (revision-guarded) |
+| `swarm_manage_worker` (pause/resume/archive/delete/cancel_run) | `swarm:manage` | `POST /v3/workers/{id}/{action}`, `…/runs/{rid}/cancel` |
+| `swarm_get_usage` | `swarm:read` | `GET /v3/usage` (tool requires `sessions:read`) |
+| `swarm_set_usage_limits` | `swarm:manage` | `POST /v3/usage/limits` (tool requires `usage:write`) |
 
-Each tool makes exactly one request through the container SDK route allowlist
-under the caller's verified identity, so canonical V3 scope, ownership,
-idempotency and permission checks decide. Persistent allow/deny rules,
-credentials, settings and bypass are not reachable. Session reads are bounded:
-long text is truncated and tool results are summarized.
+**No plan mode.** Callers author the plan (goal, constraints, checkpoints with
+acceptance criteria). The tool validates it with Swarm's strict executable-plan
+rules, saves it as the session's active plan and starts automatic execution;
+there is no agent-authored plan or approval round trip. Sessions are always
+created in `auto` mode.
+
+**Exact route allowlist.** `controlMCPRouteAllowed` matches literal segments
+and safe ids only (`[A-Za-z0-9._-]`, no reserved words). Worker acceptance,
+token minting, import/migrate, capability grants, plan-mode entry and worker
+budgets are not reachable; Swarm already refuses to activate or dispatch
+workers that request capabilities. Routes whose handlers check no scope
+(workspace list, usage dashboard, usage limits) are gated in the tool layer.
+
+**Token budget.** Results are compact JSON sent once (no `structuredContent`
+copy). Sessions, runs, plans and workers are reduced to ids, names and
+status; text is truncated (messages 1,500, tool arguments 800, tool output
+300 characters) and plans show only per-checkpoint status. The full tool list
+is about 2.5k tokens.
+
+**Local tokens.** `swarmctl setup sdk-token` mints session scopes by default;
+add `--workers` (automations read/write) and `--usage-limits` (`usage:write`)
+explicitly for the worker and limit tools.
 
 ## Relay transport (`swarm-remote-1`)
 
@@ -43,7 +70,7 @@ Daemon client: `swarmd/internal/remote`; owner API `/v1/remote*`; CLI
 `swarmctl remote`.
 
 1. **Off by default.** `swarmctl remote init --relay URL --name NAME
-   [--allow-write] [--allow-approve]` creates an Ed25519 device key and a
+   [--allow-write] [--allow-approve] [--allow-manage]` creates an Ed25519 device key and a
    device scoped token (stored only in the secrets store) without connecting.
    `enable` connects; `disable` disconnects; `reset` revokes the token and
    deletes the key. Relay URLs must be `https` (`http` only on loopback).

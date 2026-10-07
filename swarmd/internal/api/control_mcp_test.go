@@ -48,6 +48,7 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 	}
 	read, _ := issue(actor.AccountScopeID, []string{"sessions:read"}, time.Hour)
 	write, _ := issue(actor.AccountScopeID, []string{"sessions:read", "sessions:write"}, time.Hour)
+	workersOnly, _ := issue(actor.AccountScopeID, []string{"automations:read"}, time.Hour)
 	wrongAccount, _ := issue("account-other", []string{"sessions:read", "sessions:write"}, time.Hour)
 	expired, _ := issue(actor.AccountScopeID, []string{"sessions:read"}, -time.Second)
 	revoked, revokeID := issue(actor.AccountScopeID, []string{"sessions:read"}, time.Hour)
@@ -131,7 +132,7 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 	if got := rpc(read, "initialize", map[string]any{"protocolVersion": "2025-06-18"}); got.Result.ProtocolVersion != "2025-06-18" {
 		t.Fatalf("protocol negotiation: %q", got.Result.ProtocolVersion)
 	}
-	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != 6 {
+	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != len(controlMCPTools()) {
 		t.Fatalf("tool surface changed: %d tools", len(got.Result.Tools))
 	}
 	if got := rpc(read, "no/such", nil); got.Error == nil || got.Error.Code != -32601 {
@@ -173,7 +174,11 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 		args  map[string]any
 		want  string
 	}{
-		{"read grant creates", read, "swarm_create_session", map[string]any{"workspace_path": "/project"}, "HTTP 403"},
+		{"read grant creates", read, "swarm_start_session", map[string]any{"workspace_path": "/project", "prompt": "hi"}, "HTTP 403"},
+		{"prompt and plan together", write, "swarm_start_session", map[string]any{"workspace_path": "/project", "prompt": "hi", "plan": map[string]any{"goal": "g", "checkpoints": []any{map[string]any{"title": "t", "acceptance_criteria": []any{"done"}}}}}, "exactly one"},
+		{"limits without usage grant", write, "swarm_set_usage_limits", map[string]any{"enabled": false}, "lacks the usage:write permission"},
+		{"workspaces without session grant", workersOnly, "swarm_list_workspaces", map[string]any{}, "lacks the sessions:read permission"},
+		{"reserved worker id", write, "swarm_get_worker", map[string]any{"worker_id": "token"}, "not a valid id"},
 		{"read grant messages", read, "swarm_send_message", map[string]any{"session_id": own.ID, "content": "hi"}, "HTTP 403"},
 		{"read grant approves", read, "swarm_resolve_permission", map[string]any{"session_id": own.ID, "permission_id": ownPending.ID, "action": "allow_once"}, "HTTP 403"},
 		{"persistent rule", write, "swarm_resolve_permission", map[string]any{"session_id": own.ID, "permission_id": ownPending.ID, "action": "allow_always"}, "must be one of"},
@@ -181,7 +186,7 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 		{"foreign message", write, "swarm_send_message", map[string]any{"session_id": foreign.ID, "content": "forbidden"}, "HTTP 404"},
 		{"foreign approval", write, "swarm_resolve_permission", map[string]any{"session_id": foreign.ID, "permission_id": foreignPending.ID, "action": "allow_once"}, "HTTP 404"},
 		{"cross-session approval", write, "swarm_resolve_permission", map[string]any{"session_id": own.ID, "permission_id": foreignPending.ID, "action": "allow_once"}, "HTTP 4"},
-		{"path traversal", write, "swarm_get_session", map[string]any{"session_id": "../auth/tokens"}, "route unavailable"},
+		{"path traversal", write, "swarm_get_session", map[string]any{"session_id": "../auth/tokens"}, "not a valid id"},
 	} {
 		got := call(tc.token, tc.tool, tc.args)
 		if !got.Result.IsError || len(got.Result.Content) == 0 || !strings.Contains(got.Result.Content[0].Text, tc.want) {
@@ -240,7 +245,7 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 	if pending, err := s.perm.ListPending(own.ID, 10); err != nil || len(pending) != 0 {
 		t.Fatal("resolution did not resolve the exact pending call")
 	}
-	if records, err := sec.ListScopedTokens(actor.AccountScopeID); err != nil || len(records) != 4 {
+	if records, err := sec.ListScopedTokens(actor.AccountScopeID); err != nil || len(records) != 5 {
 		t.Fatalf("unauthorized token mutation: count %d err %v", len(records), err)
 	}
 }
@@ -262,6 +267,76 @@ func TestControlMCPToolMessageSummary(t *testing.T) {
 	for _, tc := range []struct{ role, content string }{{"assistant", record}, {"tool", "not json"}, {"tool", `{"unrelated":1}`}} {
 		if _, ok := controlMCPToolMessageSummary(map[string]any{"role": tc.role}, tc.content); ok {
 			t.Fatalf("summarized %s %q", tc.role, tc.content)
+		}
+	}
+}
+
+// Requirement: Swarm Control reaches only its exact route shapes. Worker
+// acceptance, token minting, import/migrate, plan-mode entry, raw SDK-only
+// shapes and traversal/reserved ids must not match, so a crafted id cannot
+// redirect a tool to an approval or credential route. Owner:
+// controlMCPRouteAllowed (dispatch also enforces it). Pure-function layer.
+func TestControlMCPRouteAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/v3/sessions/abc", true},
+		{"POST", "/v3/sessions/abc/plan-mode/plans/plan_1/start-automatic", true},
+		{"POST", "/v3/workers/wkr_1/direct", true},
+		{"POST", "/v3/workers/wkr_1/runs/run_1/cancel", true},
+		{"POST", "/v3/usage/limits", true},
+		{"POST", "/v3/workers/wkr_1/accept", false},
+		{"POST", "/v3/workers/wkr_1/token", false},
+		{"POST", "/v3/workers/import", false},
+		{"POST", "/v3/workers/wkr_1/automations", false},
+		{"POST", "/v3/sessions/abc/plan-mode/enter", false},
+		{"POST", "/v3/sessions/abc/plan-mode/plans/plan_1/submit", false},
+		{"PUT", "/v3/usage/worker-budget", false},
+		{"POST", "/v3/auth/tokens", false},
+		{"GET", "/v3/sessions/../auth/tokens", false},
+		{"GET", "/v3/sessions/a%2Fb", false},
+		{"GET", "/v3/workers/token", false},
+		{"GET", "/v3/sessions/abc/plans/active", true},
+		{"DELETE", "/v3/sessions/abc", false},
+		{"POST", "/v3/sessions:archive", false},
+	} {
+		if got := controlMCPRouteAllowed(tc.method, tc.path); got != tc.want {
+			t.Fatalf("%s %s: got %v want %v", tc.method, tc.path, got, tc.want)
+		}
+	}
+}
+
+// Requirement: a caller-authored plan becomes an executable Swarm plan only
+// if it passes the executor's strict validation (goal, ordered checkpoints,
+// acceptance criteria); bad plans are refused before any session state is
+// written. Owner: controlMCPPlanDocument with ValidateExecutablePlanDocument.
+func TestControlMCPPlanDocument(t *testing.T) {
+	doc, err := controlMCPPlanDocument(map[string]any{
+		"goal":        "Add multiply",
+		"constraints": []any{"no commits"},
+		"checkpoints": []any{
+			map[string]any{"title": "Implement", "tasks": []any{"edit calc.py"}, "acceptance_criteria": []any{"multiply exists"}},
+			map[string]any{"title": "Document", "objective": "README", "acceptance_criteria": []any{"README mentions multiply"}},
+		},
+	})
+	if err != nil || doc.Title != "Add multiply" || len(doc.Checkpoints) != 2 || doc.Checkpoints[1].ID != "cp2" || doc.Checkpoints[1].Order != 2 || !strings.HasPrefix(doc.ID, "plan_") {
+		t.Fatalf("plan not normalized: %+v %v", doc, err)
+	}
+	many := []any{}
+	for i := 0; i < controlMCPMaxCheckpoints+1; i++ {
+		many = append(many, map[string]any{"title": "t", "acceptance_criteria": []any{"ok"}})
+	}
+	for name, plan := range map[string]map[string]any{
+		"no goal":            {"checkpoints": []any{map[string]any{"title": "t", "acceptance_criteria": []any{"ok"}}}},
+		"no checkpoints":     {"goal": "g"},
+		"no criteria":        {"goal": "g", "checkpoints": []any{map[string]any{"title": "t", "tasks": []any{"x"}}}},
+		"no title":           {"goal": "g", "checkpoints": []any{map[string]any{"acceptance_criteria": []any{"ok"}}}},
+		"too many":           {"goal": "g", "checkpoints": many},
+		"checkpoint not obj": {"goal": "g", "checkpoints": []any{"step"}},
+	} {
+		if _, err := controlMCPPlanDocument(plan); err == nil {
+			t.Fatalf("%s: accepted", name)
 		}
 	}
 }

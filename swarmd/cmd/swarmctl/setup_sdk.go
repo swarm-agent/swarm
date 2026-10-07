@@ -19,6 +19,8 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	name := fs.String("name", "headless-sdk", "token name")
 	seconds := fs.Int64("expires-in-seconds", 3600, "token lifetime (60-86400 seconds)")
 	id := fs.String("id", "", "token record ID to revoke")
+	workers := fs.Bool("workers", false, "also allow creating, managing and tasking workers (Swarm Control worker tools)")
+	usageLimits := fs.Bool("usage-limits", false, "also allow changing the account's daily usage limits")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -73,7 +75,16 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 			ID string `json:"id"`
 		} `json:"record"`
 	}
-	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": []string{"sessions:read", "sessions:write"}, "expires_in_seconds": *seconds}
+	// Session access is the default; worker and spend-limit authority are
+	// explicit opt-ins because they outlive a single session.
+	scopes := []string{"sessions:read", "sessions:write"}
+	if *workers {
+		scopes = append(scopes, "automations:read", "automations:write")
+	}
+	if *usageLimits {
+		scopes = append(scopes, "usage:write")
+	}
+	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": scopes, "expires_in_seconds": *seconds}
 	if err := setupRequest(client, http.MethodPost, "/v3/auth/tokens", payload, &result); err != nil {
 		return err
 	}

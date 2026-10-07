@@ -56,6 +56,7 @@ func (s *Server) handleRemoteTransport(w http.ResponseWriter, r *http.Request) {
 		DeviceName   string   `json:"device_name"`
 		AllowWrite   bool     `json:"allow_write"`
 		AllowApprove bool     `json:"allow_approve"`
+		AllowManage  bool     `json:"allow_manage"`
 		Code         string   `json:"code"`
 		Scopes       []string `json:"scopes"`
 	}
@@ -67,7 +68,7 @@ func (s *Server) handleRemoteTransport(w http.ResponseWriter, r *http.Request) {
 	}
 	switch action {
 	case "init":
-		status, err := s.remoteTransport.Init(remote.InitInput{RelayURL: body.RelayURL, DeviceName: body.DeviceName, AllowWrite: body.AllowWrite, AllowApprove: body.AllowApprove})
+		status, err := s.remoteTransport.Init(remote.InitInput{RelayURL: body.RelayURL, DeviceName: body.DeviceName, AllowWrite: body.AllowWrite, AllowApprove: body.AllowApprove, AllowManage: body.AllowManage})
 		writeRemoteTransportResult(w, status, err)
 	case "enable", "disable":
 		status, err := s.remoteTransport.SetEnabled(action == "enable")

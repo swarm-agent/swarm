@@ -105,7 +105,7 @@ func TestInitStatusAndReset(t *testing.T) {
 	if err != nil || !st.Configured || st.Enabled || st.PublicKey == "" || !strings.HasPrefix(st.DeviceID, "dev_") {
 		t.Fatalf("init: %+v %v", st, err)
 	}
-	if len(tokens.minted) != 1 || strings.Join(tokens.minted[0], ",") != "sessions:read" {
+	if len(tokens.minted) != 1 || strings.Join(tokens.minted[0], ",") != "sessions:read,automations:read" {
 		t.Fatalf("read-only device minted %v", tokens.minted)
 	}
 	encoded, _ := json.Marshal(st)

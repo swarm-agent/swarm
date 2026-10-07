@@ -36,6 +36,7 @@ const (
 	ScopeRead    = "swarm:read"
 	ScopeWrite   = "swarm:write"
 	ScopeApprove = "swarm:approve"
+	ScopeManage  = "swarm:manage"
 
 	handshakeTimeout = 15 * time.Second
 	pingInterval     = 30 * time.Second
@@ -46,12 +47,24 @@ const (
 
 // toolScopes mirrors the relay's mapping; unknown tools need write.
 var toolScopes = map[string]string{
+	"swarm_list_workspaces":    ScopeRead,
 	"swarm_list_sessions":      ScopeRead,
 	"swarm_get_session":        ScopeRead,
-	"swarm_create_session":     ScopeWrite,
+	"swarm_list_projects":      ScopeRead,
+	"swarm_list_workers":       ScopeRead,
+	"swarm_get_worker":         ScopeRead,
+	"swarm_get_usage":          ScopeRead,
+	"swarm_start_session":      ScopeWrite,
 	"swarm_send_message":       ScopeWrite,
+	"swarm_run_plan":           ScopeWrite,
 	"swarm_stop_run":           ScopeWrite,
+	"swarm_assign_worker_task": ScopeWrite,
 	"swarm_resolve_permission": ScopeApprove,
+	"swarm_create_project":     ScopeManage,
+	"swarm_create_worker":      ScopeManage,
+	"swarm_update_worker":      ScopeManage,
+	"swarm_manage_worker":      ScopeManage,
+	"swarm_set_usage_limits":   ScopeManage,
 }
 
 func toolScope(name string) string {
@@ -84,6 +97,7 @@ type Config struct {
 	Enabled      bool   `json:"enabled"`
 	AllowWrite   bool   `json:"allow_write"`
 	AllowApprove bool   `json:"allow_approve"`
+	AllowManage  bool   `json:"allow_manage"`
 	TokenID      string `json:"token_id"`
 	Token        string `json:"token"`
 	CreatedAt    int64  `json:"created_at"`
@@ -112,6 +126,7 @@ type Status struct {
 	PublicKey    string    `json:"public_key,omitempty"`
 	AllowWrite   bool      `json:"allow_write"`
 	AllowApprove bool      `json:"allow_approve"`
+	AllowManage  bool      `json:"allow_manage"`
 	LastError    string    `json:"last_error,omitempty"`
 	Consents     []Consent `json:"pending_consents"`
 }
@@ -121,6 +136,7 @@ type InitInput struct {
 	DeviceName   string `json:"device_name"`
 	AllowWrite   bool   `json:"allow_write"`
 	AllowApprove bool   `json:"allow_approve"`
+	AllowManage  bool   `json:"allow_manage"`
 }
 
 type Service struct {
@@ -176,7 +192,7 @@ func (s *Service) Status() (Status, error) {
 		return st, nil
 	}
 	st.Enabled, st.RelayURL, st.DeviceID, st.DeviceName = cfg.Enabled, cfg.RelayURL, cfg.DeviceID, cfg.DeviceName
-	st.AllowWrite, st.AllowApprove = cfg.AllowWrite, cfg.AllowApprove
+	st.AllowWrite, st.AllowApprove, st.AllowManage = cfg.AllowWrite, cfg.AllowApprove, cfg.AllowManage
 	if pub, err := publicKey(cfg.PrivateKey); err == nil {
 		st.PublicKey = pub
 	}
@@ -235,9 +251,17 @@ func (s *Service) Init(in InitInput) (Status, error) {
 	if _, err := rand.Read(idBytes[:]); err != nil {
 		return Status{}, err
 	}
-	scopes := []string{"sessions:read"}
+	// API scopes the device token needs for its ceiling. Remote clients are
+	// still limited per tool by the ceiling (toolScopes) on every call.
+	scopes := []string{"sessions:read", "automations:read"}
 	if in.AllowWrite || in.AllowApprove {
 		scopes = append(scopes, "sessions:write")
+	}
+	if in.AllowWrite || in.AllowManage {
+		scopes = append(scopes, "automations:write")
+	}
+	if in.AllowManage {
+		scopes = append(scopes, "usage:write")
 	}
 	token, tokenID, err := s.tokens.Mint("swarm-remote "+name, scopes)
 	if err != nil {
@@ -246,7 +270,7 @@ func (s *Service) Init(in InitInput) (Status, error) {
 	now := time.Now().UnixMilli()
 	cfg := Config{
 		RelayURL: origin, DeviceID: "dev_" + hex.EncodeToString(idBytes[:]), DeviceName: name,
-		PrivateKey: base64.StdEncoding.EncodeToString(private), AllowWrite: in.AllowWrite, AllowApprove: in.AllowApprove,
+		PrivateKey: base64.StdEncoding.EncodeToString(private), AllowWrite: in.AllowWrite, AllowApprove: in.AllowApprove, AllowManage: in.AllowManage,
 		TokenID: tokenID, Token: token, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.store.PutJSON(configKey, cfg); err != nil {
@@ -344,6 +368,9 @@ func ceiling(cfg Config) []string {
 	}
 	if cfg.AllowApprove {
 		out = append(out, ScopeApprove)
+	}
+	if cfg.AllowManage {
+		out = append(out, ScopeManage)
 	}
 	return out
 }
