@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { SCENARIOS, parseOptions, createReceipt, validateReceipt, requiredAssertions, toolEvidence, mediaEvidence, runScenario, assertSafeToolRouting, mutationRequestID } from './orchestrator-pr.mjs'
+import { SCENARIOS, parseOptions, createReceipt, validateReceipt, requiredAssertions, toolEvidence, mediaEvidence, runScenario, assertSafeToolRouting, mutationRequestID, observeRun, waitForRun } from './orchestrator-pr.mjs'
 
 import { runBrowserAdapter, parseBrowserOptions } from './orchestrator-pr-browser.mjs'
 import { parseOptions as parseLiveOptions, createReceipt as createLiveReceipt, validateReceipt as validateLiveReceipt, REQUIRED_ASSERTIONS as LIVE_ASSERTIONS, runLiveE2E } from './orchestrator-live-e2e.mjs'
@@ -205,7 +205,7 @@ function protocol(options, scenario, { failed = false, missingCapability = false
     else if (route === '/v3/sync/hydrate') {
       const routed = scenario === 'orchestrator-chat' ? [{ name: 'manage_projects', args: { action: 'propose_task', project_id: projectID }, output: { task: { id: 'task', title: 'PR-' + options.runID } } }]
         : scenario === 'session-api' ? [] : missingCapability ? tools.slice(1) : tools
-      result = { run_intents_by_session: { [sessionID]: [{ run_id: 'provider-run', status: failed ? 'failed' : 'completed' }] },
+      result = { run_intents_by_session: { [sessionID]: [{ session_id: sessionID, run_id: 'provider-run', status: failed ? 'failed' : 'completed' }] },
         messages_by_session: { [sessionID]: [{ role: 'user', content: prompt }, { role: 'assistant', content: scenario === 'session-api' ? 'PR-' + options.runID : 'Provider reply', metadata: { run_id: 'provider-run', provider: 'configured-provider', model: wrongModel ? 'wrong-model' : 'configured' } }] },
         events_by_session: { [sessionID]: routed.map((record, i) => ({ event_type: 'session.tool.completed', payload: { run_id: 'provider-run', call_id: 'call-' + i, tool_name: record.name, arguments: record.args, output: record.output } })) } }
     } else if (route.endsWith('/artifacts/variant')) return new Response(badBytes ? Buffer.from('wrong') : data, { headers: { 'content-type': `${scenario}/test` } })
@@ -351,7 +351,10 @@ test('required capability, byte and run failures never qualify and stop only own
   for (const failure of [{ failed: true }, { missingCapability: true }, { badBytes: true }, { wrongModel: true }, { failed: true, stopFailure: true }]) {
     const o = { ...options, scenario: 'image' }, receipt = createReceipt(o), p = protocol(o, 'image', failure)
     await assert.rejects(runScenario(o, receipt, { fetch: p.fetch, verifyCandidate: () => {} }), failure.failed ? /run_failed/ : undefined)
-    if (failure.stopFailure) assert.deepEqual(receipt.failures, ['owned_run_stop_failed'])
+    if (failure.stopFailure) {
+      assert.ok(receipt.failures.includes('owned_run_stop_failed'))
+      assert.ok(receipt.failures.includes('last_run_failed'))
+    }
     assert.notEqual(receipt.status, 'PASS')
     assert.ok(receipt.assertions.some(a => !a.passed))
     const stops = p.calls.filter(c => c.route.endsWith('/run/stop'))
@@ -486,4 +489,187 @@ test('orchestrator live e2e runner parses options, validates receipt schema and 
   const mutated = structuredClone(r)
   mutated.assertions[0].passed = false
   assert.throws(() => validateLiveReceipt(mutated, o, 0))
+})
+
+function runSnapshot(status = 'running', extra = {}) {
+  const state = { session_id: 'owned-session', run_id: 'provider-run', status, active: status === 'running', event_seq: 2 }
+  return { current_run_state_by_session: { 'owned-session': state },
+    run_intents_by_session: { 'owned-session': [state] },
+    session_views_by_id: { 'owned-session': { pending_permissions: [] } },
+    messages_by_session: { 'owned-session': [] }, events_by_session: { 'owned-session': [] }, ...extra }
+}
+const observerOptions = { sessionID: 'owned-session', runID: 'provider-run', scenario: 'orchestrator-chat' }
+
+// Purpose: observeRun consumes V3SessionRunState/RunIntent and canonical sync
+// session views, not lifecycle guesses or provider error bodies. Protocol-level
+// negative snapshots prove exact identity, terminal/blocked and permission guards
+// without changing backend permissions or treating absent evidence as completion.
+test('exact observer classifies canonical blocked, terminal and permission states', { timeout: 5000 }, async () => {
+  for (const status of ['dispatch_blocked', 'waiting_tasks', 'failed', 'cancelled', 'expired', 'interrupted']) {
+    let samples = 0
+    await assert.rejects(waitForRun({ ...observerOptions, deadline: 1000, stallMs: 900, now: () => 0,
+      sample: async () => { samples++; return runSnapshot(status) }, pause: () => assert.fail('must fail immediately') }), new RegExp(`^Error: run_${status}$`))
+    assert.equal(samples, 1)
+  }
+  const permission = { id: 'permission', session_id: 'owned-session', run_id: 'provider-run', status: 'pending', tool_arguments: 'SECRET', reason: 'SECRET' }
+  const snapshot = runSnapshot('running', { session_views_by_id: { 'owned-session': { pending_permissions: [permission] } } })
+  assert.equal(observeRun(snapshot, 'owned-session', 'provider-run').failure, 'run_permission_pending')
+  permission.run_id = 'foreign'
+  assert.equal(observeRun(snapshot, 'owned-session', 'provider-run').failure, '')
+  const eventSnapshot = runSnapshot()
+  delete eventSnapshot.session_views_by_id
+  eventSnapshot.events_by_session['owned-session'] = [{ event_type: 'permission.requested', seq: 3,
+    payload: { run_id: 'provider-run', permission: { ...permission, run_id: 'provider-run' } } }]
+  assert.equal(observeRun(eventSnapshot, 'owned-session', 'provider-run').failure, 'run_permission_pending')
+  for (const snapshot of [{}, runSnapshot('completed', { current_run_state_by_session: { 'owned-session': { session_id: 'owned-session', run_id: 'foreign', status: 'completed' } } }),
+    runSnapshot('completed', { current_run_state_by_session: { 'owned-session': { session_id: 'foreign', run_id: 'provider-run', status: 'completed' } } })]) {
+    assert.throws(() => observeRun(snapshot, 'owned-session', 'provider-run'), /missing_run_evidence|foreign_run_evidence/)
+  }
+  const inconsistent = runSnapshot('completed')
+  inconsistent.run_intents_by_session['owned-session'] = [{ session_id: 'owned-session', run_id: 'provider-run', status: 'running' }]
+  assert.throws(() => observeRun(inconsistent, 'owned-session', 'provider-run'), /run_evidence_conflict/)
+  assert.equal(observeRun(runSnapshot('completed', { run_intents_by_session: {} }), 'owned-session', 'provider-run').status, 'completed')
+})
+
+// Purpose: waitForRun must measure semantic exact-run durable progress, not sync
+// rev/cursor/watermark churn, timestamp rewrites, foreign usage, or tail eviction.
+// An injected clock exercises real observer logic with finite deterministic bounds;
+// this is not a workload simulation, live provider test or timing benchmark.
+test('unrelated hydration churn and tail eviction cannot hide a stalled run', { timeout: 5000 }, async () => {
+  let clock = 0, samples = 0
+  await assert.rejects(waitForRun({ ...observerOptions, deadline: 10000, stallMs: 2000, now: () => clock,
+    pause: async ms => { clock += ms }, sample: async () => {
+      samples++
+      const snapshot = runSnapshot()
+      Object.assign(snapshot, { rev: samples, snapshot_endpoint_cursor: 'opaque-' + samples, watermarks: { seq: samples } })
+      snapshot.current_run_state_by_session['owned-session'].updated_at = samples
+      snapshot.current_run_state_by_session['owned-session'].event_seq = samples
+      snapshot.messages_by_session['owned-session'] = samples % 2 ? [{ id: 'message', global_seq: 3, role: 'assistant', metadata: { run_id: 'provider-run' } }] : []
+      snapshot.events_by_session['owned-session'] = [{ seq: samples + 100, event_type: 'session.usage.updated', payload: { run_id: 'provider-run' } },
+        { seq: samples + 200, event_type: 'session.tool.started', payload: { run_id: 'foreign' } }]
+      return snapshot
+    } }), /^Error: no_progress_work_retained$/)
+  assert.equal(clock, 2000)
+  assert.equal(samples, 5)
+})
+
+// Purpose: real run progress may postpone stall classification but never the total
+// stage deadline. Completion sampled after deadline is rejected. Narrow observer
+// tests prove this independently of paid work and wall-clock timer scheduling.
+test('genuine durable progress has a finite total deadline and late completion fails', { timeout: 5000 }, async () => {
+  for (const late of [false, true]) {
+    let clock = 0, samples = 0
+    await assert.rejects(waitForRun({ ...observerOptions, deadline: 2000, stallMs: 1000, now: () => clock,
+      pause: async ms => { clock += ms }, sample: async () => {
+        samples++
+        if (late) { clock = 2000; return runSnapshot('completed') }
+        return runSnapshot('running', { messages_by_session: { 'owned-session': [{ id: 'm-' + samples, global_seq: samples, role: 'assistant', metadata: { run_id: 'provider-run' } }] } })
+      } }), /^Error: stage_deadline_work_retained$/)
+    assert.equal(clock, 2000)
+    assert.equal(samples, late ? 1 : 4)
+  }
+})
+
+// Purpose: runScenario must retain safe pre-stop diagnostics in the failures array
+// consumed by operations, stop only its admitted run using an independent signal,
+// and report stop failure separately. Canonical multi-snapshot protocol injection
+// exercises the actual runner, with no live network, approval or provider calls.
+test('runner failures preserve sanitized last state before independently bounded stop', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  for (const kind of ['dispatch_blocked', 'failed', 'permission', 'deadline', 'missing', 'foreign', 'stop_failure']) {
+    const o = { ...options, scenario: 'orchestrator-chat' }, receipt = createReceipt(o), p = protocol(o, o.scenario)
+    let clock = 0, samples = 0, stopSignal
+    const fetch = async (url, init) => {
+      const route = new URL(url).pathname
+      if (route.endsWith('/run/stop')) {
+        stopSignal = init.signal
+        assert.ok(receipt.failures.some(code => code.startsWith('last_run_')))
+        assert.equal(init.signal.aborted, false)
+        const response = await p.fetch(url, init)
+        return kind === 'stop_failure' ? Response.json({ error: 'SECRET provider/auth body' }, { status: 500 }) : response
+      }
+      const response = await p.fetch(url, init)
+      if (route !== '/v3/sync/hydrate') return response
+      samples++
+      if (samples === 1) return Response.json(runSnapshot('pending_executor'))
+      if (kind === 'missing') return Response.json({})
+      if (kind === 'foreign') return Response.json(runSnapshot('completed', { current_run_state_by_session: { 'owned-session': { session_id: 'owned-session', run_id: 'foreign', status: 'completed' } } }))
+      const snapshot = runSnapshot(['failed', 'stop_failure'].includes(kind) ? 'failed' : kind === 'dispatch_blocked' ? kind : 'running')
+      snapshot.current_run_state_by_session['owned-session'].blocked_reason = 'SECRET provider/auth reason'
+      if (kind === 'permission') snapshot.session_views_by_id['owned-session'].pending_permissions = [{ session_id: 'owned-session', run_id: 'provider-run', status: 'pending', tool_arguments: 'SECRET' }]
+      if (kind === 'deadline') snapshot.messages_by_session['owned-session'] = [{ global_seq: samples, role: 'assistant', metadata: { run_id: 'provider-run' } }]
+      return Response.json(snapshot)
+    }
+    const expected = kind === 'deadline' ? 'stage_deadline_work_retained' : kind === 'permission' ? 'run_permission_pending'
+      : kind === 'missing' ? 'missing_run_evidence' : kind === 'foreign' ? 'foreign_run_evidence' : kind === 'stop_failure' ? 'run_failed' : `run_${kind}`
+    await assert.rejects(runScenario(o, receipt, { fetch, verifyCandidate: () => {}, now: () => clock, pause: async ms => { clock += ms } }), new RegExp(`^Error: ${expected}$`))
+    assert.ok(stopSignal)
+    assert.equal(receipt.status, 'FAIL')
+    assert.equal(receipt.assertions.find(a => a.name === 'run_completed').passed, false)
+    assert.ok(receipt.failures.every(code => /^[a-z_]{1,80}$/.test(code)))
+    assert.ok(!JSON.stringify(receipt).includes('SECRET'))
+    if (kind === 'deadline') {
+      assert.equal(clock, o.timeoutMs)
+      assert.ok(receipt.failures.includes('last_run_running'))
+      assert.ok(receipt.failures.includes('last_run_messages_present'))
+    }
+    if (kind === 'stop_failure') assert.ok(receipt.failures.includes('owned_run_stop_failed'))
+    const stops = p.calls.filter(c => c.route.endsWith('/run/stop'))
+    assert.equal(stops.length, 1)
+    assert.equal(stops[0].body.run_id, 'provider-run')
+    assert.equal(stops[0].body.target_swarm_id, 'self')
+    assert.ok(!p.calls.some(c => c.method === 'DELETE' || /approve|deploy/.test(c.route)))
+  }
+})
+
+// Purpose: runner qualification requires a multi-step exact completed provider run,
+// durable tool pairs and a pending task with zero intents. Incremental hydration
+// must retain completed tools even after tail eviction; neither foreign completion
+// nor task approval is a substitute. This protocol fixture proves runner behavior,
+// not actual provider completion or backend transactional correctness.
+test('multi-step project run retains tool evidence and qualifies pending unexecuted task', { timeout: 5000 }, async t => {
+  const { options } = fixture(t), o = { ...options, scenario: 'orchestrator-chat' }, receipt = createReceipt(o), p = protocol(o, o.scenario)
+  let clock = 0, samples = 0
+  const fetch = async (url, init) => {
+    const response = await p.fetch(url, init)
+    if (new URL(url).pathname !== '/v3/sync/hydrate' || JSON.parse(init.body).session_ids[0] === 'task-session') return response
+    samples++
+    const final = await response.json()
+    const proposal = final.events_by_session['owned-session'][0]
+    const discovery = { session_id: 'owned-session', seq: 3, event_type: 'session.tool.started', payload: { run_id: 'provider-run', step: 1, call_id: 'discovery', tool_name: 'manage_projects', arguments: { action: 'list_sources' } } }
+    const discovered = { ...discovery, seq: 4, event_type: 'session.tool.completed', payload: { ...discovery.payload, output: { sources: [] } } }
+    if (samples === 1) return Response.json(runSnapshot('pending_executor'))
+    if (samples === 2) return Response.json(runSnapshot('running', { events_by_session: { 'owned-session': [discovery] } }))
+    if (samples === 3) return Response.json(runSnapshot('running', { events_by_session: { 'owned-session': [discovery, discovered] } }))
+    if (samples === 4) return Response.json(runSnapshot('running', { events_by_session: { 'owned-session': [{ ...proposal, seq: 5, event_type: 'session.tool.started', payload: { ...proposal.payload, output: undefined, step: 2 } }] } }))
+    final.current_run_state_by_session = { 'owned-session': { session_id: 'owned-session', run_id: 'provider-run', status: 'completed', active: false } }
+    final.session_views_by_id = { 'owned-session': { pending_permissions: [] } }
+    final.events_by_session['owned-session'] = samples === 5 ? [{ ...proposal, seq: 6, payload: { ...proposal.payload, step: 2 } }] : []
+    return Response.json(final)
+  }
+  await runScenario(o, receipt, { fetch, verifyCandidate: () => {}, now: () => clock, pause: async ms => { clock += ms } })
+  assert.equal(samples, 6)
+  assert.equal(clock, 2000)
+  assert.ok(receipt.assertions.every(a => a.passed))
+  assert.deepEqual(receipt.failures, [])
+  assert.ok(p.calls.some(c => c.route === '/v3/sync/hydrate' && c.body.session_ids[0] === 'task-session'))
+  assert.ok(!p.calls.some(c => c.route.endsWith('/run/stop') || /approve|deploy/.test(c.route)))
+})
+
+// Purpose: message admission is the ownership boundary for run/stop. Invalid or
+// cross-session admission responses must not authorize cleanup, even when a run
+// identifier is present. Actual runScenario transport assertions prove no stop or
+// hydration follows rejected admission; no foreign run is mutated.
+test('invalid or foreign admission never authorizes an owned-run stop', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  for (const run_intent of [{ run_id: 'bad/run' }, { run_id: 'foreign-run', session_id: 'foreign-session' }]) {
+    const receipt = createReceipt(options), p = protocol(options, 'session-api')
+    const fetch = async (url, init) => {
+      const response = await p.fetch(url, init)
+      return new URL(url).pathname.endsWith('/messages') ? Response.json({ run_intent }) : response
+    }
+    await assert.rejects(runScenario(options, receipt, { fetch, verifyCandidate: () => {} }), /^Error: run_not_admitted$/)
+    assert.equal(receipt.assertions.find(a => a.name === 'run_admitted').passed, false)
+    assert.ok(!p.calls.some(c => c.route.endsWith('/run/stop') || c.route === '/v3/sync/hydrate'))
+  }
 })

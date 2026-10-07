@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Opt-in live qualification, never a benchmark or a hermetic-tier member.
-// Reuses the canonical session/hydration and progress observer pattern from
-// artifact-v3-edit-repair; no account settings, auth bootstrap or source writes.
+// Observes exact canonical session/hydration evidence with finite deadlines;
+// no account settings, auth bootstrap or source writes.
 import { createHash } from 'node:crypto'
 import { openSync, closeSync, writeFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
-import { waitStage } from './artifact-v3-edit-repair.mjs'
+import { setTimeout as sleep } from 'node:timers/promises'
 
 export const SCENARIOS = Object.freeze(['session-api', 'orchestrator-chat', 'image', 'video', 'audio'])
 export const RECEIPT_SCHEMA = 'swarm.orchestrator-pr.v1'
@@ -165,24 +165,86 @@ async function boundedBytes(response, limit) {
   return Buffer.concat(chunks)
 }
 
+const RUN_STATES = Object.freeze(['pending_executor', 'running', 'waiting_tasks', 'completed', 'failed', 'cancelled', 'expired', 'interrupted', 'dispatch_blocked'])
+
+// Canonical sync run state is authoritative; the intent tail may omit old runs.
+// Only semantic exact-run evidence counts as progress, never snapshot rev/cursors,
+// usage, timestamps, provider bodies or unrelated sessions/runs.
+export function observeRun(snapshot, sessionID, runID) {
+  const current = snapshot.current_run_state_by_session?.[sessionID]
+  const intents = (snapshot.run_intents_by_session?.[sessionID] || []).filter(i => i.run_id === runID)
+  check(intents.length <= 1, 'run_evidence_conflict')
+  if (current) check(current.run_id === runID && current.session_id === sessionID, 'foreign_run_evidence')
+  const intent = intents[0]
+  if (intent) check(intent.session_id === sessionID, 'foreign_run_evidence')
+  const state = current || intent
+  check(state, 'missing_run_evidence')
+  check(RUN_STATES.includes(state.status), 'unknown_run_state')
+  if (current && intent) check(current.status === intent.status, 'run_evidence_conflict')
+  const events = (snapshot.events_by_session?.[sessionID] || []).filter(e => {
+    const payload = decode(e.payload)
+    return payload?.run_id === runID && (!e.session_id || e.session_id === sessionID)
+      && (e.event_type?.startsWith('session.tool.') || ['session.run.started', 'session.run.completed', 'session.run.failed', 'permission.requested', 'permission.updated'].includes(e.event_type))
+  })
+  const messages = (snapshot.messages_by_session?.[sessionID] || []).filter(m => m.metadata?.run_id === runID && (!m.session_id || m.session_id === sessionID))
+  const permissions = snapshot.session_views_by_id?.[sessionID]?.pending_permissions
+  const pending = (permissions || []).some(p => p.session_id === sessionID && p.run_id === runID && p.status === 'pending')
+  const permissionEvent = events.some(e => {
+    const p = decode(e.payload)?.permission
+    return p?.session_id === sessionID && p.run_id === runID && p.status === 'pending'
+      && !events.some(other => other.event_type === 'permission.updated' && decode(other.payload)?.permission?.id === p.id && decode(other.payload)?.permission?.status !== 'pending')
+  })
+  const failure = pending || (!Array.isArray(permissions) && permissionEvent) ? 'run_permission_pending'
+    : ['waiting_tasks', 'dispatch_blocked', 'failed', 'cancelled', 'expired', 'interrupted'].includes(state.status) ? `run_${state.status}` : ''
+  return { status: state.status, failure, messages: messages.length, tools: events.filter(e => e.event_type === 'session.tool.completed').length,
+    messageSeq: Math.max(0, ...messages.map(m => Number.isSafeInteger(m.global_seq) ? m.global_seq : 0)),
+    eventSeq: Math.max(0, ...events.map(e => Number.isSafeInteger(e.seq) ? e.seq : 0)) }
+}
+
+export async function waitForRun({ sample, sessionID, runID, scenario, deadline, stallMs, now = Date.now, pause = sleep, onObservation = () => {}, heartbeat = () => {} }) {
+  let changed = now(), prior, beat = now(), messageSeq = 0, eventSeq = 0
+  for (;;) {
+    check(now() < deadline, 'stage_deadline_work_retained')
+    const snapshot = await sample()
+    const observation = observeRun(snapshot, sessionID, runID)
+    onObservation(observation)
+    check(now() < deadline, 'stage_deadline_work_retained')
+    const events = snapshot.events_by_session?.[sessionID] || []
+    assertSafeToolRouting(events, runID, scenario)
+    toolEvidence(events, runID)
+    check(!observation.failure, observation.failure)
+    if (observation.status === 'completed') return snapshot
+    messageSeq = Math.max(messageSeq, observation.messageSeq)
+    eventSeq = Math.max(eventSeq, observation.eventSeq)
+    const fingerprint = JSON.stringify([observation.status, messageSeq, eventSeq])
+    if (fingerprint !== prior) { prior = fingerprint; changed = now() }
+    check(now() - changed < stallMs, 'no_progress_work_retained')
+    if (now() >= beat) { heartbeat(); beat = now() + 10000 }
+    await pause(Math.min(500, deadline - now()))
+  }
+}
+
 export async function runScenario(o, r, deps = {}) {
   const mark = name => { const a = r.assertions.find(a => a.name === name); check(a, 'unknown_assertion'); a.passed = true }
   ;(deps.verifyCandidate ?? verifyCandidate)(o.candidate); mark('candidate_revision')
-  const deadline = Date.now() + o.timeoutMs
+  const now = deps.now ?? Date.now
+  const deadline = now() + o.timeoutMs
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), o.timeoutMs)
   const interrupt = () => controller.abort()
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt)
-  let primaryFailure
+  let primaryFailure, lastObservation
   let sessionID = '', runID = '', swarmID = '', completed = false, requests = 0, metadataBytes = 0
   const headers = { 'X-Swarm-Token': o.token, Origin: o.apiURL, Referer: `${o.apiURL}/app`, 'Sec-Fetch-Site': 'same-origin', Accept: 'application/json' }
   async function api(method, route, body, { bytes = false, cleanup = false } = {}) {
+    check(cleanup || now() < deadline, 'stage_deadline_work_retained')
     check(cleanup || ++requests <= 1800, 'request_budget_exceeded')
-    const signal = cleanup ? AbortSignal.timeout(5000) : AbortSignal.any([controller.signal, AbortSignal.timeout(Math.min(15000, Math.max(1, deadline - Date.now())))])
+    const signal = cleanup ? AbortSignal.timeout(5000) : AbortSignal.any([controller.signal, AbortSignal.timeout(Math.min(15000, Math.max(1, deadline - now())))])
     const response = await (deps.fetch ?? fetch)(o.apiURL + route, { method, headers: { ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal })
     check(response.ok, `http_${response.status}`) // Never emit provider/auth bodies.
     const data = await boundedBytes(response, bytes ? 64 * 1024 * 1024 : 2 * 1024 * 1024)
+    check(cleanup || now() < deadline, 'stage_deadline_work_retained')
     if (!bytes && !cleanup) { metadataBytes += data.length; check(metadataBytes <= 64 * 1024 * 1024, 'aggregate_metadata_budget_exceeded') }
     return bytes ? { data, type: response.headers.get('content-type')?.split(';')[0] } : JSON.parse(data.toString('utf8'))
   }
@@ -240,19 +302,14 @@ export async function runScenario(o, r, deps = {}) {
       : o.scenario === 'orchestrator-chat' ? `${common}In this project propose exactly one Big Feature Swarm task titled ${marker} with explicit source ${o.workspacePath}. The task should add a short README explanation later. Use manage_projects propose_task, auto-approval off. Do not approve, deploy or execute it. Stop after creating the pending task.`
       : `${common}Generate exactly one ${o.scenario} of a calm abstract blue wave, title ${marker}, using the account-configured model. Use manage_artifact generate_${o.scenario}. ${o.scenario === 'video' ? 'One silent clip, shortest supported duration; no story or soundtrack.' : `First discover ${o.scenario}_capabilities and use its exact capability token and supported settings.${o.scenario === 'audio' ? ' Use the shortest supported duration.' : ''}`} Return the exact ready reference. Missing capability must be reported, never replaced.`
     const sent = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, { client_request_id: mutationRequestID(o, 'message'), role: 'user', content: prompt })
-    runID = sent.run_intent?.run_id || sent.run_id
-    check(id(runID), 'run_not_admitted'); r.status = 'FAIL'; mark('run_admitted')
+    const admittedRunID = sent.run_intent?.run_id || sent.run_id
+    check(id(admittedRunID) && (!sent.run_intent?.session_id || sent.run_intent.session_id === sessionID), 'run_not_admitted')
+    runID = admittedRunID; r.status = 'FAIL'; mark('run_admitted')
     r.evidence.push({ session_id: sessionID, run_id: runID })
-    const settled = await waitStage({ sample: hydrate, stageMs: Math.max(1, deadline - Date.now()), stallMs: Math.min(90000, o.timeoutMs),
-      done: snapshot => {
-        const intents = snapshot.run_intents_by_session?.[sessionID] || []
-        const intent = intents.find(i => i.run_id === runID)
-        const events = snapshot.events_by_session?.[sessionID] || []
-        assertSafeToolRouting(events, runID, o.scenario)
-        toolEvidence(events, runID)
-        check(!intent || !['failed', 'cancelled', 'expired', 'interrupted'].includes(intent.status), 'run_failed')
-        return intent?.status === 'completed'
-      }, heartbeat: () => process.stderr.write('orchestrator-pr: awaiting durable run completion\n') })
+    const settled = await waitForRun({ sample: hydrate, sessionID, runID, scenario: o.scenario, deadline,
+      stallMs: Math.min(90000, o.timeoutMs), now, pause: deps.pause ?? sleep,
+      onObservation: observation => { lastObservation = observation },
+      heartbeat: () => process.stderr.write('orchestrator-pr: awaiting durable run completion\n') })
     completed = true; mark('run_completed')
     function verifyHistory(snapshot) {
       const messages = snapshot.messages_by_session?.[sessionID] || []
@@ -264,6 +321,9 @@ export async function runScenario(o, r, deps = {}) {
     }
     verifyHistory(settled); mark('provider_response')
     const rehydrated = await hydrate()
+    const finalObservation = observeRun(rehydrated, sessionID, runID)
+    lastObservation = finalObservation
+    check(finalObservation.status === 'completed' && !finalObservation.failure, finalObservation.failure || 'run_completion_not_retained')
     verifyHistory(rehydrated); mark('history_rehydrate')
     assertSafeToolRouting(rehydrated.events_by_session?.[sessionID] || [], runID, o.scenario)
     const tools = toolEvidence(rehydrated.events_by_session?.[sessionID] || [], runID)
@@ -291,7 +351,18 @@ export async function runScenario(o, r, deps = {}) {
         && createHash('sha256').update(data.data).digest('hex') === evidence.digest_sha256, 'media_bytes_mismatch')
       mark('media_bytes'); r.evidence.push(evidence)
     }
-  } catch (error) { primaryFailure = error; throw error } finally {
+  } catch (error) {
+    primaryFailure = now() >= deadline ? new Error('stage_deadline_work_retained')
+      : controller.signal.aborted ? new Error('run_observation_interrupted') : error
+    // Capture BEFORE stop can change durable state. Only fixed typed codes survive
+    // the operations sanitizer; never interpolate status/reason/provider content.
+    if (runID) {
+      r.failures.push(lastObservation ? `last_run_${lastObservation.status}` : 'last_run_unobserved')
+      if (lastObservation?.messages) r.failures.push('last_run_messages_present')
+      if (lastObservation?.tools) r.failures.push('last_run_tools_completed')
+    }
+    throw primaryFailure
+  } finally {
     clearTimeout(timer)
     process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', interrupt)
     // Retain owned records/artifacts. Cancel only the exact admitted live run on
