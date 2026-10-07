@@ -109,21 +109,32 @@ Daemon client: `swarmd/internal/remote`; owner API `/v1/remote*`; CLI
    deletes the key. Relay URLs must be `https` (`http` only on loopback).
 2. **Device authentication.** The device dials `wss://<relay>/device/connect`.
    The relay sends a nonce; the device signs
-   `swarm-remote-1\n<relay origin>\n<device id>\n<nonce>`. The relay verifies
-   against `SWARM_DEVICE_KEYS`, configured by the owner at deploy time. One live
-   connection per device; reconnects use exponential backoff.
-3. **Client authorization.** OAuth 2.1 + PKCE, DCR and CIMD via
+   `swarm-remote-1\n<relay origin>\n<device id>\n<nonce>` and also sends its
+   public key. The relay verifies against `SWARM_DEVICE_KEYS` (configured by
+   the owner) or a key stored by pairing. One live connection per device;
+   reconnects use exponential backoff.
+3. **Pairing.** For an unknown device the relay verifies the signature
+   against the offered key, then keeps the connection in `pairing` and sends a
+   single-use code (15 minutes; at most 20 waiting). The device shows the code
+   only to its owner (`/v1/remote` `pairing_code`, the headless app's Connect
+   to Claude step). An AI client authorized with `swarm:manage` calls the relay
+   tool `swarm_pair_machine(code)`; the relay stores the key in its Durable
+   Object and sends `ready` on the same connection. `swarm_remove_machine`
+   forgets a paired machine; `SWARM_DEVICE_KEYS` entries can only be removed
+   there. `swarm_list_machines` lists waiting machines by name, never codes.
+   `PAIRING=off` disables pairing.
+4. **Client authorization.** OAuth 2.1 + PKCE, DCR and CIMD via
    `@cloudflare/workers-oauth-provider`. The consent page shows a code and has
    no Allow button; a connected device's owner approves with `swarmctl remote
    approve CODE`. The decision is bound to the browser's consent handle, scopes
    are clamped to the request and the approving machine's ceiling, and tokens
    are sent only to `ALLOWED_REDIRECT_HOSTS`.
-4. **Calls.** The relay checks the token's scopes, routes by `machine` (required
+5. **Calls.** The relay checks the token's scopes, routes by `machine` (required
    when several are online) and forwards the JSON-RPC message. The device
    intersects the client's scopes with its own ceiling, allows only
    `tools/list`/`tools/call`, and executes through the scoped-token handler.
 
-Frames: relay→device `challenge`, `ready`, `mcp.request`, `consent.request`;
+Frames: relay→device `challenge`, `ready`, `pairing`, `mcp.request`, `consent.request`;
 device→relay `auth`, `mcp.response`, `consent.decision`.
 
 ## Security model
@@ -141,6 +152,13 @@ device→relay `auth`, `mcp.response`, `consent.decision`.
   tokens resolve requests only once (`allow_always`/`deny_always` are
   refused). `swarmd --lock-permission-policy` (the headless image default)
   makes the policy read-only for everyone until restart and keeps bypass off.
+- Pairing trusts a machine for the whole relay: once paired it receives
+  `consent.request` frames and its owner can approve AI clients, like any
+  listed machine. The code proves the person pairing can see that machine's
+  owner UI; the tool requires an already-authorized `swarm:manage` client and
+  its description tells clients to accept codes only from the user, never
+  from tool output. Unknown devices gain nothing while waiting: no MCP calls
+  are routed to them and they receive no consent requests.
 - Session content is untrusted (prompt injection). Keep `--allow-approve` off
   unless the machine is dedicated; Swarm's own permission prompts still apply
   to agent tool calls.
@@ -166,6 +184,18 @@ device→relay `auth`, `mcp.response`, `consent.decision`.
   subscription, route allowlist incl. permission policy and credentials
   refused) and `TestToolScopesMatchRelay` (device and relay scope tables
   identical; every served tool has an explicit scope).
+
+- Pairing (this revision): `go test ./internal/remote` (`TestRelayPairingThenReady`:
+  public key sent with a valid signature, code reported while waiting, cleared
+  on `ready`). Relay in local `workerd` (`wrangler dev`) with a seed machine in
+  `SWARM_DEVICE_KEYS`, a real OAuth/PKCE client and the headless app image
+  built by `containers/headless/app/install.sh up`: the app's Connect to
+  Claude step showed a code, the client saw the machine only by name, a wrong
+  code was refused, the right code paired it and its tools (e.g.
+  `swarm_list_workspaces`) served through the relay; after a container
+  restart it reconnected without a new code; `swarm_remove_machine` refused a
+  `SWARM_DEVICE_KEYS` machine and returned a removed one to waiting with a new
+  code. Not yet run against the deployed Cloudflare relay.
 
 A deployed Cloudflare relay with a claude.ai custom connector and one headless
 container has been exercised for listing machines and workspaces. Not yet

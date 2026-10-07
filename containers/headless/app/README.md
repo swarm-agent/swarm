@@ -7,6 +7,34 @@ that privileged socket or expose the daemon over a public listener.
 `--container-sdk-port` is only the basic session boundary: it does not grant
 apps, workers, sync, storage or publication APIs.
 
+## One-line install on your own server (private, on your tailnet)
+
+For a fresh Ubuntu 24.04 **x86_64** server you control, with Tailscale
+MagicDNS and HTTPS certificates turned on for your tailnet. As root:
+
+<copy label="Install">
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/swarm-control/containers/headless/app/install.sh \
+  | bash -s -- --relay https://swarm-relay.YOU.workers.dev
+</copy>
+
+`install.sh` installs Docker and Tailscale, prints one Tailscale login link to
+approve the machine, turns on a firewall that admits only the tailnet (and
+SSH until `--lock-ssh`), builds the runtime and this app from source
+(`Dockerfile.local`), and serves the app with `tailscale serve` at
+`https://NAME.TAILNET.ts.net`. It prints that URL and the unlock secret; no
+provider key or other secret is passed to it. The app's guided setup then
+covers owner, provider sign-in, models, a workspace and **Connect to Claude**,
+which shows a pairing code for your relay (see `packages/swarm-relay`).
+State lives in the usual named volumes plus `/var/lib/swarm-headless`. A
+5-minute timer runs `install.sh update`, which rebuilds only when the branch
+moves; `install.sh secret` prints the unlock secret again. `--relay` only
+prefills the Connect step. `--name` sets the tailnet and machine name.
+
+This is a source build of an unpublished candidate, not the qualified release
+path below. Validated in a container with a local relay and a stand-in for
+Tailscale Serve; a real server, Tailscale and a deployed relay are not yet
+exercised by its checks.
+
 ## Build and launch
 
 Obtain `SWARM_RUNTIME=ghcr.io/swarm-agent/swarm-headless@sha256:<digest>` from the

@@ -21,11 +21,11 @@ async function settings() {
 // Guided setup: the server reports which steps are done; each step points at
 // the existing control that completes it. Nothing here performs a step.
 const STEPS = [
-  ['owner', 'Create the owner', 'Right column, Installation: choose an owner name and a name for this installation.', 'owner-form'],
-  ['provider', 'Connect a model provider', 'Right column, Provider connection: choose a provider, then paste an API key or use Sign in to Codex.', 'provider'],
-  ['models', 'Choose models', 'Right column, Model assignment: pick a model (and thinking level), then press "Use for every role".', 'model'],
-  ['workspace', 'Create a workspace', 'Left column, New workspace: create a folder, Inspect Git, approve and Initialize Git, then Register workspace.', 'folder-form'],
-  ['claude', 'Connect to Claude', 'Right column, Connect to Claude: press Connect, then give Claude the pairing code shown there.', 'claude-form'],
+  ['owner', 'Create the owner', 'Installation: choose an owner name and a name for this installation.', 'owner-form'],
+  ['provider', 'Connect a model provider', 'Provider connection: choose a provider, then paste an API key or use Sign in to Codex.', 'provider'],
+  ['models', 'Choose models', 'Model assignment: pick a model (and thinking level), then press "Use for every role".', 'model'],
+  ['workspace', 'Create a workspace', 'New workspace: create a folder, Inspect Git, approve and Initialize Git, then Register workspace.', 'folder-form'],
+  ['claude', 'Connect to Claude', 'Connect to Claude: press Connect, then give Claude the pairing code shown there.', 'claude-form'],
 ];
 let pollUntil = 0, pollTimer = 0;
 function spotlight(id) {
@@ -54,6 +54,7 @@ function renderRemote(remote, defaults = {}) {
     form.elements.relay_url.readOnly = !!remote?.configured;
     for (const name of ['device_name', 'allow_write', 'allow_manage', 'allow_approve']) form.elements[name].disabled = !!remote?.configured;
   }
+  if (form.querySelector) form.querySelector('button').disabled = !remote;
   const pairing = remote?.pairing_code && remote.pairing_expires_at > Date.now();
   form.hidden = !!remote?.enabled; $('claude-actions').hidden = !remote?.configured; $('pairing').hidden = !pairing;
   $('claude-status').textContent = !remote ? 'Create the owner first.'

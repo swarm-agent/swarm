@@ -59,6 +59,19 @@ docker exec swarm-workshop cat /etc/swarmd/headless-app/login-secret
    pending call or deny it; stop targets the current active run. No persistent
    permission rule or bypass is created.
 
+## Guided setup
+
+After unlocking, a setup guide lists the remaining steps (owner, provider,
+models, workspace, Connect to Claude) and points at the control for the next
+one; the server derives each step from canonical state (`setup` operation).
+**Use for every role** saves the selected model for all seven roles.
+**Connect to Claude** initializes and enables the machine's relay connection
+(`APP_RELAY_URL` and `APP_DEVICE_NAME` prefill it) with the ceiling you tick,
+then shows the pairing code to give Claude; it refreshes on a bounded timer
+only while connecting. AI client authorization requests appear there to
+approve or deny. Relay administration uses the owner-only `client.remote`
+SDK namespace on the private socket and never returns key material.
+
 ## Private access from your tailnet
 
 To open the app from your own devices, keep the loopback publication above and

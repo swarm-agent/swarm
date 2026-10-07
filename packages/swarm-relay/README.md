@@ -9,7 +9,10 @@ AI client ──HTTPS + OAuth──► relay /mcp ──► Durable Object ◄�
 ```
 
 - Machines **dial out**; nothing listens on them. Remote access is **off** in
-  Swarm until you run `swarmctl remote init` and `swarmctl remote enable`.
+  Swarm until you run `swarmctl remote init` and `swarmctl remote enable`
+  (or press **Connect to Claude** in the headless app).
+- Machines are trusted from `SWARM_DEVICE_KEYS` or by **pairing**: a new
+  machine shows a code, and an AI client you already authorized pairs it.
 - AI clients register themselves (Dynamic Client Registration or Client ID
   Metadata Documents) and use OAuth 2.1 with PKCE via
   `@cloudflare/workers-oauth-provider`.
@@ -42,6 +45,23 @@ npx wrangler deploy
 swarmctl remote enable
 swarmctl remote status                             # connected: true
 ```
+
+### Adding machines by pairing (no redeploy)
+
+A machine the relay does not list yet can pair instead. It connects, proves
+it holds its own key, and waits with a short code (shown only on that
+machine: `swarmctl remote status` → `pairing_code`, or the headless app's
+**Connect to Claude** step). Give the code to an AI client you already
+authorized with `swarm:manage`, which calls `swarm_pair_machine`; the relay
+stores the key in its Durable Object and the machine connects at once.
+`swarm_remove_machine` forgets a paired machine. Codes are single-use and
+expire after 15 minutes; at most 20 machines wait at a time; clients see
+waiting machines by name only. Set the variable `PAIRING=off` to accept only
+`SWARM_DEVICE_KEYS`.
+
+To update an already-deployed relay to this version, run `npx wrangler deploy`
+in this directory with your existing `wrangler.jsonc` values. No migration,
+secret or connector change is needed.
 
 Add `https://<relay>/mcp` as a custom connector in your AI client. When the
 browser shows a code, approve it on a machine:
