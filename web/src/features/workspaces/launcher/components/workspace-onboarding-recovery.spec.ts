@@ -13,6 +13,8 @@ const webDir = existsSync(path.resolve(process.cwd(), 'src/features'))
     : path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../../..')
 
 // Requirement: account onboarding must no longer perform workspace setup;
+// Desktop onboarding follows the canonical 4-step lifecycle:
+// Step 1: Identity -> Step 2: Provider -> Step 3: Project -> Step 4: Workspaces.
 // WorkspaceHomePage and WorkspaceFolderTree retain selected folders on failures.
 // Threat: duplicate creation, implicit Git mutation, lost retry intent or premature
 // completion. Real React handlers in a hermetic browser with a fake launcher are
