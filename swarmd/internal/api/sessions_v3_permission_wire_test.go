@@ -103,7 +103,8 @@ func TestSessionsV3PrimaryAllowOnceWireContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	raced := resolve()
-	if raced.Status != pebblestore.PermissionStatusDenied || raced.Decision != "deny" || raced.ApprovedArguments != "{}" {
+	// normalizeResolveAction canonicalizes the "deny" alias to "deny_once".
+	if raced.Status != pebblestore.PermissionStatusDenied || raced.Decision != "deny_once" || raced.ApprovedArguments != "{}" {
 		t.Fatalf("racing deny was overwritten: %+v", raced)
 	}
 	afterPolicy, err := permissionSvc.CurrentPolicyForAccount(principal.AccountScopeID)
