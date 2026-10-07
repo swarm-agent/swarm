@@ -201,7 +201,94 @@ export function observeRun(snapshot, sessionID, runID) {
     eventSeq: Math.max(0, ...events.map(e => Number.isSafeInteger(e.seq) ? e.seq : 0)) }
 }
 
-export async function waitForRun({ sample, sessionID, runID, scenario, deadline, stallMs, now = Date.now, pause = sleep, onObservation = () => {}, heartbeat = () => {} }) {
+// PermissionRecord.ToolCallArguments is the executor's original call; do not
+// authorize from a display summary, a reservation or assistant prose. Unknown
+// fields are rejected rather than trusting backend defaults for launch behavior.
+const object = value => value && typeof value === 'object' && !Array.isArray(value)
+const canonical = value => JSON.stringify(object(value)
+  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, JSON.parse(canonical(value[key]))]))
+  : Array.isArray(value) ? value.map(item => JSON.parse(canonical(item))) : value)
+function permissionArgs(record) {
+  try {
+    const args = decode(record.tool_call_arguments || record.tool_arguments)
+    const summary = record.tool_arguments ? decode(record.tool_arguments) : {}
+    check(object(args) && object(summary) && !Object.hasOwn(summary, 'approved_arguments'), 'permission_arguments_invalid')
+    return args
+  } catch { throw new Error('permission_arguments_invalid') }
+}
+function fixtureCall(args, fixture) {
+  check(args.project_id === fixture.projectID, 'permission_project_mismatch')
+  const discovery = ['list_sources', 'inspect_source'].includes(args.action)
+  const fields = discovery ? ['action', 'project_id', 'workspace_path', 'workspace_id', 'workspace_generation']
+    : ['action', 'project_id', 'title', 'prompt', 'description', 'agent', 'feature_size', 'workspace_path', 'workspace_id', 'workspace_generation', 'auto_approve', 'client_request_id']
+  check(Object.keys(args).every(key => fields.includes(key)), 'permission_fields_rejected')
+  check(discovery || args.action === 'propose_task', 'permission_action_rejected')
+  if (args.workspace_path !== undefined) check(args.workspace_path === fixture.workspacePath, 'permission_source_mismatch')
+  if (args.workspace_id !== undefined) check(id(fixture.workspaceID) && args.workspace_id === fixture.workspaceID, 'permission_source_identity_mismatch')
+  if (args.workspace_generation !== undefined) check(Number.isSafeInteger(fixture.workspaceGeneration) && fixture.workspaceGeneration > 0
+    && args.workspace_generation === fixture.workspaceGeneration, 'permission_source_identity_mismatch')
+  if (args.action === 'inspect_source' || !discovery) check(args.workspace_path === fixture.workspacePath, 'permission_source_missing')
+  if (!discovery) {
+    check(args.title === fixture.marker, 'permission_title_mismatch')
+    check(args.agent === 'swarm' && args.feature_size === 'big' && args.auto_approve === false, 'permission_pending_contract_rejected')
+    for (const field of ['prompt', 'description']) if (args[field] !== undefined) check(typeof args[field] === 'string' && args[field].trim() && args[field].length <= 4000, 'permission_arguments_invalid')
+    if (args.client_request_id !== undefined) check(id(args.client_request_id), 'permission_arguments_invalid')
+  }
+  return !discovery
+}
+
+// One bounded, exact-call consent surface for this harness only. No saved rules,
+// argument rewrites, bulk resolution or bypass. HTTP races fail closed; never
+// retry a grant. A duplicate pending snapshot gets one rehydration, not a loop.
+function fixtureConsent(api, fixture) {
+  const seen = new Map(), calls = new Set()
+  let proposalCall = ''
+  return async (snapshot, observation) => {
+    const pending = snapshot.session_views_by_id?.[fixture.sessionID]?.pending_permissions
+    if (!Array.isArray(pending)) {
+      check(observation.failure !== 'run_permission_pending', 'permission_evidence_missing')
+      return false
+    }
+    check(pending.length <= 12, 'permission_budget_exceeded')
+    if (!pending.length) return false
+    check(fixture.scenario === 'orchestrator-chat', 'run_permission_pending')
+    check(observation.status === 'running', 'permission_run_not_running')
+    // Validate the entire batch before making any mutation.
+    const batch = pending.map(record => {
+      check(object(record) && record.session_id === fixture.sessionID && record.run_id === fixture.runID && record.status === 'pending'
+        && /^[a-zA-Z0-9_-]{1,200}$/.test(record.id || '') && id(record.call_id), 'permission_identity_rejected')
+      check(record.tool_name === 'manage_projects' && !record.approved_arguments, 'permission_tool_rejected')
+      const args = permissionArgs(record), proposal = fixtureCall(args, fixture)
+      const fingerprint = canonical([record.session_id, record.run_id, record.call_id, record.tool_name, args])
+      const prior = seen.get(record.id)
+      if (prior) check(prior.fingerprint === fingerprint && prior.duplicates === 0, 'permission_stale_or_changed')
+      else check(!calls.has(record.call_id), 'permission_duplicate_call')
+      return { record, fingerprint, prior, proposal }
+    })
+    check(new Set(batch.map(p => p.record.id)).size === batch.length && new Set(batch.map(p => p.record.call_id)).size === batch.length, 'permission_duplicate_call')
+    const proposals = batch.filter(p => p.proposal)
+    check(proposals.length <= 1 && (!proposals.length || !proposalCall || proposalCall === proposals[0].record.call_id), 'permission_multiple_proposals')
+    check(seen.size + batch.filter(p => !p.prior).length <= 12, 'permission_budget_exceeded')
+    for (const { record, fingerprint, prior, proposal } of batch) {
+      if (prior) { prior.duplicates++; continue }
+      seen.set(record.id, { fingerprint, duplicates: 0 }); calls.add(record.call_id)
+      if (proposal) proposalCall = record.call_id
+      let result
+      try {
+        result = await api('POST', `/v3/sessions/${encodeURIComponent(fixture.sessionID)}/permissions/${encodeURIComponent(record.id)}/resolve`,
+          { action: 'allow_once', reason: 'Exact owned pending-only PR fixture call' })
+      } catch { throw new Error('permission_resolution_failed') }
+      const resolved = result.permission
+      check(result.ok === true && result.session_id === fixture.sessionID && result.saved_rule === false
+        && resolved?.id === record.id && resolved.status === 'approved' && resolved.decision === 'allow_once'
+        && !resolved.approved_arguments && canonical([resolved.session_id, resolved.run_id, resolved.call_id, resolved.tool_name, permissionArgs(resolved)]) === fingerprint,
+      'permission_resolution_mismatch')
+    }
+    return true
+  }
+}
+
+export async function waitForRun({ sample, sessionID, runID, scenario, deadline, stallMs, now = Date.now, pause = sleep, onObservation = () => {}, heartbeat = () => {}, consent }) {
   let changed = now(), prior, beat = now(), messageSeq = 0, eventSeq = 0
   for (;;) {
     check(now() < deadline, 'stage_deadline_work_retained')
@@ -212,8 +299,10 @@ export async function waitForRun({ sample, sessionID, runID, scenario, deadline,
     const events = snapshot.events_by_session?.[sessionID] || []
     assertSafeToolRouting(events, runID, scenario)
     toolEvidence(events, runID)
-    check(!observation.failure, observation.failure)
-    if (observation.status === 'completed') return snapshot
+    const resolving = consent ? await consent(snapshot, observation) : false
+    check(now() < deadline, 'stage_deadline_work_retained')
+    check(!observation.failure || (resolving && observation.failure === 'run_permission_pending'), observation.failure)
+    if (!resolving && observation.status === 'completed') return snapshot
     messageSeq = Math.max(messageSeq, observation.messageSeq)
     eventSeq = Math.max(eventSeq, observation.eventSeq)
     const fingerprint = JSON.stringify([observation.status, messageSeq, eventSeq])
@@ -299,15 +388,17 @@ export async function runScenario(o, r, deps = {}) {
     const marker = `PR-${o.runID}`
     const common = 'Do not change models, settings, permissions, files or unrelated projects. Do not retry generation or delegate. '
     const prompt = o.scenario === 'session-api' ? `Reply with exactly ${marker}. Do not use tools.`
-      : o.scenario === 'orchestrator-chat' ? `${common}In this project propose exactly one Big Feature Swarm task titled ${marker} with explicit source ${o.workspacePath}. The task should add a short README explanation later. Use manage_projects propose_task, auto-approval off. Do not approve, deploy or execute it. Stop after creating the pending task.`
+      : o.scenario === 'orchestrator-chat' ? `${common}In this project propose exactly one Big Feature Swarm task titled ${marker} with explicit source ${o.workspacePath}. The task should add a short README explanation later. Use manage_projects propose_task with explicit agent="swarm", feature_size="big", workspace_path for that exact source and auto_approve=false. Only read-only manage_projects list_sources/inspect_source discovery for this project/source and this one pending proposal are authorized by the fixture. Do not approve, deploy or execute it. Stop after creating the pending task.`
       : `${common}Generate exactly one ${o.scenario} of a calm abstract blue wave, title ${marker}, using the account-configured model. Use manage_artifact generate_${o.scenario}. ${o.scenario === 'video' ? 'One silent clip, shortest supported duration; no story or soundtrack.' : `First discover ${o.scenario}_capabilities and use its exact capability token and supported settings.${o.scenario === 'audio' ? ' Use the shortest supported duration.' : ''}`} Return the exact ready reference. Missing capability must be reported, never replaced.`
     const sent = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, { client_request_id: mutationRequestID(o, 'message'), role: 'user', content: prompt })
     const admittedRunID = sent.run_intent?.run_id || sent.run_id
     check(id(admittedRunID) && (!sent.run_intent?.session_id || sent.run_intent.session_id === sessionID), 'run_not_admitted')
     runID = admittedRunID; r.status = 'FAIL'; mark('run_admitted')
     r.evidence.push({ session_id: sessionID, run_id: runID })
+    const consent = fixtureConsent(api, { scenario: o.scenario, sessionID, runID, projectID, marker, workspacePath: o.workspacePath,
+      workspaceID: binding.source_workspace_id, workspaceGeneration: binding.source_workspace_generation })
     const settled = await waitForRun({ sample: hydrate, sessionID, runID, scenario: o.scenario, deadline,
-      stallMs: Math.min(90000, o.timeoutMs), now, pause: deps.pause ?? sleep,
+      stallMs: Math.min(90000, o.timeoutMs), now, pause: deps.pause ?? sleep, consent,
       onObservation: observation => { lastObservation = observation },
       heartbeat: () => process.stderr.write('orchestrator-pr: awaiting durable run completion\n') })
     completed = true; mark('run_completed')
@@ -323,6 +414,7 @@ export async function runScenario(o, r, deps = {}) {
     const rehydrated = await hydrate()
     const finalObservation = observeRun(rehydrated, sessionID, runID)
     lastObservation = finalObservation
+    check(!await consent(rehydrated, finalObservation), 'permission_after_completion')
     check(finalObservation.status === 'completed' && !finalObservation.failure, finalObservation.failure || 'run_completion_not_retained')
     verifyHistory(rehydrated); mark('history_rehydrate')
     assertSafeToolRouting(rehydrated.events_by_session?.[sessionID] || [], runID, o.scenario)

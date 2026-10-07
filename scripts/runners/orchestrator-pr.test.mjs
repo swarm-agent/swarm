@@ -600,7 +600,7 @@ test('runner failures preserve sanitized last state before independently bounded
       if (kind === 'deadline') snapshot.messages_by_session['owned-session'] = [{ global_seq: samples, role: 'assistant', metadata: { run_id: 'provider-run' } }]
       return Response.json(snapshot)
     }
-    const expected = kind === 'deadline' ? 'stage_deadline_work_retained' : kind === 'permission' ? 'run_permission_pending'
+    const expected = kind === 'deadline' ? 'stage_deadline_work_retained' : kind === 'permission' ? 'permission_identity_rejected'
       : kind === 'missing' ? 'missing_run_evidence' : kind === 'foreign' ? 'foreign_run_evidence' : kind === 'stop_failure' ? 'run_failed' : `run_${kind}`
     await assert.rejects(runScenario(o, receipt, { fetch, verifyCandidate: () => {}, now: () => clock, pause: async ms => { clock += ms } }), new RegExp(`^Error: ${expected}$`))
     assert.ok(stopSignal)
@@ -671,5 +671,148 @@ test('invalid or foreign admission never authorizes an owned-run stop', { timeou
     await assert.rejects(runScenario(options, receipt, { fetch, verifyCandidate: () => {} }), /^Error: run_not_admitted$/)
     assert.equal(receipt.assertions.find(a => a.name === 'run_admitted').passed, false)
     assert.ok(!p.calls.some(c => c.route.endsWith('/run/stop') || c.route === '/v3/sync/hydrate'))
+  }
+})
+
+// Purpose: runScenario's explicit fixture consent must bind PermissionRecord's
+// original executor call to the owned session/run/project/source, then require
+// durable completion and pending-task zero intents. This transport-level test
+// exercises the real runner, not backend transactional correctness or live AI.
+function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = false, resolution = 'allow', missing = false, badOutcome = false, batch = '', changed = false, fallback = false } = {}) {
+  const p = protocol(o, o.scenario), resolutions = []
+  let clock = 0, samples = 0, index = 0, resolved = false
+  const args = [
+    { action: 'list_sources', project_id: 'project' },
+    { action: 'inspect_source', project_id: 'project', workspace_path: o.workspacePath, workspace_id: 'source', workspace_generation: 1 },
+    { action: 'propose_task', project_id: 'project', title: 'PR-' + o.runID, workspace_path: o.workspacePath,
+      workspace_id: 'source', workspace_generation: 1, agent: 'swarm', feature_size: 'big', auto_approve: false,
+      prompt: 'Add a short README explanation later.' },
+  ]
+  const record = () => {
+    const r = { id: 'permission-' + index, session_id: 'owned-session', run_id: 'provider-run', call_id: 'call-' + index,
+      step: index + 1, tool_name: 'manage_projects', status: 'pending', requirement: 'tool', mode: 'auto',
+      tool_arguments: JSON.stringify({ display_summary: 'SECRET non-authoritative summary' }), tool_call_arguments: JSON.stringify(args[index]) }
+    if (fallback) { r.tool_arguments = r.tool_call_arguments; delete r.tool_call_arguments }
+    if (changed && resolved) r.call_id = 'changed-call'
+    mutate(r, index)
+    return r
+  }
+  const fetch = async (url, init) => {
+    const route = new URL(url).pathname
+    if (/\/permissions\/[^/]+\/resolve$/.test(route)) {
+      const body = JSON.parse(init.body), r = record()
+      resolutions.push({ route, body })
+      assert.deepEqual(body, { action: 'allow_once', reason: 'Exact owned pending-only PR fixture call' })
+      if (resolution === 'http') return Response.json({ error: 'SECRET auth body' }, { status: 409 })
+      resolved = true
+      return Response.json({ ok: true, session_id: 'owned-session', saved_rule: resolution === 'rule',
+        permission: { ...r, status: resolution === 'deny' ? 'denied' : 'approved', decision: resolution === 'deny' ? 'deny' : 'allow_once',
+          ...(resolution === 'foreign' ? { run_id: 'foreign' } : {}) } })
+    }
+    const response = await p.fetch(url, init)
+    if (route === '/v1/swarm/topology') {
+      const result = await response.json()
+      Object.assign(result.workspace_bindings[0], { source_workspace_id: 'source', source_workspace_generation: 1 })
+      return Response.json(result)
+    }
+    if (route !== '/v3/sync/hydrate' || JSON.parse(init.body).session_ids[0] === 'task-session') {
+      if (badOutcome && route.endsWith('/tasks/task')) {
+        const result = await response.json(); result.task.status = 'in_progress'; return Response.json(result)
+      }
+      return response
+    }
+    samples++
+    if (resolved && !(duplicate || stale)) { index++; resolved = false }
+    else if (resolved && duplicate && !stale) { duplicate = false } // one stale snapshot, no second grant
+    if (index < args.length) {
+      const snapshot = runSnapshot(), r = record()
+      if (missing) {
+        delete snapshot.session_views_by_id
+        snapshot.events_by_session['owned-session'] = [{ event_type: 'permission.requested', payload: { run_id: 'provider-run', permission: r } }]
+      } else snapshot.session_views_by_id['owned-session'].pending_permissions = batch === 'duplicate' ? [r, r]
+        : batch === 'mixed' ? [r, { ...r, id: 'unsafe', call_id: 'unsafe', tool_name: 'task' }]
+          : batch === 'budget' ? Array.from({ length: 13 }, (_, i) => ({ ...r, id: 'p-' + i, call_id: 'c-' + i })) : [r]
+      return Response.json(snapshot)
+    }
+    const result = await response.json()
+    result.session_views_by_id = { 'owned-session': { pending_permissions: [] } }
+    // The canonical completed call retains the exact original JSON arguments.
+    result.events_by_session['owned-session'][0].payload.arguments = args[2]
+    return Response.json(result)
+  }
+  return { ...p, fetch, resolutions, samples: () => samples, deps: { fetch, verifyCandidate: () => {}, now: () => clock, pause: async ms => { clock += ms } } }
+}
+test('exact discovery and pending proposal receive only allow_once and require canonical outcome', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  for (const config of [{}, { duplicate: true }, { fallback: true }]) {
+    const o = { ...options, scenario: 'orchestrator-chat' }, r = createReceipt(o), p = consentProtocol(o, config)
+    await runScenario(o, r, p.deps)
+    assert.ok(r.assertions.every(a => a.passed))
+    assert.equal(p.resolutions.length, 3)
+    assert.equal(new Set(p.resolutions.map(c => c.route)).size, 3)
+    assert.ok(p.calls.some(c => c.route === '/v3/sync/hydrate' && c.body.session_ids[0] === 'task-session'))
+    assert.ok(!p.calls.some(c => /approve|deploy|resolve_all/.test(c.route) || c.route.endsWith('/run/stop')))
+    assert.ok(!JSON.stringify(r).includes('SECRET'))
+  }
+})
+
+// Purpose: no unsafe/ambiguous permission may cause any grant or successful
+// assertion. Unknown fields, wrong ownership, source identity, proposal semantics
+// and nested/string JSON are checked at the runner's per-call boundary; rejection
+// categories must not expose raw arguments, provider bodies or secret summaries.
+test('fixture permission rejects unsafe or ambiguous calls before any resolution', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  const changes = [
+    r => { r.tool_name = 'task' }, r => { r.session_id = 'foreign' }, r => { r.run_id = 'foreign' },
+    r => { delete r.call_id }, r => { delete r.id }, r => { r.status = 'approved' },
+    r => { r.tool_arguments = JSON.stringify({ approved_arguments: { action: 'deploy_task' } }) },
+    r => { r.approved_arguments = '{}' },
+    r => { r.tool_call_arguments = 'SECRET malformed JSON' }, r => { r.tool_call_arguments = JSON.stringify(JSON.stringify({ action: 'list_sources' })) },
+    r => { r.tool_call_arguments = JSON.stringify({ action: 'inspect_source', project_id: 'project', workspace_path: { path: options.workspacePath } }) },
+    ...['approve_task', 'accept_task', 'deploy_task', 'create_task', 'list', 'get', 'inspect_files'].map(action => r => {
+      r.tool_call_arguments = JSON.stringify({ action, project_id: 'project' })
+    }),
+    ...[
+      { project_id: 'foreign' }, { workspace_path: 'foreign' }, { workspace_id: 'foreign' }, { workspace_generation: 2 },
+      { title: 'foreign' }, { auto_approve: true }, { auto_approve: 'false' }, { auto_approve: null },
+      { agent: 'image' }, { feature_size: 'small' }, { task_program: {} }, { operation: 'create' }, { model: 'override' },
+      { deploy: false }, { approved_arguments: {} },
+    ].map(patch => r => { r.tool_call_arguments = JSON.stringify({ action: 'propose_task', project_id: 'project', title: 'PR-' + options.runID,
+      workspace_path: options.workspacePath, agent: 'swarm', feature_size: 'big', auto_approve: false, ...patch }) }),
+    ...['auto_approve', 'workspace_path', 'agent', 'feature_size'].map(key => r => {
+      const a = { action: 'propose_task', project_id: 'project', title: 'PR-' + options.runID, workspace_path: options.workspacePath,
+        agent: 'swarm', feature_size: 'big', auto_approve: false }; delete a[key]; r.tool_call_arguments = JSON.stringify(a)
+    }),
+  ]
+  for (const mutate of changes) {
+    const o = { ...options, scenario: 'orchestrator-chat' }, r = createReceipt(o), p = consentProtocol(o, { mutate })
+    await assert.rejects(runScenario(o, r, p.deps), /^Error: permission_[a-z_]+$/)
+    assert.equal(p.resolutions.length, 0)
+    assert.equal(p.samples(), 1)
+    assert.equal(r.assertions.find(a => a.name === 'run_completed').passed, false)
+    assert.ok(!JSON.stringify(r).includes('SECRET'))
+  }
+  for (const scenario of ['session-api', 'image', 'video', 'audio']) {
+    const o = { ...options, scenario }, r = createReceipt(o), p = consentProtocol(o)
+    await assert.rejects(runScenario(o, r, p.deps), /^Error: run_permission_pending$/)
+    assert.equal(p.resolutions.length, 0)
+  }
+})
+
+// Purpose: allow_once replies are not completion. A racing deny/foreign record,
+// unexpected saved rule, failed request, missing canonical call evidence or
+// repeated stale pending record must fail without a retry grant or false PASS.
+test('permission races failures and stale snapshots never become qualification success', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  for (const config of [{ resolution: 'http' }, { resolution: 'deny' }, { resolution: 'foreign' }, { resolution: 'rule' },
+    { stale: true }, { stale: true, changed: true }, { missing: true }, { badOutcome: true },
+    { batch: 'duplicate' }, { batch: 'mixed' }, { batch: 'budget' }]) {
+    const o = { ...options, scenario: 'orchestrator-chat' }, r = createReceipt(o), p = consentProtocol(o, config)
+    await assert.rejects(runScenario(o, r, p.deps), /^Error: (permission_[a-z_]+|task_not_pending)$/)
+    assert.equal(p.resolutions.length, config.missing || config.batch ? 0 : config.badOutcome ? 3 : 1)
+    assert.ok(p.samples() <= 5)
+    assert.notEqual(r.status, 'PASS')
+    assert.ok(r.assertions.some(a => !a.passed))
+    assert.ok(!JSON.stringify(r).includes('SECRET'))
   }
 })

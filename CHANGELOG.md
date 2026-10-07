@@ -5,6 +5,7 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Add bounded, exact-call `allow_once` consent for qualification Orchestrator source discovery and the owned pending-only Big Feature Swarm proposal; reject unknown, mismatched and stale permissions without bypass or saved rules, and retain canonical completion/zero-intent gates. Docs impact: none.
 - Observe qualification runs by exact canonical identity and semantic durable progress, fail promptly on blocked/permission states, and retain secret-safe pre-stop failure diagnostics without extending deadlines; add multi-snapshot observer regressions. This improves failure observation, not a proven repair of the underlying provider stall. Docs impact: none.
 - Namespace qualification runner project, session and message request keys by scenario and operation, preserving build receipt identity and deterministic retries; add shared-account collision regressions and allow required read-only Orchestrator source discovery. Docs impact: none.
 
