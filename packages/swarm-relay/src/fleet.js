@@ -285,14 +285,19 @@ export class Fleet extends DurableObject {
       inputSchema: { type: 'object', additionalProperties: false, properties: {} },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     };
-    const devices = this.devices();
-    let deviceTools = [];
-    if (devices.length > 0) {
-      const body = await this.forward(devices[0], { jsonrpc: '2.0', id: crypto.randomUUID(), method: 'tools/list' }, { scope: scopes });
-      deviceTools = Array.isArray(body?.result?.tools) ? body.result.tools : [];
+    // Machines filter tools by their own ceilings, so list the union across
+    // every online machine; each machine still refuses calls beyond its own.
+    const lists = await Promise.all(
+      this.devices().map((device) => this.forward(device, { jsonrpc: '2.0', id: crypto.randomUUID(), method: 'tools/list' }, { scope: scopes })),
+    );
+    const deviceTools = new Map();
+    for (const body of lists) {
+      for (const tool of Array.isArray(body?.result?.tools) ? body.result.tools : []) {
+        if (tool?.name && !deviceTools.has(tool.name)) deviceTools.set(tool.name, tool);
+      }
     }
     const tools = [machineTool];
-    for (const tool of deviceTools) {
+    for (const tool of deviceTools.values()) {
       if (!scopes.includes(toolScope(tool.name)) || tool.name === machineTool.name) continue;
       const schema = structuredClone(tool.inputSchema || { type: 'object', properties: {} });
       schema.properties = { ...(schema.properties || {}), machine: { type: 'string', maxLength: 100, description: 'Machine id from swarm_list_machines; required when more than one machine is online.' } };
