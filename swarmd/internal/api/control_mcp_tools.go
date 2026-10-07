@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -21,19 +22,42 @@ import (
 const (
 	controlMCPMaxCheckpoints = 30
 	controlMCPMaxListItems   = 50
+	controlMCPMaxWaitSeconds = 45
+	controlMCPMaxModels      = 40
+	controlMCPMaxChildren    = 20
 )
+
+// Roles whose default model an AI client may change, mapped to the canonical
+// agent-model-settings patch slot.
+var controlMCPAgentModelRoles = map[string][2]string{
+	"swarm":               {"swarm", "action"},
+	"system-orchestrator": {"swarm", "plan"},
+	"system-coder":        {"system_agents", "coder"},
+	"system-finder":       {"system_agents", "finder"},
+	"system-designer":     {"system_agents", "designer"},
+	"system-compact":      {"system_agents", "compact"},
+	"system-router":       {"system_agents", "router"},
+}
+
+var controlMCPSessionAgents = []string{"swarm", "system-orchestrator", "system-coder", "system-designer", "system-finder"}
 
 var controlMCPSafeID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,200}$`)
 
 // Literal segments must match exactly; "*" matches one id segment. Worker
-// acceptance, token minting, import/migrate and capability grants are absent
-// on purpose: they are owner approval and credential surfaces.
+// acceptance, token minting, import/migrate, capability grants, credentials,
+// permission policy (rules, bypass) and the account default model are absent
+// on purpose: they are owner approval, credential and policy surfaces.
 var controlMCPRoutes = []string{
 	"GET v1/workspace/list",
+	"GET v1/providers",
+	"GET v1/model/catalog",
+	"GET v1/agent-model-settings",
+	"PATCH v1/agent-model-settings",
 	"GET v3/sessions",
 	"POST v3/sessions",
 	"GET v3/sessions/*",
 	"POST v3/sessions/*/messages",
+	"POST v3/sessions/*/preference",
 	"POST v3/sessions/*/run/stop",
 	"POST v3/sessions/*/permissions/*/resolve",
 	"POST v3/sessions/*/plans",
@@ -41,11 +65,17 @@ var controlMCPRoutes = []string{
 	"POST v3/sessions/*/plan-mode/plans/*/start-automatic",
 	"GET v3/projects",
 	"POST v3/projects",
+	"POST v3/projects/*/sessions",
+	"GET v3/projects/*/tasks",
 	"GET v3/workers",
 	"POST v3/workers",
 	"GET v3/workers/*",
 	"PUT v3/workers/*",
+	"GET v3/workers/*/summary",
 	"POST v3/workers/*/activate",
+	"POST v3/workers/*/automations",
+	"POST v3/workers/*/automations/*/enable",
+	"POST v3/workers/*/automations/*/disable",
 	"POST v3/workers/*/pause",
 	"POST v3/workers/*/resume",
 	"POST v3/workers/*/archive",
@@ -135,7 +165,7 @@ func controlMCPSessionSummary(session map[string]any) map[string]any {
 }
 
 func controlMCPPermissionSummary(record map[string]any) map[string]any {
-	summary := controlMCPPick(record, "id", "tool_name")
+	summary := controlMCPPick(record, "id", "tool_name", "requirement")
 	if args, ok := record["tool_arguments"].(string); ok {
 		summary["tool_arguments"] = controlMCPTruncate(args, controlMCPArgumentLimit)
 	}
@@ -265,6 +295,24 @@ var (
 	controlMCPDestructive = map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false}
 )
 
+func controlMCPWaitProp() map[string]any {
+	return map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds for the run to finish or ask for approval, then return the session's latest state. Default 0 (return at once)."}
+}
+
+func controlMCPScheduleSchema() map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": "Run scheduled_plan automatically: kind interval (interval_seconds, at least 60) or cron (5-field cron and an IANA timezone).",
+		"required":    []string{"kind"},
+		"properties": map[string]any{
+			"kind":             map[string]any{"type": "string", "enum": []string{"interval", "cron"}},
+			"interval_seconds": map[string]any{"type": "integer", "minimum": 60},
+			"cron":             map[string]any{"type": "string", "maxLength": 100},
+			"timezone":         map[string]any{"type": "string", "maxLength": 100},
+		},
+	}
+}
+
 func controlMCPPlanSchema() map[string]any {
 	stringList := func(description string) map[string]any {
 		return map[string]any{"type": "array", "maxItems": 20, "items": map[string]any{"type": "string", "maxLength": 1000}, "description": description}
@@ -298,7 +346,10 @@ func controlMCPPlanSchema() map[string]any {
 func controlMCPTools() []controlMCPTool {
 	sessionID := controlMCPStringProp("From list_sessions or start_session.", 1, 200)
 	workerID := controlMCPStringProp("From list_workers.", 1, 200)
-	agentProp := controlMCPStringProp("swarm (default: plans and delegates to sub-agents), system-coder, system-designer or system-finder.", 0, 100)
+	agentProp := map[string]any{"type": "string", "enum": controlMCPSessionAgents, "description": "swarm (default) works in one workspace and delegates to sub-agents; system-orchestrator runs a project (needs project_id), turning work into tasks for agents and workers; system-coder, system-designer and system-finder work alone."}
+	providerProp := controlMCPStringProp("Provider id from list_models.", 0, 100)
+	modelProp := controlMCPStringProp("Model from list_models (needs provider).", 0, 200)
+	thinkingProp := controlMCPStringProp("One of the model's thinking options from list_models.", 0, 50)
 	return []controlMCPTool{
 		{
 			Name: "swarm_list_workspaces", Title: "List workspaces",
@@ -315,22 +366,28 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_get_session", Title: "Read a session",
-			Description: "Session state, active run, plan progress, pending permission requests and the last messages (truncated; tool results summarized).",
+			Description: "Session state, model, active run, plan progress, pending permission requests and questions, delegated child sessions or project tasks, and the last messages (truncated; tool results summarized).",
 			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{
-				"session_id": sessionID,
-				"messages":   map[string]any{"type": "integer", "minimum": 0, "maximum": 30, "description": "Recent messages to include. Default 5."},
+				"session_id":   sessionID,
+				"messages":     map[string]any{"type": "integer", "minimum": 0, "maximum": 30, "description": "Recent messages to include. Default 5."},
+				"wait_seconds": controlMCPWaitProp(),
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPGetSession,
 		},
 		{
 			Name: "swarm_start_session", Title: "Start work in a new session",
-			Description: "Create a session in a workspace and start it with either a prompt or a plan (not both). With a plan, Swarm executes every checkpoint automatically. Returns at once.",
-			InputSchema: controlMCPObject([]string{"workspace_path"}, map[string]any{
-				"workspace_path": controlMCPStringProp("Absolute path from list_workspaces.", 1, 4096),
+			Description: "Create a session and start it with either a prompt or a plan (not both). Regular sessions need workspace_path; orchestrator sessions (agent system-orchestrator) need project_id instead. With a plan, Swarm executes every checkpoint automatically. Optionally pick the model; otherwise the role default from list_models applies.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"workspace_path": controlMCPStringProp("Absolute path from list_workspaces (regular sessions).", 0, 4096),
+				"project_id":     controlMCPStringProp("From list_projects (orchestrator sessions).", 0, 200),
 				"prompt":         controlMCPStringProp("The task, for unplanned work.", 0, 100000),
 				"plan":           controlMCPPlanSchema(),
 				"agent":          agentProp,
 				"title":          controlMCPStringProp("", 0, 200),
+				"provider":       providerProp,
+				"model":          modelProp,
+				"thinking":       thinkingProp,
+				"wait_seconds":   controlMCPWaitProp(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPStartSession,
 		},
@@ -341,6 +398,7 @@ func controlMCPTools() []controlMCPTool {
 				"session_id":        sessionID,
 				"content":           controlMCPStringProp("", 1, 100000),
 				"client_request_id": controlMCPStringProp("Idempotency key; reuse when retrying.", 0, 200),
+				"wait_seconds":      controlMCPWaitProp(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSendMessage,
 		},
@@ -357,15 +415,46 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPDestructive, call: controlMCPStopRun,
 		},
 		{
-			Name: "swarm_resolve_permission", Title: "Approve or deny one tool call",
-			Description: "Resolve one pending permission from get_session, once. Read its tool_arguments first. No persistent rules.",
+			Name: "swarm_resolve_permission", Title: "Approve, deny or answer one pending request",
+			Description: "Resolve one pending permission from get_session, once. Read its tool_arguments first. For an agent question (tool ask_user) use allow_once with answer. No persistent rules.",
 			InputSchema: controlMCPObject([]string{"session_id", "permission_id", "action"}, map[string]any{
 				"session_id":    sessionID,
 				"permission_id": controlMCPStringProp("", 1, 200),
 				"action":        map[string]any{"type": "string", "enum": []string{"allow_once", "deny_once"}},
 				"reason":        controlMCPStringProp("Shown to the agent.", 0, 500),
+				"answer":        controlMCPStringProp("Reply to an ask_user question (allow_once only).", 0, 10000),
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPResolvePermission,
+		},
+		{
+			Name: "swarm_list_models", Title: "List models and role defaults",
+			Description: "Connected providers with their models and thinking options, and the default model of each agent role.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"provider": controlMCPStringProp("Only this provider.", 0, 100),
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPListModels,
+		},
+		{
+			Name: "swarm_set_session_model", Title: "Change a session's model",
+			Description: "Switch an existing session to another model and thinking level; applies from its next run.",
+			InputSchema: controlMCPObject([]string{"session_id", "provider", "model"}, map[string]any{
+				"session_id": sessionID,
+				"provider":   providerProp,
+				"model":      modelProp,
+				"thinking":   thinkingProp,
+			}),
+			Annotations: controlMCPWrites, call: controlMCPSetSessionModel,
+		},
+		{
+			Name: "swarm_set_agent_model", Title: "Change an agent role's default model",
+			Description: "Set the account default model for one agent role (new sessions and delegated work use it).",
+			InputSchema: controlMCPObject([]string{"role", "provider", "model"}, map[string]any{
+				"role":     map[string]any{"type": "string", "enum": []string{"swarm", "system-orchestrator", "system-coder", "system-finder", "system-designer", "system-compact", "system-router"}},
+				"provider": providerProp,
+				"model":    modelProp,
+				"thinking": thinkingProp,
+			}),
+			Annotations: controlMCPWrites, call: controlMCPSetAgentModel,
 		},
 		{
 			Name: "swarm_list_projects", Title: "List projects",
@@ -392,19 +481,21 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_get_worker", Title: "Read a worker or one of its runs",
-			Description: "Without run_id: the worker and its 5 latest runs. With run_id: that run's status, session_id (read it with get_session), error and deliverables.",
+			Description: "Without run_id: the worker, its schedules, next scheduled run and 5 latest runs. With run_id: that run's status, session_id (read it with get_session), error and deliverables.",
 			InputSchema: controlMCPObject([]string{"worker_id"}, map[string]any{"worker_id": workerID, "run_id": controlMCPStringProp("", 0, 200)}),
 			Annotations: controlMCPReadOnly, call: controlMCPGetWorker,
 		},
 		{
 			Name: "swarm_create_worker", Title: "Create a worker",
-			Description: "Create a durable worker with standing instructions, bound to one workspace and ready for tasks. The workspace must belong to a project (or pass project_id). Workers cannot be granted extra tool capabilities here.",
+			Description: "Create a durable worker with standing instructions, bound to one workspace and ready for tasks. The workspace must belong to a project (or pass project_id). Optionally give it a schedule and the plan each scheduled run executes; the schedule starts enabled. Workers cannot be granted extra tool capabilities here.",
 			InputSchema: controlMCPObject([]string{"name", "instructions", "workspace_path"}, map[string]any{
 				"name":           controlMCPStringProp("", 1, 256),
 				"instructions":   controlMCPStringProp("What this worker does and how; applies to every task.", 1, 20000),
 				"description":    controlMCPStringProp("", 0, 1000),
 				"workspace_path": controlMCPStringProp("Workspace it works in (list_workspaces).", 1, 4096),
 				"project_id":     controlMCPStringProp("Needed only if the workspace is in several projects.", 0, 200),
+				"schedule":       controlMCPScheduleSchema(),
+				"scheduled_plan": controlMCPPlanSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPCreateWorker,
 		},
@@ -420,12 +511,13 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPWrites, call: controlMCPUpdateWorker,
 		},
 		{
-			Name: "swarm_manage_worker", Title: "Pause, resume, archive or delete a worker, or cancel a run",
-			Description: "Lifecycle control. cancel_run needs run_id.",
+			Name: "swarm_manage_worker", Title: "Pause, resume, archive or delete a worker, cancel a run, or switch a schedule",
+			Description: "Lifecycle control. cancel_run needs run_id; enable_schedule and disable_schedule need schedule_id (from get_worker).",
 			InputSchema: controlMCPObject([]string{"worker_id", "action"}, map[string]any{
-				"worker_id": workerID,
-				"action":    map[string]any{"type": "string", "enum": []string{"pause", "resume", "archive", "delete", "cancel_run"}},
-				"run_id":    controlMCPStringProp("", 0, 200),
+				"worker_id":   workerID,
+				"action":      map[string]any{"type": "string", "enum": []string{"pause", "resume", "archive", "delete", "cancel_run", "enable_schedule", "disable_schedule"}},
+				"run_id":      controlMCPStringProp("", 0, 200),
+				"schedule_id": controlMCPStringProp("", 0, 200),
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPManageWorker,
 		},
@@ -519,12 +611,35 @@ func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	limit := controlMCPInt(args, "messages", 5)
+	settled, err := c.waitForSession(sessionID, controlMCPInt(args, "wait_seconds", 0))
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.sessionState(sessionID, controlMCPInt(args, "messages", 5))
+	if err != nil {
+		return nil, err
+	}
+	if settled != nil {
+		out["waited"] = settled
+	}
+	return out, nil
+}
+
+// sessionState is the get_session view: summary, model, run, pending
+// requests, plan, delegated children and the latest messages.
+func (c *controlMCPCall) sessionState(sessionID string, limit int) (map[string]any, error) {
 	response, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {strconv.Itoa(limit)}, "event_limit": {"0"}}, nil)
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"session": controlMCPSessionSummary(controlMCPMap(response["session"]))}
+	session := controlMCPMap(response["session"])
+	out := map[string]any{"session": controlMCPSessionSummary(session)}
+	if preference := controlMCPPick(controlMCPMap(session["preference"]), "provider", "model", "thinking"); len(preference) > 0 {
+		out["model"] = preference
+	}
+	if children := c.sessionChildren(sessionID, controlMCPMap(session["metadata"])); len(children) > 0 {
+		out["children"] = children
+	}
 	if intent := controlMCPRunIntentSummary(controlMCPMap(response["active_run_intent"])); intent != nil {
 		out["active_run"] = intent
 	}
@@ -565,6 +680,136 @@ func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
 	return out, nil
 }
 
+// sessionChildren lists work a session delegated: project tasks for an
+// orchestrator, otherwise sessions whose metadata names it as parent. Both
+// reads go through the caller's own scoped routes; failures omit the field.
+func (c *controlMCPCall) sessionChildren(sessionID string, metadata map[string]any) []map[string]any {
+	children := []map[string]any{}
+	projectID, _ := metadata["project_id"].(string)
+	if role, _ := metadata["role"].(string); role == "project_orchestrator" && controlMCPSafeID.MatchString(projectID) && !controlMCPReservedIDs[projectID] {
+		response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
+		if err != nil {
+			return nil
+		}
+		for _, raw := range controlMCPList(response["tasks"]) {
+			task := controlMCPMap(raw)
+			if task == nil || task["origin_session_id"] != sessionID {
+				continue
+			}
+			children = append(children, controlMCPPick(task, "id", "title", "status", "agent", "session_id", "worker_name"))
+			if len(children) >= controlMCPMaxChildren {
+				break
+			}
+		}
+		return children
+	}
+	response, err := c.dispatch(http.MethodGet, "/v3/sessions", url.Values{"limit": {"100"}}, nil)
+	if err != nil {
+		return nil
+	}
+	for _, item := range controlMCPList(response["sessions"]) {
+		child := controlMCPMap(controlMCPMap(item)["session"])
+		if child == nil || controlMCPMap(child["metadata"])["parent_session_id"] != sessionID {
+			continue
+		}
+		children = append(children, controlMCPSessionSummary(child))
+		if len(children) >= controlMCPMaxChildren {
+			break
+		}
+	}
+	return children
+}
+
+// waitForSession blocks up to seconds until the session has no active run or
+// has a pending request. It wakes on committed V3 outbox records (no timer
+// polling) and re-reads state through dispatch, so ownership checks decide.
+// It returns nil when no wait was requested.
+func (c *controlMCPCall) waitForSession(sessionID string, seconds int) (map[string]any, error) {
+	if seconds <= 0 {
+		return nil, nil
+	}
+	if seconds > controlMCPMaxWaitSeconds {
+		seconds = controlMCPMaxWaitSeconds
+	}
+	var hub *v3RealtimeOutboxHub
+	if c.server != nil {
+		hub = c.server.v3RealtimeOutbox
+	}
+	sub := hub.subscribe()
+	defer hub.unsubscribe(sub)
+	settled := func() (bool, error) {
+		detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil)
+		if err != nil {
+			return false, err
+		}
+		return controlMCPMap(detail["active_run_intent"]) == nil || len(controlMCPList(detail["pending_permissions"])) > 0, nil
+	}
+	done, err := settled()
+	if err != nil || done || sub == nil {
+		return map[string]any{"settled": done}, err
+	}
+	timer := time.NewTimer(time.Duration(seconds) * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case record := <-sub.send:
+			if record.SessionID != sessionID {
+				continue
+			}
+			if done, err = settled(); err != nil || done {
+				return map[string]any{"settled": done}, err
+			}
+		case <-sub.slow:
+			done, err = settled()
+			return map[string]any{"settled": done}, err
+		case <-timer.C:
+			return map[string]any{"settled": false, "timed_out": true}, nil
+		case <-c.request.Context().Done():
+			return map[string]any{"settled": false}, nil
+		}
+	}
+}
+
+// modelPreference validates an optional provider/model/thinking choice
+// against the live catalog and returns the canonical preference, or nil when
+// no model was given.
+func (c *controlMCPCall) modelPreference(args map[string]any) (map[string]any, error) {
+	provider, model, thinking := controlMCPString(args, "provider"), controlMCPString(args, "model"), controlMCPString(args, "thinking")
+	if model == "" {
+		if provider != "" || thinking != "" {
+			return nil, controlMCPToolFailure("give model (with provider) to choose a model")
+		}
+		return nil, nil
+	}
+	if provider == "" {
+		return nil, controlMCPToolFailure("model needs provider (see list_models)")
+	}
+	response, err := c.dispatch(http.MethodGet, "/v1/model/catalog", url.Values{"provider": {provider}, "model": {model}}, nil)
+	if err != nil {
+		return nil, controlMCPToolFailure("model %s/%s is not in the catalog (see list_models)", provider, model)
+	}
+	record := controlMCPMap(controlMCPMap(response["lookup"])["record"])
+	if record == nil {
+		return nil, controlMCPToolFailure("model %s/%s is not in the catalog (see list_models)", provider, model)
+	}
+	if thinking == "" {
+		thinking, _ = record["default_thinking"].(string)
+	} else {
+		allowed := false
+		for _, option := range controlMCPList(record["thinking_options"]) {
+			allowed = allowed || option == thinking
+		}
+		if !allowed {
+			return nil, controlMCPToolFailure("thinking %q is not offered by %s (see list_models)", thinking, model)
+		}
+	}
+	preference := map[string]any{"provider": provider, "model": model}
+	if thinking != "" {
+		preference["thinking"] = thinking
+	}
+	return preference, nil
+}
+
 func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error) {
 	prompt := controlMCPString(args, "prompt")
 	plan, hasPlan := args["plan"].(map[string]any)
@@ -582,6 +827,10 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 	if agent == "" {
 		agent = "swarm"
 	}
+	preference, err := c.modelPreference(args)
+	if err != nil {
+		return nil, err
+	}
 	title := controlMCPString(args, "title")
 	if title == "" && document != nil {
 		title = document.Title
@@ -589,14 +838,38 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 	body := map[string]any{
 		"client_request_id": controlMCPRequestID(),
 		"agent_name":        agent,
-		"workspace_path":    controlMCPString(args, "workspace_path"),
 		// Always auto: callers bring their own plan instead of plan mode.
 		"mode": "auto",
 	}
 	if title != "" {
 		body["title"] = title
 	}
-	created, err := c.dispatch(http.MethodPost, "/v3/sessions", nil, body)
+	if preference != nil {
+		body["preference"] = preference
+	}
+	// Orchestrators run a project (server-stamped project identity, no
+	// workspace fields); every other agent runs in one workspace.
+	createPath := "/v3/sessions"
+	if agent == "system-orchestrator" {
+		if controlMCPString(args, "workspace_path") != "" {
+			return nil, controlMCPToolFailure("orchestrator sessions take project_id, not workspace_path")
+		}
+		projectID, err := controlMCPID(args, "project_id")
+		if err != nil {
+			return nil, controlMCPToolFailure("orchestrator sessions need project_id (see list_projects)")
+		}
+		createPath = "/v3/projects/" + projectID + "/sessions"
+	} else {
+		if controlMCPString(args, "project_id") != "" {
+			return nil, controlMCPToolFailure("project_id applies only to agent system-orchestrator")
+		}
+		workspacePath := controlMCPString(args, "workspace_path")
+		if workspacePath == "" {
+			return nil, controlMCPToolFailure("workspace_path is required (see list_workspaces)")
+		}
+		body["workspace_path"] = workspacePath
+	}
+	created, err := c.dispatch(http.MethodPost, createPath, nil, body)
 	if err != nil {
 		return nil, err
 	}
@@ -609,13 +882,29 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 			return nil, controlMCPToolFailure("session %s created but the plan did not start: %s", sessionID, err.Error())
 		}
 		out["plan"] = started
-		return out, nil
+		return c.withWait(out, sessionID, args)
 	}
 	run, err := c.sendMessage(sessionID, prompt, controlMCPRequestID())
 	if err != nil {
 		return nil, controlMCPToolFailure("session %s created but the prompt was not accepted: %s", sessionID, err.Error())
 	}
 	out["run"] = run
+	return c.withWait(out, sessionID, args)
+}
+
+// withWait honours wait_seconds after work was started: it waits, then
+// attaches the session's latest state (including the reply).
+func (c *controlMCPCall) withWait(out map[string]any, sessionID string, args map[string]any) (any, error) {
+	settled, err := c.waitForSession(sessionID, controlMCPInt(args, "wait_seconds", 0))
+	if err != nil || settled == nil {
+		return out, nil
+	}
+	state, err := c.sessionState(sessionID, 3)
+	if err != nil {
+		return out, nil
+	}
+	state["waited"] = settled
+	out["latest"] = state
 	return out, nil
 }
 
@@ -648,7 +937,31 @@ func controlMCPSendMessage(c *controlMCPCall, args map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"session_id": sessionID, "client_request_id": requestID, "run": run}, nil
+	return c.withWait(map[string]any{"session_id": sessionID, "client_request_id": requestID, "run": run}, sessionID, args)
+}
+
+func controlMCPSetSessionModel(c *controlMCPCall, args map[string]any) (any, error) {
+	sessionID, err := controlMCPID(args, "session_id")
+	if err != nil {
+		return nil, err
+	}
+	preference, err := c.modelPreference(args)
+	if err != nil {
+		return nil, err
+	}
+	preference["client_request_id"] = controlMCPRequestID()
+	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "preference"), nil, preference)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"session_id": sessionID}
+	if applied := controlMCPPick(controlMCPMap(controlMCPMap(response["session"])["preference"]), "provider", "model", "thinking"); len(applied) > 0 {
+		out["model"] = applied
+	} else {
+		delete(preference, "client_request_id")
+		out["model"] = preference
+	}
+	return out, nil
 }
 
 // controlMCPPlanDocument turns the caller's plan into an executable Swarm plan
@@ -788,9 +1101,17 @@ func controlMCPResolvePermission(c *controlMCPCall, args map[string]any) (any, e
 	if err != nil {
 		return nil, err
 	}
-	body := map[string]any{"action": controlMCPString(args, "action")}
+	action := controlMCPString(args, "action")
+	body := map[string]any{"action": action}
 	if reason := controlMCPString(args, "reason"); reason != "" {
 		body["reason"] = reason
+	}
+	// ask_user takes the permission message of an allow as its free-text reply.
+	if answer := controlMCPString(args, "answer"); answer != "" {
+		if action != "allow_once" {
+			return nil, controlMCPToolFailure("answer needs action allow_once")
+		}
+		body["reason"] = answer
 	}
 	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "permissions", permissionID, "resolve"), nil, body)
 	if err != nil {
@@ -801,6 +1122,81 @@ func controlMCPResolvePermission(c *controlMCPCall, args map[string]any) (any, e
 		out["status"] = record["status"]
 	}
 	return out, nil
+}
+
+// ---- models --------------------------------------------------------------
+
+func controlMCPListModels(c *controlMCPCall, args map[string]any) (any, error) {
+	// Provider, catalog and model-settings handlers check no scope.
+	if err := c.requireTokenScope("sessions:read"); err != nil {
+		return nil, err
+	}
+	only := controlMCPString(args, "provider")
+	response, err := c.dispatch(http.MethodGet, "/v1/providers", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	providers := []map[string]any{}
+	for _, raw := range controlMCPList(response["providers"]) {
+		provider := controlMCPMap(raw)
+		id, _ := provider["id"].(string)
+		if runnable, _ := provider["runnable"].(bool); !runnable || id == "" || (only != "" && id != only) {
+			continue
+		}
+		entry := controlMCPPick(provider, "id", "default_model", "default_thinking")
+		catalog, err := c.dispatch(http.MethodGet, "/v1/model/catalog", url.Values{"provider": {id}, "limit": {strconv.Itoa(controlMCPMaxModels)}}, nil)
+		if err == nil {
+			models := []map[string]any{}
+			for _, record := range controlMCPList(catalog["records"]) {
+				if m := controlMCPPick(controlMCPMap(record), "model", "thinking_options", "default_thinking", "context_window"); len(m) > 0 {
+					models = append(models, m)
+				}
+			}
+			entry["models"] = models
+		}
+		providers = append(providers, entry)
+	}
+	out := map[string]any{"providers": providers}
+	if settings, err := c.dispatch(http.MethodGet, "/v1/agent-model-settings", nil, nil); err == nil {
+		assignments := controlMCPMap(settings["agent_model_settings"])
+		roles := []map[string]any{}
+		for _, raw := range controlMCPList(settings["roles"]) {
+			role := controlMCPMap(raw)
+			id, _ := role["id"].(string)
+			slot, ok := controlMCPAgentModelRoles[id]
+			if !ok {
+				continue
+			}
+			entry := controlMCPPick(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]), "provider", "model", "thinking")
+			entry["role"] = id
+			roles = append(roles, entry)
+		}
+		out["roles"] = roles
+	}
+	return out, nil
+}
+
+func controlMCPSetAgentModel(c *controlMCPCall, args map[string]any) (any, error) {
+	// The model-settings handler checks no scope; changing account defaults
+	// needs an explicit settings:write grant.
+	if err := c.requireTokenScope("settings:write"); err != nil {
+		return nil, err
+	}
+	role := controlMCPString(args, "role")
+	slot, ok := controlMCPAgentModelRoles[role]
+	if !ok {
+		return nil, controlMCPToolFailure("unknown role %q", role)
+	}
+	preference, err := c.modelPreference(args)
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.dispatch(http.MethodPatch, "/v1/agent-model-settings", nil, map[string]any{slot[0]: map[string]any{slot[1]: preference}})
+	if err != nil {
+		return nil, err
+	}
+	applied := controlMCPPick(controlMCPMap(controlMCPMap(controlMCPMap(response["agent_model_settings"])[slot[0]])[slot[1]]), "provider", "model", "thinking")
+	return map[string]any{"role": role, "model": applied}, nil
 }
 
 // ---- projects ------------------------------------------------------------
@@ -913,6 +1309,27 @@ func controlMCPGetWorker(c *controlMCPCall, args map[string]any) (any, error) {
 	if bindings := controlMCPMap(worker["local_bindings"]); len(bindings) > 0 {
 		out["workspace_bindings"] = bindings
 	}
+	schedules := []map[string]any{}
+	for _, raw := range controlMCPList(worker["automations"]) {
+		if automation := controlMCPMap(raw); automation != nil {
+			schedule := controlMCPPick(automation, "id", "name", "activation_mode", "enabled")
+			if spec := controlMCPPick(controlMCPMap(automation["schedule"]), "kind", "interval_seconds", "cron", "timezone"); len(spec) > 0 {
+				schedule["schedule"] = spec
+			}
+			schedules = append(schedules, schedule)
+		}
+	}
+	if len(schedules) > 0 {
+		out["schedules"] = schedules
+		if summary, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID+"/summary", nil, nil); err == nil {
+			if next, ok := summary["next_scheduled_at"]; ok && next != nil {
+				out["next_scheduled_at"] = next
+			}
+		}
+	}
+	if review := controlMCPMap(worker["pending_review"]); review != nil {
+		out["pending_owner_review"] = true
+	}
 	if runs, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID+"/runs", url.Values{"limit": {"5"}}, nil); err == nil {
 		recent := []map[string]any{}
 		for _, raw := range controlMCPList(runs["runs"]) {
@@ -930,7 +1347,48 @@ func controlMCPRevision(worker map[string]any) uint64 {
 	return uint64(value)
 }
 
+// controlMCPAutomation builds the scheduled job a worker runs from the
+// caller's schedule and plan; the store validates both again.
+func controlMCPAutomation(args map[string]any) (map[string]any, error) {
+	schedule, hasSchedule := args["schedule"].(map[string]any)
+	plan, hasPlan := args["scheduled_plan"].(map[string]any)
+	if !hasSchedule && !hasPlan {
+		return nil, nil
+	}
+	if !hasSchedule || !hasPlan {
+		return nil, controlMCPToolFailure("schedule and scheduled_plan go together")
+	}
+	document, err := controlMCPPlanDocument(plan)
+	if err != nil {
+		return nil, err
+	}
+	kind, _ := schedule["kind"].(string)
+	spec := map[string]any{"kind": kind}
+	switch kind {
+	case "interval":
+		seconds, _ := schedule["interval_seconds"].(float64)
+		if seconds < 60 || seconds != float64(int64(seconds)) {
+			return nil, controlMCPToolFailure("interval schedules need whole interval_seconds of at least 60")
+		}
+		spec["interval_seconds"] = int64(seconds)
+	case "cron":
+		expression, _ := schedule["cron"].(string)
+		timezone, _ := schedule["timezone"].(string)
+		if strings.TrimSpace(expression) == "" || strings.TrimSpace(timezone) == "" {
+			return nil, controlMCPToolFailure("cron schedules need cron and timezone")
+		}
+		spec["cron"], spec["timezone"] = strings.TrimSpace(expression), strings.TrimSpace(timezone)
+	default:
+		return nil, controlMCPToolFailure("schedule kind must be interval or cron")
+	}
+	return map[string]any{"name": "Scheduled: " + controlMCPTruncate(document.Title, 80), "activation_mode": kind, "schedule": spec, "plan_document": document}, nil
+}
+
 func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error) {
+	automation, err := controlMCPAutomation(args)
+	if err != nil {
+		return nil, err
+	}
 	workspaceID, err := c.workspaceID(controlMCPString(args, "workspace_path"))
 	if err != nil {
 		return nil, err
@@ -960,6 +1418,19 @@ func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if !controlMCPSafeID.MatchString(workerID) {
 		return nil, controlMCPToolFailure("worker created without a usable id")
 	}
+	// A schedule is attached while the worker is still pending so it is part
+	// of what activation approves; later changes to an active worker are
+	// staged for owner review.
+	if automation != nil {
+		attached, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/automations", nil, map[string]any{
+			"expected_worker_revision": controlMCPRevision(worker),
+			"automation":               automation,
+		})
+		if err != nil {
+			return nil, controlMCPToolFailure("worker %s created but its schedule was rejected: %s", workerID, err.Error())
+		}
+		worker = controlMCPMap(attached["worker"])
+	}
 	activated, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/activate", nil, map[string]any{
 		"expected_revision": controlMCPRevision(worker),
 		"local_bindings":    map[string]string{"primary": workspaceID},
@@ -967,7 +1438,26 @@ func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if err != nil {
 		return nil, controlMCPToolFailure("worker %s created but not activated: %s", workerID, err.Error())
 	}
-	return map[string]any{"worker": controlMCPWorkerSummary(controlMCPMap(activated["worker"]))}, nil
+	worker = controlMCPMap(activated["worker"])
+	out := map[string]any{"worker": controlMCPWorkerSummary(worker)}
+	if automation != nil {
+		scheduleID := ""
+		for _, raw := range controlMCPList(worker["automations"]) {
+			if a := controlMCPMap(raw); a != nil && a["name"] == automation["name"] {
+				scheduleID, _ = a["id"].(string)
+			}
+		}
+		if !controlMCPSafeID.MatchString(scheduleID) {
+			return nil, controlMCPToolFailure("worker %s activated but its schedule id is missing", workerID)
+		}
+		enabled, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/automations/"+scheduleID+"/enable", nil, map[string]any{"expected_worker_revision": controlMCPRevision(worker)})
+		if err != nil {
+			return nil, controlMCPToolFailure("worker %s activated but schedule %s was not enabled: %s", workerID, scheduleID, err.Error())
+		}
+		out["worker"] = controlMCPWorkerSummary(controlMCPMap(enabled["worker"]))
+		out["schedule_id"] = scheduleID
+	}
+	return out, nil
 }
 
 func controlMCPUpdateWorker(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1001,6 +1491,21 @@ func controlMCPManageWorker(c *controlMCPCall, args map[string]any) (any, error)
 		return nil, err
 	}
 	action := controlMCPString(args, "action")
+	if action == "enable_schedule" || action == "disable_schedule" {
+		scheduleID, err := controlMCPID(args, "schedule_id")
+		if err != nil {
+			return nil, err
+		}
+		worker, err := c.worker(workerID)
+		if err != nil {
+			return nil, err
+		}
+		response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/automations/"+scheduleID+"/"+strings.TrimSuffix(action, "_schedule"), nil, map[string]any{"expected_worker_revision": controlMCPRevision(worker)})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"worker": controlMCPWorkerSummary(controlMCPMap(response["worker"])), "schedule_id": scheduleID, "action": action}, nil
+	}
 	if action == "cancel_run" {
 		runID, err := controlMCPID(args, "run_id")
 		if err != nil {

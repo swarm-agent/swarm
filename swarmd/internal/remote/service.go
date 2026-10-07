@@ -54,17 +54,20 @@ var toolScopes = map[string]string{
 	"swarm_list_workers":       ScopeRead,
 	"swarm_get_worker":         ScopeRead,
 	"swarm_get_usage":          ScopeRead,
+	"swarm_list_models":        ScopeRead,
 	"swarm_start_session":      ScopeWrite,
 	"swarm_send_message":       ScopeWrite,
 	"swarm_run_plan":           ScopeWrite,
 	"swarm_stop_run":           ScopeWrite,
 	"swarm_assign_worker_task": ScopeWrite,
+	"swarm_set_session_model":  ScopeWrite,
 	"swarm_resolve_permission": ScopeApprove,
 	"swarm_create_project":     ScopeManage,
 	"swarm_create_worker":      ScopeManage,
 	"swarm_update_worker":      ScopeManage,
 	"swarm_manage_worker":      ScopeManage,
 	"swarm_set_usage_limits":   ScopeManage,
+	"swarm_set_agent_model":    ScopeManage,
 }
 
 func toolScope(name string) string {
@@ -261,7 +264,7 @@ func (s *Service) Init(in InitInput) (Status, error) {
 		scopes = append(scopes, "automations:write")
 	}
 	if in.AllowManage {
-		scopes = append(scopes, "usage:write")
+		scopes = append(scopes, "usage:write", "settings:write")
 	}
 	token, tokenID, err := s.tokens.Mint("swarm-remote "+name, scopes)
 	if err != nil {

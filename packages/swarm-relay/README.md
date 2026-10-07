@@ -17,7 +17,8 @@ AI client ──HTTPS + OAuth──► relay /mcp ──► Durable Object ◄�
   code; you approve it with `swarmctl remote approve CODE` on a machine you
   own. A stranger who finds the URL cannot authorize their own client.
 - Each machine enforces its own ceiling (`--allow-write`, `--allow-approve`,
-  `--allow-manage` for worker administration and usage limits)
+  `--allow-manage` for worker administration, usage limits and agent role
+  default models)
   on top of the scopes a client was granted, and executes tools through the
   same scoped-token Swarm Control handler as local clients.
 

@@ -41,7 +41,7 @@ func cmdRemote(args []string) error {
 	name := fs.String("name", "", "device name shown to AI clients")
 	allowWrite := fs.Bool("allow-write", false, "allow remote clients to create sessions, send messages and stop runs")
 	allowApprove := fs.Bool("allow-approve", false, "allow remote clients to approve or deny pending tool calls once")
-	allowManage := fs.Bool("allow-manage", false, "allow remote clients to create/update/delete workers and change daily usage limits")
+	allowManage := fs.Bool("allow-manage", false, "allow remote clients to create/update/delete workers, change daily usage limits and change agent role default models")
 	scopes := fs.String("scopes", "", "comma-separated scopes to grant (default: everything requested that this machine allows)")
 	positional := []string{}
 	for len(rest) > 0 {

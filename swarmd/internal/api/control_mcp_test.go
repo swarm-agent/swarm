@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +189,20 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 		{"foreign approval", write, "swarm_resolve_permission", map[string]any{"session_id": foreign.ID, "permission_id": foreignPending.ID, "action": "allow_once"}, "HTTP 404"},
 		{"cross-session approval", write, "swarm_resolve_permission", map[string]any{"session_id": own.ID, "permission_id": foreignPending.ID, "action": "allow_once"}, "HTTP 4"},
 		{"path traversal", write, "swarm_get_session", map[string]any{"session_id": "../auth/tokens"}, "not a valid id"},
+		{"agent model without settings grant", write, "swarm_set_agent_model", map[string]any{"role": "system-coder", "provider": "codex", "model": "m"}, "lacks the settings:write permission"},
+		{"models without session grant", workersOnly, "swarm_list_models", map[string]any{}, "lacks the sessions:read permission"},
+		{"orchestrator without project", write, "swarm_start_session", map[string]any{"agent": "system-orchestrator", "prompt": "hi"}, "need project_id"},
+		{"orchestrator in a workspace", write, "swarm_start_session", map[string]any{"agent": "system-orchestrator", "project_id": "p1", "workspace_path": "/project", "prompt": "hi"}, "not workspace_path"},
+		{"project on a regular session", write, "swarm_start_session", map[string]any{"workspace_path": "/project", "project_id": "p1", "prompt": "hi"}, "only to agent system-orchestrator"},
+		{"session without workspace", write, "swarm_start_session", map[string]any{"prompt": "hi"}, "workspace_path is required"},
+		{"model without provider", write, "swarm_start_session", map[string]any{"workspace_path": "/project", "prompt": "hi", "model": "m"}, "needs provider"},
+		{"internal agent", write, "swarm_start_session", map[string]any{"workspace_path": "/project", "prompt": "hi", "agent": "system-router"}, "must be one of"},
+		{"answer with deny", write, "swarm_resolve_permission", map[string]any{"session_id": own.ID, "permission_id": ownPending.ID, "action": "deny_once", "answer": "yes"}, "answer needs action allow_once"},
+		{"unbounded wait", read, "swarm_get_session", map[string]any{"session_id": own.ID, "wait_seconds": 999}, "at most 45"},
+		{"foreign wait", write, "swarm_get_session", map[string]any{"session_id": foreign.ID, "wait_seconds": 5}, "HTTP 404"},
+		{"schedule without plan", write, "swarm_create_worker", map[string]any{"name": "w", "instructions": "i", "workspace_path": "/project", "schedule": map[string]any{"kind": "interval", "interval_seconds": 60}}, "go together"},
+		{"sub-minute schedule", write, "swarm_create_worker", map[string]any{"name": "w", "instructions": "i", "workspace_path": "/project", "schedule": map[string]any{"kind": "interval", "interval_seconds": 30}, "scheduled_plan": map[string]any{"goal": "g", "checkpoints": []any{map[string]any{"title": "t", "objective": "o", "acceptance_criteria": []any{"done"}}}}}, "at least 60"},
+		{"schedule id traversal", write, "swarm_manage_worker", map[string]any{"worker_id": "wkr_1", "action": "enable_schedule", "schedule_id": "../token"}, "not a valid id"},
 	} {
 		got := call(tc.token, tc.tool, tc.args)
 		if !got.Result.IsError || len(got.Result.Content) == 0 || !strings.Contains(got.Result.Content[0].Text, tc.want) {
@@ -205,7 +221,10 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 		}
 	}
 	if sessions, err := s.sessions.ListSessionsForAccountUser(actor.AccountScopeID, actor.UserID, 50); err != nil || len(sessions) != 1 {
-		t.Fatalf("read grant created a session: %d", len(sessions))
+		t.Fatalf("rejected call created a session: %d", len(sessions))
+	}
+	if workers, err := s.sessions.ListWorkers(actor.AccountScopeID, pebblestore.ListWorkersQuery{Limit: 10}); err == nil && len(workers.Workers) != 0 {
+		t.Fatalf("rejected schedule created a worker: %d", len(workers.Workers))
 	}
 
 	// The daemon's own listeners serve the same surface for local clients, but
@@ -289,7 +308,30 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"POST", "/v3/workers/wkr_1/accept", false},
 		{"POST", "/v3/workers/wkr_1/token", false},
 		{"POST", "/v3/workers/import", false},
-		{"POST", "/v3/workers/wkr_1/automations", false},
+		{"POST", "/v3/workers/wkr_1/automations", true},
+		{"POST", "/v3/workers/wkr_1/automations/auto_1/enable", true},
+		{"PUT", "/v3/workers/wkr_1/automations/auto_1", false},
+		{"DELETE", "/v3/workers/wkr_1/automations/auto_1", false},
+		{"POST", "/v3/workers/wkr_1/automations/auto_1/trigger", false},
+		{"POST", "/v3/workers/wkr_1/trigger", false},
+		{"POST", "/v3/workers/wkr_1/test-run", false},
+		{"GET", "/v1/providers", true},
+		{"GET", "/v1/model/catalog", true},
+		{"POST", "/v1/model/catalog", false},
+		{"PATCH", "/v1/agent-model-settings", true},
+		{"POST", "/v1/agent-model-settings/restore-defaults", false},
+		{"POST", "/v1/model", false},
+		{"POST", "/v1/permissions/bypass", false},
+		{"POST", "/v1/permissions", false},
+		{"PUT", "/v1/permissions/capabilities", false},
+		{"POST", "/v1/onboarding/provider/credential", false},
+		{"POST", "/v3/sessions/abc/preference", true},
+		{"POST", "/v3/sessions/abc/settings", false},
+		{"PUT", "/v3/sessions/abc/model-profile", false},
+		{"POST", "/v3/sessions/abc/permissions/resolve_all", false},
+		{"POST", "/v3/projects/prj_1/sessions", true},
+		{"GET", "/v3/projects/prj_1/tasks", true},
+		{"POST", "/v3/projects/prj_1/tasks", false},
 		{"POST", "/v3/sessions/abc/plan-mode/enter", false},
 		{"POST", "/v3/sessions/abc/plan-mode/plans/plan_1/submit", false},
 		{"PUT", "/v3/usage/worker-budget", false},
@@ -337,6 +379,185 @@ func TestControlMCPPlanDocument(t *testing.T) {
 	} {
 		if _, err := controlMCPPlanDocument(plan); err == nil {
 			t.Fatalf("%s: accepted", name)
+		}
+	}
+}
+
+// controlMCPTestCaller drives Swarm Control through the container SDK handler
+// with a scoped token, as the relay device and local MCP clients do.
+func controlMCPTestCaller(t *testing.T, s *Server, token string) func(tool string, args map[string]any) (string, bool) {
+	t.Helper()
+	handler := s.ContainerSDKHandler()
+	return func(tool string, args map[string]any) (string, bool) {
+		t.Helper()
+		encoded, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": args}})
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7783/mcp", strings.NewReader(string(encoded)))
+		r.RemoteAddr = "192.0.2.1:40000"
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		var out struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || len(out.Result.Content) == 0 {
+			t.Fatalf("%s: HTTP %d %s", tool, w.Code, w.Body.String())
+		}
+		return out.Result.Content[0].Text, out.Result.IsError
+	}
+}
+
+// Requirement: a supervising AI can answer an agent's ask_user question once,
+// and the answer reaches the agent as the permission message of that exact
+// pending record; a read grant cannot answer. Threat: answering through a
+// read-only connection or turning an answer into a persistent rule. Owners:
+// controlMCPResolvePermission and the V3 permission resolve handler. The
+// in-process handler with real temporary stores is the narrowest layer that
+// covers scope, ownership and the stored decision together.
+func TestControlMCPAnswersAgentQuestion(t *testing.T) {
+	s, _, sec, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	permissionDB, err := pebblestore.Open(filepath.Join(t.TempDir(), "permissions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer permissionDB.Close()
+	s.perm = permission.NewService(pebblestore.NewPermissionStore(permissionDB), nil, nil)
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := pebblestore.SessionSnapshot{ID: "question-session", UserID: actor.UserID, AccountScopeID: actor.AccountScopeID, Title: "q", Mode: "auto"}
+	if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Session: &session, IdempotencyKey: "q-create", PayloadHash: "q-create", NowUnixMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.perm.CreatePending(permission.CreateInput{SessionID: session.ID, RunID: "q-run", CallID: "q-call", ToolName: "ask_user", ToolArguments: `{"questions":[{"id":"q1","question":"Which platform?"}]}`, Requirement: "approval", Mode: "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readToken, _, err := sec.CreateScopedToken("read", []string{"sessions:read"}, actor.AccountScopeID, actor.UserID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeToken, _, err := sec.CreateScopedToken("write", []string{"sessions:read", "sessions:write"}, actor.AccountScopeID, actor.UserID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"session_id": session.ID, "permission_id": pending.ID, "action": "allow_once", "answer": "Bluesky first"}
+	if text, isError := controlMCPTestCaller(t, s, readToken)("swarm_resolve_permission", args); !isError || !strings.Contains(text, "HTTP 403") {
+		t.Fatalf("read grant answered: %s", text)
+	}
+	if open, err := s.perm.ListPending(session.ID, 10); err != nil || len(open) != 1 {
+		t.Fatal("rejected answer changed the question")
+	}
+	detail, _ := controlMCPTestCaller(t, s, readToken)("swarm_get_session", map[string]any{"session_id": session.ID})
+	if !strings.Contains(detail, `"tool_name":"ask_user"`) || !strings.Contains(detail, "Which platform?") {
+		t.Fatalf("question not visible: %s", detail)
+	}
+	if text, isError := controlMCPTestCaller(t, s, writeToken)("swarm_resolve_permission", args); isError {
+		t.Fatalf("answer failed: %s", text)
+	}
+	records, err := s.perm.ListPermissions(session.ID, 10)
+	if err != nil || len(records) != 1 || records[0].Status == "pending" || records[0].Reason != "Bluesky first" {
+		t.Fatalf("answer not recorded on the exact question: %+v %v", records, err)
+	}
+}
+
+// Requirement: wait_seconds returns as soon as the session's run stops being
+// active, woken by committed V3 outbox records for that session (never a
+// timer poll), ignores other sessions' records, and stays bounded. Threat: a
+// tool call that hangs the relay, or wakes on another session's activity.
+// Owner: controlMCPCall.waitForSession over v3RealtimeOutboxHub. Run intents
+// are recorded through the canonical V3 mutation store; the wake is the same
+// hub publish the mutation path performs after commit.
+func TestControlMCPWaitForSession(t *testing.T) {
+	s, _, sec, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := pebblestore.SessionSnapshot{ID: "wait-session", UserID: actor.UserID, AccountScopeID: actor.AccountScopeID, Title: "w", Mode: "auto"}
+	if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Session: &session, IdempotencyKey: "w-create", PayloadHash: "w-create", NowUnixMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	record := func(status string) {
+		t.Helper()
+		if _, err := s.sessions.Store().ApplyV3SessionMutation(pebblestore.V3SessionMutationInput{SessionID: session.ID, UserID: actor.UserID, AccountScopeID: actor.AccountScopeID, Kind: pebblestore.V3SessionMutationRecordRunIntent, ClientRequestID: status, PayloadHash: status, RunIntent: &pebblestore.V3SessionRunIntent{RunID: "wait-run", Status: status}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	token, _, err := sec.CreateScopedToken("read", []string{"sessions:read"}, actor.AccountScopeID, actor.UserID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := controlMCPTestCaller(t, s, token)
+
+	// Idle session: returns at once, settled.
+	start := time.Now()
+	if text, isError := call("swarm_get_session", map[string]any{"session_id": session.ID, "wait_seconds": 30}); isError || !strings.Contains(text, `"waited":{"settled":true}`) || time.Since(start) > 5*time.Second {
+		t.Fatalf("idle wait: %s after %s", text, time.Since(start))
+	}
+
+	record(pebblestore.V3RunIntentPendingExecutor)
+	record(pebblestore.V3RunIntentRunning)
+	type result struct {
+		text    string
+		elapsed time.Duration
+	}
+	done := make(chan result, 1)
+	start = time.Now()
+	go func() {
+		text, _ := call("swarm_get_session", map[string]any{"session_id": session.ID, "wait_seconds": 30})
+		done <- result{text, time.Since(start)}
+	}()
+	// Wait until the call has subscribed, then wake it with another
+	// session's record: it must keep waiting.
+	for func() bool { s.v3RealtimeOutbox.mu.Lock(); defer s.v3RealtimeOutbox.mu.Unlock(); return len(s.v3RealtimeOutbox.subs) == 0 }() {
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.v3RealtimeOutbox.publish(pebblestore.V3RealtimeOutboxRecord{EndpointSeq: 1, SessionID: "other-session"})
+	select {
+	case got := <-done:
+		t.Fatalf("woke on another session: %s", got.text)
+	case <-time.After(200 * time.Millisecond):
+	}
+	record(pebblestore.V3RunIntentCompleted)
+	s.v3RealtimeOutbox.publish(pebblestore.V3RealtimeOutboxRecord{EndpointSeq: 2, SessionID: session.ID})
+	select {
+	case got := <-done:
+		if !strings.Contains(got.text, `"waited":{"settled":true}`) || got.elapsed > 10*time.Second {
+			t.Fatalf("completion wait: %s after %s", got.text, got.elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("wait did not wake on the session's committed record")
+	}
+	s.v3RealtimeOutbox.mu.Lock()
+	leaked := len(s.v3RealtimeOutbox.subs)
+	s.v3RealtimeOutbox.mu.Unlock()
+	if leaked != 0 {
+		t.Fatalf("wait leaked %d hub subscriptions", leaked)
+	}
+}
+
+// Requirement: every tool this daemon serves has an explicit scope in the
+// reference relay table, which the device mirrors (remote
+// TestToolScopesMatchRelay). Unknown names fall back to write, so a missing
+// entry would under-protect a manage tool. Owner: controlMCPTools and
+// packages/swarm-relay/src/protocol.js TOOL_SCOPES.
+func TestControlMCPServedToolsHaveRelayScopes(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "packages", "swarm-relay", "src", "protocol.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range controlMCPTools() {
+		if !regexp.MustCompile(`(?m)^\s+` + tool.Name + `:\s+SCOPE_[A-Z]+,$`).Match(source) {
+			t.Fatalf("%s has no explicit relay scope", tool.Name)
 		}
 	}
 }

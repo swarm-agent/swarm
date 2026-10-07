@@ -8,6 +8,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +123,41 @@ func TestInitStatusAndReset(t *testing.T) {
 	}
 	if len(tokens.revoked) != 1 || tokens.revoked[0] != "tok_device" {
 		t.Fatalf("device token not revoked: %v", tokens.revoked)
+	}
+	// Manage is the only ceiling that carries account-wide authority: spend
+	// limits and agent role default models.
+	if _, err := svc.Init(InitInput{RelayURL: "https://relay.example.com", DeviceName: "box", AllowManage: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(tokens.minted[1], ","); got != "sessions:read,automations:read,automations:write,usage:write,settings:write" {
+		t.Fatalf("manage device minted %s", got)
+	}
+}
+
+// Requirement: every Swarm Control tool has an explicit scope, identical on
+// the device and in the reference relay. toolScope falls back to write for
+// unknown names, so a missing entry would expose a manage tool (for example
+// agent role defaults) to write-only clients. Owners: toolScopes here and
+// TOOL_SCOPES in packages/swarm-relay/src/protocol.js. Comparing the two
+// checked-in tables is the narrowest layer; the api package checks that every
+// served tool appears in the relay table.
+func TestToolScopesMatchRelay(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "packages", "swarm-relay", "src", "protocol.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	constants := map[string]string{"SCOPE_READ": ScopeRead, "SCOPE_WRITE": ScopeWrite, "SCOPE_APPROVE": ScopeApprove, "SCOPE_MANAGE": ScopeManage}
+	relay := map[string]string{}
+	for _, match := range regexp.MustCompile(`(?m)^\s+(swarm_[a-z_]+):\s+(SCOPE_[A-Z]+),$`).FindAllStringSubmatch(string(source), -1) {
+		relay[match[1]] = constants[match[2]]
+	}
+	if len(relay) == 0 || len(relay) != len(toolScopes)+1 { // +1: swarm_list_machines is relay-only
+		t.Fatalf("relay has %d tool scopes, device %d", len(relay), len(toolScopes))
+	}
+	for name, scope := range toolScopes {
+		if relay[name] != scope {
+			t.Fatalf("%s: device %q relay %q", name, scope, relay[name])
+		}
 	}
 }
 

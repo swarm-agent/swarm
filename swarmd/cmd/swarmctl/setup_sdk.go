@@ -21,6 +21,7 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	id := fs.String("id", "", "token record ID to revoke")
 	workers := fs.Bool("workers", false, "also allow creating, managing and tasking workers (Swarm Control worker tools)")
 	usageLimits := fs.Bool("usage-limits", false, "also allow changing the account's daily usage limits")
+	settings := fs.Bool("settings", false, "also allow changing agent role default models")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -75,14 +76,17 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 			ID string `json:"id"`
 		} `json:"record"`
 	}
-	// Session access is the default; worker and spend-limit authority are
-	// explicit opt-ins because they outlive a single session.
+	// Session access is the default; worker, spend-limit and model-default
+	// authority are explicit opt-ins because they outlive a single session.
 	scopes := []string{"sessions:read", "sessions:write"}
 	if *workers {
 		scopes = append(scopes, "automations:read", "automations:write")
 	}
 	if *usageLimits {
 		scopes = append(scopes, "usage:write")
+	}
+	if *settings {
+		scopes = append(scopes, "settings:write")
 	}
 	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": scopes, "expires_in_seconds": *seconds}
 	if err := setupRequest(client, http.MethodPost, "/v3/auth/tokens", payload, &result); err != nil {

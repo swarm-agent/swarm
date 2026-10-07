@@ -10,7 +10,7 @@ export const PROTOCOL = 'swarm-remote-1';
 export const SCOPE_READ = 'swarm:read';
 export const SCOPE_WRITE = 'swarm:write';
 export const SCOPE_APPROVE = 'swarm:approve';
-// Worker administration and account usage limits.
+// Worker administration, usage limits and agent role default models.
 export const SCOPE_MANAGE = 'swarm:manage';
 export const SCOPES = [SCOPE_READ, SCOPE_WRITE, SCOPE_APPROVE, SCOPE_MANAGE];
 
@@ -25,17 +25,20 @@ export const TOOL_SCOPES = {
   swarm_list_workers: SCOPE_READ,
   swarm_get_worker: SCOPE_READ,
   swarm_get_usage: SCOPE_READ,
+  swarm_list_models: SCOPE_READ,
   swarm_start_session: SCOPE_WRITE,
   swarm_send_message: SCOPE_WRITE,
   swarm_run_plan: SCOPE_WRITE,
   swarm_stop_run: SCOPE_WRITE,
   swarm_assign_worker_task: SCOPE_WRITE,
+  swarm_set_session_model: SCOPE_WRITE,
   swarm_resolve_permission: SCOPE_APPROVE,
   swarm_create_project: SCOPE_MANAGE,
   swarm_create_worker: SCOPE_MANAGE,
   swarm_update_worker: SCOPE_MANAGE,
   swarm_manage_worker: SCOPE_MANAGE,
   swarm_set_usage_limits: SCOPE_MANAGE,
+  swarm_set_agent_model: SCOPE_MANAGE,
 };
 
 export function toolScope(name) {
