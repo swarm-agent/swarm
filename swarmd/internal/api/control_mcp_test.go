@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -308,7 +312,7 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"POST", "/v3/workers/wkr_1/accept", false},
 		{"POST", "/v3/workers/wkr_1/token", false},
 		{"POST", "/v3/workers/import", false},
-		{"POST", "/v3/workers/wkr_1/automations", true},
+		{"POST", "/v3/workers/wkr_1/automations", false},
 		{"POST", "/v3/workers/wkr_1/automations/auto_1/enable", true},
 		{"PUT", "/v3/workers/wkr_1/automations/auto_1", false},
 		{"DELETE", "/v3/workers/wkr_1/automations/auto_1", false},
@@ -325,9 +329,10 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"POST", "/v1/permissions", false},
 		{"PUT", "/v1/permissions/capabilities", false},
 		{"POST", "/v1/onboarding/provider/credential", false},
-		{"POST", "/v3/sessions/abc/preference", true},
+		{"POST", "/v3/sessions/abc/preference", false},
 		{"POST", "/v3/sessions/abc/settings", false},
-		{"PUT", "/v3/sessions/abc/model-profile", false},
+		{"PUT", "/v3/sessions/abc/model-profile", true},
+		{"DELETE", "/v3/sessions/abc/model-profile", false},
 		{"POST", "/v3/sessions/abc/permissions/resolve_all", false},
 		{"POST", "/v3/projects/prj_1/sessions", true},
 		{"GET", "/v3/projects/prj_1/tasks", true},
@@ -518,7 +523,11 @@ func TestControlMCPWaitForSession(t *testing.T) {
 	}()
 	// Wait until the call has subscribed, then wake it with another
 	// session's record: it must keep waiting.
-	for func() bool { s.v3RealtimeOutbox.mu.Lock(); defer s.v3RealtimeOutbox.mu.Unlock(); return len(s.v3RealtimeOutbox.subs) == 0 }() {
+	for func() bool {
+		s.v3RealtimeOutbox.mu.Lock()
+		defer s.v3RealtimeOutbox.mu.Unlock()
+		return len(s.v3RealtimeOutbox.subs) == 0
+	}() {
 		time.Sleep(5 * time.Millisecond)
 	}
 	s.v3RealtimeOutbox.publish(pebblestore.V3RealtimeOutboxRecord{EndpointSeq: 1, SessionID: "other-session"})
@@ -559,5 +568,182 @@ func TestControlMCPServedToolsHaveRelayScopes(t *testing.T) {
 		if !regexp.MustCompile(`(?m)^\s+` + tool.Name + `:\s+SCOPE_[A-Z]+,$`).Match(source) {
 			t.Fatalf("%s has no explicit relay scope", tool.Name)
 		}
+	}
+}
+
+// Requirement: a model chosen through Swarm Control must be the model the
+// session runs. Swarm and orchestrator sessions capture the account role
+// defaults as their model profile when created, and that profile (not the
+// plain preference) decides their model, so set_session_model replaces the
+// session's own profile selection. It is validated against the live catalog
+// and refused for read grants, leaving the session unchanged. Threat: a
+// silently ignored model choice (work billed to and run on another model), or
+// a read-only connection changing a session. Owners: controlMCPSetSessionModel,
+// controlMCPModelChoice and the V3 model-profile mutation. In-process HTTP with
+// real temporary stores and the boot catalog is the narrowest layer that runs
+// the tool, route allowlist, scope checks and the mutation together; it does
+// not run a provider.
+func TestControlMCPSessionModelReplacesCapturedProfile(t *testing.T) {
+	s, _, sec, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "models"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	events, err := pebblestore.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.model = model.NewService(pebblestore.NewModelStore(db), events, model.NewCatalogService(pebblestore.NewModelCatalogStore(db)))
+	if err := s.model.EnsureBootDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	s.SetModelProfileService(modelprofile.NewService(pebblestore.NewModelProfileStore(db)))
+	records, err := s.model.ListCatalog("codex", 10)
+	if err != nil || len(records) < 2 {
+		t.Fatalf("boot catalog: %d records, %v", len(records), err)
+	}
+	roleDefault, chosen := records[0], records[1]
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured := pebblestore.ModelProfileSelection{Provider: "codex", Model: roleDefault.Model, Thinking: roleDefault.DefaultThinking}
+	session := pebblestore.SessionSnapshot{
+		ID: "model-session", UserID: actor.UserID, AccountScopeID: actor.AccountScopeID, Title: "m", Mode: "auto",
+		Metadata:     map[string]any{"agent_name": "swarm"},
+		Preference:   pebblestore.ModelPreference{Provider: "codex", Model: roleDefault.Model, Thinking: roleDefault.DefaultThinking},
+		ModelProfile: &pebblestore.SessionModelProfileSnapshot{Source: pebblestore.SessionModelProfileSourceSwarmSettings, UseAccountDefault: true, Action: captured, Plan: &captured, AppliedAt: 1},
+	}
+	if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: session.ID, UserID: session.UserID, AccountScopeID: session.AccountScopeID, Session: &session, IdempotencyKey: "m-create", PayloadHash: "m-create", NowUnixMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	unchanged := func(label string) {
+		t.Helper()
+		stored, ok, err := s.sessions.GetSession(session.ID)
+		if err != nil || !ok || stored.Preference.Model != roleDefault.Model || stored.ModelProfile == nil || stored.ModelProfile.Source != pebblestore.SessionModelProfileSourceSwarmSettings {
+			t.Fatalf("%s changed the session: %+v %v", label, stored, err)
+		}
+	}
+	readToken, _, err := sec.CreateScopedToken("read", []string{"sessions:read"}, actor.AccountScopeID, actor.UserID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeToken, _, err := sec.CreateScopedToken("write", []string{"sessions:read", "sessions:write"}, actor.AccountScopeID, actor.UserID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"session_id": session.ID, "provider": "codex", "model": chosen.Model}
+	if text, isError := controlMCPTestCaller(t, s, readToken)("swarm_set_session_model", args); !isError || !strings.Contains(text, "HTTP 403") {
+		t.Fatalf("read grant changed the model: %s", text)
+	}
+	unchanged("read grant")
+	if text, isError := controlMCPTestCaller(t, s, writeToken)("swarm_set_session_model", map[string]any{"session_id": session.ID, "provider": "codex", "model": "no-such-model"}); !isError || !strings.Contains(text, "not in the catalog") {
+		t.Fatalf("uncatalogued model accepted: %s", text)
+	}
+	unchanged("uncatalogued model")
+	text, isError := controlMCPTestCaller(t, s, writeToken)("swarm_set_session_model", args)
+	if isError || !strings.Contains(text, chosen.Model) {
+		t.Fatalf("model change failed: %s", text)
+	}
+	stored, ok, err := s.sessions.GetSession(session.ID)
+	if err != nil || !ok || stored.Preference.Model != chosen.Model || stored.ModelProfile == nil || stored.ModelProfile.Source != pebblestore.SessionModelProfileSourceTemporary || stored.ModelProfile.Action.Model != chosen.Model {
+		t.Fatalf("session does not use the chosen model: %+v %v", stored, err)
+	}
+	if policy := s.sessionsV3AgentModelPolicy(stored, stored.Preference, 0, 0); policy.Preference.Model != chosen.Model {
+		t.Fatalf("effective model policy = %+v", policy)
+	}
+	if choice := controlMCPModelChoice(map[string]any{"provider": "codex", "model": chosen.Model, "thinking": "low"}); controlMCPMap(choice["temporary"])["thinking"] != "low" {
+		t.Fatalf("thinking dropped from the session choice: %+v", choice)
+	}
+}
+
+// Requirement: create_worker's schedule and scheduled plan are part of the
+// worker it creates (approved with it), and the plan must be accepted as an
+// unexecuted template while keeping the caller's checkpoints. A template that
+// carries plan identity is refused with no worker created. Threat: every
+// scheduled worker created through Swarm Control failing after creation and
+// left without its schedule, or a schedule staged for an owner review Swarm
+// Control cannot accept. Once bound and enabled, get_worker reports the next
+// scheduled run. Owners: controlMCPWorkerCreateBody, controlMCPAutomation,
+// controlMCPGetWorker, the worker store's validateUnexecutedPlanDocument behind
+// POST /v3/workers, worker activation and the summary route. Worker routes
+// with a real temporary store, execution service and Git workspace are the
+// narrowest layer that validates the exact bodies the tool sends; they do not
+// run a scheduled plan.
+func TestControlMCPWorkerScheduleIsPartOfCreate(t *testing.T) {
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
+	args := map[string]any{
+		"name": "Drafts", "instructions": "Write drafts.", "workspace_path": "/project",
+		"schedule": map[string]any{"kind": "interval", "interval_seconds": float64(120)},
+		"scheduled_plan": map[string]any{"title": "Draft", "goal": "Write one draft file.", "checkpoints": []any{
+			map[string]any{"title": "Write", "objective": "Write drafts/x.md", "acceptance_criteria": []any{"drafts/x.md exists"}},
+		}},
+	}
+	create := func(body map[string]any) *httptest.ResponseRecorder {
+		encoded, _ := json.Marshal(body)
+		return executeWorkerAPI(h, http.MethodPost, "", string(encoded), workerAPICallOptions{scopes: []string{"automations:write"}})
+	}
+	workers := pebblestore.NewWorkerStore(db)
+
+	body, automation, err := controlMCPWorkerCreateBody(args)
+	if err != nil || automation == nil {
+		t.Fatalf("body: %v", err)
+	}
+	withIdentity, _, _ := controlMCPWorkerCreateBody(args)
+	identified := map[string]any{}
+	for key, value := range automation {
+		identified[key] = value
+	}
+	document := *automation["plan_document"].(*pebblestore.SessionPlanDocument)
+	document.ID = "plan_preset"
+	identified["plan_document"] = &document
+	withIdentity["automations"] = []map[string]any{identified}
+	if w := create(withIdentity); w.Code < 400 || !strings.Contains(w.Body.String(), "execution state") {
+		t.Fatalf("plan with identity accepted: %d %s", w.Code, w.Body.String())
+	}
+	if listed, err := workers.ListWorkers("acct-test", pebblestore.ListWorkersQuery{Limit: 10}); err != nil || len(listed.Workers) != 0 {
+		t.Fatalf("rejected create left a worker: %+v %v", listed, err)
+	}
+
+	w := create(body)
+	var created struct {
+		Worker pebblestore.WorkerRecord `json:"worker"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || w.Code != http.StatusCreated {
+		t.Fatalf("scheduled worker rejected: %d %s", w.Code, w.Body.String())
+	}
+	stored, ok, err := workers.GetWorker("acct-test", created.Worker.ID)
+	if err != nil || !ok || stored.PendingReview != nil || len(stored.Automations) != 1 {
+		t.Fatalf("schedule not part of the created worker: %+v %v", stored, err)
+	}
+	attached := stored.Automations[0]
+	if attached.Enabled || attached.Schedule == nil || attached.Schedule.IntervalSeconds != 120 || len(attached.PlanDocument.Checkpoints) != 1 || attached.PlanDocument.Checkpoints[0].Title != "Write" || attached.PlanDocument.ID != "" {
+		t.Fatalf("schedule lost the caller's plan or started enabled: %+v", attached)
+	}
+
+	activate, _ := json.Marshal(map[string]any{"expected_revision": stored.Revision, "local_bindings": map[string]string{"primary": workspaceID}})
+	if w := executeWorkerAPI(h, http.MethodPost, "/"+stored.ID+"/activate", string(activate), workerAPICallOptions{scopes: []string{"automations:write"}}); w.Code != http.StatusOK {
+		t.Fatalf("activate: %d %s", w.Code, w.Body.String())
+	}
+	active, _, _ := workers.GetWorker("acct-test", stored.ID)
+	enable, _ := json.Marshal(map[string]any{"expected_worker_revision": active.Revision})
+	if w := executeWorkerAPI(h, http.MethodPost, "/"+stored.ID+"/automations/"+attached.ID+"/enable", string(enable), workerAPICallOptions{scopes: []string{"automations:write"}}); w.Code != http.StatusOK {
+		t.Fatalf("enable: %d %s", w.Code, w.Body.String())
+	}
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	r = r.WithContext(context.WithValue(context.WithValue(r.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", UserID: "user-test", AccountScopeID: "acct-test"}),
+		productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: "acct-test", UserID: "user-test", Scopes: []string{"automations:read"}}))
+	got, err := controlMCPGetWorker(&controlMCPCall{request: r, next: h}, map[string]any{"worker_id": stored.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := got.(map[string]any)
+	nextFloat, _ := view["next_scheduled_at"].(float64)
+	next := int64(nextFloat)
+	if next <= time.Now().UnixMilli() || next > time.Now().Add(121*time.Second).UnixMilli() || view["lifecycle_state"] != string(pebblestore.WorkerLifecycleStateActive) {
+		t.Fatalf("get_worker does not report the next scheduled run: %+v", view)
 	}
 }

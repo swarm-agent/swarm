@@ -28,7 +28,7 @@ unsupported protocol versions are rejected.
 | `swarm_start_session` (prompt **or** plan; optional model, `wait_seconds`) | `swarm:write` | `POST /v3/sessions` (workspace agents) or `POST /v3/projects/{pid}/sessions` (`system-orchestrator`), always `auto`, then `…/messages` or the plan routes |
 | `swarm_send_message` (+ `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages` |
 | `swarm_list_models` | `swarm:read` | `GET /v1/providers`, `GET /v1/model/catalog`, `GET /v1/agent-model-settings` (tool requires `sessions:read`) |
-| `swarm_set_session_model` | `swarm:write` | `POST /v3/sessions/{id}/preference` (validated against the catalog) |
+| `swarm_set_session_model` | `swarm:write` | `PUT /v3/sessions/{id}/model-profile` (session-owned selection, validated against the catalog) |
 | `swarm_set_agent_model` | `swarm:manage` | `PATCH /v1/agent-model-settings`, one role (tool requires `settings:write`) |
 | `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
 | `swarm_stop_run` | `swarm:write` | `POST …/run/stop` |
@@ -37,7 +37,7 @@ unsupported protocol versions are rejected.
 | `swarm_create_project` | `swarm:manage` | `POST /v3/projects` (workspaces must be registered) |
 | `swarm_list_workers`, `swarm_get_worker` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
 | `swarm_assign_worker_task` | `swarm:write` | `POST /v3/workers/{id}/direct` |
-| `swarm_create_worker` (optional `schedule` + `scheduled_plan`) | `swarm:manage` | `POST /v3/workers`, `POST …/automations` (while pending), `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`), `POST …/automations/{aid}/enable` |
+| `swarm_create_worker` (optional `schedule` + `scheduled_plan`) | `swarm:manage` | `POST /v3/workers` (schedule included), `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`), `POST …/automations/{aid}/enable` |
 | `swarm_update_worker` | `swarm:manage` | `PUT /v3/workers/{id}` (revision-guarded) |
 | `swarm_manage_worker` (pause/resume/archive/delete/cancel_run/enable_schedule/disable_schedule) | `swarm:manage` | `POST /v3/workers/{id}/{action}`, `…/runs/{rid}/cancel`, `…/automations/{aid}/enable\|disable` |
 | `swarm_get_usage` | `swarm:read` | `GET /v3/usage` (tool requires `sessions:read`) |
@@ -52,13 +52,18 @@ records for that session (no timer polling), then returns the latest state.
 
 **Models.** `list_models` shows runnable providers, their catalog models and
 thinking options, and each role's default. A session's model can be chosen at
-start or changed later; role defaults need `swarm:manage` (`settings:write`).
+start or changed later (between runs); both set the session's own model
+profile, because Swarm and orchestrator sessions otherwise capture the role
+defaults when created and those decide their model. Role defaults need
+`swarm:manage` (`settings:write`).
 Models are validated against the live catalog. The account default model,
 credentials and permission policy (rules, bypass) are not reachable.
 
-**Schedules.** A worker's schedule is attached before activation, so it is
-part of what activation approves; later changes to an active worker are staged
-for owner review, which Swarm Control cannot accept.
+**Schedules.** A worker's schedule is part of the create request, so it is
+approved with the worker, and is enabled only after the workspace binding. The
+scheduled plan is a template without plan identity. Later schedule changes to
+an existing worker are staged for owner review, which Swarm Control cannot
+accept.
 
 **No plan mode.** Callers author the plan (goal, constraints, checkpoints with
 acceptance criteria). The tool validates it with Swarm's strict executable-plan

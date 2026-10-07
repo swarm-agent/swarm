@@ -57,7 +57,7 @@ var controlMCPRoutes = []string{
 	"POST v3/sessions",
 	"GET v3/sessions/*",
 	"POST v3/sessions/*/messages",
-	"POST v3/sessions/*/preference",
+	"PUT v3/sessions/*/model-profile",
 	"POST v3/sessions/*/run/stop",
 	"POST v3/sessions/*/permissions/*/resolve",
 	"POST v3/sessions/*/plans",
@@ -73,7 +73,6 @@ var controlMCPRoutes = []string{
 	"PUT v3/workers/*",
 	"GET v3/workers/*/summary",
 	"POST v3/workers/*/activate",
-	"POST v3/workers/*/automations",
 	"POST v3/workers/*/automations/*/enable",
 	"POST v3/workers/*/automations/*/disable",
 	"POST v3/workers/*/pause",
@@ -845,7 +844,7 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 		body["title"] = title
 	}
 	if preference != nil {
-		body["preference"] = preference
+		body["model_profile"] = controlMCPModelChoice(preference)
 	}
 	// Orchestrators run a project (server-stamped project identity, no
 	// workspace fields); every other agent runs in one workspace.
@@ -940,6 +939,15 @@ func controlMCPSendMessage(c *controlMCPCall, args map[string]any) (any, error) 
 	return c.withWait(map[string]any{"session_id": sessionID, "client_request_id": requestID, "run": run}, sessionID, args)
 }
 
+// controlMCPModelChoice is the session model-profile choice for a validated
+// preference: a selection owned by that session. Swarm and orchestrator
+// sessions otherwise capture the account role defaults when created, and that
+// captured profile, not the plain preference, decides their model.
+func controlMCPModelChoice(preference map[string]any) map[string]any {
+	inline := controlMCPPick(preference, "provider", "model", "thinking")
+	return map[string]any{"temporary": inline}
+}
+
 func controlMCPSetSessionModel(c *controlMCPCall, args map[string]any) (any, error) {
 	sessionID, err := controlMCPID(args, "session_id")
 	if err != nil {
@@ -949,17 +957,16 @@ func controlMCPSetSessionModel(c *controlMCPCall, args map[string]any) (any, err
 	if err != nil {
 		return nil, err
 	}
-	preference["client_request_id"] = controlMCPRequestID()
-	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "preference"), nil, preference)
+	response, err := c.dispatch(http.MethodPut, controlMCPSessionPath(sessionID, "model-profile"), nil, map[string]any{
+		"client_request_id": controlMCPRequestID(),
+		"choice":            controlMCPModelChoice(preference),
+	})
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"session_id": sessionID}
-	if applied := controlMCPPick(controlMCPMap(controlMCPMap(response["session"])["preference"]), "provider", "model", "thinking"); len(applied) > 0 {
+	out := map[string]any{"session_id": sessionID, "model": preference}
+	if applied := controlMCPPick(controlMCPMap(response["preference"]), "provider", "model", "thinking"); len(applied) > 0 {
 		out["model"] = applied
-	} else {
-		delete(preference, "client_request_id")
-		out["model"] = preference
 	}
 	return out, nil
 }
@@ -1321,7 +1328,10 @@ func controlMCPGetWorker(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	if len(schedules) > 0 {
 		out["schedules"] = schedules
-		if summary, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID+"/summary", nil, nil); err == nil {
+		// The summary route requires a reporting day; next_scheduled_at does not
+		// depend on it.
+		day := url.Values{"timezone": {"UTC"}, "date": {time.Now().UTC().Format("2006-01-02")}}
+		if summary, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID+"/summary", day, nil); err == nil {
 			if next, ok := summary["next_scheduled_at"]; ok && next != nil {
 				out["next_scheduled_at"] = next
 			}
@@ -1362,6 +1372,9 @@ func controlMCPAutomation(args map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A scheduled plan is a template: each run gets its own plan identity, and
+	// the worker store refuses templates that carry one.
+	document.ID = ""
 	kind, _ := schedule["kind"].(string)
 	spec := map[string]any{"kind": kind}
 	switch kind {
@@ -1384,14 +1397,13 @@ func controlMCPAutomation(args map[string]any) (map[string]any, error) {
 	return map[string]any{"name": "Scheduled: " + controlMCPTruncate(document.Title, 80), "activation_mode": kind, "schedule": spec, "plan_document": document}, nil
 }
 
-func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error) {
+// controlMCPWorkerCreateBody is the POST /v3/workers body. A schedule is part
+// of the created worker, so it is approved with it; attaching one later to an
+// existing worker is staged for owner review, which Swarm Control cannot accept.
+func controlMCPWorkerCreateBody(args map[string]any) (map[string]any, map[string]any, error) {
 	automation, err := controlMCPAutomation(args)
 	if err != nil {
-		return nil, err
-	}
-	workspaceID, err := c.workspaceID(controlMCPString(args, "workspace_path"))
-	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	body := map[string]any{
 		"name":                   controlMCPString(args, "name"),
@@ -1405,9 +1417,24 @@ func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if controlMCPString(args, "project_id") != "" {
 		projectID, err := controlMCPID(args, "project_id")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		body["metadata"] = map[string]any{"project_id": projectID}
+	}
+	if automation != nil {
+		body["automations"] = []map[string]any{automation}
+	}
+	return body, automation, nil
+}
+
+func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error) {
+	body, automation, err := controlMCPWorkerCreateBody(args)
+	if err != nil {
+		return nil, err
+	}
+	workspaceID, err := c.workspaceID(controlMCPString(args, "workspace_path"))
+	if err != nil {
+		return nil, err
 	}
 	created, err := c.dispatch(http.MethodPost, "/v3/workers", nil, body)
 	if err != nil {
@@ -1417,19 +1444,6 @@ func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error)
 	workerID, _ := worker["id"].(string)
 	if !controlMCPSafeID.MatchString(workerID) {
 		return nil, controlMCPToolFailure("worker created without a usable id")
-	}
-	// A schedule is attached while the worker is still pending so it is part
-	// of what activation approves; later changes to an active worker are
-	// staged for owner review.
-	if automation != nil {
-		attached, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/automations", nil, map[string]any{
-			"expected_worker_revision": controlMCPRevision(worker),
-			"automation":               automation,
-		})
-		if err != nil {
-			return nil, controlMCPToolFailure("worker %s created but its schedule was rejected: %s", workerID, err.Error())
-		}
-		worker = controlMCPMap(attached["worker"])
 	}
 	activated, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/activate", nil, map[string]any{
 		"expected_revision": controlMCPRevision(worker),
@@ -1441,6 +1455,8 @@ func controlMCPCreateWorker(c *controlMCPCall, args map[string]any) (any, error)
 	worker = controlMCPMap(activated["worker"])
 	out := map[string]any{"worker": controlMCPWorkerSummary(worker)}
 	if automation != nil {
+		// The schedule is enabled only once the worker is bound to its
+		// workspace, so no scheduled run starts before it can work.
 		scheduleID := ""
 		for _, raw := range controlMCPList(worker["automations"]) {
 			if a := controlMCPMap(raw); a != nil && a["name"] == automation["name"] {
