@@ -5,6 +5,8 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Reconcile Orchestrator source-filter regressions with the segmented Task scope UI; retain approval/archive guards and strengthen pressed-state, callback, count and keyboard-accessibility assertions without changing production styling. Docs impact: none.
+
 - Retire the obsolete basic-plan-auto session chatmode runner and its launch/release receipt requirements; require explicit runner selection without fallback, preserving current session API, Task Program and Orchestrator coverage. Docs impact: `docs/testing/new-task-browser-smoke.md` documents retirement and qualification-helper rollout ordering.
 
 - Ensure resilient APT toolchain installation and explicit GCC verification for qualification runner CGO compilation. Docs impact: none.
