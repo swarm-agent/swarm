@@ -9,6 +9,7 @@ import (
 
 	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
+	"swarm-refactor/swarmtui/internal/ui"
 )
 
 func (a *App) cycleHomeModelProfile() {
@@ -35,6 +36,21 @@ func (a *App) cycleHomeModelProfile() {
 }
 
 func (a *App) selectHomeModelProfile(profileID string) error {
+	return a.selectModelFavorite(profileID, ui.FavoriteScopeDefault)
+}
+
+func favoriteDefaultPatch(settings client.AgentModelSettings, assignment client.AgentModelAssignment, agent string) client.AgentModelSettingsPatch {
+	patch := &client.AgentModelSettingsSwarmPatch{Action: settings.Swarm.Action, Plan: settings.Swarm.Plan}
+	switch strings.ToLower(strings.TrimSpace(agent)) {
+	case "system-orchestrator", "swarm-orchestrator", "orchestrator":
+		patch.Plan = assignment
+	default:
+		patch.Action = assignment
+	}
+	return client.AgentModelSettingsPatch{Swarm: patch}
+}
+
+func (a *App) selectModelFavorite(profileID string, scope ui.FavoriteScope) error {
 	if a == nil {
 		return fmt.Errorf("profile switch is unavailable")
 	}
@@ -64,21 +80,50 @@ func (a *App) selectHomeModelProfile(profileID string) error {
 		a.setModelProfileStatus("switch profile failed: " + err.Error())
 		return err
 	}
+	if scope == "" {
+		scope = ui.FavoriteScopeDefault
+	}
+	if scope != ui.FavoriteScopeChat && scope != ui.FavoriteScopeDefault && scope != ui.FavoriteScopeDefaultAndChat {
+		return fmt.Errorf("unknown favorite scope %q", scope)
+	}
+	sessionID := ""
+	agent := a.homeModel.ActiveAgent
+	if a.route == "v3chat" && a.v3Chat != nil {
+		sessionID = a.v3Chat.SessionID()
+	}
+	if scope != ui.FavoriteScopeDefault && sessionID == "" {
+		return fmt.Errorf("open a chat before applying this favorite to This chat")
+	}
+	if sessionID != "" {
+		snapshot, err := a.api.GetSessionV3WithLimits(ctx, sessionID, 1, 1)
+		if err != nil {
+			return err
+		}
+		agent = strings.TrimSpace(snapshot.AgentModelPolicy.ResolvedAgent)
+		if agent == "" {
+			agent, _ = snapshot.Session.Metadata["resolved_agent_name"].(string)
+			if strings.TrimSpace(agent) == "" {
+				agent, _ = snapshot.Session.Metadata["agent_name"].(string)
+			}
+		}
+		if strings.TrimSpace(agent) == "" {
+			return fmt.Errorf("chat agent is unavailable; favorite target cannot be resolved")
+		}
+	}
+	assignment := client.AgentModelAssignment{
+		Provider: strings.TrimSpace(selected.Provider), Model: strings.TrimSpace(selected.Model),
+		Thinking: strings.TrimSpace(selected.Thinking), ServiceTier: strings.TrimSpace(selected.ServiceTier),
+		ContextMode: strings.TrimSpace(selected.ContextMode),
+	}
+	if scope == ui.FavoriteScopeChat {
+		return a.applyFavoriteToCurrentChat(ctx, sessionID, selected.ProfileID)
+	}
 	settings, err := a.api.GetAgentModelSettings(ctx)
 	if err != nil {
 		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
 		return err
 	}
-	settings, err = a.api.PatchAgentModelSettings(ctx, client.AgentModelSettingsPatch{Swarm: &client.AgentModelSettingsSwarmPatch{
-		Action: client.AgentModelAssignment{
-			Provider:    strings.TrimSpace(selected.Provider),
-			Model:       strings.TrimSpace(selected.Model),
-			Thinking:    strings.TrimSpace(selected.Thinking),
-			ServiceTier: strings.TrimSpace(selected.ServiceTier),
-			ContextMode: strings.TrimSpace(selected.ContextMode),
-		},
-		Plan: settings.Swarm.Plan,
-	}})
+	settings, err = a.api.PatchAgentModelSettings(ctx, favoriteDefaultPatch(settings, assignment, agent))
 	if err != nil {
 		a.setModelProfileStatus(fmt.Sprintf("switch profile failed: %v", err))
 		return err
@@ -93,7 +138,22 @@ func (a *App) selectHomeModelProfile(profileID string) error {
 	if label == "" {
 		label = selected.ProfileID
 	}
-	a.setModelProfileStatus("profile switched: " + label)
+	if scope == ui.FavoriteScopeDefaultAndChat {
+		if err := a.applyFavoriteToCurrentChat(ctx, sessionID, selected.ProfileID); err != nil {
+			return fmt.Errorf("default saved, but this chat was not changed: %w", err)
+		}
+	}
+	a.setModelProfileStatus("favorite applied: " + label)
+	return nil
+}
+
+func (a *App) applyFavoriteToCurrentChat(ctx context.Context, sessionID, profileID string) error {
+	policy, err := a.api.SetSessionV3ModelProfile(ctx, sessionID, profileID)
+	if err != nil {
+		return err
+	}
+	a.v3Chat.ApplyModelProfile(policy)
+	a.setModelProfileStatus("favorite applied to this chat")
 	return nil
 }
 

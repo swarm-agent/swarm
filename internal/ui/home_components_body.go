@@ -324,7 +324,7 @@ func (p *HomePage) drawPresetsRow(s tcell.Screen, rect Rect, centered bool) {
 	if len(p.model.QuickActions) == 0 {
 		line := "/auth"
 		if p.model.AuthConfigured {
-			line = "/profiles"
+			line = "/favorites"
 		}
 		DrawText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return

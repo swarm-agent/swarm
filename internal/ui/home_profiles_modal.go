@@ -10,16 +10,28 @@ import (
 	"swarm-refactor/swarmtui/internal/model"
 )
 
+type FavoriteScope string
+
+const (
+	FavoriteScopeChat           FavoriteScope = "chat"
+	FavoriteScopeDefault        FavoriteScope = "default"
+	FavoriteScopeDefaultAndChat FavoriteScope = "default-and-chat"
+)
+
 type profilesModalState struct {
-	Visible  bool
-	Selected int
-	Status   string
+	Visible       bool
+	Selected      int
+	Status        string
+	Scope         FavoriteScope
+	ChatAvailable bool
 }
 
 func (p *HomePage) ShowProfilesModal() {
 	if p == nil {
 		return
 	}
+	p.profilesModal.Scope = FavoriteScopeDefault
+	p.profilesModal.ChatAvailable = false
 	p.profilesModal.Visible = true
 	p.profilesModal.Selected = 0
 	for i, profile := range p.model.ModelProfiles {
@@ -28,7 +40,18 @@ func (p *HomePage) ShowProfilesModal() {
 			break
 		}
 	}
-	p.profilesModal.Status = "Enter applies • e opens agent setup • Esc closes"
+	p.profilesModal.Status = "1 This chat • 2 Default • 3 Default + this chat • Enter applies"
+}
+
+func (p *HomePage) SetFavoritesChatAvailable(available bool) {
+	p.profilesModal.ChatAvailable = available
+	if available {
+		p.profilesModal.Scope = FavoriteScopeChat
+	}
+}
+
+func (p *HomePage) SetFavoritesStatus(status string) {
+	p.profilesModal.Status = status
 }
 
 func (p *HomePage) HideProfilesModal() {
@@ -63,6 +86,8 @@ func (p *HomePage) handleProfilesModalKey(ev *tcell.EventKey) {
 		p.moveProfilesModalSelection(1)
 	case p.keybinds.Match(ev, KeybindModalEnter):
 		p.applySelectedModelProfile()
+	case ev.Key() == tcell.KeyRune && ev.Rune() >= '1' && ev.Rune() <= '3':
+		p.selectFavoriteScope(int(ev.Rune() - '1'))
 	case ev.Key() == tcell.KeyRune && (ev.Rune() == 'e' || ev.Rune() == 'a'):
 		p.openSelectedModelProfileEditor()
 	}
@@ -86,11 +111,23 @@ func (p *HomePage) applySelectedModelProfile() {
 		return
 	}
 	profile := p.model.ModelProfiles[p.profilesModal.Selected]
-	if !p.QueueSelectModelProfile(profile.ProfileID) {
+	if !p.QueueSelectModelProfileScope(profile.ProfileID, p.profilesModal.Scope) {
 		p.profilesModal.Status = "profile is unavailable"
 		return
 	}
-	p.HideProfilesModal()
+}
+
+func (p *HomePage) selectFavoriteScope(index int) {
+	scopes := []FavoriteScope{FavoriteScopeChat, FavoriteScopeDefault, FavoriteScopeDefaultAndChat}
+	if index < 0 || index >= len(scopes) {
+		return
+	}
+	if scopes[index] != FavoriteScopeDefault && !p.profilesModal.ChatAvailable {
+		p.profilesModal.Status = "Open a chat to use This chat or Default + this chat"
+		return
+	}
+	p.profilesModal.Scope = scopes[index]
+	p.profilesModal.Status = "Enter applies • e opens agent setup • Esc closes"
 }
 
 func (p *HomePage) handleProfilesModalMouse(ev *tcell.EventMouse) bool {
@@ -117,6 +154,8 @@ func (p *HomePage) handleProfilesModalMouse(ev *tcell.EventMouse) bool {
 		case "profile-row":
 			p.profilesModal.Selected = target.Index
 			p.applySelectedModelProfile()
+		case "favorite-scope":
+			p.selectFavoriteScope(target.Index)
 		case "profile-edit":
 			p.openSelectedModelProfileEditor()
 		}
@@ -132,20 +171,32 @@ func (p *HomePage) drawProfilesModal(s tcell.Screen) {
 	}
 	w, h := s.Size()
 	modalW := minInt(72, w-4)
-	modalH := minInt(maxInt(10, len(p.model.ModelProfiles)+7), h-4)
-	if modalW < 36 || modalH < 8 {
+	modalH := minInt(maxInt(12, len(p.model.ModelProfiles)+9), h-4)
+	if modalW < 36 || modalH < 10 {
 		return
 	}
 	rect := Rect{X: (w - modalW) / 2, Y: (h - modalH) / 2, W: modalW, H: modalH}
 	FillRect(s, rect, p.theme.Panel)
 	DrawBox(s, rect, p.theme.BorderActive)
-	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, "Model Profiles")
-	DrawText(s, rect.X+2, rect.Y+1, rect.W-4, p.theme.TextMuted, "Select the default model profile used by new sessions")
+	DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Text, "Favorites")
+	labels := []string{"1 This chat", "2 Default", "3 Default + this chat"}
+	scopes := []FavoriteScope{FavoriteScopeChat, FavoriteScopeDefault, FavoriteScopeDefaultAndChat}
+	for i, label := range labels {
+		style := p.theme.TextMuted
+		if p.profilesModal.Scope == scopes[i] {
+			style = p.theme.Primary.Bold(true)
+		}
+		if scopes[i] != FavoriteScopeDefault && !p.profilesModal.ChatAvailable {
+			label += " (open a chat first)"
+		}
+		DrawText(s, rect.X+2, rect.Y+1+i, rect.W-4, style, label)
+		p.profilesModalTargets = append(p.profilesModalTargets, clickTarget{Rect: Rect{X: rect.X + 2, Y: rect.Y + 1 + i, W: rect.W - 4, H: 1}, Action: "favorite-scope", Index: i})
+	}
 
-	rowY := rect.Y + 3
-	availableRows := rect.H - 6
+	rowY := rect.Y + 5
+	availableRows := rect.H - 8
 	if len(p.model.ModelProfiles) == 0 {
-		DrawText(s, rect.X+2, rowY, rect.W-4, p.theme.Warning, "No saved profiles. Open /agents to configure agent models.")
+		DrawText(s, rect.X+2, rowY, rect.W-4, p.theme.Warning, "No favorites. Open /agents to configure agent models.")
 	} else {
 		start := 0
 		if p.profilesModal.Selected >= availableRows {
@@ -177,6 +228,7 @@ func (p *HomePage) drawProfilesModal(s tcell.Screen) {
 		}
 	}
 
+	DrawText(s, rect.X+2, rect.Y+rect.H-3, rect.W-4, p.theme.TextMuted, p.profilesModal.Status)
 	edit := "[ e: agent setup ]"
 	DrawText(s, rect.X+2, rect.Y+rect.H-2, rect.W-4, p.theme.Secondary, edit)
 	p.profilesModalTargets = append(p.profilesModalTargets, clickTarget{Rect: Rect{X: rect.X + 2, Y: rect.Y + rect.H - 2, W: len([]rune(edit)), H: 1}, Action: "profile-edit"})

@@ -3,7 +3,7 @@ package app
 import "strings"
 
 // handleCodexCommand opens the account-scoped ChatGPT usage surface. Codex
-// model selection and priority belong to /agents and /profiles; /codex does not
+// model selection and priority belong to /agents and /favorites; /codex does not
 // mutate model preferences.
 func (a *App) handleCodexCommand(args []string) {
 	if a == nil || a.home == nil {

@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, GitBranch, Info, Lightbulb, Lock, MoreHorizontal, Pencil, Plus, Settings2, Star, Trash2, Zap, ZapOff } from 'lucide-react'
 import type { ActiveModelProfileState, AgentProfileRecord, ModelOptionRecord, ModelProfileInput, ModelProfileRecord } from '../types/chat'
 import { defaultModelThinking, displayModelName, effectiveContextWindow, formatContextWindow, formatModelPricing, modelOptionRouteLabel, modelOptionUpstreamFamily, modelServiceTierOptions, modelThinkingOptions, normalizeModelServiceTier, normalizeModelThinking, supportsModelServiceTier } from '../services/model-options'
+import { applyFavoriteScope, favoriteDefaultPatch, favoriteDefaultSlot, type FavoriteScope } from '../services/favorite-scopes'
 import { displayAgentName } from '../services/agent-display'
 import { agentModelSettingsQueryOptions, agentModelSettingsQueryKey } from '../../settings/swarm/queries/get-agent-model-settings'
 import { restoreAgentModelDefaults, saveSwarmAgentModelSettings, saveSystemAgentModelSettings } from '../../settings/swarm/mutations/save-agent-model-settings'
@@ -649,7 +650,7 @@ export function AgentModelControl({
     }
   }
 
-  async function applyFavorite(profile: ModelProfileRecord) {
+  async function applyFavorite(profile: ModelProfileRecord, scope: FavoriteScope = 'default') {
     if (saving || busy) return
     const settings = agentModelSettingsQuery.data
     if (!settings) {
@@ -660,25 +661,17 @@ export function AgentModelControl({
     setSwitchingFavoriteId(profile.profileId)
     setError(null)
     try {
-      const isOrchestrator = selectedPrimaryAgent === 'system-orchestrator' || currentAgent === 'system-orchestrator'
-      const saved = await saveSwarmAgentModelSettings({
-        action: isOrchestrator ? settings.swarm.action : {
+      const applyChat = onApplyModelFavoriteChatOnly ?? onApplyModelFavorite
+      await applyFavoriteScope(scope, async () => {
+        const saved = await saveSwarmAgentModelSettings(favoriteDefaultPatch(settings, {
           provider: profile.provider,
           model: profile.model,
           thinking: profile.thinking,
           serviceTier: profile.serviceTier,
           contextMode: profile.contextMode,
-        },
-        plan: isOrchestrator ? {
-          provider: profile.provider,
-          model: profile.model,
-          thinking: profile.thinking,
-          serviceTier: profile.serviceTier,
-          contextMode: profile.contextMode,
-        } : settings.swarm.plan,
-      })
-      queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, saved)
-      await onApplyModelFavorite?.(profile)
+        }, selectedPrimaryAgent, currentAgent))
+        queryClient.setQueryData<AgentModelSettings>(agentModelSettingsQueryKey, saved)
+      }, applyChat ? async () => { await applyChat(profile) } : undefined)
       setOpen(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -688,7 +681,8 @@ export function AgentModelControl({
     }
   }
 
-  const defaultAction = agentModelSettingsQuery.data?.swarm.action ?? actionDraft
+  const defaultSlot = favoriteDefaultSlot(selectedPrimaryAgent, currentAgent)
+  const defaultAction = agentModelSettingsQuery.data?.swarm[defaultSlot] ?? (defaultSlot === 'plan' ? planDraft : actionDraft)
   const defaultMatchesFavorite = useMemo(() => {
     if (!defaultAction?.provider || !defaultAction?.model) return null
     const defaultTier = normalizeDraftServiceTier(defaultAction.provider, defaultAction.serviceTier ?? '')
@@ -935,7 +929,7 @@ export function AgentModelControl({
             </div>
             {favoritesHelpOpen ? (
               <div id="model-favorites-help" role="region" aria-label="Model favorite action help" className="border-b border-[var(--app-border)] bg-[var(--app-bg-alt)] px-4 py-3 text-xs leading-5 text-[var(--app-text-muted)] sm:px-5">
-                Hover or focus a favorite to reveal chat, default, and delete actions. “Use in chat” changes only this chat; “Default” applies to future chats. Use the external ellipsis button to edit a favorite.
+                Choose a scope below a favorite to apply it, or use Delete to remove it. “This chat” changes only this chat; “Default” applies only to future chats; “Default + this chat” does both. Orchestrator uses the Plan default; deployed Swarm uses the Action default. Use the external ellipsis button to edit a favorite.
               </div>
             ) : null}
             <div className="min-h-0 max-w-full flex-1 overflow-x-hidden overflow-y-auto overscroll-contain p-4 sm:p-5">
@@ -946,7 +940,7 @@ export function AgentModelControl({
                     const confirmingDelete = deleteCandidateId === profile.profileId
                     return (
                       <div key={profile.profileId} className="flex min-w-0 max-w-full items-center gap-1">
-                        <div className={`group relative flex min-w-0 flex-1 items-center overflow-hidden rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
+                        <div className={`group relative flex min-w-0 flex-1 flex-col items-stretch overflow-hidden rounded-xl border p-1 transition ${active ? 'border-[var(--app-primary)] bg-[var(--app-surface-subtle)]' : 'border-[var(--app-border)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-surface-hover)]'}`}>
                           <div className="flex min-w-0 flex-1 items-center gap-3 rounded-lg p-2">
                             <Star size={17} fill={active ? 'currentColor' : 'none'} className={`shrink-0 ${active ? 'text-[var(--app-primary)]' : 'text-[var(--app-text-subtle)]'}`} />
                             <span className="min-w-0 flex-1">
@@ -956,7 +950,7 @@ export function AgentModelControl({
                             </span>
                           </div>
                           <div
-                            className={`absolute inset-y-1 right-1 z-10 flex max-w-[calc(100%-0.5rem)] items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] px-1 shadow-sm transition-all duration-150 ${confirmingDelete ? 'pointer-events-auto translate-x-0 opacity-100' : 'pointer-events-none translate-x-1 opacity-0 group-hover:pointer-events-auto group-hover:translate-x-0 group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:translate-x-0 group-focus-within:opacity-100'}`}
+                            className="flex max-w-full flex-wrap items-center gap-1 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface)] p-1"
                             role="group"
                             aria-label={`Actions for ${profile.name}`}
                           >
@@ -970,12 +964,15 @@ export function AgentModelControl({
                               <>
                                 {onApplyModelFavoriteChatOnly ? (
                                   <button type="button" disabled={saving || busy} aria-label={active ? `${profile.name} is in use for this chat` : `Use ${profile.name} in this chat only`} title={active ? 'In use for this chat' : 'Change only this chat to this model'} onClick={() => { void applyFavoriteToChat(profile) }} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">
-                                    {switchingChatFavoriteId === profile.profileId ? 'Switching…' : active ? 'Current' : 'Use in chat'}
+                                    {switchingChatFavoriteId === profile.profileId ? 'Switching…' : 'This chat'}
                                   </button>
                                 ) : null}
                                 <button type="button" disabled={saving || busy} aria-label={`Make ${profile.name} the default model for future chats`} title="Use this model for future chats" onClick={() => { void applyFavorite(profile) }} className="shrink-0 rounded-lg border border-[var(--app-primary)] px-2 py-2 text-[11px] font-semibold text-[var(--app-primary)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">
                                   {switchingFavoriteId === profile.profileId ? 'Switching…' : 'Default'}
                                 </button>
+                                {(onApplyModelFavoriteChatOnly || onApplyModelFavorite) ? (
+                                  <button type="button" disabled={saving || busy} aria-label={`Make ${profile.name} the default and use it in this chat`} onClick={() => { void applyFavorite(profile, 'default-and-chat') }} className="shrink-0 rounded-lg border border-[var(--app-border)] px-2 py-2 text-[11px] font-semibold text-[var(--app-text)] hover:bg-[var(--app-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-primary)] disabled:opacity-60">Default + this chat</button>
+                                ) : null}
                                 <button type="button" disabled={saving || busy} aria-label={`Delete favorite ${profile.name}`} title={`Delete favorite ${profile.name}`} onClick={() => { setError(null); setDeleteCandidateId(profile.profileId) }} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--app-text-subtle)] hover:bg-[var(--app-danger-bg)] hover:text-[var(--app-danger)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-danger)] disabled:opacity-60">
                                   <Trash2 size={14} />
                                 </button>

@@ -65,7 +65,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/actions", Hint: "Open canonical workspace Actions", QuickTips: []string{"/actions", "/actions list"}},
 		{Command: "/alerts", Hint: "Open alerts / notifications (c clears all, Enter opens session)"},
 		{Command: "/agents", Hint: "Open agent cards and model setup"},
-		{Command: "/profiles", Hint: "Quick-switch the saved model profile used by new sessions"},
+		{Command: "/favorites", Hint: "Apply a favorite to This chat, Default, or Default + this chat"},
 		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/memory", Hint: "List, edit, or permanently forget saved memories", QuickTips: []string{"/memory", "/memory help"}},
@@ -2285,7 +2285,7 @@ func (a *App) executeCommand(raw string) {
 		a.handleWorktreesCommand(args)
 	case "wt":
 		a.handleWorktreesCommand(args)
-	case "profiles":
+	case "favorites":
 		a.openProfilesModal()
 	case "agents", "agent":
 		a.handleAgentsCommand(args)
@@ -2361,7 +2361,7 @@ func (a *App) showHelp() {
 		"/worktrees [new|open|off|status|branch <name>]",
 		"/agents   (open agent cards and model setup)",
 
-		"/profiles   (quick-switch the saved model profile used by new sessions)",
+		"/favorites  (This chat, Default, or Default + this chat)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
 		fmt.Sprintf("%s   (cycle saved model profiles)", keybinds.Label(ui.KeybindGlobalCycleProfiles)),
 		"/themes   (open theme modal with live preview)",
@@ -5539,7 +5539,11 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 	case ui.HomeActionOpenProfilesModal:
 		a.openProfilesModal()
 	case ui.HomeActionSelectModelProfile:
-		_ = a.selectHomeModelProfile(action.ModelProfileID)
+		if err := a.selectModelFavorite(action.ModelProfileID, action.FavoriteScope); err != nil {
+			a.home.SetFavoritesStatus(err.Error())
+		} else {
+			a.home.HideProfilesModal()
+		}
 	case ui.HomeActionRefreshCodexUsage:
 		a.refreshHomeCodexAccount()
 	case ui.HomeActionConsumeCodexReset:
@@ -7511,6 +7515,7 @@ func (a *App) openProfilesModal() {
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
 	a.home.ShowProfilesModal()
+	a.home.SetFavoritesChatAvailable(a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.SessionID() != "")
 }
 
 func (a *App) openAgentsModal() {
