@@ -5,6 +5,8 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Enable TAP and spec test reporters for deterministic Orchestrator qualification suites. Docs impact: none.
+
 - Fix test-install-distro container setup to ensure mint suppression guard is copied into active container namespace under Docker runtime. Docs impact: none.
 
 
