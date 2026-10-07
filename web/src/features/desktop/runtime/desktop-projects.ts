@@ -253,6 +253,7 @@ export class DesktopProjectsRuntime {
           (!entry.authoritative && response.task.session_id !== entry.task.sessionId) ||
           (response.task.revision ?? 0) < (entry.task.revision ?? 0)) {
           apply(task => ({ ...task, gitStatus: 'unknown', isIntegrated: false, unintegratedCommits: 0,
+            detailError: 'Task status response did not match the current execution',
             syncWarning: 'Task status response did not match the current execution' }), true)
           return
         }
@@ -262,7 +263,9 @@ export class DesktopProjectsRuntime {
         }
         apply(() => mapBackendTask(response.task), true)
       }).catch(error => {
-        apply(task => ({ ...task, gitStatus: 'unknown', isIntegrated: false, unintegratedCommits: 0, syncWarning: error instanceof Error ? error.message : 'Task status refresh failed' }), true)
+        apply(task => ({ ...task, gitStatus: 'unknown', isIntegrated: false, unintegratedCommits: 0,
+          detailError: error instanceof Error ? error.message : 'Task detail refresh failed',
+          syncWarning: error instanceof Error ? error.message : 'Task status refresh failed' }), true)
       }).finally(() => {
         this.taskReads.delete(key)
         this.drainTasks()
@@ -438,6 +441,10 @@ export class DesktopProjectsRuntime {
   inspectTask(projectId: string, taskId: string): void {
     const task = this.deps.getState()[projectId]?.tasks.find(item => item.id === taskId)
     if (!task || task.detailLoaded) return
+    const key = JSON.stringify([projectId, taskId])
+    const read = this.taskReads.get(key)
+    if (this.taskQueue.has(key) || (read && read.identity === taskGitIdentity(task) &&
+      read.demand === this.demand.get(projectId) && read.epoch === this.taskEpoch)) return
     this.queueTask(projectId, task, true, false)
   }
 

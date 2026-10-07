@@ -773,9 +773,6 @@ export function MinimalTaskCard({
   const expanded = isExpanded !== undefined ? isExpanded : internalExpanded
   const detailsToggleRef = useRef<HTMLButtonElement>(null)
   const detailsId = useId()
-  useEffect(() => {
-    if (expanded && projectId && !task.detailLoaded) desktopProjects.inspectTask(projectId, task.id)
-  }, [expanded, projectId, task.id, task.revision, task.detailLoaded])
   const handleToggleExpand = () => {
     if (expanded) {
       requestAnimationFrame(() => {
@@ -801,6 +798,13 @@ export function MinimalTaskCard({
   const disclosureBinding = task.planBinding || task.plan_binding
   const disclosurePlanId = disclosureBinding?.planId || disclosureBinding?.plan_id
   const disclosureRevision = disclosureBinding?.definitionRevision ?? disclosureBinding?.definition_revision
+  // Pending bound cards need their exact review document even while collapsed.
+  // Hydration never approves, expands, or attaches the execution conversation.
+  useEffect(() => {
+    if (projectId && !task.detailLoaded && !task.detailError &&
+      (expanded || (isPendingApproval && disclosurePlanId))) desktopProjects.inspectTask(projectId, task.id)
+  }, [expanded, isPendingApproval, projectId, task.id, task.revision, task.detailLoaded,
+    task.detailError, disclosurePlanId, disclosureRevision])
   // New tasks and durable definition revisions start with titles only. Status
   // chatter must not reopen details or discard the user's current expansion.
   useEffect(() => {
@@ -1688,6 +1692,17 @@ export function MinimalTaskCard({
           {/* Refine / Actions Bar */}
           <div className="flex flex-col gap-2 pt-1 border-t border-blue-500/20">
 
+            {isPlanCard && !task.detailLoaded && projectId && (
+              <div role="status" className="text-xs text-slate-300" data-testid="task-review-hydration">
+                <span>{task.detailError
+                  ? `Could not load the current plan: ${task.detailError}`
+                  : 'Loading the current plan for review. Approval remains unavailable until it is verified.'}</span>
+                {task.detailError && <button type="button" className="swarm-outline-action ml-2 px-2 py-1"
+                  onClick={event => { event.stopPropagation(); desktopProjects.inspectTask(projectId, task.id) }}>
+                  Retry loading plan
+                </button>}
+              </div>
+            )}
             {isPlanRejected && (
               <div className="p-2.5 rounded bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs flex items-center gap-2" data-testid="task-plan-rejected-banner">
                 <AlertTriangle size={13} className="text-rose-400 shrink-0" />
