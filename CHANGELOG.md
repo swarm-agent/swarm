@@ -6,7 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
-- Modernize workspace onboarding recovery test assertions to validate the canonical 4-step Desktop onboarding lifecycle, ensuring smooth step transitions and accurate multi-step navigation checks. Docs impact: none.
+- Modernize workspace onboarding recovery test assertions to validate the canonical 4-step Desktop onboarding lifecycle, ensuring smooth step transitions, accurate multi-step navigation checks, and clean error recovery. Docs impact: none.
 
 - Author comprehensive E2E tests for New Task creation across all 6 modal flows (small coder feature, big swarm feature, audit finder, image, video, and sound) with Chromium form submission, durable store verification, UI card rendering, and reload persistence. Add live Orchestrator E2E test suite and runner covering in-chat task proposals without self-approval, structured plan suggestion handoff to Swarm Default, and multi-stage Task Program dependency consumption. Docs impact: none.
 
