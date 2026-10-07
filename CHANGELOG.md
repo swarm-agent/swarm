@@ -5,6 +5,8 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Let the headless application BFF accept an exact Tailscale Serve origin (`https://NAME.TAILNET.ts.net`) in addition to loopback, with TLS terminated by Tailscale on the host and the container listener kept on host loopback; all other non-loopback origins remain rejected. Docs impact: `examples/headless-app/README.md` documents private tailnet access.
+
 - Add Swarm Control: an MCP endpoint (`/mcp`) on the daemon and headless SDK listener that admits only scoped tokens and exposes six session tools through the existing V3 route allowlist (persistent permission rules excluded). Add optional, off-by-default remote access: `swarmctl remote` and `/v1/remote*` (owner-only) connect a machine outbound to a user-deployed `swarm-remote-1` relay with an Ed25519 device key and a local scope ceiling; `packages/swarm-relay` is the Cloudflare reference relay with OAuth 2.1/DCR/CIMD and consent approved inside Swarm. Docs impact: `docs/checkpoints/swarm-control.md` and `packages/swarm-relay/README.md` document surfaces, protocol, security model and local validation; deployed Cloudflare, claude.ai, ChatGPT and routine use remain unproven.
 
 - Reconcile Orchestrator source-filter regressions with the segmented Task scope UI; retain approval/archive guards and strengthen pressed-state, callback, count and keyboard-accessibility assertions without changing production styling. Docs impact: none.

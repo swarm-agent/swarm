@@ -59,6 +59,18 @@ docker exec swarm-workshop cat /etc/swarmd/headless-app/login-secret
    pending call or deny it; stop targets the current active run. No persistent
    permission rule or bypass is created.
 
+## Private access from your tailnet
+
+To open the app from your own devices, keep the loopback publication above and
+let [Tailscale Serve](https://tailscale.com/kb/1312/serve) provide HTTPS on the
+host. Set `APP_ORIGIN` to the exact Serve origin (`https://NAME.TAILNET.ts.net`,
+no port or path) with `-e APP_ORIGIN=...` on `docker run`, then on the host run
+`tailscale serve --bg 8443`. Tailscale terminates TLS, so the container listener
+stays plain HTTP on host loopback and no certificate files are needed. The app
+rejects any other non-loopback origin, and requests whose Host is not the Serve
+name. Login, HttpOnly `__Host-` cookie and CSRF rules are unchanged; the Serve
+name is reachable only from your tailnet. Do not use Tailscale Funnel.
+
 ## Streaming and persistence
 
 `server.mjs` uses `sdk.realtime.watchSession`; it does not implement V3 transport,

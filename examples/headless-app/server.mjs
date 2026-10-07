@@ -3,7 +3,7 @@ import { createServer as createHTTP } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SwarmClient } from '@swarm-agent/sdk';
-import { body, createBoundary, reject, safeError, text } from './boundary.mjs';
+import { body, createBoundary, isTailscaleServeOrigin, reject, safeError, text } from './boundary.mjs';
 import { operations } from './operations.mjs';
 
 const headers = {
@@ -84,7 +84,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     sdk.setToken('');
     const origin = process.env.APP_ORIGIN || 'http://127.0.0.1:8443';
     const handler = appHandler(sdk, { origin, secret }); // Validate before listening.
-    const server = origin.startsWith('https:')
+    // Tailscale Serve terminates TLS on the host; this listener stays plain HTTP
+    // and must be published to host loopback only.
+    const server = origin.startsWith('https:') && !isTailscaleServeOrigin(origin)
       ? createHTTPS({ key: await readFile(`${config}/tls.key`), cert: await readFile(`${config}/tls.crt`), maxHeaderSize: 8192 }, handler)
       : createHTTP({ maxHeaderSize: 8192 }, handler);
     server.requestTimeout = 35_000; server.headersTimeout = 10_000; server.maxConnections = 32;

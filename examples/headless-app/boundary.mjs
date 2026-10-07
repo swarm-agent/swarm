@@ -15,9 +15,20 @@ export function safeError(error) {
   return error instanceof AppError ? { status: error.status, error: error.message } :
     { status: 502, error: 'Daemon operation failed. Check setup, provider readiness and selected model; then refresh. No automatic retry was made.' };
 }
+// A Tailscale Serve origin: HTTPS on a tailnet MagicDNS name, default port.
+// Tailscale terminates TLS on the host and proxies to the loopback-published
+// listener, so the name is reachable only from the owner's tailnet.
+export function isTailscaleServeOrigin(origin) {
+  try {
+    const url = new URL(origin);
+    return url.protocol === 'https:' && !url.port && url.origin === origin &&
+      /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+\.ts\.net$/.test(url.hostname);
+  } catch { return false; }
+}
 export function createBoundary(origin, secret) {
   const url = new URL(origin);
-  if (!['http:', 'https:'].includes(url.protocol) || url.hostname !== '127.0.0.1' || url.origin !== origin) throw new Error('APP_ORIGIN must be an exact HTTP(S) IPv4 loopback origin');
+  const loopback = ['http:', 'https:'].includes(url.protocol) && url.hostname === '127.0.0.1' && url.origin === origin;
+  if (!loopback && !isTailscaleServeOrigin(origin)) throw new Error('APP_ORIGIN must be an exact HTTP(S) IPv4 loopback origin or an HTTPS Tailscale Serve (*.ts.net) origin');
   // HTTP is supported only for host-loopback publication, never LAN/remote access.
   const secure = url.protocol === 'https:';
   const cookieName = secure ? '__Host-swapp' : 'swapp-loopback';
