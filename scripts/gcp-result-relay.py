@@ -90,7 +90,7 @@ def stage_policy(context, env):
                  for n in range(1, 4 if (p, surface) == ('anthropic', 'tui') else 2)}
     return build | providers | {'main-source-policy', 'changelog', 'dependency-vulnerabilities',
         'head-reverify', 'identity-bootstrap', 'installed-new-user', 'installed-existing-user',
-        'installed-normal-user', 'desktop-launch', 'tui-launch', 'plan-auto', 'task-routing',
+        'installed-normal-user', 'desktop-launch', 'tui-launch', 'task-routing',
         'task-program', 'provider-sync'}
 
 

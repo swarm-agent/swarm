@@ -8,14 +8,14 @@ fi
 
 usage() {
   cat >&2 <<'USAGE'
-Usage: scripts/run-runner-test.sh <target> <provider> [test-name] [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--action-model <id>] [--action-thinking <level>] [--plan-model <id>] [--plan-thinking <level>] [--coder-model <id>] [--coder-thinking <level>] [--designer-model <id>] [--designer-thinking <level>] [--browser-executable <path>] [--stage <name>] [--session-id <id>] [--initial-run-id <id>] [--artifact-id <id>] [--desktop-path <path>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
+Usage: scripts/run-runner-test.sh <target> <provider> <test-name> [--api-url <url>] [--workspace-path <path>] [--linked-workspace-path <path>] [--model <id>] [--thinking <level>] [--action-model <id>] [--action-thinking <level>] [--plan-model <id>] [--plan-thinking <level>] [--coder-model <id>] [--coder-thinking <level>] [--designer-model <id>] [--designer-thinking <level>] [--browser-executable <path>] [--stage <name>] [--session-id <id>] [--initial-run-id <id>] [--artifact-id <id>] [--desktop-path <path>] [--source-session-id <id>] [--source-collection-id <id>] [--source-variant-id <id>] [--source-event-seq <seq>] [--timeout-ms <ms>]
 
 Runs a checked-in runner test against an already-running Swarm target.
 
 Arguments:
   target       SSH alias, or an http(s) URL for direct execution
   provider     Exact provider id paired with explicit role models
-  test-name    Runner under scripts/runners without .mjs (default: basic-plan-auto)
+  test-name    Required explicit runner under scripts/runners without .mjs; no default
 
 Options:
   --api-url          API URL used from the target host (SSH default: http://127.0.0.1:7781)
@@ -49,8 +49,8 @@ Environment:
                       never embedded in a remote command or copied config file.
 
 Examples:
-  scripts/run-runner-test.sh runner-alias codex
-  scripts/run-runner-test.sh https://runner.example.invalid codex
+  scripts/run-runner-test.sh runner-alias "$PROVIDER" task-program-worktrees --coder-model "$CODER_MODEL"
+  scripts/run-runner-test.sh https://runner.example.invalid "$PROVIDER" task-program-worktrees --coder-model "$CODER_MODEL"
 USAGE
 }
 
@@ -68,11 +68,10 @@ TARGET="$1"
 PROVIDER="$2"
 shift 2
 
-TEST_NAME="basic-plan-auto"
-if [[ $# -gt 0 && "$1" != --* ]]; then
-  TEST_NAME="$1"
-  shift
-fi
+[[ $# -gt 0 && -n "$1" && "$1" != --* ]] || fail "test-name is required; choose an explicit supported runner under scripts/runners (no default)"
+TEST_NAME="$1"
+shift
+[[ "${TEST_NAME}" != basic-plan-auto ]] || fail "basic-plan-auto is retired; choose an explicit supported runner; no replacement is selected"
 
 API_URL=""
 WORKSPACE_PATH=""

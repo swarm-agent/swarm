@@ -119,7 +119,7 @@ class ReleaseTests(unittest.TestCase):
         cells = []
         for cell, provider in s.CELLS.items():
             gates = {'identity', 'credential', 'workspace', 'canonical-models'}
-            if provider == 'fireworks': gates |= {'explicit-model', 'basic-plan-auto'}
+            if provider == 'fireworks': gates |= {'explicit-model'}
             cells.append(dict(schema='swarm.gcp.onboarding/v1', cell=cell, source_sha=A,
                               archive_sha256=refs['archive']['sha256'], build_id='build-1', run_id='run-1',
                               exit_code=0, cleanup_verified=True, gates={g: True for g in gates},
@@ -143,8 +143,94 @@ class ReleaseTests(unittest.TestCase):
         return result, manifest, evidence, policy, inputs
 
     def test_full_independent_binding(self):
+        """Purpose: verify_evidence accepts complete current release evidence without
+        retired plan-auto stage/onboarding gates. Prevent revival while preserving
+        exact immutable binding; this pure boundary neither stages nor publishes.
+        """
         result, manifest, evidence, policy, inputs = self.evidence()
+        self.assertNotIn('plan-auto', s.FULL_STAGES)
+        for cell in evidence['receipt']['onboarding_receipts']:
+            self.assertNotIn('basic-plan-auto', cell['gates'])
         self.assertEqual(s.verify_evidence(result, manifest, evidence, policy, 'v1.2.3'), inputs)
+
+    def test_retirement_preserves_required_stages(self):
+        """Purpose: relay.stage_policy and release.FULL_STAGES must agree on exact
+        release coverage without plan-auto. Prevent blanket weakening: every other
+        install/build/security/session/task/provider/cleanup stage remains required.
+        Static policy unit scope is the narrowest independent coverage assertion.
+        """
+        providers = {f'provider-{p}-{surface}-{n}'
+                     for p in ('anthropic', 'fireworks', 'gemini', 'openai', 'openrouter')
+                     for surface in ('desktop', 'tui')
+                     for n in range(1, 4 if (p, surface) == ('anthropic', 'tui') else 2)}
+        expected = providers | {'source', 'setup', 'version', 'repository-policy',
+            'main-source-policy', 'changelog', 'dependency-vulnerabilities',
+            'critical-fast', 'critical-deep', 'critical-agents', 'build', 'package-smoke',
+            'ubuntu-sudo', 'arch-sudo', 'ubuntu-root', 'head-reverify', 'cleanup',
+            'identity-bootstrap', 'installed-new-user', 'installed-existing-user',
+            'installed-normal-user', 'desktop-launch', 'tui-launch', 'task-routing',
+            'task-program', 'provider-sync'}
+        self.assertEqual(s.FULL_STAGES, expected)
+        for context in ('build-main', 'release-candidate'):
+            self.assertEqual(r.stage_policy(context, {'GITHUB_EVENT_NAME': 'push'}), expected)
+
+    @staticmethod
+    def rebind_receipt(manifest, evidence):
+        # Preserve valid digest association so rejection reaches the mutated gate.
+        evidence['observed_authority']['receipt_sha256'] = s.hashed(evidence['receipt'])
+        manifest.update({k: copy.deepcopy(evidence[k])
+                         for k in ('receipt', 'admission', 'observed_authority')})
+        manifest['evidence']['sha256'] = s.hashed(evidence)
+
+    def test_retirement_keeps_onboarding_gates_binding_model_and_cleanup(self):
+        """Purpose: verify_evidence must still reject missing/false explicit-model,
+        identity/credential/workspace/canonical-model gates, wrong model, stale
+        binding and failed cleanup. Rebound fixtures reach the actual validations;
+        the pure verifier must reject without mutating its input evidence.
+        """
+        for change in ('explicit-model', 'identity', 'credential', 'workspace',
+                       'canonical-models', 'model', 'source_sha', 'build_id',
+                       'run_id', 'archive_sha256', 'cleanup_verified', 'exit_code'):
+            gate = change in ('explicit-model', 'identity', 'credential', 'workspace', 'canonical-models')
+            for missing in ((False, True) if gate else (False,)):
+                with self.subTest(change=change, missing=missing):
+                    result, manifest, evidence, policy, _ = self.evidence()
+                    cell = next(c for c in evidence['receipt']['onboarding_receipts']
+                                if c['cell'] == 'fireworks-desktop-1')
+                    if change in cell['gates']:
+                        if missing: del cell['gates'][change]
+                        else: cell['gates'][change] = False
+                    elif change == 'cleanup_verified': cell[change] = False
+                    elif change == 'exit_code': cell[change] = 1
+                    else: cell[change] = 'wrong'
+                    self.rebind_receipt(manifest, evidence)
+                    before = copy.deepcopy((result, manifest, evidence, policy))
+                    with self.assertRaisesRegex(s.relay.Invalid, 'onboarding'):
+                        s.verify_evidence(result, manifest, evidence, policy, 'v1.2.3')
+                    self.assertEqual((result, manifest, evidence, policy), before)
+
+    def test_retirement_does_not_accept_missing_skipped_or_legacy_extra_stages(self):
+        """Purpose: verify_evidence retains exact successful stage coverage after
+        removal. Prevent skip/duplicate/extra old stage or lost task/session gates
+        from qualifying; the pure receipt boundary rejects without changing inputs.
+        """
+        for stage in ('task-program', 'task-routing', 'desktop-launch', 'tui-launch',
+                      'provider-sync', 'cleanup', 'critical-agents'):
+            for change in ('missing', 'skipped'):
+                with self.subTest(stage=stage, change=change):
+                    result, manifest, evidence, policy, _ = self.evidence()
+                    if change == 'missing':
+                        result['stages'] = [row for row in result['stages'] if row['id'] != stage]
+                    else:
+                        next(row for row in result['stages'] if row['id'] == stage)['status'] = 'skipped'
+                    before = copy.deepcopy(result)
+                    with self.assertRaisesRegex(s.relay.Invalid, 'incomplete successful coverage'):
+                        s.verify_evidence(result, manifest, evidence, policy, 'v1.2.3')
+                    self.assertEqual(result, before)
+        result, manifest, evidence, policy, _ = self.evidence()
+        result['stages'].append({'id': 'plan-auto', 'status': 'passed'})
+        with self.assertRaisesRegex(s.relay.Invalid, 'incomplete successful coverage'):
+            s.verify_evidence(result, manifest, evidence, policy, 'v1.2.3')
 
     def test_missing_stale_attempt_base_source_version_cleanup_rejected(self):
         for change in ('onboarding', 'attempt', 'base', 'source', 'version', 'cleanup', 'authority', 'artifact'):

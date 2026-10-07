@@ -8,35 +8,37 @@ fi
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/run-testbench-runner.sh [runner-name] [runner options...]
+Usage: scripts/run-testbench-runner.sh <runner-name> [runner options...]
 
 Loads the ignored repository-root .env, maps this clean worktree to its stable
 slot in the bounded isolated container pool, deploys the exact HEAD when needed,
 and runs a checked-in scripts/runners scenario through temporary loopback tunnels.
-Default runner: basic-plan-auto.
+An explicit supported runner name is required; there is no default.
 USAGE
 }
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/lib-testbench-e2e.sh
-source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
-swarm_testbench_load_env "${ROOT_DIR}" || exit 1
-swarm_testbench_validate_env || exit 1
-
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
 
-RUNNER="basic-plan-auto"
-if [[ $# -gt 0 && "${1}" != --* ]]; then
-  RUNNER="$1"
-  shift
-fi
+[[ $# -gt 0 && -n "$1" && "$1" != --* ]] || { printf 'run-testbench-runner: runner-name is required; choose an explicit supported runner (no default)\n' >&2; exit 2; }
+RUNNER="$1"
+shift
+[[ "${RUNNER}" != basic-plan-auto ]] || { printf 'run-testbench-runner: basic-plan-auto is retired; choose an explicit supported runner; no replacement is selected\n' >&2; exit 2; }
+[[ "${RUNNER}" =~ ^[A-Za-z0-9._-]+$ ]] || { printf 'run-testbench-runner: runner-name contains unsupported characters\n' >&2; exit 2; }
+[[ -f "${ROOT_DIR}/scripts/runners/${RUNNER}.mjs" ]] || { printf 'run-testbench-runner: runner not found: scripts/runners/%s.mjs\n' "${RUNNER}" >&2; exit 2; }
 
 if [[ "${RUNNER}" == "artifact-v2-provider-proof" ]]; then
   printf 'run-testbench-runner: artifact-v2-provider-proof is retired; managed candidate testing uses artifact-v3-multipart-e2e\n' >&2
   exit 2
 fi
+
+# Validate selection before reading deployment configuration or allocating a tunnel.
+# shellcheck source=scripts/lib-testbench-e2e.sh
+source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
+swarm_testbench_load_env "${ROOT_DIR}" || exit 1
+swarm_testbench_validate_env || exit 1
 
 model_args=()
 model_args+=(--action-model "${SWARM_TESTBENCH_ACTION_MODEL}" --action-thinking "${SWARM_TESTBENCH_ACTION_THINKING}")

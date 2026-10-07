@@ -123,8 +123,15 @@ assertion reviews. No CI workflow is changed by this product-side contract.
   fixtures now use current-run evidence and `SubmitProjectTaskStructuredPlan`;
   an active session plan alone is explicitly insufficient, and stale callbacks
   cannot fail the current planning task.
-- `basic-plan-auto.mjs`, `task-program-worktrees.mjs`: supported direct session /
-  delegation checks retained separately, not mislabelled Orchestrator UI proofs.
+- `orchestrator-pr.mjs --scenario session-api`, `task-program-worktrees.mjs`:
+  supported direct session / delegation checks retained separately, not mislabelled
+  Orchestrator UI proofs. The obsolete `basic-plan-auto.mjs` session chatmode journey
+  is retired; it is not `orchestrator-chat`, which remains supported. Runner wrappers
+  require an explicit supported runner name and reject the retired name without
+  selecting a replacement. Launch pre-run and release receipts no longer require
+  `plan-auto`; explicit-model, identity, evidence binding and cleanup gates remain.
+  Land the separate qualification-helper retirement before pushing this product
+  cleanup so deployed operations no longer invoke the removed runner.
 - `artifact-v3-edit-repair.mjs`: reuse the maintained deadline/progress observer.
   Existing `designer-artifact-flow.mjs`, `video-studio-multi-turn.mjs`,
   `image-swarm-benchmark.mjs`, `video-benchmark.mjs`, project media/design suites
