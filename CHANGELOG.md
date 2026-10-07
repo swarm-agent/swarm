@@ -5,6 +5,7 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Correct the qualification permission wire regression to distinguish read-generated rule timestamps from durable policy changes; check exact stored bytes and immutable effective policy snapshots after once-only decisions, with a real saved-rule insertion control. Docs impact: none.
 - Require the canonical explicit `saved_rule: null` qualification `allow_once` response, rejecting malformed envelopes and persistent rules with bounded safe diagnostics; align continuation fixtures with actual wire types and add handler/service/store regressions for normalization and resolution races. Docs impact: none.
 - Recognize semantically empty stored qualification permission overrides (including normalized `'{}'`) at pending and resolved boundaries, with separate safe override diagnostics; reject malformed/nonempty overrides and missing executor-call evidence without display-summary fallback, preserving exact-call consent and pending-task zero-execution gates. Docs impact: none.
 - Add bounded, exact-call `allow_once` consent for qualification Orchestrator source discovery and the owned pending-only Big Feature Swarm proposal; reject unknown, mismatched and stale permissions without bypass or saved rules, and retain canonical completion/zero-intent gates. Docs impact: none.
