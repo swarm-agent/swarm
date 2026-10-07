@@ -8,6 +8,7 @@ func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/ws", s.handleDesktopStream)
+	mux.HandleFunc(controlMCPPath, s.handleControlMCP)
 }
 
 func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {

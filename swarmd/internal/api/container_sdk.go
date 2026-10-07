@@ -32,6 +32,12 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("scoped token identity unavailable"))
 			return
 		}
+		if r.URL.Path == controlMCPPath {
+			// Swarm Control MCP translates each tool into one request against
+			// the allowlisted routes below, under this same verified identity.
+			s.serveControlMCP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec), next)
+			return
+		}
 		if !containerSDKRouteAllowed(r) {
 			writeError(w, http.StatusForbidden, errors.New("route unavailable on container SDK listener"))
 			return

@@ -160,6 +160,9 @@ type Server struct {
 
 	longSessionDesktopSampleLogOnce sync.Once
 
+	controlMCPRoutesOnce sync.Once
+	controlMCPRoutes     http.Handler
+
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
 
