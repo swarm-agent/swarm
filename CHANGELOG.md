@@ -5,6 +5,8 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Fix test-install-distro container setup to ensure mint suppression guard is copied into active container namespace under Docker runtime. Docs impact: none.
+
 
 - Modernize workspace onboarding recovery test assertions to validate the canonical 4-step Desktop onboarding lifecycle, ensuring smooth step transitions, accurate multi-step navigation checks, and clean error recovery. Docs impact: none.
 

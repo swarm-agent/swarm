@@ -159,7 +159,7 @@ done
 [[ "${systemd_ready}" == "true" ]] || fail "systemd did not become ready in the ${DISTRO} test container"
 
 # Install the guard as root before either identity can invoke the installer.
-"${RUNTIME}" cp "$(dirname -- "${BASH_SOURCE[0]}")/test-install-mint-guard.sh" "${container_name}:/run/test-install-mint-guard.sh"
+"${RUNTIME}" cp "$(dirname -- "${BASH_SOURCE[0]}")/test-install-mint-guard.sh" "${container_name}:/run/test-install-mint-guard.sh" 2>/dev/null || true; if [[ "${RUNTIME}" == docker ]]; then "${RUNTIME}" exec -i "${container_name}" sh -c 'cat > /run/test-install-mint-guard.sh' < "$(dirname -- "${BASH_SOURCE[0]}")/test-install-mint-guard.sh"; fi
 "${RUNTIME}" exec "${container_name}" bash /run/test-install-mint-guard.sh prepare
 
 if [[ "$INSTALL_IDENTITY" == root ]]; then
