@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { chromium } from 'playwright'
+
+const webDir = existsSync(path.resolve(process.cwd(), 'src/features'))
+  ? process.cwd()
+  : existsSync(path.resolve(process.cwd(), 'web/src/features'))
+    ? path.resolve(process.cwd(), 'web')
+    : path.resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../../..')
 
 // Requirement: account onboarding must no longer perform workspace setup;
 // WorkspaceHomePage and WorkspaceFolderTree retain selected folders on failures.
@@ -23,13 +32,13 @@ test('workspace onboarding interaction and recovery matrix', { timeout: 60000 },
       w.status = status;
       const root = createRoot(document.getElementById('root'));
       root.render(w.surface === 'home' ? <WorkspaceHomePage/> : <DesktopOnboardingGate status={status} onReload={async()=>{if(w.failFinish){await new Promise(r=>setTimeout(r,350));throw Error('Finalization failed')}return status}} onComplete={()=>w.calls.push(['complete'])}/>);
-    `, resolveDir: process.cwd(), loader: 'tsx' },
+    `, resolveDir: webDir, loader: 'tsx' },
     bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic',
     plugins: [{ name: 'isolated-workspace-api', setup(b) {
       b.onResolve({ filter: /use-workspace-launcher$|onboarding\/api$|^\.\.\/api$|query-client$|queries\/query-options$|workspace-theme$|new-session-flow$|workspace-onboarding-assistant$|list-providers$|write-api$/ }, (args) => ({ path: args.path, namespace: 'fixture' }))
       b.onLoad({ filter: /.*/, namespace: 'fixture' }, (args) => {
         if (args.path.endsWith('use-workspace-launcher')) return { contents: `
-          import {WorkspaceRepositoryPrerequisiteError} from '${process.cwd()}/src/features/workspaces/launcher/services/workspace-repository';
+          import {WorkspaceRepositoryPrerequisiteError} from '${webDir}/src/features/workspaces/launcher/services/workspace-repository';
           export function useWorkspaceLauncher(){const w=window;return {
             workspaces:[],discovered:[],loading:false,browserLoading:false,browserError:null,
             browser:{resolvedPath:'/workspace',homePath:'/workspace',parentPath:'/',entries:[]},
@@ -39,7 +48,7 @@ test('workspace onboarding interaction and recovery matrix', { timeout: 60000 },
             setupWorkspaceRepository:async(path,expected)=>{w.calls.push(['setup',path,expected]);if(w.failSetup)throw Error('Setup failed');w.repository={...w.repository,state:'ready',canSetup:false,headCommit:'abc'};return {...w.repository,path}},
             openWorkspace:async(path)=>{w.calls.push(['open',path]);return {resolvedPath:path,workspaceName:'new'}},
           }}
-        `, resolveDir: process.cwd() }
+        `, resolveDir: webDir }
         if (args.path.endsWith('workspace-theme')) return { contents: `export const WORKSPACE_THEME_OPTIONS=[];export const applyWorkspaceTheme=()=>{};export const workspaceThemeDefaultId=()=>'';export const createWorkspaceThemeStyle=()=>({});` }
         if (args.path.endsWith('query-client')) return { contents: `export const queryClient={invalidateQueries:async()=>{}};` }
         if (args.path.endsWith('query-options')) return { contents: `export const agentStateQueryOptions=()=>({});export const draftModelQueryOptions=agentStateQueryOptions,modelOptionsQueryOptions=agentStateQueryOptions,modelProfilesQueryOptions=agentStateQueryOptions;` }
@@ -50,10 +59,11 @@ test('workspace onboarding interaction and recovery matrix', { timeout: 60000 },
         return { contents: `export const patchDesktopOnboarding=async()=>window.status;export const acceptOnboardingProviderCredential=async()=>{};export const startWorkspaceOnboardingSession=async()=>{throw Error('Unexpected assistant')};` }
       })
       b.onResolve({ filter: /^@tanstack\/react-router$/ }, () => ({ path: 'router', namespace: 'router-fixture' }))
-      b.onLoad({ filter: /.*/, namespace: 'router-fixture' }, () => ({ contents: `import React from 'react';export const useNavigate=()=>async()=>{};export const Link=({children,...props})=>React.createElement('a',props,children);`, resolveDir: process.cwd() }))
+      b.onLoad({ filter: /.*/, namespace: 'router-fixture' }, () => ({ contents: `import React from 'react';export const useNavigate=()=>async()=>{};export const Link=({children,...props})=>React.createElement('a',props,children);`, resolveDir: webDir }))
     } }],
   })
-  const browser = await chromium.launch({ headless: true, ...(process.env.SWARM_TEST_CHROMIUM_PATH ? { executablePath: process.env.SWARM_TEST_CHROMIUM_PATH } : { channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' }) })
+  const chromiumPath = process.env.SWARM_TEST_CHROMIUM_PATH || process.env.SWARM_TEST_CHROMIUM
+  const browser = await chromium.launch({ headless: true, ...(chromiumPath ? { executablePath: chromiumPath } : { channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' }) })
   t.after(() => browser.close())
   async function mount(surface = 'onboarding', mobile = false) {
     const page = await browser.newPage({ viewport: { width: mobile ? 390 : 1280, height: 900 } })
@@ -76,10 +86,12 @@ test('workspace onboarding interaction and recovery matrix', { timeout: 60000 },
     try {
       await page.evaluate(() => { (window as any).failFinish = true })
       await page.getByRole('button', { name: 'Continue without provider', exact: true }).click()
+      await page.getByRole('button', { name: 'Continue to projects', exact: true }).click()
       await page.getByText('Finalization failed', { exact: true }).waitFor()
       assert.deepEqual(await calls(page), [])
       await page.evaluate(() => { (window as any).failFinish = false })
       await page.getByRole('button', { name: 'Continue without provider', exact: true }).click()
+      await page.getByRole('button', { name: 'Continue to projects', exact: true }).click()
       await page.waitForFunction(() => (window as any).calls.some((c: string[]) => c[0] === 'complete'))
       assert.deepEqual(await calls(page), [['complete']])
       assert.equal(await page.getByRole('button', { name: 'Add from Explorer', exact: true }).count(), 0)
