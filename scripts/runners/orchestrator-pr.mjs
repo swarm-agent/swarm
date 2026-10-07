@@ -55,6 +55,14 @@ export function requiredAssertions(scenario) {
         ...(scenario !== 'video' ? ['capability_discovery'] : [])] : [])]
 }
 
+// Session creation derives identity from account + request key, not its route.
+// Bound long build IDs without changing receipt identity or payload retry checks.
+export function mutationRequestID(o, operation) {
+  check(id(o.runID) && SCENARIOS.includes(o.scenario) && ['project', 'session', 'message'].includes(operation), 'invalid_mutation_identity')
+  const digest = createHash('sha256').update(JSON.stringify([o.runID, o.scenario, operation])).digest('hex')
+  return `orchestrator-pr:${o.scenario}:${operation}:${digest}`
+}
+
 export function createReceipt(o) {
   return { schema: RECEIPT_SCHEMA, scenario: o.scenario, candidate_revision: o.candidate, run_id: o.runID,
     status: 'NOT_RUN', native_exit: 2, assertion_count: 0,
@@ -86,7 +94,7 @@ export function assertSafeToolRouting(events, runID, scenario) {
       if (e.tool_name === 'manage_artifact' && args.action?.startsWith('generate_')) check(++generations <= 1, 'single_media_generation_required')
     }
     if (e.tool_name === 'manage_projects') {
-      check(scenario === 'orchestrator-chat' && ['help', 'list', 'get', 'list_tasks', 'get_task', 'propose_task', 'create_task'].includes(args.action), 'unexpected_project_mutation')
+      check(scenario === 'orchestrator-chat' && ['help', 'list', 'get', 'list_sources', 'inspect_source', 'list_tasks', 'get_task', 'propose_task', 'create_task'].includes(args.action), 'unexpected_project_mutation')
     }
     if (e.tool_name === 'manage_artifact') {
       check(['image', 'video', 'audio'].includes(scenario) && ['image_capabilities', 'audio_capabilities', 'help', `generate_${scenario}`].includes(args.action)
@@ -214,13 +222,13 @@ export async function runScenario(o, r, deps = {}) {
       swarm_id: swarmID, target_kind: 'host', target_relationship: 'self' }
     let projectID = ''
     if (o.scenario !== 'session-api') {
-      const project = (await api('POST', '/v3/projects', { client_request_id: o.runID + ':project', name: 'PR qualification ' + o.runID,
+      const project = (await api('POST', '/v3/projects', { client_request_id: mutationRequestID(o, 'project'), name: 'PR qualification ' + o.runID,
         description: 'Disposable qualification project; never approve tasks.', workspaces: [{ path: o.workspacePath, role: 'primary_code' }] })).project
       check(id(project?.id), 'project_identity_unavailable'); projectID = project.id
       r.evidence.push({ project_id: projectID, retained: true })
     }
     const created = await api('POST', projectID ? `/v3/projects/${encodeURIComponent(projectID)}/sessions` : '/v3/sessions', {
-      client_request_id: o.runID + ':session', ...(projectID ? {} : { ...authority, mode: 'auto', agent_name: 'swarm', model_profile: { use_account_default: true } }) })
+      client_request_id: mutationRequestID(o, 'session'), ...(projectID ? {} : { ...authority, mode: 'auto', agent_name: 'swarm', model_profile: { use_account_default: true } }) })
     r.status = 'FAIL'
     sessionID = created.session_id || created.session?.id
     check(id(sessionID) && created.session?.id === sessionID && created.session.mode === 'auto', 'session_identity_mismatch')
@@ -231,7 +239,7 @@ export async function runScenario(o, r, deps = {}) {
     const prompt = o.scenario === 'session-api' ? `Reply with exactly ${marker}. Do not use tools.`
       : o.scenario === 'orchestrator-chat' ? `${common}In this project propose exactly one Big Feature Swarm task titled ${marker} with explicit source ${o.workspacePath}. The task should add a short README explanation later. Use manage_projects propose_task, auto-approval off. Do not approve, deploy or execute it. Stop after creating the pending task.`
       : `${common}Generate exactly one ${o.scenario} of a calm abstract blue wave, title ${marker}, using the account-configured model. Use manage_artifact generate_${o.scenario}. ${o.scenario === 'video' ? 'One silent clip, shortest supported duration; no story or soundtrack.' : `First discover ${o.scenario}_capabilities and use its exact capability token and supported settings.${o.scenario === 'audio' ? ' Use the shortest supported duration.' : ''}`} Return the exact ready reference. Missing capability must be reported, never replaced.`
-    const sent = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, { client_request_id: o.runID + ':message', role: 'user', content: prompt })
+    const sent = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, { client_request_id: mutationRequestID(o, 'message'), role: 'user', content: prompt })
     runID = sent.run_intent?.run_id || sent.run_id
     check(id(runID), 'run_not_admitted'); r.status = 'FAIL'; mark('run_admitted')
     r.evidence.push({ session_id: sessionID, run_id: runID })
