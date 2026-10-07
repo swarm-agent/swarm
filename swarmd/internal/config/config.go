@@ -19,6 +19,7 @@ type Config struct {
 	ListenAddr              string
 	DesktopPort             int
 	ContainerSDKPort        int
+	LockPermissionPolicy    bool
 	PeerTransportPort       int
 	BypassPermissions       bool
 	RetainToolOutputHistory bool
@@ -78,6 +79,9 @@ func Parse(args []string) (Config, error) {
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
 	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
 	fs.BoolVar(&cfg.BypassPermissions, "bypass-permissions", startupCfg.BypassPermissions, "bypass normal tool permission prompts (exit_plan_mode still requires approval)")
+	// Never persisted: the lock is a property of how this process was started,
+	// so nothing reachable at runtime (API, agents, config edits) can lift it.
+	fs.BoolVar(&cfg.LockPermissionPolicy, "lock-permission-policy", false, "make permission policy (rules, capability policies, bypass) read-only for this process; bypass stays off. Changing it requires a restart without this flag")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
 	fs.StringVar(&cfg.DBPath, "db-path", defaultDBPath, "Pebble database path")
 	fs.StringVar(&cfg.LockPath, "lock-path", defaultLockPath, "daemon lock file path")
@@ -98,6 +102,11 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
+	if cfg.LockPermissionPolicy {
+		// A locked policy always runs with permissions enforced, even if the
+		// startup config file was edited to enable bypass.
+		cfg.BypassPermissions = false
+	}
 	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err
 	}

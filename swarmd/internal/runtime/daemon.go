@@ -373,6 +373,10 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("migrate v3 run-state index: %w", err)
 	}
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
+	if cfg.LockPermissionPolicy {
+		permissionSvc.LockPolicy()
+		log.Printf("swarmd permission policy locked by --lock-permission-policy; bypass is off and policy changes are refused until restart")
+	}
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
 	webPushRepository, err := webpush.NewPebbleRepository(secretStore)
 	if err != nil {

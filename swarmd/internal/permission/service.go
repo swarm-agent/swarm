@@ -58,7 +58,13 @@ type Service struct {
 	permissionStateCache map[string]permissionStateCacheEntry
 	counter              atomic.Uint64
 	reconciled           bool
+	policyLocked         atomic.Bool
 }
+
+// ErrPolicyLocked reports that the daemon was started with its permission
+// policy locked: rules, capability policies and bypass cannot change until the
+// daemon restarts without the lock.
+var ErrPolicyLocked = errors.New("permission policy is locked: restart swarmd without --lock-permission-policy to change it")
 
 type permissionStateCacheEntry struct {
 	AccountScopeID    string
@@ -257,9 +263,29 @@ func (s *Service) SetNotificationService(notifications *notification.Service) {
 	s.notifications = notifications
 }
 
+// LockPolicy makes the permission policy read-only for the life of this
+// process: every policy write (rules, capability and subagent policies, the
+// bash profile and rules saved by allow_always/deny_always) fails with
+// ErrPolicyLocked, and bypass is turned off and cannot be turned on. There is
+// deliberately no unlock; the lock comes from the daemon's startup flags.
+func (s *Service) LockPolicy() {
+	if s == nil {
+		return
+	}
+	s.policyLocked.Store(true)
+	s.SetBypassPermissions(false)
+}
+
+func (s *Service) PolicyLocked() bool {
+	return s != nil && s.policyLocked.Load()
+}
+
 func (s *Service) SetBypassPermissions(enabled bool) {
 	if s == nil {
 		return
+	}
+	if enabled && s.policyLocked.Load() {
+		enabled = false
 	}
 	now := time.Now().UnixMilli()
 	s.mu.Lock()
@@ -1903,6 +1929,13 @@ func actionIsDeny(action string) bool {
 	default:
 		return false
 	}
+}
+
+// IsPersistentAction reports whether a resolve action saves a policy rule
+// (allow_always, deny_always or an alias of either).
+func IsPersistentAction(action string) bool {
+	normalized, err := normalizeResolveAction(action)
+	return err == nil && actionIsPersistent(normalized)
 }
 
 func actionIsPersistent(action string) bool {

@@ -2847,13 +2847,16 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if rejectScopedPersistentResolve(w, r, req.Action) {
+		return
+	}
 	if err := s.validateProjectPermissionReply(principal, sessionID, req.Action); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
 	record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writePermissionPolicyError(w, err)
 		return
 	}
 	mutation, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)
