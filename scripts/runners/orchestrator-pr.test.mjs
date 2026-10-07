@@ -678,7 +678,7 @@ test('invalid or foreign admission never authorizes an owned-run stop', { timeou
 // original executor call to the owned session/run/project/source, then require
 // durable completion and pending-task zero intents. This transport-level test
 // exercises the real runner, not backend transactional correctness or live AI.
-function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = false, resolution = 'allow', missing = false, badOutcome = false, batch = '', changed = false, mutateResolved = () => {} } = {}) {
+function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = false, resolution = 'allow', missing = false, badOutcome = false, batch = '', changed = false, mutateResolved = () => {}, mutateReply = reply => reply } = {}) {
   const p = protocol(o, o.scenario), resolutions = []
   let clock = 0, samples = 0, index = 0, resolved = false
   const args = [
@@ -708,8 +708,13 @@ function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = fals
       const permission = { ...r, status: resolution === 'deny' ? 'denied' : 'approved', decision: resolution === 'deny' ? 'deny' : 'allow_once',
         reason: body.reason, resolved_at: 2, updated_at: 2,
         ...(resolution === 'foreign' ? { run_id: 'foreign' } : {}) }
+      // Direct resolve returns empty ApprovedArguments omitted by omitempty;
+      // later store hydration/replay normalizes it to the JSON string '{}'.
+      delete permission.approved_arguments
       mutateResolved(permission, index)
-      return Response.json({ ok: true, session_id: 'owned-session', saved_rule: resolution === 'rule', permission })
+      // Actual API response: nil *PolicyRule becomes null; persistent rules are objects.
+      return Response.json(mutateReply({ ok: true, session_id: 'owned-session',
+        saved_rule: resolution === 'rule' ? { id: 'unexpected-rule', decision: 'allow' } : null, permission }))
     }
     const response = await p.fetch(url, init)
     if (route === '/v1/swarm/topology') {
@@ -739,7 +744,10 @@ function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = fals
     const result = await response.json()
     result.session_views_by_id = { 'owned-session': { pending_permissions: [] } }
     // The canonical completed call retains the exact original JSON arguments.
-    result.events_by_session['owned-session'][0].payload.arguments = args[2]
+    const completed = result.events_by_session['owned-session'][0].payload
+    // Executor recordProviderToolEvent emits JSON strings for arguments/output.
+    completed.arguments = JSON.stringify(args[2])
+    completed.output = JSON.stringify(completed.output)
     return Response.json(result)
   }
   return { ...p, fetch, resolutions, samples: () => samples, deps: { fetch, verifyCandidate: () => {}, now: () => clock, pause: async ms => { clock += ms } } }
@@ -903,5 +911,41 @@ test('normalized empty overrides never authorize changed resolution evidence', {
     assert.equal(p.samples(), 1)
     assert.equal(r.assertions.find(a => a.name === 'run_completed').passed, false)
     assert.ok(!p.calls.some(c => /approve|deploy|resolve_all/.test(c.route)))
+  }
+})
+
+// Purpose: fixtureConsent must require the canonical explicit null PolicyRule,
+// not truthiness or the old boolean fixture. At the HTTP reply boundary reject
+// malformed envelopes, identity/decision drift and persistent rules after one
+// grant, without retry, completion, task approval/deployment or secret output.
+test('allow_once requires explicit null saved rule and strict resolution envelope', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  const cases = [
+    ...[{}, { id: 'SECRET rule' }, true, false, 0, 1, '', 'null', [], undefined].map(value => ({
+      code: 'permission_resolution_rule_rejected', mutateReply: reply => {
+        if (value === undefined) delete reply.saved_rule
+        else reply.saved_rule = value
+        return reply
+      },
+    })),
+    ...[null, [], false, 'SECRET envelope', {}, { ok: true, permission: [] }].map(value => ({
+      code: 'permission_resolution_envelope_rejected', mutateReply: () => value,
+    })),
+    { code: 'permission_resolution_envelope_rejected', mutateReply: reply => ({ ...reply, ok: 'true' }) },
+    { code: 'permission_resolution_mismatch', mutateReply: reply => ({ ...reply, session_id: 'foreign' }) },
+    ...[{ status: 'pending' }, { decision: 'allow_always' }, { decision: false }, { decision: undefined }].map(patch => ({
+      code: 'permission_resolution_decision_rejected', mutateResolved: record => Object.assign(record, patch),
+    })),
+  ]
+  for (const { code, ...config } of cases) {
+    const o = { ...options, scenario: 'orchestrator-chat' }, r = createReceipt(o), p = consentProtocol(o, config)
+    await assert.rejects(runScenario(o, r, p.deps), new RegExp('^Error: ' + code + '$'))
+    assert.equal(p.resolutions.length, 1)
+    assert.equal(p.samples(), 1)
+    assert.equal(r.assertions.find(a => a.name === 'run_completed').passed, false)
+    assert.equal(r.assertions.find(a => a.name === 'zero_task_intents').passed, false)
+    assert.notEqual(r.status, 'PASS')
+    assert.ok(!p.calls.some(c => /approve|deploy|resolve_all/.test(c.route)))
+    assert.ok(!JSON.stringify(r).includes('SECRET'))
   }
 })

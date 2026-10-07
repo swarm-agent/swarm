@@ -295,11 +295,15 @@ function fixtureConsent(api, fixture) {
         result = await api('POST', `/v3/sessions/${encodeURIComponent(fixture.sessionID)}/permissions/${encodeURIComponent(record.id)}/resolve`,
           { action: 'allow_once', reason: 'Exact owned pending-only PR fixture call' })
       } catch { throw new Error('permission_resolution_failed') }
+      check(object(result) && result.ok === true && object(result.permission), 'permission_resolution_envelope_rejected')
+      // ResolveWithPolicyAndArguments returns a nil *PolicyRule for allow_once;
+      // the canonical map response serializes it as explicit null, not false.
+      check(Object.hasOwn(result, 'saved_rule') && result.saved_rule === null, 'permission_resolution_rule_rejected')
       const resolved = result.permission
-      check(result.ok === true && result.session_id === fixture.sessionID && result.saved_rule === false
-        && resolved?.id === record.id && resolved.status === 'approved' && resolved.decision === 'allow_once'
+      check(result.session_id === fixture.sessionID && resolved.id === record.id
         && canonical([resolved.session_id, resolved.run_id, resolved.call_id, resolved.tool_name, permissionArgs(resolved)]) === fingerprint,
       'permission_resolution_mismatch')
+      check(resolved.status === 'approved' && resolved.decision === 'allow_once', 'permission_resolution_decision_rejected')
       check(noPermissionOverride(resolved.approved_arguments), 'permission_resolution_override_rejected')
     }
     return true
