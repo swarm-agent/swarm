@@ -30,9 +30,17 @@ export function toolActivityPresentation(
   toolName: string,
   state: ToolMessageState,
   lifecycleStatus = '',
+  argumentsJson?: Record<string, unknown> | null,
+  outputJson?: Record<string, unknown> | null,
 ): ToolActivityPresentation {
-  const descriptor = describeToolActivity(toolName)
-  const displayState = resolveToolActivityDisplayState(state, lifecycleStatus)
+  const descriptor = describeToolActivity(toolName, argumentsJson)
+  const projectTool = toolName.trim().toLowerCase().replace(/-/g, '_') === 'manage_projects'
+  const task = jsonRecord(outputJson?.task)
+  const resultStatus = jsonString(outputJson, 'task_status') || jsonString(task, 'status') || jsonString(outputJson, 'status')
+  const displayState = resolveToolActivityDisplayState(
+    projectTool && state === 'done' && ['failed', 'error'].includes(resultStatus) ? 'error' : state,
+    lifecycleStatus,
+  )
   if (displayState === 'running') {
     const title = `${descriptor.activeLabel}…`
     return { kind: descriptor.kind, state: displayState, title, statusLabel: 'Active', announcement: title }
@@ -45,13 +53,23 @@ export function toolActivityPresentation(
     const title = `${descriptor.label} cancelled`
     return { kind: descriptor.kind, state: displayState, title, statusLabel: 'Cancelled', announcement: title }
   }
-  const title = descriptor.kind === 'task' ? 'Subagents launched' : `${descriptor.label} complete`
-  return { kind: descriptor.kind, state: displayState, title, statusLabel: 'Done', announcement: title }
+  const pendingStatus = projectTool && ['proposed', 'pending', 'pending_review', 'queued', 'pending_executor', 'planning', 'approved'].includes(resultStatus)
+    ? resultStatus.replace(/_/g, ' ') : ''
+  const title = pendingStatus
+    ? `${descriptor.label} · ${pendingStatus}`
+    : projectTool && jsonString(argumentsJson, 'action') === 'deploy_task'
+      ? `${descriptor.label} response received`
+      : descriptor.kind === 'task' ? 'Subagents launched' : `${descriptor.label} complete`
+  return { kind: descriptor.kind, state: displayState, title, statusLabel: pendingStatus ? 'Pending' : 'Done', announcement: title }
 }
 
 function jsonString(record: Record<string, unknown> | null | undefined, key: string): string {
   const value = record?.[key]
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
 function jsonNumber(record: Record<string, unknown> | null | undefined, key: string): number {
@@ -62,6 +80,20 @@ function jsonNumber(record: Record<string, unknown> | null | undefined, key: str
 export function toolActivityStartSummary(message: StructuredToolMessage): string {
   const args = message.argumentsJson
   switch (message.tool.trim().toLowerCase().replace(/-/g, '_')) {
+    case 'manage_projects': {
+      const inspection = jsonRecord(args?.inspection)
+      const inspectedArgs = jsonRecord(inspection?.arguments)
+      // Allowlisted display metadata only: never render prompts, content,
+      // environment variables, or the complete argument/result object.
+      const target = jsonString(inspectedArgs, 'path') || jsonString(args, 'workspace_path') || jsonString(args, 'workspace_id') || jsonString(args, 'task_id')
+      const query = jsonString(inspectedArgs, 'query')
+      const queries = Array.isArray(inspectedArgs?.queries) ? inspectedArgs.queries : []
+      const queryLabel = query || (queries.length === 1 && typeof queries[0] === 'string' ? queries[0] : queries.length > 1 ? `${queries.length} queries` : '')
+      const title = jsonString(args, 'title') || jsonString(args, 'name')
+      const taskIds = Array.isArray(args?.task_ids) ? args.task_ids : []
+      const subject = title || target || (taskIds.length ? `${taskIds.length} tasks` : jsonString(args, 'project_id'))
+      return [subject, queryLabel].filter(Boolean).join(' · ').replace(/\s+/g, ' ').slice(0, 240)
+    }
     case 'edit':
     case 'write':
       return message.target || jsonString(args, 'path')
