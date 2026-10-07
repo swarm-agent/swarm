@@ -678,7 +678,7 @@ test('invalid or foreign admission never authorizes an owned-run stop', { timeou
 // original executor call to the owned session/run/project/source, then require
 // durable completion and pending-task zero intents. This transport-level test
 // exercises the real runner, not backend transactional correctness or live AI.
-function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = false, resolution = 'allow', missing = false, badOutcome = false, batch = '', changed = false, fallback = false } = {}) {
+function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = false, resolution = 'allow', missing = false, badOutcome = false, batch = '', changed = false, mutateResolved = () => {} } = {}) {
   const p = protocol(o, o.scenario), resolutions = []
   let clock = 0, samples = 0, index = 0, resolved = false
   const args = [
@@ -691,8 +691,8 @@ function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = fals
   const record = () => {
     const r = { id: 'permission-' + index, session_id: 'owned-session', run_id: 'provider-run', call_id: 'call-' + index,
       step: index + 1, tool_name: 'manage_projects', status: 'pending', requirement: 'tool', mode: 'auto',
+      decision: '', reason: '', resolved_at: 0, created_at: 1, updated_at: 1, approved_arguments: '{}',
       tool_arguments: JSON.stringify({ display_summary: 'SECRET non-authoritative summary' }), tool_call_arguments: JSON.stringify(args[index]) }
-    if (fallback) { r.tool_arguments = r.tool_call_arguments; delete r.tool_call_arguments }
     if (changed && resolved) r.call_id = 'changed-call'
     mutate(r, index)
     return r
@@ -705,9 +705,11 @@ function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = fals
       assert.deepEqual(body, { action: 'allow_once', reason: 'Exact owned pending-only PR fixture call' })
       if (resolution === 'http') return Response.json({ error: 'SECRET auth body' }, { status: 409 })
       resolved = true
-      return Response.json({ ok: true, session_id: 'owned-session', saved_rule: resolution === 'rule',
-        permission: { ...r, status: resolution === 'deny' ? 'denied' : 'approved', decision: resolution === 'deny' ? 'deny' : 'allow_once',
-          ...(resolution === 'foreign' ? { run_id: 'foreign' } : {}) } })
+      const permission = { ...r, status: resolution === 'deny' ? 'denied' : 'approved', decision: resolution === 'deny' ? 'deny' : 'allow_once',
+        reason: body.reason, resolved_at: 2, updated_at: 2,
+        ...(resolution === 'foreign' ? { run_id: 'foreign' } : {}) }
+      mutateResolved(permission, index)
+      return Response.json({ ok: true, session_id: 'owned-session', saved_rule: resolution === 'rule', permission })
     }
     const response = await p.fetch(url, init)
     if (route === '/v1/swarm/topology') {
@@ -744,7 +746,20 @@ function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = fals
 }
 test('exact discovery and pending proposal receive only allow_once and require canonical outcome', { timeout: 5000 }, async t => {
   const { options } = fixture(t)
-  for (const config of [{}, { duplicate: true }, { fallback: true }]) {
+  // Store hydration emits '{}'; Service.resolveLocked can return an omitted
+  // omitempty string before persistence sanitizes it. Empty string/whitespace
+  // use the same sanitizePermissionArguments no-override normalization.
+  for (const config of [{}, { duplicate: true },
+    // Isolate the old resolved truthiness defect from the pending check.
+    { mutate: r => { delete r.approved_arguments }, mutateResolved: r => { r.approved_arguments = '{}' } },
+    ...[undefined, '', ' ', '{}', ' { } '].map(value => ({ mutateResolved: r => {
+      if (value === undefined) delete r.approved_arguments
+      else r.approved_arguments = value
+    } })),
+    ...[undefined, '', ' '].map(value => ({ mutate: r => {
+      if (value === undefined) delete r.approved_arguments
+      else r.approved_arguments = value
+    } }))]) {
     const o = { ...options, scenario: 'orchestrator-chat' }, r = createReceipt(o), p = consentProtocol(o, config)
     await runScenario(o, r, p.deps)
     assert.ok(r.assertions.every(a => a.passed))
@@ -766,7 +781,10 @@ test('fixture permission rejects unsafe or ambiguous calls before any resolution
     r => { r.tool_name = 'task' }, r => { r.session_id = 'foreign' }, r => { r.run_id = 'foreign' },
     r => { delete r.call_id }, r => { delete r.id }, r => { r.status = 'approved' },
     r => { r.tool_arguments = JSON.stringify({ approved_arguments: { action: 'deploy_task' } }) },
-    r => { r.approved_arguments = '{}' },
+    // Even a plausible full display call cannot substitute for executor evidence.
+    r => { r.tool_arguments = r.tool_call_arguments; r.tool_call_arguments = '{}' },
+    r => { r.tool_arguments = r.tool_call_arguments; delete r.tool_call_arguments },
+    r => { r.tool_arguments = r.tool_call_arguments; r.tool_call_arguments = '' },
     r => { r.tool_call_arguments = 'SECRET malformed JSON' }, r => { r.tool_call_arguments = JSON.stringify(JSON.stringify({ action: 'list_sources' })) },
     r => { r.tool_call_arguments = JSON.stringify({ action: 'inspect_source', project_id: 'project', workspace_path: { path: options.workspacePath } }) },
     ...['approve_task', 'accept_task', 'deploy_task', 'create_task', 'list', 'get', 'inspect_files'].map(action => r => {
@@ -814,5 +832,76 @@ test('permission races failures and stale snapshots never become qualification s
     assert.notEqual(r.status, 'PASS')
     assert.ok(r.assertions.some(a => !a.passed))
     assert.ok(!JSON.stringify(r).includes('SECRET'))
+  }
+})
+
+// Purpose: fixture drift must not hide PermissionRecord's string normalization.
+// This source-contract tripwire ties the wire fixture to PutPermissionWithSummary,
+// sanitizePermissionRecord, Service.resolveLocked and the canonical V3 reply.
+// It proves only source shape, not store durability or backend runtime behavior;
+// the transport regressions below prove the runner's observable fail-closed gate.
+test('permission fixture tracks canonical stored strings and direct resolve serialization', () => {
+  const source = relative => readFileSync(new URL('../../' + relative, import.meta.url), 'utf8')
+  const store = source('swarmd/internal/store/pebble/permission_store.go')
+  const service = source('swarmd/internal/permission/service.go')
+  const api = source('swarmd/internal/api/sessions_v3_primary.go')
+  assert.match(store, /ApprovedArguments\s+string `json:"approved_arguments,omitempty"`/)
+  assert.match(store, /ToolCallArguments\s+string `json:"tool_call_arguments,omitempty"`/)
+  assert.match(store, /record\.ApprovedArguments = sanitizePermissionArguments\(record\.ApprovedArguments\)/)
+  assert.match(store, /record\.ToolCallArguments = sanitizePermissionArguments\(record\.ToolCallArguments\)/)
+  assert.match(store, /func sanitizePermissionArguments\(raw string\) string \{\s*trimmed := strings\.TrimSpace\(raw\)\s*if trimmed == "" \{\s*return "\{\}"/)
+  assert.match(service, /updated\.ApprovedArguments, err = approvedArgumentsForResolution/)
+  assert.match(service, /PutPermissionWithSummary\(updated, &record, summary\)/)
+  assert.match(service, /return updated, true, nil/)
+  assert.match(service, /func sanitizeApprovedArguments[\s\S]*?if approvedArguments == "" \{\s*return ""/)
+  assert.match(api, /PendingPermissions\s+\[\]pebblestore\.PermissionRecord/)
+  assert.match(api, /"permission": record, "saved_rule": savedRule/)
+})
+
+// Purpose: fixtureConsent must distinguish no override from any unsafe override
+// at both hydration and allow_once reply boundaries. Production store strings
+// '{}' are the success baseline above (old truthiness checks reject it). Reject
+// malformed, encoded, scalar, null, array and nonempty objects, including changes
+// only at resolution, with no grant retries, task approval/deployment or false PASS.
+test('permission overrides fail closed at pending and resolved boundaries', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  const unsafe = ['SECRET malformed JSON', '[]', '[{}]', 'null', 'false', '0', '""', '"{}"',
+    '{"action":"deploy_task"}', '{"unused":null}', JSON.stringify(JSON.stringify({ action: 'deploy_task' })),
+    null, false, 0, [], {}, { action: 'deploy_task' }]
+  for (const phase of ['pending', 'resolved']) {
+    for (const value of unsafe) {
+      const o = { ...options, scenario: 'orchestrator-chat' }, r = createReceipt(o)
+      const mutate = record => { record.approved_arguments = value }
+      const p = consentProtocol(o, phase === 'pending' ? { mutate } : { mutateResolved: mutate })
+      await assert.rejects(runScenario(o, r, p.deps), phase === 'pending'
+        ? /^Error: permission_override_rejected$/ : /^Error: permission_resolution_override_rejected$/)
+      assert.equal(p.resolutions.length, phase === 'pending' ? 0 : 1)
+      assert.equal(p.samples(), 1)
+      assert.equal(r.assertions.find(a => a.name === 'run_completed').passed, false)
+      assert.notEqual(r.status, 'PASS')
+      assert.ok(!p.calls.some(c => /approve|deploy|resolve_all/.test(c.route)))
+      assert.ok(!JSON.stringify(r).includes('SECRET'))
+    }
+  }
+})
+
+// Purpose: override normalization cannot weaken exact executor-call identity at
+// resolution. Changed session/run/call/tool/project/source/title or missing original
+// call must fail with one attempted grant and no subsequent task execution.
+test('normalized empty overrides never authorize changed resolution evidence', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  const changes = [
+    r => { r.session_id = 'foreign' }, r => { r.run_id = 'foreign' }, r => { r.call_id = 'foreign' },
+    r => { r.tool_name = 'task' }, r => { r.tool_arguments = r.tool_call_arguments; r.tool_call_arguments = '{}' },
+    ...[{ project_id: 'foreign' }, { action: 'deploy_task' }, { workspace_path: 'foreign' }, { title: 'foreign' }]
+      .map(patch => r => { r.tool_call_arguments = JSON.stringify({ ...JSON.parse(r.tool_call_arguments), ...patch }) }),
+  ]
+  for (const mutateResolved of changes) {
+    const o = { ...options, scenario: 'orchestrator-chat' }, r = createReceipt(o), p = consentProtocol(o, { mutateResolved })
+    await assert.rejects(runScenario(o, r, p.deps), /^Error: permission_resolution_mismatch$/)
+    assert.equal(p.resolutions.length, 1)
+    assert.equal(p.samples(), 1)
+    assert.equal(r.assertions.find(a => a.name === 'run_completed').passed, false)
+    assert.ok(!p.calls.some(c => /approve|deploy|resolve_all/.test(c.route)))
   }
 })

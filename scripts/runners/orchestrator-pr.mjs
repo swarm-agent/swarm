@@ -208,9 +208,25 @@ const object = value => value && typeof value === 'object' && !Array.isArray(val
 const canonical = value => JSON.stringify(object(value)
   ? Object.fromEntries(Object.keys(value).sort().map(key => [key, JSON.parse(canonical(value[key]))]))
   : Array.isArray(value) ? value.map(item => JSON.parse(canonical(item))) : value)
+// Stored PermissionRecord strings normalize empty values to '{}'. The direct
+// resolve reply may omit ApprovedArguments (omitempty) before store normalization.
+// Parse exactly once: encoded objects, scalars, arrays and null are not overrides
+// we can safely treat as empty. Never accept an object-valued wire field.
+function noPermissionOverride(raw) {
+  if (raw === undefined) return true
+  if (typeof raw !== 'string') return false
+  if (!raw.trim()) return true
+  try {
+    const value = JSON.parse(raw)
+    return object(value) && Object.keys(value).length === 0
+  } catch { return false }
+}
 function permissionArgs(record) {
   try {
-    const args = decode(record.tool_call_arguments || record.tool_arguments)
+    // A missing executor call is normalized to '{}' too. Do not fall back to
+    // ToolArguments: it is a display summary, not execution authority.
+    check(typeof record.tool_call_arguments === 'string', 'permission_arguments_invalid')
+    const args = JSON.parse(record.tool_call_arguments)
     const summary = record.tool_arguments ? decode(record.tool_arguments) : {}
     check(object(args) && object(summary) && !Object.hasOwn(summary, 'approved_arguments'), 'permission_arguments_invalid')
     return args
@@ -257,7 +273,8 @@ function fixtureConsent(api, fixture) {
     const batch = pending.map(record => {
       check(object(record) && record.session_id === fixture.sessionID && record.run_id === fixture.runID && record.status === 'pending'
         && /^[a-zA-Z0-9_-]{1,200}$/.test(record.id || '') && id(record.call_id), 'permission_identity_rejected')
-      check(record.tool_name === 'manage_projects' && !record.approved_arguments, 'permission_tool_rejected')
+      check(record.tool_name === 'manage_projects', 'permission_tool_rejected')
+      check(noPermissionOverride(record.approved_arguments), 'permission_override_rejected')
       const args = permissionArgs(record), proposal = fixtureCall(args, fixture)
       const fingerprint = canonical([record.session_id, record.run_id, record.call_id, record.tool_name, args])
       const prior = seen.get(record.id)
@@ -281,8 +298,9 @@ function fixtureConsent(api, fixture) {
       const resolved = result.permission
       check(result.ok === true && result.session_id === fixture.sessionID && result.saved_rule === false
         && resolved?.id === record.id && resolved.status === 'approved' && resolved.decision === 'allow_once'
-        && !resolved.approved_arguments && canonical([resolved.session_id, resolved.run_id, resolved.call_id, resolved.tool_name, permissionArgs(resolved)]) === fingerprint,
+        && canonical([resolved.session_id, resolved.run_id, resolved.call_id, resolved.tool_name, permissionArgs(resolved)]) === fingerprint,
       'permission_resolution_mismatch')
+      check(noPermissionOverride(resolved.approved_arguments), 'permission_resolution_override_rejected')
     }
     return true
   }
