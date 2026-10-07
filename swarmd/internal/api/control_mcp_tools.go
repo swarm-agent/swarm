@@ -25,6 +25,7 @@ const (
 	controlMCPMaxWaitSeconds = 45
 	controlMCPMaxModels      = 40
 	controlMCPMaxChildren    = 20
+	controlMCPMaxTasks       = 30
 )
 
 // Roles whose default model an AI client may change, mapped to the canonical
@@ -67,6 +68,7 @@ var controlMCPRoutes = []string{
 	"POST v3/projects",
 	"POST v3/projects/*/sessions",
 	"GET v3/projects/*/tasks",
+	"POST v3/projects/*/tasks/*/integrate",
 	"GET v3/workers",
 	"POST v3/workers",
 	"GET v3/workers/*",
@@ -469,6 +471,24 @@ func controlMCPTools() []controlMCPTool {
 				"workspace_paths": map[string]any{"type": "array", "minItems": 1, "maxItems": 10, "items": map[string]any{"type": "string", "maxLength": 4096}, "description": "From list_workspaces; the first is the primary code workspace."},
 			}),
 			Annotations: controlMCPWrites, call: controlMCPCreateProject,
+		},
+		{
+			Name: "swarm_list_tasks", Title: "List project tasks",
+			Description: "Work in a project: orchestrator tasks and worker runs, with status, agent branch, target branch and what needs doing. Finished work waits in status needs_review until integrate_task merges it.",
+			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
+				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
+				"status":     controlMCPStringProp("Only this status, e.g. needs_review.", 0, 50),
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPListTasks,
+		},
+		{
+			Name: "swarm_integrate_task", Title: "Integrate a reviewed task",
+			Description: "Merge a needs_review task's commits from its agent branch into its target branch in the project repository (a real git merge; nothing is pushed). Review the work first: read the task's session with get_session. Refused on conflicts or when there is nothing committed to integrate.",
+			InputSchema: controlMCPObject([]string{"project_id", "task_id"}, map[string]any{
+				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
+				"task_id":    controlMCPStringProp("From list_tasks.", 1, 200),
+			}),
+			Annotations: controlMCPDestructive, call: controlMCPIntegrateTask,
 		},
 		{
 			Name: "swarm_list_workers", Title: "List workers",
@@ -1259,6 +1279,101 @@ func controlMCPCreateProject(c *controlMCPCall, args map[string]any) (any, error
 		project = response
 	}
 	return map[string]any{"project": controlMCPPick(project, "id", "name")}, nil
+}
+
+// ---- tasks ---------------------------------------------------------------
+
+func controlMCPTaskSummary(task map[string]any) map[string]any {
+	summary := controlMCPPick(task, "id", "title", "status", "agent", "worker_name", "worker_run_id", "session_id", "worktree_branch", "base_branch", "is_integrated", "unintegrated_commits")
+	for key, limit := range map[string]int{"action_needed": 200, "what_did_do": 300, "last_error": 300} {
+		if text, ok := task[key].(string); ok && strings.TrimSpace(text) != "" {
+			summary[key] = controlMCPTruncate(text, limit)
+		}
+	}
+	paths := []any{}
+	for i, raw := range controlMCPList(task["deliverables"]) {
+		if i >= 10 {
+			break
+		}
+		if path, ok := controlMCPMap(raw)["path"].(string); ok && path != "" {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) > 0 {
+		summary["deliverables"] = paths
+	}
+	if integration := controlMCPPick(controlMCPMap(task["integration"]), "state", "error", "resulting_target_head"); len(integration) > 0 {
+		summary["integration"] = integration
+	}
+	return summary
+}
+
+func controlMCPListTasks(c *controlMCPCall, args map[string]any) (any, error) {
+	projectID, err := controlMCPID(args, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	only := controlMCPString(args, "status")
+	tasks := []map[string]any{}
+	for _, raw := range controlMCPList(response["tasks"]) {
+		task := controlMCPMap(raw)
+		if task == nil || task["archived"] == true || (only != "" && task["status"] != only) {
+			continue
+		}
+		tasks = append(tasks, controlMCPTaskSummary(task))
+		if len(tasks) >= controlMCPMaxTasks {
+			break
+		}
+	}
+	return map[string]any{"tasks": tasks}, nil
+}
+
+// controlMCPIntegrateTask selects the task's own session, agent branch and
+// captured target branch, so the integrate route's lineage checks decide; it
+// never picks branches itself.
+func controlMCPIntegrateTask(c *controlMCPCall, args map[string]any) (any, error) {
+	projectID, err := controlMCPID(args, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	taskID, err := controlMCPID(args, "task_id")
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	var task map[string]any
+	for _, raw := range controlMCPList(response["tasks"]) {
+		if candidate := controlMCPMap(raw); candidate != nil && candidate["id"] == taskID {
+			task = candidate
+		}
+	}
+	if task == nil {
+		return nil, controlMCPToolFailure("task %s not found in project %s (see list_tasks)", taskID, projectID)
+	}
+	selection := map[string]any{}
+	for key, field := range map[string]string{"session_id": "session_id", "source_branch": "worktree_branch", "target_branch": "base_branch"} {
+		value, _ := task[field].(string)
+		if strings.TrimSpace(value) == "" {
+			return nil, controlMCPToolFailure("task %s has no %s to integrate", taskID, field)
+		}
+		selection[key] = value
+	}
+	integrated, err := c.dispatch(http.MethodPost, "/v3/projects/"+projectID+"/tasks/"+taskID+"/integrate", nil, selection)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"status": integrated["status"], "task": controlMCPTaskSummary(controlMCPMap(integrated["task"]))}
+	if result := controlMCPPick(controlMCPMap(integrated["integration"]), "target_branch", "resulting_target_head"); len(result) > 0 {
+		out["integration"] = result
+	}
+	return out, nil
 }
 
 // ---- workers -------------------------------------------------------------

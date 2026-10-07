@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -18,6 +19,8 @@ import (
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/workspace"
+	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
 // Requirement: Swarm Control MCP is a client surface over the scoped-token SDK
@@ -337,6 +340,10 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"POST", "/v3/projects/prj_1/sessions", true},
 		{"GET", "/v3/projects/prj_1/tasks", true},
 		{"POST", "/v3/projects/prj_1/tasks", false},
+		{"GET", "/v3/projects/prj_1/tasks/task_1", false},
+		{"POST", "/v3/projects/prj_1/tasks/task_1/integrate", true},
+		{"POST", "/v3/projects/prj_1/tasks/task_1/recover-integrate", false},
+		{"POST", "/v3/projects/prj_1/tasks/task_1/reopen", false},
 		{"POST", "/v3/sessions/abc/plan-mode/enter", false},
 		{"POST", "/v3/sessions/abc/plan-mode/plans/plan_1/submit", false},
 		{"PUT", "/v3/usage/worker-budget", false},
@@ -745,5 +752,252 @@ func TestControlMCPWorkerScheduleIsPartOfCreate(t *testing.T) {
 	next := int64(nextFloat)
 	if next <= time.Now().UnixMilli() || next > time.Now().Add(121*time.Second).UnixMilli() || view["lifecycle_state"] != string(pebblestore.WorkerLifecycleStateActive) {
 		t.Fatalf("get_worker does not report the next scheduled run: %+v", view)
+	}
+}
+
+// Requirement: a supervising AI can review and integrate finished project
+// work: list_tasks shows tasks waiting in needs_review with their branches,
+// and integrate_task performs the real git integration of the task's own
+// agent branch into its captured target branch (never a branch the caller
+// picks), recording the receipt. A task without a captured target is refused
+// with no Git or task change. Threats: work stranded on agent branches with
+// no remote way to accept it, a merge into an arbitrary branch, or a task
+// marked integrated without a merge. Owners: controlMCPListTasks,
+// controlMCPIntegrateTask and POST /v3/projects/{id}/tasks/{tid}/integrate.
+// Real Git with temporary stores through the API mux is the narrowest layer
+// that proves the merge; relay scope (swarm:approve) is covered by
+// TestToolScopesMatchRelay.
+func TestControlMCPIntegratesReviewedTask(t *testing.T) {
+	f := setupMatrixTestFixture(t)
+	defer func() { f.db.Close() }()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	git := func(path string, args ...string) string {
+		t.Helper()
+		out, err := exec.CommandContext(ctx, "git", append([]string{"-C", path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(dir, name, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo := filepath.Join(root, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git(repo, "init", "-b", "main")
+	// The integration merge commit needs a hermetic repository identity.
+	git(repo, "config", "user.name", "Fixture")
+	git(repo, "config", "user.email", "fixture@example.invalid")
+	write(repo, "README.md", "base\n")
+	git(repo, "add", ".")
+	git(repo, "commit", "-m", "base")
+	base := git(repo, "rev-parse", "HEAD")
+	entry, err := pebblestore.NewWorkspaceStore(f.db).AddForAccount(f.accountID, repo, "Bot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ss := pebblestore.NewSessionStore(f.db)
+	el, err := pebblestore.NewEventLog(f.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server.sessions = sessionruntime.NewService(ss, el)
+	f.server.workspace = workspace.NewService(pebblestore.NewWorkspaceStore(f.db))
+	worktrees := worktreeruntime.NewService(pebblestore.NewWorktreeStore(f.db), f.server.workspace, nil)
+	f.server.worktrees = worktrees
+	binding := pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: repo, Provenance: "explicit"}
+	seedTaskSessionBinding(t, f, binding)
+	p := identity.Principal{Type: "user", UserID: f.userID, AccountScopeID: f.accountID}
+	alloc, err := worktrees.AllocateProjectTaskFollowup(p, repo, "draft-run", "agent/worker-draft", base, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(alloc.WorkspacePath, "drafts/draft.md", "a draft\n")
+	git(alloc.WorkspacePath, "add", ".")
+	git(alloc.WorkspacePath, "commit", "-m", "draft")
+	head := git(alloc.WorkspacePath, "rev-parse", "HEAD")
+	write(repo, "NOTES.md", "target moved on\n")
+	git(repo, "add", ".")
+	git(repo, "commit", "-m", "target")
+	target := git(repo, "rev-parse", "HEAD")
+
+	db := f.server.sessions.Store()
+	if err := db.PutProject(f.accountID, &pebblestore.ProjectRecord{ID: "project", Name: "Bot", Workspaces: []pebblestore.ProjectWorkspaceRef{{WorkspaceID: entry.WorkspaceID, Path: repo}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range []pebblestore.ProjectTaskRecord{
+		{ID: "task_ready", ProjectID: "project", AccountID: f.accountID, Title: "Draft", Status: "needs_review", SessionID: "draft-run", Agent: "swarm", WorkspacePath: alloc.WorkspacePath, WorktreeBranch: alloc.BranchName, BaseBranch: "main", BaseCommit: base, SourceWorkspace: binding},
+		{ID: "task_foreign", ProjectID: "project", AccountID: f.accountID, Title: "Unowned", Status: "needs_review", SessionID: "missing-session", Agent: "swarm", WorkspacePath: alloc.WorkspacePath, WorktreeBranch: alloc.BranchName, BaseBranch: "main", BaseCommit: base, SourceWorkspace: binding},
+	} {
+		task := task
+		if err := db.PutProjectTask(f.accountID, &task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := pebblestore.SessionSnapshot{ID: "draft-run", UserID: p.UserID, AccountScopeID: p.AccountScopeID, WorkspacePath: alloc.WorkspacePath, WorktreeEnabled: true, WorktreeRootPath: alloc.WorkspacePath, WorktreeBranch: alloc.BranchName, WorktreeBaseBranch: "main", Mode: "auto", Metadata: map[string]any{"project_id": "project", "task_id": "task_ready", "base_commit": base, "swarm_v3_source_workspace_path": repo, "swarm_v3_source_workspace_id": binding.WorkspaceID, "swarm_v3_source_workspace_generation": binding.WorkspaceGeneration, "swarm_v3_worktree_owner_session_id": "draft-run", "swarm_v3_runtime_workspace_path": alloc.WorkspacePath}}
+	if _, err := applyProjectLifecycleFixture(f.server, sessionruntime.SessionMutationInput{SessionID: snapshot.ID, UserID: p.UserID, AccountScopeID: p.AccountScopeID, ClientRequestID: "create-draft", IdempotencyKey: "create-draft", PayloadHash: "create-draft", RequestHash: "create-draft", Kind: sessionruntime.SessionMutationCreateSession, Session: &snapshot, WorktreeAdmission: &pebblestore.WorktreeAdmissionEvidence{Kind: "allocated", Path: alloc.WorkspacePath, SourcePath: repo, OwnerSessionID: snapshot.ID, Branch: alloc.BranchName, AllocatedRuntimeRoot: true}}); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	r = r.WithContext(context.WithValue(context.WithValue(ctx, productPrincipalRequestContextKey, p),
+		productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, Scopes: []string{"sessions:read", "sessions:write"}}))
+	c := &controlMCPCall{request: r, next: f.server.apiMux()}
+
+	listed, err := controlMCPListTasks(c, map[string]any{"project_id": "project", "status": "needs_review"})
+	if err != nil || len(listed.(map[string]any)["tasks"].([]map[string]any)) != 2 {
+		t.Fatalf("list_tasks: %+v %v", listed, err)
+	}
+	if _, err := controlMCPIntegrateTask(c, map[string]any{"project_id": "project", "task_id": "task_foreign"}); err == nil || !strings.Contains(err.Error(), "HTTP 409") {
+		t.Fatalf("task without its own session integrated: %v", err)
+	}
+	if foreign, _, _ := db.GetProjectTask(f.accountID, "project", "task_foreign"); git(repo, "rev-parse", "main") != target || foreign.IsIntegrated {
+		t.Fatal("refused integration changed the target or the task")
+	}
+	result, err := controlMCPIntegrateTask(c, map[string]any{"project_id": "project", "task_id": "task_ready"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := result.(map[string]any)
+	stored, found, err := db.GetProjectTask(f.accountID, "project", "task_ready")
+	if err != nil || !found || out["status"] != "integrated" || !stored.IsIntegrated || stored.Status != "completed" || stored.Integration == nil || stored.Integration.ResultingTargetHead != git(repo, "rev-parse", "main") {
+		t.Fatalf("integration not recorded: %+v %+v %v", out, stored, err)
+	}
+	git(repo, "merge-base", "--is-ancestor", head, "main")
+	git(repo, "merge-base", "--is-ancestor", target, "main")
+	if git(repo, "status", "--porcelain") != "" || git(repo, "show", "main:drafts/draft.md") != "a draft" {
+		t.Fatal("draft not on main or target left dirty")
+	}
+}
+
+// Requirement: a worker run's work can be reviewed and integrated like any
+// project task: the run forks from the source workspace's current branch (a
+// real integration target, not a literal HEAD) and records the same captured
+// lineage (task source binding, session base commit), so integrate_task merges
+// its committed work into that branch. Threat: scheduled worker output stranded
+// on agent branches that the integrate route refuses, or a merge target of
+// "HEAD". Owners: WorkerExecutionService dispatch preparation
+// (worker_execution.go), controlMCPIntegrateTask and the project task integrate
+// route. The worker HTTP dispatch with the real execution service, Git and
+// temporary stores is the narrowest layer covering both; the agent's own work
+// is a fixture commit (no provider runs).
+func TestControlMCPIntegratesWorkerRun(t *testing.T) {
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
+	s.workspace = workspace.NewService(pebblestore.NewWorkspaceStore(db))
+	w, err := s.sessions.Store().WorkerStore().CreateWorker("acct-test", "user-test", pebblestore.CreateWorkerRequest{Name: "Drafts", WorkspaceRequirements: []pebblestore.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = activateWorkerAPIFixture(t, s, w, workspaceID)
+	if response := executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/direct", `{"prompt":"Write a draft","idempotency_key":"draft-run"}`, workerAPICallOptions{scopes: []string{"automations:write"}}); response.Code != http.StatusCreated {
+		t.Fatalf("dispatch: %d %s", response.Code, response.Body.String())
+	}
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "acct-test", UserID: "user-test"}
+	runs, _, err := s.sessions.ListWorkerRuns(p.AccountScopeID, w.ID, 10, "")
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs: %+v %v", runs, err)
+	}
+	session, found, err := s.sessions.GetSession(runs[0].SessionID)
+	if err != nil || !found {
+		t.Fatalf("run session: %v", err)
+	}
+	repo, _ := session.Metadata["swarm_v3_source_workspace_path"].(string)
+	taskID, _ := session.Metadata["task_id"].(string)
+	task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, "project_workers", taskID)
+	if err != nil || !found || task.BaseBranch != "dev" || session.WorktreeBaseBranch != "dev" || task.SourceWorkspace.WorkspaceID != workspaceID || task.SourceWorkspace.Path != repo || task.BaseCommit == "" || session.Metadata["base_commit"] != task.BaseCommit {
+		t.Fatalf("worker run lineage is not integrable: task=%+v session=%+v %v", task, session, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	git := func(path string, args ...string) string {
+		t.Helper()
+		out, err := exec.CommandContext(ctx, "git", append([]string{"-C", path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(repo, "config", "user.name", "Fixture")
+	git(repo, "config", "user.email", "fixture@example.invalid")
+	if err := os.MkdirAll(filepath.Join(session.WorktreeRootPath, "drafts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(session.WorktreeRootPath, "drafts", "draft.md"), []byte("a draft\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(session.WorktreeRootPath, "add", ".")
+	git(session.WorktreeRootPath, "commit", "-m", "draft")
+	head := git(session.WorktreeRootPath, "rev-parse", "HEAD")
+
+	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	r = r.WithContext(context.WithValue(context.WithValue(ctx, productPrincipalRequestContextKey, p),
+		productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, Scopes: []string{"sessions:read", "sessions:write"}}))
+	result, err := controlMCPIntegrateTask(&controlMCPCall{request: r, next: h}, map[string]any{"project_id": "project_workers", "task_id": taskID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, _, _ := s.sessions.Store().GetProjectTask(p.AccountScopeID, "project_workers", taskID)
+	if result.(map[string]any)["status"] != "integrated" || stored == nil || !stored.IsIntegrated {
+		t.Fatalf("worker run not integrated: %+v %+v", result, stored)
+	}
+	git(repo, "merge-base", "--is-ancestor", head, "dev")
+	if git(repo, "show", "dev:drafts/draft.md") != "a draft" {
+		t.Fatal("draft not on the source branch")
+	}
+}
+
+// Requirement: the task-session lane check accepts a worker run's session
+// shape (source workspace as session workspace, owned worktree as runtime)
+// only for that task's own worker run; every other shape mismatch still
+// fails. Threat: another run's, worker's or a non-worker session passing as
+// the task's lane and having its worktree integrated. Owner:
+// verifyProjectTaskSession / workerRunTaskSession; a pure function test is the
+// narrowest layer.
+func TestVerifyProjectTaskSessionWorkerRunShape(t *testing.T) {
+	task := &pebblestore.ProjectTaskRecord{ID: "task_wrun_1", ProjectID: "p", SessionID: "worker-execution-wrun_1", WorkerID: "worker_1", WorkerRunID: "wrun_1", WorkspacePath: "/wt/run", SourceWorkspace: pebblestore.ProjectTaskSource{WorkspaceID: "ws_1", WorkspaceGeneration: 1, Path: "/repo", Provenance: "worker_binding"}}
+	session := func(edit func(*pebblestore.SessionSnapshot)) pebblestore.SessionSnapshot {
+		s := pebblestore.SessionSnapshot{ID: "worker-execution-wrun_1", AccountScopeID: "acct", WorkspacePath: "/repo", WorktreeEnabled: true, WorktreeRootPath: "/wt/run", Metadata: map[string]any{
+			"project_id": "p", "task_id": "task_wrun_1", "swarm_v3_source_workspace_path": "/repo", "swarm_v3_source_workspace_id": "ws_1", "swarm_v3_source_workspace_generation": int64(1),
+			"swarm_v3_worktree_owner_session_id": "worker-execution-wrun_1", "swarm_v3_runtime_workspace_path": "/wt/run",
+			pebblestore.SessionPurposeMetadataKey: pebblestore.SessionPurposeAutomationExecution, "worker_execution_run_id": "wrun_1", "worker_id": "worker_1",
+		}}
+		if edit != nil {
+			edit(&s)
+		}
+		return s
+	}
+	if err := verifyProjectTaskSession(task, session(nil), "acct"); err != nil {
+		t.Fatalf("own worker run refused: %v", err)
+	}
+	for name, edit := range map[string]func(*pebblestore.SessionSnapshot){
+		"other run":          func(s *pebblestore.SessionSnapshot) { s.Metadata["worker_execution_run_id"] = "wrun_2" },
+		"other worker":       func(s *pebblestore.SessionSnapshot) { s.Metadata["worker_id"] = "worker_2" },
+		"not a worker run":   func(s *pebblestore.SessionSnapshot) { delete(s.Metadata, pebblestore.SessionPurposeMetadataKey) },
+		"foreign workspace":  func(s *pebblestore.SessionSnapshot) { s.WorkspacePath = "/elsewhere" },
+		"foreign runtime":    func(s *pebblestore.SessionSnapshot) { s.Metadata["swarm_v3_runtime_workspace_path"] = "/wt/other" },
+		"foreign lane owner": func(s *pebblestore.SessionSnapshot) { s.Metadata["swarm_v3_worktree_owner_session_id"] = "other" },
+	} {
+		if err := verifyProjectTaskSession(task, session(edit), "acct"); err == nil {
+			t.Fatalf("%s accepted as the task's lane", name)
+		}
+	}
+	plain := *task
+	plain.WorkerID, plain.WorkerRunID = "", ""
+	if err := verifyProjectTaskSession(&plain, session(nil), "acct"); err == nil {
+		t.Fatal("non-worker task accepted a source-workspace session")
 	}
 }

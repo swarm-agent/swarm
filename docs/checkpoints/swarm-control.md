@@ -35,6 +35,8 @@ unsupported protocol versions are rejected.
 | `swarm_resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` |
 | `swarm_list_projects` | `swarm:read` | `GET /v3/projects` |
 | `swarm_create_project` | `swarm:manage` | `POST /v3/projects` (workspaces must be registered) |
+| `swarm_list_tasks` | `swarm:read` | `GET /v3/projects/{pid}/tasks` (orchestrator tasks and worker runs, with branches and review state) |
+| `swarm_integrate_task` | `swarm:approve` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict; nothing is pushed) |
 | `swarm_list_workers`, `swarm_get_worker` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
 | `swarm_assign_worker_task` | `swarm:write` | `POST /v3/workers/{id}/direct` |
 | `swarm_create_worker` (optional `schedule` + `scheduled_plan`) | `swarm:manage` | `POST /v3/workers` (schedule included), `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`), `POST …/automations/{aid}/enable` |
@@ -59,6 +61,11 @@ defaults when created and those decide their model. Role defaults need
 Models are validated against the live catalog. The account default model,
 credentials and permission policy (rules, bypass) are not reachable.
 
+**Review.** Finished orchestrator tasks and worker runs wait in
+`needs_review`. A worker run forks from the workspace's current branch (its
+integration target); work reaches that branch only through `integrate_task`.
+Disabling a schedule cancels its runs still in flight.
+
 **Schedules.** A worker's schedule is part of the create request, so it is
 approved with the worker, and is enabled only after the workspace binding. The
 scheduled plan is a template without plan identity. Later schedule changes to
@@ -82,7 +89,7 @@ workers that request capabilities. Routes whose handlers check no scope
 copy). Sessions, runs, plans and workers are reduced to ids, names and
 status; text is truncated (messages 1,500, tool arguments 800, tool output
 300 characters) and plans show only per-checkpoint status. The full tool list
-is about 4.5k tokens (21 tools, 18 KB).
+is 23 tools.
 
 **Local tokens.** `swarmctl setup sdk-token` mints session scopes by default;
 add `--workers` (automations read/write), `--usage-limits` (`usage:write`) and
@@ -129,6 +136,11 @@ device→relay `auth`, `mcp.response`, `consent.decision`.
 - A stolen OAuth token is limited to its scopes and lifetime (1 h access,
   refresh expires after 30 idle days). Revoke a machine with `remote disable`
   or `reset`.
+- Permission policy (bypass, rules, capability policies) is owner-only:
+  `/v1/permissions*` refuse scoped tokens whatever their scopes, and scoped
+  tokens resolve requests only once (`allow_always`/`deny_always` are
+  refused). `swarmd --lock-permission-policy` (the headless image default)
+  makes the policy read-only for everyone until restart and keeps bypass off.
 - Session content is untrusted (prompt injection). Keep `--allow-approve` off
   unless the machine is dedicated; Swarm's own permission prompts still apply
   to agent tool calls.

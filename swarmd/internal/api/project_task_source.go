@@ -155,6 +155,15 @@ func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebbles
 	return nil
 }
 
+// workerRunTaskSession reports whether session is the worker execution
+// session of exactly this task's worker run.
+func workerRunTaskSession(task *pebblestore.ProjectTaskRecord, session pebblestore.SessionSnapshot) bool {
+	return task.WorkerRunID != "" && task.WorkerID != "" &&
+		session.Metadata[pebblestore.SessionPurposeMetadataKey] == pebblestore.SessionPurposeAutomationExecution &&
+		session.Metadata["worker_execution_run_id"] == task.WorkerRunID &&
+		session.Metadata["worker_id"] == task.WorkerID
+}
+
 func verifyProjectTaskSession(task *pebblestore.ProjectTaskRecord, session pebblestore.SessionSnapshot, accountID string) error {
 	if session.ID != task.SessionID || session.AccountScopeID != accountID || session.Metadata == nil || session.Metadata["project_id"] != task.ProjectID || session.Metadata["task_id"] != task.ID {
 		return errors.New("task session ownership does not match reservation")
@@ -168,7 +177,12 @@ func verifyProjectTaskSession(task *pebblestore.ProjectTaskRecord, session pebbl
 		return errors.New("task attempt provenance mismatch")
 	}
 	if session.WorktreeEnabled {
-		if session.WorktreeRootPath == "" || session.WorkspacePath != session.WorktreeRootPath || session.Metadata["swarm_v3_worktree_owner_session_id"] != session.ID || session.Metadata["swarm_v3_runtime_workspace_path"] != session.WorktreeRootPath || task.WorkspacePath != session.WorktreeRootPath {
+		// Project task sessions run with the worktree as their workspace. A
+		// worker run's session keeps its approved source workspace and runs in
+		// its own worktree; accept that shape only for this task's own run.
+		workspaceOK := session.WorkspacePath == session.WorktreeRootPath ||
+			(workerRunTaskSession(task, session) && task.SourceWorkspace.Path != "" && session.WorkspacePath == task.SourceWorkspace.Path)
+		if session.WorktreeRootPath == "" || !workspaceOK || session.Metadata["swarm_v3_worktree_owner_session_id"] != session.ID || session.Metadata["swarm_v3_runtime_workspace_path"] != session.WorktreeRootPath || task.WorkspacePath != session.WorktreeRootPath {
 			return errors.New("task session worktree owner or runtime path does not match reservation")
 		}
 	} else if task.Agent == "coder" || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.PlanBinding != nil {
