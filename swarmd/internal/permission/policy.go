@@ -399,6 +399,16 @@ func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) 
 	if explain, ok := explainExplicitDeny(ctx, policy); ok {
 		return explain
 	}
+	if ctx.ToolName == "manage_memory" {
+		var args struct {
+			Action string `json:"action"`
+		}
+		if json.Unmarshal([]byte(toolArguments), &args) != nil || args.Action != "inspect" {
+			// Tool visibility is not consent to store/delete private context. The
+			// compiled enabled-tool overlay and generic bypass must not skip review.
+			return PolicyExplain{Decision: PolicyDecisionAsk, Source: "account_memory_consent", Reason: "account memory mutation requires explicit approval", ToolName: ctx.ToolName}
+		}
+	}
 	if ctx.ToolName == "bash" && !ctx.BashEffect.Valid {
 		return bashProfileExplain(ctx, PolicyDecisionAsk, "bash effect metadata is malformed or contradictory: "+ctx.BashEffect.Reason)
 	}

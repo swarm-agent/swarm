@@ -395,6 +395,9 @@ func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
 
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 7)
+	// Check memory eligibility before any system-profile reconciliation can
+	// normalize a supplied mode to primary.
+	accountMemory := s.accountMemoryPromptBlock(scope, agentProfile)
 	isOrchestrator := agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name)
 	if isOrchestrator {
 		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
@@ -407,11 +410,11 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 	}
 	capacitySnapshot := s.ExecutionCapacitySnapshot(scope.Principal.AccountScopeID)
 	blocks = append(blocks, executionCapacityInstructions(capacitySnapshot))
-	if workspaceMap := s.accountMemoryPromptBlock(scope, agentProfile); workspaceMap != "" {
+	if accountMemory != "" {
 		// The account map is high-level orientation. Keep it before repository
 		// AGENTS.md blocks so those more specific rules remain adjacent to the
 		// active-agent instructions and cannot be mistaken for map content.
-		blocks = append(blocks, workspaceMap)
+		blocks = append(blocks, accountMemory)
 	}
 
 	agentName := strings.TrimSpace(agentProfile.Name)

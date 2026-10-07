@@ -117,7 +117,6 @@ export function DesktopSettingsPage({ initialMemoryOpen = false }: { initialMemo
 
         <div className="mt-6 px-2">
           <h1 className="text-sm font-semibold tracking-tight text-[var(--app-text)]">Settings</h1>
-          <Button variant="ghost" size="sm" onClick={() => setMemoryOpen(true)}>Memory</Button>
           <p className="mt-1 text-xs text-[var(--app-text-muted)]">Desktop preferences in one place.</p>
         </div>
 
@@ -168,6 +167,10 @@ export function DesktopSettingsPage({ initialMemoryOpen = false }: { initialMemo
           </div>
         </div>
         <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-5 md:px-6 md:py-8">
+          <div className="mb-5 flex w-full max-w-4xl flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-[var(--app-text-muted)]">Private account memory for Orchestrator. Review and edit it here.</p>
+            <Button variant="outline" size="sm" aria-haspopup="dialog" onClick={() => setMemoryOpen(true)}>Memory</Button>
+          </div>
           <div className="w-full max-w-4xl">
             {activeTab === 'account' ? <AccountSettingsPage /> : null}
             {activeTab === 'auth' ? <AuthSettingsPage /> : null}
