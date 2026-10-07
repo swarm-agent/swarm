@@ -244,3 +244,24 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 		t.Fatalf("unauthorized token mutation: count %d err %v", len(records), err)
 	}
 }
+
+// Requirement: session reads stay bounded for a supervising model. Stored
+// tool-result records are reduced to tool, step, truncated arguments and
+// output; non-tool and unparseable messages keep their (truncated) text.
+// Owner: controlMCPToolMessageSummary. A pure-function test is the narrowest
+// layer; the live headless run exercises it through the full stack.
+func TestControlMCPToolMessageSummary(t *testing.T) {
+	record := `{"tool_name":"bash","step":3,"arguments":"` + strings.Repeat("a", 900) + `","output":"ok","search_index_content":"secret-sized blob"}`
+	got, ok := controlMCPToolMessageSummary(map[string]any{"role": "tool"}, record)
+	if !ok || got["tool_name"] != "bash" || got["output"] != "ok" || got["search_index_content"] != nil {
+		t.Fatalf("unexpected summary: %v", got)
+	}
+	if args, _ := got["arguments"].(string); !strings.Contains(args, "[truncated 400 characters]") {
+		t.Fatalf("arguments not bounded: %d", len(args))
+	}
+	for _, tc := range []struct{ role, content string }{{"assistant", record}, {"tool", "not json"}, {"tool", `{"unrelated":1}`}} {
+		if _, ok := controlMCPToolMessageSummary(map[string]any{"role": tc.role}, tc.content); ok {
+			t.Fatalf("summarized %s %q", tc.role, tc.content)
+		}
+	}
+}

@@ -462,6 +462,33 @@ func controlMCPPermissionSummary(record map[string]any) map[string]any {
 	return summary
 }
 
+// Tool-result messages are stored as structured JSON records. A supervising
+// model needs which tool ran, with what, and whether it failed; full outputs
+// stay in Swarm.
+func controlMCPToolMessageSummary(message map[string]any, content string) (map[string]any, bool) {
+	if role, _ := message["role"].(string); role != "tool" {
+		return nil, false
+	}
+	var record map[string]any
+	if err := json.Unmarshal([]byte(content), &record); err != nil {
+		return nil, false
+	}
+	summary := controlMCPPick(record, "tool_name", "step", "status")
+	if args, ok := record["arguments"].(string); ok {
+		summary["arguments"] = controlMCPTruncate(args, 500)
+	}
+	if errText, ok := record["error"].(string); ok && strings.TrimSpace(errText) != "" {
+		summary["error"] = controlMCPTruncate(errText, 500)
+	}
+	if output, ok := record["output"].(string); ok && strings.TrimSpace(output) != "" {
+		summary["output"] = controlMCPTruncate(output, 800)
+	}
+	if len(summary) == 0 {
+		return nil, false
+	}
+	return summary, true
+}
+
 func controlMCPRunIntentSummary(intent map[string]any) map[string]any {
 	if intent == nil {
 		return nil
@@ -593,7 +620,11 @@ func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 		summary := controlMCPPick(message, "id", "role", "created_at")
 		content, _ := message["content"].(string)
-		summary["content"] = controlMCPTruncate(content, controlMCPTextLimit)
+		if tool, ok := controlMCPToolMessageSummary(message, content); ok {
+			summary["tool"] = tool
+		} else {
+			summary["content"] = controlMCPTruncate(content, controlMCPTextLimit)
+		}
 		messages = append(messages, summary)
 	}
 	out["messages"] = messages
