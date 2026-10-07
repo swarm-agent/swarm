@@ -1,9 +1,12 @@
 import { realpath } from 'node:fs/promises';
-import { SwarmNotFoundError } from '@swarm-agent/sdk';
+import { SwarmApiError, SwarmNotFoundError } from '@swarm-agent/sdk';
 import { reject, text } from './boundary.mjs';
 
-/** @param {import('@swarm-agent/sdk').SwarmClient} sdk */
-export function operations(sdk, project = '/project') {
+/**
+ * @param {import('@swarm-agent/sdk').SwarmClient} sdk
+ * @param {{ relayUrl?: string, deviceName?: string }} defaults installer-supplied relay connection defaults
+ */
+export function operations(sdk, project = '/project', defaults = {}) {
   async function workspace(path) {
     text(path, 512);
     const root = await realpath(project), resolved = await realpath(path);
@@ -26,9 +29,43 @@ export function operations(sdk, project = '/project') {
   const loginStatus = c => ({ session_id: c.session_id, method: c.method, status: c.status,
     verification_url: c.verification_url, auth_url: c.auth_url, user_code: c.user_code, expires_at: c.expires_at,
     failed: !!c.error });
+  // Relay status for the browser: no keys or tokens exist in it; consents keep
+  // only what the owner needs to recognise the requesting client.
+  const remoteStatus = r => ({ configured: r.configured, enabled: r.enabled, connected: r.connected,
+    relay_url: r.relay_url, device_name: r.device_name, allow_write: r.allow_write, allow_approve: r.allow_approve,
+    allow_manage: r.allow_manage, last_error: r.last_error, pairing_code: r.pairing_code, pairing_expires_at: r.pairing_expires_at,
+    consents: (r.pending_consents || []).map(c => ({ code: c.code, client_name: c.client_name, redirect_host: c.redirect_host,
+      scopes: c.scopes, expires_at: c.expires_at })) });
+  // Owner-only relay administration returns key-free messages (bad relay URL,
+  // already configured); show those instead of the generic daemon error.
+  async function remote(call) {
+    try { return remoteStatus(await call()); }
+    catch (error) { if (error instanceof SwarmApiError && error.status === 400 && error.message) reject(400, error.message.slice(0, 300)); throw error; }
+  }
+  const assigned = a => typeof a?.provider === 'string' && !!a.provider && typeof a.model === 'string' && !!a.model;
+  // Guided setup: which step comes next. Reads only; each step keeps its own
+  // explicit operation below.
+  async function setup() {
+    const status = await sdk.onboarding.get();
+    const steps = { owner: status.identity?.bootstrapped === true, provider: false, models: false, workspace: false, claude: false };
+    let relay = null;
+    if (steps.owner) {
+      steps.provider = (status.heuristics?.credential_count ?? 0) > 0;
+      let settings = null;
+      try { settings = (await sdk.settings.agentModels()).agent_model_settings; }
+      catch (error) { if (!(error instanceof SwarmNotFoundError)) throw error; }
+      const agents = Object.values(settings?.system_agents || {});
+      steps.models = !!settings && assigned(settings.swarm?.action) && assigned(settings.swarm?.plan) && agents.length >= 5 && agents.every(assigned);
+      steps.workspace = (await sdk.workspaces.list({ limit: 100 })).some(w => (w.path || w.workspace_path || '').startsWith(project + '/'));
+      relay = remoteStatus(await sdk.remote.status());
+      steps.claude = relay.connected === true;
+    }
+    return { steps, remote: relay, defaults: { relay_url: defaults.relayUrl || '', device_name: defaults.deviceName || '' } };
+  }
   return {
     session,
     async run(op, b) {
+      if (op === 'setup') return setup();
       if (op === 'onboarding') { const s = await sdk.onboarding.get(); return { identity: s.identity, needs_onboarding: s.needs_onboarding }; }
       if (op === 'owner') {
         const s = await sdk.onboarding.get();
@@ -103,6 +140,30 @@ export function operations(sdk, project = '/project') {
           if (b.action === 'allow_once') return sdk.sessions.approvePermissionOnce(b.id, text(b.permission_id));
           if (b.action === 'deny') return sdk.sessions.denyPermission(b.id, text(b.permission_id));
           reject(400, 'Only allow-once or deny is supported.'); break;
+        }
+        case 'remote-status': return remote(() => sdk.remote.status());
+        case 'remote-connect': {
+          const relayUrl = text(b.relay_url, 200);
+          let origin;
+          try { origin = new URL(relayUrl).origin; } catch { reject(400, 'Enter the relay URL, e.g. https://swarm-relay.example.workers.dev'); }
+          const current = await sdk.remote.status();
+          if (!current.configured) {
+            await remote(() => sdk.remote.init({ relay_url: relayUrl, device_name: text(b.device_name, 80),
+              allow_write: b.allow_write === true, allow_approve: b.allow_approve === true, allow_manage: b.allow_manage === true }));
+          } else if (current.relay_url !== origin) {
+            reject(409, `This machine is set up for ${current.relay_url}. Reset the connection first to use another relay.`);
+          }
+          return remote(() => sdk.remote.enable());
+        }
+        case 'remote-disable': return remote(() => sdk.remote.disable());
+        case 'remote-reset':
+          if (b.confirm !== true) reject(400, 'Confirm that this machine should forget its relay key.');
+          return remote(() => sdk.remote.reset());
+        case 'remote-consent': {
+          const code = text(b.code, 16);
+          try { await sdk.remote.decideConsent(code, b.approve === true); }
+          catch (error) { if (error instanceof SwarmApiError && error.status === 400) reject(409, 'That request is no longer pending. Refresh.'); throw error; }
+          return remote(() => sdk.remote.status());
         }
         default: reject(404, 'Unknown application operation.');
       }

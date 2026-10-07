@@ -12,6 +12,7 @@ export * from './permissions.js';
 export * from './chat.js';
 export * from './workspaces.js';
 export * from './system.js';
+export * from './remote.js';
 export * from './transport.js';
 export * from './errors.js';
 export * from './types.js';

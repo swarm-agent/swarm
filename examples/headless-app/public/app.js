@@ -18,7 +18,79 @@ async function settings() {
   options('provider', providers.map(p => ({ value: p.id, label: p.id + (p.ready ? ' · ready' : ' · setup needed') })), 'Choose provider');
   showJSON('credentials', result.credentials); showJSON('assignments', result.settings?.agent_model_settings ?? { status: 'Not configured. Connect a provider, then choose model assignments.' });
 }
+// Guided setup: the server reports which steps are done; each step points at
+// the existing control that completes it. Nothing here performs a step.
+const STEPS = [
+  ['owner', 'Create the owner', 'Right column, Installation: choose an owner name and a name for this installation.', 'owner-form'],
+  ['provider', 'Connect a model provider', 'Right column, Provider connection: choose a provider, then paste an API key or use Sign in to Codex.', 'provider'],
+  ['models', 'Choose models', 'Right column, Model assignment: pick a model (and thinking level), then press "Use for every role".', 'model'],
+  ['workspace', 'Create a workspace', 'Left column, New workspace: create a folder, Inspect Git, approve and Initialize Git, then Register workspace.', 'folder-form'],
+  ['claude', 'Connect to Claude', 'Right column, Connect to Claude: press Connect, then give Claude the pairing code shown there.', 'claude-form'],
+];
+let pollUntil = 0, pollTimer = 0;
+function spotlight(id) {
+  const target = $(id); target.closest?.('details')?.setAttribute('open', '');
+  target.scrollIntoView?.({ behavior: 'smooth', block: 'center' }); target.classList.add?.('spotlight');
+  setTimeout(() => target.classList.remove?.('spotlight'), 2500); target.focus?.();
+}
+function renderGuide(steps) {
+  const next = STEPS.find(([key]) => !steps[key]);
+  $('guide-title').textContent = next ? "Let's get this Swarm ready" : 'This Swarm is ready. Ask Claude to use it.';
+  $('guide-steps').replaceChildren(...STEPS.map(([key, title, hint, target]) => {
+    const li = document.createElement('li'), b = document.createElement('b');
+    li.className = steps[key] ? 'done' : next?.[0] === key ? 'current' : 'todo'; b.textContent = title; li.append(b);
+    if (li.className === 'current') {
+      const p = document.createElement('p'), button = document.createElement('button');
+      p.textContent = hint; button.type = 'button'; button.textContent = 'Show me'; button.onclick = () => spotlight(target); li.append(p, button);
+    }
+    return li;
+  }));
+}
+function renderRemote(remote, defaults = {}) {
+  const form = $('claude-form');
+  if (form.elements) {
+    if (!form.elements.relay_url.value) form.elements.relay_url.value = remote?.relay_url || defaults.relay_url || '';
+    if (!form.elements.device_name.value) form.elements.device_name.value = remote?.device_name || defaults.device_name || '';
+    form.elements.relay_url.readOnly = !!remote?.configured;
+    for (const name of ['device_name', 'allow_write', 'allow_manage', 'allow_approve']) form.elements[name].disabled = !!remote?.configured;
+  }
+  const pairing = remote?.pairing_code && remote.pairing_expires_at > Date.now();
+  form.hidden = !!remote?.enabled; $('claude-actions').hidden = !remote?.configured; $('pairing').hidden = !pairing;
+  $('claude-status').textContent = !remote ? 'Create the owner first.'
+    : remote.connected ? `Connected as "${remote.device_name}". Claude can now see and use this machine.`
+    : pairing ? 'Waiting for Claude to pair this machine.'
+    : remote.enabled ? `Connecting to ${remote.relay_url}…${remote.last_error ? ' Last error: ' + remote.last_error : ''}`
+    : remote.configured ? `Set up for ${remote.relay_url}, currently disconnected.`
+    : 'Lets Claude (claude.ai, the Claude app or Claude Code) use this machine through your Swarm relay. Nothing on this machine listens to the internet; it dials out to the relay.';
+  if (pairing) {
+    $('pairing-code').textContent = remote.pairing_code; $('pairing-say').textContent = `Pair my Swarm machine with code ${remote.pairing_code}`;
+    $('pairing-expiry').textContent = `Expires at ${new Date(remote.pairing_expires_at).toLocaleTimeString()}. A new code appears if it expires.`;
+  }
+  $('consents').replaceChildren(...(remote?.consents || []).map(c => {
+    const box = document.createElement('div'), title = document.createElement('strong'), details = document.createElement('p');
+    box.className = 'consent'; title.textContent = `${c.client_name || 'An AI client'} wants access`;
+    details.textContent = `Code ${c.code} · sends tokens to ${c.redirect_host} · ${(c.scopes || []).join(', ')}. Approve only if the code matches the one on your screen.`;
+    box.append(title, details);
+    for (const [approve, label] of [[true, 'Approve'], [false, 'Deny']]) {
+      const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
+      button.onclick = async () => { button.disabled = true; try { renderRemote(await api('remote-consent', { code: c.code, approve })); } catch (e) { fail(e); button.disabled = false; } };
+      box.append(button);
+    } return box;
+  }));
+  // Bounded status refresh only while connecting/pairing after the owner pressed Connect.
+  clearTimeout(pollTimer);
+  if (remote?.enabled && !remote.connected && Date.now() < pollUntil) pollTimer = setTimeout(() => pollRemote().catch(fail), 3000);
+}
+async function pollRemote() {
+  const remote = await api('remote-status'); renderRemote(remote);
+  if (remote.connected) await guide();
+}
+async function guide() {
+  const setup = await api('setup'); $('setup-guide').hidden = false;
+  renderGuide(setup.steps); renderRemote(setup.remote, setup.defaults); return setup;
+}
 async function refresh() {
+  await guide();
   const onboard = await api('onboarding');
   $('owner-status').textContent = onboard.identity.bootstrapped ? `Owner: ${onboard.identity.username}` : 'Create an owner to begin.';
   $('owner-form').hidden = onboard.identity.bootstrapped;
@@ -44,7 +116,18 @@ act('login-form', async e => {
   csrf = data.csrf; $('login').hidden = true; $('app').hidden = false; $('logout').hidden = false;
   $('connection').textContent = 'Authenticated · local HTTPS'; await refresh();
 }, 'submit');
-act('logout', async () => { stream?.abort(); await request('/logout', {}); location.reload(); });
+act('logout', async () => { stream?.abort(); clearTimeout(pollTimer); await request('/logout', {}); location.reload(); });
+act('guide-refresh', refresh);
+act('claude-form', async e => {
+  const f = e.target.elements; pollUntil = Date.now() + 20 * 60_000;
+  renderRemote(await api('remote-connect', { relay_url: f.relay_url.value, device_name: f.device_name.value,
+    allow_write: f.allow_write.checked, allow_manage: f.allow_manage.checked, allow_approve: f.allow_approve.checked }));
+}, 'submit');
+act('claude-disable', async () => { pollUntil = 0; renderRemote(await api('remote-disable')); await guide(); });
+act('claude-reset', async () => {
+  if (!window.confirm?.('Forget this machine\'s relay key? Claude loses access until you connect and pair again.')) return;
+  pollUntil = 0; renderRemote(await api('remote-reset', { confirm: true })); await guide();
+});
 act('theme', () => document.body.classList.toggle('light'));
 act('refresh', refresh);
 act('owner-form', async e => { await api('owner', Object.fromEntries(new FormData(e.target))); await refresh(); }, 'submit');
@@ -64,7 +147,7 @@ act('model', () => {
 act('credential-form', async e => {
   const input = e.target.elements.key, key = input.value; input.value = '';
   const result = await api('credential', { provider: $('provider').value, type: $('credential-type').value, key });
-  await settings();
+  await settings(); await guide();
   if (!result.connected || result.defaultsError) throw new Error('Credential stored, but inference/default model readiness is not confirmed. Select canonical model settings and check provider status.');
 }, 'submit');
 function displayLogin(s) {
@@ -80,11 +163,20 @@ function displayLogin(s) {
 }
 act('codex-start', async () => { const s = await api('codex-start', { method: $('codex-method').value }); loginId = s.session_id; displayLogin(s); });
 act('codex-complete', async e => { const input = e.target.elements.callback, callback = input.value; input.value = ''; const s = await api('codex-complete', { id: loginId, callback }); displayLogin(s); if (s.status === 'success') await settings(); }, 'submit');
-act('codex-status', async () => { const s = await api('codex-status', { id: loginId }); displayLogin(s); if (s.status === 'success') await settings(); });
+act('codex-status', async () => { const s = await api('codex-status', { id: loginId }); displayLogin(s); if (s.status === 'success') { await settings(); await guide(); } });
 act('save-model', async () => {
   const result = await api('model', { provider: $('provider').value, model: $('model').value, thinking: $('thinking').value,
     service_tier: $('tier').value, context_mode: $('context').value, slot: $('slot').value });
-  showJSON('assignments', result.agent_model_settings);
+  showJSON('assignments', result.agent_model_settings); await guide();
+});
+act('save-model-all', async () => {
+  if (!$('model').value) throw new Error('Choose a provider and catalog model first.');
+  let result;
+  for (const slot of ['action', 'plan', 'compact', 'finder', 'coder', 'designer', 'router']) {
+    result = await api('model', { provider: $('provider').value, model: $('model').value, thinking: $('thinking').value,
+      service_tier: $('tier').value, context_mode: $('context').value, slot });
+  }
+  showJSON('assignments', result.agent_model_settings); await guide();
 });
 act('folder-form', async e => {
   const folder = await api('folder', Object.fromEntries(new FormData(e.target))); $('folder-path').value = folder.path;
@@ -103,7 +195,7 @@ act('baseline', async () => {
     paths: [...$('baseline-files').querySelectorAll('input:checked')].map(i => i.value), confirm: $('baseline-confirm').checked, confirm_omissions: $('baseline-confirm').checked });
   review = null; $('baseline-files').replaceChildren(); $('baseline-confirm').checked = false; await inspect();
 });
-act('register', async () => { await api('register', { path: $('folder-path').value }); await refreshWorkspaces(); });
+act('register', async () => { await api('register', { path: $('folder-path').value }); await refreshWorkspaces(); await guide(); });
 act('workspaces', async () => { selected = workspaces[Number($('workspaces').value)]; if ($('workspaces').value === '') selected = null; stream?.abort(); sessionId = ''; $('send').disabled = true; $('stop').disabled = true; await sessions(); }, 'change');
 act('session-form', async e => {
   if (!selected) throw new Error('Select a registered workspace first.');

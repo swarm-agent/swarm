@@ -10,8 +10,8 @@ const headers = {
   'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 };
-export function appHandler(sdk, { origin, secret, project = '/project' }) {
-  const boundary = createBoundary(origin, secret), ops = operations(sdk, project);
+export function appHandler(sdk, { origin, secret, project = '/project', relayUrl = '', deviceName = '' }) {
+  const boundary = createBoundary(origin, secret), ops = operations(sdk, project, { relayUrl, deviceName });
   let active = 0;
   const json = (res, status, value) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
   return async (req, res) => {
@@ -83,7 +83,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // Only private local-transport identity; never inherit an injected SDK token.
     sdk.setToken('');
     const origin = process.env.APP_ORIGIN || 'http://127.0.0.1:8443';
-    const handler = appHandler(sdk, { origin, secret }); // Validate before listening.
+    // Installer defaults for "Connect to Claude"; the owner can edit both.
+    const relayUrl = process.env.APP_RELAY_URL || '', deviceName = process.env.APP_DEVICE_NAME || '';
+    const handler = appHandler(sdk, { origin, secret, relayUrl, deviceName }); // Validate before listening.
     // Tailscale Serve terminates TLS on the host; this listener stays plain HTTP
     // and must be published to host loopback only.
     const server = origin.startsWith('https:') && !isTailscaleServeOrigin(origin)
