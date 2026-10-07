@@ -162,6 +162,7 @@ type Server struct {
 
 	controlMCPRoutesOnce sync.Once
 	controlMCPRoutes     http.Handler
+	remoteTransport      RemoteTransportService
 
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession

@@ -56,6 +56,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
+	"swarm/packages/swarmd/internal/remote"
 	"swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -166,6 +167,7 @@ type Daemon struct {
 	cleanupOnce               sync.Once
 	cleanupErr                error
 	longSessionDiagnostics    *longsessiondiag.Recorder
+	remoteTransport           *remote.Service
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -744,6 +746,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
 	apiServer.SetWorktreeService(worktreeSvc)
 	apiServer.SetMCPService(mcpSvc)
+	// Remote transport is off until the owner initializes and enables a relay.
+	remoteSvc := remote.NewService(secretStore, remoteTokenIssuer{security: securitySvc, identities: identitySessionSvc})
+	remoteSvc.SetControlHandler(apiServer.ContainerSDKHandler())
+	apiServer.SetRemoteTransportService(remoteSvc)
 	apiServer.SetVoiceService(voiceSvc)
 	apiServer.SetUISettingsService(uiSettingsSvc)
 	apiServer.SetPlanLifecycleService(planLifecycleSvc)
@@ -820,6 +826,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		workerExecution:           workerExecution,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
+		remoteTransport:           remoteSvc,
 	}
 	apiServer.SetShutdownHandler(func(reason string) {
 		d.requestStop("api:" + strings.TrimSpace(reason))
@@ -1183,6 +1190,9 @@ func (d *Daemon) Run() error {
 				d.requestStop("container-sdk-serve-error")
 			}
 		}()
+	}
+	if d.remoteTransport != nil && d.bgCtx != nil {
+		go d.remoteTransport.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

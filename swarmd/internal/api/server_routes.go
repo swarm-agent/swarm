@@ -9,6 +9,8 @@ func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/ws", s.handleDesktopStream)
 	mux.HandleFunc(controlMCPPath, s.handleControlMCP)
+	mux.HandleFunc("/v1/remote", s.handleRemoteTransport)
+	mux.HandleFunc("/v1/remote/", s.handleRemoteTransport)
 }
 
 func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {
