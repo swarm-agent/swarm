@@ -151,7 +151,13 @@ func TestToolScopesMatchRelay(t *testing.T) {
 	for _, match := range regexp.MustCompile(`(?m)^\s+(swarm_[a-z_]+):\s+(SCOPE_[A-Z]+),$`).FindAllStringSubmatch(string(source), -1) {
 		relay[match[1]] = constants[match[2]]
 	}
-	if len(relay) == 0 || len(relay) != len(toolScopes)+1 { // +1: swarm_list_machines is relay-only
+	relayOnly := map[string]bool{"swarm_list_machines": true, "swarm_pair_machine": true, "swarm_remove_machine": true}
+	for name := range relayOnly {
+		if relay[name] == "" {
+			t.Fatalf("relay-only tool %s has no relay scope", name)
+		}
+	}
+	if len(relay) == 0 || len(relay) != len(toolScopes)+len(relayOnly) {
 		t.Fatalf("relay has %d tool scopes, device %d", len(relay), len(toolScopes))
 	}
 	for name, scope := range toolScopes {
@@ -333,4 +339,78 @@ func toStrings(v any) []string {
 		}
 	}
 	return out
+}
+
+// Requirement: a relay that does not trust this device yet can hold it in a
+// pairing state. The device sends its public key with a valid signature,
+// reports the relay's pairing code to the owner while it waits, and becomes
+// connected (code cleared) when the relay sends ready on the same connection.
+// Owner: Service.session. A fake relay over a real WebSocket exercises the
+// wire protocol; relay-side pairing is covered by the workerd relay check.
+func TestRelayPairingThenReady(t *testing.T) {
+	svc := NewService(&memoryStore{data: map[string][]byte{}}, &fakeTokens{})
+	paired := make(chan struct{})
+	gotKey := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteJSON(map[string]any{"type": "challenge", "nonce": "nonce-2"})
+		var auth map[string]any
+		if err := conn.ReadJSON(&auth); err != nil {
+			return
+		}
+		key, _ := auth["public_key"].(string)
+		raw, _ := base64.StdEncoding.DecodeString(key)
+		sig, _ := base64.StdEncoding.DecodeString(auth["signature"].(string))
+		if len(raw) != ed25519.PublicKeySize || !ed25519.Verify(ed25519.PublicKey(raw), []byte(AuthMessage("http://"+r.Host, auth["device_id"].(string), "nonce-2")), sig) {
+			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(4401, "invalid device signature"))
+			return
+		}
+		gotKey <- key
+		_ = conn.WriteJSON(map[string]any{"type": "pairing", "code": "abcd-ef23", "expires_at": time.Now().Add(time.Minute).UnixMilli()})
+		<-paired
+		_ = conn.WriteJSON(map[string]any{"type": "ready"})
+		var discard map[string]any
+		_ = conn.ReadJSON(&discard)
+	}))
+	defer server.Close()
+
+	st, err := svc.Init(InitInput{RelayURL: server.URL, DeviceName: "new box"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.SetEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go svc.Run(ctx)
+	wait := func(what string, ok func(Status) bool) Status {
+		t.Helper()
+		for {
+			current, _ := svc.Status()
+			if ok(current) {
+				return current
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("timed out waiting for %s: %+v", what, current)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waiting := wait("pairing code", func(s Status) bool { return s.PairingCode != "" })
+	if waiting.PairingCode != "ABCD-EF23" || waiting.Connected || waiting.PairingExpiresAt == 0 {
+		t.Fatalf("unexpected pairing status: %+v", waiting)
+	}
+	if key := <-gotKey; key != st.PublicKey {
+		t.Fatalf("auth public_key %q does not match device key %q", key, st.PublicKey)
+	}
+	close(paired)
+	ready := wait("connected", func(s Status) bool { return s.Connected })
+	if ready.PairingCode != "" || ready.LastError != "" {
+		t.Fatalf("pairing state not cleared on ready: %+v", ready)
+	}
 }

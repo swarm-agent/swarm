@@ -2,8 +2,13 @@
 // The device dials out over WebSocket; nothing listens on the device. Every
 // frame is one JSON object with a `type`.
 //
-// relay -> device: challenge, ready, mcp.request, consent.request, error
+// relay -> device: challenge, ready, pairing, mcp.request, consent.request, error
 // device -> relay: auth, mcp.response, consent.decision
+//
+// A device whose key the relay does not trust yet sends its public_key in
+// auth; after proving it holds that key it waits in `pairing` with a short
+// code until an authorized client pairs it (swarm_pair_machine), then gets
+// `ready` on the same connection.
 export const PROTOCOL = 'swarm-remote-1';
 
 // OAuth scopes a client can be granted. read is required for any access.
@@ -41,6 +46,9 @@ export const TOOL_SCOPES = {
   swarm_manage_worker: SCOPE_MANAGE,
   swarm_set_usage_limits: SCOPE_MANAGE,
   swarm_set_agent_model: SCOPE_MANAGE,
+  // Relay tools: trust a machine waiting to pair, or remove a paired one.
+  swarm_pair_machine: SCOPE_MANAGE,
+  swarm_remove_machine: SCOPE_MANAGE,
 };
 
 export function toolScope(name) {

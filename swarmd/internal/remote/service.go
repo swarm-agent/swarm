@@ -134,6 +134,10 @@ type Status struct {
 	AllowManage  bool      `json:"allow_manage"`
 	LastError    string    `json:"last_error,omitempty"`
 	Consents     []Consent `json:"pending_consents"`
+	// Set while a relay that does not trust this device yet waits for an
+	// authorized client to pair it. Shown only to the owner.
+	PairingCode      string `json:"pairing_code,omitempty"`
+	PairingExpiresAt int64  `json:"pairing_expires_at,omitempty"`
 }
 
 type InitInput struct {
@@ -154,9 +158,15 @@ type Service struct {
 	conn      *websocket.Conn
 	writeMu   sync.Mutex
 	connected bool
+	pairing   pairingState
 	lastError string
 	consents  map[string]Consent
 	wake      chan struct{}
+}
+
+type pairingState struct {
+	Code      string
+	ExpiresAt int64
 }
 
 func NewService(store SecretStore, tokens TokenIssuer) *Service {
@@ -186,6 +196,9 @@ func (s *Service) Status() (Status, error) {
 	defer s.mu.Unlock()
 	st := Status{Configured: ok, Connected: s.connected, LastError: s.lastError, Consents: []Consent{}}
 	now := time.Now().UnixMilli()
+	if s.pairing.Code != "" && s.pairing.ExpiresAt > now {
+		st.PairingCode, st.PairingExpiresAt = s.pairing.Code, s.pairing.ExpiresAt
+	}
 	for code, consent := range s.consents {
 		if consent.ExpiresAt < now {
 			delete(s.consents, code)
@@ -232,8 +245,10 @@ func ValidateRelayURL(raw string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
-// Init creates this device's identity for one relay. It does not connect;
-// the owner registers the public key with the relay, then calls Enable.
+// Init creates this device's identity for one relay. It does not connect.
+// After Enable, a relay that already lists the public key accepts the device;
+// otherwise the relay shows it as waiting to pair and Status reports the
+// pairing code an authorized client must present (swarm_pair_machine).
 func (s *Service) Init(in InitInput) (Status, error) {
 	if _, ok, err := s.loadConfig(); err != nil {
 		return Status{}, err
@@ -441,6 +456,7 @@ func (s *Service) Run(ctx context.Context) {
 		err = s.session(ctx, cfg)
 		s.mu.Lock()
 		s.connected = false
+		s.pairing = pairingState{}
 		s.conn = nil
 		if err != nil && ctx.Err() == nil {
 			s.lastError = err.Error()
@@ -478,7 +494,8 @@ type frame struct {
 	ClientDomain string   `json:"client_domain,omitempty"`
 	RedirectHost string   `json:"redirect_host,omitempty"`
 	Scopes       []string `json:"scopes,omitempty"`
-	ExpiresAt    int64    `json:"expires_at,omitempty"`
+	// consent.request and pairing
+	ExpiresAt int64 `json:"expires_at,omitempty"`
 }
 
 type frameClient struct {
@@ -517,23 +534,19 @@ func (s *Service) session(ctx context.Context, cfg Config) error {
 	if err := conn.ReadJSON(&challenge); err != nil || challenge.Type != "challenge" || challenge.Nonce == "" {
 		return errors.New("relay did not send a challenge")
 	}
-	signature := ed25519.Sign(ed25519.PrivateKey(raw), []byte(AuthMessage(cfg.RelayURL, cfg.DeviceID, challenge.Nonce)))
-	if err := conn.WriteJSON(map[string]any{"type": "auth", "protocol": Protocol, "device_id": cfg.DeviceID, "name": cfg.DeviceName, "signature": base64.StdEncoding.EncodeToString(signature)}); err != nil {
+	private := ed25519.PrivateKey(raw)
+	signature := ed25519.Sign(private, []byte(AuthMessage(cfg.RelayURL, cfg.DeviceID, challenge.Nonce)))
+	// public_key lets a relay that does not list this device yet offer pairing;
+	// a relay that does list it verifies against its own copy.
+	if err := conn.WriteJSON(map[string]any{
+		"type": "auth", "protocol": Protocol, "device_id": cfg.DeviceID, "name": cfg.DeviceName,
+		"signature":  base64.StdEncoding.EncodeToString(signature),
+		"public_key": base64.StdEncoding.EncodeToString(private.Public().(ed25519.PublicKey)),
+	}); err != nil {
 		return err
 	}
-	var ready frame
-	if err := conn.ReadJSON(&ready); err != nil || ready.Type != "ready" {
-		if closeErr, ok := err.(*websocket.CloseError); ok {
-			return fmt.Errorf("relay rejected device: %s", closeErr.Text)
-		}
-		return errors.New("relay did not accept the device")
-	}
-	s.mu.Lock()
-	s.connected, s.lastError = true, ""
-	s.mu.Unlock()
-	log.Printf("remote transport connected relay=%s device=%s", cfg.RelayURL, cfg.DeviceID)
 
-	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
+	// Keepalive from here on: a device may wait minutes to be paired.
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(readTimeout)) })
 	pingDone := make(chan struct{})
 	defer close(pingDone)
@@ -555,6 +568,31 @@ func (s *Service) session(ctx context.Context, cfg Config) error {
 			}
 		}
 	}()
+
+	for {
+		var msg frame
+		err := conn.ReadJSON(&msg)
+		if err == nil && msg.Type == "ready" {
+			break
+		}
+		if err == nil && msg.Type == "pairing" && msg.Code != "" {
+			s.mu.Lock()
+			s.pairing, s.lastError = pairingState{Code: strings.ToUpper(msg.Code), ExpiresAt: msg.ExpiresAt}, ""
+			s.mu.Unlock()
+			log.Printf("remote transport waiting to be paired relay=%s device=%s", cfg.RelayURL, cfg.DeviceID)
+			_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
+			continue
+		}
+		if closeErr, ok := err.(*websocket.CloseError); ok {
+			return fmt.Errorf("relay rejected device: %s", closeErr.Text)
+		}
+		return errors.New("relay did not accept the device")
+	}
+	s.mu.Lock()
+	s.connected, s.pairing, s.lastError = true, pairingState{}, ""
+	s.mu.Unlock()
+	log.Printf("remote transport connected relay=%s device=%s", cfg.RelayURL, cfg.DeviceID)
+	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 
 	for {
 		var msg frame
