@@ -256,7 +256,7 @@ func TestControlMCPToolMessageSummary(t *testing.T) {
 	if !ok || got["tool_name"] != "bash" || got["output"] != "ok" || got["search_index_content"] != nil {
 		t.Fatalf("unexpected summary: %v", got)
 	}
-	if args, _ := got["arguments"].(string); !strings.Contains(args, "[truncated 400 characters]") {
+	if args, _ := got["arguments"].(string); !strings.Contains(args, "[truncated 600 characters]") {
 		t.Fatalf("arguments not bounded: %d", len(args))
 	}
 	for _, tc := range []struct{ role, content string }{{"assistant", record}, {"tool", "not json"}, {"tool", `{"unrelated":1}`}} {

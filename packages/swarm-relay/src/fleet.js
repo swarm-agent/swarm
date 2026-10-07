@@ -281,7 +281,7 @@ export class Fleet extends DurableObject {
     const machineTool = {
       name: 'swarm_list_machines',
       title: 'List Swarm machines',
-      description: 'List the Swarm machines currently connected to this relay.',
+      description: 'List Swarm machines online now. Call first; pass `machine` to other tools when several are online.',
       inputSchema: { type: 'object', additionalProperties: false, properties: {} },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     };
@@ -300,7 +300,7 @@ export class Fleet extends DurableObject {
     for (const tool of deviceTools.values()) {
       if (!scopes.includes(toolScope(tool.name)) || tool.name === machineTool.name) continue;
       const schema = structuredClone(tool.inputSchema || { type: 'object', properties: {} });
-      schema.properties = { ...(schema.properties || {}), machine: { type: 'string', maxLength: 100, description: 'Machine id from swarm_list_machines; required when more than one machine is online.' } };
+      schema.properties = { ...(schema.properties || {}), machine: { type: 'string', maxLength: 100, description: 'Machine id (swarm_list_machines). Required if several are online.' } };
       tools.push({ ...tool, inputSchema: schema });
     }
     return tools;
@@ -314,8 +314,8 @@ export class Fleet extends DurableObject {
     }
     const devices = this.devices();
     if (name === 'swarm_list_machines') {
-      const machines = devices.map((d) => ({ machine: d.deviceId, name: d.name, connected_at: d.connectedAt }));
-      return { content: [{ type: 'text', text: JSON.stringify({ machines }, null, 2) }], structuredContent: { machines }, isError: false };
+      const machines = devices.map((d) => ({ machine: d.deviceId, name: d.name }));
+      return { content: [{ type: 'text', text: JSON.stringify({ machines }) }], isError: false };
     }
     const machine = typeof args.machine === 'string' ? args.machine : '';
     delete args.machine;

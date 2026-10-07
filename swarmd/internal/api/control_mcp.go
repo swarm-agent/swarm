@@ -27,8 +27,8 @@ const (
 	controlMCPPath            = "/mcp"
 	controlMCPMaxRequestBytes = 1 << 20
 	controlMCPMaxToolBytes    = 4 << 20
-	controlMCPTextLimit       = 4000
-	controlMCPArgumentLimit   = 2000
+	controlMCPTextLimit       = 1500
+	controlMCPArgumentLimit   = 800
 	controlMCPServerName      = "swarm-control"
 	controlMCPLatestProtocol  = "2025-11-25"
 )
@@ -247,6 +247,9 @@ func (c *controlMCPCall) callTool(params json.RawMessage) (map[string]any, *cont
 	return controlMCPToolResult(value, err), nil
 }
 
+// Results are returned once, as compact JSON text: no indentation and no
+// duplicate structuredContent, because every byte lands in the caller's
+// context window.
 func controlMCPToolResult(value any, err error) map[string]any {
 	if err != nil {
 		message := "tool failed"
@@ -256,15 +259,11 @@ func controlMCPToolResult(value any, err error) map[string]any {
 		}
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": message}}, "isError": true}
 	}
-	encoded, marshalErr := json.MarshalIndent(value, "", "  ")
+	encoded, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": "tool result could not be encoded"}}, "isError": true}
 	}
-	return map[string]any{
-		"content":           []map[string]any{{"type": "text", "text": string(encoded)}},
-		"structuredContent": value,
-		"isError":           false,
-	}
+	return map[string]any{"content": []map[string]any{{"type": "text", "text": string(encoded)}}, "isError": false}
 }
 
 // controlMCPValidateArgs enforces the declared schema subset: required keys,
@@ -439,23 +438,30 @@ func controlMCPPick(source map[string]any, keys ...string) map[string]any {
 	return out
 }
 
+// controlMCPSessionSummary keeps only what a supervisor acts on; ids,
+// timestamps and runtime internals stay in Swarm.
 func controlMCPSessionSummary(session map[string]any) map[string]any {
-	summary := controlMCPPick(session, "id", "title", "mode", "workspace_path", "workspace_name", "created_at", "updated_at", "message_count", "last_message_at", "worktree_branch")
+	summary := controlMCPPick(session, "id", "title", "workspace_path", "message_count")
 	if metadata := controlMCPMap(session["metadata"]); metadata != nil {
-		for _, key := range []string{"agent_name", "swarm_v3_runtime_swarm_id"} {
-			if value, ok := metadata[key]; ok {
-				summary[key] = value
-			}
+		if agent, ok := metadata["agent_name"]; ok {
+			summary["agent"] = agent
 		}
 	}
 	if lifecycle := controlMCPMap(session["lifecycle"]); lifecycle != nil {
-		summary["lifecycle"] = controlMCPPick(lifecycle, "run_id", "active", "phase", "stop_reason", "error", "updated_at")
+		if active, _ := lifecycle["active"].(bool); active {
+			summary["running"] = true
+		}
+		for _, key := range []string{"phase", "stop_reason", "error"} {
+			if value, ok := lifecycle[key].(string); ok && value != "" {
+				summary[key] = controlMCPTruncate(value, 200)
+			}
+		}
 	}
 	return summary
 }
 
 func controlMCPPermissionSummary(record map[string]any) map[string]any {
-	summary := controlMCPPick(record, "id", "run_id", "tool_name", "requirement", "status", "created_at")
+	summary := controlMCPPick(record, "id", "tool_name")
 	if args, ok := record["tool_arguments"].(string); ok {
 		summary["tool_arguments"] = controlMCPTruncate(args, controlMCPArgumentLimit)
 	}
@@ -473,15 +479,15 @@ func controlMCPToolMessageSummary(message map[string]any, content string) (map[s
 	if err := json.Unmarshal([]byte(content), &record); err != nil {
 		return nil, false
 	}
-	summary := controlMCPPick(record, "tool_name", "step", "status")
+	summary := controlMCPPick(record, "tool_name", "status")
 	if args, ok := record["arguments"].(string); ok {
-		summary["arguments"] = controlMCPTruncate(args, 500)
+		summary["arguments"] = controlMCPTruncate(args, 300)
 	}
 	if errText, ok := record["error"].(string); ok && strings.TrimSpace(errText) != "" {
-		summary["error"] = controlMCPTruncate(errText, 500)
+		summary["error"] = controlMCPTruncate(errText, 300)
 	}
 	if output, ok := record["output"].(string); ok && strings.TrimSpace(output) != "" {
-		summary["output"] = controlMCPTruncate(output, 800)
+		summary["output"] = controlMCPTruncate(output, 300)
 	}
 	if len(summary) == 0 {
 		return nil, false
@@ -493,7 +499,7 @@ func controlMCPRunIntentSummary(intent map[string]any) map[string]any {
 	if intent == nil {
 		return nil
 	}
-	return controlMCPPick(intent, "run_id", "status", "blocked_reason", "created_at", "started_at", "completed_at", "plan_id", "checkpoint_id")
+	return controlMCPPick(intent, "run_id", "status", "blocked_reason", "plan_id", "checkpoint_id")
 }
 
 func controlMCPTools() []controlMCPTool {
@@ -618,7 +624,7 @@ func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
 		if message == nil {
 			continue
 		}
-		summary := controlMCPPick(message, "id", "role", "created_at")
+		summary := controlMCPPick(message, "role")
 		content, _ := message["content"].(string)
 		if tool, ok := controlMCPToolMessageSummary(message, content); ok {
 			summary["tool"] = tool
