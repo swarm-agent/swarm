@@ -107,8 +107,8 @@ func RunAccountUsageRollupBackfillMigration(store *Store) (AccountUsageRollupMig
 			rollups[key] = r
 		}
 
-		tot, in, out, cache, _, think := billedComponents(rec)
-		cost, status := sessionStore.CalculateCostWithStatus(provID, modelID, in, out, cache, think)
+		tot, in, out, cache, cacheWrite, think := billedComponents(rec)
+		cost, status := sessionStore.CalculateCostWithStatus(provID, modelID, in, out, cache, cacheWrite, think)
 		codexNominal := 0.0
 		if provID == "codex" {
 			codexNominal = CalculateBaselineCost("openai", modelID, in, out, cache, think)

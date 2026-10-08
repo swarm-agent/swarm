@@ -2465,7 +2465,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			cost := usage.EstimatedCostUSD
 			if cost == 0 && s.sessions.Store() != nil {
-				cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+				cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.ThinkingTokens)
 			}
 			usage.EstimatedCostUSD = priorCost + cost
 			baseTokens, baseInput, baseOutput := priorTokens, priorInput, priorOutput
@@ -2509,7 +2509,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			} else if strings.EqualFold(providerID, "codex") {
 				stepCost = 0.0
 			} else if s.sessions != nil && s.sessions.Store() != nil {
-				stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+				stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.CacheWriteTokens, response.Usage.ThinkingTokens)
 			}
 			cumulativeTurnCost += stepCost
 			if strings.EqualFold(response.Usage.Source, "copilot_session_usage") {

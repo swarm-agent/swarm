@@ -15,6 +15,7 @@ import (
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"swarm/packages/swarmd/internal/identity"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -105,6 +106,14 @@ func (r *Runner) CreateResponseStreaming(ctx context.Context, req provideriface.
 		return provideriface.Response{}, err
 	}
 	stream := client.Messages.NewStreaming(ctx, params, requestOptions...)
+	return collectAnthropicStream(stream, modelName, onEvent)
+}
+
+// collectAnthropicStream folds a Messages stream into one response. The SDK's
+// Message.Accumulate applies the cumulative message_delta usage (input, cache
+// read, and cache write totals), which supersedes the message_start snapshot.
+func collectAnthropicStream(stream *ssestream.Stream[anthropicapi.MessageStreamEventUnion], modelName string, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	defer stream.Close()
 	message := anthropicapi.Message{}
 	streamState := newAnthropicStreamState()
 	streamState.SetContext("anthropic", modelName)

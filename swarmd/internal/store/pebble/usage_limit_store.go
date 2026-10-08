@@ -103,10 +103,7 @@ func CalculateBaselineCost(provider, model string, inputTokens, outputTokens, ca
 		return 0.0
 	}
 
-	regularInput := inputTokens - cacheReadTokens
-	if regularInput < 0 {
-		regularInput = 0
-	}
+	regularInput := uncachedInputTokens(provider, inputTokens, cacheReadTokens)
 
 	var cost float64
 	cost += (float64(regularInput) / 1_000_000.0) * pricing.InputPricePerMillion
@@ -121,15 +118,51 @@ func CalculateBaselineCost(provider, model string, inputTokens, outputTokens, ca
 	return cost
 }
 
+// uncachedInputTokens returns the input tokens billed at the full input rate.
+// Anthropic reports input_tokens as the uncached remainder only (cache reads and
+// cache writes are separate counters); other providers report prompt tokens
+// that include cache reads.
+func uncachedInputTokens(provider string, inputTokens, cacheReadTokens int64) int64 {
+	if strings.EqualFold(strings.TrimSpace(provider), "anthropic") {
+		return max(inputTokens, 0)
+	}
+	return max(inputTokens-cacheReadTokens, 0)
+}
+
+// catalogCacheWritePricePerMillion returns the catalog's standard-tier 5-minute
+// cache-write rate, the TTL the Anthropic adapter requests.
+func catalogCacheWritePricePerMillion(pricing json.RawMessage) (float64, bool) {
+	var p struct {
+		Billing struct {
+			Lines []struct {
+				Variant  string   `json:"variant"`
+				PriceUSD *float64 `json:"price_usd"`
+			} `json:"lines"`
+		} `json:"billing"`
+	}
+	if err := json.Unmarshal(pricing, &p); err != nil {
+		return 0, false
+	}
+	for _, line := range p.Billing.Lines {
+		if strings.EqualFold(strings.TrimSpace(line.Variant), "cache_write_5m") && line.PriceUSD != nil && *line.PriceUSD > 0 {
+			return *line.PriceUSD, true
+		}
+	}
+	return 0, false
+}
+
 // CalculateCost computes estimated cost in USD based on stored catalog pricing.
 // If pricing is absent or unpriced, it returns 0.0 without guessing fallback rates.
-func (s *SessionStore) CalculateCost(provider, model string, inputTokens, outputTokens, cacheReadTokens, thinkingTokens int64) float64 {
-	cost, _ := s.CalculateCostWithStatus(provider, model, inputTokens, outputTokens, cacheReadTokens, thinkingTokens)
+func (s *SessionStore) CalculateCost(provider, model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, thinkingTokens int64) float64 {
+	cost, _ := s.CalculateCostWithStatus(provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, thinkingTokens)
 	return cost
 }
 
 // CalculateCostWithStatus evaluates cost and reports whether the pricing is known, subscription, free, or unknown.
-func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputTokens, outputTokens, cacheReadTokens, thinkingTokens int64) (float64, string) {
+// Anthropic cache writes are billed at the catalog cache-write rate; when a
+// receipt has cache writes but the catalog has no such rate, the known portion
+// is returned with status "unknown" rather than pricing the writes at a guess.
+func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, thinkingTokens int64) (float64, string) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	model = strings.ToLower(strings.TrimSpace(model))
 	if provider == "codex" {
@@ -163,10 +196,7 @@ func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputToke
 					hasCached = true
 				}
 				if inp > 0 || outVal > 0 {
-					regInput := inputTokens - cacheReadTokens
-					if regInput < 0 {
-						regInput = 0
-					}
+					regInput := uncachedInputTokens(provider, inputTokens, cacheReadTokens)
 					var cost float64
 					cost += (float64(regInput) / 1_000_000.0) * inp
 					if hasCached && cachedVal > 0 {
@@ -175,6 +205,13 @@ func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputToke
 						cost += (float64(cacheReadTokens) / 1_000_000.0) * inp
 					}
 					cost += (float64(outputTokens+thinkingTokens) / 1_000_000.0) * outVal
+					if provider == "anthropic" && cacheWriteTokens > 0 {
+						writeRate, ok := catalogCacheWritePricePerMillion(rec.Pricing)
+						if !ok {
+							return cost, "unknown"
+						}
+						cost += (float64(cacheWriteTokens) / 1_000_000.0) * writeRate
+					}
 					return cost, "known"
 				}
 			}
