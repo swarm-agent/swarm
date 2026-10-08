@@ -56,6 +56,58 @@ func RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 	return Default().RouteGit(ctx, cmd)
 }
 
+// Prepare is RouteGit for call sites that run cmd right after: a routing
+// refusal is stored in cmd.Err, so the caller's own Run/Output error handling
+// reports it and nothing runs.
+func Prepare(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
+	if err := RouteGit(ctx, cmd); err != nil && cmd != nil {
+		cmd.Err = err
+	}
+	return cmd
+}
+
+// Command is exec.CommandContext(ctx, "git", args...) prepared with Prepare.
+// The target directory must be named by -C (or the daemon's working
+// directory); callers that set Dir, Env or Stdin afterwards use Prepare
+// instead, once those are set.
+func Command(ctx context.Context, args ...string) *exec.Cmd {
+	return Prepare(ctx, exec.CommandContext(ctx, "git", args...))
+}
+
+// RoutedArgv is RouteGit for callers that run commands through their own
+// runner: it returns the engine program and arguments that run
+// `git args...` (with env) in the project's sandbox, or routed=false when
+// the target is not agent-writable and the caller runs Git itself.
+func RoutedArgv(ctx context.Context, env []string, args ...string) (name string, argv []string, routed bool, err error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Env = env
+	if err := RouteGit(ctx, cmd); err != nil {
+		return "", nil, false, err
+	}
+	if filepath.Base(cmd.Args[0]) == "git" {
+		return "", nil, false, nil
+	}
+	return cmd.Path, cmd.Args[1:], true, nil
+}
+
+// ScratchDir creates a private disposable directory for files a Git command
+// on path must read or write (a temporary index, for example). For a
+// sandboxed project it lives in the project's worktree bucket, which the
+// sandbox mounts; otherwise in the system temp directory.
+func ScratchDir(path, pattern string) (string, error) {
+	m := Default()
+	if m != nil && (m.Active() || m.Enforced()) {
+		if scope, ok, err := m.ScopeFor(path); err == nil && ok && len(scope.Mounts) > 1 {
+			base := filepath.Join(scope.Mounts[len(scope.Mounts)-1], ".swarm-scratch")
+			if err := os.MkdirAll(base, 0o700); err != nil {
+				return "", err
+			}
+			return os.MkdirTemp(base, pattern)
+		}
+	}
+	return os.MkdirTemp("", pattern)
+}
+
 // RouteGit is the manager form of the package-level RouteGit.
 func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 	if m == nil || cmd == nil {

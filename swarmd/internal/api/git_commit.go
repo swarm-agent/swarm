@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 
 	"swarm/packages/swarmd/internal/gitenv"
@@ -138,6 +139,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 		stageCmd := exec.CommandContext(ctx, "git", stageArgv...)
 		stageCmd.Dir = workspacePath
 		stageCmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
+		sandbox.Prepare(ctx, stageCmd)
 		stageOutput, stageErr := stageCmd.CombinedOutput()
 		if strings.TrimSpace(string(stageOutput)) != "" {
 			combinedParts = append(combinedParts, strings.TrimSpace(string(stageOutput)))
@@ -162,6 +164,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = workspacePath
 	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
+	sandbox.Prepare(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	exitCode := workspaceGitCommandExitCode(err)

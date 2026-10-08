@@ -75,7 +75,7 @@ func e2eSetup(t *testing.T) *e2eEnv {
 		Mode: ModeRequired, UID: uid, GID: gid,
 		// A test environment behind a TLS-inspecting proxy can point this at
 		// a derived image that trusts the proxy's CA.
-		Image: os.Getenv("SWARM_SANDBOX_E2E_IMAGE"),
+		Image:              os.Getenv("SWARM_SANDBOX_E2E_IMAGE"),
 		ProtectedRoots:     []string{env.data},
 		ProtectedAncestors: []string{filepath.Join(base, "home")},
 		StateDir:           filepath.Join(env.data, "sandbox"),

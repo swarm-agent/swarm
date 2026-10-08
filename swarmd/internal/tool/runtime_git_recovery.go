@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 
 	"swarm/packages/swarmd/internal/gitenv"
 )
@@ -201,7 +202,8 @@ func recoveryCommit(ctx context.Context, repo string, args map[string]any, princ
 		}
 		entries = append(entries, mode+" "+strings.TrimSpace(string(blob))+"\t"+path+"\x00")
 	}
-	tmp, err := os.MkdirTemp("", "swarm-recovery-index-")
+	// The index must be reachable by Git inside the project's sandbox.
+	tmp, err := sandbox.ScratchDir(repo, "swarm-recovery-index-")
 	if err != nil {
 		return "", err
 	}
@@ -213,6 +215,7 @@ func recoveryCommit(ctx context.Context, repo string, args map[string]any, princ
 		cmd.Env = append(gitenv.FilterIdentityOverrides(os.Environ()), "GIT_INDEX_FILE="+filepath.Join(tmp, "index"))
 		out := newCappedBuffer(maxCommandOutput)
 		cmd.Stdout, cmd.Stderr = out, out
+		sandbox.Prepare(ctx, cmd)
 		err := cmd.Run()
 		if err != nil {
 			return "", fmt.Errorf("recovery git %s: %w: %s", argv[0], err, out.String())

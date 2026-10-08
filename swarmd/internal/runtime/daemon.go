@@ -442,6 +442,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("agent sandbox: %w", err)
 	}
 	sandbox.SetDefault(sandboxMgr)
+	provider.BuildSourceGitRouter = sandbox.RoutedArgv
 	permissionSvc.SetBypassGate(func() (bool, string) {
 		status := sandboxMgr.Status()
 		return status.Active, status.Reason

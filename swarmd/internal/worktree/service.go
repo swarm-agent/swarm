@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"time"
 
@@ -480,6 +481,7 @@ func (s *Service) TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit s
 	}
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseCommit, headCommit)
 	cmd.Dir = workspacePath
+	sandbox.Prepare(context.Background(), cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -1011,12 +1013,14 @@ func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegratio
 	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
 	cmd := exec.Command("git", "-C", parentPath, "read-tree", parentHead)
 	cmd.Env = env
+	sandbox.Prepare(context.Background(), cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("initialize integration preflight: %s", strings.TrimSpace(string(out)))
 	}
 	for _, entry := range entries {
 		for _, commit := range entry.Commits {
 			patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
+			sandbox.Prepare(context.Background(), patch)
 			data, err := patch.Output()
 			if err != nil {
 				return fmt.Errorf("read child %q commit %s patch: %w", entry.SessionID, commit, err)
@@ -1024,6 +1028,7 @@ func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegratio
 			apply := exec.Command("git", "-C", parentPath, "apply", "--cached", "--3way", "--whitespace=nowarn", "-")
 			apply.Env = env
 			apply.Stdin = bytes.NewReader(data)
+			sandbox.Prepare(context.Background(), apply)
 			if out, err := apply.CombinedOutput(); err != nil {
 				detail := strings.TrimSpace(string(out))
 				if detail == "" {
@@ -1714,6 +1719,7 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	if env != nil {
 		cmd.Env = env
 	}
+	sandbox.Prepare(ctx, cmd)
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if errors.Is(err, exec.ErrNotFound) {
@@ -1732,6 +1738,7 @@ func localBranchExists(repoRoot, branchName string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	sandbox.Prepare(ctx, cmd)
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -1880,6 +1887,7 @@ func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch strin
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	sandbox.Prepare(ctx, cmd)
 	err := cmd.Run()
 	stdoutText := strings.TrimSpace(stdout.String())
 	stderrText := strings.TrimSpace(stderr.String())

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -129,9 +130,9 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 		res.baseBranch = strings.TrimSpace(sess.WorktreeBaseBranch)
 	} else {
 		// Test if dev exists
-		if err := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--verify", "dev").Run(); err == nil {
+		if err := sandbox.Command(ctx, "-C", targetPath, "rev-parse", "--verify", "dev").Run(); err == nil {
 			res.baseBranch = "dev"
-		} else if err := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--verify", "origin/dev").Run(); err == nil {
+		} else if err := sandbox.Command(ctx, "-C", targetPath, "rev-parse", "--verify", "origin/dev").Run(); err == nil {
 			res.baseBranch = "dev"
 		}
 	}
@@ -139,11 +140,13 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	// 5. Inspect current HEAD branch and commit in targetPath
 	cmdHead := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "--abbrev-ref", "HEAD")
 	headBranch := ""
+	sandbox.Prepare(ctx, cmdHead)
 	if out, err := cmdHead.Output(); err == nil {
 		headBranch = strings.TrimSpace(string(out))
 	}
 	cmdHeadCommit := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-parse", "HEAD")
 	headCommit := ""
+	sandbox.Prepare(ctx, cmdHeadCommit)
 	if out, err := cmdHeadCommit.Output(); err == nil {
 		headCommit = strings.TrimSpace(string(out))
 	}
@@ -158,6 +161,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 
 	// 6. Dirty status
 	cmdDirty := exec.CommandContext(ctx, "git", "-C", targetPath, "status", "--porcelain")
+	sandbox.Prepare(ctx, cmdDirty)
 	if out, err := cmdDirty.Output(); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 		for _, l := range lines {
@@ -178,6 +182,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	if baseCommit == "" {
 		// Check reflog to find where the branch was created
 		cmdReflog := exec.CommandContext(ctx, "git", "-C", targetPath, "log", "-g", "--format=%H", "--reverse", fmt.Sprintf("refs/heads/%s", res.worktreeBranch))
+		sandbox.Prepare(ctx, cmdReflog)
 		if out, err := cmdReflog.Output(); err == nil {
 			fields := strings.Fields(strings.TrimSpace(string(out)))
 			if len(fields) > 0 {
@@ -188,6 +193,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	if baseCommit == "" {
 		// Fallback to merge-base between baseBranch and HEAD
 		cmdMb := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", res.baseBranch, "HEAD")
+		sandbox.Prepare(ctx, cmdMb)
 		if out, err := cmdMb.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
 			baseCommit = strings.TrimSpace(string(out))
 		}
@@ -196,6 +202,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 
 	// 8. Ahead / behind relative to baseBranch
 	cmdRevList := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-list", "--left-right", "--count", res.baseBranch+"...HEAD")
+	sandbox.Prepare(ctx, cmdRevList)
 	if out, err := cmdRevList.Output(); err == nil {
 		fields := strings.Fields(strings.TrimSpace(string(out)))
 		if len(fields) >= 2 {
@@ -204,6 +211,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 		}
 	} else {
 		cmdRevOrigin := exec.CommandContext(ctx, "git", "-C", targetPath, "rev-list", "--left-right", "--count", "origin/"+res.baseBranch+"...HEAD")
+		sandbox.Prepare(ctx, cmdRevOrigin)
 		if out, err := cmdRevOrigin.Output(); err == nil {
 			fields := strings.Fields(strings.TrimSpace(string(out)))
 			if len(fields) >= 2 {
@@ -216,6 +224,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	// 9. Diff summary
 	if res.unintegratedCommits > 0 || res.isDirty {
 		cmdDiff := exec.CommandContext(ctx, "git", "-C", targetPath, "diff", "--shortstat", res.baseBranch+"...HEAD")
+		sandbox.Prepare(ctx, cmdDiff)
 		if out, err := cmdDiff.Output(); err == nil && len(bytes.TrimSpace(out)) > 0 {
 			res.diffSummary = string(bytes.TrimSpace(out))
 		}
@@ -234,6 +243,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	} else if headCommit != "" {
 		// Double check via reflog if commits were made on the branch
 		cmdRefLogCommits := exec.CommandContext(ctx, "git", "-C", targetPath, "log", "-g", "--format=%gs", fmt.Sprintf("refs/heads/%s", res.worktreeBranch))
+		sandbox.Prepare(ctx, cmdRefLogCommits)
 		if out, err := cmdRefLogCommits.Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				if strings.HasPrefix(strings.TrimSpace(line), "commit") {
@@ -247,10 +257,12 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	if !res.isDirty && hasBranchCommits && res.unintegratedCommits == 0 && headCommit != "" {
 		// Verify ancestry: is HEAD an ancestor of baseBranch?
 		cmdAncestor := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", "--is-ancestor", headCommit, res.baseBranch)
+		sandbox.Prepare(ctx, cmdAncestor)
 		if cmdAncestor.Run() == nil {
 			res.isIntegrated = true
 		} else {
 			cmdAncestorOrigin := exec.CommandContext(ctx, "git", "-C", targetPath, "merge-base", "--is-ancestor", headCommit, "origin/"+res.baseBranch)
+			sandbox.Prepare(ctx, cmdAncestorOrigin)
 			if cmdAncestorOrigin.Run() == nil {
 				res.isIntegrated = true
 			}
@@ -271,6 +283,7 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 	}
 	if parentWs != "" && parentWs != targetPath {
 		cmdBranchStatus := exec.CommandContext(ctx, "git", "-C", parentWs, "status", "--porcelain=v2", "--branch")
+		sandbox.Prepare(ctx, cmdBranchStatus)
 		if out, err := cmdBranchStatus.Output(); err == nil {
 			outStr := string(out)
 			for _, line := range strings.Split(outStr, "\n") {
@@ -3656,7 +3669,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				receipt.PreviousTargetHead = checkout.HeadCommit
 				ancestorCtx, ancestorCancel := context.WithTimeout(r.Context(), 3*time.Second)
 				defer ancestorCancel()
-				if err := exec.CommandContext(ancestorCtx, "git", "-C", capturedPath, "merge-base", "--is-ancestor", sourceState.HeadCommit, checkout.HeadCommit).Run(); err != nil {
+				if err := sandbox.Command(ancestorCtx, "-C", capturedPath, "merge-base", "--is-ancestor", sourceState.HeadCommit, checkout.HeadCommit).Run(); err != nil {
 					receipt.Error = "Integration ancestry changed during verification; inspect the retained source and target before launching repair."
 					writeError(w, http.StatusConflict, errors.New(receipt.Error))
 					return
@@ -3811,7 +3824,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		}
 		verifyCtx, verifyCancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer verifyCancel()
-		if err := exec.CommandContext(verifyCtx, "git", "-C", parentWs, "merge-base", "--is-ancestor", childState.HeadCommit, verified.HeadCommit).Run(); err != nil {
+		if err := sandbox.Command(verifyCtx, "-C", parentWs, "merge-base", "--is-ancestor", childState.HeadCommit, verified.HeadCommit).Run(); err != nil {
 			receipt.Error = "source commit ancestry on target could not be verified; inspect Git before retrying"
 			writeError(w, http.StatusConflict, errors.New(receipt.Error))
 			return

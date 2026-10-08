@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"syscall"
 	"time"
@@ -395,7 +396,8 @@ func (s *Service) PrepareRepositoryBaselineForPrincipal(principal identity.Princ
 			return state, errors.Join(err, root.RemoveAll(".git"))
 		}
 	}
-	scratch, err := os.MkdirTemp("", "swarm-baseline-")
+	// The index must be reachable by Git inside the project's sandbox.
+	scratch, err := sandbox.ScratchDir(requested, "swarm-baseline-")
 	if err != nil {
 		return state, err
 	}

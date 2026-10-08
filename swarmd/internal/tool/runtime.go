@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"time"
 	"unicode"
@@ -2592,6 +2593,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 	cmd.Stdout = capture
 	cmd.Stderr = capture
 
+	sandbox.Prepare(ctx, cmd)
 	err = cmd.Run()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	wasTruncated := capture.Truncated()
@@ -2678,6 +2680,7 @@ func gitOutputForEvidence(dir string, env []string, argv ...string) (string, err
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = dir
 	cmd.Env = env
+	sandbox.Prepare(ctx, cmd)
 	output, err := cmd.Output()
 	return strings.TrimSpace(string(output)), err
 }

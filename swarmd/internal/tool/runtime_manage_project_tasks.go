@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 
 	sessionruntime "swarm/packages/swarmd/internal/session"
@@ -453,6 +454,7 @@ func projectTaskGit(root string, argv ...string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", root}, argv...)...)
 	cmd.WaitDelay = time.Second
+	sandbox.Prepare(ctx, cmd)
 	out, err := cmd.Output()
 	if len(out) > 1<<20 {
 		return "", errors.New("git inspection output too large")

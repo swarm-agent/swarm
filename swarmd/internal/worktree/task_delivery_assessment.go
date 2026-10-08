@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"time"
 
@@ -69,6 +70,7 @@ func (d *deliveryInspector) run(path string, args ...string) (string, error) {
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
 	cmd.Env = append(cmd.Env, d.env...)
 	cmd.Stdout, cmd.Stderr = out, out
+	sandbox.Prepare(d.ctx, cmd)
 	err := cmd.Run()
 	return strings.TrimRight(out.String(), "\n"), err
 }
