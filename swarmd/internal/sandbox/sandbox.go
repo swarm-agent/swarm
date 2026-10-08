@@ -127,6 +127,10 @@ type Manager struct {
 	used    map[string]struct{}
 	layout  *layoutCache
 	stop    chan struct{}
+	// resolvConf is the sandbox's own /etc/resolv.conf (public resolvers, no
+	// search domain). Docker's embedded resolver (127.0.0.11) does not
+	// answer under gVisor, and the host's search domain names the tailnet.
+	resolvConf string
 }
 
 type box struct {
@@ -182,6 +186,9 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	}
 	m := &Manager{cfg: cfg, runner: runner, boxes: map[string]*box{}, used: map[string]struct{}{}, stop: make(chan struct{})}
 	if err := m.loadUsed(); err != nil {
+		return nil, err
+	}
+	if err := m.writeResolvConf(); err != nil {
 		return nil, err
 	}
 	m.status = Status{Mode: cfg.Mode}
@@ -322,6 +329,36 @@ func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
 	}
 }
 
+func (m *Manager) writeResolvConf() error {
+	if m.cfg.StateDir == "" {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("# Written by Swarm for agent sandboxes.\n")
+	for _, dns := range m.cfg.DNS {
+		b.WriteString("nameserver " + dns + "\n")
+	}
+	b.WriteString("options edns0\n")
+	if err := os.MkdirAll(m.cfg.StateDir, 0o700); err != nil {
+		return fmt.Errorf("sandbox state directory: %w", err)
+	}
+	path := filepath.Join(m.cfg.StateDir, "resolv.conf")
+	tmp := path + ".tmp"
+	// World-readable: it is mounted read-only into sandboxes running as the
+	// daemon's uid and holds only public resolver addresses.
+	if err := os.WriteFile(tmp, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write sandbox resolv.conf: %w", err)
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	m.resolvConf = path
+	return nil
+}
+
 // ContainerName is the deterministic container name for a project root.
 func ContainerName(root string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(root)))
@@ -410,7 +447,7 @@ func within(root, path string) bool {
 func (m *Manager) specHash(mounts []string) string {
 	m.mu.Lock()
 	parts := []string{
-		"v1", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs,
+		"v2", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
 		strconv.Itoa(m.cfg.UID), strconv.Itoa(m.cfg.GID), strings.Join(m.cfg.DNS, ","),
 	}
 	m.mu.Unlock()
@@ -456,6 +493,10 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string) []string {
 	}
 	for _, dns := range m.cfg.DNS {
 		args = append(args, "--dns", dns)
+	}
+	if m.resolvConf != "" {
+		// A mount on /etc/resolv.conf replaces Docker's generated one.
+		args = append(args, "--mount", "type=bind,src="+m.resolvConf+",dst=/etc/resolv.conf,readonly")
 	}
 	for _, mount := range mounts {
 		args = append(args, "--mount", "type=bind,src="+mount+",dst="+mount)

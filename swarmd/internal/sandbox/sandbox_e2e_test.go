@@ -289,6 +289,7 @@ func TestSandboxNegativeSuite(t *testing.T) {
 			}
 			Mounts []struct {
 				Type, Source, Destination string
+				RW                        bool
 			}
 			Config struct {
 				User string
@@ -311,9 +312,27 @@ func TestSandboxNegativeSuite(t *testing.T) {
 			if mount.Type != "bind" {
 				continue
 			}
+			if mount.Destination == "/etc/resolv.conf" {
+				// The one extra mount: Swarm's resolver file, read-only.
+				if mount.RW || mount.Source != filepath.Join(e.data, "sandbox", "resolv.conf") {
+					t.Fatalf("unexpected resolver mount %+v", mount)
+				}
+				continue
+			}
 			if mount.Source != mount.Destination || (mount.Source != e.project && mount.Source != e.scope.Mounts[1]) {
 				t.Fatalf("unexpected bind mount %+v", mount)
 			}
+		}
+	})
+	t.Run("own resolver config: public resolvers, no host search domain", func(t *testing.T) {
+		// Docker's embedded resolver does not answer under gVisor and the
+		// host's search domain names the tailnet; the sandbox gets its own.
+		out := e.mustSh(t, "cat /etc/resolv.conf")
+		if strings.Contains(out, "127.0.0.11") || strings.Contains(out, "search") || !strings.Contains(out, "nameserver 1.1.1.1") {
+			t.Fatalf("unexpected resolv.conf:\n%s", out)
+		}
+		if out, code := e.sh(t, "echo x > /etc/resolv.conf"); code == 0 {
+			t.Fatalf("resolv.conf is writable from the sandbox:\n%s", out)
 		}
 	})
 	t.Run("network: internet yes; host, tailnet, private, metadata no", func(t *testing.T) {
