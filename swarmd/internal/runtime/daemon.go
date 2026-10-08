@@ -703,6 +703,8 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
+	secretSlots := pebblestore.NewSecretSlotStore(store)
+	apiServer.SetSecretServices(secretSlots, authStore)
 	if err := deploymentMgr.Recover(bgCtx); err != nil {
 		log.Printf("warning: environment supervisor recovery: %v", err)
 	}

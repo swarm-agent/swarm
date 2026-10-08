@@ -50,6 +50,8 @@ func main() {
 		err = cmdContext(os.Args[2:])
 	case "session":
 		err = cmdSession(os.Args[2:])
+	case "secret":
+		err = cmdSecret(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
