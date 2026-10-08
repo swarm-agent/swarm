@@ -32,6 +32,7 @@ export const TOOL_SCOPES = {
   swarm_get_usage: SCOPE_READ,
   swarm_list_models: SCOPE_READ,
   swarm_list_tasks: SCOPE_READ,
+  swarm_create_workspace: SCOPE_WRITE,
   swarm_start_session: SCOPE_WRITE,
   swarm_send_message: SCOPE_WRITE,
   swarm_run_plan: SCOPE_WRITE,

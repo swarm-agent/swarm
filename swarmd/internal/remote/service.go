@@ -56,6 +56,7 @@ var toolScopes = map[string]string{
 	"swarm_get_usage":          ScopeRead,
 	"swarm_list_models":        ScopeRead,
 	"swarm_list_tasks":         ScopeRead,
+	"swarm_create_workspace":   ScopeWrite,
 	"swarm_start_session":      ScopeWrite,
 	"swarm_send_message":       ScopeWrite,
 	"swarm_run_plan":           ScopeWrite,

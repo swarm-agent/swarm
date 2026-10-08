@@ -41,6 +41,7 @@ var controlMCPProtocolVersions = map[string]bool{
 }
 
 const controlMCPInstructions = "Swarm Control drives Swarm, a local AI coding workspace, on one machine. " +
+	"Sessions run in a registered workspace: if list_workspaces is empty, create one with create_workspace first. " +
 	"Work is asynchronous: start_session, send_message, run_plan and assign_worker_task return at once; pass wait_seconds to start_session, send_message or get_session to wait for the reply, or check back with get_session or get_worker. " +
 	"Prefer giving a plan (checkpoints with acceptance criteria) for multi-step work; Swarm then executes it without further approval. " +
 	"Agent tool calls that need approval, and agent questions (ask_user), wait in pending_permissions until resolve_permission. " +

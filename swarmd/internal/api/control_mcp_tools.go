@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -44,12 +45,17 @@ var controlMCPSessionAgents = []string{"swarm", "system-orchestrator", "system-c
 
 var controlMCPSafeID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,200}$`)
 
+// New workspace folder names: one plain path segment, never hidden or relative.
+var controlMCPWorkspaceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+
 // Literal segments must match exactly; "*" matches one id segment. Worker
 // acceptance, token minting, import/migrate, capability grants, credentials,
 // permission policy (rules, bypass) and the account default model are absent
 // on purpose: they are owner approval, credential and policy surfaces.
 var controlMCPRoutes = []string{
 	"GET v1/workspace/list",
+	"POST v1/workspace/repository/setup",
+	"POST v1/workspace/add",
 	"GET v1/providers",
 	"GET v1/model/catalog",
 	"GET v1/agent-model-settings",
@@ -358,6 +364,14 @@ func controlMCPTools() []controlMCPTool {
 			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListWorkspaces,
 		},
 		{
+			Name: "swarm_create_workspace", Title: "Create a workspace",
+			Description: "Create a new, empty Git workspace in this machine's workspace folder and register it, so sessions, projects and workers can use it. Returns its path. Calling it again with the same name returns the existing workspace; a folder that already holds other content is refused.",
+			InputSchema: controlMCPObject([]string{"name"}, map[string]any{
+				"name": map[string]any{"type": "string", "pattern": controlMCPWorkspaceName.String(), "maxLength": 63, "description": "Folder name: lowercase letters, digits, dashes and underscores, e.g. social-bot."},
+			}),
+			Annotations: controlMCPWrites, call: controlMCPCreateWorkspace,
+		},
+		{
 			Name: "swarm_list_sessions", Title: "List sessions",
 			Description: "Recent sessions with agent and running state.",
 			InputSchema: controlMCPObject(nil, map[string]any{
@@ -592,6 +606,63 @@ func controlMCPListWorkspaces(c *controlMCPCall, _ map[string]any) (any, error) 
 		}
 	}
 	return map[string]any{"workspaces": workspaces}, nil
+}
+
+// controlMCPCreateWorkspace creates <root>/<name> as an empty repository with
+// one initial commit and registers it, through the same setup and add routes
+// the app uses. The root is the daemon's startup directory, never an argument,
+// so a caller cannot choose where on the machine folders appear.
+func controlMCPCreateWorkspace(c *controlMCPCall, args map[string]any) (any, error) {
+	if err := c.requireTokenScope("sessions:write"); err != nil {
+		return nil, err
+	}
+	name := controlMCPString(args, "name")
+	if !controlMCPWorkspaceName.MatchString(name) {
+		return nil, controlMCPToolFailure("name must be lowercase letters, digits, dashes and underscores (at most 63), starting with a letter or digit")
+	}
+	if c.server == nil || c.server.workspaceRoot == "" {
+		return nil, controlMCPToolFailure("this machine has no workspace folder configured")
+	}
+	root, err := filepath.EvalSymlinks(c.server.workspaceRoot)
+	if err != nil {
+		return nil, controlMCPToolFailure("the workspace folder %s is unavailable", c.server.workspaceRoot)
+	}
+	path := filepath.Join(root, name)
+	summary := func(entry map[string]any) map[string]any {
+		return controlMCPPick(entry, "path", "workspace_name", "workspace_id")
+	}
+	if existing, err := c.registeredWorkspace(path); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return map[string]any{"workspace": summary(existing), "created": false}, nil
+	}
+	if _, err := c.dispatch(http.MethodPost, "/v1/workspace/repository/setup", nil, map[string]any{"path": path, "expected_resolved_path": path}); err != nil {
+		return nil, err
+	}
+	if _, err := c.dispatch(http.MethodPost, "/v1/workspace/add", nil, map[string]any{"path": path, "name": name, "make_current": false}); err != nil {
+		return nil, err
+	}
+	created, err := c.registeredWorkspace(path)
+	if err != nil {
+		return nil, err
+	}
+	if created == nil {
+		return nil, controlMCPToolFailure("workspace %s was not registered", path)
+	}
+	return map[string]any{"workspace": summary(created), "created": true}, nil
+}
+
+func (c *controlMCPCall) registeredWorkspace(path string) (map[string]any, error) {
+	response, err := c.dispatch(http.MethodGet, "/v1/workspace/list", url.Values{"limit": {"500"}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range controlMCPList(response["workspaces"]) {
+		if entry := controlMCPMap(raw); entry != nil && entry["path"] == path {
+			return entry, nil
+		}
+	}
+	return nil, nil
 }
 
 func (c *controlMCPCall) workspaceID(path string) (string, error) {

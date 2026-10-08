@@ -149,6 +149,7 @@ type Server struct {
 	automationV2Scheduler       *sessionruntime.AutomationV2Scheduler
 	webhookDispatcher           *webhook.Dispatcher
 	dataDir                     string
+	workspaceRoot               string
 	startupConfigPath           string
 	startedAt                   time.Time
 	bypassPermissions           bool
@@ -494,6 +495,15 @@ func (s *Server) SetStartupConfigPath(path string) {
 		return
 	}
 	s.startupConfigPath = strings.TrimSpace(path)
+}
+
+// SetWorkspaceRoot names the folder (the daemon's startup directory) where
+// Swarm Control may create new workspaces. Empty disables creation.
+func (s *Server) SetWorkspaceRoot(path string) {
+	if s == nil {
+		return
+	}
+	s.workspaceRoot = strings.TrimSpace(path)
 }
 
 func (s *Server) SetDataDir(path string) {

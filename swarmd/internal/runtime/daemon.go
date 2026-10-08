@@ -748,6 +748,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
+	apiServer.SetWorkspaceRoot(cfg.StartupCWD)
 	apiServer.SetWorktreeService(worktreeSvc)
 	apiServer.SetMCPService(mcpSvc)
 	// Remote transport is off until the owner initializes and enables a relay.

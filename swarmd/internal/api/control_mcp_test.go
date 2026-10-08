@@ -19,6 +19,7 @@ import (
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	topologyruntime "swarm/packages/swarmd/internal/topology"
 	"swarm/packages/swarmd/internal/workspace"
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
@@ -999,5 +1000,95 @@ func TestVerifyProjectTaskSessionWorkerRunShape(t *testing.T) {
 	plain.WorkerID, plain.WorkerRunID = "", ""
 	if err := verifyProjectTaskSession(&plain, session(nil), "acct"); err == nil {
 		t.Fatal("non-worker task accepted a source-workspace session")
+	}
+}
+
+// Requirement: an AI with a write grant can take a fresh machine from zero
+// workspaces to one it can start sessions in. create_workspace creates an
+// empty repository with one initial commit under the daemon's startup folder
+// and registers it; repeating the call returns the same workspace; names that
+// could leave that folder are refused; a read grant cannot create; a folder
+// that already holds other content is not taken over. Threat: an AI creating
+// folders anywhere on the machine or adopting existing files. Owners:
+// controlMCPCreateWorkspace and the workspace setup and add handlers. The
+// in-process handler with real temporary stores and Git is the narrowest
+// layer that runs scope, route allowlist, setup and registration together.
+func TestControlMCPCreatesWorkspaceFromZero(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is required")
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	s, _, sec, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "workspaces"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	swarmStore := pebblestore.NewSwarmStore(db, nil)
+	if _, err := swarmStore.PutLocalNode(pebblestore.SwarmLocalNodeRecord{SwarmID: "create-workspace-test", Name: "Primary", Role: bootstrapRoleMaster}); err != nil {
+		t.Fatal(err)
+	}
+	s.workspace = workspace.NewService(pebblestore.NewWorkspaceStore(db))
+	s.SetTopologyService(topologyruntime.NewService(pebblestore.NewTopologyStore(db), swarmStore))
+	root := t.TempDir()
+	s.SetWorkspaceRoot(root)
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := func(scopes ...string) string {
+		value, _, err := sec.CreateScopedToken("create-workspace", scopes, actor.AccountScopeID, actor.UserID, time.Hour, "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	read := controlMCPTestCaller(t, s, token("sessions:read"))
+	write := controlMCPTestCaller(t, s, token("sessions:read", "sessions:write"))
+
+	if text, isError := read("swarm_create_workspace", map[string]any{"name": "bot"}); !isError || !strings.Contains(text, "sessions:write") {
+		t.Fatalf("read grant created a workspace: %s", text)
+	}
+	for _, name := range []string{"..", "../x", "a/b", ".hidden", "Bot", ""} {
+		if text, isError := write("swarm_create_workspace", map[string]any{"name": name}); !isError {
+			t.Fatalf("name %q accepted: %s", name, text)
+		}
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedRoot, "bot")
+	text, isError := write("swarm_create_workspace", map[string]any{"name": "bot"})
+	if isError || !strings.Contains(text, `"created":true`) || !strings.Contains(text, want) {
+		t.Fatalf("create: %s", text)
+	}
+	if out, err := exec.Command("git", "-C", want, "rev-list", "--count", "HEAD").CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "1" {
+		t.Fatalf("initial commit: %v %s", err, out)
+	}
+	if text, isError := write("swarm_create_workspace", map[string]any{"name": "bot"}); isError || !strings.Contains(text, `"created":false`) {
+		t.Fatalf("repeat: %s", text)
+	}
+	if text, _ := read("swarm_list_workspaces", map[string]any{}); !strings.Contains(text, want) {
+		t.Fatalf("list: %s", text)
+	}
+	occupied := filepath.Join(resolvedRoot, "notes")
+	if err := os.MkdirAll(occupied, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(occupied, "keep.txt"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if text, isError := write("swarm_create_workspace", map[string]any{"name": "notes"}); !isError {
+		t.Fatalf("occupied folder adopted: %s", text)
+	}
+	if _, err := os.Stat(filepath.Join(occupied, ".git")); !os.IsNotExist(err) {
+		t.Fatalf("occupied folder changed: %v", err)
+	}
+	s.SetWorkspaceRoot("")
+	if text, isError := write("swarm_create_workspace", map[string]any{"name": "other"}); !isError || !strings.Contains(text, "no workspace folder") {
+		t.Fatalf("no root: %s", text)
 	}
 }
