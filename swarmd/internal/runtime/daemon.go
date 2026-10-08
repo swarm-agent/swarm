@@ -173,6 +173,7 @@ type Daemon struct {
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
 	copilot                   *copilot.Manager
+	secretGatewayStop         func()
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
@@ -705,6 +706,20 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
+	var secretGatewayStop func()
+	if cfg.SecretsGateway == "on" {
+		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore)
+		if err != nil {
+			bgCancel()
+			_ = secretStore.Close()
+			_ = store.Close()
+			_ = lk.Release()
+			return nil, fmt.Errorf("secret gateway: %w", err)
+		}
+		sandboxMgr.SetSecretBroker(broker)
+		secretGatewayStop = stopGateway
+		log.Printf("swarmd secret gateway enabled; granted secrets inject through the egress gateway without the agent seeing them")
+	}
 	if err := deploymentMgr.Recover(bgCtx); err != nil {
 		log.Printf("warning: environment supervisor recovery: %v", err)
 	}
@@ -859,6 +874,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		localTransportRuntimeName: localTransportRuntimeName,
 		remoteTransport:           remoteSvc,
 	}
+	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
 		d.requestStop("api:" + strings.TrimSpace(reason))
 	})
@@ -1018,6 +1034,10 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.secretGatewayStop != nil {
+			d.secretGatewayStop()
+			d.secretGatewayStop = nil
 		}
 		if d.memoryDone != nil {
 			<-d.memoryDone

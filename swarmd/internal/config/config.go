@@ -34,6 +34,8 @@ type Config struct {
 	SandboxImage            string
 	SandboxNetwork          string
 	SandboxRuntime          string
+	SecretsGateway          string // off (default) | on
+	SecretsGatewayAddr      string // bridge address:port the gateway listens on
 }
 
 func Parse(args []string) (Config, error) {
@@ -93,6 +95,8 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.SandboxImage, "sandbox-image", "swarm-sandbox:local", "image for agent sandboxes")
 	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
+	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
+	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
 	fs.StringVar(&cfg.DBPath, "db-path", defaultDBPath, "Pebble database path")
 	fs.StringVar(&cfg.LockPath, "lock-path", defaultLockPath, "daemon lock file path")
@@ -120,6 +124,13 @@ func Parse(args []string) (Config, error) {
 	}
 	if _, err := sandbox.ParseMode(cfg.SandboxMode); err != nil {
 		return Config{}, err
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.SecretsGateway)) {
+	case "", "off":
+		cfg.SecretsGateway = "off"
+	case "on":
+	default:
+		return Config{}, fmt.Errorf("invalid --secrets-gateway %q (expected off or on)", cfg.SecretsGateway)
 	}
 	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err

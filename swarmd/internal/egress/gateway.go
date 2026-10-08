@@ -27,6 +27,9 @@ type Grant struct {
 	Placeholder []byte // what the agent's code sends
 	Value       []byte // what goes to the allowed host
 	Hosts       map[string]struct{}
+	// ExpiresAtUnixMilli is when the grant stops injecting, even in a sandbox
+	// still running. 0 means no expiry.
+	ExpiresAtUnixMilli int64
 }
 
 // Sandbox is the set of secrets granted to one project's sandbox.
@@ -125,14 +128,21 @@ func (g *Gateway) handleConn(conn net.Conn) {
 }
 
 func grantsForHost(s Sandbox, host string) []Grant {
+	now := nowMilli()
 	var out []Grant
 	for _, grant := range s.Grants {
+		if grant.ExpiresAtUnixMilli != 0 && grant.ExpiresAtUnixMilli <= now {
+			continue // expired: the secret is no longer injected
+		}
 		if _, ok := grant.Hosts[host]; ok {
 			out = append(out, grant)
 		}
 	}
 	return out
 }
+
+// nowMilli is overridable in tests.
+var nowMilli = func() int64 { return time.Now().UnixMilli() }
 
 // tunnel connects straight through to a public address without reading the
 // stream. No secret can be injected, so nothing is logged as used.

@@ -97,6 +97,29 @@ type Config struct {
 	ProtectedAncestors []string
 	// StateDir holds the durable list of projects that have used a sandbox.
 	StateDir string
+	// SecretBroker, when set, supplies per-project secret wiring (egress proxy
+	// env, stand-ins, CA mount) for projects with an active secret grant.
+	SecretBroker SecretBroker
+}
+
+// SecretSetup is the per-sandbox secret wiring returned by a SecretBroker.
+type SecretSetup struct {
+	Env         []string    // extra "K=V" lines: proxy, stand-ins, CA paths
+	Files       []FileMount // read-only files to mount (CA, CA bundle)
+	Fingerprint string      // changes when grants change, so the sandbox is rebuilt
+}
+
+// FileMount is one read-only host file mounted into the sandbox.
+type FileMount struct {
+	HostPath string
+	Dest     string
+}
+
+// SecretBroker prepares a project's secret wiring. PrepareSandbox is called on
+// every acquire (cheap); it returns empty when the project has no grant.
+type SecretBroker interface {
+	PrepareSandbox(root string) (SecretSetup, error)
+	ReleaseSandbox(root string)
 }
 
 // Status reports whether sandboxes are in force for this process.
@@ -136,11 +159,13 @@ type Manager struct {
 type box struct {
 	mu       sync.RWMutex // exec holds read; recreate holds write
 	name     string
+	root     string
 	spec     string
 	mounts   []string
 	lastUsed time.Time
 	verified time.Time
 	inflight int
+	secret   SecretSetup
 }
 
 // verifyInterval bounds how long a container is trusted to still be running
@@ -216,6 +241,23 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 		m.status.Mode = ModeRequired
 	}
 	return m, nil
+}
+
+// SetSecretBroker installs the per-project secret wiring broker. The daemon
+// calls it once at startup when the secret gateway is enabled.
+func (m *Manager) SetSecretBroker(broker SecretBroker) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.cfg.SecretBroker = broker
+	m.mu.Unlock()
+}
+
+func (m *Manager) secretBroker() SecretBroker {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cfg.SecretBroker
 }
 
 // Status returns the current sandbox status.
@@ -325,6 +367,9 @@ func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
 		_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "stop", "--time", "5", b.name)
 		cancel()
 		b.spec = "" // next use re-verifies and restarts it
+		if broker := m.secretBroker(); broker != nil && b.root != "" {
+			broker.ReleaseSandbox(b.root)
+		}
 		b.mu.Unlock()
 	}
 }
@@ -444,11 +489,11 @@ func within(root, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
-func (m *Manager) specHash(mounts []string) string {
+func (m *Manager) specHash(mounts []string, secretFingerprint string) string {
 	m.mu.Lock()
 	parts := []string{
-		"v2", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
-		strconv.Itoa(m.cfg.UID), strconv.Itoa(m.cfg.GID), strings.Join(m.cfg.DNS, ","),
+		"v3", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
+		strconv.Itoa(m.cfg.UID), strconv.Itoa(m.cfg.GID), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
 	parts = append(parts, mounts...)
@@ -458,7 +503,7 @@ func (m *Manager) specHash(mounts []string) string {
 
 // RunArgs builds the hardened `docker run` arguments for a sandbox. It is
 // exported for the negative test suite, which asserts every hardening flag.
-func (m *Manager) RunArgs(name, root, spec string, mounts []string) []string {
+func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret SecretSetup) []string {
 	m.mu.Lock()
 	runtime := m.runtime
 	m.mu.Unlock()
@@ -501,6 +546,14 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string) []string {
 	for _, mount := range mounts {
 		args = append(args, "--mount", "type=bind,src="+mount+",dst="+mount)
 	}
+	for _, kv := range secret.Env {
+		args = append(args, "--env", kv)
+	}
+	for _, f := range secret.Files {
+		if f.HostPath != "" && f.Dest != "" {
+			args = append(args, "--mount", "type=bind,src="+f.HostPath+",dst="+f.Dest+",readonly")
+		}
+	}
 	args = append(args, m.cfg.Image, "sleep", "infinity")
 	return args
 }
@@ -520,12 +573,18 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 		return nil, err
 	}
 	name := ContainerName(root)
-	spec := m.specHash(mounts)
+	secret := SecretSetup{}
+	if broker := m.secretBroker(); broker != nil {
+		if secret, err = broker.PrepareSandbox(root); err != nil {
+			return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
+		}
+	}
+	spec := m.specHash(mounts, secret.Fingerprint)
 
 	m.mu.Lock()
 	b := m.boxes[name]
 	if b == nil {
-		b = &box{name: name}
+		b = &box{name: name, root: root}
 		m.boxes[name] = b
 	}
 	b.inflight++
@@ -547,11 +606,12 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 
 	b.mu.Lock()
 	ensureCtx, cancel := context.WithTimeout(ctx, ensureTimeout)
-	err = m.ensure(ensureCtx, name, root, spec, mounts)
+	err = m.ensure(ensureCtx, name, root, spec, mounts, secret)
 	cancel()
 	if err == nil {
 		b.spec = spec
 		b.mounts = mounts
+		b.secret = secret
 		b.verified = time.Now()
 	} else {
 		b.spec = ""
@@ -573,7 +633,7 @@ func (m *Manager) release(b *box) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string) error {
+func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup) error {
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}}", name)
 	if err == nil {
 		fields := strings.Fields(string(out))
@@ -592,7 +652,7 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 			return fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
-	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.RunArgs(name, root, spec, mounts)...); err != nil {
+	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.RunArgs(name, root, spec, mounts, secret)...); err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 	return m.configureGitIdentity(ctx, name)

@@ -30,6 +30,12 @@ iptables -C DOCKER-USER -i "$BRIDGE" -j SWARM-SANDBOX 2>/dev/null ||
 
 iptables -N SWARM-SANDBOX-HOST 2>/dev/null || iptables -F SWARM-SANDBOX-HOST
 iptables -A SWARM-SANDBOX-HOST -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+# When the secret gateway is enabled, the sandbox reaches it on the bridge
+# gateway address and that one port only; everything else to the host is dropped.
+if [ -n "${SWARM_SANDBOX_GATEWAY_PORT:-}" ]; then
+  GATEWAY_IP=${SWARM_SANDBOX_GATEWAY_IP:-${SUBNET%.*}.1}
+  iptables -A SWARM-SANDBOX-HOST -p tcp -d "$GATEWAY_IP" --dport "$SWARM_SANDBOX_GATEWAY_PORT" -j RETURN
+fi
 iptables -A SWARM-SANDBOX-HOST -j DROP
 iptables -C INPUT -i "$BRIDGE" -j SWARM-SANDBOX-HOST 2>/dev/null ||
   iptables -I INPUT -i "$BRIDGE" -j SWARM-SANDBOX-HOST

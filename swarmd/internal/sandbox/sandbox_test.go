@@ -88,7 +88,7 @@ func newTestManager(t *testing.T, mode Mode, runner *fakeRunner, cfg Config) *Ma
 
 func TestRunArgsCarryEveryHardeningFlag(t *testing.T) {
 	m := newTestManager(t, ModeRequired, readyRunner(), Config{})
-	args := strings.Join(m.RunArgs("swarm-sandbox-x", "/srv/p", "spec", []string{"/srv/p", "/w/b"}), " ")
+	args := strings.Join(m.RunArgs("swarm-sandbox-x", "/srv/p", "spec", []string{"/srv/p", "/w/b"}, SecretSetup{}), " ")
 	for _, want := range []string{
 		"--user 10001:10001", "--cap-drop ALL", "--security-opt no-new-privileges",
 		"--memory 4g", "--memory-swap 4g", "--pids-limit 1024", "--network swarm-sandbox",
@@ -110,7 +110,7 @@ func TestRunArgsPreferGVisor(t *testing.T) {
 	runner := readyRunner()
 	runner.out["info --format"] = `{"runc":{},"runsc":{"path":"/usr/local/bin/runsc"}}`
 	m := newTestManager(t, ModeRequired, runner, Config{})
-	if !strings.Contains(strings.Join(m.RunArgs("n", "/p", "s", []string{"/p"}), " "), "--runtime runsc") {
+	if !strings.Contains(strings.Join(m.RunArgs("n", "/p", "s", []string{"/p"}, SecretSetup{}), " "), "--runtime runsc") {
 		t.Fatal("gVisor runtime not selected although registered")
 	}
 	if m.Status().Runtime != "runsc" {
@@ -275,5 +275,38 @@ func TestScopeForWorktreeNeedsKnownProject(t *testing.T) {
 	}
 	if _, _, err := m.ScopeFor(stray); !errors.Is(err, errUnknownWorktree) {
 		t.Fatalf("worktree of an unknown project must be refused, got %v", err)
+	}
+}
+
+// Purpose: a project with a secret grant must get its egress wiring baked into
+// the container (proxy env, stand-ins, a read-only CA mount), and a change to
+// the grant set must change the spec so the sandbox is rebuilt rather than
+// keeping stale env. These are argument/spec decisions, provable without an engine.
+func TestRunArgsIncludeSecretWiring(t *testing.T) {
+	m := newTestManager(t, ModeRequired, readyRunner(), Config{})
+	setup := SecretSetup{
+		Env:         []string{"HTTPS_PROXY=http://swarm:tok@172.31.251.1:8080", "STRIPE_KEY=swarm-secret://STRIPE_KEY", "NODE_EXTRA_CA_CERTS=/etc/swarm/egress-ca.pem"},
+		Files:       []FileMount{{HostPath: "/var/lib/swarmd/egress/egress-ca.pem", Dest: "/etc/swarm/egress-ca.pem"}},
+		Fingerprint: "fp1",
+	}
+	args := strings.Join(m.RunArgs("n", "/p", "s", []string{"/p"}, setup), " ")
+	for _, want := range []string{
+		"--env HTTPS_PROXY=http://swarm:tok@172.31.251.1:8080",
+		"--env STRIPE_KEY=swarm-secret://STRIPE_KEY",
+		"--env NODE_EXTRA_CA_CERTS=/etc/swarm/egress-ca.pem",
+		"--mount type=bind,src=/var/lib/swarmd/egress/egress-ca.pem,dst=/etc/swarm/egress-ca.pem,readonly",
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("run args missing %q:\n%s", want, args)
+		}
+	}
+	// No wiring without a grant.
+	plain := strings.Join(m.RunArgs("n", "/p", "s", []string{"/p"}, SecretSetup{}), " ")
+	if strings.Contains(plain, "HTTPS_PROXY") || strings.Contains(plain, "egress-ca") {
+		t.Fatalf("plain sandbox leaked secret wiring:\n%s", plain)
+	}
+	// A changed grant fingerprint changes the spec.
+	if m.specHash([]string{"/p"}, "fp1") == m.specHash([]string{"/p"}, "fp2") {
+		t.Fatal("spec hash did not change with the grant fingerprint")
 	}
 }
