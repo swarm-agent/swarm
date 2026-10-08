@@ -238,7 +238,7 @@ func TestRouteGitRewritesIntoProjectSandbox(t *testing.T) {
 	}
 	args := strings.Join(cmd.Args, " ")
 	if filepath.Base(cmd.Path) != "docker" || !strings.Contains(args, "exec -w "+sub+" ") || !strings.Contains(args, ContainerName(project)+" timeout --kill-after=2 ") ||
-		!strings.HasSuffix(args, "git --no-optional-locks -C sub status --porcelain") {
+		!strings.HasSuffix(args, "swarm-git git --no-optional-locks -C sub status --porcelain") {
 		t.Fatalf("unexpected rewrite: %s", args)
 	}
 	if !strings.Contains(args, "-e GIT_OPTIONAL_LOCKS=0") || strings.Contains(args, "GIT_SSH_COMMAND") || strings.Contains(args, "must-not-cross") {

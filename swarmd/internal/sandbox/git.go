@@ -169,7 +169,9 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		}
 		execArgs = append(execArgs, "timeout", "--kill-after=2", fmt.Sprintf("%d", secs))
 	}
-	execArgs = append(execArgs, "git")
+	// Container exec starts with umask 0; keep files Git writes in the host
+	// project as the daemon would have written them.
+	execArgs = append(execArgs, "sh", "-c", `umask 022 && exec "$@"`, "swarm-git", "git")
 	execArgs = append(execArgs, cmd.Args[1:]...)
 
 	enginePath, err := exec.LookPath(m.cfg.Engine)
