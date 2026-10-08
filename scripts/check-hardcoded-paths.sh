@@ -59,6 +59,11 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:APP_CONFIG=/etc/swarmd/headless-app$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:GVISOR_LIST=/etc/apt/sources\.list\.d/gvisor\.list$' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*sandboxHome[[:space:]]*=[[:space:]]*"/home/sandbox"$' \
+    -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:.*dst=/etc/resolv\.conf' \
+    -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*//.*/etc/resolv\.conf' \
+    -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:[[:space:]]*sandboxCADest[[:space:]]*=[[:space:]]*"/etc/swarm/egress-ca\.pem"$' \
+    -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:[[:space:]]*sandboxBundleDest[[:space:]]*=[[:space:]]*"/etc/swarm/ca-bundle\.pem"$' \
+    -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:.*"/etc/ssl/certs/ca-certificates\.crt", "/etc/pki/tls/certs/ca-bundle\.crt"' \
     -e '^(\./)?scripts/check-daemon-storage-paths\.sh:.*(/home/|/root|/tmp/swarm-storage-gate-self-test\.out|forbidden_home_hits|negative fixture|run_scan)' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemConfigMarker[[:space:]]*=[[:space:]]*"/etc/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemDataMarker[[:space:]]*=[[:space:]]*"/var/lib/"[[:space:]]*$' \
