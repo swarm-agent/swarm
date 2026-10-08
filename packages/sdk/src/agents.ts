@@ -1,4 +1,5 @@
 import type { PendingPermissionRecord } from './permissions.js';
+import { SwarmSessionsNamespace } from './sessions.js';
 import type { SwarmTransport } from './transport.js';
 
 /** A typed tool the application answers. Swarm validates and waits; it never executes it. */
@@ -49,6 +50,12 @@ export class ClientToolError extends Error {
 }
 
 export type ClientToolHandler = (args: Record<string, unknown>, call: ClientToolCall) => Promise<unknown> | unknown;
+
+/** One visitor turn: the agent's reply and every message the turn added (including tool results). */
+export interface ConverseResult {
+  reply: string;
+  messages: Array<Record<string, any>>;
+}
 
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
@@ -170,6 +177,38 @@ export class SwarmAgentsNamespace {
         const timer = setTimeout(resolve, interval);
         options.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
       });
+    }
+  }
+
+  /**
+   * Sends one user message to a sealed agent's session, answers its client
+   * tool calls with `handlers` while it runs, and returns once the run has
+   * finished. This is the whole loop a gateway needs per visitor message.
+   */
+  async converse(sessionId: string, message: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number } = {}): Promise<ConverseResult> {
+    const sessions = new SwarmSessionsNamespace(this.transport);
+    const before = new Set(((await sessions.get(sessionId)).messages ?? []).map((m: any) => m.id));
+    const controller = new AbortController();
+    const serving = this.serve(sessionId, handlers, { signal: controller.signal, intervalMs: options.pollIntervalMs ?? 200 });
+    const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+    try {
+      await sessions.sendMessage(sessionId, { content: message });
+      for (;;) {
+        const detail = await sessions.get(sessionId);
+        const raw = (detail.raw ?? {}) as Record<string, any>;
+        const added = ((detail.messages ?? []) as Array<Record<string, any>>).filter((m) => !before.has(m.id));
+        const pending = Array.isArray(raw.pending_permissions) ? raw.pending_permissions.length : 0;
+        const failure = added.find((m) => m.role === 'system' && m.metadata?.message_kind === 'run_failure');
+        if (!raw.active_run_intent && failure) throw new Error(`The agent's run failed: ${String(failure.content ?? '').slice(0, 300)}`);
+        if (!raw.active_run_intent && pending === 0 && added.some((m) => m.role === 'assistant')) {
+          return { reply: added.filter((m) => m.role === 'assistant').map((m) => String(m.content ?? '')).join('\n\n'), messages: added };
+        }
+        if (Date.now() > deadline) throw new Error('The agent did not finish in time; the run may still complete');
+        await new Promise((resolve) => setTimeout(resolve, options.pollIntervalMs ?? 400));
+      }
+    } finally {
+      controller.abort();
+      await serving.catch(() => undefined);
     }
   }
 

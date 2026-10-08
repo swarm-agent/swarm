@@ -154,6 +154,17 @@ var (
 		"developer message",
 		"you are now",
 		"jailbreak",
+		"system override",
+		"admin mode",
+		"developer mode",
+		"maintenance mode",
+		"notice to the ai",
+		"to the ai assistant",
+		"to any ai reading",
+		"new instructions:",
+		"do not mention this",
+		"do not tell the user",
+		"call the bash tool",
 	}
 	errListScanLimit = errors.New("list scan limit reached")
 )
