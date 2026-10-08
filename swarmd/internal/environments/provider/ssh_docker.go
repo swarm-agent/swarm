@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os/exec"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -121,10 +121,12 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (_ *D
 	if req.Environment.Build != nil && (req.Deployment == nil || req.Deployment.Build == nil) {
 		return nil, errors.New("successful managed build receipt required before SSH deployment")
 	}
+	// Remote ports are published on the remote loopback only, so direct HTTP
+	// endpoints and HTTP health probes from this machine cannot work.
+	if len(req.Environment.FrontendEndpoints) != 0 || (req.Environment.HealthCheck != nil && req.Environment.HealthCheck.HTTPPath != "") {
+		return nil, errors.New("SSH deployments do not support direct remote HTTP endpoints; use container health commands")
+	}
 	if req.Environment.Build != nil || (req.Deployment != nil && req.Deployment.Build != nil) {
-		if len(req.Environment.FrontendEndpoints) != 0 || (req.Environment.HealthCheck != nil && req.Environment.HealthCheck.HTTPPath != "") {
-			return nil, errors.New("SSH managed tests do not support direct remote HTTP endpoints; use container health commands")
-		}
 		if req.Environment.Container.Privileged || len(req.Environment.Provisioning.Mounts) != 0 || req.Environment.Provisioning.Strategy.Kind != environments.SourceStrategyKindRegistryImage {
 			return nil, errors.New("SSH managed deployment forbids host mounts and privileged access")
 		}
@@ -268,16 +270,12 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (_ *D
 		if port.Protocol != "" {
 			proto = port.Protocol
 		}
-		prefix := ""
-		if req.Deployment.Build != nil {
-			prefix = "127.0.0.1:"
-		}
+		// Remote ports bind to the remote host's loopback only; reach them
+		// through an SSH tunnel, never the remote host's public interfaces.
 		if port.HostPort > 0 {
-			runArgs = append(runArgs, "-p", prefix+fmt.Sprintf("%d:%d/%s", port.HostPort, port.ContainerPort, proto))
-		} else if prefix != "" {
-			runArgs = append(runArgs, "-p", prefix+fmt.Sprintf(":%d/%s", port.ContainerPort, proto))
+			runArgs = append(runArgs, "-p", fmt.Sprintf("127.0.0.1:%d:%d/%s", port.HostPort, port.ContainerPort, proto))
 		} else {
-			runArgs = append(runArgs, "-p", fmt.Sprintf("%d/%s", port.ContainerPort, proto))
+			runArgs = append(runArgs, "-p", fmt.Sprintf("127.0.0.1::%d/%s", port.ContainerPort, proto))
 		}
 	}
 
@@ -293,7 +291,7 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (_ *D
 		runArgs = append(runArgs, "-u", req.Environment.Container.User)
 	}
 	if req.Environment.Container.Privileged {
-		runArgs = append(runArgs, "--privileged")
+		return nil, errors.New("privileged containers are not supported")
 	}
 
 	// Workspace provisioning strategy translation
@@ -347,7 +345,10 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (_ *D
 	}
 
 	// Additional remote mounts
-	for _, m := range req.Environment.Provisioning.Mounts {
+	for i, m := range req.Environment.Provisioning.Mounts {
+		if err := confineRemoteHostMount(m.HostPath, req.Environment.Provisioning.Strategy.RemoteExistingPath); err != nil {
+			return nil, fmt.Errorf("mount[%d]: %w", i, err)
+		}
 		spec := fmt.Sprintf("%s:%s", m.HostPath, m.ContainerPath)
 		if m.ReadOnly {
 			spec += ":ro"
@@ -442,27 +443,7 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (_ *D
 
 	// Determine health status
 	healthStatus := insRes.Health
-	if req.Environment.HealthCheck != nil {
-		if req.Environment.HealthCheck.HTTPPath != "" && req.Environment.HealthCheck.HTTPPort > 0 {
-			var mappedHostPort int
-			for _, ap := range runtimeMeta.AssignedPorts {
-				if ap.ContainerPort == req.Environment.HealthCheck.HTTPPort {
-					mappedHostPort = ap.HostPort
-					break
-				}
-			}
-			if mappedHostPort > 0 {
-				host := req.Connection.SSH.Host
-				probeURL := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(mappedHostPort)), req.Environment.HealthCheck.HTTPPath)
-				statusCode, probeErr := p.httpGet(deployCtx, probeURL)
-				if probeErr == nil && statusCode >= 200 && statusCode < 400 {
-					healthStatus = environments.HealthStatusHealthy
-				} else {
-					healthStatus = environments.HealthStatusUnhealthy
-				}
-			}
-		}
-	} else if insRes.Status == environments.DeploymentStatusRunning {
+	if req.Environment.HealthCheck == nil && insRes.Status == environments.DeploymentStatusRunning {
 		healthStatus = environments.HealthStatusHealthy
 	}
 
@@ -545,11 +526,6 @@ func (p *SSHDockerProvider) Inspect(ctx context.Context, conn *environments.Conn
 	var assignedPorts []environments.AssignedPort
 	var primaryEndpoint string
 
-	host := "127.0.0.1"
-	if conn != nil && conn.SSH != nil && conn.SSH.Host != "" {
-		host = conn.SSH.Host
-	}
-
 	portKeys := make([]string, 0, len(ins.NetworkSettings.Ports))
 	for k := range ins.NetworkSettings.Ports {
 		portKeys = append(portKeys, k)
@@ -565,14 +541,11 @@ func (p *SSHDockerProvider) Inspect(ctx context.Context, conn *environments.Conn
 			proto = parts[1]
 		}
 		for _, b := range bindings {
-			if deployment.Build != nil && b.HostIP != "127.0.0.1" && b.HostIP != "::1" {
-				return nil, errors.New("SSH managed port binding is not loopback-only")
+			if b.HostIP != "127.0.0.1" && b.HostIP != "::1" {
+				return nil, errors.New("SSH port binding is not loopback-only")
 			}
 			hPort, _ := strconv.Atoi(b.HostPort)
 			endpointURL := ""
-			if proto == "tcp" && deployment.Build == nil {
-				endpointURL = fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(hPort)))
-			}
 			ap := environments.AssignedPort{
 				ContainerPort: cPort,
 				HostPort:      hPort,
@@ -902,4 +875,23 @@ func quoteShellArg(s string) string {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// confineRemoteHostMount admits an extra remote bind mount only inside the
+// environment's remote_existing_path. Remote symlinks cannot be resolved from
+// here, so the check is lexical and paths containing Docker mount syntax are
+// refused.
+func confineRemoteHostMount(hostPath string, root *environments.RemoteExistingPathConfig) error {
+	if root == nil || strings.TrimSpace(root.RemotePath) == "" {
+		return errors.New("remote host mounts require remote_existing_path provisioning")
+	}
+	if strings.ContainsAny(hostPath, ":,\x00") || !strings.HasPrefix(hostPath, "/") {
+		return fmt.Errorf("host_path is not a supported absolute path: %q", hostPath)
+	}
+	base := path.Clean(root.RemotePath)
+	clean := path.Clean(hostPath)
+	if clean != base && !strings.HasPrefix(clean, strings.TrimSuffix(base, "/")+"/") {
+		return fmt.Errorf("host_path %q is outside remote_existing_path", hostPath)
+	}
+	return nil
 }
