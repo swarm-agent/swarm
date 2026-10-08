@@ -5,7 +5,7 @@
 set -eu
 if [ -n "${TS_AUTHKEY:-}" ]; then
   mkdir -p /tmp/ts
-  tailscaled --tun=userspace-networking --state=mem: --statedir=/tmp/ts --socket=/tmp/ts/tailscaled.sock \
+  tailscaled --no-logs-no-support --tun=userspace-networking --state=mem: --statedir=/tmp/ts --socket=/tmp/ts/tailscaled.sock \
     --outbound-http-proxy-listen=127.0.0.1:1055 >/tmp/ts/tailscaled.log 2>&1 &
   if ! tailscale --socket=/tmp/ts/tailscaled.sock up --auth-key="$TS_AUTHKEY" \
       --hostname="${TS_HOSTNAME:-claude-fleet}" --accept-dns=false --timeout=90s >&2; then
