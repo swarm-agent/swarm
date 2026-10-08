@@ -59,6 +59,44 @@ type Service struct {
 	counter              atomic.Uint64
 	reconciled           bool
 	policyLocked         atomic.Bool
+	bypassGate           atomic.Pointer[BypassGate]
+}
+
+// BypassGate reports whether permission bypass may take effect right now and,
+// when it may not, why. The agent sandbox installs it: agents may run without
+// prompts only while their commands are confined to a sandbox.
+type BypassGate func() (allowed bool, reason string)
+
+// SetBypassGate installs gate. While it returns false, the stored bypass
+// setting is kept but has no effect: every authorization path reads bypass as
+// off.
+func (s *Service) SetBypassGate(gate BypassGate) {
+	if s == nil {
+		return
+	}
+	if gate == nil {
+		s.bypassGate.Store(nil)
+		return
+	}
+	s.bypassGate.Store(&gate)
+}
+
+// BypassBlocked reports why bypass cannot take effect now, or "" when it can.
+func (s *Service) BypassBlocked() string {
+	if s == nil {
+		return ""
+	}
+	gate := s.bypassGate.Load()
+	if gate == nil {
+		return ""
+	}
+	if allowed, reason := (*gate)(); !allowed {
+		if strings.TrimSpace(reason) == "" {
+			reason = "the agent sandbox is not active"
+		}
+		return reason
+	}
+	return ""
 }
 
 // ErrPolicyLocked reports that the daemon was started with its permission
@@ -312,10 +350,11 @@ func (s *Service) BypassPermissions() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, err := s.loadPermissionStateLocked("")
+	bypass := state.BypassPermissions
 	if err != nil {
-		return s.bypassPermissions
+		bypass = s.bypassPermissions
 	}
-	return state.BypassPermissions
+	return bypass && s.BypassBlocked() == ""
 }
 
 func (s *Service) SetRetainToolOutputHistory(enabled bool) {

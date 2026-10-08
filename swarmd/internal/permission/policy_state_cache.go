@@ -28,7 +28,11 @@ func (s *Service) CurrentPermissionStateForAccount(accountScopeID string) (Permi
 	if err != nil {
 		return PermissionState{}, err
 	}
-	return permissionStateFromCacheEntry(entry), nil
+	state := permissionStateFromCacheEntry(entry)
+	if state.BypassPermissions && s.BypassBlocked() != "" {
+		state.BypassPermissions = false
+	}
+	return state, nil
 }
 
 func (s *Service) loadPermissionStateLocked(accountScopeID string) (permissionStateCacheEntry, error) {

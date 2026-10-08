@@ -58,6 +58,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/registry"
 	"swarm/packages/swarmd/internal/remote"
 	"swarm/packages/swarmd/internal/run"
+	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -433,6 +434,28 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("ensure canonical local swarm identity: %w", err)
 	}
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
+	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("agent sandbox: %w", err)
+	}
+	sandbox.SetDefault(sandboxMgr)
+	permissionSvc.SetBypassGate(func() (bool, string) {
+		status := sandboxMgr.Status()
+		return status.Active, status.Reason
+	})
+	if status := sandboxMgr.Status(); status.Active {
+		runtimeName := status.Runtime
+		if runtimeName == "" {
+			runtimeName = "engine default runtime"
+		}
+		log.Printf("swarmd agent sandbox active (%s); agent commands and Git on projects run inside per-project sandboxes", runtimeName)
+	} else {
+		log.Printf("swarmd agent sandbox inactive (%s); agent commands run on this machine and permission bypass is disabled", status.Reason)
+	}
+	sandboxMgr.Start(context.Background())
 	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
 	identityStore := pebblestore.NewIdentityStore(store)

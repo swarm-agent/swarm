@@ -550,6 +550,18 @@ func (s *Server) permissionBypassForAccount(accountScopeID string) bool {
 	return s.bypassPermissions
 }
 
+// permissionBypassBlockedReason says why bypass cannot take effect (no active
+// agent sandbox), or "" when it can.
+func (s *Server) permissionBypassBlockedReason() string {
+	if s == nil || s.perm == nil {
+		return ""
+	}
+	if gate, ok := s.perm.(interface{ BypassBlocked() string }); ok {
+		return gate.BypassBlocked()
+	}
+	return ""
+}
+
 // ExecutionCapacity returns the shared account-scoped execution capacity manager if configured.
 func (s *Server) ExecutionCapacity() *executioncapacity.Manager {
 	if s == nil || s.perm == nil {
@@ -4581,6 +4593,14 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			writePermissionPolicyError(w, err)
 			return
 		}
+		if req.Enabled {
+			// No sandbox, no autonomy: agents may run without prompts only
+			// while their commands are confined to a sandbox.
+			if reason := s.permissionBypassBlockedReason(); reason != "" {
+				writeError(w, http.StatusConflict, fmt.Errorf("agents can run on their own only inside a sandbox: %s", reason))
+				return
+			}
+		}
 		cfg, err := s.loadStartupConfig()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -4742,7 +4762,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				writePermissionPolicyError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy, "bypass_permissions": s.permissionBypassForAccount(accountScopeID)})
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy, "bypass_permissions": s.permissionBypassForAccount(accountScopeID), "bypass_blocked_reason": s.permissionBypassBlockedReason()})
 		case http.MethodPost:
 			var req struct {
 				Kind     string `json:"kind"`

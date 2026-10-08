@@ -95,6 +95,16 @@ func WorktreeDataDir(repoRoot string, parts ...string) (string, error) {
 	return ensurePrivateAppDir(root, path)
 }
 
+// WorktreesRoot returns the directory holding every repository's worktree
+// bucket (see WorktreeDataDir). It is not created.
+func WorktreesRoot() (string, error) {
+	root, err := userLocalSwarmDataRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, WorktreesDir), nil
+}
+
 // TempDir returns a private disposable directory under the canonical daemon cache root.
 func TempDir(pattern string, parts ...string) (string, error) {
 	base, err := CacheDir(append([]string{"tmp"}, parts...)...)

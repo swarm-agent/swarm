@@ -12,6 +12,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
+	"swarm/packages/swarmd/internal/sandbox"
 )
 
 type Config struct {
@@ -28,6 +29,10 @@ type Config struct {
 	DBPath                  string
 	LockPath                string
 	StartupCWD              string
+	SandboxMode             string
+	SandboxImage            string
+	SandboxNetwork          string
+	SandboxRuntime          string
 }
 
 func Parse(args []string) (Config, error) {
@@ -82,6 +87,10 @@ func Parse(args []string) (Config, error) {
 	// Never persisted: the lock is a property of how this process was started,
 	// so nothing reachable at runtime (API, agents, config edits) can lift it.
 	fs.BoolVar(&cfg.LockPermissionPolicy, "lock-permission-policy", false, "make permission policy (rules, capability policies, bypass) read-only for this process; bypass stays off. Changing it requires a restart without this flag")
+	fs.StringVar(&cfg.SandboxMode, "sandbox", "auto", "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)")
+	fs.StringVar(&cfg.SandboxImage, "sandbox-image", "swarm-sandbox:local", "image for agent sandboxes")
+	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
+	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
 	fs.StringVar(&cfg.DBPath, "db-path", defaultDBPath, "Pebble database path")
 	fs.StringVar(&cfg.LockPath, "lock-path", defaultLockPath, "daemon lock file path")
@@ -106,6 +115,9 @@ func Parse(args []string) (Config, error) {
 		// A locked policy always runs with permissions enforced, even if the
 		// startup config file was edited to enable bypass.
 		cfg.BypassPermissions = false
+	}
+	if _, err := sandbox.ParseMode(cfg.SandboxMode); err != nil {
+		return Config{}, err
 	}
 	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err
