@@ -5011,8 +5011,11 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 		}
 		return path, filepath.ToSlash(path), nil
 	}
-	_, path, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, outputDirArg)
+	requestedPath, path, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, outputDirArg)
 	if err != nil {
+		return "", "", err
+	}
+	if err := refuseProtectedPath(requestedPath, path); err != nil {
 		return "", "", err
 	}
 	if len(scope.MutationScopes) > 0 {
@@ -10198,6 +10201,12 @@ func resolveWorkspacePath(scope WorkspaceScope, requested string) (string, error
 	}
 	candidateAbs, resolvedCandidate, err := normalizeWorkspaceCandidatePath(workspacePath, requested)
 	if err != nil {
+		return "", err
+	}
+	if err := refuseProtectedPath(candidateAbs, resolvedCandidate); err != nil {
+		return "", err
+	}
+	if err := refuseRootContainingStorage(resolvedCandidate); err != nil {
 		return "", err
 	}
 

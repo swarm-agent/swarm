@@ -12,11 +12,17 @@ import (
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
-// homeCredentialDirs are directories under the daemon user's home that hold
-// credentials for other tools; no sandbox may mount them or anything inside.
-var homeCredentialDirs = []string{".ssh", ".gnupg", ".docker", ".config", ".aws", ".kube", ".codex", ".claude", ".netrc"}
+// homeCredentialDirs are paths under the daemon user's home that hold
+// credentials for other tools; no sandbox mounts them and no file tool opens
+// them or anything inside.
+var homeCredentialDirs = []string{
+	".ssh", ".gnupg", ".docker", ".aws", ".azure", ".kube", ".codex", ".claude",
+	".config/gh", ".config/gcloud", ".config/swarm", ".netrc", ".git-credentials",
+	".npmrc", ".pypirc",
+}
 
 // newSandboxManager builds the agent sandbox manager from daemon flags. Every
 // daemon storage root is protected: no sandbox can mount it, a directory
@@ -26,10 +32,13 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 	if err != nil {
 		return nil, err
 	}
-	protected, ancestors, err := sandboxProtectedRoots(cfg)
+	storage, credentials, ancestors, err := protectedDaemonPaths(cfg)
 	if err != nil {
 		return nil, err
 	}
+	// File tools refuse the same paths, even with permissions bypassed.
+	tool.SetProtectedPaths(storage, credentials)
+	protected := append(append([]string(nil), storage...), credentials...)
 	manager, err := sandbox.NewManager(ctx, sandbox.Config{
 		Mode:               mode,
 		Image:              cfg.SandboxImage,
@@ -54,20 +63,24 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 	return manager, nil
 }
 
-func sandboxProtectedRoots(cfg config.Config) (protected, ancestors []string, err error) {
+// protectedDaemonPaths returns the daemon's storage roots (never inside,
+// never containing), the daemon user's credential directories (never inside)
+// and the directories a sandbox may mount below but never mount itself (the
+// daemon user's home).
+func protectedDaemonPaths(cfg config.Config) (storage, credentials, ancestors []string, err error) {
 	roots, err := storagecontract.ResolveRoots(storagecontract.Options{})
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve storage roots for sandbox: %w", err)
+		return nil, nil, nil, fmt.Errorf("resolve storage roots: %w", err)
 	}
-	protected = []string{roots.DataDir, roots.CacheDir, roots.RuntimeDir, roots.ConfigDir, roots.LogsDir, cfg.DataDir, filepath.Dir(cfg.DBPath), filepath.Dir(cfg.LockPath)}
+	storage = []string{roots.DataDir, roots.CacheDir, roots.RuntimeDir, roots.ConfigDir, roots.LogsDir, cfg.DataDir, filepath.Dir(cfg.DBPath), filepath.Dir(cfg.LockPath)}
 	if path, err := startupconfig.ResolvePath(); err == nil {
-		protected = append(protected, filepath.Dir(path))
+		storage = append(storage, filepath.Dir(path))
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		ancestors = append(ancestors, home)
 		for _, dir := range homeCredentialDirs {
-			protected = append(protected, filepath.Join(home, dir))
+			credentials = append(credentials, filepath.Join(home, dir))
 		}
 	}
-	return protected, ancestors, nil
+	return storage, credentials, ancestors, nil
 }
