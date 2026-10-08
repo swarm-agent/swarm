@@ -5,6 +5,7 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Preserve `board_summary` in project task board JSON, including empty markers and plan review identity, without bypassing task diagnostic redaction. Docs impact: none.
 - Rerun release qualification on unchanged application code to verify pipeline maintenance; no functional changes. Docs impact: none.
 - Read qualification project-tool evidence from canonical raw results rather than summarized display previews; retain strict pending-task and once-only consent gates, add completion/rehydration regressions, and emit fixed phase/transport/decode diagnostics without exception bodies. Live Chat root cause remains unverified. Docs impact: none.
 - Correct the qualification permission wire regression to distinguish read-generated rule timestamps from durable policy changes; check exact stored bytes and immutable effective policy snapshots after once-only decisions, with a real saved-rule insertion control. Docs impact: none.

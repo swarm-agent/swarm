@@ -32,6 +32,25 @@ type projectTaskBoardRow struct {
 	BoardSummary projectTaskBoardRelated `json:"board_summary"`
 }
 
+// MarshalJSON keeps the task's privacy-aware encoder without promoting it over
+// the entire row, which would silently omit board_summary (even when empty).
+func (row projectTaskBoardRow) MarshalJSON() ([]byte, error) {
+	task, err := json.Marshal(row.ProjectTaskRecord)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(task, &fields); err != nil {
+		return nil, err
+	}
+	summary, err := json.Marshal(row.BoardSummary)
+	if err != nil {
+		return nil, err
+	}
+	fields["board_summary"] = summary
+	return json.Marshal(fields)
+}
+
 func projectTaskBoardSummary(task *pebblestore.ProjectTaskRecord, reader *pebblestore.ProjectTaskBoardReader) projectTaskBoardRelated {
 	var out projectTaskBoardRelated
 	if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
