@@ -151,7 +151,7 @@ export class SwarmChatNamespace {
   /**
    * Appends a message to a chat conversation.
    */
-  async sendMessage(sessionId: string, content: string, role: 'user' | 'assistant' | 'system' = 'user', clientRequestId?: string): Promise<any> {
+  async sendMessage(sessionId: string, content: string, role: 'user' = 'user', clientRequestId?: string): Promise<any> {
     return this.sessions.sendMessage(sessionId, { content, role, client_request_id: clientRequestId });
   }
 

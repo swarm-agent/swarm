@@ -94,6 +94,11 @@ type ProviderManagedToolInvokerConfig struct {
 	PlanContextGuard        *PlanContextGuard
 	ArtifactRunContext      *tool.ArtifactRunContext
 	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
+	// OfferedTools names the tools the provider was offered for this step. When
+	// set (even empty), any other tool call is refused before it can reach
+	// permission gating or execution: hiding a tool from the model is not
+	// enforcement, because a model can name a tool it was never shown.
+	OfferedTools []string
 }
 
 type terminalPlanToolState struct {
@@ -156,6 +161,7 @@ type providerToolInvokerConfig struct {
 	planContextGuard        *PlanContextGuard
 	artifactRunContext      *tool.ArtifactRunContext
 	artifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
+	offeredTools            map[string]struct{}
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -185,7 +191,41 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		planContextGuard:        config.PlanContextGuard,
 		artifactRunContext:      cloneArtifactRunContext(config.ArtifactRunContext),
 		artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(config.ArtifactV3AuthorContext, strings.TrimSpace(config.RunID)),
+		offeredTools:            offeredToolSet(config.OfferedTools),
 	}
+}
+
+func offeredToolSet(names []string) map[string]struct{} {
+	if names == nil {
+		return nil
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name = canonicalToolName(name); name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	return set
+}
+
+func offeredToolSetFromDefinitions(definitions []provideriface.ToolDefinition) map[string]struct{} {
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	return offeredToolSet(names)
+}
+
+// ToolNotOfferedRefusal marks a stored tool result the runtime refused because
+// the agent was not offered that tool. Monitors key on it.
+const ToolNotOfferedRefusal = "tool_not_offered"
+
+func providerManagedToolOffered(config providerToolInvokerConfig, name string) bool {
+	if config.offeredTools == nil {
+		return true
+	}
+	_, ok := config.offeredTools[canonicalToolName(name)]
+	return ok
 }
 
 type providerToolInvoker struct {
@@ -625,6 +665,16 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 	call.Name = name
 	call.CallID = callID
+	if strings.TrimSpace(call.Arguments) == "" {
+		call.Arguments = "{}"
+	}
+	if !providerManagedToolOffered(config, call.Name) {
+		// Recorded through the normal completion path so the refusal is durable
+		// and visible, but nothing is gated, launched or executed.
+		metadata["refusal"] = ToolNotOfferedRefusal
+		refused := tool.Result{CallID: call.CallID, Name: call.Name, Error: fmt.Sprintf("tool %q is not available to this agent", call.Name)}
+		return s.completeProviderManagedToolCall(config, call, metadata, refused, 0)
+	}
 	if canonicalToolName(call.Name) == "compact" {
 		if config.planContextGuard == nil || !config.planContextGuard.DecisionActive() || config.planContextGuard.FinalizationOnly() {
 			return tool.Result{}, 0, errors.New("compact rejected: no armed plan context guard compaction decision is active")
@@ -907,6 +957,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		}
 	}
 
+	return s.completeProviderManagedToolCall(config, call, metadata, result, permissionWaitMS)
+}
+
+// completeProviderManagedToolCall emits, stores and returns a finished call.
+func (s *Service) completeProviderManagedToolCall(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result, permissionWaitMS int64) (tool.Result, int64, error) {
 	if strings.TrimSpace(result.CallID) == "" {
 		result.CallID = call.CallID
 	}

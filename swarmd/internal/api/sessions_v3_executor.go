@@ -3472,7 +3472,7 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		var toolInvoker provideriface.ToolInvoker
 		if toolsEnabled {
 			var invokerErr error
-			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step, toolProgression, planContextGuard)
+			toolInvoker, invokerErr = e.newSessionV3ProviderToolInvoker(resolved, job, step, toolProgression, planContextGuard, stepTools)
 			if invokerErr != nil {
 				return sessionV3ProviderLoopResult{}, invokerErr
 			}
@@ -4135,7 +4135,9 @@ func sessionV3ProviderToolPrincipal(job sessionV3ExecutorJob, session pebblestor
 	return principal, nil
 }
 
-func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int, toolProgression *runruntime.ToolProgressionState, planContextGuard *runruntime.PlanContextGuard) (provideriface.ToolInvoker, error) {
+// offered is exactly what the provider was shown this step; the invoker
+// refuses every other tool name.
+func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3ResolvedRuntime, job sessionV3ExecutorJob, step int, toolProgression *runruntime.ToolProgressionState, planContextGuard *runruntime.PlanContextGuard, offered []provideriface.ToolDefinition) (provideriface.ToolInvoker, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return nil, errors.New("v3 executor is not configured")
 	}
@@ -4182,6 +4184,7 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 		Model:                resolved.Preference.Model,
 		MediaContract:        resolved.MediaContract,
 		PlanContextGuard:     planContextGuard,
+		OfferedTools:         sessionV3OfferedToolNames(offered),
 	})
 	if invoker == nil {
 		return nil, errors.New("provider-managed tool invoker is not configured")
@@ -5087,6 +5090,17 @@ func (e *sessionV3Executor) resolveSessionV3TaskHistoryTools(scope tool.Workspac
 		return resolver.ResolveTaskHistoryTools(scope, profile, definitions)
 	}
 	return profile, definitions, nil
+}
+
+// sessionV3OfferedToolNames is never nil, so the invoker always enforces it.
+func sessionV3OfferedToolNames(tools []provideriface.ToolDefinition) []string {
+	names := make([]string, 0, len(tools))
+	for _, definition := range tools {
+		if name := strings.TrimSpace(definition.Name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {

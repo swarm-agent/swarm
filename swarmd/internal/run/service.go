@@ -2422,6 +2422,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				mediaContract:           mediaContract,
 				artifactRunContext:      cloneArtifactRunContext(options.ArtifactRunContext),
 				artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(options.ArtifactV3AuthorContext, runID),
+				offeredTools:            offeredToolSetFromDefinitions(stepToolDefinitions),
 			}),
 		}
 		runRequestDebugEvent("provider_request", map[string]any{
@@ -2816,8 +2817,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		permissionFeedback := make([]PermissionFeedback, 0, len(toolCalls))
 		permissionCalls := make([]tool.Call, 0, len(toolCalls))
 		permissionIndexes := make([]int, 0, len(toolCalls))
+		offered := offeredToolSetFromDefinitions(stepToolDefinitions)
 		for i, call := range toolCalls {
 			gatedResults[i] = tool.Result{CallID: strings.TrimSpace(call.CallID), Name: strings.TrimSpace(call.Name)}
+			if _, ok := offered[canonicalToolName(call.Name)]; !ok {
+				// Never gated or executed: the run did not offer this tool.
+				gatedResults[i].Error = fmt.Sprintf("tool %q is not available to this agent", call.Name)
+				if toolCallMetadata[i] == nil {
+					toolCallMetadata[i] = map[string]any{}
+				}
+				toolCallMetadata[i]["refusal"] = ToolNotOfferedRefusal
+				continue
+			}
 			if canonicalToolName(call.Name) == mediaInspectToolName {
 				approvedMask[i] = true
 				continue

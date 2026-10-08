@@ -1740,6 +1740,13 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if message.Role == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("message role is required")
 	}
+	// Assistant and system turns are written only by the runtime. Accepting
+	// them from a caller would let anyone with session access forge what the
+	// model believes it said or was instructed.
+	if !strings.EqualFold(message.Role, "user") {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New(`message role must be "user"; assistant and system turns are written by the runtime`)
+	}
+	message.Role = "user"
 	if len(message.ArtifactSelections) > 0 && !strings.EqualFold(message.Role, "user") {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("artifact selections are allowed only on user messages")
 	}
