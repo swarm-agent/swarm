@@ -14,8 +14,14 @@
 # the app (none exist at first). Skip it with --no-ai-access.
 # Nothing listens on the public internet and no secret is passed to this script.
 #
+# The first visit to the app creates your login (username, password and an
+# optional authenticator code) from a device on your tailnet.
 # Later: `install.sh update` (also run by a 5-minute timer) rebuilds when the
-# branch changes; `install.sh secret` prints the app's unlock secret again.
+# branch changes; `install.sh reset-login` deletes the login so you can create
+# a new one (Swarm itself and your work are kept).
+# `install.sh reinstall` wipes Swarm's state and installs it fresh with the same
+# settings; `install.sh uninstall` only removes it. Both keep Docker, Tailscale,
+# the firewall and (unless --delete-projects) the project folder.
 set -euo pipefail
 
 STATE=/var/lib/swarm-headless
@@ -31,13 +37,22 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'USAGE'
 Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--lock-ssh] [--no-ai-access]
-       install.sh update | up | secret | status
+       install.sh reinstall [--yes] [--delete-projects] [install options]
+       install.sh uninstall [--yes] [--delete-projects]
+       install.sh update | up | reset-login | status
 
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   tailnet machine name and Swarm machine name (default: swarm)
   --ref BRANCH  swarm branch to build (default: swarm-control)
   --lock-ssh    also close public SSH (use after `tailscale ssh` works)
   --no-ai-access  do not serve the AI gateway on the tailnet (port 8444)
+
+  reinstall / uninstall remove Swarm's container, images and state volumes
+  (owner, provider sign-in, AI keys, relay pairing), its update timer and its
+  Tailscale Serve entries. reinstall then installs again, reusing the saved
+  --relay, --name and --ref unless you pass new ones.
+  --yes              do not ask for confirmation
+  --delete-projects  also delete the project folder (your workspaces)
 USAGE
 }
 
@@ -115,16 +130,94 @@ UNIT
   systemctl enable --now swarm-headless-update.timer >/dev/null
 }
 
-secret() {
-  # The entrypoint creates it on first start.
-  for _ in $(seq 1 60); do
-    if docker exec "$CONTAINER" test -s /etc/swarmd/headless-app/login-secret 2>/dev/null; then
-      docker exec "$CONTAINER" cat /etc/swarmd/headless-app/login-secret
-      return 0
-    fi
+# Wait until the app answers on its loopback port.
+wait_ready() {
+  # shellcheck disable=SC1090
+  . "$CONF"
+  for _ in $(seq 1 90); do
+    curl -fsS -o /dev/null -H "Host: ${APP_ORIGIN#https://}" http://127.0.0.1:8443/ 2>/dev/null && return 0
     sleep 1
   done
   die "the app has not started; check: docker logs $CONTAINER"
+}
+
+# Forgotten password or lost authenticator: delete the login (not Swarm or
+# your work) and restart the app, which also signs out every browser. The next
+# visit from a device on your tailnet creates a new login.
+reset_login() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  docker exec "$CONTAINER" rm -f /etc/swarmd/headless-app/account.json
+  docker restart -t 15 "$CONTAINER" >/dev/null
+  wait_ready
+  # shellcheck disable=SC1090
+  . "$CONF"
+  echo "Login deleted. Open $APP_ORIGIN from your own device to create a new one."
+}
+
+# Remove everything install_all created for Swarm itself. Docker, Tailscale
+# and the firewall stay: Tailscale may be how you reach this server.
+uninstall_all() {
+  local yes=0 delete_projects=0
+  while (($#)); do
+    case $1 in
+      --yes) yes=1; shift ;;
+      --delete-projects) delete_projects=1; shift ;;
+      *) usage >&2; die "unknown option $1" ;;
+    esac
+  done
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  if ((!yes)); then
+    local what='Swarm, its sign-ins, AI keys and relay pairing'
+    ((delete_projects)) && what="$what, and every project in $PROJECT"
+    { : </dev/tty; } 2>/dev/null || die "no terminal to confirm on; pass --yes to continue"
+    printf 'This deletes %s. Type yes to continue: ' "$what" >/dev/tty
+    local answer
+    read -r answer </dev/tty
+    [[ $answer == yes ]] || die "cancelled; nothing was changed"
+  fi
+
+  say "Removing Swarm"
+  systemctl disable --now swarm-headless-update.timer >/dev/null 2>&1 || true
+  rm -f "$UNITS/swarm-headless-update.service" "$UNITS/swarm-headless-update.timer"
+  systemctl daemon-reload
+  if command -v tailscale >/dev/null; then
+    tailscale serve --https=443 off >/dev/null 2>&1 || true
+    tailscale serve --https=8444 off >/dev/null 2>&1 || true
+  fi
+  if command -v docker >/dev/null; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    docker volume rm swarm-config swarm-data swarm-cache swarm-logs >/dev/null 2>&1 || true
+    docker image rm swarm-app:local swarm-headless:local >/dev/null 2>&1 || true
+  fi
+  rm -f "$CONF"
+  if ((delete_projects)); then
+    rm -rf "$PROJECT"
+  elif [[ -d $PROJECT ]]; then
+    echo "Kept your projects in $PROJECT"
+  fi
+  echo "Swarm is removed. Docker, Tailscale and the firewall are unchanged."
+}
+
+# Wipe and install again with the saved settings unless new ones are given.
+reinstall_all() {
+  local uninstall=() install=() saved=() args=()
+  while (($#)); do
+    case $1 in
+      --yes|--delete-projects) uninstall+=("$1"); shift ;;
+      *) install+=("$1"); shift ;;
+    esac
+  done
+  if [[ -f $CONF ]]; then
+    # shellcheck disable=SC1090
+    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}")
+  fi
+  [[ -n ${saved[0]:-} ]] && args+=(--relay "${saved[0]}")
+  [[ -n ${saved[1]:-} ]] && args+=(--name "${saved[1]}")
+  [[ -n ${saved[2]:-} ]] && args+=(--ref "${saved[2]}")
+  [[ ${saved[3]:-} == off ]] && args+=(--no-ai-access)
+  # Later options win, so anything passed now overrides the saved settings.
+  uninstall_all "${uninstall[@]}"
+  install_all "${args[@]}" "${install[@]}"
 }
 
 install_all() {
@@ -136,6 +229,7 @@ install_all() {
       --ref) ref=${2:?--ref needs a branch}; shift 2 ;;
       --lock-ssh) lock_ssh=1; shift ;;
       --no-ai-access) ai_access=off; shift ;;
+      --ai-access) ai_access=on; shift ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "unknown option $1" ;;
     esac
@@ -205,21 +299,16 @@ CONF
     tailscale serve --https=8444 off >/dev/null 2>&1 || true
   fi
 
-  local unlock
-  unlock=$(secret)
+  wait_ready
   cat <<DONE
 
   ┌───────────────────────────────────────────────────────────────
-  │ Swarm is ready. From any device on your tailnet, open:
+  │ Swarm is ready. From your own device on your tailnet, open:
   │
   │   https://$dns
   │
-  │ Unlock secret (keep it private; you need it once per browser):
-  │
-  │   $unlock
-  │
-  │ The app walks you through the rest. AI keys for Claude Code are
-  │ under "AI access over Tailscale" (https://$dns:8444/mcp).
+  │ Create your login there (save it in your password manager);
+  │ the app then walks you through the rest.
   └───────────────────────────────────────────────────────────────
 DONE
 }
@@ -228,9 +317,11 @@ main() {
   case ${1:-install} in
     install) shift || true; install_all "$@" ;;
     -*) install_all "$@" ;;
+    reinstall) shift; reinstall_all "$@" ;;
+    uninstall) shift; uninstall_all "$@" ;;
     update) update ;;
     up) up ;;
-    secret) secret ;;
+    reset-login) reset_login ;;
     status) docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}} {{.Status}}'; tailscale serve status ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
