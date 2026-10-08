@@ -234,7 +234,7 @@ func (r *configuredTaskSwarmRouter) taskSwarmRouterOutput(ctx context.Context, r
 	if r.sessions != nil && hasConcreteUsageSnapshot(response.Usage) {
 		routerCost := 0.0
 		if r.sessions.Store() != nil {
-			routerCost = r.sessions.Store().CalculateCost(r.runtime.ProviderID, r.runtime.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+			routerCost = r.sessions.Store().CalculateCost(r.runtime.ProviderID, r.runtime.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.CacheWriteTokens, response.Usage.ThinkingTokens)
 		}
 		uniqueRouterRunID := fmt.Sprintf("router:%s:%d:%d", r.callID, attempt, time.Now().UnixNano())
 		routerUsage := pebblestore.SessionTurnUsageSnapshot{

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -83,6 +84,8 @@ func TestProjectFeatureRoutingUsesSwarmAuto(t *testing.T) {
 // document or definition revisions, cross-account, changed-plan-ID and missing guards must leave the plan,
 // card and run intents unchanged. The fixture selects its authorized repository
 // explicitly rather than treating project membership as execution authority.
+// The client detail GET must hydrate that exact replacement without accepting it;
+// a stale HTTP approval must leave both the stored card and plan untouched.
 // Authored requirement changes persist with their
 // exact acceptance criteria and require fresh approval. This API/store fixture is narrower than live AI.
 func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
@@ -153,9 +156,36 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	if _, err := f.server.SubmitProjectTaskPlan(context.Background(), input); err == nil {
 		t.Fatal("stale revision overwrote replacement")
 	}
+	detailResponse := f.callAPI(http.MethodGet, "/"+project+"/tasks/"+task.ID, nil, p)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("read revised review: %d %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detail struct {
+		Task pebblestore.ProjectTaskRecord `json:"task"`
+	}
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Task.PlanDocument == nil || detail.Task.PlanBinding == nil ||
+		*detail.Task.PlanBinding != *revised.Task.PlanBinding || detail.Task.Status != "pending_approval" ||
+		detail.Task.PlanDocument.RevisionID != revised.Plan.Document.RevisionID ||
+		len(detail.Task.PlanDocument.Requirements) != 1 || detail.Task.PlanDocument.Requirements[0] != doc.Requirements[0] {
+		t.Fatalf("detail did not hydrate exact revised review: %+v", detail.Task)
+	}
 	guards := tool.ProjectTaskApprovalGuards{SessionID: task.SessionID, PlanID: binding.PlanID, DefinitionRevision: binding.DefinitionRevision}
-	if _, err := f.server.ApproveProjectTask(context.Background(), p, project, task.ID, guards); err == nil {
-		t.Fatal("stale approval started execution")
+	staleResponse := f.callAPI(http.MethodPost, "/"+project+"/tasks/"+task.ID+"/approve", guards, p)
+	if staleResponse.Code != http.StatusBadRequest {
+		t.Fatalf("stale HTTP approval: %d %s", staleResponse.Code, staleResponse.Body.String())
+	}
+	unchanged, found, err := f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
+	if err != nil || !found || unchanged.Revision != revised.Task.Revision || unchanged.Status != "pending_approval" ||
+		unchanged.PlanBinding == nil || *unchanged.PlanBinding != *revised.Task.PlanBinding {
+		t.Fatalf("stale approval changed revised card: %+v %v", unchanged, err)
+	}
+	unaccepted, found, err := f.server.sessions.Store().GetPlan(task.SessionID, binding.PlanID)
+	if err != nil || !found || unaccepted.Version != revised.Plan.Version || unaccepted.ApprovalState != "pending" ||
+		unaccepted.AcceptedDefinitionReceipt != "" || unaccepted.Document == nil || unaccepted.Document.RevisionID != revised.Plan.Document.RevisionID {
+		t.Fatalf("review read or stale approval accepted/replaced plan: %+v %v", unaccepted, err)
 	}
 	intents, err := f.server.sessions.Store().ListRunIntents(task.SessionID, 10)
 	if err != nil || len(intents) != 0 {
@@ -178,7 +208,7 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	if _, err := f.server.SubmitProjectTaskPlan(context.Background(), input); err == nil {
 		t.Fatal("structured refinement reopened approved execution")
 	}
-	unchanged, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
+	unchanged, _, _ = f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
 	if unchanged.Status != approvedTask.Status || *unchanged.PlanBinding != approvedBinding {
 		t.Fatal("rejected refinement mutated approved card")
 	}

@@ -346,6 +346,7 @@ export interface RunningTask {
   environmentsStale?: boolean
   boardSummary?: ProjectTaskBoardSummary
   detailLoaded?: boolean
+  detailError?: string
   currentRunId?: string
   currentRunStatus?: string
   activeAttemptId?: string

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	anthropicapi "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -123,11 +124,12 @@ func TestSanitizeAnthropicToolSchemaMovesUnsupportedConstraintsToDescription(t *
 
 	encoded := mustMarshalJSON(t, schema)
 	assertNotContains(t, encoded, `"format":"regex"`)
-	assertNotContains(t, encoded, `"pattern"`)
 	assertNotContains(t, encoded, `"minItems":2`)
 	assertContains(t, encoded, `format: regex`)
-	assertContains(t, encoded, `pattern: ^[a-z]+$`)
 	assertContains(t, encoded, `minItems: 2`)
+	// anthropic-sdk-go's transformer allowlists pattern as a native constraint.
+	assertContains(t, encoded, `"pattern":"^[a-z]+$"`)
+	assertNotContains(t, encoded, `pattern: ^[a-z]+$`)
 }
 
 func TestAnthropicThinkingConfigUsesCatalogAdaptiveEffortMapping(t *testing.T) {
@@ -268,6 +270,81 @@ func TestAnthropicUsageMapsCacheTokenTypesForFrontend(t *testing.T) {
 	}
 	if usage.APIUsageRaw["speed"] != "fast" {
 		t.Fatalf("raw provider speed = %#v, want fast", usage.APIUsageRaw["speed"])
+	}
+}
+
+// Purpose: streamed Anthropic receipts must carry the provider's final usage.
+// Requirement: message_delta usage counts are cumulative whole-message totals
+// and supersede the message_start snapshot; counts message_delta omits keep the
+// message_start value. Threat: an accumulator that copies only output_tokens
+// records zero cache reads/writes for streamed turns, so the usage dashboard and
+// catalog cost under-report spend. Authority: collectAnthropicStream (the
+// production CreateResponseStreaming fold) over the SDK's Message.Accumulate,
+// then anthropicUsageToTokenUsage. Layer: a local SSE fixture through the real
+// SDK client is the narrowest layer that exercises the actual stream decoder
+// and accumulator without network or credentials.
+func TestCollectAnthropicStreamUsesCumulativeMessageDeltaUsage(t *testing.T) {
+	cases := []struct {
+		name       string
+		deltaUsage string
+		wantInput  int64
+		wantRead   int64
+		wantWrite  int64
+		wantOutput int64
+	}{
+		{
+			name:       "message_delta totals supersede message_start",
+			deltaUsage: `{"input_tokens":12,"cache_creation_input_tokens":300,"cache_read_input_tokens":9000,"output_tokens":42}`,
+			wantInput:  12, wantRead: 9000, wantWrite: 300, wantOutput: 42,
+		},
+		{
+			name:       "omitted message_delta counts keep message_start values",
+			deltaUsage: `{"output_tokens":42}`,
+			wantInput:  5, wantRead: 7000, wantWrite: 100, wantOutput: 42,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []string{
+				`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"msg_fixture","type":"message","role":"assistant","model":"claude-fixture","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":7000,"output_tokens":1}}}`,
+				`event: content_block_start` + "\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+				`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}`,
+				`event: content_block_stop` + "\n" + `data: {"type":"content_block_stop","index":0}`,
+				`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":` + tc.deltaUsage + `}`,
+				`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("content-type", "text/event-stream")
+				_, _ = io.WriteString(w, strings.Join(events, "\n\n")+"\n\n")
+			}))
+			defer server.Close()
+
+			client := anthropicapi.NewClient(option.WithAPIKey("paper-test-key"), option.WithBaseURL(server.URL), option.WithMaxRetries(0))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			stream := client.Messages.NewStreaming(ctx, anthropicapi.MessageNewParams{
+				Model:     anthropicapi.Model("claude-fixture"),
+				MaxTokens: 16,
+				Messages:  []anthropicapi.MessageParam{anthropicapi.NewUserMessage(anthropicapi.NewTextBlock("paper test"))},
+			})
+			response, err := collectAnthropicStream(stream, "claude-fixture", nil)
+			if err != nil {
+				t.Fatalf("collect stream: %v", err)
+			}
+			usage := response.Usage
+			if usage.InputTokens != tc.wantInput || usage.CacheReadTokens != tc.wantRead || usage.CacheWriteTokens != tc.wantWrite || usage.OutputTokens != tc.wantOutput {
+				t.Fatalf("usage = input %d read %d write %d output %d, want %d/%d/%d/%d", usage.InputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.OutputTokens, tc.wantInput, tc.wantRead, tc.wantWrite, tc.wantOutput)
+			}
+			if want := tc.wantInput + tc.wantRead + tc.wantWrite + tc.wantOutput; usage.TotalTokens != want {
+				t.Fatalf("total tokens = %d, want %d", usage.TotalTokens, want)
+			}
+			if usage.APIUsageRaw["cache_read_input_tokens"] != tc.wantRead || usage.APIUsageRaw["cache_creation_input_tokens"] != tc.wantWrite {
+				t.Fatalf("raw usage cache fields = %#v", usage.APIUsageRaw)
+			}
+			if response.Text != "done" || response.StopReason != "end_turn" {
+				t.Fatalf("response text/stop = %q/%q", response.Text, response.StopReason)
+			}
+		})
 	}
 }
 
