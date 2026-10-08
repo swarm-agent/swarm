@@ -21,8 +21,8 @@ export function claimant(req, origin) {
   return typeof login === 'string' && /^[^\s]{1,200}$/.test(login) ? { allowed: true, login } : { allowed: false, login: '' };
 }
 
-export function appHandler(sdk, { origin, accounts, project = '/project', relayUrl = '', deviceName = '', aiUrl = '', aiIp = '' }) {
-  const boundary = createBoundary(origin), ops = operations(sdk, project, { relayUrl, deviceName, aiUrl, aiIp });
+export function appHandler(sdk, { origin, accounts, project = '/project', relayUrl = '', deviceName = '', aiUrl = '', aiIp = '', settingsFile = '' }) {
+  const boundary = createBoundary(origin), ops = operations(sdk, project, { relayUrl, deviceName, aiUrl, aiIp, settingsFile });
   const signIn = (res, username) => {
     const { id, session } = boundary.open(username);
     res.setHeader('Set-Cookie', boundary.cookie(id));
@@ -126,7 +126,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const aiUrl = /^https:\/\/[a-z0-9.-]+\.ts\.net:\d+\/mcp$/.test(process.env.APP_AI_URL || '') ? process.env.APP_AI_URL : '';
     const aiIp = /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(process.env.APP_AI_IP || '') ? process.env.APP_AI_IP : '';
     const accounts = createAccounts({ file: `${config}/account.json`, issuer: `Swarm ${deviceName || 'app'}` });
-    const handler = appHandler(sdk, { origin, accounts, relayUrl, deviceName, aiUrl, aiIp }); // Validate before listening.
+    const handler = appHandler(sdk, { origin, accounts, relayUrl, deviceName, aiUrl, aiIp, settingsFile: `${config}/settings.json` }); // Validate before listening.
     // Tailscale Serve terminates TLS on the host; this listener stays plain HTTP
     // and must be published to host loopback only.
     const server = origin.startsWith('https:') && !isTailscaleServeOrigin(origin)

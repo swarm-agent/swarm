@@ -1,11 +1,12 @@
-import { realpath } from 'node:fs/promises';
+import { readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { SwarmApiError, SwarmNotFoundError } from '@swarm-agent/sdk';
 import { reject, text } from './boundary.mjs';
 
 /**
  * @param {import('@swarm-agent/sdk').SwarmClient} sdk
- * @param {{ relayUrl?: string, deviceName?: string, aiUrl?: string, aiIp?: string }} defaults installer-supplied relay connection
- *   defaults and the tailnet address of this machine's AI gateway (empty when the installer did not publish it)
+ * @param {{ relayUrl?: string, deviceName?: string, aiUrl?: string, aiIp?: string, settingsFile?: string }} defaults installer-supplied relay connection
+ *   defaults, the tailnet address of this machine's AI gateway (empty when the installer did not publish it) and
+ *   the app's own settings file (setup choices; no secrets)
  */
 export function operations(sdk, project = '/project', defaults = {}) {
   async function workspace(path) {
@@ -57,6 +58,21 @@ export function operations(sdk, project = '/project', defaults = {}) {
   const assigned = a => typeof a?.provider === 'string' && !!a.provider && typeof a.model === 'string' && !!a.model;
   // Guided setup: which step comes next. Reads only; each step keeps its own
   // explicit operation below.
+  // Setup choices the daemon does not record itself (that the owner has
+  // chosen how agents work). No secrets; absent until the first choice.
+  async function appSettings() {
+    if (!defaults.settingsFile) return {};
+    try { return JSON.parse(await readFile(defaults.settingsFile, 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+  }
+  async function saveAppSettings(values) {
+    if (!defaults.settingsFile) return;
+    const temp = `${defaults.settingsFile}.tmp`;
+    await writeFile(temp, JSON.stringify({ ...(await appSettings()), ...values }), { mode: 0o600 });
+    await rename(temp, defaults.settingsFile);
+  }
+  // Agents work on their own (no ordinary permission prompts) or ask first.
+  const agentsMode = async () => (await sdk.permissions.bypass()) ? 'auto' : 'ask';
   // The app's owner account doubles as the Swarm owner; created once, on the
   // first sign-up (or the first request after it, if that one failed).
   async function ensureOwner(username) {
@@ -66,8 +82,8 @@ export function operations(sdk, project = '/project', defaults = {}) {
   }
   async function setup() {
     const status = await sdk.onboarding.get();
-    const steps = { provider: false, models: false, workspace: false, claude: false };
-    let relay = null;
+    const steps = { provider: false, models: false, workspace: false, agents: false, claude: false };
+    let relay = null, mode = 'ask';
     if (status.identity?.bootstrapped === true) {
       steps.provider = (status.heuristics?.credential_count ?? 0) > 0;
       let settings = null;
@@ -78,8 +94,10 @@ export function operations(sdk, project = '/project', defaults = {}) {
       steps.workspace = (await sdk.workspaces.list({ limit: 100 })).some(w => (w.path || w.workspace_path || '').startsWith(project + '/'));
       relay = remoteStatus(await sdk.remote.status());
       steps.claude = relay.connected === true;
+      mode = await agentsMode();
+      steps.agents = mode === 'auto' || (await appSettings()).agents_chosen === true;
     }
-    return { steps, remote: relay, defaults: { relay_url: defaults.relayUrl || '', device_name: defaults.deviceName || '' } };
+    return { steps, agents: mode, remote: relay, defaults: { relay_url: defaults.relayUrl || '', device_name: defaults.deviceName || '' } };
   }
   return {
     session,
@@ -125,6 +143,12 @@ export function operations(sdk, project = '/project', defaults = {}) {
           break;
         }
         case 'models-recommended': return sdk.settings.restoreDefaults();
+        case 'agents-mode': {
+          if (!['auto', 'ask'].includes(b.mode)) reject(400, 'Choose whether agents work on their own or ask first.');
+          await sdk.permissions.setBypass(b.mode === 'auto');
+          await saveAppSettings({ agents_chosen: true });
+          return { mode: await agentsMode() };
+        }
         case 'workspace-create': {
           const name = text(b.name, 63);
           if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) reject(400, 'Use lowercase letters, digits, dashes and underscores, e.g. social-bot.');

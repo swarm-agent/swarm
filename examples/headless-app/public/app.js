@@ -113,7 +113,7 @@ act('password-form', async e => {
 // ---- setup -----------------------------------------------------------------
 
 const STEPS = [
-  ['security', 'Login'], ['provider', 'AI provider'], ['models', 'Models'], ['workspace', 'Workspace'], ['claude', 'Claude'],
+  ['security', 'Login'], ['provider', 'AI provider'], ['models', 'Models'], ['workspace', 'Workspace'], ['agents', 'Agents'], ['claude', 'Claude'],
 ];
 function nextStep() {
   if (showSecurity) return 'security';
@@ -175,6 +175,7 @@ act('codex-start', async () => {
 });
 act('models-recommended', async () => { await api('models-recommended'); await openSetup(); });
 act('workspace-form', async e => { await api('workspace-create', { name: e.target.elements.name.value }); await openSetup(); }, 'submit');
+act('agents-form', async e => { await api('agents-mode', { mode: e.target.elements.mode.value }); await openSetup(); }, 'submit');
 
 // ---- Claude connection -----------------------------------------------------
 
@@ -235,10 +236,23 @@ async function openSettings() {
   $('twofa-on').hidden = account.two_factor; $('twofa-off-box').hidden = !account.two_factor;
   $('password-code').hidden = !account.two_factor; $('password-form').elements.username.value = account.username;
   await loadProviders();
+  renderAgents((await api('setup')).agents);
   renderRemote(await api('remote-status'));
   renderAI(await api('ai-keys'));
 }
 act('nav-settings', openSettings);
+function renderAgents(mode) {
+  $('agents-status').textContent = mode === 'auto'
+    ? 'Agents work on their own: no permission prompts (they still stop for plans and questions).'
+    : 'Agents ask before running commands or changing files.';
+  $('agents-toggle').textContent = mode === 'auto' ? 'Make agents ask first' : 'Let agents work on their own';
+  $('agents-toggle').dataset.next = mode === 'auto' ? 'ask' : 'auto';
+}
+act('agents-toggle', async () => {
+  const next = $('agents-toggle').dataset.next;
+  if (next === 'auto' && !window.confirm('Agents will run commands and change files in this server\'s container without asking. Continue?')) return;
+  renderAgents((await api('agents-mode', { mode: next })).mode);
+});
 
 function renderAI(state) {
   $('ai-form').hidden = !state.url;

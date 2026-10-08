@@ -29,10 +29,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 button.link { border: 0; background: none; color: var(--accent); padding: 6px 8px; }
 input, select, textarea { width: 100%; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
-input[type=checkbox] { width: auto; margin-right: 8px; }
+input[type=checkbox], input[type=radio] { width: auto; margin-right: 8px; }
 label { display: block; margin: 14px 0 0; font-weight: 500; }
 label > input, label > select { margin-top: 6px; font-weight: 400; }
 label.check { font-weight: 400; margin: 8px 0; }
+label.choice { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; margin: 10px 0; cursor: pointer; }
+label.choice input { margin-top: 4px; }
+label.choice:has(input:checked) { border-color: var(--accent); background: var(--soft); }
 fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 16px 0 0; padding: 4px 14px 10px; }
 legend { color: var(--muted); padding: 0 6px; }
 form > button { margin-top: 16px; }

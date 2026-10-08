@@ -7,9 +7,12 @@ import (
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 )
 
-// Requirement: container access is explicit and cannot relax normal loopback or
-// tool-permission defaults. Parse is the startup authority; isolated config
-// parsing is the narrowest test and opens no daemon listener.
+// Requirement: container access is explicit and cannot relax normal loopback
+// defaults. Tool permissions stay the owner's choice: a startup config with
+// bypass on (set through the owner-only setting) still starts the headless
+// listener, so the choice survives restarts; --lock-permission-policy forces
+// permissions on. Parse is the startup authority; isolated config parsing is
+// the narrowest test and opens no daemon listener.
 func TestContainerSDKConfig(t *testing.T) {
 	t.Setenv("CONFIGURATION_DIRECTORY", writeTestStartupConfig(t))
 	t.Setenv("SWARM_CHILD_STARTUP_CONFIG", "")
@@ -27,12 +30,19 @@ func TestContainerSDKConfig(t *testing.T) {
 		{"--desktop-port=0", "--container-sdk-port=65536"},
 		{"--desktop-port=0", "--container-sdk-port=7781"},
 		{"--desktop-port=0", "--container-sdk-port=7791"},
-		{"--desktop-port=0", "--container-sdk-port=7783", "--bypass-permissions"},
 		{"--desktop-port=0", "--container-sdk-port=7783", "--listen=0.0.0.0:7781"},
 	} {
 		if _, err := Parse(args); err == nil {
 			t.Fatalf("accepted unsafe flags %v", args)
 		}
+	}
+	owner, err := Parse([]string{"--desktop-port=0", "--container-sdk-port=7783", "--bypass-permissions"})
+	if err != nil || !owner.BypassPermissions {
+		t.Fatalf("owner bypass refused with the headless listener: %+v %v", owner, err)
+	}
+	locked, err := Parse([]string{"--desktop-port=0", "--container-sdk-port=7783", "--bypass-permissions", "--lock-permission-policy"})
+	if err != nil || locked.BypassPermissions {
+		t.Fatalf("lock did not keep permissions on: %+v %v", locked, err)
 	}
 	after, err := Parse(nil)
 	if err != nil || after.ContainerSDKPort != 0 || after.ListenAddr != defaults.ListenAddr {

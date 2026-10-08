@@ -25,6 +25,7 @@ test('SwarmPermissionsNamespace: getPolicy, setBypass, setBashProfile, addRule, 
             rules: [{ id: 'rule_1', kind: 'tool', decision: 'allow', tool: 'search' }],
             updated_at: 1000,
           },
+          bypass_permissions: bypassValue === true,
         })
       );
     } else if (req.method === 'POST' && url.pathname === '/v1/permissions/bypass') {
@@ -102,9 +103,11 @@ test('SwarmPermissionsNamespace: getPolicy, setBypass, setBashProfile, addRule, 
     assert.equal(policy.bash_profile, 'strict');
     assert.equal(policy.rules?.length, 1);
 
+    assert.equal(await perms.bypass(), false);
     const bypassed = await perms.setBypass(true);
     assert.equal(bypassed, true);
     assert.equal(bypassValue, true);
+    assert.equal(await perms.bypass(), true);
 
     const profile = await perms.setBashProfile('permissive');
     assert.equal(profile, 'permissive');

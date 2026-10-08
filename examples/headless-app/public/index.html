@@ -91,6 +91,18 @@
     </form>
   </div>
 
+  <div id="step-agents" class="step" hidden>
+    <h1>How should agents work?</h1>
+    <p class="muted">Agents run inside this server's container. You can change this any time in Settings.</p>
+    <form id="agents-form">
+      <label class="choice"><input type="radio" name="mode" value="ask" checked>
+        <span><b>Ask me first</b><br><span class="muted">Agents pause before running commands or changing files until you (or Claude) approve.</span></span></label>
+      <label class="choice"><input type="radio" name="mode" value="auto">
+        <span><b>On their own</b><br><span class="muted">No permission prompts. Agents still stop for plans you must accept and for questions. Best on a server used only for Swarm, with nothing else on it you need to protect.</span></span></label>
+      <button class="primary">Continue</button>
+    </form>
+  </div>
+
   <div id="step-claude" class="step" hidden>
     <h1>Connect to Claude</h1>
     <p class="muted">Lets Claude (claude.ai, the Claude app or Claude Code) use this server through your relay. Nothing here is opened to the internet.</p>
@@ -200,6 +212,10 @@
       <button>Change password</button>
     </form>
   </details>
+
+  <h2>Agents</h2>
+  <p id="agents-status" class="muted"></p>
+  <button id="agents-toggle" type="button"></button>
 
   <h2>Claude</h2>
   <p id="settings-claude" class="muted"></p>

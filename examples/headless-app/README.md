@@ -45,12 +45,15 @@ Host/Origin checks and a separate CSRF token for privileged requests.
    connected providers); change them later in Settings.
 5. **Workspace**: type a name; the app creates an empty Git repository with one
    initial commit under `/project` and registers it.
-6. **Connect to Claude**: see below. Then chat in a workspace from **Home**:
+6. **Agents**: **Ask me first** (default) or **On their own** (no ordinary
+   permission prompts; see `containers/headless/app/README.md` for the
+   container isolation this relies on). Changeable in Settings.
+7. **Connect to Claude**: see below. Then chat in a workspace from **Home**:
    approve one exact pending call or deny it; stop targets the active run.
 
 ## Guided setup
 
-After sign-in, setup shows one step at a time (provider, models, workspace,
+After sign-in, setup shows one step at a time (provider, models, workspace, agents,
 Connect to Claude), derived from canonical state (`setup` operation); a
 returning owner with nothing left goes straight to Home. **Connect to Claude** initializes and enables the machine's relay connection
 (`APP_RELAY_URL` and `APP_DEVICE_NAME` prefill it) with the ceiling you tick,
