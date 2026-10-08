@@ -231,7 +231,10 @@ update() {
 
 install_units() {
   load_conf
-  local sdk_args='' runtime_arg=''
+  local sdk_args='' runtime_arg='' release
+  # The app starts only when run as the main module, which Node decides on
+  # the symlink-resolved path, so its unit names the release itself.
+  release=$(readlink -f "$OPT/current")
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
   [[ ${SANDBOX_RUNTIME:-default} == default ]] && runtime_arg='--sandbox-runtime=runc'
   install -d "$UNITS"
@@ -315,8 +318,8 @@ Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1 APP_LISTEN=127.0.0.1 
 Environment=APP_ORIGIN=${APP_ORIGIN} APP_RELAY_URL=${APP_RELAY_URL} APP_DEVICE_NAME=${APP_DEVICE_NAME}
 Environment=APP_AI_URL=$([[ ${AI_ACCESS:-off} == on ]] && echo "${APP_AI_URL:-}") APP_AI_IP=$([[ ${AI_ACCESS:-off} == on ]] && echo "${APP_AI_IP:-}")
 ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do curl -fsS --unix-socket /var/lib/swarmd/local-transport/api.sock -o /dev/null http://swarmd/readyz && exit 0; sleep 1; done; exit 1'
-ExecStart=$OPT/current/bin/node $OPT/current/app/examples/headless-app/server.mjs
-WorkingDirectory=$OPT/current/app/examples/headless-app
+ExecStart=$release/bin/node $release/app/examples/headless-app/server.mjs
+WorkingDirectory=$release/app/examples/headless-app
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes
