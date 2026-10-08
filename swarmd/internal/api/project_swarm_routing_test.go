@@ -208,7 +208,7 @@ func TestOrchestratorStructuredRefinementKeepsCardPending(t *testing.T) {
 	if _, err := f.server.SubmitProjectTaskPlan(context.Background(), input); err == nil {
 		t.Fatal("structured refinement reopened approved execution")
 	}
-	unchanged, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
+	unchanged, _, _ = f.server.sessions.Store().GetProjectTask(f.accountID, project, task.ID)
 	if unchanged.Status != approvedTask.Status || *unchanged.PlanBinding != approvedBinding {
 		t.Fatal("rejected refinement mutated approved card")
 	}
