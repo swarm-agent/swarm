@@ -37,6 +37,26 @@ installs it again with the saved `--relay`, `--name` and `--ref`;
 firewall and the project folder (unless `--delete-projects`). `--relay` only
 prefills the Connect step. `--name` sets the tailnet and machine name.
 
+**Network isolation.** The container runs on its own Docker network
+(`swarm-net`, bridge `br-swarm`) with public DNS (1.1.1.1, 9.9.9.9). Firewall
+rules (`SWARM-ISOLATE` from `DOCKER-USER`, `SWARM-HOST` from `INPUT`) let it
+reach the internet (model providers, Git hosts) but drop new connections to
+the tailnet (100.64.0.0/10), private ranges, link-local and cloud metadata
+(169.254.0.0/16) and to the server itself; replies on connections the host
+opened (the published app and gateway ports) pass. `swarm-headless-firewall`
+re-applies them at boot. `install.sh check-isolation` proves it from inside
+the container, and the installer runs it at the end. Verified in a sandbox
+with real Docker and iptables (host and metadata blocked by these rules,
+published port and DNS working); a real Tailscale interface was not
+available there.
+
+**Agent permissions.** Setup asks how agents work: **Ask me first**
+(default; agents pause before commands and file changes) or **On their own**
+(the owner-only bypass setting: no ordinary prompts; plans to accept, agent
+questions and hard denials still stop). It can be changed in Settings. Agents
+run as the daemon's user inside the container, so "on their own" relies on
+the container and network isolation above, not on prompts.
+
 It also serves Swarm's **AI gateway** (Swarm Control MCP on the scoped-token
 listener) on the tailnet at `https://NAME.TAILNET.ts.net:8444/mcp`: the
 container publishes port 7783 to host loopback only and `tailscale serve`

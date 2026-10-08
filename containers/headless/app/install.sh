@@ -30,6 +30,13 @@ PROJECT=$STATE/project
 CONF=$STATE/install.env
 UNITS=/usr/local/lib/systemd/system
 CONTAINER=swarm
+# Swarm's own Docker network. Agents run inside the container, so traffic from
+# this bridge may reach the internet (model providers, Git hosts) but never
+# your tailnet, private networks, cloud metadata, or this server itself.
+NETWORK=swarm-net
+BRIDGE=br-swarm
+SUBNET=172.31.250.0/24
+BLOCKED_NETS=(100.64.0.0/10 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16)
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -39,7 +46,7 @@ usage() {
 Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--lock-ssh] [--no-ai-access]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
-       install.sh update | up | reset-login | status
+       install.sh update | up | reset-login | status | check-isolation
 
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   tailnet machine name and Swarm machine name (default: swarm)
@@ -54,6 +61,53 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--lock-s
   --yes              do not ask for confirmation
   --delete-projects  also delete the project folder (your workspaces)
 USAGE
+}
+
+# Network isolation for the container (idempotent; also run at boot by
+# swarm-headless-firewall.service, since iptables rules do not survive reboot).
+# DOCKER-USER sees forwarded traffic (to the tailnet, other networks, the
+# internet); INPUT sees traffic to this server itself. Replies to connections
+# the host opened (the published app and gateway ports) stay allowed.
+firewall() {
+  docker network inspect "$NETWORK" >/dev/null 2>&1 ||
+    docker network create --driver bridge --subnet "$SUBNET" \
+      -o com.docker.network.bridge.name="$BRIDGE" "$NETWORK" >/dev/null
+  iptables -N SWARM-ISOLATE 2>/dev/null || iptables -F SWARM-ISOLATE
+  iptables -A SWARM-ISOLATE -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  local net
+  for net in "${BLOCKED_NETS[@]}"; do iptables -A SWARM-ISOLATE -d "$net" -j DROP; done
+  iptables -A SWARM-ISOLATE -j RETURN
+  iptables -N DOCKER-USER 2>/dev/null || true
+  iptables -C DOCKER-USER -i "$BRIDGE" -j SWARM-ISOLATE 2>/dev/null ||
+    iptables -I DOCKER-USER -i "$BRIDGE" -j SWARM-ISOLATE
+  iptables -N SWARM-HOST 2>/dev/null || iptables -F SWARM-HOST
+  iptables -A SWARM-HOST -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  iptables -A SWARM-HOST -j DROP
+  iptables -C INPUT -i "$BRIDGE" -j SWARM-HOST 2>/dev/null ||
+    iptables -I INPUT -i "$BRIDGE" -j SWARM-HOST
+}
+
+# Prove the isolation from inside the container: the tailnet, private ranges,
+# cloud metadata and the host must be unreachable; the internet reachable.
+check_isolation() {
+  docker container inspect "$CONTAINER" >/dev/null 2>&1 || die "Swarm is not running"
+  local host_ts gateway target name want got failed=0
+  host_ts=$(tailscale ip -4 2>/dev/null | head -n1)
+  gateway=${SUBNET%.*}.1
+  printf '%-34s %-10s %s\n' "From inside the container to" "expected" "result"
+  for target in \
+    "${host_ts:-100.100.100.100}:443|this server's tailnet address|blocked" \
+    "100.100.100.100:53|Tailscale DNS|blocked" \
+    "169.254.169.254:80|cloud metadata|blocked" \
+    "$gateway:22|this server (SSH)|blocked" \
+    "1.1.1.1:443|the internet|reachable"; do
+    IFS='|' read -r target name want <<<"$target"
+    if docker exec "$CONTAINER" timeout 4 bash -c "exec 3<>/dev/tcp/${target%:*}/${target#*:}" 2>/dev/null; then got=reachable; else got=blocked; fi
+    [[ $got == "$want" ]] || failed=1
+    printf '%-34s %-10s %s\n' "$name ($target)" "$want" "$got$([[ $got == "$want" ]] || echo '  <-- NOT AS EXPECTED')"
+  done
+  ((failed == 0)) || die "isolation check failed"
+  echo "Isolation is as expected."
 }
 
 # Build both images from the checkout and (re)create the container on the
@@ -77,8 +131,12 @@ up() {
   # loopback only; Tailscale Serve is its only way in.
   local ai=()
   [[ ${AI_ACCESS:-off} == on ]] && ai=(-p 127.0.0.1:7783:7783 -e APP_AI_URL="${APP_AI_URL:-}" -e APP_AI_IP="${APP_AI_IP:-}")
+  firewall
+  # Public DNS: the host's resolver may be Tailscale's (MagicDNS), which the
+  # container must not reach and which would reveal tailnet names.
   docker run -d --name "$CONTAINER" --restart=unless-stopped --stop-timeout=15 \
     --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory=6g \
+    --network "$NETWORK" --dns 1.1.1.1 --dns 9.9.9.9 \
     -p 127.0.0.1:8443:8443 "${ai[@]}" \
     -e APP_ORIGIN="$APP_ORIGIN" -e APP_RELAY_URL="$APP_RELAY_URL" -e APP_DEVICE_NAME="$APP_DEVICE_NAME" \
     -v swarm-config:/etc/swarmd -v swarm-data:/var/lib/swarmd \
@@ -99,12 +157,28 @@ update() {
   [[ $old == "$new" ]] && return 0
   git -C "$SRC" reset -q --hard "$new"
   echo "swarm: ${old:0:9} -> ${new:0:9}"
-  install_units
-  up
+  # Continue in the installer just fetched, not this already-loaded copy, so
+  # changes to the installer itself (units, firewall, run flags) apply now.
+  exec bash "$SRC/containers/headless/app/install.sh" apply
 }
 
 install_units() {
   install -d "$UNITS"
+  cat > "$UNITS/swarm-headless-firewall.service" <<UNIT
+[Unit]
+Description=Keep headless Swarm's container off the tailnet and private networks
+After=docker.service ufw.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash $SRC/containers/headless/app/install.sh firewall
+
+[Install]
+WantedBy=multi-user.target docker.service
+UNIT
   cat > "$UNITS/swarm-headless-update.service" <<UNIT
 [Unit]
 Description=Rebuild headless Swarm when its branch changes
@@ -128,6 +202,7 @@ WantedBy=timers.target
 UNIT
   systemctl daemon-reload
   systemctl enable --now swarm-headless-update.timer >/dev/null
+  systemctl enable swarm-headless-firewall.service >/dev/null
 }
 
 # Wait until the app answers on its loopback port.
@@ -178,7 +253,8 @@ uninstall_all() {
 
   say "Removing Swarm"
   systemctl disable --now swarm-headless-update.timer >/dev/null 2>&1 || true
-  rm -f "$UNITS/swarm-headless-update.service" "$UNITS/swarm-headless-update.timer"
+  systemctl disable swarm-headless-firewall.service >/dev/null 2>&1 || true
+  rm -f "$UNITS/swarm-headless-update.service" "$UNITS/swarm-headless-update.timer" "$UNITS/swarm-headless-firewall.service"
   systemctl daemon-reload
   if command -v tailscale >/dev/null; then
     tailscale serve --https=443 off >/dev/null 2>&1 || true
@@ -188,6 +264,13 @@ uninstall_all() {
     docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
     docker volume rm swarm-config swarm-data swarm-cache swarm-logs >/dev/null 2>&1 || true
     docker image rm swarm-app:local swarm-headless:local >/dev/null 2>&1 || true
+    docker network rm "$NETWORK" >/dev/null 2>&1 || true
+  fi
+  if command -v iptables >/dev/null; then
+    iptables -D DOCKER-USER -i "$BRIDGE" -j SWARM-ISOLATE 2>/dev/null || true
+    iptables -D INPUT -i "$BRIDGE" -j SWARM-HOST 2>/dev/null || true
+    iptables -F SWARM-ISOLATE 2>/dev/null && iptables -X SWARM-ISOLATE 2>/dev/null || true
+    iptables -F SWARM-HOST 2>/dev/null && iptables -X SWARM-HOST 2>/dev/null || true
   fi
   rm -f "$CONF"
   if ((delete_projects)); then
@@ -300,6 +383,8 @@ CONF
   fi
 
   wait_ready
+  say "Checking that Swarm's container cannot reach your tailnet"
+  check_isolation
   cat <<DONE
 
   ┌───────────────────────────────────────────────────────────────
@@ -322,6 +407,9 @@ main() {
     update) update ;;
     up) up ;;
     reset-login) reset_login ;;
+    apply) install_units; up ;;
+    firewall) firewall ;;
+    check-isolation) check_isolation ;;
     status) docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}} {{.Status}}'; tailscale serve status ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
