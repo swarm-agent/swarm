@@ -469,3 +469,38 @@ func TestWorkerMultiCheckpointCompletion(t *testing.T) {
 		t.Fatalf("completion: %+v %v", receipt, err)
 	}
 }
+
+// Requirement: a worker run starts whether the source workspace is on a branch
+// or on a detached HEAD (mid-rebase, bisect, CI-style checkout). On a branch the
+// run forks from it so it can be integrated; on a detached HEAD it forks from
+// the HEAD commit as before. Threat: forking only in current-branch mode made
+// every run on a detached HEAD fail to start. startPlan owns the base choice;
+// the real worktree service on a real repository is the narrowest proof.
+func TestWorkerRunStartsFromDetachedHead(t *testing.T) {
+	_, ss, execution, _ := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	canonical, err := execution.host.runs.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", canonical.SourceWorkspacePath, "checkout", "-q", "--detach").CombinedOutput(); err != nil {
+		t.Fatalf("detach: %v %s", err, out)
+	}
+	ws := ss.Store().WorkerStore()
+	doc := store.SessionPlanDocument{Title: "One step", Info: store.SessionPlanInfo{Goal: "Review"}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Review", Tasks: []string{"Review"}, AcceptanceCriteria: []string{"Reviewed"}, Status: "pending"}}}
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "detached", WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}, Automations: []store.WorkerAutomationDefinition{{Name: "review", ActivationMode: "manual", Enabled: true, PlanDocument: doc}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": canonical.SourceWorkspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", store.WorkerRunAdmission{WorkerID: w.ID, AutomationID: w.Automations[0].ID, RequestSource: "test_run", IdempotencyKey: "detached"})
+	if err != nil {
+		t.Fatalf("run on a detached HEAD did not start: %v", err)
+	}
+	snapshot, ok, err := ss.GetSession(r.SessionID)
+	if err != nil || !ok || snapshot.WorktreeRootPath == "" {
+		t.Fatalf("run has no worktree lane: %+v %v", snapshot, err)
+	}
+}

@@ -483,7 +483,13 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		}
 		// Fork from the source workspace's current branch (as project tasks do) so
 		// the run's task records a real integration target, not a literal HEAD.
-		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, "", "agent/worker-"+r.ID[:16])
+		// A detached HEAD has no branch to integrate into: fork from the HEAD
+		// commit as before.
+		base := ""
+		if branch, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath); branchErr == nil && branch == "" {
+			base = "HEAD"
+		}
+		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		if err != nil {
 			return err
 		}

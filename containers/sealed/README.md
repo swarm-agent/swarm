@@ -3,8 +3,9 @@
 A **sealed agent** is an agent whose only capabilities are *client tools*: typed
 tools your application answers. It has no built-in tools at all: no shell, files,
 web, delegation or memory. It can read the conversation, reply, and call the tools
-you defined, nothing else. This is the shape for agents that face the public, such
-as a front desk on a website.
+you defined, nothing else. It needs at least one client tool: a custom agent with
+every tool off is an ordinary chat agent. This is the shape for agents that face
+the public, such as a front desk on a website.
 
 The **sealed runtime** (`containers/sealed/Dockerfile`) is a container with
 `swarmd`, `swarmctl`, `git` and their libraries on an empty base. It has no shell,

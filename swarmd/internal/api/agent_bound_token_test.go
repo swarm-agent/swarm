@@ -57,6 +57,19 @@ func TestAgentBoundTokenIsDefaultDeny(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A custom agent with every tool off is an ordinary chat agent, not sealed:
+	// it must keep the normal prompt and limits and cannot back a gateway token.
+	if _, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: "chatonly", Mode: agentruntime.ModeSubagent, Enabled: pebblestore.BoolPtr(true), Prompt: "x",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"list": {Enabled: pebblestore.BoolPtr(false)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sealedAgentError(account, "chatonly"); err == nil {
+		t.Fatal("an agent with no tools was treated as sealed")
+	}
+	if err := s.sealedAgentError(account, "frontdesk"); err != nil {
+		t.Fatalf("client-tool agent not sealed: %v", err)
+	}
+
 	// Minting goes through the owner-only token route.
 	mint := func(body string) (int, map[string]any) {
 		r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(body)), actor.UserID, account)
@@ -68,6 +81,7 @@ func TestAgentBoundTokenIsDefaultDeny(t *testing.T) {
 	}
 	for _, body := range []string{
 		`{"name":"gw","agent_name":"lister"}`,
+		`{"name":"gw","agent_name":"chatonly"}`,
 		`{"name":"gw","agent_name":"swarm"}`,
 		`{"name":"gw","agent_name":"frontdesk","scopes":["admin"]}`,
 		`{"name":"gw","agent_name":"frontdesk","worker_id":"w"}`,
