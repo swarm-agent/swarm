@@ -56,7 +56,11 @@ with these environment variables in the cloud environment's settings:
 SWARM_FLEET=[{"name":"box","url":"https://box.<tailnet>.ts.net:8444/mcp","token":"<AI key>"}]
 TS_AUTHKEY=<reusable, ephemeral, tag:claude auth key>
 MCP_TIMEOUT=120000
+SWARM_FLEET_CA_BUNDLE=<path of the environment's proxy CA bundle>
 ```
+
+`SWARM_FLEET_CA_BUNDLE` is needed only where outbound HTTPS goes through an
+inspecting proxy: Tailscale then uses the proxy and trusts that CA.
 
 and this setup script, which starts Docker and builds the image ahead of the
 first session (`MCP_TIMEOUT` covers a first build that happens later):
