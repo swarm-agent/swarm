@@ -5,7 +5,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { SCENARIOS, parseOptions, createReceipt, validateReceipt, requiredAssertions, toolEvidence, mediaEvidence, runScenario, assertSafeToolRouting, mutationRequestID, observeRun, waitForRun } from './orchestrator-pr.mjs'
+import { SCENARIOS, parseOptions, createReceipt, validateReceipt, requiredAssertions, toolEvidence, mediaEvidence, runScenario, assertSafeToolRouting, mutationRequestID, observeRun, waitForRun, recordFailure } from './orchestrator-pr.mjs'
 
 import { runBrowserAdapter, parseBrowserOptions } from './orchestrator-pr-browser.mjs'
 import { parseOptions as parseLiveOptions, createReceipt as createLiveReceipt, validateReceipt as validateLiveReceipt, REQUIRED_ASSERTIONS as LIVE_ASSERTIONS, runLiveE2E } from './orchestrator-live-e2e.mjs'
@@ -116,7 +116,7 @@ test('media protocol rejects unavailable, mismatched, duplicated and overridden 
 // rejects failed/duplicate/incomplete current-run evidence without manufacturing it.
 test('tool evidence is completion- and run-scoped', { timeout: 5000 }, () => {
   const event = { event_type: 'session.tool.completed', payload: JSON.stringify({ run_id: 'owned-run', call_id: 'call', tool_name: 'manage_projects',
-    arguments: JSON.stringify({ action: 'propose_task' }), output: JSON.stringify({ task: { id: 'task' } }) }) }
+    arguments: JSON.stringify({ action: 'propose_task' }), output: 'Task proposed', raw_output: JSON.stringify({ task: { id: 'task' } }) }) }
   assert.equal(toolEvidence([event], 'owned-run')[0].output.task.id, 'task')
   assert.deepEqual(toolEvidence([event], 'foreign-run'), [])
   assert.deepEqual(toolEvidence([{ ...event, event_type: 'session.tool.started' }], 'owned-run'), [])
@@ -207,7 +207,7 @@ function protocol(options, scenario, { failed = false, missingCapability = false
         : scenario === 'session-api' ? [] : missingCapability ? tools.slice(1) : tools
       result = { run_intents_by_session: { [sessionID]: [{ session_id: sessionID, run_id: 'provider-run', status: failed ? 'failed' : 'completed' }] },
         messages_by_session: { [sessionID]: [{ role: 'user', content: prompt }, { role: 'assistant', content: scenario === 'session-api' ? 'PR-' + options.runID : 'Provider reply', metadata: { run_id: 'provider-run', provider: 'configured-provider', model: wrongModel ? 'wrong-model' : 'configured' } }] },
-        events_by_session: { [sessionID]: routed.map((record, i) => ({ event_type: 'session.tool.completed', payload: { run_id: 'provider-run', call_id: 'call-' + i, tool_name: record.name, arguments: record.args, output: record.output } })) } }
+        events_by_session: { [sessionID]: routed.map((record, i) => ({ event_type: 'session.tool.completed', payload: { run_id: 'provider-run', call_id: 'call-' + i, tool_name: record.name, arguments: record.args, output: record.name === 'manage_projects' ? 'Task proposed' : record.output, raw_output: JSON.stringify(record.output) } })) } }
     } else if (route.endsWith('/artifacts/variant')) return new Response(badBytes ? Buffer.from('wrong') : data, { headers: { 'content-type': `${scenario}/test` } })
     else throw new Error('unexpected_route')
     return Response.json(result)
@@ -637,7 +637,7 @@ test('multi-step project run retains tool evidence and qualifies pending unexecu
     const final = await response.json()
     const proposal = final.events_by_session['owned-session'][0]
     const discovery = { session_id: 'owned-session', seq: 3, event_type: 'session.tool.started', payload: { run_id: 'provider-run', step: 1, call_id: 'discovery', tool_name: 'manage_projects', arguments: { action: 'list_sources' } } }
-    const discovered = { ...discovery, seq: 4, event_type: 'session.tool.completed', payload: { ...discovery.payload, output: { sources: [] } } }
+    const discovered = { ...discovery, seq: 4, event_type: 'session.tool.completed', payload: { ...discovery.payload, output: 'Sources inspected', raw_output: JSON.stringify({ sources: [] }) } }
     if (samples === 1) return Response.json(runSnapshot('pending_executor'))
     if (samples === 2) return Response.json(runSnapshot('running', { events_by_session: { 'owned-session': [discovery] } }))
     if (samples === 3) return Response.json(runSnapshot('running', { events_by_session: { 'owned-session': [discovery, discovered] } }))
@@ -678,9 +678,10 @@ test('invalid or foreign admission never authorizes an owned-run stop', { timeou
 // original executor call to the owned session/run/project/source, then require
 // durable completion and pending-task zero intents. This transport-level test
 // exercises the real runner, not backend transactional correctness or live AI.
-function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = false, resolution = 'allow', missing = false, badOutcome = false, batch = '', changed = false, mutateResolved = () => {}, mutateReply = reply => reply } = {}) {
+function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = false, resolution = 'allow', missing = false, badOutcome = false, batch = '', changed = false, mutateResolved = () => {}, mutateReply = reply => reply, mutateCompletion = () => {} } = {}) {
   const p = protocol(o, o.scenario), resolutions = []
   let clock = 0, samples = 0, index = 0, resolved = false
+  const completedEvents = []
   const args = [
     { action: 'list_sources', project_id: 'project' },
     { action: 'inspect_source', project_id: 'project', workspace_path: o.workspacePath, workspace_id: 'source', workspace_generation: 1 },
@@ -729,10 +730,18 @@ function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = fals
       return response
     }
     samples++
-    if (resolved && !(duplicate || stale)) { index++; resolved = false }
+    if (resolved && !(duplicate || stale)) {
+      const payload = { run_id: 'provider-run', call_id: 'call-' + index, tool_name: 'manage_projects',
+        arguments: JSON.stringify(args[index]), output: 'Completed project operation',
+        raw_output: JSON.stringify(index === 2 ? { task: { id: 'task', title: 'PR-' + o.runID } } : { sources: [] }) }
+      mutateCompletion(payload, index)
+      completedEvents.push({ seq: index + 1, event_type: 'session.tool.completed', payload })
+      index++; resolved = false
+    }
     else if (resolved && duplicate && !stale) { duplicate = false } // one stale snapshot, no second grant
     if (index < args.length) {
       const snapshot = runSnapshot(), r = record()
+      snapshot.events_by_session['owned-session'] = [...completedEvents]
       if (missing) {
         delete snapshot.session_views_by_id
         snapshot.events_by_session['owned-session'] = [{ event_type: 'permission.requested', payload: { run_id: 'provider-run', permission: r } }]
@@ -743,11 +752,9 @@ function consentProtocol(o, { mutate = () => {}, duplicate = false, stale = fals
     }
     const result = await response.json()
     result.session_views_by_id = { 'owned-session': { pending_permissions: [] } }
-    // The canonical completed call retains the exact original JSON arguments.
-    const completed = result.events_by_session['owned-session'][0].payload
-    // Executor recordProviderToolEvent emits JSON strings for arguments/output.
-    completed.arguments = JSON.stringify(args[2])
-    completed.output = JSON.stringify(completed.output)
+    // Retain discovery completions through the next provider step and final
+    // rehydration; display previews and canonical raw JSON are separate fields.
+    result.events_by_session['owned-session'] = [...completedEvents]
     return Response.json(result)
   }
   return { ...p, fetch, resolutions, samples: () => samples, deps: { fetch, verifyCandidate: () => {}, now: () => clock, pause: async ms => { clock += ms } } }
@@ -948,4 +955,102 @@ test('allow_once requires explicit null saved rule and strict resolution envelop
     assert.ok(!p.calls.some(c => /approve|deploy|resolve_all/.test(c.route)))
     assert.ok(!JSON.stringify(r).includes('SECRET'))
   }
+})
+
+// Purpose: recordProviderToolEvent persists a display preview separately from
+// liveStreamRawOutput's exact manage_projects JSON. formatToolCompletedOutput
+// summarizes this tool, so display text cannot prove discovery or a proposal.
+// The event parser is the narrowest runner boundary; this is not live RCA proof.
+test('project completion uses canonical raw output, never display proposal text', () => {
+  const event = { event_type: 'session.tool.completed', payload: {
+    run_id: 'owned-run', call_id: 'call', tool_name: 'manage_projects',
+    arguments: JSON.stringify({ action: 'propose_task' }),
+    output: 'SECRET display preview', raw_output: JSON.stringify({ task: { id: 'task' } }),
+  } }
+  assert.equal(toolEvidence([event], 'owned-run')[0].output.task.id, 'task')
+  for (const raw_output of [undefined, 'SECRET malformed', 'null', '[]', '"{}"']) {
+    const bad = structuredClone(event); bad.payload.raw_output = raw_output
+    assert.throws(() => toolEvidence([bad], 'owned-run'), /^Error: tool_output_contract_invalid$/)
+  }
+  const bad = structuredClone(event); bad.payload.arguments = 'SECRET malformed'
+  assert.throws(() => toolEvidence([bad], 'owned-run'), /^Error: tool_arguments_invalid$/)
+})
+
+// Purpose: receipt diagnostics must preserve only runner-owned codes and fixed
+// phases, never arbitrary exception messages (even code-looking secret values),
+// non-Error throws or provider/auth JSON. Exercise the same terminal serializer.
+test('terminal failure diagnostics reject arbitrary messages and non-Error throws', () => {
+  for (const error of [new Error('secret_marker'), new SyntaxError('SECRET token'), null, undefined, 'SECRET', { message: 'secret_marker' }]) {
+    const r = { status: 'FAIL', failures: [] }
+    recordFailure(r, error)
+    assert.deepEqual(r.failures, ['runtime_exception'])
+    assert.equal(r.native_exit, 2)
+    assert.ok(!JSON.stringify(r).includes('SECRET'))
+    assert.ok(!JSON.stringify(r).includes('secret_marker'))
+  }
+})
+
+// Purpose: canonical consent -> completion -> next step must reject corrupt
+// executor evidence before another grant, without trusting a display proposal.
+// runScenario is the narrowest protocol layer; existing success cases above
+// also require final rehydration, pending task/source and zero task intents.
+test('malformed completion stops consent progression with safe phase diagnostics', { timeout: 5000 }, async t => {
+  const { options } = fixture(t), o = { ...options, scenario: 'orchestrator-chat' }
+  for (const [field, value, code] of [
+    ['raw_output', 'SECRET malformed', 'tool_output_contract_invalid'],
+    ['raw_output', 'null', 'tool_output_contract_invalid'],
+    ['raw_output', undefined, 'tool_output_contract_invalid'],
+    ['arguments', 'SECRET malformed', 'tool_arguments_invalid'],
+  ]) {
+    const r = createReceipt(o), p = consentProtocol(o, { mutateCompletion: (payload, index) => {
+      if (index === 0) payload[field] = value
+    } })
+    try { await runScenario(o, r, p.deps); assert.fail('corrupt completion admitted') }
+    catch (error) { assert.equal(error.message, code); recordFailure(r, error) }
+    assert.equal(p.resolutions.length, 1)
+    assert.equal(r.assertions.find(a => a.name === 'run_completed').passed, false)
+    assert.equal(r.assertions.find(a => a.name === 'zero_task_intents').passed, false)
+    assert.ok(r.failures.includes('phase_run_observation'))
+    assert.ok(r.failures.includes(code))
+    assert.ok(!JSON.stringify(r).includes('SECRET'))
+    assert.ok(!p.calls.some(c => /approve|deploy/.test(c.route)))
+  }
+})
+
+// Purpose: API transport/decode and unknown runtime errors must remain distinct
+// in the existing failures array, without leaking even code-shaped messages.
+// Execute real runScenario boundaries, not a separate mock error classifier.
+test('API and runtime failures retain fixed codes and phase without bodies', { timeout: 5000 }, async t => {
+  const { options } = fixture(t)
+  for (const [fetch, code] of [
+    [async () => { throw new Error('SECRET credentials') }, 'api_transport_failed'],
+    [async () => new Response('SECRET invalid JSON'), 'api_json_invalid'],
+    [async () => Response.json({ secret: 'SECRET' }, { status: 409 }), 'http_409'],
+  ]) {
+    const r = createReceipt(options)
+    try { await runScenario(options, r, { fetch, verifyCandidate: () => {} }); assert.fail('bad API admitted') }
+    catch (error) { recordFailure(r, error) }
+    assert.deepEqual(r.failures, ['phase_model_settings', code])
+    assert.equal(r.native_exit, 2)
+    assert.ok(!JSON.stringify(r).includes('SECRET'))
+    assert.equal(r.assertions.find(a => a.name === 'session_identity').passed, false)
+  }
+})
+
+// Purpose: catch fixture drift at the exact producer/event/hydration boundaries.
+// This source tripwire is not backend runtime proof: protocol assertions above
+// exercise runner behavior; parent must separately validate Go serialization.
+test('completion fixture tracks canonical raw result and display preview producers', () => {
+  const source = relative => readFileSync(new URL('../../' + relative, import.meta.url), 'utf8')
+  const formatter = source('swarmd/internal/run/service_tool_output.go')
+  const executor = source('swarmd/internal/api/sessions_v3_executor.go')
+  const invoker = source('swarmd/internal/run/provider_tool_invoker.go')
+  const projects = source('swarmd/internal/tool/runtime_manage_projects.go')
+  assert.match(formatter, /func liveStreamRawOutput[\s\S]*?!= "bash" \{\s*return output/)
+  assert.match(formatter, /func formatToolCompletedOutput[\s\S]*?return summarizeToolOutput/)
+  assert.match(invoker, /RawOutput:\s+liveStreamRawOutput\(call, result\)/)
+  assert.match(executor, /payload\["output"\] = output/)
+  assert.match(executor, /payload\["raw_output"\] = rawOutput/)
+  assert.match(projects, /response\["task"\] = task/)
+  assert.match(projects, /json.Marshal\(response\)/)
 })

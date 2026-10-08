@@ -11,8 +11,26 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 export const SCENARIOS = Object.freeze(['session-api', 'orchestrator-chat', 'image', 'video', 'audio'])
 export const RECEIPT_SCHEMA = 'swarm.orchestrator-pr.v1'
-const check = (value, code) => { if (!value) throw new Error(code) }
-const decode = value => typeof value === 'string' ? JSON.parse(value) : value
+const runnerFailures = new WeakSet()
+function failure(code) {
+  const error = new Error(code)
+  runnerFailures.add(error)
+  return error
+}
+const check = (value, code) => { if (!value) throw failure(code) }
+function decode(value, code = 'event_payload_invalid', requireObject = true) {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value
+    if (requireObject) check(parsed && typeof parsed === 'object' && !Array.isArray(parsed), code)
+    return parsed
+  } catch { throw failure(code) }
+}
+// Only errors minted at runner boundaries may supply public diagnostic codes.
+export function recordFailure(receipt, error) {
+  if (receipt.status === 'PASS') receipt.status = 'FAIL'
+  receipt.failures.push(error instanceof Error && runnerFailures.has(error) ? error.message : 'runtime_exception')
+  receipt.native_exit = 2
+}
 const id = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,200}$/.test(value)
 
 export function parseOptions(argv, env = process.env) {
@@ -87,7 +105,7 @@ export function assertSafeToolRouting(events, runID, scenario) {
     const e = decode(event.payload)
     if (e?.run_id !== runID) continue
     check(scenario !== 'session-api', 'session_api_unexpected_tool')
-    const args = decode(e.arguments)
+    const args = decode(e.arguments, 'tool_arguments_invalid')
     check(args && ['manage_projects', 'manage_artifact', 'search', 'find', 'list', 'read', 'media_inspect'].includes(e.tool_name), 'unexpected_tool_routing')
     if (event.event_type === 'session.tool.started') {
       check(++starts <= 12, 'tool_budget_exceeded')
@@ -113,7 +131,11 @@ export function toolEvidence(events, runID) {
     check(e && !e.error && e.call_id && !seen.has(e.call_id) && (!e.run_id || e.run_id === runID), 'invalid_tool_evidence')
     seen.add(e.call_id)
     check(e.arguments && e.output, 'tool_output_unavailable')
-    tools.push({ name: e.tool_name || e.tool, args: decode(e.arguments), output: decode(e.output) })
+    const name = e.tool_name || e.tool
+    // manage_projects display output is summarized; only raw_output retains the
+    // canonical result. Never fall back to a plausible display proposal.
+    const output = name === 'manage_projects' ? e.raw_output : e.output
+    tools.push({ name, args: decode(e.arguments, 'tool_arguments_invalid'), output: decode(output, 'tool_output_contract_invalid') })
   }
   check(tools.length <= 12, 'tool_budget_exceeded')
   return tools
@@ -230,7 +252,7 @@ function permissionArgs(record) {
     const summary = record.tool_arguments ? decode(record.tool_arguments) : {}
     check(object(args) && object(summary) && !Object.hasOwn(summary, 'approved_arguments'), 'permission_arguments_invalid')
     return args
-  } catch { throw new Error('permission_arguments_invalid') }
+  } catch { throw failure('permission_arguments_invalid') }
 }
 function fixtureCall(args, fixture) {
   check(args.project_id === fixture.projectID, 'permission_project_mismatch')
@@ -294,7 +316,7 @@ function fixtureConsent(api, fixture) {
       try {
         result = await api('POST', `/v3/sessions/${encodeURIComponent(fixture.sessionID)}/permissions/${encodeURIComponent(record.id)}/resolve`,
           { action: 'allow_once', reason: 'Exact owned pending-only PR fixture call' })
-      } catch { throw new Error('permission_resolution_failed') }
+      } catch { throw failure('permission_resolution_failed') }
       check(object(result) && result.ok === true && object(result.permission), 'permission_resolution_envelope_rejected')
       // ResolveWithPolicyAndArguments returns a nil *PolicyRule for allow_once;
       // the canonical map response serializes it as explicit null, not false.
@@ -344,20 +366,23 @@ export async function runScenario(o, r, deps = {}) {
   const timer = setTimeout(() => controller.abort(), o.timeoutMs)
   const interrupt = () => controller.abort()
   process.once('SIGINT', interrupt); process.once('SIGTERM', interrupt)
-  let primaryFailure, lastObservation
+  let primaryFailure, lastObservation, phase = 'preflight'
   let sessionID = '', runID = '', swarmID = '', completed = false, requests = 0, metadataBytes = 0
   const headers = { 'X-Swarm-Token': o.token, Origin: o.apiURL, Referer: `${o.apiURL}/app`, 'Sec-Fetch-Site': 'same-origin', Accept: 'application/json' }
   async function api(method, route, body, { bytes = false, cleanup = false } = {}) {
     check(cleanup || now() < deadline, 'stage_deadline_work_retained')
     check(cleanup || ++requests <= 1800, 'request_budget_exceeded')
     const signal = cleanup ? AbortSignal.timeout(5000) : AbortSignal.any([controller.signal, AbortSignal.timeout(Math.min(15000, Math.max(1, deadline - now())))])
-    const response = await (deps.fetch ?? fetch)(o.apiURL + route, { method, headers: { ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal })
+    let response
+    try {
+      response = await (deps.fetch ?? fetch)(o.apiURL + route, { method, headers: { ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal })
+    } catch { throw failure('api_transport_failed') }
     check(response.ok, `http_${response.status}`) // Never emit provider/auth bodies.
     const data = await boundedBytes(response, bytes ? 64 * 1024 * 1024 : 2 * 1024 * 1024)
     check(cleanup || now() < deadline, 'stage_deadline_work_retained')
     if (!bytes && !cleanup) { metadataBytes += data.length; check(metadataBytes <= 64 * 1024 * 1024, 'aggregate_metadata_budget_exceeded') }
-    return bytes ? { data, type: response.headers.get('content-type')?.split(';')[0] } : JSON.parse(data.toString('utf8'))
+    return bytes ? { data, type: response.headers.get('content-type')?.split(';')[0] } : decode(data.toString('utf8'), 'api_json_invalid', false)
   }
   // Retain at most the 12 started/completed pairs from canonical hydration so
   // progress chatter cannot evict capability evidence from the bounded tail.
@@ -381,11 +406,13 @@ export async function runScenario(o, r, deps = {}) {
     return snapshot
   }
   try {
+    phase = 'model_settings'
     const settings = (await api('GET', '/v1/agent-model-settings')).agent_model_settings
     check(settings?.swarm?.action?.model && settings?.swarm?.plan?.model && settings?.system_agents?.router?.model, 'configured_models_unavailable')
     const expectedModel = o.scenario === 'session-api' ? settings.swarm.action : settings.swarm.plan
     check(expectedModel.provider && expectedModel.thinking, 'configured_model_identity_unavailable')
     mark('configured_models')
+    phase = 'workspace_binding'
     const topology = await api('GET', '/v1/swarm/topology')
     const binding = topology.workspace_bindings?.find(b => b.state === 'bound' && b.source_workspace_path === o.workspacePath)
     const runtime = topology.runtimes?.find(s => s.relationship === 'self')
@@ -395,11 +422,13 @@ export async function runScenario(o, r, deps = {}) {
       swarm_id: swarmID, target_kind: 'host', target_relationship: 'self' }
     let projectID = ''
     if (o.scenario !== 'session-api') {
+      phase = 'project_creation'
       const project = (await api('POST', '/v3/projects', { client_request_id: mutationRequestID(o, 'project'), name: 'PR qualification ' + o.runID,
         description: 'Disposable qualification project; never approve tasks.', workspaces: [{ path: o.workspacePath, role: 'primary_code' }] })).project
       check(id(project?.id), 'project_identity_unavailable'); projectID = project.id
       r.evidence.push({ project_id: projectID, retained: true })
     }
+    phase = 'session_creation'
     const created = await api('POST', projectID ? `/v3/projects/${encodeURIComponent(projectID)}/sessions` : '/v3/sessions', {
       client_request_id: mutationRequestID(o, 'session'), ...(projectID ? {} : { ...authority, mode: 'auto', agent_name: 'swarm', model_profile: { use_account_default: true } }) })
     r.status = 'FAIL'
@@ -412,6 +441,7 @@ export async function runScenario(o, r, deps = {}) {
     const prompt = o.scenario === 'session-api' ? `Reply with exactly ${marker}. Do not use tools.`
       : o.scenario === 'orchestrator-chat' ? `${common}In this project propose exactly one Big Feature Swarm task titled ${marker} with explicit source ${o.workspacePath}. The task should add a short README explanation later. Use manage_projects propose_task with explicit agent="swarm", feature_size="big", workspace_path for that exact source and auto_approve=false. Only read-only manage_projects list_sources/inspect_source discovery for this project/source and this one pending proposal are authorized by the fixture. Do not approve, deploy or execute it. Stop after creating the pending task.`
       : `${common}Generate exactly one ${o.scenario} of a calm abstract blue wave, title ${marker}, using the account-configured model. Use manage_artifact generate_${o.scenario}. ${o.scenario === 'video' ? 'One silent clip, shortest supported duration; no story or soundtrack.' : `First discover ${o.scenario}_capabilities and use its exact capability token and supported settings.${o.scenario === 'audio' ? ' Use the shortest supported duration.' : ''}`} Return the exact ready reference. Missing capability must be reported, never replaced.`
+    phase = 'message_admission'
     const sent = await api('POST', `/v3/sessions/${encodeURIComponent(sessionID)}/messages`, { client_request_id: mutationRequestID(o, 'message'), role: 'user', content: prompt })
     const admittedRunID = sent.run_intent?.run_id || sent.run_id
     check(id(admittedRunID) && (!sent.run_intent?.session_id || sent.run_intent.session_id === sessionID), 'run_not_admitted')
@@ -419,6 +449,7 @@ export async function runScenario(o, r, deps = {}) {
     r.evidence.push({ session_id: sessionID, run_id: runID })
     const consent = fixtureConsent(api, { scenario: o.scenario, sessionID, runID, projectID, marker, workspacePath: o.workspacePath,
       workspaceID: binding.source_workspace_id, workspaceGeneration: binding.source_workspace_generation })
+    phase = 'run_observation'
     const settled = await waitForRun({ sample: hydrate, sessionID, runID, scenario: o.scenario, deadline,
       stallMs: Math.min(90000, o.timeoutMs), now, pause: deps.pause ?? sleep, consent,
       onObservation: observation => { lastObservation = observation },
@@ -432,7 +463,9 @@ export async function runScenario(o, r, deps = {}) {
       if (o.scenario === 'session-api') check(assistant.content.trim() === marker, 'provider_ack_mismatch')
       return messages
     }
+    phase = 'history_verification'
     verifyHistory(settled); mark('provider_response')
+    phase = 'history_rehydration'
     const rehydrated = await hydrate()
     const finalObservation = observeRun(rehydrated, sessionID, runID)
     lastObservation = finalObservation
@@ -442,6 +475,7 @@ export async function runScenario(o, r, deps = {}) {
     assertSafeToolRouting(rehydrated.events_by_session?.[sessionID] || [], runID, o.scenario)
     const tools = toolEvidence(rehydrated.events_by_session?.[sessionID] || [], runID)
     if (o.scenario === 'orchestrator-chat') {
+      phase = 'pending_task_verification'
       const proposals = tools.filter(t => t.name === 'manage_projects' && ['propose_task', 'create_task'].includes(t.args.action))
       check(proposals.length === 1 && proposals[0].args.project_id === projectID && proposals[0].output.task?.title === marker, 'ai_routed_task_missing')
       mark('ai_task_routing')
@@ -456,6 +490,7 @@ export async function runScenario(o, r, deps = {}) {
       check(Array.isArray(snapshot.run_intents_by_session?.[task.session_id]) && snapshot.run_intents_by_session[task.session_id].length === 0, 'unapproved_task_executed')
       mark('zero_task_intents'); r.evidence.push({ project_id: projectID, task_id: task.id, session_id: task.session_id, retained: true })
     } else if (o.scenario !== 'session-api') {
+      phase = 'media_verification'
       const evidence = mediaEvidence(tools, o.scenario, sessionID)
       mark('media_tool_routing'); mark('ready_exact_reference')
       if (o.scenario !== 'video') mark('capability_discovery')
@@ -466,8 +501,9 @@ export async function runScenario(o, r, deps = {}) {
       mark('media_bytes'); r.evidence.push(evidence)
     }
   } catch (error) {
-    primaryFailure = now() >= deadline ? new Error('stage_deadline_work_retained')
-      : controller.signal.aborted ? new Error('run_observation_interrupted') : error
+    primaryFailure = now() >= deadline ? failure('stage_deadline_work_retained')
+      : controller.signal.aborted ? failure('run_observation_interrupted') : error
+    r.failures.push(`phase_${phase}`)
     // Capture BEFORE stop can change durable state. Only fixed typed codes survive
     // the operations sanitizer; never interpolate status/reason/provider content.
     if (runID) {
@@ -504,9 +540,7 @@ export async function main(argv = process.argv.slice(2)) {
     r.status = 'PASS'; r.native_exit = 0
     validateReceipt(r, o, 0)
   } catch (e) {
-    if (r.status === 'PASS') r.status = 'FAIL'
-    r.failures.push(/^[a-z0-9_]{1,80}$/.test(e.message) ? e.message : 'operation_failed')
-    r.native_exit = 2
+    recordFailure(r, e)
   } finally {
     r.assertion_count = r.assertions.filter(a => a.passed).length
     try { writeFileSync(fd, JSON.stringify(r, null, 2) + '\n'); } finally { closeSync(fd) }
