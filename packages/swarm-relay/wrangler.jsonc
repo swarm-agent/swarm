@@ -15,9 +15,7 @@
     // Public origin of this Worker, e.g. https://swarm-relay.<subdomain>.workers.dev
     "RELAY_ORIGIN": "",
     "ALLOWED_REDIRECT_HOSTS": "claude.ai,claude.com"
-    // "PAIRING": "off" accepts only machines listed in SWARM_DEVICE_KEYS.
   }
-  // Optional secret (wrangler secret put SWARM_DEVICE_KEYS); machines can
-  // also pair with a code instead:
+  // Secret (wrangler secret put SWARM_DEVICE_KEYS):
   //   {"<device-id>": "<base64 ed25519 public key from `swarmctl remote init`>"}
 }
