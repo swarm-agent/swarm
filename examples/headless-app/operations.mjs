@@ -57,11 +57,18 @@ export function operations(sdk, project = '/project', defaults = {}) {
   const assigned = a => typeof a?.provider === 'string' && !!a.provider && typeof a.model === 'string' && !!a.model;
   // Guided setup: which step comes next. Reads only; each step keeps its own
   // explicit operation below.
+  // The app's owner account doubles as the Swarm owner; created once, on the
+  // first sign-up (or the first request after it, if that one failed).
+  async function ensureOwner(username) {
+    const status = await sdk.onboarding.get();
+    if (status.identity?.bootstrapped) return;
+    await sdk.onboarding.update({ username: text(username, 64), swarm_name: text(defaults.deviceName || 'swarm', 80) });
+  }
   async function setup() {
     const status = await sdk.onboarding.get();
-    const steps = { owner: status.identity?.bootstrapped === true, provider: false, models: false, workspace: false, claude: false };
+    const steps = { provider: false, models: false, workspace: false, claude: false };
     let relay = null;
-    if (steps.owner) {
+    if (status.identity?.bootstrapped === true) {
       steps.provider = (status.heuristics?.credential_count ?? 0) > 0;
       let settings = null;
       try { settings = (await sdk.settings.agentModels()).agent_model_settings; }
@@ -76,16 +83,12 @@ export function operations(sdk, project = '/project', defaults = {}) {
   }
   return {
     session,
-    async run(op, b) {
-      if (op === 'setup') return setup();
+    ensureOwner,
+    async run(op, b, username = '') {
       if (op === 'onboarding') { const s = await sdk.onboarding.get(); return { identity: s.identity, needs_onboarding: s.needs_onboarding }; }
-      if (op === 'owner') {
-        const s = await sdk.onboarding.get();
-        if (s.identity.bootstrapped) reject(409, 'Owner already exists.');
-        await sdk.onboarding.update({ username: text(b.username, 64), swarm_name: text(b.name, 80) });
-        return { ok: true };
-      }
-      if (!(await sdk.onboarding.get()).identity.bootstrapped) reject(409, 'Create the installation owner first.');
+      if (username) await ensureOwner(username);
+      else if (!(await sdk.onboarding.get()).identity.bootstrapped) reject(409, 'Create the owner account first.');
+      if (op === 'setup') return setup();
       switch (op) {
         case 'settings': {
           let settings = null;
@@ -120,6 +123,12 @@ export function operations(sdk, project = '/project', defaults = {}) {
           if (['compact', 'finder', 'coder', 'designer', 'router'].includes(b.slot)) return sdk.settings.setSystemAgentModel(b.slot, assignment);
           reject(400, 'Invalid role.');
           break;
+        }
+        case 'models-recommended': return sdk.settings.restoreDefaults();
+        case 'workspace-create': {
+          const name = text(b.name, 63);
+          if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) reject(400, 'Use lowercase letters, digits, dashes and underscores, e.g. social-bot.');
+          return sdk.workspaces.create({ parent_path: await realpath(project), name });
         }
         case 'workspaces': return (await sdk.workspaces.list({ limit: 100 })).filter(w => w.path?.startsWith(project + '/') || w.workspace_path?.startsWith(project + '/'));
         case 'folder': {

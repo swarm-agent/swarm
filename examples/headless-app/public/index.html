@@ -1,10 +1,237 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Swarm · Workshop</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
-<body><header><div><b>◈ SWARM</b><span class="muted"> / Workshop</span></div><div><span id="connection">Private local app</span> <button id="theme" type="button">Light / dark</button><button id="logout" hidden>Lock</button></div></header>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Swarm</title>
+<link rel="stylesheet" href="/style.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<header>
+  <b class="brand">◈ Swarm</b>
+  <nav id="topnav" hidden>
+    <button id="nav-home" type="button" class="link">Home</button>
+    <button id="nav-setup" type="button" class="link">Setup</button>
+    <button id="nav-settings" type="button" class="link">Settings</button>
+    <button id="logout" type="button" class="link">Sign out</button>
+  </nav>
+</header>
 <p id="error" role="alert" hidden></p>
-<section id="setup-guide" class="guide" hidden><div class="guide-head"><div><span class="eyebrow">SET UP THIS MACHINE</span><h1 id="guide-title">Let's get this Swarm ready</h1></div><button id="guide-refresh" type="button">Check again</button></div><ol id="guide-steps"></ol></section>
-<section id="login" class="welcome"><span class="eyebrow">YOUR PRIVATE WORKSHOP</span><h1>One place to build.</h1><p>A custom interface. A real Swarm daemon.<br>Your providers, projects and conversations stay in this installation.</p><form id="login-form"><label>Installation secret<input name="secret" type="password" required autocomplete="current-password" maxlength="64"></label><button>Unlock workshop →</button></form><small>Retrieve the generated secret using the documented container command. No host Swarm account is imported.</small></section>
-<main id="app" hidden><aside><h2>Workspace</h2><button id="refresh">Refresh lists</button><select id="workspaces" aria-label="Workspace"><option value="">Choose a workspace</option></select><details><summary>New workspace</summary><form id="folder-form"><label>Folder name<input name="name" required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" maxlength="64"></label><button>Create folder</button></form><label>Project folder<input id="folder-path" readonly></label><button id="inspect">Inspect Git</button><p id="repository-status"></p><label><input type="checkbox" id="git-confirm"> I approve Git initialization in this folder.</label><button id="git-init">Initialize Git</button><button id="review">Review baseline files</button><div id="baseline-files"></div><label><input type="checkbox" id="baseline-confirm"> Commit only selected files; I approve omitted files remaining outside the baseline.</label><button id="baseline">Commit reviewed baseline</button><button id="register">Register workspace</button></details><h2>Conversations</h2><form id="session-form"><input name="title" placeholder="New conversation" aria-label="Session title" maxlength="120" required><button>Create</button></form><nav id="sessions"></nav><p class="muted">Lists refresh on your actions. Chat uses canonical V3 realtime, not polling.</p></aside>
-<section class="conversation"><div class="chat-heading"><div><span class="eyebrow">BUILD WITH SWARM</span><h1 id="session-title">Start a conversation</h1></div><button id="reconnect">Reconnect</button></div><div class="status-row"><span id="stream-status">No session selected</span><button id="stop" disabled>Stop run</button></div><p class="muted">Durable history: latest 200 messages. Live drafts are separate until committed.</p><div id="messages" aria-live="polite"></div><div id="live"></div><section id="permissions"></section><details><summary>Run state and recent tool activity</summary><pre id="activity"></pre></details><form id="message-form"><label for="message">Message</label><textarea id="message" rows="4" maxlength="32000" required placeholder="What would you like to build?"></textarea><div class="composer-actions"><small id="history-status">Choose a workspace and session to begin.</small><button id="send" disabled>Send message ↑</button></div></form></section>
-<aside class="settings"><h2>Installation</h2><p id="owner-status"></p><form id="owner-form"><label>Owner name<input name="username" required maxlength="64" autocomplete="username"></label><label>Installation name<input name="name" required maxlength="80"></label><button>Create owner</button></form><h2>Provider connection</h2><label>Provider<select id="provider"></select></label><p id="provider-status"></p><form id="credential-form"><label>Credential type<select id="credential-type"></select></label><label>API key<input name="key" type="password" required maxlength="16000" autocomplete="off"></label><button>Save API key</button></form><label>Codex sign-in method<select id="codex-method"><option value="device">Device code</option><option value="manual">Browser sign-in · paste callback</option></select></label><button id="codex-start">Sign in to Codex</button><div id="codex-login"></div><button id="codex-status" hidden>Refresh sign-in status</button><form id="codex-complete" hidden><label>Callback URL or code<input name="callback" type="password" autocomplete="off" maxlength="16000" required></label><button>Complete sign-in</button></form><small>Device sign-in needs no callback port. Manual sign-in lets you paste the final callback URL if the browser cannot reach the container callback.</small><pre id="credentials"></pre><h2>Model assignment</h2><label>Role<select id="slot"><option value="action">Swarm · action</option><option value="plan">Swarm · plan</option><option value="compact">Compact</option><option value="finder">Finder</option><option value="coder">Coder</option><option value="designer">Designer</option><option value="router">Router</option></select></label><label>Model<select id="model"></select></label><label>Thinking<select id="thinking"></select></label><label>Service tier<select id="tier"></select></label><label>Context<select id="context"></select></label><button id="save-model">Save selected assignment</button> <button id="save-model-all" type="button">Use for every role</button><details><summary>Current canonical role settings</summary><pre id="assignments"></pre></details><h2 id="claude-heading">Connect to Claude</h2><p id="claude-status" class="muted">Lets Claude (claude.ai, the Claude app or Claude Code) use this machine through your Swarm relay. Nothing on this machine listens to the internet; it dials out to the relay.</p><form id="claude-form"><label>Relay URL<input name="relay_url" type="url" required maxlength="200" placeholder="https://swarm-relay.example.workers.dev" autocomplete="off"></label><label>Machine name<input name="device_name" required maxlength="80" autocomplete="off"></label><label><input type="checkbox" name="allow_write" checked> Claude can start sessions and send messages</label><label><input type="checkbox" name="allow_manage" checked> Claude can manage workers, schedules and models</label><label><input type="checkbox" name="allow_approve"> Claude can approve agents' tool calls (dedicated machines only)</label><button>Connect</button></form><div id="pairing" class="pairing" hidden><span class="eyebrow">PAIRING CODE</span><strong id="pairing-code"></strong><p>Tell Claude: <q id="pairing-say"></q></p><small id="pairing-expiry"></small></div><div id="consents"></div><div id="claude-actions" hidden><button id="claude-disable" type="button">Disconnect</button> <button id="claude-reset" type="button">Forget relay key</button></div><h2 id="ai-heading">AI access over Tailscale</h2><p id="ai-status" class="muted">Lets Claude Code and other AI clients on your tailnet use this machine with a key. Nothing is published to the internet.</p><p>Address <code id="ai-url"></code></p><form id="ai-form"><label>Key name<input name="name" required maxlength="64" value="claude" autocomplete="off"></label><label>Access<select name="access"><option value="read">Read only: see sessions, usage and models (recommended)</option><option value="write">Read and write: also start sessions and send messages</option></select></label><label>Expires after<select name="days"><option value="1">1 day</option><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">365 days</option></select></label><button>Create key</button></form><div id="ai-new" class="pairing" hidden><span class="eyebrow">NEW KEY · SHOWN ONCE</span><code id="ai-token"></code><small>Copy it now into your AI client or its environment settings. It cannot be shown again; revoke it below if it leaks.</small></div><div id="ai-keys"></div><details><summary>Tailscale access rule</summary><p class="muted">In the Tailscale admin console (Access controls), allow only Claude devices to reach this port.</p><pre id="ai-acl"></pre></details><details><summary>Connect an AI client</summary><pre id="ai-client"></pre></details></aside></main>
-<footer>LOCAL-FIRST / SDK-POWERED / NO SIMULATED REPLIES</footer></body></html>
+
+<!-- First visit: create the owner login. -->
+<section id="signup" class="card narrow" hidden>
+  <h1>Create your login</h1>
+  <p class="muted">This is the only account on this server. Save it in your password manager (1Password or similar) when your browser offers.</p>
+  <form id="signup-form">
+    <label>Username<input name="username" autocomplete="username" required minlength="2" maxlength="32" pattern="[a-z0-9][a-z0-9._\-]{1,31}" autocapitalize="none" spellcheck="false" placeholder="e.g. roy"></label>
+    <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+    <label>Repeat password<input name="repeat" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+    <small class="muted">At least 12 characters. A password manager can generate one.</small>
+    <button class="primary">Create login</button>
+  </form>
+  <p id="signup-blocked" class="notice" hidden>Open this page from one of your own devices on your tailnet to create the login.</p>
+</section>
+
+<!-- Later visits. -->
+<section id="signin" class="card narrow" hidden>
+  <h1>Sign in</h1>
+  <form id="signin-form">
+    <label>Username<input name="username" autocomplete="username" required maxlength="32" autocapitalize="none" spellcheck="false"></label>
+    <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+    <label id="signin-code" hidden>6-digit code from your authenticator<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7"></label>
+    <button class="primary">Sign in</button>
+  </form>
+  <small class="muted">Forgot it? On the server run <code>sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh reset-login</code>, then create a new login here.</small>
+</section>
+
+<!-- Setup, one step at a time. -->
+<section id="setup" class="card" hidden>
+  <ol id="progress" class="progress"></ol>
+
+  <div id="step-security" class="step" hidden>
+    <h1>Protect your login with a code</h1>
+    <p class="muted">Recommended. Each sign-in will also ask for a 6-digit code from an authenticator: 1Password, Google Authenticator, Authy or similar.</p>
+    <button id="twofa-begin" type="button" class="primary">Turn on two-factor</button>
+    <button id="twofa-skip" type="button" class="link">Skip for now</button>
+  </div>
+
+  <div id="step-provider" class="step" hidden>
+    <h1>Connect an AI provider</h1>
+    <p class="muted">Swarm's agents need a model provider. The easiest is your ChatGPT account.</p>
+    <button id="codex-start" type="button" class="primary">Sign in with ChatGPT</button>
+    <div id="codex-login" class="callout" hidden>
+      <p>1. Open <a id="codex-link" target="_blank" rel="noopener noreferrer">this sign-in page</a></p>
+      <p>2. Enter this code: <strong id="codex-code" class="code"></strong></p>
+      <p id="codex-wait" class="muted">Waiting for you to finish… this page updates by itself.</p>
+    </div>
+    <details>
+      <summary>Use an API key instead</summary>
+      <form id="credential-form">
+        <label>Provider<select id="provider" required></select></label>
+        <label>Key type<select id="credential-type" required></select></label>
+        <label>API key<input name="key" type="password" required maxlength="16000" autocomplete="off"></label>
+        <button class="primary">Save key</button>
+      </form>
+    </details>
+  </div>
+
+  <div id="step-models" class="step" hidden>
+    <h1>Choose models</h1>
+    <p class="muted">Use the recommended model for each agent. You can change them later in Settings.</p>
+    <button id="models-recommended" type="button" class="primary">Use recommended models</button>
+  </div>
+
+  <div id="step-workspace" class="step" hidden>
+    <h1>Create a workspace</h1>
+    <p class="muted">A workspace is a project folder (a Git repository) where agents work.</p>
+    <form id="workspace-form">
+      <label>Name<input name="name" required maxlength="63" pattern="[a-z0-9][a-z0-9_\-]*" value="main" autocapitalize="none" spellcheck="false"></label>
+      <button class="primary">Create workspace</button>
+    </form>
+  </div>
+
+  <div id="step-claude" class="step" hidden>
+    <h1>Connect to Claude</h1>
+    <p class="muted">Lets Claude (claude.ai, the Claude app or Claude Code) use this server through your relay. Nothing here is opened to the internet.</p>
+    <form id="claude-form">
+      <label>Relay address<input name="relay_url" type="url" required maxlength="200" placeholder="https://swarm-relay.example.workers.dev" autocomplete="off"></label>
+      <label>Name for this server<input name="device_name" required maxlength="80" autocomplete="off"></label>
+      <fieldset>
+        <legend>Claude may</legend>
+        <label class="check"><input type="checkbox" name="allow_write" checked> start work and send messages</label>
+        <label class="check"><input type="checkbox" name="allow_manage" checked> manage workers, limits and models</label>
+        <label class="check"><input type="checkbox" name="allow_approve"> approve agents' actions (only on a dedicated server)</label>
+      </fieldset>
+      <button class="primary">Connect</button>
+    </form>
+    <div id="pairing" class="callout" hidden>
+      <p>Tell Claude:</p>
+      <p class="say"><q id="pairing-say"></q></p>
+      <small id="pairing-expiry" class="muted"></small>
+    </div>
+    <p id="claude-status" class="muted"></p>
+    <div id="consents"></div>
+  </div>
+
+  <div id="step-done" class="step" hidden>
+    <h1>All set</h1>
+    <p class="muted">This server is ready. Ask Claude to use it, or start a conversation here.</p>
+    <button id="go-home" type="button" class="primary">Open my workspace</button>
+  </div>
+
+  <button id="setup-later" type="button" class="link later">Finish setup later</button>
+</section>
+
+<!-- Two-factor setup (from setup or settings). -->
+<section id="twofa" class="card narrow" hidden>
+  <h1>Add this server to your authenticator</h1>
+  <p class="muted">Scan the code with your authenticator app, or in 1Password add a "one-time password" field and paste the setup key.</p>
+  <div id="twofa-qr" class="qr"></div>
+  <label>Setup key<input id="twofa-key" readonly></label>
+  <form id="twofa-form">
+    <label>Enter the 6-digit code it shows<input name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9 ]{6,7}" maxlength="7"></label>
+    <button class="primary">Turn on</button>
+    <button id="twofa-cancel" type="button" class="link">Cancel</button>
+  </form>
+</section>
+
+<!-- Everyday use. -->
+<main id="home" hidden>
+  <aside>
+    <h2>Workspaces</h2>
+    <nav id="workspace-list" class="list"></nav>
+    <form id="workspace-new" class="inline">
+      <input name="name" required maxlength="63" pattern="[a-z0-9][a-z0-9_\-]*" placeholder="new-workspace" aria-label="New workspace name" autocapitalize="none">
+      <button>Add</button>
+    </form>
+    <h2>Conversations</h2>
+    <form id="session-form" class="inline">
+      <input name="title" placeholder="New conversation" aria-label="Conversation title" maxlength="120" required>
+      <button>Start</button>
+    </form>
+    <nav id="sessions" class="list"></nav>
+  </aside>
+  <section class="conversation">
+    <div class="chat-heading">
+      <h1 id="session-title">Pick a workspace and start a conversation</h1>
+      <span id="stream-status" class="muted">No conversation open</span>
+    </div>
+    <div id="messages" aria-live="polite"></div>
+    <div id="live"></div>
+    <section id="permissions"></section>
+    <form id="message-form">
+      <textarea id="message" rows="3" maxlength="32000" required placeholder="What would you like to build?" aria-label="Message"></textarea>
+      <div class="composer-actions">
+        <small id="history-status" class="muted"></small>
+        <span>
+          <button id="reconnect" type="button" class="link">Reconnect</button>
+          <button id="stop" type="button" disabled>Stop</button>
+          <button id="send" class="primary" disabled>Send</button>
+        </span>
+      </div>
+    </form>
+    <details><summary>Run details</summary><pre id="activity"></pre></details>
+  </section>
+</main>
+
+<!-- Settings. -->
+<section id="settings" class="card" hidden>
+  <h1>Settings</h1>
+
+  <h2>Login</h2>
+  <p id="account-status" class="muted"></p>
+  <button id="twofa-on" type="button" hidden>Turn on two-factor</button>
+  <details id="twofa-off-box" hidden>
+    <summary>Turn off two-factor</summary>
+    <form id="twofa-off">
+      <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <label>Current code<input name="code" inputmode="numeric" autocomplete="one-time-code" required pattern="[0-9 ]{6,7}" maxlength="7"></label>
+      <button>Turn off two-factor</button>
+    </form>
+  </details>
+  <details>
+    <summary>Change password</summary>
+    <form id="password-form">
+      <input name="username" autocomplete="username" hidden>
+      <label>Current password<input name="current" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <label>New password<input name="next" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+      <label id="password-code" hidden>Code<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7"></label>
+      <button>Change password</button>
+    </form>
+  </details>
+
+  <h2>Claude</h2>
+  <p id="settings-claude" class="muted"></p>
+  <button id="claude-disable" type="button" hidden>Disconnect</button>
+  <button id="claude-reset" type="button" hidden>Forget relay key</button>
+
+  <h2>AI access over Tailscale</h2>
+  <p id="ai-status" class="muted"></p>
+  <form id="ai-form" class="inline-wide">
+    <label>Key name<input name="name" required maxlength="64" value="claude" autocomplete="off"></label>
+    <label>Access<select name="access"><option value="read">Read only</option><option value="write">Read and write</option></select></label>
+    <label>Expires<select name="days"><option value="1">1 day</option><option value="7">7 days</option><option value="30" selected>30 days</option><option value="90">90 days</option><option value="365">1 year</option></select></label>
+    <button>Create key</button>
+  </form>
+  <div id="ai-new" class="callout" hidden>
+    <p><b>New key, shown once.</b> Copy it now into your AI client or password manager.</p>
+    <code id="ai-token"></code>
+  </div>
+  <div id="ai-keys"></div>
+  <details><summary>How to connect an AI client</summary><pre id="ai-client"></pre></details>
+
+  <h2>Models</h2>
+  <p class="muted">Pick a model for one role, or for all of them.</p>
+  <div class="inline-wide">
+    <label>Provider<select id="model-provider"></select></label>
+    <label>Model<select id="model"></select></label>
+    <label>Thinking<select id="thinking"></select></label>
+    <label>Role<select id="slot"><option value="all">Every role</option><option value="action">Swarm</option><option value="plan">Swarm · planning</option><option value="coder">Coder</option><option value="finder">Finder</option><option value="designer">Designer</option><option value="compact">Compact</option><option value="router">Router</option></select></label>
+  </div>
+  <button id="save-model" type="button">Save model</button>
+  <button id="models-reset" type="button" class="link">Use recommended models</button>
+  <details><summary>Current models</summary><pre id="assignments"></pre></details>
+</section>
+</body>
+</html>

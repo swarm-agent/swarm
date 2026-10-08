@@ -9,7 +9,8 @@ function fakeSdk({ owner = true, credentials = 1, models = true, workspaces = ['
   let status = { configured: false, enabled: false, connected: false, allow_write: false, allow_approve: false, allow_manage: false, pending_consents: [], ...remote };
   const sdk = {
     calls,
-    onboarding: { get: async () => ({ identity: { bootstrapped: owner }, heuristics: { credential_count: credentials } }) },
+    onboarding: { get: async () => ({ identity: { bootstrapped: owner }, heuristics: { credential_count: credentials } }),
+      update: async input => { calls.push(['owner', input]); } },
     settings: { agentModels: async () => ({ agent_model_settings: models ? { swarm: { action: assignment, plan: assignment },
       system_agents: { compact: assignment, finder: assignment, coder: assignment, designer: assignment, router: assignment } } :
       { swarm: { action: assignment, plan: {} }, system_agents: {} } }) },
@@ -27,22 +28,45 @@ function fakeSdk({ owner = true, credentials = 1, models = true, workspaces = ['
   return sdk;
 }
 
-// Purpose: the guide reports the next unfinished step from canonical state and
-// never touches relay administration before an owner exists (it is owner-only).
-// Boundary: operations().run('setup') with an SDK fixture; real daemon
-// onboarding and relay behaviour are covered by the container/relay checks.
-test('setup reports step completion and installer defaults', async () => {
+// Purpose: the signed-in owner's account becomes the Swarm owner on first use
+// (named after the installer's machine name), the guide reports the next
+// unfinished step from canonical state, and relay administration (owner-only)
+// is never touched before an owner exists. Boundary: operations().run('setup')
+// with an SDK fixture; real daemon onboarding and relay behaviour are covered
+// by the container/relay checks.
+test('setup creates the Swarm owner and reports step completion and installer defaults', async () => {
   const none = fakeSdk({ owner: false });
-  const before = await operations(none, '/project', { relayUrl: 'https://relay.example', deviceName: 'box' }).run('setup', {});
-  assert.deepEqual(before.steps, { owner: false, provider: false, models: false, workspace: false, claude: false });
+  const ops = operations(none, '/project', { relayUrl: 'https://relay.example', deviceName: 'box' });
+  await assert.rejects(ops.run('setup', {}), /owner account/);
+  const before = await ops.run('setup', {}, 'roy');
+  assert.deepEqual(none.calls, [['owner', { username: 'roy', swarm_name: 'box' }]]);
+  assert.deepEqual(before.steps, { provider: false, models: false, workspace: false, claude: false });
   assert.equal(before.remote, null);
   assert.deepEqual(before.defaults, { relay_url: 'https://relay.example', device_name: 'box' });
-  assert.deepEqual(none.calls, []);
 
-  const partial = await operations(fakeSdk({ models: false, workspaces: ['/elsewhere/repo'] })).run('setup', {});
-  assert.deepEqual(partial.steps, { owner: true, provider: true, models: false, workspace: false, claude: false });
-  const done = await operations(fakeSdk({ remote: { configured: true, enabled: true, connected: true } })).run('setup', {});
-  assert.deepEqual(done.steps, { owner: true, provider: true, models: true, workspace: true, claude: true });
+  const existing = fakeSdk();
+  await operations(existing).run('setup', {}, 'roy');
+  assert.equal(existing.calls.some(c => c[0] === 'owner'), false);
+  const partial = await operations(fakeSdk({ models: false, workspaces: ['/elsewhere/repo'] })).run('setup', {}, 'roy');
+  assert.deepEqual(partial.steps, { provider: true, models: false, workspace: false, claude: false });
+  const done = await operations(fakeSdk({ remote: { configured: true, enabled: true, connected: true } })).run('setup', {}, 'roy');
+  assert.deepEqual(done.steps, { provider: true, models: true, workspace: true, claude: true });
+});
+
+// Purpose: one-step workspace creation stays inside the project folder and
+// accepts only plain lowercase names, before any SDK call.
+test('workspace-create makes one plain folder in the project', async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const project = await mkdtemp(join(tmpdir(), 'workshop-project-'));
+  t.after(() => rm(project, { recursive: true, force: true }));
+  const sdk = fakeSdk();
+  sdk.workspaces.create = async input => { sdk.calls.push(['create', input]); return { workspace_id: 'ws' }; };
+  const ops = operations(sdk, project);
+  for (const name of ['..', 'a/b', '.git', 'Bot', '-x', '']) await assert.rejects(ops.run('workspace-create', { name }, 'roy'));
+  assert.deepEqual(await ops.run('workspace-create', { name: 'social-bot' }, 'roy'), { workspace_id: 'ws' });
+  assert.deepEqual(sdk.calls.filter(c => c[0] === 'create'), [['create', { parent_path: project, name: 'social-bot' }]]);
 });
 
 // Purpose: Connect initializes once with explicit boolean ceilings, enables,

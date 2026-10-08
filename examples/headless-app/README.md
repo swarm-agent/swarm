@@ -32,45 +32,62 @@ stays on this machine; this is not a transport for LAN or remote access. Browser
 may label HTTP as “Not secure”; no certificate interstitial is involved.
 The host-only login cookie remains HttpOnly and SameSite=Strict, with exact
 Host/Origin checks and a separate CSRF token for privileged requests.
-The following explicit secret read is for the operator's terminal only: do not
-paste it into chat, screenshots, issues or logs.
-
-<copy label="Retrieve local login secret">
-docker exec swarm-workshop cat /etc/swarmd/headless-app/login-secret
-</copy>
-
-1. Unlock, then explicitly create this installation's owner/name. No workstation
-   identity, environment credentials or Swarm account are imported.
-2. Choose a provider and its advertised credential type, then enter an API key;
-   or choose **Sign in to Codex**, open the device URL, enter the code, and click
-   **Refresh sign-in status**. Alternatively choose browser/manual sign-in and
-   paste the final callback URL into the password field. No callback port is
-   exposed; automatic browser callback capture is not offered in this container.
-3. Select models from the daemon's catalog and save canonical role assignments.
-   Thinking, service-tier and context options come from the selected record.
-   Stored credentials are not proof of verified inference; readiness/default
-   errors are displayed. No provider/model fallback is hardcoded.
-4. Create a folder inside `/project`, inspect Git, explicitly approve initialization,
-   and register. If content needs a baseline, review the exact file list, select
-   files, approve omissions, and commit that reviewed digest. No automatic commit.
-   Partial failures leave the folder visible in the creation form for retry;
-   no alternate endpoint silently bypasses repository prerequisites.
-5. Select the workspace, create a session, and send a message. Approve one exact
-   pending call or deny it; stop targets the current active run. No persistent
-   permission rule or bypass is created.
+1. **Create your login**: a username and a password of at least 12 characters
+   (save both in your password manager). This account also becomes the Swarm
+   owner. No workstation identity, environment credentials or Swarm account are
+   imported.
+2. **Two-factor (recommended)**: scan the QR code with an authenticator, or in
+   1Password add a one-time password field with the setup key; enter one code
+   to turn it on. Sign-in then asks for a current code.
+3. **AI provider**: **Sign in with ChatGPT** shows a device code and finishes by
+   itself; or open **Use an API key instead**.
+4. **Models**: **Use recommended models** (the daemon's verified defaults for
+   connected providers); change them later in Settings.
+5. **Workspace**: type a name; the app creates an empty Git repository with one
+   initial commit under `/project` and registers it.
+6. **Connect to Claude**: see below. Then chat in a workspace from **Home**:
+   approve one exact pending call or deny it; stop targets the active run.
 
 ## Guided setup
 
-After unlocking, a setup guide lists the remaining steps (owner, provider,
-models, workspace, Connect to Claude) and points at the control for the next
-one; the server derives each step from canonical state (`setup` operation).
-**Use for every role** saves the selected model for all seven roles.
-**Connect to Claude** initializes and enables the machine's relay connection
+After sign-in, setup shows one step at a time (provider, models, workspace,
+Connect to Claude), derived from canonical state (`setup` operation); a
+returning owner with nothing left goes straight to Home. **Connect to Claude** initializes and enables the machine's relay connection
 (`APP_RELAY_URL` and `APP_DEVICE_NAME` prefill it) with the ceiling you tick,
 then shows the pairing code to give Claude; it refreshes on a bounded timer
 only while connecting. AI client authorization requests appear there to
 approve or deny. Relay administration uses the owner-only `client.remote`
 SDK namespace on the private socket and never returns key material.
+
+## Sign-in API (reusable)
+
+`accounts.mjs` is the owner login: one account per installation in
+`/etc/swarmd/headless-app/account.json` (mode 0600) holding only a salted
+scrypt hash and, once confirmed, the TOTP key (RFC 6238, SHA-1, 6 digits, 30 s,
+one step of drift, each code usable once). Ten failures in a minute lock
+sign-in for five minutes; a wrong password never consumes the current code, and
+every failure gets the same message. `boundary.mjs` then issues the browser
+session (HttpOnly SameSite=Strict cookie, CSRF token, 12 hours, at most 8).
+Use both from your own BFF, or call these routes (JSON POST, exact Origin):
+
+| Route | Signed in | Body | Result |
+|---|---|---|---|
+| `/auth/status` | no | | `registered`, `two_factor`, `can_register` |
+| `/auth/register` | no | `username`, `password` | first owner only; sets the cookie, returns `csrf` |
+| `/auth/login` | no | `username`, `password`, `code` | sets the cookie, returns `csrf` |
+| `/auth/logout` | yes | | |
+| `/auth/me` | yes | | `username`, `two_factor`, `claimed_by` |
+| `/auth/2fa/start` | yes | | `secret`, `uri` (otpauth), `qr` (module grid) |
+| `/auth/2fa/confirm` | yes | `code` | turns 2FA on |
+| `/auth/2fa/disable` | yes | `password`, `code` | turns 2FA off |
+| `/auth/password` | yes | `current`, `next`, `code` | |
+
+Changing the password or 2FA signs out every other browser. Behind Tailscale
+Serve, `/auth/register` requires Serve's `Tailscale-User-Login` header (Serve
+sets it for tailnet users and strips any copy a client sends) and records it as
+`claimed_by`; on a loopback origin only the machine itself can reach the page.
+Forgotten password or lost authenticator: `install.sh reset-login` on the host
+(or delete `account.json` and restart the container), then create a new login.
 
 ## Private access from your tailnet
 
@@ -100,9 +117,9 @@ docker rm swarm-workshop
 </copy>
 
 Repeat the same `docker run` command with the **same five named volumes**. Owner,
-provider credentials, settings, workspaces, sessions and login
-secret persist. Browser sessions are memory-only and require unlocking after a
-restart/reload. Never remove these volumes unless intentionally destroying the
+provider credentials, settings, workspaces, sessions and the login
+persist. Browser sessions are memory-only and require signing in again after a
+restart. Never remove these volumes unless intentionally destroying the
 installation. Back up them together while stopped. The data volume contains the
 canonical daemon state and its private socket; never attach it to another running
 container or export/mount that socket. It is not an SDK access volume.
@@ -123,8 +140,8 @@ container or export/mount that socket. It is not an SDK access volume.
   cross-site embedded pages, subresources and API requests remain rejected.
   Credentials never go to browser storage; user-provided API keys are cleared
   immediately after submission. SDK exception bodies are not reflected or logged.
-- 64 KiB request bodies, 8 app logins, 2 streams per login, 16 concurrent requests,
-  32 TCP connections, bounded stream queue/frame sizes, and login throttling.
+- 64 KiB request bodies, 8 browser sessions, 2 streams per session, 16 concurrent
+  requests, 32 TCP connections, bounded stream queue/frame sizes, and sign-in lockout.
 - This is a **single-owner development installation**, not tenant isolation.
   Tool execution shares the daemon/BFF UID and can access installation state;
   review permissions carefully. Path checks reject resolved paths outside the

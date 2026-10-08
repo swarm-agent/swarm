@@ -21,13 +21,20 @@ curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/swarm-control/con
 approve the machine, turns on a firewall that admits only the tailnet (and
 SSH until `--lock-ssh`), builds the runtime and this app from source
 (`Dockerfile.local`), and serves the app with `tailscale serve` at
-`https://NAME.TAILNET.ts.net`. It prints that URL and the unlock secret; no
-provider key or other secret is passed to it. The app's guided setup then
-covers owner, provider sign-in, models, a workspace and **Connect to Claude**,
-which shows a pairing code for your relay (see `packages/swarm-relay`).
+`https://NAME.TAILNET.ts.net` and prints that URL; no provider key or other
+secret is passed to it. On the first visit, from your own device on the
+tailnet, you create your login (username, password, optional authenticator
+code; see `examples/headless-app`). Setup then covers provider sign-in, models,
+a workspace and **Connect to Claude**, which shows a pairing code for your
+relay (see `packages/swarm-relay`).
 State lives in the usual named volumes plus `/var/lib/swarm-headless`. A
 5-minute timer runs `install.sh update`, which rebuilds only when the branch
-moves; `install.sh secret` prints the unlock secret again. `--relay` only
+moves. `install.sh reset-login` deletes the login (not Swarm or your work) so
+you can create a new one. `install.sh reinstall` wipes Swarm (container,
+images, state volumes: owner, provider sign-in, AI keys, relay pairing) and
+installs it again with the saved `--relay`, `--name` and `--ref`;
+`install.sh uninstall` only removes it. Both keep Docker, Tailscale, the
+firewall and the project folder (unless `--delete-projects`). `--relay` only
 prefills the Connect step. `--name` sets the tailnet and machine name.
 
 It also serves Swarm's **AI gateway** (Swarm Control MCP on the scoped-token

@@ -3,6 +3,7 @@ import { createServer as createHTTP } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SwarmClient } from '@swarm-agent/sdk';
+import { createAccounts } from './accounts.mjs';
 import { body, createBoundary, isTailscaleServeOrigin, reject, safeError, text } from './boundary.mjs';
 import { operations } from './operations.mjs';
 
@@ -10,8 +11,23 @@ const headers = {
   'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
   'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 };
-export function appHandler(sdk, { origin, secret, project = '/project', relayUrl = '', deviceName = '', aiUrl = '', aiIp = '' }) {
-  const boundary = createBoundary(origin, secret), ops = operations(sdk, project, { relayUrl, deviceName, aiUrl, aiIp });
+// Who may create the first (owner) account. Behind Tailscale Serve, only a
+// signed-in tailnet user: Serve sets Tailscale-User-Login and strips any copy a
+// client sends, and the app listens on host loopback only. On a loopback origin
+// only this machine can reach the page at all.
+export function claimant(req, origin) {
+  if (!isTailscaleServeOrigin(origin)) return { allowed: true, login: '' };
+  const login = req.headers['tailscale-user-login'];
+  return typeof login === 'string' && /^[^\s]{1,200}$/.test(login) ? { allowed: true, login } : { allowed: false, login: '' };
+}
+
+export function appHandler(sdk, { origin, accounts, project = '/project', relayUrl = '', deviceName = '', aiUrl = '', aiIp = '' }) {
+  const boundary = createBoundary(origin), ops = operations(sdk, project, { relayUrl, deviceName, aiUrl, aiIp });
+  const signIn = (res, username) => {
+    const { id, session } = boundary.open(username);
+    res.setHeader('Set-Cookie', boundary.cookie(id));
+    return { csrf: session.csrf, username };
+  };
   let active = 0;
   const json = (res, status, value) => { res.writeHead(status, { ...headers, 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)); };
   return async (req, res) => {
@@ -30,16 +46,39 @@ export function appHandler(sdk, { origin, secret, project = '/project', relayUrl
       }
       if (req.method !== 'POST') reject(405, 'POST required.');
       const b = await body(req);
-      if (url.pathname === '/login') {
-        const { id, session } = boundary.login(b.secret);
-        res.setHeader('Set-Cookie', boundary.cookie(id));
-        json(res, 200, { csrf: session.csrf }); return;
+      // Sign-in API (public): status, first-owner sign-up, sign-in.
+      if (url.pathname === '/auth/status') {
+        json(res, 200, { ...(await accounts.status()), can_register: claimant(req, origin).allowed }); return;
+      }
+      if (url.pathname === '/auth/register') {
+        const who = claimant(req, origin);
+        if (!who.allowed) reject(403, 'Open this page from your own device on your tailnet to create the owner account.');
+        const username = typeof b.username === 'string' ? b.username.trim().toLowerCase() : '';
+        await accounts.register({ username, password: b.password, claimedBy: who.login });
+        await ops.ensureOwner(username);
+        json(res, 200, signIn(res, username)); return;
+      }
+      if (url.pathname === '/auth/login') {
+        const username = typeof b.username === 'string' ? b.username.trim().toLowerCase() : '';
+        const user = await accounts.verify({ username, password: b.password, code: typeof b.code === 'string' ? b.code : '' });
+        json(res, 200, signIn(res, user.username)); return;
       }
       const auth = boundary.authenticate(req);
-      if (url.pathname === '/logout') {
+      if (url.pathname === '/auth/logout') {
         boundary.logout(auth);
         res.setHeader('Set-Cookie', boundary.cookie('', 0));
         json(res, 200, { ok: true }); return;
+      }
+      if (url.pathname.startsWith('/auth/')) {
+        const done = () => { boundary.logoutOthers(auth); };
+        switch (url.pathname) {
+          case '/auth/me': json(res, 200, await accounts.details()); return;
+          case '/auth/2fa/start': json(res, 200, await accounts.startTwoFactor()); return;
+          case '/auth/2fa/confirm': { const r = await accounts.confirmTwoFactor(b.code); done(); json(res, 200, r); return; }
+          case '/auth/2fa/disable': { const r = await accounts.disableTwoFactor({ password: b.password, code: b.code }); done(); json(res, 200, r); return; }
+          case '/auth/password': { const r = await accounts.changePassword({ current: b.current, next: b.next, code: b.code }); done(); json(res, 200, r); return; }
+          default: reject(404, 'Unknown sign-in route.');
+        }
       }
       if (url.pathname === '/watch') {
         if (auth.streams.size >= 2) reject(429, 'Close another session stream first.');
@@ -66,7 +105,7 @@ export function appHandler(sdk, { origin, secret, project = '/project', relayUrl
         return;
       }
       if (url.pathname !== '/api') reject(404, 'Unknown application route.');
-      json(res, 200, await ops.run(text(b.op), b));
+      json(res, 200, await ops.run(text(b.op), b, auth.username));
     } catch (error) {
       const safe = safeError(error);
       if (!res.headersSent) json(res, safe.status, { error: safe.error }); else res.end();
@@ -77,8 +116,6 @@ export function appHandler(sdk, { origin, secret, project = '/project', relayUrl
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     const config = '/etc/swarmd/headless-app';
-    const secret = (await readFile(`${config}/login-secret`, 'utf8')).trim();
-    if (!/^[a-f0-9]{64}$/.test(secret)) throw new Error('Invalid secret');
     const sdk = new SwarmClient({ socketPath: '/var/lib/swarmd/local-transport/api.sock', timeoutMs: 30_000 });
     // Only private local-transport identity; never inherit an injected SDK token.
     sdk.setToken('');
@@ -88,7 +125,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // Tailnet address of the AI gateway, set by the installer when it publishes one.
     const aiUrl = /^https:\/\/[a-z0-9.-]+\.ts\.net:\d+\/mcp$/.test(process.env.APP_AI_URL || '') ? process.env.APP_AI_URL : '';
     const aiIp = /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(process.env.APP_AI_IP || '') ? process.env.APP_AI_IP : '';
-    const handler = appHandler(sdk, { origin, secret, relayUrl, deviceName, aiUrl, aiIp }); // Validate before listening.
+    const accounts = createAccounts({ file: `${config}/account.json`, issuer: `Swarm ${deviceName || 'app'}` });
+    const handler = appHandler(sdk, { origin, accounts, relayUrl, deviceName, aiUrl, aiIp }); // Validate before listening.
     // Tailscale Serve terminates TLS on the host; this listener stays plain HTTP
     // and must be published to host loopback only.
     const server = origin.startsWith('https:') && !isTailscaleServeOrigin(origin)
