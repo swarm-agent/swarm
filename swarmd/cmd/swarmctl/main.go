@@ -36,6 +36,8 @@ func main() {
 	switch os.Args[1] {
 	case "setup":
 		err = cmdSetup(os.Args[2:])
+	case "remote":
+		err = cmdRemote(os.Args[2:])
 	case "health":
 		err = cmdHealth(os.Args[2:])
 	case "auth":
@@ -62,6 +64,7 @@ func main() {
 func usage() {
 	fmt.Println("Usage:")
 	fmt.Println("  swarmctl setup <status|identity|credential|model|workspace|complete> --help")
+	fmt.Println("  swarmctl remote <status|init|enable|disable|approve|deny|reset>  # optional relay access, off by default")
 	fmt.Println("  swarmctl health [--addr URL]")
 	fmt.Println("  swarmctl auth codex status [--addr URL]")
 	fmt.Println("  swarmctl auth codex login [--method device|browser|manual] [--label NAME] [--addr URL]")

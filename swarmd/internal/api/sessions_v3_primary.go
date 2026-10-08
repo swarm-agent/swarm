@@ -1740,6 +1740,13 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if message.Role == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("message role is required")
 	}
+	// Assistant and system turns are written only by the runtime. Accepting
+	// them from a caller would let anyone with session access forge what the
+	// model believes it said or was instructed.
+	if !strings.EqualFold(message.Role, "user") {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New(`message role must be "user"; assistant and system turns are written by the runtime`)
+	}
+	message.Role = "user"
 	if len(message.ArtifactSelections) > 0 && !strings.EqualFold(message.Role, "user") {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("artifact selections are allowed only on user messages")
 	}
@@ -2847,13 +2854,16 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if rejectScopedPersistentResolve(w, r, req.Action) {
+		return
+	}
 	if err := s.validateProjectPermissionReply(principal, sessionID, req.Action); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
 	record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writePermissionPolicyError(w, err)
 		return
 	}
 	mutation, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)

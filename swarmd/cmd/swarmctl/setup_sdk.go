@@ -19,6 +19,13 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	name := fs.String("name", "headless-sdk", "token name")
 	seconds := fs.Int64("expires-in-seconds", 3600, "token lifetime (60-86400 seconds)")
 	id := fs.String("id", "", "token record ID to revoke")
+	workers := fs.Bool("workers", false, "also allow creating, managing and tasking workers (Swarm Control worker tools)")
+	usageLimits := fs.Bool("usage-limits", false, "also allow changing the account's daily usage limits")
+	settings := fs.Bool("settings", false, "also allow changing agent role default models")
+	agent := fs.String("agent", "", "mint a gateway token limited to this sealed agent's sessions and client tool calls (lifetime up to 30 days)")
+	messagesPerMinute := fs.Int("messages-per-minute", 0, "with --agent: most messages (model runs) the token may start per minute (default 120)")
+	sessionsPerHour := fs.Int("sessions-per-hour", 0, "with --agent: most new conversations per hour (default 300)")
+	aiAccess := fs.String("ai-access", "", "mint an AI key for Swarm Control (/mcp): read (default level for AI clients) or write (lifetime up to 365 days)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -34,9 +41,25 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	if revoke && strings.TrimSpace(*id) == "" {
 		return errors.New("--id is required")
 	}
+	maxSeconds := int64(86400)
+	if strings.TrimSpace(*agent) != "" {
+		if *workers || *usageLimits || *settings {
+			return errors.New("--agent tokens take no other authority")
+		}
+		maxSeconds = 30 * 86400
+	}
+	if level := strings.TrimSpace(*aiAccess); level != "" {
+		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" {
+			return errors.New("--ai-access keys take no other authority")
+		}
+		if level != "read" && level != "write" {
+			return errors.New("--ai-access must be read or write")
+		}
+		maxSeconds = 365 * 86400
+	}
 	if !revoke {
-		if *seconds < 60 || *seconds > 86400 || strings.TrimSpace(*name) == "" {
-			return errors.New("token name and lifetime of 60-86400 seconds required")
+		if *seconds < 60 || *seconds > maxSeconds || strings.TrimSpace(*name) == "" {
+			return fmt.Errorf("token name and lifetime of 60-%d seconds required", maxSeconds)
 		}
 		// Token export is explicit, pipe/file only. Never display it in a terminal.
 		if f, ok := output.(*os.File); ok {
@@ -73,7 +96,27 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 			ID string `json:"id"`
 		} `json:"record"`
 	}
-	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": []string{"sessions:read", "sessions:write"}, "expires_in_seconds": *seconds}
+	// Session access is the default; worker, spend-limit and model-default
+	// authority are explicit opt-ins because they outlive a single session.
+	scopes := []string{"sessions:read", "sessions:write"}
+	if *workers {
+		scopes = append(scopes, "automations:read", "automations:write")
+	}
+	if *usageLimits {
+		scopes = append(scopes, "usage:write")
+	}
+	if *settings {
+		scopes = append(scopes, "settings:write")
+	}
+	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": scopes, "expires_in_seconds": *seconds}
+	if level := strings.TrimSpace(*aiAccess); level != "" {
+		// The daemon derives scopes and Swarm Control levels from the level.
+		payload = map[string]any{"name": strings.TrimSpace(*name), "ai_access": level, "expires_in_seconds": *seconds}
+	} else if agentName := strings.TrimSpace(*agent); agentName != "" {
+		// The daemon refuses unless the agent is sealed (only client tools).
+		payload = map[string]any{"name": strings.TrimSpace(*name), "agent_name": agentName, "expires_in_seconds": *seconds,
+			"messages_per_minute": *messagesPerMinute, "sessions_per_hour": *sessionsPerHour}
+	}
 	if err := setupRequest(client, http.MethodPost, "/v3/auth/tokens", payload, &result); err != nil {
 		return err
 	}

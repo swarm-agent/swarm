@@ -80,7 +80,7 @@ Do not add session behavior to v1/v2 session handlers, legacy snapshots, fronten
 
 ### Networking, auth, and privacy defaults
 
-- Normal API and Desktop listeners default to `127.0.0.1`; unsupported non-loopback startup must fail closed. The explicit headless distribution flag `--container-sdk-port` adds a separate scoped-token-only session listener on container IPv4 interfaces with Desktop/bypass disabled. Publish it only to host loopback; never export the privileged local socket. See `containers/headless/README.md`.
+- Normal API and Desktop listeners default to `127.0.0.1`; unsupported non-loopback startup must fail closed. The explicit headless distribution flag `--container-sdk-port` adds a separate scoped-token-only session listener on container IPv4 interfaces with Desktop disabled; tool permissions stay the owner's choice (owner-only bypass setting), and `--lock-permission-policy` keeps them on. Publish it only to host loopback; never export the privileged local socket. See `containers/headless/README.md`.
 - Non-health daemon access requires authenticated local identity/attach credentials.
 - Permission bypass, provider diagnostics, V3 diagnostics, and tool-output-history retention default off.
 - Default permission output is privacy-redacted. Do not expose command output, secrets, provider payloads, or user content through logs/diagnostics by default.

@@ -1678,6 +1678,11 @@ func resolveRepositoryHeadCommit(workspacePath string) (string, error) {
 	return "", errors.New("resolve repository HEAD: empty commit")
 }
 
+// CurrentBranch returns the checked-out branch, or "" on a detached HEAD.
+func CurrentBranch(workspacePath string) (string, error) {
+	return currentBranch(workspacePath)
+}
+
 func currentBranch(workspacePath string) (string, error) {
 	branch, err := runGit(workspacePath, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {

@@ -7,6 +7,73 @@ that privileged socket or expose the daemon over a public listener.
 `--container-sdk-port` is only the basic session boundary: it does not grant
 apps, workers, sync, storage or publication APIs.
 
+## One-line install on your own server (private, on your tailnet)
+
+For a fresh Ubuntu 24.04 **x86_64** server you control, with Tailscale
+MagicDNS and HTTPS certificates turned on for your tailnet. As root:
+
+<copy label="Install">
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/swarm-control/containers/headless/app/install.sh \
+  | bash -s -- --relay https://swarm-relay.YOU.workers.dev
+</copy>
+
+`install.sh` installs Docker and Tailscale, prints one Tailscale login link to
+approve the machine, turns on a firewall that admits only the tailnet (and
+SSH until `--lock-ssh`), builds the runtime and this app from source
+(`Dockerfile.local`), and serves the app with `tailscale serve` at
+`https://NAME.TAILNET.ts.net` and prints that URL; no provider key or other
+secret is passed to it. On the first visit, from your own device on the
+tailnet, you create your login (username, password, optional authenticator
+code; see `examples/headless-app`). Setup then covers provider sign-in, models,
+a workspace and **Connect to Claude**, which shows a pairing code for your
+relay (see `packages/swarm-relay`).
+State lives in the usual named volumes plus `/var/lib/swarm-headless`. A
+5-minute timer runs `install.sh update`, which rebuilds only when the branch
+moves. `install.sh reset-login` deletes the login (not Swarm or your work) so
+you can create a new one. `install.sh reinstall` wipes Swarm (container,
+images, state volumes: owner, provider sign-in, AI keys, relay pairing) and
+installs it again with the saved `--relay`, `--name` and `--ref`;
+`install.sh uninstall` only removes it. Both keep Docker, Tailscale, the
+firewall and the project folder (unless `--delete-projects`). `--relay` only
+prefills the Connect step. `--name` sets the tailnet and machine name.
+
+**Network isolation.** The container runs on its own Docker network
+(`swarm-net`, bridge `br-swarm`) with public DNS (1.1.1.1, 9.9.9.9). Firewall
+rules (`SWARM-ISOLATE` from `DOCKER-USER`, `SWARM-HOST` from `INPUT`) let it
+reach the internet (model providers, Git hosts) but drop new connections to
+the tailnet (100.64.0.0/10), private ranges, link-local and cloud metadata
+(169.254.0.0/16) and to the server itself; replies on connections the host
+opened (the published app and gateway ports) pass. `swarm-headless-firewall`
+re-applies them at boot. `install.sh check-isolation` proves it from inside
+the container, and the installer runs it at the end. Verified in a sandbox
+with real Docker and iptables (host and metadata blocked by these rules,
+published port and DNS working); a real Tailscale interface was not
+available there.
+
+**Agent permissions.** Setup asks how agents work: **Ask me first**
+(default; agents pause before commands and file changes) or **On their own**
+(the owner-only bypass setting: no ordinary prompts; plans to accept, agent
+questions and hard denials still stop). It can be changed in Settings. Agents
+run as the daemon's user inside the container, so "on their own" relies on
+the container and network isolation above, not on prompts.
+
+It also serves Swarm's **AI gateway** (Swarm Control MCP on the scoped-token
+listener) on the tailnet at `https://NAME.TAILNET.ts.net:8444/mcp`: the
+container publishes port 7783 to host loopback only and `tailscale serve`
+is its only way in. It answers only to **AI keys** created in the app under
+**AI access over Tailscale** (none exist at first): read only, or read and
+write (start sessions, send messages, stop runs); never approve tool calls or
+manage workers, limits or models, and never any route but `/mcp`. The page
+shows the key once, lists keys with last use, revokes them, and shows the
+Tailscale access rule and client settings. `--no-ai-access` skips the gateway.
+Clients: Claude Code on a tailnet device (`claude mcp add --transport http`),
+or `packages/swarm-fleet` for Claude Code on the web and routines.
+
+This is a source build of an unpublished candidate, not the qualified release
+path below. Validated in a container with a local relay and a stand-in for
+Tailscale Serve; a real server, Tailscale and a deployed relay are not yet
+exercised by its checks.
+
 ## Build and launch
 
 Obtain `SWARM_RUNTIME=ghcr.io/swarm-agent/swarm-headless@sha256:<digest>` from the

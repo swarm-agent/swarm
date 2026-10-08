@@ -149,6 +149,7 @@ type Server struct {
 	automationV2Scheduler       *sessionruntime.AutomationV2Scheduler
 	webhookDispatcher           *webhook.Dispatcher
 	dataDir                     string
+	workspaceRoot               string
 	startupConfigPath           string
 	startedAt                   time.Time
 	bypassPermissions           bool
@@ -159,6 +160,10 @@ type Server struct {
 	artifactV3                  ArtifactV3Service
 
 	longSessionDesktopSampleLogOnce sync.Once
+
+	controlMCPRoutesOnce sync.Once
+	controlMCPRoutes     http.Handler
+	remoteTransport      RemoteTransportService
 
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
@@ -490,6 +495,15 @@ func (s *Server) SetStartupConfigPath(path string) {
 		return
 	}
 	s.startupConfigPath = strings.TrimSpace(path)
+}
+
+// SetWorkspaceRoot names the folder (the daemon's startup directory) where
+// Swarm Control may create new workspaces. Empty disables creation.
+func (s *Server) SetWorkspaceRoot(path string) {
+	if s == nil {
+		return
+	}
+	s.workspaceRoot = strings.TrimSpace(path)
 }
 
 func (s *Server) SetDataDir(path string) {
@@ -3327,9 +3341,12 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if rejectScopedPersistentResolve(w, r, req.Action) {
+			return
+		}
 		record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			writePermissionPolicyError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -4206,6 +4223,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					}
 					reqWithAuth := requestWithActorContext(r, actor)
 					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) {
+						return
+					}
 					next.ServeHTTP(w, reqWithAuth)
 					return
 				}
@@ -4246,6 +4266,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			reqWithAuth := requestWithActorContext(r, actor)
 			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) {
+				return
+			}
 			next.ServeHTTP(w, reqWithAuth)
 			return
 		}
@@ -4255,6 +4278,17 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid or missing attach token"))
 	})
 }
+
+// gateAIKey limits AI keys to Swarm Control, where their level is enforced
+// per tool; every other route would bypass that level.
+func gateAIKey(w http.ResponseWriter, r *http.Request, rec *pebblestore.ScopedTokenRecord) bool {
+	if isAIKey(rec) && r.URL.Path != controlMCPPath {
+		writeError(w, http.StatusForbidden, errors.New("AI keys work only through Swarm Control (/mcp)"))
+		return false
+	}
+	return true
+}
+
 func extractAttachToken(r *http.Request) string {
 	headerToken := strings.TrimSpace(r.Header.Get("X-Swarm-Token"))
 	if headerToken != "" {
@@ -4485,9 +4519,48 @@ func methodNotAllowed(w http.ResponseWriter) {
 	writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 }
 
+// permissionPolicyLocked reports whether the daemon started with its
+// permission policy locked (--lock-permission-policy).
+func (s *Server) permissionPolicyLocked() bool {
+	locker, ok := s.perm.(interface{ PolicyLocked() bool })
+	return ok && locker.PolicyLocked()
+}
+
+// writePermissionPolicyError reports a locked policy as 403 and other policy
+// errors as 400.
+func writePermissionPolicyError(w http.ResponseWriter, err error) {
+	if errors.Is(err, permission.ErrPolicyLocked) {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
+	writeError(w, http.StatusBadRequest, err)
+}
+
+// rejectScopedPersistentResolve keeps scoped tokens (SDK, Swarm Control relay
+// devices, workers) to one-off decisions: allow_always/deny_always save a
+// policy rule, and permission policy belongs to the machine owner.
+func rejectScopedPersistentResolve(w http.ResponseWriter, r *http.Request, action string) bool {
+	if _, scoped := ScopedTokenFromRequest(r); scoped && permission.IsPersistentAction(action) {
+		writeError(w, http.StatusForbidden, errors.New("saving a permission rule requires the machine owner; scoped tokens may only allow or deny once"))
+		return true
+	}
+	return false
+}
+
 func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 	if s.perm == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("permission service is not configured"))
+		return
+	}
+	// Permission policy (bypass, rules, capability and subagent policies, the
+	// bash profile) belongs to the machine owner. Scoped tokens never reach it,
+	// whatever their scopes.
+	if _, scoped := ScopedTokenFromRequest(r); scoped {
+		writeError(w, http.StatusForbidden, errors.New("permission policy requires the machine owner"))
+		return
+	}
+	if principal, ok := PrincipalFromRequest(r); !ok || !principal.Valid() {
+		writeError(w, http.StatusUnauthorized, identity.ErrPrincipalRequired)
 		return
 	}
 	path := strings.TrimSpace(r.URL.Path)
@@ -4497,11 +4570,15 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			methodNotAllowed(w)
 			return
 		}
+		if s.permissionPolicyLocked() {
+			writeError(w, http.StatusForbidden, permission.ErrPolicyLocked)
+			return
+		}
 		var req struct {
 			Enabled bool `json:"enabled"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			writePermissionPolicyError(w, err)
 			return
 		}
 		cfg, err := s.loadStartupConfig()
@@ -4546,7 +4623,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bash_profile": policy.BashProfile})
@@ -4555,12 +4632,12 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				BashProfile permission.BashApprovalProfile `json:"bash_profile"`
 			}
 			if err := decodeJSON(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			policy, err := s.perm.UpdateBashApprovalProfileForAccount(accountScopeID, req.BashProfile)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "bash_profile": policy.BashProfile})
@@ -4573,7 +4650,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -4589,30 +4666,30 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				ActiveExecutionLimit *int                             `json:"active_execution_limit"`
 			}
 			if err := decodeJSON(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			if req.ActiveExecutionLimit != nil {
 				if err := permission.ValidateActiveExecutionLimit(*req.ActiveExecutionLimit); err != nil {
-					writeError(w, http.StatusBadRequest, err)
+					writePermissionPolicyError(w, err)
 					return
 				}
 			}
 			if req.SessionDeploy != nil {
 				if err := permission.ValidateSessionDeployPolicy(*req.SessionDeploy); err != nil {
-					writeError(w, http.StatusBadRequest, err)
+					writePermissionPolicyError(w, err)
 					return
 				}
 			}
 			if req.PlanAcceptance != nil {
 				if err := permission.ValidatePlanAcceptancePolicy(*req.PlanAcceptance); err != nil {
-					writeError(w, http.StatusBadRequest, err)
+					writePermissionPolicyError(w, err)
 					return
 				}
 			}
 			policy, err := s.perm.UpdateExecutionCapabilityPoliciesForAccount(accountScopeID, req.SessionDeploy, req.PlanAcceptance, req.ActiveExecutionLimit)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -4630,14 +4707,14 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": policy.Subagents})
 		case http.MethodPost, http.MethodPut:
 			var req permission.SubagentPolicy
 			if err := decodeJSON(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			updater, ok := s.perm.(interface {
@@ -4649,7 +4726,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			}
 			policy, err := updater.UpdateSubagentPolicyForAccount(accountScopeID, req)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "subagents": policy.Subagents})
@@ -4662,7 +4739,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		case http.MethodGet:
 			policy, err := s.perm.CurrentPolicyForAccount(accountScopeID)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy, "bypass_permissions": s.permissionBypassForAccount(accountScopeID)})
@@ -4674,7 +4751,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				Pattern  string `json:"pattern"`
 			}
 			if err := decodeJSON(r, &req); err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			rule, err := s.perm.UpsertRuleForAccount(accountScopeID, permission.PolicyRule{
@@ -4684,7 +4761,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 				Pattern:  req.Pattern,
 			})
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
+				writePermissionPolicyError(w, err)
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "rule": rule})
@@ -4699,7 +4776,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 		policy, err := s.perm.ResetPolicyForAccount(accountScopeID)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			writePermissionPolicyError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy})
@@ -4711,7 +4788,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 		explain, err := s.perm.ExplainToolForAccount(accountScopeID, r.URL.Query().Get("mode"), r.URL.Query().Get("tool"), r.URL.Query().Get("arguments"), nil)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			writePermissionPolicyError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "explain": explain})
@@ -4729,7 +4806,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 		}
 		removed, err := s.perm.RemoveRuleForAccount(accountScopeID, ruleID)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			writePermissionPolicyError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "removed": removed, "rule_id": ruleID})

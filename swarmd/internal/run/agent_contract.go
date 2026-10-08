@@ -73,15 +73,19 @@ func (s *Service) customAgentToolDefinitionsForAccount(accountScopeID string) []
 		if description == "" {
 			description = fmt.Sprintf("Custom agent tool (%s)", strings.TrimSpace(customTool.Kind))
 		}
+		parameters := map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		}
+		if customTool.Kind == pebblestore.AgentCustomToolKindClient {
+			parameters = customTool.InputSchema
+		}
 		definitions = append(definitions, tool.Definition{
 			Type:        "function",
 			Name:        name,
 			Description: description,
-			Parameters: map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"additionalProperties": false,
-			},
+			Parameters:  parameters,
 		})
 	}
 	return definitions
@@ -136,7 +140,7 @@ func (s *Service) listCustomAgentToolsForRun(accountScopeID string) ([]pebblesto
 	}
 	filtered := tools[:0]
 	for _, customTool := range tools {
-		if pebblestore.IsRemovedAgentToolName(customTool.Name) {
+		if pebblestore.IsRemovedAgentToolName(customTool.Name) || IsReservedToolName(customTool.Name) {
 			continue
 		}
 		filtered = append(filtered, customTool)
@@ -161,6 +165,24 @@ var storedV3BuiltinToolNames = func() []string {
 	}
 	return names
 }()
+
+var reservedToolNames = func() map[string]struct{} {
+	reserved := map[string]struct{}{
+		"ask_user": {}, "exit_plan_mode": {}, "plan_manage": {}, "task": {}, "compact": {},
+		"edit_pending_plan": {}, "task_progress": {}, mediaInspectToolName: {},
+	}
+	for _, name := range storedV3BuiltinToolNames {
+		reserved[name] = struct{}{}
+	}
+	return reserved
+}()
+
+// IsReservedToolName reports whether name belongs to a built-in or
+// control-plane tool, under any alias.
+func IsReservedToolName(name string) bool {
+	_, ok := reservedToolNames[canonicalToolName(name)]
+	return ok
+}
 
 // ValidateStoredV3AgentToolContract checks the same stored contract and resolved
 // states as execution, without compiling policy, schemas or instructions.

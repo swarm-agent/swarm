@@ -1,0 +1,21 @@
+{
+  "name": "@swarm-agent/relay-cloudflare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference swarm-remote-1 relay for Cloudflare Workers: an OAuth-protected MCP endpoint that forwards to Swarm machines connected over outbound WebSockets.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.3"
+  },
+  "devDependencies": {
+    "wrangler": "4.148.0"
+  },
+  "license": "MIT",
+  "overrides": {
+    "sharp": "0.35.5"
+  }
+}

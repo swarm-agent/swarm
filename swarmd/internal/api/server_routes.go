@@ -8,6 +8,9 @@ func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleReady)
 	mux.HandleFunc("/ws", s.handleDesktopStream)
+	mux.HandleFunc(controlMCPPath, s.handleControlMCP)
+	mux.HandleFunc("/v1/remote", s.handleRemoteTransport)
+	mux.HandleFunc("/v1/remote/", s.handleRemoteTransport)
 }
 
 func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {
@@ -56,12 +59,29 @@ func (s *Server) registerSwarmRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v2/custom-tools", s.handleCustomToolsV2)
-	mux.HandleFunc("/v2/custom-tools/", s.handleCustomToolByNameV2)
-	mux.HandleFunc("/v2/agents", s.handleAgentsV2)
-	mux.HandleFunc("/v2/agents/defaults/restore", s.handleAgentDefaultsRestoreV2)
-	mux.HandleFunc("/v2/agents/defaults/reset", s.handleAgentDefaultsResetV2)
-	mux.HandleFunc("/v2/agents/", s.handleAgentByNameV2)
+	mux.HandleFunc("/v2/custom-tools", s.agentConfigScope(s.handleCustomToolsV2))
+	mux.HandleFunc("/v2/custom-tools/", s.agentConfigScope(s.handleCustomToolByNameV2))
+	mux.HandleFunc("/v2/agents", s.agentConfigScope(s.handleAgentsV2))
+	mux.HandleFunc("/v2/agents/defaults/restore", s.agentConfigScope(s.handleAgentDefaultsRestoreV2))
+	mux.HandleFunc("/v2/agents/defaults/reset", s.agentConfigScope(s.handleAgentDefaultsResetV2))
+	mux.HandleFunc("/v2/agents/", s.agentConfigScope(s.handleAgentByNameV2))
+}
+
+// agentConfigScope guards agent and custom-tool configuration for scoped
+// tokens. Changing an agent's tools or adding a custom (shell) tool decides
+// what agents may execute, so any change needs admin; reading needs
+// agents:read. Owner and local callers carry no scoped token and are unaffected.
+func (s *Server) agentConfigScope(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			if !s.requireScope(w, r, "agents:read") {
+				return
+			}
+		} else if !s.requireScope(w, r, "admin") {
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
