@@ -121,9 +121,11 @@ func TestLocalDockerDeployAdmitsMountInsideWorkspace(t *testing.T) {
 func TestLocalDockerDeployRefusesPrivilegedAndReservedLabels(t *testing.T) {
 	workspace := existingWorkspaceDir(t)
 	cases := map[string]func(req *DeployRequest){
-		"privileged":     func(req *DeployRequest) { req.Environment.Container.Privileged = true },
-		"reserved label": func(req *DeployRequest) { req.Environment.Labels = map[string]string{"swarm.account_scope_id": "other"} },
-		"dash image":     func(req *DeployRequest) { req.Environment.Container.Image = "--privileged" },
+		"privileged": func(req *DeployRequest) { req.Environment.Container.Privileged = true },
+		"reserved label": func(req *DeployRequest) {
+			req.Environment.Labels = map[string]string{"swarm.account_scope_id": "other"}
+		},
+		"dash image": func(req *DeployRequest) { req.Environment.Container.Image = "--privileged" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
