@@ -22,6 +22,9 @@ func validateContainerSDK(cfg Config) error {
 	if cfg.DesktopPort != 0 {
 		return errors.New("container SDK requires desktop-port=0")
 	}
+	if ip := net.ParseIP(cfg.ContainerSDKHost); ip == nil || ip.To4() == nil || !(ip.IsLoopback() || ip.IsUnspecified()) {
+		return errors.New("container-sdk-host must be 127.0.0.1 (host service) or 0.0.0.0 (inside a container)")
+	}
 	_, port, err := net.SplitHostPort(cfg.ListenAddr)
 	if err != nil {
 		return err

@@ -874,7 +874,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	d.httpServer = httpServer
 	if cfg.ContainerSDKPort > 0 {
 		d.containerSDKServer = &http.Server{
-			Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.ContainerSDKPort)),
+			Addr:              net.JoinHostPort(cfg.ContainerSDKHost, strconv.Itoa(cfg.ContainerSDKPort)),
 			Handler:           apiServer.ContainerSDKHandler(),
 			ReadTimeout:       10 * time.Second,
 			ReadHeaderTimeout: 5 * time.Second,

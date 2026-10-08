@@ -19,7 +19,7 @@ Launch is centered on reliable local operation. Preserve loopback-only defaults,
 
 ### Retired or deferred concepts
 
-- **Dedicated local-container execution is retired.** Do not restore container profiles, stores, routes, images, harnesses, or container-specific workspace behavior. Containers or other non-local execution may return only as future runner targets through a separately designed contract.
+- **Dedicated local-container execution is retired.** Do not restore container profiles, stores, routes, images, harnesses, or container-specific workspace behavior. Containers or other non-local execution may return only as future runner targets through a separately designed contract. The agent sandbox (below) is that separately designed contract for confining agent commands; it is not a workspace runner and adds no container-specific workspace behavior.
 - **The general-purpose Flow product is retired.** Do not add Flow definitions, Flow APIs, or a parallel Flow executor. Workspace Actions are the current reusable executable customization. Some UI code uses “flow” as a local label for pinned Action/AI-commit combinations; that is not a standalone Flow runtime or persistence authority.
 - **System agents remain code-owned.** Legacy mutable agent-profile APIs remain compatibility/migration debt. The explicit application-agent contract (`/v3/application-agents`, SDK `client.apps`) adds principal-owned, revisioned application instructions/context and canonical V3 conversation ownership; it does not change system-agent models, tools, permissions or orchestration authority. Project/worker links retain their existing execution and context contracts.
 - Hosted control planes, managed synchronization, remote deployment, and retired runner route-mirroring are not current product contracts.
@@ -74,6 +74,7 @@ Do not add session behavior to v1/v2 session handlers, legacy snapshots, fronten
 ### Targets and execution
 
 - Local host execution is the launch path.
+- **Agent sandbox** (`swarmd/internal/sandbox`). Swarm stays outside with its keys, storage and local socket; agent `bash` and the daemon's Git on agent-writable repositories run in one hardened container per project, mounted at the same paths. Every daemon Git call site on a workspace or worktree must pass through `sandbox.RouteGit` (`Prepare`/`Command`/`RoutedArgv`); `TestEveryDaemonGitCommandIsRouted` guards this. Never mount daemon storage, credential directories or the daemon's home into a sandbox, never pass daemon environment in, never run a sandbox as root or privileged. No sandbox, no autonomy: permission bypass takes effect only while the sandbox is active (`permission.Service.SetBypassGate`). File tools stay in the daemon and hard-refuse protected paths (`tool.SetProtectedPaths`). Docker-backed proof: `scripts/test-sandbox.sh` (not a hermetic tier).
 - Generic Swarm targets, topology, workspace bindings, and route identity remain valid product contracts. Preserve required account, workspace, target, and runtime-path metadata.
 - Never route V3 work through retired local-container or hosted-runner code.
 - Do not expand non-local execution incidentally. A future runner must be explicit, separately owned, and preserve V3 durability and permission boundaries.

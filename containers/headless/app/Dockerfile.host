@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1
+# Build recipe for the host-service install (install.sh). It produces files,
+# not an image: `docker build -f containers/headless/app/Dockerfile.host
+# -o type=local,dest=DIR .` writes DIR/bin (swarmd, swarmctl,
+# swarm-fff-search, node), DIR/lib (libfff_c.so) and DIR/app (the SDK and the
+# setup app). Swarm then runs on the server as a systemd service under its own
+# user and starts each project's agent sandbox with Docker.
+#
+# The daemon is built against an older glibc than the server's (Debian
+# bookworm, glibc 2.36; Ubuntu 24.04 has 2.39) so the binaries run there.
+ARG BUILD_IMAGE=docker.io/library/golang:1.26.7-bookworm
+ARG NODE_IMAGE=docker.io/library/node:22.22.0-trixie-slim
+
+FROM ${BUILD_IMAGE} AS daemon
+ARG TARGETOS
+ARG TARGETARCH
+RUN test "${TARGETOS}/${TARGETARCH}" = linux/amd64 || \
+    { echo 'Headless Swarm supports only linux/amd64 (vendored glibc FFF)' >&2; exit 1; }
+ENV CGO_ENABLED=1 GOMAXPROCS=2 GOTOOLCHAIN=local
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY swarmd/go.mod swarmd/go.sum ./swarmd/
+RUN cd swarmd && go mod download
+COPY . .
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILT_AT=unknown
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out/bin /out/lib && cd swarmd && \
+    flags="-X swarm-refactor/swarmtui/pkg/buildinfo.Version=${VERSION} -X swarm-refactor/swarmtui/pkg/buildinfo.Commit=${COMMIT} -X swarm-refactor/swarmtui/pkg/buildinfo.BuiltAt=${BUILT_AT}" && \
+    for command in swarmd swarmctl swarm-fff-search; do \
+      go build -mod=readonly -p 2 -trimpath -ldflags "$flags" -o "/out/bin/$command" "./cmd/$command" || exit 1; \
+    done && \
+    cp internal/fff/lib/linux-amd64-gnu/libfff_c.so /out/lib/
+
+FROM ${NODE_IMAGE} AS app
+WORKDIR /src/packages/sdk
+COPY packages/sdk/package.json packages/sdk/package-lock.json packages/sdk/tsconfig.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY packages/sdk/src ./src
+COPY packages/sdk/scripts ./scripts
+RUN npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+WORKDIR /src/examples/headless-app
+COPY examples/headless-app/package.json examples/headless-app/package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY examples/headless-app ./
+
+FROM scratch
+COPY --from=daemon /out/bin/ /bin/
+COPY --from=daemon /out/lib/ /lib/
+COPY --from=app /usr/local/bin/node /bin/node
+COPY --from=app /src/packages/sdk /app/packages/sdk
+COPY --from=app /src/examples/headless-app /app/examples/headless-app
+COPY LICENSE THIRD_PARTY_NOTICES.md containers/headless/FFF-LICENSE /doc/

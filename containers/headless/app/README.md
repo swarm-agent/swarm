@@ -13,66 +13,77 @@ For a fresh Ubuntu 24.04 **x86_64** server you control, with Tailscale
 MagicDNS and HTTPS certificates turned on for your tailnet. As root:
 
 <copy label="Install">
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/swarm-control/containers/headless/app/install.sh \
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/dev/containers/headless/app/install.sh \
   | bash -s -- --relay https://swarm-relay.YOU.workers.dev
 </copy>
 
-`install.sh` installs Docker and Tailscale, prints one Tailscale login link to
-approve the machine, turns on a firewall that admits only the tailnet (and
-SSH until `--lock-ssh`), builds the runtime and this app from source
-(`Dockerfile.local`), and serves the app with `tailscale serve` at
-`https://NAME.TAILNET.ts.net` and prints that URL; no provider key or other
+`install.sh` installs Docker, gVisor and Tailscale, prints one Tailscale login
+link to approve the machine, turns on a firewall that admits only the tailnet
+(and SSH until `--lock-ssh`), builds Swarm and this app from source
+(`Dockerfile.host`, exported as files) and serves the app with
+`tailscale serve` at `https://NAME.TAILNET.ts.net`; no provider key or other
 secret is passed to it. On the first visit, from your own device on the
 tailnet, you create your login (username, password, optional authenticator
 code; see `examples/headless-app`). Setup then covers provider sign-in, models,
 a workspace and **Connect to Claude**, which shows a pairing code for your
 relay (see `packages/swarm-relay`).
-State lives in the usual named volumes plus `/var/lib/swarm-headless`. A
-5-minute timer runs `install.sh update`, which rebuilds only when the branch
-moves. `install.sh reset-login` deletes the login (not Swarm or your work) so
-you can create a new one. `install.sh reinstall` wipes Swarm (container,
-images, state volumes: owner, provider sign-in, AI keys, relay pairing) and
-installs it again with the saved `--relay`, `--name` and `--ref`;
-`install.sh uninstall` only removes it. Both keep Docker, Tailscale, the
-firewall and the project folder (unless `--delete-projects`). `--relay` only
-prefills the Connect step. `--name` sets the tailnet and machine name.
 
-**Network isolation.** The container runs on its own Docker network
-(`swarm-net`, bridge `br-swarm`) with public DNS (1.1.1.1, 9.9.9.9). Firewall
-rules (`SWARM-ISOLATE` from `DOCKER-USER`, `SWARM-HOST` from `INPUT`) let it
-reach the internet (model providers, Git hosts) but drop new connections to
-the tailnet (100.64.0.0/10), private ranges, link-local and cloud metadata
-(169.254.0.0/16) and to the server itself; replies on connections the host
-opened (the published app and gateway ports) pass. `swarm-headless-firewall`
-re-applies them at boot. `install.sh check-isolation` proves it from inside
-the container, and the installer runs it at the end. Verified in a sandbox
-with real Docker and iptables (host and metadata blocked by these rules,
-published port and DNS working); a real Tailscale interface was not
-available there.
+**Layout.** Swarm runs on the server itself as two systemd services under a
+dedicated `swarm` user: `swarm-headless` (the daemon, `--sandbox=required`)
+and `swarm-headless-app` (this app on 127.0.0.1:8443). Binaries live in
+`/opt/swarm/current`; Swarm's state in `/etc/swarmd`, `/var/lib/swarmd`,
+`/var/cache/swarmd` and `/var/log/swarmd` (mode 0700, systemd state
+directories); agent worktrees under `/var/lib/swarm`; projects in
+`/var/lib/swarm-headless/project`. `swarmctl` (in `/usr/local/bin`) runs as
+the `swarm` user, e.g. `sudo swarmctl remote approve CODE`. A 5-minute timer
+runs `install.sh update`, which rebuilds only when the branch moves.
+`install.sh reset-login` deletes the login (not Swarm or your work).
+`install.sh reinstall` wipes Swarm (services, binaries, sandboxes, state:
+owner, provider sign-in, AI keys, relay pairing, agent worktrees) and installs
+it again with the saved `--relay`, `--name` and `--ref`; `install.sh uninstall`
+only removes it. Both keep Docker, gVisor, Tailscale, ufw and the project
+folder (unless `--delete-projects`), and remove the earlier
+Swarm-in-a-container layout if present.
+
+**Agent sandboxes.** Swarm keeps its keys, login and local socket to itself.
+Agents' commands, and Swarm's own Git on their projects, run in one sandbox
+per project (`swarmd/internal/sandbox`, image `containers/sandbox`): gVisor
+when it runs correctly on the machine (else Docker's default runtime), all
+capabilities dropped, no-new-privileges, the `swarm` user's uid, memory and
+process limits, only that project and its worktrees mounted at the same paths,
+nothing from Swarm's environment. The sandbox network (`swarm-sandbox`, bridge
+`br-swarm-sbx`, rules from `containers/sandbox/firewall.sh`, re-applied at
+boot by `swarm-sandbox-firewall`) reaches the internet but drops new
+connections to this server, the tailnet, private ranges, loopback and cloud
+metadata. File tools refuse Swarm's storage and credential paths outright.
+`install.sh check-isolation` proves the network rules from inside a sandbox
+(the installer runs it at the end); `install.sh check-sandbox` shows each
+running sandbox's runtime, user, capabilities, limits and mounts.
 
 **Agent permissions.** Setup asks how agents work: **Ask me first**
 (default; agents pause before commands and file changes) or **On their own**
 (the owner-only bypass setting: no ordinary prompts; plans to accept, agent
-questions and hard denials still stop). It can be changed in Settings. Agents
-run as the daemon's user inside the container, so "on their own" relies on
-the container and network isolation above, not on prompts.
+questions and hard denials still stop). No sandbox, no autonomy: bypass takes
+effect only while the agent sandbox is active, and turning it on is refused
+otherwise.
 
 It also serves Swarm's **AI gateway** (Swarm Control MCP on the scoped-token
-listener) on the tailnet at `https://NAME.TAILNET.ts.net:8444/mcp`: the
-container publishes port 7783 to host loopback only and `tailscale serve`
-is its only way in. It answers only to **AI keys** created in the app under
-**AI access over Tailscale** (none exist at first): read only, or read and
-write (start sessions, send messages, stop runs); never approve tool calls or
-manage workers, limits or models, and never any route but `/mcp`. The page
-shows the key once, lists keys with last use, revokes them, and shows the
-Tailscale access rule and client settings. `--no-ai-access` skips the gateway.
-Clients: Claude Code on a tailnet device (`claude mcp add --transport http`),
-or `packages/swarm-fleet` for Claude Code on the web and routines.
+listener, bound to 127.0.0.1:7783) on the tailnet at
+`https://NAME.TAILNET.ts.net:8444/mcp`; `tailscale serve` is its only way in.
+It answers only to **AI keys** created in the app under **AI access over
+Tailscale** (none exist at first): read only, or read and write (start
+sessions, send messages, stop runs); never approve tool calls or manage
+workers, limits or models, and never any route but `/mcp`. The page shows the
+key once, lists keys with last use, revokes them, and shows the Tailscale
+access rule and client settings. `--no-ai-access` skips the gateway. Clients:
+Claude Code on a tailnet device (`claude mcp add --transport http`), or
+`packages/swarm-fleet` for Claude Code on the web and routines.
 
 This is a source build of an unpublished candidate, not the qualified release
-path below. Validated in a container with a local relay and a stand-in for
-Tailscale Serve; a real server, Tailscale and a deployed relay are not yet
-exercised by its checks.
+path below. The sandbox is checked with real Docker by
+`scripts/test-sandbox.sh` (a positive and negative suite, and a red-team run
+through a real daemon); gVisor, a real Tailscale interface and a deployed
+relay are exercised only on a real server.
 
 ## Build and launch
 

@@ -126,7 +126,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     const aiUrl = /^https:\/\/[a-z0-9.-]+\.ts\.net:\d+\/mcp$/.test(process.env.APP_AI_URL || '') ? process.env.APP_AI_URL : '';
     const aiIp = /^100\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(process.env.APP_AI_IP || '') ? process.env.APP_AI_IP : '';
     const accounts = createAccounts({ file: `${config}/account.json`, issuer: `Swarm ${deviceName || 'app'}` });
-    const handler = appHandler(sdk, { origin, accounts, relayUrl, deviceName, aiUrl, aiIp, settingsFile: `${config}/settings.json` }); // Validate before listening.
+    // The project folder is /project inside a container; a host-service install
+    // sets its own absolute path.
+    const project = /^\/[A-Za-z0-9._\/-]+$/.test(process.env.APP_PROJECT || '') ? process.env.APP_PROJECT.replace(/\/+$/, '') : '/project';
+    const handler = appHandler(sdk, { origin, accounts, project, relayUrl, deviceName, aiUrl, aiIp, settingsFile: `${config}/settings.json` }); // Validate before listening.
     // Tailscale Serve terminates TLS on the host; this listener stays plain HTTP
     // and must be published to host loopback only.
     const server = origin.startsWith('https:') && !isTailscaleServeOrigin(origin)
@@ -136,7 +139,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     // No browser WebSocket proxy: only CSRF-protected POST streaming is supported.
     server.on('upgrade', (_req, socket) => socket.destroy());
     server.on('error', () => { console.error('App listener failed.'); process.exit(1); });
-    server.listen(8443, '0.0.0.0'); // Container-only; launch must publish to host loopback.
+    // Inside a container 0.0.0.0, published to host loopback only; a host-service
+    // install listens on loopback directly (APP_LISTEN=127.0.0.1).
+    server.listen(8443, process.env.APP_LISTEN === '127.0.0.1' ? '127.0.0.1' : '0.0.0.0');
     const shutdown = () => { server.close(); server.closeAllConnections(); };
     process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
   } catch { console.error('App startup failed. Verify the private installation files.'); process.exitCode = 1; }

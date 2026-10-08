@@ -20,6 +20,7 @@ type Config struct {
 	ListenAddr              string
 	DesktopPort             int
 	ContainerSDKPort        int
+	ContainerSDKHost        string
 	LockPermissionPolicy    bool
 	PeerTransportPort       int
 	BypassPermissions       bool
@@ -83,6 +84,7 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
 	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
+	fs.StringVar(&cfg.ContainerSDKHost, "container-sdk-host", "0.0.0.0", "IPv4 address for the scoped-token SDK listener: 0.0.0.0 inside a container, 127.0.0.1 when Swarm runs as a host service")
 	fs.BoolVar(&cfg.BypassPermissions, "bypass-permissions", startupCfg.BypassPermissions, "bypass normal tool permission prompts (exit_plan_mode still requires approval)")
 	// Never persisted: the lock is a property of how this process was started,
 	// so nothing reachable at runtime (API, agents, config edits) can lift it.
