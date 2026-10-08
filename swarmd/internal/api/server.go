@@ -4213,7 +4213,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					}
 					reqWithAuth := requestWithActorContext(r, actor)
 					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) {
+					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) {
 						return
 					}
 					next.ServeHTTP(w, reqWithAuth)
@@ -4256,7 +4256,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			reqWithAuth := requestWithActorContext(r, actor)
 			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) {
+			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) {
 				return
 			}
 			next.ServeHTTP(w, reqWithAuth)
@@ -4268,6 +4268,17 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		writeError(w, http.StatusUnauthorized, errors.New("invalid or missing attach token"))
 	})
 }
+
+// gateAIKey limits AI keys to Swarm Control, where their level is enforced
+// per tool; every other route would bypass that level.
+func gateAIKey(w http.ResponseWriter, r *http.Request, rec *pebblestore.ScopedTokenRecord) bool {
+	if isAIKey(rec) && r.URL.Path != controlMCPPath {
+		writeError(w, http.StatusForbidden, errors.New("AI keys work only through Swarm Control (/mcp)"))
+		return false
+	}
+	return true
+}
+
 func extractAttachToken(r *http.Request) string {
 	headerToken := strings.TrimSpace(r.Header.Get("X-Swarm-Token"))
 	if headerToken != "" {

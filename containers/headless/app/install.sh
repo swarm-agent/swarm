@@ -9,6 +9,9 @@
 # link), builds Swarm and the app from source, and serves the app only on your
 # tailnet at https://NAME.TAILNET.ts.net. The app then walks you through the
 # rest: owner, provider sign-in, models, workspace and Connect to Claude.
+# It also serves Swarm's AI gateway (Swarm Control MCP) on your tailnet at
+# https://NAME.TAILNET.ts.net:8444/mcp; it answers only to AI keys you create in
+# the app (none exist at first). Skip it with --no-ai-access.
 # Nothing listens on the public internet and no secret is passed to this script.
 #
 # Later: `install.sh update` (also run by a 5-minute timer) rebuilds when the
@@ -27,13 +30,14 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--lock-ssh]
+Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--lock-ssh] [--no-ai-access]
        install.sh update | up | secret | status
 
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   tailnet machine name and Swarm machine name (default: swarm)
   --ref BRANCH  swarm branch to build (default: swarm-control)
   --lock-ssh    also close public SSH (use after `tailscale ssh` works)
+  --no-ai-access  do not serve the AI gateway on the tailnet (port 8444)
 USAGE
 }
 
@@ -54,9 +58,13 @@ up() {
     docker stop -t 15 "$CONTAINER" >/dev/null
     docker rm "$CONTAINER" >/dev/null
   fi
+  # The AI gateway (scoped-token listener, port 7783) is published to host
+  # loopback only; Tailscale Serve is its only way in.
+  local ai=()
+  [[ ${AI_ACCESS:-off} == on ]] && ai=(-p 127.0.0.1:7783:7783 -e APP_AI_URL="${APP_AI_URL:-}" -e APP_AI_IP="${APP_AI_IP:-}")
   docker run -d --name "$CONTAINER" --restart=unless-stopped --stop-timeout=15 \
     --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=512 --memory=6g \
-    -p 127.0.0.1:8443:8443 \
+    -p 127.0.0.1:8443:8443 "${ai[@]}" \
     -e APP_ORIGIN="$APP_ORIGIN" -e APP_RELAY_URL="$APP_RELAY_URL" -e APP_DEVICE_NAME="$APP_DEVICE_NAME" \
     -v swarm-config:/etc/swarmd -v swarm-data:/var/lib/swarmd \
     -v swarm-cache:/var/cache/swarmd -v swarm-logs:/var/log/swarmd \
@@ -120,13 +128,14 @@ secret() {
 }
 
 install_all() {
-  local relay='' name=swarm ref=swarm-control lock_ssh=0
+  local relay='' name=swarm ref=swarm-control lock_ssh=0 ai_access=on
   while (($#)); do
     case $1 in
       --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
       --name) name=${2:?--name needs a value}; shift 2 ;;
       --ref) ref=${2:?--ref needs a branch}; shift 2 ;;
       --lock-ssh) lock_ssh=1; shift ;;
+      --no-ai-access) ai_access=off; shift ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "unknown option $1" ;;
     esac
@@ -178,6 +187,9 @@ SWARM_REF=$ref
 APP_ORIGIN=https://$dns
 APP_RELAY_URL=${relay:-$previous_relay}
 APP_DEVICE_NAME=$name
+AI_ACCESS=$ai_access
+APP_AI_URL=https://$dns:8444/mcp
+APP_AI_IP=$(tailscale ip -4 | head -n1)
 CONF
   umask 022
 
@@ -187,6 +199,11 @@ CONF
   say "Serving the app on your tailnet"
   tailscale serve --bg 8443 >/dev/null ||
     die "tailscale serve failed: turn on HTTPS certificates in the Tailscale admin console (DNS page), then run this again"
+  if [[ $ai_access == on ]]; then
+    tailscale serve --bg --https=8444 http://127.0.0.1:7783 >/dev/null || die "tailscale serve for the AI gateway failed"
+  else
+    tailscale serve --https=8444 off >/dev/null 2>&1 || true
+  fi
 
   local unlock
   unlock=$(secret)
@@ -201,7 +218,8 @@ CONF
   │
   │   $unlock
   │
-  │ The app walks you through the rest.
+  │ The app walks you through the rest. AI keys for Claude Code are
+  │ under "AI access over Tailscale" (https://$dns:8444/mcp).
   └───────────────────────────────────────────────────────────────
 DONE
 }

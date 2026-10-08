@@ -21,6 +21,29 @@ type createScopedTokenRequest struct {
 	AgentName         string `json:"agent_name,omitempty"`
 	MessagesPerMinute int    `json:"messages_per_minute,omitempty"`
 	SessionsPerHour   int    `json:"sessions_per_hour,omitempty"`
+	// AIAccess mints an AI key for Swarm Control (/mcp): "read" or "write".
+	// Scopes are derived from the level; scopes, worker and agent stay empty.
+	AIAccess string `json:"ai_access,omitempty"`
+}
+
+const (
+	aiKeyDefaultLifetime = 30 * 24 * time.Hour
+	aiKeyMaxLifetime     = 365 * 24 * time.Hour
+)
+
+// aiKeyScopes are the API scopes plus Swarm Control levels for an AI key.
+// Read keys see and call only read tools; write keys may also start sessions,
+// send messages and stop runs. Approving tool calls and managing workers,
+// limits or models are never granted to an AI key.
+func aiKeyScopes(level string) ([]string, error) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "read":
+		return []string{"swarm:read", "sessions:read", "automations:read"}, nil
+	case "write":
+		return []string{"swarm:read", "swarm:write", "sessions:read", "sessions:write", "automations:read", "automations:write"}, nil
+	default:
+		return nil, errors.New(`ai_access must be "read" or "write"`)
+	}
 }
 
 func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +112,25 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			record   pebblestore.ScopedTokenRecord
 			err      error
 		)
-		if agentName := strings.TrimSpace(req.AgentName); agentName != "" {
+		if level := strings.TrimSpace(req.AIAccess); level != "" {
+			if len(req.Scopes) > 0 || req.WorkerID != "" || req.WorkerName != "" || strings.TrimSpace(req.AgentName) != "" {
+				writeError(w, http.StatusBadRequest, errors.New("an AI key takes no scopes, worker or agent"))
+				return
+			}
+			scopes, scopeErr := aiKeyScopes(level)
+			if scopeErr != nil {
+				writeError(w, http.StatusBadRequest, scopeErr)
+				return
+			}
+			if expiresIn == 0 {
+				expiresIn = aiKeyDefaultLifetime
+			}
+			if expiresIn > aiKeyMaxLifetime {
+				writeError(w, http.StatusBadRequest, errors.New("an AI key lasts at most 365 days"))
+				return
+			}
+			rawToken, record, err = s.security.CreateScopedToken(req.Name, scopes, accountScopeID, principal.UserID, expiresIn, "", "")
+		} else if agentName := strings.TrimSpace(req.AgentName); agentName != "" {
 			if len(req.Scopes) > 0 || req.WorkerID != "" || req.WorkerName != "" {
 				writeError(w, http.StatusBadRequest, errors.New("an agent-bound token takes no scopes or worker"))
 				return

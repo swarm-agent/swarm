@@ -4,7 +4,8 @@ import { reject, text } from './boundary.mjs';
 
 /**
  * @param {import('@swarm-agent/sdk').SwarmClient} sdk
- * @param {{ relayUrl?: string, deviceName?: string }} defaults installer-supplied relay connection defaults
+ * @param {{ relayUrl?: string, deviceName?: string, aiUrl?: string, aiIp?: string }} defaults installer-supplied relay connection
+ *   defaults and the tailnet address of this machine's AI gateway (empty when the installer did not publish it)
  */
 export function operations(sdk, project = '/project', defaults = {}) {
   async function workspace(path) {
@@ -41,6 +42,17 @@ export function operations(sdk, project = '/project', defaults = {}) {
   async function remote(call) {
     try { return remoteStatus(await call()); }
     catch (error) { if (error instanceof SwarmApiError && error.status === 400 && error.message) reject(400, error.message.slice(0, 300)); throw error; }
+  }
+  // AI keys: scoped tokens carrying Swarm Control levels. The browser sees
+  // each key's hint and dates; the full key only once, when it is created.
+  const aiLevel = scopes => (scopes || []).includes('swarm:write') ? 'write' : 'read';
+  const aiKey = t => ({ id: t.id, name: t.name, access: aiLevel(t.scopes), hint: t.token_hint,
+    created_at: t.created_at, expires_at: t.expires_at, last_used_at: t.last_used_at || 0 });
+  async function aiKeys() {
+    const tokens = await sdk.auth.listScopedTokens();
+    const keys = tokens.filter(t => !t.revoked && (t.scopes || []).some(s => s.startsWith('swarm:'))
+      && !(t.expires_at && t.expires_at <= Date.now())).map(aiKey);
+    return { url: defaults.aiUrl || '', ip: defaults.aiIp || '', keys };
   }
   const assigned = a => typeof a?.provider === 'string' && !!a.provider && typeof a.model === 'string' && !!a.model;
   // Guided setup: which step comes next. Reads only; each step keeps its own
@@ -140,6 +152,22 @@ export function operations(sdk, project = '/project', defaults = {}) {
           if (b.action === 'allow_once') return sdk.sessions.approvePermissionOnce(b.id, text(b.permission_id));
           if (b.action === 'deny') return sdk.sessions.denyPermission(b.id, text(b.permission_id));
           reject(400, 'Only allow-once or deny is supported.'); break;
+        }
+        case 'ai-keys': return aiKeys();
+        case 'ai-key-create': {
+          const name = text(b.name, 64);
+          if (!['read', 'write'].includes(b.access)) reject(400, 'Choose read only or read and write.');
+          const days = Number(b.days);
+          if (![1, 7, 30, 90, 365].includes(days)) reject(400, 'Choose how long the key lasts.');
+          if ((await aiKeys()).keys.length >= 20) reject(409, 'Revoke an old key first (at most 20).');
+          const created = await sdk.auth.createAIKey({ name, access: b.access, expires_in_seconds: days * 86400 });
+          return { token: created.token, key: aiKey(created.record), url: defaults.aiUrl || '' };
+        }
+        case 'ai-key-revoke': {
+          const id = text(b.id, 200);
+          if (!(await aiKeys()).keys.some(k => k.id === id)) reject(404, 'That key is not an active AI key.');
+          await sdk.auth.revokeScopedToken(id);
+          return aiKeys();
         }
         case 'remote-status': return remote(() => sdk.remote.status());
         case 'remote-connect': {

@@ -25,6 +25,7 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	agent := fs.String("agent", "", "mint a gateway token limited to this sealed agent's sessions and client tool calls (lifetime up to 30 days)")
 	messagesPerMinute := fs.Int("messages-per-minute", 0, "with --agent: most messages (model runs) the token may start per minute (default 120)")
 	sessionsPerHour := fs.Int("sessions-per-hour", 0, "with --agent: most new conversations per hour (default 300)")
+	aiAccess := fs.String("ai-access", "", "mint an AI key for Swarm Control (/mcp): read (default level for AI clients) or write (lifetime up to 365 days)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -46,6 +47,15 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 			return errors.New("--agent tokens take no other authority")
 		}
 		maxSeconds = 30 * 86400
+	}
+	if level := strings.TrimSpace(*aiAccess); level != "" {
+		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" {
+			return errors.New("--ai-access keys take no other authority")
+		}
+		if level != "read" && level != "write" {
+			return errors.New("--ai-access must be read or write")
+		}
+		maxSeconds = 365 * 86400
 	}
 	if !revoke {
 		if *seconds < 60 || *seconds > maxSeconds || strings.TrimSpace(*name) == "" {
@@ -99,7 +109,10 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 		scopes = append(scopes, "settings:write")
 	}
 	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": scopes, "expires_in_seconds": *seconds}
-	if agentName := strings.TrimSpace(*agent); agentName != "" {
+	if level := strings.TrimSpace(*aiAccess); level != "" {
+		// The daemon derives scopes and Swarm Control levels from the level.
+		payload = map[string]any{"name": strings.TrimSpace(*name), "ai_access": level, "expires_in_seconds": *seconds}
+	} else if agentName := strings.TrimSpace(*agent); agentName != "" {
 		// The daemon refuses unless the agent is sealed (only client tools).
 		payload = map[string]any{"name": strings.TrimSpace(*name), "agent_name": agentName, "expires_in_seconds": *seconds,
 			"messages_per_minute": *messagesPerMinute, "sessions_per_hour": *sessionsPerHour}

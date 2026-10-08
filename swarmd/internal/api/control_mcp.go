@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"swarm-refactor/swarmtui/pkg/buildinfo"
+	"swarm/packages/swarmd/internal/remote"
 )
 
 // Swarm Control MCP: a Model Context Protocol (streamable HTTP, JSON response
@@ -158,7 +159,7 @@ func (s *Server) serveControlMCP(w http.ResponseWriter, r *http.Request, next ht
 	case "ping":
 		writeControlMCPResult(w, req.ID, map[string]any{})
 	case "tools/list":
-		writeControlMCPResult(w, req.ID, map[string]any{"tools": controlMCPTools()})
+		writeControlMCPResult(w, req.ID, map[string]any{"tools": call.visibleTools()})
 	case "tools/call":
 		result, rpcErr := call.callTool(req.Params)
 		if rpcErr != nil {
@@ -218,6 +219,49 @@ func writeControlMCPError(w http.ResponseWriter, id json.RawMessage, code int, m
 	writeJSON(w, http.StatusOK, map[string]any{"jsonrpc": "2.0", "id": responseID, "error": controlMCPError{Code: code, Message: message}})
 }
 
+// AI keys carry Swarm Control levels (swarm:read, swarm:write, swarm:approve,
+// swarm:manage) next to their API scopes. A token with any level sees and
+// calls only the tools those levels allow, the same ceiling a relay machine
+// applies; tokens without levels keep their API scopes alone.
+func (c *controlMCPCall) levels() []string {
+	record, ok := ScopedTokenFromRequest(c.request)
+	if !ok {
+		return nil
+	}
+	var levels []string
+	for _, scope := range record.Scopes {
+		if scope = strings.ToLower(strings.TrimSpace(scope)); strings.HasPrefix(scope, "swarm:") {
+			levels = append(levels, scope)
+		}
+	}
+	return levels
+}
+
+func (c *controlMCPCall) levelAllows(name string) bool {
+	levels := c.levels()
+	if len(levels) == 0 {
+		return true
+	}
+	need := remote.ToolScope(name)
+	for _, level := range levels {
+		if level == need {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *controlMCPCall) visibleTools() []controlMCPTool {
+	all := controlMCPTools()
+	visible := make([]controlMCPTool, 0, len(all))
+	for _, tool := range all {
+		if c.levelAllows(tool.Name) {
+			visible = append(visible, tool)
+		}
+	}
+	return visible
+}
+
 func (c *controlMCPCall) callTool(params json.RawMessage) (map[string]any, *controlMCPError) {
 	var p struct {
 		Name      string          `json:"name"`
@@ -236,6 +280,9 @@ func (c *controlMCPCall) callTool(params json.RawMessage) (map[string]any, *cont
 	}
 	if tool == nil {
 		return nil, &controlMCPError{Code: -32602, Message: "unknown tool"}
+	}
+	if !c.levelAllows(tool.Name) {
+		return controlMCPToolResult(nil, controlMCPToolFailure("this key is limited to %s; %s needs %s", strings.Join(c.levels(), ", "), tool.Name, remote.ToolScope(tool.Name))), nil
 	}
 	args := map[string]any{}
 	if len(bytes.TrimSpace(p.Arguments)) > 0 && string(bytes.TrimSpace(p.Arguments)) != "null" {

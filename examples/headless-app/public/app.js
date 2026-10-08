@@ -86,6 +86,47 @@ async function pollRemote() {
   const remote = await api('remote-status'); renderRemote(remote);
   if (remote.connected) await guide();
 }
+// AI access: keys for AI clients on the tailnet. Keys are listed by hint; the
+// full key appears once, right after Create key.
+function aiSnippets(url, ip) {
+  const host = url ? new URL(url).hostname : '<machine>.<tailnet>.ts.net', port = url ? new URL(url).port : '8444';
+  const address = url || `https://${host}:${port}/mcp`, name = host.split('.')[0];
+  // Replaces the default allow-all rule: your own devices keep full access;
+  // devices tagged tag:claude reach only this machine's AI port.
+  $('ai-acl').textContent = JSON.stringify({
+    tagOwners: { 'tag:claude': ['autogroup:admin'] },
+    grants: [
+      { src: ['autogroup:member'], dst: ['*'], ip: ['*'] },
+      { src: ['tag:claude'], dst: [ip || '<this machine\'s tailnet IP>'], ip: [`tcp:${port}`] },
+    ],
+  }, null, 2);
+  $('ai-client').textContent = [
+    '# Claude Code on a device in this tailnet:',
+    `claude mcp add --transport http swarm ${address} --header "Authorization: Bearer <key>"`,
+    '',
+    '# Claude Code on the web or routines: add to the environment variables',
+    `SWARM_FLEET=[{"name":"${name}","url":"${address}","token":"<key>"}]`,
+    'TS_AUTHKEY=<a reusable, ephemeral Tailscale auth key tagged tag:claude>',
+  ].join('\n');
+}
+function renderAI(state) {
+  $('ai-url').textContent = state.url || 'not published';
+  $('ai-status').textContent = state.url
+    ? `${state.keys.length ? state.keys.length + ' active key' + (state.keys.length > 1 ? 's' : '') : 'No keys yet'}. AI clients on your tailnet reach this machine at the address below with a key; without one they get nothing.`
+    : 'The installer has not published the AI gateway on this machine. Re-run the installer to turn it on.';
+  $('ai-form').hidden = !state.url; aiSnippets(state.url, state.ip);
+  $('ai-keys').replaceChildren(...state.keys.map(k => {
+    const box = document.createElement('div'), title = document.createElement('strong'), details = document.createElement('p'), button = document.createElement('button');
+    box.className = 'consent'; title.textContent = `${k.name} · ${k.access === 'write' ? 'read and write' : 'read only'}`;
+    details.textContent = `${k.hint} · expires ${new Date(k.expires_at).toLocaleDateString()} · ${k.last_used_at ? 'last used ' + new Date(k.last_used_at).toLocaleString() : 'never used'}`;
+    button.type = 'button'; button.textContent = 'Revoke';
+    button.onclick = async () => {
+      if (!window.confirm?.(`Revoke "${k.name}"? AI clients using it lose access immediately.`)) return;
+      button.disabled = true; try { $('ai-new').hidden = true; renderAI(await api('ai-key-revoke', { id: k.id })); } catch (e) { fail(e); button.disabled = false; }
+    };
+    box.append(title, details, button); return box;
+  }));
+}
 async function guide() {
   const setup = await api('setup'); $('setup-guide').hidden = false;
   renderGuide(setup.steps); renderRemote(setup.remote, setup.defaults); return setup;
@@ -96,7 +137,7 @@ async function refresh() {
   $('owner-status').textContent = onboard.identity.bootstrapped ? `Owner: ${onboard.identity.username}` : 'Create an owner to begin.';
   $('owner-form').hidden = onboard.identity.bootstrapped;
   if (!onboard.identity.bootstrapped) return;
-  await settings(); await refreshWorkspaces();
+  await settings(); await refreshWorkspaces(); renderAI(await api('ai-keys'));
 }
 async function refreshWorkspaces() {
   workspaces = await api('workspaces');
@@ -129,6 +170,11 @@ act('claude-reset', async () => {
   if (!window.confirm?.('Forget this machine\'s relay key? Claude loses access until you connect and pair again.')) return;
   pollUntil = 0; renderRemote(await api('remote-reset', { confirm: true })); await guide();
 });
+act('ai-form', async e => {
+  const f = e.target.elements;
+  const created = await api('ai-key-create', { name: f.name.value, access: f.access.value, days: Number(f.days.value) });
+  $('ai-token').textContent = created.token; $('ai-new').hidden = false; renderAI(await api('ai-keys'));
+}, 'submit');
 act('theme', () => document.body.classList.toggle('light'));
 act('refresh', refresh);
 act('owner-form', async e => { await api('owner', Object.fromEntries(new FormData(e.target))); await refresh(); }, 'submit');

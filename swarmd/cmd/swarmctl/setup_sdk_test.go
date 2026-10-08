@@ -77,3 +77,26 @@ func TestSetupSDKToken(t *testing.T) {
 		t.Fatalf("validation minted credential: calls %d", calls)
 	}
 }
+
+// Requirement: --ai-access mints an AI key by level only (the daemon derives
+// its scopes), refuses other authority, and allows up to a year.
+func TestSetupSDKTokenAIAccess(t *testing.T) {
+	var got map[string]any
+	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprint(w, `{"token":"swk_ai","record":{"id":"ai-id"}}`)
+	})
+	var out bytes.Buffer
+	if err := runSetup([]string{"sdk-token", "--socket", socket, "--name", "claude", "--ai-access", "read", "--expires-in-seconds", "2592000"}, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, map[string]any{"name": "claude", "ai_access": "read", "expires_in_seconds": float64(2592000)}) {
+		t.Fatalf("payload = %v", got)
+	}
+	for _, flags := range [][]string{{"--ai-access", "admin"}, {"--ai-access", "write", "--workers"}, {"--ai-access", "read", "--agent", "frontdesk"}, {"--ai-access", "read", "--expires-in-seconds", "40000000"}} {
+		out.Reset()
+		if err := runSetup(append([]string{"sdk-token", "--socket", socket}, flags...), nil, &out); err == nil {
+			t.Fatalf("accepted %v", flags)
+		}
+	}
+}

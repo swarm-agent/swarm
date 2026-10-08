@@ -79,6 +79,10 @@ func toolScope(name string) string {
 	return ScopeWrite
 }
 
+// ToolScope is the Swarm Control level (swarm:read, swarm:write, swarm:approve
+// or swarm:manage) a tool needs. Unknown tools need write.
+func ToolScope(name string) string { return toolScope(name) }
+
 // SecretStore is the daemon's private secrets store.
 type SecretStore interface {
 	PutJSON(key string, v any) error

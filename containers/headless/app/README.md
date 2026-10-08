@@ -30,6 +30,18 @@ State lives in the usual named volumes plus `/var/lib/swarm-headless`. A
 moves; `install.sh secret` prints the unlock secret again. `--relay` only
 prefills the Connect step. `--name` sets the tailnet and machine name.
 
+It also serves Swarm's **AI gateway** (Swarm Control MCP on the scoped-token
+listener) on the tailnet at `https://NAME.TAILNET.ts.net:8444/mcp`: the
+container publishes port 7783 to host loopback only and `tailscale serve`
+is its only way in. It answers only to **AI keys** created in the app under
+**AI access over Tailscale** (none exist at first): read only, or read and
+write (start sessions, send messages, stop runs); never approve tool calls or
+manage workers, limits or models, and never any route but `/mcp`. The page
+shows the key once, lists keys with last use, revokes them, and shows the
+Tailscale access rule and client settings. `--no-ai-access` skips the gateway.
+Clients: Claude Code on a tailnet device (`claude mcp add --transport http`),
+or `packages/swarm-fleet` for Claude Code on the web and routines.
+
 This is a source build of an unpublished candidate, not the qualified release
 path below. Validated in a container with a local relay and a stand-in for
 Tailscale Serve; a real server, Tailscale and a deployed relay are not yet
