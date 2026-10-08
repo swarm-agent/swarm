@@ -68,9 +68,52 @@ type AgentProfile struct {
 	ExitPlanModeEnabled *bool              `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *AgentToolScope    `json:"tool_scope,omitempty"`
 	ToolContract        *AgentToolContract `json:"tool_contract,omitempty"`
+	Limits              *AgentRunLimits    `json:"limits,omitempty"`
 	Enabled             bool               `json:"enabled"`
 	Protected           bool               `json:"protected,omitempty"`
 	UpdatedAt           int64              `json:"updated_at"`
+}
+
+// AgentRunLimits bounds what one message can cost. Zero means unset; sealed
+// agents get conservative defaults for unset fields.
+type AgentRunLimits struct {
+	// MaxSteps is the most model calls per message. On the last step the model
+	// is offered no tools, so it must answer.
+	MaxSteps int `json:"max_steps,omitempty"`
+	// MaxOutputTokens caps each model call's output, reasoning included.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// MaxHistoryMessages sends only the most recent messages, starting at a
+	// user turn, and always as a fresh provider context.
+	MaxHistoryMessages int `json:"max_history_messages,omitempty"`
+	// RunTimeoutMS ends a run that takes longer.
+	RunTimeoutMS int `json:"run_timeout_ms,omitempty"`
+}
+
+func clampLimit(value, max int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+// NormalizeAgentRunLimits bounds each field and drops an all-zero block.
+func NormalizeAgentRunLimits(limits *AgentRunLimits) *AgentRunLimits {
+	if limits == nil {
+		return nil
+	}
+	out := AgentRunLimits{
+		MaxSteps:           clampLimit(limits.MaxSteps, 50),
+		MaxOutputTokens:    clampLimit(limits.MaxOutputTokens, 128000),
+		MaxHistoryMessages: clampLimit(limits.MaxHistoryMessages, 2000),
+		RunTimeoutMS:       clampLimit(limits.RunTimeoutMS, 30*60*1000),
+	}
+	if out == (AgentRunLimits{}) {
+		return nil
+	}
+	return &out
 }
 
 type AgentCustomToolDefinition struct {
@@ -421,6 +464,7 @@ func agentToolContractEnablesMutatingTools(contract *AgentToolContract) bool {
 }
 
 func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
+	profile.Limits = NormalizeAgentRunLimits(profile.Limits)
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Mode = strings.ToLower(strings.TrimSpace(profile.Mode))
 	profile.Description = strings.TrimSpace(profile.Description)

@@ -18,7 +18,9 @@ type createScopedTokenRequest struct {
 	WorkerName       string   `json:"worker_name,omitempty"`
 	// AgentName mints a token limited to one sealed agent's sessions; scopes
 	// and worker fields must then be empty.
-	AgentName string `json:"agent_name,omitempty"`
+	AgentName         string `json:"agent_name,omitempty"`
+	MessagesPerMinute int    `json:"messages_per_minute,omitempty"`
+	SessionsPerHour   int    `json:"sessions_per_hour,omitempty"`
 }
 
 func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +98,11 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, sealedErr)
 				return
 			}
-			rawToken, record, err = s.security.CreateAgentBoundToken(req.Name, accountScopeID, principal.UserID, expiresIn, agentName)
+			rawToken, record, err = s.security.CreateAgentBoundToken(req.Name, accountScopeID, principal.UserID, expiresIn, agentName, req.MessagesPerMinute, req.SessionsPerHour)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 		} else {
 			rawToken, record, err = s.security.CreateScopedToken(req.Name, req.Scopes, accountScopeID, principal.UserID, expiresIn, req.WorkerID, req.WorkerName)
 		}

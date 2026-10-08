@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -21,6 +24,53 @@ import (
 // disables the token instead of widening it.
 
 const agentBoundCreateBodyLimit = 1 << 20
+
+// Defaults for what an agent-bound token may start: each message is a model
+// run, each session a new conversation. Polling routes are not limited.
+const (
+	agentBoundDefaultMessagesPerMinute = 120
+	agentBoundDefaultSessionsPerHour   = 300
+)
+
+// tokenBucket refills continuously up to its capacity.
+type tokenBucket struct {
+	tokens float64
+	last   time.Time
+}
+
+type agentBoundRateLimiter struct {
+	mu      sync.Mutex
+	buckets map[string]*tokenBucket
+}
+
+var agentBoundLimits = &agentBoundRateLimiter{buckets: map[string]*tokenBucket{}}
+
+// take spends one unit of key's bucket (capacity per window) and returns how
+// long to wait when it is empty.
+func (l *agentBoundRateLimiter) take(key string, capacity int, window time.Duration, now time.Time) (bool, time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	rate := float64(capacity) / window.Seconds()
+	bucket, ok := l.buckets[key]
+	if !ok {
+		bucket = &tokenBucket{tokens: float64(capacity), last: now}
+		l.buckets[key] = bucket
+	}
+	bucket.tokens = min(float64(capacity), bucket.tokens+now.Sub(bucket.last).Seconds()*rate)
+	bucket.last = now
+	if bucket.tokens >= 1 {
+		bucket.tokens--
+		return true, 0
+	}
+	return false, time.Duration((1-bucket.tokens)/rate*float64(time.Second)) + time.Millisecond
+}
+
+func agentBoundRateFor(configured, fallback int) int {
+	if configured > 0 {
+		return configured
+	}
+	return fallback
+}
 
 // sealedAgentError reports why name is not a sealed agent in the account.
 func (s *Server) sealedAgentError(accountScopeID, name string) error {
@@ -60,6 +110,10 @@ func (s *Server) agentBoundRequestError(r *http.Request, rec *pebblestore.Scoped
 		return err
 	}
 	p := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(p) == 2 && p[0] == "v3" && p[1] == "sessions:usage-limits" && r.Method == http.MethodGet {
+		// Read-only: lets the gateway's budget breaker see today's spend.
+		return nil
+	}
 	if len(p) < 2 || p[0] != "v3" || p[1] != "sessions" {
 		return errors.New("route unavailable to an agent-bound token")
 	}
@@ -172,6 +226,25 @@ func (s *Server) gateAgentBoundToken(w http.ResponseWriter, r *http.Request, rec
 	}
 	if err := s.agentBoundRequestError(r, rec); err != nil {
 		writeError(w, http.StatusForbidden, err)
+		return false
+	}
+	if r.Method != http.MethodPost {
+		return true
+	}
+	path := strings.Trim(r.URL.Path, "/")
+	var ok bool
+	var wait time.Duration
+	switch {
+	case path == "v3/sessions":
+		ok, wait = agentBoundLimits.take(rec.ID+"/sessions", agentBoundRateFor(rec.SessionsPerHour, agentBoundDefaultSessionsPerHour), time.Hour, time.Now())
+	case strings.HasSuffix(path, "/messages"):
+		ok, wait = agentBoundLimits.take(rec.ID+"/messages", agentBoundRateFor(rec.MessagesPerMinute, agentBoundDefaultMessagesPerMinute), time.Minute, time.Now())
+	default:
+		return true
+	}
+	if !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, errors.New("agent-bound token rate limit reached"))
 		return false
 	}
 	return true

@@ -1663,6 +1663,47 @@ type sessionV3ResolvedRuntime struct {
 	Instructions  string
 	Tools         []provideriface.ToolDefinition
 	ToolChoice    string
+	// Limits are the agent's run limits, with sealed-agent defaults applied.
+	Limits pebblestore.AgentRunLimits
+}
+
+// Sealed agents face the public: a message may never run unbounded.
+var sealedAgentDefaultLimits = pebblestore.AgentRunLimits{MaxSteps: 4, MaxOutputTokens: 1024, MaxHistoryMessages: 40, RunTimeoutMS: 60000}
+
+func effectiveAgentRunLimits(configured *pebblestore.AgentRunLimits, sealed bool) pebblestore.AgentRunLimits {
+	var limits pebblestore.AgentRunLimits
+	if normalized := pebblestore.NormalizeAgentRunLimits(configured); normalized != nil {
+		limits = *normalized
+	}
+	if sealed {
+		if limits.MaxSteps == 0 {
+			limits.MaxSteps = sealedAgentDefaultLimits.MaxSteps
+		}
+		if limits.MaxOutputTokens == 0 {
+			limits.MaxOutputTokens = sealedAgentDefaultLimits.MaxOutputTokens
+		}
+		if limits.MaxHistoryMessages == 0 {
+			limits.MaxHistoryMessages = sealedAgentDefaultLimits.MaxHistoryMessages
+		}
+		if limits.RunTimeoutMS == 0 {
+			limits.RunTimeoutMS = sealedAgentDefaultLimits.RunTimeoutMS
+		}
+	}
+	return limits
+}
+
+// trimSessionV3History keeps the newest max messages, starting at a user turn
+// so no tool result is sent without its call.
+func trimSessionV3History(messages []pebblestore.MessageSnapshot, max int) []pebblestore.MessageSnapshot {
+	if max <= 0 || len(messages) <= max {
+		return messages
+	}
+	for i := len(messages) - max; i < len(messages); i++ {
+		if messages[i].Role == "user" {
+			return messages[i:]
+		}
+	}
+	return messages[len(messages)-1:]
 }
 
 type sessionV3AssistantResponse struct {
@@ -2551,6 +2592,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
+	messages = trimSessionV3History(messages, resolved.Limits.MaxHistoryMessages)
 	if contextSelection != sessionV3ProviderContextCheckpointStartup {
 		input, err = e.sessionsV3ProviderInput(resolved, messages)
 		if err != nil {
@@ -2598,6 +2640,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	})
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
+	if timeout := resolved.Limits.RunTimeoutMS; timeout > 0 {
+		var cancelDeadline context.CancelFunc
+		streamCtx, cancelDeadline = context.WithTimeout(streamCtx, time.Duration(timeout)*time.Millisecond)
+		defer cancelDeadline()
+	}
 	var sink *sessionV3DurableProgressSink
 	if e.durableProgressWriterForTest != nil {
 		sink = newSessionV3DurableProgressSinkWithWriter(e, job, cancelStream, e.durableProgressWriterForTest)
@@ -2886,6 +2933,17 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 	}
 	if strings.TrimSpace(baseReq.ToolChoice) == "" {
 		baseReq.ToolChoice = "none"
+	}
+	if resolved.Limits.MaxOutputTokens > 0 && (baseReq.MaxOutputTokens == 0 || baseReq.MaxOutputTokens > resolved.Limits.MaxOutputTokens) {
+		baseReq.MaxOutputTokens = resolved.Limits.MaxOutputTokens
+	}
+	if resolved.Limits.MaxHistoryMessages > 0 {
+		// Bounded history only bounds cost if the provider cannot replay the
+		// rest from a stored chain.
+		baseReq.StartNewChain = true
+		baseReq.AllowContinuation = false
+		baseReq.NativeContinuationAllowed = false
+		baseReq.ForceFreshProviderContext = true
 	}
 	return baseReq, nil
 }
@@ -3468,6 +3526,10 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		} else {
 			stepTools = runruntime.FilterToolDefinitionsExcept(stepTools, sessionV3ToolNamesExcept(stepTools, "compact"))
 		}
+		if limit := resolved.Limits.MaxSteps; limit > 0 && step >= limit {
+			// Last allowed model call: no tools, so the model has to answer.
+			stepTools = nil
+		}
 		toolsEnabled := len(stepTools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
 		if toolsEnabled {
@@ -3502,6 +3564,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		req.Input = append([]map[string]any(nil), input...)
 		req.Instructions = stepInstructions
 		req.Tools = stepTools
+		if len(stepTools) == 0 {
+			req.ToolChoice = "none"
+		}
 		if planGuardFreshContext {
 			req.BoundaryReason = sessionV3ProviderBoundaryReasonWithOverride(req.BoundaryReason, "context_compaction_plan_guard")
 			req.StartNewChain = true
@@ -4941,7 +5006,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		}
 		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
 	}
-	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: resolved.ContextWindow, ModelCatalog: resolved.ModelCatalog, CatalogMeta: resolved.CatalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: resolved.ContextWindow, ModelCatalog: resolved.ModelCatalog, CatalogMeta: resolved.CatalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice, Limits: effectiveAgentRunLimits(agentProfile.Limits, sealed)}, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, metadata map[string]any, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {

@@ -128,19 +128,29 @@ func (s *Service) AuditDenied(method, path, remoteAddr, reason, suppliedToken st
 }
 
 func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
-	return s.createScopedToken(name, scopes, accountScopeID, userID, expiresIn, workerID, workerName, "")
+	return s.createScopedTokenRecord(name, scopes, accountScopeID, userID, expiresIn, func(record *pebblestore.ScopedTokenRecord) {
+		record.WorkerID = strings.TrimSpace(workerID)
+		record.WorkerName = strings.TrimSpace(workerName)
+	})
 }
 
 // CreateAgentBoundToken mints a session token limited to one sealed agent's
 // sessions. The caller must have checked the agent is sealed.
-func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string) (string, pebblestore.ScopedTokenRecord, error) {
+func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string, messagesPerMinute, sessionsPerHour int) (string, pebblestore.ScopedTokenRecord, error) {
 	if strings.TrimSpace(agentName) == "" {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("agent name is required")
 	}
-	return s.createScopedToken(name, []string{"sessions:read", "sessions:write"}, accountScopeID, userID, expiresIn, "", "", agentName)
+	if messagesPerMinute < 0 || messagesPerMinute > 6000 || sessionsPerHour < 0 || sessionsPerHour > 100000 {
+		return "", pebblestore.ScopedTokenRecord{}, errors.New("rate limits out of range")
+	}
+	return s.createScopedTokenRecord(name, []string{"sessions:read", "sessions:write"}, accountScopeID, userID, expiresIn, func(record *pebblestore.ScopedTokenRecord) {
+		record.AgentName = strings.TrimSpace(agentName)
+		record.MessagesPerMinute = messagesPerMinute
+		record.SessionsPerHour = sessionsPerHour
+	})
 }
 
-func (s *Service) createScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName, agentName string) (string, pebblestore.ScopedTokenRecord, error) {
+func (s *Service) createScopedTokenRecord(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, bind func(*pebblestore.ScopedTokenRecord)) (string, pebblestore.ScopedTokenRecord, error) {
 	if s == nil || s.authStore == nil {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
 	}
@@ -185,14 +195,12 @@ func (s *Service) createScopedToken(name string, scopes []string, accountScopeID
 		Scopes:         cleanScopes,
 		AccountScopeID: accountScopeID,
 		UserID:         userID,
-		WorkerID:       strings.TrimSpace(workerID),
-		WorkerName:     strings.TrimSpace(workerName),
-		AgentName:      strings.TrimSpace(agentName),
 		CreatedAt:      now,
 		ExpiresAt:      expiresAt,
 		Revoked:        false,
 	}
 
+	bind(&record)
 	if err := s.authStore.PutScopedToken(record); err != nil {
 		return "", pebblestore.ScopedTokenRecord{}, err
 	}

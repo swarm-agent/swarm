@@ -518,6 +518,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			ExecutionSetting    string                                  `json:"execution_setting"`
 			ExitPlanModeEnabled *bool                                   `json:"exit_plan_mode_enabled"`
 			ToolContract        *pebblestore.AgentToolContract          `json:"tool_contract"`
+			Limits              *pebblestore.AgentRunLimits             `json:"limits"`
 			Enabled             *bool                                   `json:"enabled"`
 			CustomTools         []pebblestore.AgentCustomToolDefinition `json:"custom_tools"`
 			AssignCustomTools   []string                                `json:"assign_custom_tools"`
@@ -563,6 +564,7 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 			ExecutionSetting:    req.ExecutionSetting,
 			ExitPlanModeEnabled: req.ExitPlanModeEnabled,
 			ToolContract:        req.ToolContract,
+			Limits:              req.Limits,
 			Enabled:             req.Enabled,
 		})
 		if err != nil {
@@ -621,6 +623,7 @@ type publicAgentProfileDTO struct {
 	ExitPlanModeEnabled *bool                          `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *pebblestore.AgentToolScope    `json:"tool_scope,omitempty"`
 	ToolContract        *pebblestore.AgentToolContract `json:"tool_contract,omitempty"`
+	Limits              *pebblestore.AgentRunLimits    `json:"limits,omitempty"`
 	Enabled             bool                           `json:"enabled"`
 	Protected           bool                           `json:"protected,omitempty"`
 	UpdatedAt           int64                          `json:"updated_at"`
@@ -635,7 +638,7 @@ func publicAgentProfile(profile pebblestore.AgentProfile) publicAgentProfileDTO 
 		Provider: profile.Provider, Model: profile.Model, Thinking: profile.Thinking, ContextMode: profile.ContextMode,
 		Prompt: profile.Prompt, RuntimeMode: profile.RuntimeMode, DefaultSessionMode: profile.DefaultSessionMode,
 		ExecutionSetting: profile.ExecutionSetting, ExitPlanModeEnabled: profile.ExitPlanModeEnabled,
-		ToolScope: profile.ToolScope, ToolContract: profile.ToolContract, Enabled: profile.Enabled,
+		ToolScope: profile.ToolScope, ToolContract: profile.ToolContract, Limits: profile.Limits, Enabled: profile.Enabled,
 		Protected: profile.Protected, UpdatedAt: profile.UpdatedAt,
 	}
 }

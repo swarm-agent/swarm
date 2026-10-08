@@ -63,6 +63,25 @@ only and must never be shipped. Results:
 So the image removes command execution outright. File and network tools still
 depend on tool enforcement plus the deployment choices above.
 
+## Limits
+
+Every message to a sealed agent is bounded, whatever the model does:
+
+| Limit | Default | Set with |
+|---|---|---|
+| Model calls per message (the last one gets no tools) | 4 | agent `limits.max_steps` |
+| Output tokens per call | 1024 | `limits.max_output_tokens` |
+| History sent (newest messages, fresh provider context) | 40 messages | `limits.max_history_messages` |
+| Run deadline | 60 s | `limits.run_timeout_ms` |
+| New messages per gateway token | 120 / minute | `sdk-token --messages-per-minute` |
+| New conversations per gateway token | 300 / hour | `sdk-token --sessions-per-hour` |
+| Account spend per day | off | `swarmctl setup daily-limit --usd 25` |
+
+When the daily cap is reached the daemon refuses new runs and stops running
+ones. A gateway token can read today's spend (`agents.spendToday()`) but cannot
+change the cap. Visitor-level limits (per person, per IP address, bursts,
+budget) belong in the gateway.
+
 ## Define a sealed agent
 
 ```json

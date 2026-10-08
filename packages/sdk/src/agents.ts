@@ -27,6 +27,16 @@ export interface SealedAgentDefinition {
   provider?: string;
   model?: string;
   thinking?: string;
+  /** Bounds one message's cost. Unset fields use the sealed defaults (4 model calls, 1024 output tokens, last 40 messages, 60 s). */
+  limits?: { max_steps?: number; max_output_tokens?: number; max_history_messages?: number; run_timeout_ms?: number };
+}
+
+/** The account's spend today and its daily cap, as the daemon enforces it. */
+export interface SpendToday {
+  today_cost_usd: number;
+  daily_cost_limit_usd: number;
+  enabled: boolean;
+  limit_exceeded: boolean;
 }
 
 /** A pending client tool call your application must answer. */
@@ -100,6 +110,7 @@ export class SwarmAgentsNamespace {
         ...(definition.provider ? { provider: definition.provider } : {}),
         ...(definition.model ? { model: definition.model } : {}),
         ...(definition.thinking ? { thinking: definition.thinking } : {}),
+        ...(definition.limits ? { limits: definition.limits } : {}),
         tool_contract: { preset: 'custom', tools },
       },
     });
@@ -111,13 +122,24 @@ export class SwarmAgentsNamespace {
    * create and use that agent's sessions and answer its client tool calls;
    * it stops working if the agent is given any built-in tool. Owner only.
    */
-  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds?: number } = {}): Promise<{ token: string; record: Record<string, unknown> }> {
+  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds?: number; messagesPerMinute?: number; sessionsPerHour?: number } = {}): Promise<{ token: string; record: Record<string, unknown> }> {
     const agent = toolName(agentName);
     const res = await this.transport.request<{ token: string; record: Record<string, unknown> }>('/v3/auth/tokens', {
       method: 'POST',
-      body: { name: options.name ?? `${agent} gateway`, agent_name: agent, ...(options.expiresInSeconds ? { expires_in_seconds: options.expiresInSeconds } : {}) },
+      body: {
+        name: options.name ?? `${agent} gateway`, agent_name: agent,
+        ...(options.expiresInSeconds ? { expires_in_seconds: options.expiresInSeconds } : {}),
+        ...(options.messagesPerMinute ? { messages_per_minute: options.messagesPerMinute } : {}),
+        ...(options.sessionsPerHour ? { sessions_per_hour: options.sessionsPerHour } : {}),
+      },
     });
     return { token: res.data.token, record: res.data.record };
+  }
+
+  /** Today's spend against the daily cap. A gateway token may read it. */
+  async spendToday(): Promise<SpendToday> {
+    const res = await this.transport.request<{ limits: SpendToday }>('/v3/sessions:usage-limits');
+    return res.data.limits;
   }
 
   async removeAgent(name: string): Promise<void> {

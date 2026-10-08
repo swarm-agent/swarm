@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,4 +172,111 @@ func toStrings(value any) []string {
 		}
 	}
 	return out
+}
+
+// Purpose: even a leaked or buggy gateway token can only start a bounded
+// number of model runs and conversations. Limits are set when minting and the
+// daemon answers 429 with Retry-After beyond them; reads are not limited.
+func TestAgentBoundTokenRateLimits(t *testing.T) {
+	s, _, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-bound-rate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	events, err := pebblestore.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.perm = permission.NewService(pebblestore.NewPermissionStore(db), nil, nil)
+	s.agents = agentruntime.NewService(pebblestore.NewAgentStore(db), events)
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := actor.AccountScopeID
+	if _, err := s.agents.PutCustomToolForAccount(account, pebblestore.AgentCustomToolDefinition{Name: "lookup_order", Kind: pebblestore.AgentCustomToolKindClient, Description: "x", InputSchema: lookupOrderSchema}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: "frontdesk", Mode: agentruntime.ModeSubagent, Enabled: pebblestore.BoolPtr(true), Prompt: "x",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"lookup_order": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	r := requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(`{"name":"gw","agent_name":"frontdesk","messages_per_minute":3,"sessions_per_hour":2}`)), actor.UserID, account)
+	w := httptest.NewRecorder()
+	s.handleAuthTokens(w, r)
+	var minted struct {
+		Token  string                        `json:"token"`
+		Record pebblestore.ScopedTokenRecord `json:"record"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &minted); err != nil || w.Code != http.StatusOK || minted.Record.MessagesPerMinute != 3 || minted.Record.SessionsPerHour != 2 {
+		t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	snapshot := pebblestore.SessionSnapshot{ID: "desk", UserID: actor.UserID, AccountScopeID: account, Title: "desk", Mode: "auto", Metadata: map[string]any{"agent_name": "frontdesk"}}
+	if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: "desk", UserID: actor.UserID, AccountScopeID: account, Session: &snapshot, IdempotencyKey: "desk", PayloadHash: "desk", NowUnixMs: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	sdk := s.ContainerSDKHandler()
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, "http://127.0.0.1:7783"+path, strings.NewReader(body))
+		req.RemoteAddr = "192.0.2.1:40000"
+		req.Header.Set("Authorization", "Bearer "+minted.Token)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		sdk.ServeHTTP(rec, req)
+		return rec
+	}
+	for i := 0; i < 3; i++ {
+		if got := do("POST", "/v3/sessions", `{"agent_name":"frontdesk","client_request_id":"s`+strconv.Itoa(i)+`"}`); (got.Code == http.StatusTooManyRequests) != (i == 2) {
+			t.Fatalf("session create %d: %d", i, got.Code)
+		}
+	}
+	for i := 0; i < 4; i++ {
+		got := do("POST", "/v3/sessions/desk/messages", `{"role":"user","content":"hi","client_request_id":"m`+strconv.Itoa(i)+`"}`)
+		if (got.Code == http.StatusTooManyRequests) != (i == 3) {
+			t.Fatalf("message %d: %d %s", i, got.Code, got.Body.String())
+		}
+		if i == 3 && got.Header().Get("Retry-After") == "" {
+			t.Fatal("429 without Retry-After")
+		}
+	}
+	for i := 0; i < 20; i++ {
+		if got := do("GET", "/v3/sessions/desk", ""); got.Code == http.StatusTooManyRequests {
+			t.Fatal("reads must not be rate limited")
+		}
+	}
+	for _, body := range []string{`{"name":"gw","agent_name":"frontdesk","messages_per_minute":-1}`, `{"name":"gw","agent_name":"frontdesk","sessions_per_hour":1000000}`} {
+		w := httptest.NewRecorder()
+		s.handleAuthTokens(w, requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(body)), actor.UserID, account))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("out-of-range limits accepted: %s %d", body, w.Code)
+		}
+	}
+}
+
+// Purpose: the daily spend cap is the last cost control, so a session token
+// must not be able to raise or disable it; a gateway may read today's spend.
+func TestUsageLimitChangesNeedUsageWrite(t *testing.T) {
+	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	handler := server.Handler()
+	do := func(method string, scopes []string) int {
+		req := withTestPrincipal(httptest.NewRequest(method, "/v3/sessions:usage-limits", strings.NewReader(`{"daily_cost_limit_usd":100000,"enabled":false}`)))
+		req.Header.Set("Content-Type", "application/json")
+		if scopes != nil {
+			req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{Scopes: scopes})
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if got := do(http.MethodPost, []string{"sessions:read", "sessions:write"}); got != http.StatusForbidden {
+		t.Fatalf("session token changed the spend cap: %d", got)
+	}
+	if got := do(http.MethodGet, []string{"sessions:read"}); got != http.StatusOK {
+		t.Fatalf("session token could not read spend: %d", got)
+	}
+	if got := do(http.MethodPost, []string{"usage:write"}); got != http.StatusOK {
+		t.Fatalf("usage:write could not change the cap: %d", got)
+	}
 }

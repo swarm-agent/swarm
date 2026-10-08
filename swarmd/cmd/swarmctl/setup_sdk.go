@@ -23,6 +23,8 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	usageLimits := fs.Bool("usage-limits", false, "also allow changing the account's daily usage limits")
 	settings := fs.Bool("settings", false, "also allow changing agent role default models")
 	agent := fs.String("agent", "", "mint a gateway token limited to this sealed agent's sessions and client tool calls (lifetime up to 30 days)")
+	messagesPerMinute := fs.Int("messages-per-minute", 0, "with --agent: most messages (model runs) the token may start per minute (default 120)")
+	sessionsPerHour := fs.Int("sessions-per-hour", 0, "with --agent: most new conversations per hour (default 300)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -99,7 +101,8 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": scopes, "expires_in_seconds": *seconds}
 	if agentName := strings.TrimSpace(*agent); agentName != "" {
 		// The daemon refuses unless the agent is sealed (only client tools).
-		payload = map[string]any{"name": strings.TrimSpace(*name), "agent_name": agentName, "expires_in_seconds": *seconds}
+		payload = map[string]any{"name": strings.TrimSpace(*name), "agent_name": agentName, "expires_in_seconds": *seconds,
+			"messages_per_minute": *messagesPerMinute, "sessions_per_hour": *sessionsPerHour}
 	}
 	if err := setupRequest(client, http.MethodPost, "/v3/auth/tokens", payload, &result); err != nil {
 		return err

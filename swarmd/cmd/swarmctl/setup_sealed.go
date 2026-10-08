@@ -30,6 +30,13 @@ type sealedAgentFile struct {
 		Model       string   `json:"model,omitempty"`
 		Thinking    string   `json:"thinking,omitempty"`
 		Tools       []string `json:"tools"`
+		// Limits bound one message's cost; unset fields use sealed defaults.
+		Limits *struct {
+			MaxSteps           int `json:"max_steps,omitempty"`
+			MaxOutputTokens    int `json:"max_output_tokens,omitempty"`
+			MaxHistoryMessages int `json:"max_history_messages,omitempty"`
+			RunTimeoutMS       int `json:"run_timeout_ms,omitempty"`
+		} `json:"limits,omitempty"`
 	} `json:"agent"`
 }
 
@@ -88,6 +95,9 @@ func runSetupSealedAgent(args []string, input io.Reader, output io.Writer) error
 	agent := map[string]any{
 		"mode": "subagent", "description": file.Agent.Description, "prompt": file.Agent.Prompt,
 		"tool_contract": map[string]any{"preset": "custom", "tools": contract},
+	}
+	if file.Agent.Limits != nil {
+		agent["limits"] = file.Agent.Limits
 	}
 	for key, value := range map[string]string{"provider": file.Agent.Provider, "model": file.Agent.Model, "thinking": file.Agent.Thinking} {
 		if value != "" {

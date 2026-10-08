@@ -44,8 +44,16 @@ func (s *Server) handleSessionsV3UsageLimits(w http.ResponseWriter, r *http.Requ
 
 	switch r.Method {
 	case http.MethodGet:
+		if !s.requireScopeAny(w, r, "usage:read", "usage:write", "sessions:read") {
+			return
+		}
 		s.handleGetSessionsV3UsageLimits(w, r, principal)
 	case http.MethodPost, http.MethodPut:
+		// The spend cap is the last cost control: changing it needs an
+		// explicit grant, never a session token.
+		if !s.requireScope(w, r, "usage:write") {
+			return
+		}
 		s.handlePostSessionsV3UsageLimits(w, r, principal)
 	default:
 		methodNotAllowed(w)

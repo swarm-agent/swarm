@@ -66,6 +66,7 @@ type UpsertInput struct {
 	ExitPlanModeEnabled *bool                          `json:"exit_plan_mode_enabled"`
 	ToolScope           *pebblestore.AgentToolScope    `json:"tool_scope"`
 	ToolContract        *pebblestore.AgentToolContract `json:"tool_contract"`
+	Limits              *pebblestore.AgentRunLimits    `json:"limits"`
 	Enabled             *bool                          `json:"enabled"`
 }
 
@@ -1292,6 +1293,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(existing.ToolContract)
 		}
+		if input.Limits == nil {
+			profile.Limits = pebblestore.NormalizeAgentRunLimits(existing.Limits)
+		}
 	}
 	profile, err = finalizeRuntimeProfile(profile, input, ok)
 	if err != nil {
@@ -1688,6 +1692,9 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		}
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(before.ToolContract)
+		}
+		if input.Limits == nil {
+			profile.Limits = pebblestore.NormalizeAgentRunLimits(before.Limits)
 		}
 		if input.Enabled == nil {
 			profile.Enabled = before.Enabled
@@ -2143,6 +2150,7 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		ExitPlanModeEnabled: pebblestore.CloneBoolPtr(input.ExitPlanModeEnabled),
 		ToolScope:           toolScope,
 		ToolContract:        toolContract,
+		Limits:              pebblestore.NormalizeAgentRunLimits(input.Limits),
 		Enabled:             enabled,
 	}), nil
 }
