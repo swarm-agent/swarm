@@ -749,6 +749,9 @@ func NewService(sessions *sessionruntime.Service, modelSvc *model.Service, provi
 	if tools != nil && permissions != nil {
 		tools.SetManageSessionCapacityProvider(permissions)
 	}
+	if agents != nil {
+		agents.SetReservedToolNames(IsReservedToolName)
+	}
 	return &Service{
 		sessions:    sessions,
 		model:       modelSvc,

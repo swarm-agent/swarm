@@ -24,7 +24,21 @@ type Service struct {
 	publish           func(pebblestore.EventEnvelope)
 	systemAgents      *SystemAgentRegistry
 	systemAgentsError error
-	mu                sync.Mutex
+	// reservedToolName reports built-in tool names, which a custom tool may
+	// not take: the runtime dispatches built-ins first, so a custom tool
+	// named "bash" would run real bash with the model's arguments.
+	reservedToolName func(string) bool
+	mu               sync.Mutex
+}
+
+// SetReservedToolNames installs the built-in tool name check.
+func (s *Service) SetReservedToolNames(reserved func(string) bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.reservedToolName = reserved
+	s.mu.Unlock()
 }
 
 type State struct {
@@ -874,8 +888,21 @@ func (s *Service) putCustomToolForAccount(accountScopeID string, definition pebb
 	if definition.Kind == "" {
 		return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool kind is required")
 	}
-	if definition.Command == "" {
-		return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool command is required")
+	switch definition.Kind {
+	case pebblestore.AgentCustomToolKindFixedBash:
+		if definition.Command == "" {
+			return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool command is required")
+		}
+	case pebblestore.AgentCustomToolKindClient:
+		if definition.Command != "" {
+			return pebblestore.AgentCustomToolDefinition{}, errors.New("client tools take no command: the session's client answers them")
+		}
+		if _, err := CompileClientToolSchema(definition.InputSchema); err != nil {
+			return pebblestore.AgentCustomToolDefinition{}, err
+		}
+	}
+	if s.reservedToolName != nil && s.reservedToolName(definition.Name) {
+		return pebblestore.AgentCustomToolDefinition{}, fmt.Errorf("custom tool name %q is a built-in tool", definition.Name)
 	}
 	eventType := "agent.custom_tool.created"
 	var exists bool

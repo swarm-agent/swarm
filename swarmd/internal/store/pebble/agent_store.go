@@ -20,6 +20,17 @@ const (
 	AgentExecutionSettingReadWrite = AgentRuntimeModeReadWrite
 
 	AgentCustomToolKindFixedBash = "fixed_bash"
+	// AgentCustomToolKindClient is a typed tool the session's client answers.
+	// Swarm validates the arguments against InputSchema, records a pending
+	// call, waits for the client's result and returns it to the model. Swarm
+	// itself executes nothing for it.
+	AgentCustomToolKindClient = "client"
+
+	AgentCustomToolEffectRead  = "read"
+	AgentCustomToolEffectWrite = "write"
+
+	AgentClientToolDefaultTimeoutMS = 30_000
+	AgentClientToolMaxTimeoutMS     = 300_000
 )
 
 type AgentToolScope struct {
@@ -67,7 +78,11 @@ type AgentCustomToolDefinition struct {
 	Kind        string `json:"kind"`
 	Description string `json:"description,omitempty"`
 	Command     string `json:"command"`
-	UpdatedAt   int64  `json:"updated_at"`
+	// Client tools only.
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+	Effect      string         `json:"effect,omitempty"`
+	TimeoutMS   int            `json:"timeout_ms,omitempty"`
+	UpdatedAt   int64          `json:"updated_at"`
 }
 
 func BoolPtr(value bool) *bool {
@@ -240,6 +255,8 @@ func NormalizeAgentCustomToolKind(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case AgentCustomToolKindFixedBash:
 		return AgentCustomToolKindFixedBash
+	case AgentCustomToolKindClient:
+		return AgentCustomToolKindClient
 	default:
 		return ""
 	}
@@ -251,8 +268,27 @@ func CloneAgentCustomToolDefinition(definition AgentCustomToolDefinition) AgentC
 		Kind:        strings.TrimSpace(definition.Kind),
 		Description: strings.TrimSpace(definition.Description),
 		Command:     strings.TrimSpace(definition.Command),
+		InputSchema: cloneJSONObject(definition.InputSchema),
+		Effect:      strings.TrimSpace(definition.Effect),
+		TimeoutMS:   definition.TimeoutMS,
 		UpdatedAt:   definition.UpdatedAt,
 	}
+}
+
+// cloneJSONObject deep-copies a decoded JSON object.
+func cloneJSONObject(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func NormalizeAgentCustomToolDefinition(definition AgentCustomToolDefinition) AgentCustomToolDefinition {
@@ -261,6 +297,24 @@ func NormalizeAgentCustomToolDefinition(definition AgentCustomToolDefinition) Ag
 	definition.Kind = NormalizeAgentCustomToolKind(definition.Kind)
 	definition.Description = strings.TrimSpace(definition.Description)
 	definition.Command = strings.TrimSpace(definition.Command)
+	if definition.Kind == AgentCustomToolKindClient {
+		switch strings.ToLower(definition.Effect) {
+		case AgentCustomToolEffectWrite:
+			definition.Effect = AgentCustomToolEffectWrite
+		default:
+			definition.Effect = AgentCustomToolEffectRead
+		}
+		if definition.TimeoutMS <= 0 {
+			definition.TimeoutMS = AgentClientToolDefaultTimeoutMS
+		}
+		if definition.TimeoutMS > AgentClientToolMaxTimeoutMS {
+			definition.TimeoutMS = AgentClientToolMaxTimeoutMS
+		}
+	} else {
+		definition.InputSchema = nil
+		definition.Effect = ""
+		definition.TimeoutMS = 0
+	}
 	if definition.UpdatedAt < 0 {
 		definition.UpdatedAt = 0
 	}

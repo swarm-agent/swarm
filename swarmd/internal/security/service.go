@@ -128,6 +128,19 @@ func (s *Service) AuditDenied(method, path, remoteAddr, reason, suppliedToken st
 }
 
 func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
+	return s.createScopedToken(name, scopes, accountScopeID, userID, expiresIn, workerID, workerName, "")
+}
+
+// CreateAgentBoundToken mints a session token limited to one sealed agent's
+// sessions. The caller must have checked the agent is sealed.
+func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string) (string, pebblestore.ScopedTokenRecord, error) {
+	if strings.TrimSpace(agentName) == "" {
+		return "", pebblestore.ScopedTokenRecord{}, errors.New("agent name is required")
+	}
+	return s.createScopedToken(name, []string{"sessions:read", "sessions:write"}, accountScopeID, userID, expiresIn, "", "", agentName)
+}
+
+func (s *Service) createScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName, agentName string) (string, pebblestore.ScopedTokenRecord, error) {
 	if s == nil || s.authStore == nil {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
 	}
@@ -174,6 +187,7 @@ func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID
 		UserID:         userID,
 		WorkerID:       strings.TrimSpace(workerID),
 		WorkerName:     strings.TrimSpace(workerName),
+		AgentName:      strings.TrimSpace(agentName),
 		CreatedAt:      now,
 		ExpiresAt:      expiresAt,
 		Revoked:        false,

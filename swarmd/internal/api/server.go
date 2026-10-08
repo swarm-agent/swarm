@@ -4213,6 +4213,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					}
 					reqWithAuth := requestWithActorContext(r, actor)
 					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) {
+						return
+					}
 					next.ServeHTTP(w, reqWithAuth)
 					return
 				}
@@ -4253,6 +4256,9 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			reqWithAuth := requestWithActorContext(r, actor)
 			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
+			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) {
+				return
+			}
 			next.ServeHTTP(w, reqWithAuth)
 			return
 		}

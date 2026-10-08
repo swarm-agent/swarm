@@ -114,10 +114,12 @@ type ScopedTokenRecord struct {
 	UserID         string   `json:"user_id"`
 	WorkerID       string   `json:"worker_id,omitempty"`
 	WorkerName     string   `json:"worker_name,omitempty"`
-	CreatedAt      int64    `json:"created_at"`
-	ExpiresAt      int64    `json:"expires_at"` // 0 = never
-	Revoked        bool     `json:"revoked"`
-	LastUsedAt     int64    `json:"last_used_at,omitempty"`
+	// AgentName binds the token to one sealed agent's sessions (default-deny).
+	AgentName  string `json:"agent_name,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+	ExpiresAt  int64  `json:"expires_at"` // 0 = never
+	Revoked    bool   `json:"revoked"`
+	LastUsedAt int64  `json:"last_used_at,omitempty"`
 }
 
 func (r *ScopedTokenRecord) HasScope(required string) bool {

@@ -2177,10 +2177,14 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	if !ok {
 		return "", fmt.Errorf("unsupported tool %q", name)
 	}
-	if len(args) > 0 {
+	if len(args) > 0 && definition.Kind != pebblestore.AgentCustomToolKindClient {
 		return "", fmt.Errorf("custom tool %q does not accept arguments", name)
 	}
 	switch definition.Kind {
+	case pebblestore.AgentCustomToolKindClient:
+		// Answered by the session's client through the run service; reaching
+		// the runtime means that path was bypassed.
+		return "", fmt.Errorf("client tool %q is answered by the session's client, not executed", name)
 	case pebblestore.AgentCustomToolKindFixedBash:
 		return executeBashCommand(ctx, scope, map[string]any{}, strings.TrimSpace(definition.Command), func(chunk string) {
 			if onProgress == nil {
@@ -11050,4 +11054,11 @@ func detectPromptInjectionSignals(text string) ([]string, bool) {
 		}
 	}
 	return signals, scanTruncated
+}
+
+// UntrustedSafety labels text that entered the conversation from outside the
+// runtime (for example a client tool's result) the same way as file and web
+// output: untrusted, with any prompt-injection markers found in it.
+func UntrustedSafety(text string) map[string]any {
+	return buildUntrustedSafety(text)
 }

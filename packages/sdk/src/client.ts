@@ -1,3 +1,4 @@
+import { SwarmAgentsNamespace } from './agents.js';
 import { SwarmAppsNamespace } from './apps.js';
 import { SwarmChatNamespace } from './chat.js';
 import { SwarmPermissionsNamespace } from './permissions.js';
@@ -59,6 +60,8 @@ export class SwarmClient {
   readonly storage: SwarmStorageNamespace;
   /** Owner administration of the relay connection (private transport only) */
   readonly remote: SwarmRemoteNamespace;
+  /** Sealed agents and the client tools your application answers */
+  readonly agents: SwarmAgentsNamespace;
   /** Convenient alias for cloud storage connections: cloud */
   readonly cloud: SwarmStorageNamespace;
 
@@ -107,6 +110,7 @@ export class SwarmClient {
     this.deploy = new SwarmDeployNamespace(this.transport);
     this.notifications = new SwarmNotificationsNamespace(this.transport);
     this.inbox = this.notifications;
+    this.agents = new SwarmAgentsNamespace(this.transport);
     this.storage = new SwarmStorageNamespace(this.transport);
     this.cloud = this.storage;
     this.remote = new SwarmRemoteNamespace(this.transport);

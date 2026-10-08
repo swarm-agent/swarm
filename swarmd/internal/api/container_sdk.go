@@ -32,6 +32,14 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("scoped token identity unavailable"))
 			return
 		}
+		if strings.TrimSpace(rec.AgentName) != "" {
+			// Agent-bound tokens get only their own gate: no MCP, no listing.
+			if !s.gateAgentBoundToken(w, r, rec) {
+				return
+			}
+			next.ServeHTTP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec))
+			return
+		}
 		if r.URL.Path == controlMCPPath {
 			// Swarm Control MCP translates each tool into one request against
 			// the allowlisted routes below, under this same verified identity.

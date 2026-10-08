@@ -75,10 +75,13 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 		})
 	case http.MethodPut:
 		var req struct {
-			Name        string `json:"name"`
-			Kind        string `json:"kind"`
-			Description string `json:"description"`
-			Command     string `json:"command"`
+			Name        string         `json:"name"`
+			Kind        string         `json:"kind"`
+			Description string         `json:"description"`
+			Command     string         `json:"command"`
+			InputSchema map[string]any `json:"input_schema"`
+			Effect      string         `json:"effect"`
+			TimeoutMS   int            `json:"timeout_ms"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -93,6 +96,9 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 			Kind:        req.Kind,
 			Description: req.Description,
 			Command:     req.Command,
+			InputSchema: req.InputSchema,
+			Effect:      req.Effect,
+			TimeoutMS:   req.TimeoutMS,
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

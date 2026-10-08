@@ -16,6 +16,9 @@ type createScopedTokenRequest struct {
 	ExpiresInSeconds int64    `json:"expires_in_seconds,omitempty"`
 	WorkerID         string   `json:"worker_id,omitempty"`
 	WorkerName       string   `json:"worker_name,omitempty"`
+	// AgentName mints a token limited to one sealed agent's sessions; scopes
+	// and worker fields must then be empty.
+	AgentName string `json:"agent_name,omitempty"`
 }
 
 func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
@@ -79,7 +82,24 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			expiresIn = time.Duration(req.ExpiresInSeconds) * time.Second
 		}
 
-		rawToken, record, err := s.security.CreateScopedToken(req.Name, req.Scopes, accountScopeID, principal.UserID, expiresIn, req.WorkerID, req.WorkerName)
+		var (
+			rawToken string
+			record   pebblestore.ScopedTokenRecord
+			err      error
+		)
+		if agentName := strings.TrimSpace(req.AgentName); agentName != "" {
+			if len(req.Scopes) > 0 || req.WorkerID != "" || req.WorkerName != "" {
+				writeError(w, http.StatusBadRequest, errors.New("an agent-bound token takes no scopes or worker"))
+				return
+			}
+			if sealedErr := s.sealedAgentError(accountScopeID, agentName); sealedErr != nil {
+				writeError(w, http.StatusBadRequest, sealedErr)
+				return
+			}
+			rawToken, record, err = s.security.CreateAgentBoundToken(req.Name, accountScopeID, principal.UserID, expiresIn, agentName)
+		} else {
+			rawToken, record, err = s.security.CreateScopedToken(req.Name, req.Scopes, accountScopeID, principal.UserID, expiresIn, req.WorkerID, req.WorkerName)
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

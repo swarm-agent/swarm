@@ -108,6 +108,11 @@ type AuthorizationInput struct {
 	Overlay                  *Policy
 	SubagentReservation      *SubagentReservationResult
 	SessionDeployReservation *SessionDeployReservationResult
+	// InputBoundary marks a call whose result must come from the session's
+	// client (a client tool). Like ask_user it always waits for an explicit
+	// resolution, even when approvals are bypassed or a broad allow rule
+	// exists; only an explicit deny skips the wait.
+	InputBoundary bool
 }
 
 type AuthorizationResult struct {
@@ -520,6 +525,9 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		// a broad allow rule exists; otherwise the tool executes with an empty
 		// response and silently loses the product decision.
 		return s.createPendingAuthorization(input, sessionID, requirement, "ask_user requires an explicit user response", "user_input_policy", "ask user input")
+	}
+	if input.InputBoundary && explain.Decision != PolicyDecisionDeny {
+		return s.createPendingAuthorization(input, sessionID, requirement, "client tool result required", "client_tool", "client tool call")
 	}
 	if state.BypassPermissions {
 		// Bypass suppresses ordinary approval prompts only. Hard denials and the
