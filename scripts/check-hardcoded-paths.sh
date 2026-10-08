@@ -46,12 +46,19 @@ filter_allowed_runtime_paths() {
   # whole-file exemption, alternate binary, or appended shell command is allowed.
   # Fresh-root detection checks the complete fixed installation layout and must
   # not bootstrap over existing state. Allow only this exact presence-check list.
+  # The headless installer and the sandbox image name the fixed server and
+  # container layout they create; each is one exact declaration.
   filter_guest_image_paths | grep -Ev \
     -e '^(\./)?scripts/rebuild\.sh:[0-9]+:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm\.service; do$' \
     -e '^(\./)?scripts/diagnose-live-workset-full-history\.sh:.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
     -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go|scripts/ssh-fast-test\.sh):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:.*[ :]/etc/swarmd[/ ]' \
     -e '^(\./)?containers/sealed/test/run\.sh:[0-9]+:.*--tmpfs /home/swarm:' \
+    -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:OPT=/opt/swarm$' \
+    -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:DATA_DIRS=\(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd\)$' \
+    -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:APP_CONFIG=/etc/swarmd/headless-app$' \
+    -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:GVISOR_LIST=/etc/apt/sources\.list\.d/gvisor\.list$' \
+    -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*sandboxHome[[:space:]]*=[[:space:]]*"/home/sandbox"$' \
     -e '^(\./)?scripts/check-daemon-storage-paths\.sh:.*(/home/|/root|/tmp/swarm-storage-gate-self-test\.out|forbidden_home_hits|negative fixture|run_scan)' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemConfigMarker[[:space:]]*=[[:space:]]*"/etc/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemDataMarker[[:space:]]*=[[:space:]]*"/var/lib/"[[:space:]]*$' \

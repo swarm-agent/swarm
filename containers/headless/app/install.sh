@@ -50,6 +50,8 @@ SANDBOX_NETWORK=swarm-sandbox
 SANDBOX_SUBNET=172.31.251.0/24
 SANDBOX_BRIDGE=br-swarm-sbx
 DATA_DIRS=(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd)
+APP_CONFIG=/etc/swarmd/headless-app
+GVISOR_LIST=/etc/apt/sources.list.d/gvisor.list
 
 # The earlier layout ran Swarm itself inside a container; reinstall/uninstall
 # remove what it left behind.
@@ -172,7 +174,7 @@ check_sandbox() {
 '
 }
 
-# Build Swarm and the app from the checkout, install them under /opt/swarm,
+# Build Swarm and the app from the checkout, install them under $OPT,
 # build the sandbox image and (re)start the services. Restarting stops any
 # agent run in progress.
 up() {
@@ -196,11 +198,11 @@ up() {
   # Keep the running release and the one before it.
   find "$OPT/releases" -mindepth 1 -maxdepth 1 -type d ! -path "$release" -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | tail -n +2 | cut -d' ' -f2- | xargs -r rm -rf
-  install -m 0755 /dev/stdin /usr/local/bin/swarmctl <<'WRAPPER'
+  install -m 0755 /dev/stdin /usr/local/bin/swarmctl <<WRAPPER
 #!/bin/sh
 # swarmctl talks to Swarm's private socket, so it runs as Swarm's own user.
-if [ "$(id -un)" = swarm ]; then exec /opt/swarm/current/bin/swarmctl "$@"; fi
-exec runuser -u swarm -- env HOME=/var/lib/swarm LD_LIBRARY_PATH=/opt/swarm/current/lib /opt/swarm/current/bin/swarmctl "$@"
+if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
+exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@"
 WRAPPER
 
   firewall
@@ -322,7 +324,7 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
-ReadWritePaths=/etc/swarmd/headless-app $PROJECT
+ReadWritePaths=$APP_CONFIG $PROJECT
 
 [Install]
 WantedBy=multi-user.target
@@ -348,7 +350,7 @@ OnUnitActiveSec=5min
 [Install]
 WantedBy=timers.target
 UNIT
-  install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 /etc/swarmd /etc/swarmd/headless-app
+  install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "${DATA_DIRS[0]}" "$APP_CONFIG"
   systemctl daemon-reload
   systemctl enable "$FIREWALL_UNIT" "$DAEMON_UNIT" "$APP_UNIT" >/dev/null
   systemctl enable --now swarm-headless-update.timer >/dev/null
@@ -369,7 +371,7 @@ wait_ready() {
 # visit from a device on your tailnet creates a new login.
 reset_login() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
-  rm -f /etc/swarmd/headless-app/account.json
+  rm -f "$APP_CONFIG/account.json"
   systemctl restart "$APP_UNIT"
   wait_ready
   load_conf
@@ -478,12 +480,12 @@ install_gvisor() {
   # gVisor's signed apt repository (https://gvisor.dev/docs/user_guide/install/).
   if curl -fsSL https://gvisor.dev/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg &&
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" \
-      >/etc/apt/sources.list.d/gvisor.list &&
+      >"$GVISOR_LIST" &&
     apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq runsc >/dev/null; then
     return 0
   fi
   echo "warning: gVisor could not be installed; sandboxes use Docker's default runtime" >&2
-  rm -f /etc/apt/sources.list.d/gvisor.list
+  rm -f "$GVISOR_LIST"
 }
 
 register_gvisor() {
