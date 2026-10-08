@@ -289,6 +289,107 @@ class RuntimeTests(unittest.TestCase):
         for value in ('--property=CPUQuota=10%', '--property=MemoryMax=32M', '--property=TasksMax=8'):
             self.assertIn(value, argv)
 
+    def test_suspend_preserves_receipt_and_stops_only_owned_guest(self):
+        """Suspend is not Pool.stop: retain capacity/manifest and stop only the
+        verified guest, not endpoint proxies or foreign units. Adapter assertions
+        prove the lifecycle boundary without claiming a real guest restart.
+        """
+        r = self.owned()
+        self.pool.transition(self.lane, r['generation'], 'deploying', 'ready')
+        manifest = (self.root / self.runtime.manifest_name(r)).read_bytes()
+        self.commands.units[self.runtime.units(r)[0]] = 'LoadState=loaded\nActiveState=active\nDescription=foreign'
+        with self.assertRaises(PoolError):
+            self.runtime.suspend(self.lane, r['generation'])
+        self.assertFalse(any(c[:2] == ['systemctl', 'stop'] for c in self.commands.calls))
+        self.commands.units[self.runtime.units(r)[0]] = 'LoadState=loaded\nActiveState=active\nDescription=' + self.runtime.description(r)
+        result = self.runtime.suspend(self.lane, r['generation'])
+        self.assertTrue(result['image_preserved'])
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual((self.root / self.runtime.manifest_name(r)).read_bytes(), manifest)
+        self.assertEqual([c for c in self.commands.calls if c[:2] == ['systemctl', 'stop']],
+                         [['systemctl', 'stop', self.runtime.units(r)[0]]])
+
+    def test_private_resume_failure_does_not_echo_diagnostic(self):
+        """wait_ready must not expose authenticated guest output after failure;
+        the narrow unit boundary injects a stopped unit and asserts no diagnostic
+        reader is called, while the failure still reaches the caller.
+        """
+        r = self.owned()
+        self.commands.units.pop(self.runtime.units(r)[0])
+        with mock.patch.object(self.runtime, 'print_failure_diagnostic') as diagnostic:
+            with self.assertRaisesRegex(PoolError, 'candidate unit stopped'):
+                self.runtime.wait_ready(r, self.lane, private_diagnostics=True)
+        diagnostic.assert_not_called()
+
+    def test_resume_rejects_wrong_owner_stale_generation_and_running_guest(self):
+        """NspawnRuntime.resume/Pool.status must reject foreign/stale requests and
+        live daemons before removing sockets or starting a competing database owner.
+        This adapter test proves zero runtime mutation at that authority boundary.
+        """
+        r = self.owned()
+        self.pool.transition(self.lane, r['generation'], 'deploying', 'ready')
+        for lane, generation in ((self.lane, 'f' * 64),
+                                 (Lane(str(self.common), str(self.base)), r['generation'])):
+            with self.assertRaises(PoolError):
+                self.runtime.resume(lane, generation, 'b' * 40)
+        with self.assertRaisesRegex(PoolError, 'stopped guest'):
+            self.runtime.resume(self.lane, r['generation'], 'b' * 40)
+        self.assertFalse(any(c[0] == 'systemd-run' or c[:2] == ['systemctl', 'stop']
+                             for c in self.commands.calls))
+        self.assertEqual(self.pool.status(self.lane, r['generation'])['state'], 'ready')
+        self.assertEqual(self.runtime.read_manifest(r)['head'], 'b' * 40)
+
+    def test_resume_preserves_image_manifest_and_failure_diagnostics(self):
+        """Resume failure must retain state and original immutable receipts, not
+        call destructive Pool.stop. Inject failure at the real wait_ready boundary;
+        assert both retained bytes and absence of cleanup commands.
+        """
+        r = self.owned()
+        self.pool.transition(self.lane, r['generation'], 'deploying', 'ready')
+        self.commands.units.pop(self.runtime.units(r)[0])
+        image = self.root / (self.runtime.name(r) + '.raw')
+        with image.open('wb') as stream:
+            stream.write(b'preserved encrypted history')
+            stream.truncate(self.pool.config.disk_mb * 1048576)
+        exchange = self.root / (self.runtime.name(r) + '.exchange')
+        exchange.mkdir()
+        manifest = (self.root / self.runtime.manifest_name(r)).read_bytes()
+        with mock.patch('local_testbench_runtime.os.path.ismount', return_value=True), \
+             mock.patch.object(self.runtime, 'wait_ready', side_effect=PoolError('startup failed')) as wait:
+            with self.assertRaisesRegex(PoolError, 'startup failed'):
+                self.runtime.resume(self.lane, r['generation'], 'c' * 40)
+        wait.assert_called_once_with(mock.ANY, self.lane, private_diagnostics=True)
+        with image.open('rb') as stream:
+            self.assertEqual(stream.read(27), b'preserved encrypted history')
+        self.assertEqual((self.root / self.runtime.manifest_name(r)).read_bytes(), manifest)
+        self.assertEqual(self.pool.status(self.lane, r['generation'])['state'], 'ready')
+        self.assertFalse(any(c[:2] == ['systemctl', 'stop'] for c in self.commands.calls))
+        launch = next(c for c in self.commands.calls if c[0] == 'systemd-run')
+        self.assertIn('--setenv=CANDIDATE_HEAD=' + 'c' * 40, launch)
+        self.assertNotIn('--bind=/var/run/docker.sock', ' '.join(launch))
+
+    def test_resume_rejects_symlink_endpoint_before_mutation(self):
+        """Candidate-controlled exchange entries cannot redirect resume cleanup;
+        NspawnRuntime.resume validates every endpoint before deleting any socket.
+        """
+        r = self.owned()
+        self.pool.transition(self.lane, r['generation'], 'deploying', 'ready')
+        self.commands.units.pop(self.runtime.units(r)[0])
+        image = self.root / (self.runtime.name(r) + '.raw')
+        with image.open('wb') as stream:
+            stream.truncate(self.pool.config.disk_mb * 1048576)
+        exchange = self.root / (self.runtime.name(r) + '.exchange')
+        exchange.mkdir()
+        target = self.base / 'untouched'
+        target.write_text('preserve')
+        (exchange / 'api.sock').symlink_to(target)
+        with mock.patch('local_testbench_runtime.os.path.ismount', return_value=True):
+            with self.assertRaisesRegex(PoolError, 'endpoint type'):
+                self.runtime.resume(self.lane, r['generation'], 'b' * 40)
+        self.assertEqual(target.read_text(), 'preserve')
+        self.assertTrue((exchange / 'api.sock').is_symlink())
+        self.assertFalse(any(c[0] == 'systemd-run' for c in self.commands.calls))
+
     def test_config_symlink_and_oversize_are_rejected(self):
         """Config reads must be bounded and refuse symlink substitution before allocation."""
         target = self.base / 'config'

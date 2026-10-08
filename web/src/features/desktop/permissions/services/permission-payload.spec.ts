@@ -760,6 +760,30 @@ main()
 for (const mode of ['plan', 'auto', 'yolo']) {
   for (const toolName of ['read', 'functions.read']) {
     assert(permissionRequiresApproval(makePermission({ toolName, mode, requirement: 'design_source_sensitive_read' }), mode), 'Designer source consent must remain visible')
-    assert(!permissionRequiresApproval(makePermission({ toolName, mode, requirement: '' }), mode), 'ordinary reads must remain non-interactive')
+    assert(!permissionRequiresApproval({ toolName, mode, requirement: '' }, mode), 'ordinary reads without a pending request remain non-interactive')
   }
+}
+
+// Requirement: resolved V3 permissions retained for replay protection must not
+// remain actionable in the conversation modal/inline Bash card. The production
+// boundary is permissionRequiresApproval, consumed by the conversation selector.
+// This narrow policy test covers both tool families and negative terminal cases;
+// live browser verification separately proves dismissal after real resolution.
+for (const toolName of ['ask-user', 'bash']) {
+  const pending = makePermission({ toolName, mode: 'auto', requirement: '', status: 'pending' })
+  assert(permissionRequiresApproval(pending), `${toolName} pending decision must remain visible`)
+  for (const status of ['approved', 'denied', 'cancelled', 'expired', 'failed']) {
+    assert(!permissionRequiresApproval({ ...pending, status }), `${toolName} ${status} must not reopen approval`)
+  }
+  assert(pending.status === 'pending', 'selection must not mutate canonical permission state')
+}
+
+// Purpose: permissionRequiresApproval owns visibility, not authorization. Explicit
+// pending V3 requests must survive policy inference before a tool starts; terminal
+// decisions must never resurrect. This pure predicate is the narrowest boundary.
+for (const toolName of ['read', 'write', 'bash', 'plan_manage']) {
+  const pending = makePermission({ toolName, mode: 'yolo', requirement: '' })
+  assert(permissionRequiresApproval(pending), `${toolName} explicit pending request must remain actionable`)
+  assert(!permissionRequiresApproval({ ...pending, decision: 'deny' }), 'a decision clears attention')
+  assert(!permissionRequiresApproval({ ...pending, resolvedAt: 10 }), 'resolution clears attention')
 }

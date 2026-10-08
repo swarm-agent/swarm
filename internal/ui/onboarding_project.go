@@ -9,6 +9,63 @@ import (
 	"github.com/gdamore/tcell/v2"
 )
 
+// Phase 3: Project Creation (Project-first onboarding)
+
+func (p *HomePage) handleOnboardingProjectKey(ev *tcell.EventKey) {
+	s := &p.onboarding
+	switch ev.Key() {
+	case tcell.KeyEscape:
+		p.ShowOnboardingProvider("Provider configuration.")
+		return
+	case tcell.KeyEnter:
+		name := strings.TrimSpace(s.ProjectName)
+		if name == "" {
+			s.Error = "Project name is required. Please enter a name for your project."
+			return
+		}
+		s.ProjectName = name
+		s.ProjectNamed = true
+		p.ShowOnboardingWorkspace("")
+		return
+	case tcell.KeyCtrlU:
+		s.ProjectName = ""
+		s.Error = ""
+		return
+	case tcell.KeyBackspace, tcell.KeyBackspace2:
+		_, size := utf8.DecodeLastRuneInString(s.ProjectName)
+		if size > 0 {
+			s.ProjectName = s.ProjectName[:len(s.ProjectName)-size]
+		}
+		s.Error = ""
+		return
+	case tcell.KeyRune:
+		if unicode.IsPrint(ev.Rune()) {
+			s.ProjectName += string(ev.Rune())
+		}
+		s.Error = ""
+		return
+	}
+}
+
+func (p *HomePage) drawOnboardingProject(screen tcell.Screen, content Rect) {
+	s := &p.onboarding
+	y := content.Y + 2
+	DrawText(screen, content.X+1, y, content.W-2, p.theme.TextMuted, "Project name")
+	fieldRect := Rect{X: content.X, Y: y + 1, W: content.W, H: 3}
+	DrawBox(screen, fieldRect, p.theme.BorderActive)
+	value := s.ProjectName
+	valueStyle := p.theme.Primary
+	if value == "" {
+		value = "Type project name..."
+		valueStyle = p.theme.TextMuted
+	}
+	DrawText(screen, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valueStyle, clampTail(value, fieldRect.W-4))
+
+	DrawText(screen, content.X+1, y+5, content.W-2, p.theme.Primary.Bold(true), "› [ Continue to Workspaces (Enter) ]")
+	DrawText(screen, content.X+1, content.Y+content.H-1, content.W-2, p.theme.TextMuted, "Enter continue to workspaces · Esc back to provider")
+}
+
+// Legacy helper preserved for compatibility
 func (p *HomePage) beginOnboardingProject() {
 	s := &p.onboarding
 	s.NamingProject = true
@@ -26,12 +83,12 @@ func (p *HomePage) beginOnboardingProject() {
 func (p *HomePage) onboardingProjectDestination() string {
 	s := &p.onboarding
 	if strings.TrimSpace(s.ProjectName) == "" {
-		return ""
+		return strings.TrimSpace(s.ProjectParent)
 	}
 	return filepath.Join(strings.TrimSpace(s.ProjectParent), strings.TrimSpace(s.ProjectName))
 }
 
-func (p *HomePage) handleOnboardingProjectKey(ev *tcell.EventKey) {
+func (p *HomePage) handleOnboardingProjectFolderKey(ev *tcell.EventKey) {
 	s := &p.onboarding
 	switch ev.Key() {
 	case tcell.KeyEscape:
@@ -93,7 +150,7 @@ func (p *HomePage) handleOnboardingProjectKey(ev *tcell.EventKey) {
 	s.Error = ""
 }
 
-func (p *HomePage) drawOnboardingProject(screen tcell.Screen, content Rect) {
+func (p *HomePage) drawOnboardingProjectFolder(screen tcell.Screen, content Rect) {
 	s := &p.onboarding
 	rows := []string{"Project name: " + s.ProjectName, "Parent location: " + s.ProjectParent, "Continue to setup confirmation"}
 	for i, text := range rows {
@@ -107,7 +164,7 @@ func (p *HomePage) drawOnboardingProject(screen tcell.Screen, content Rect) {
 	}
 	destination := p.onboardingProjectDestination()
 	if destination == "" {
-		destination = "Enter a project name"
+		destination = "Enter a folder name"
 	}
 	DrawText(screen, content.X, content.Y+5, content.W, p.theme.TextMuted, clampTail("Destination: "+destination, content.W))
 	DrawText(screen, content.X, content.Y+7, content.W, p.theme.TextMuted, "Tab fields · Enter next · Ctrl+U clear · Esc back (keeps draft)")

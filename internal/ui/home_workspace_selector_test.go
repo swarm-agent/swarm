@@ -168,31 +168,12 @@ func TestWorkspaceHeaderWarningDistinguishesGitReadinessStates(t *testing.T) {
 		WorkspaceSetupGitReadiness: model.GitReadinessReady,
 		Workspaces:                 []model.Workspace{{Name: "Default", Path: "/default", Active: true}},
 	})
-	if got := page.workspaceSetupWarning(); got != "Opened from unsaved Git repository /outside/repo. Using workspace Default. Run /workspace save to save the launch directory and switch to it." {
-		t.Fatalf("unsaved git warning = %q", got)
+	if got := page.workspaceSetupWarning(); got != "" {
+		t.Fatalf("workspaceSetupWarning() = %q, want empty (warning removed)", got)
 	}
-
 	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/plain", WorkspaceSetupGitReadiness: model.GitReadinessNotRepository})
-	if got := page.workspaceSetupWarning(); got != "/outside/plain cannot be added yet: Swarm requires a Git repository with an initial commit. Empty folders can be initialized from Desktop; existing files require ignore-rule review and permission before Git mutations." {
-		t.Fatalf("no-git warning = %q", got)
-	}
-
-	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/unborn", WorkspaceSetupHasGit: true, WorkspaceSetupGitReadiness: model.GitReadinessNeedsCommit})
-	if got := page.workspaceSetupWarning(); got != "/outside/unborn cannot be added yet: create an initial commit after reviewing files and ignore rules; staging and commits require explicit permission." {
-		t.Fatalf("unborn warning = %q", got)
-	}
-
-	page = NewHomePage(model.HomeModel{WorkspaceSetupPath: "/outside/plain", WorkspaceSetupGitReadiness: model.GitReadinessUnavailable})
-	if got := page.workspaceSetupWarning(); !strings.Contains(got, "Git is required") || !strings.Contains(got, "before adding or opening") {
-		t.Fatalf("missing-git warning = %q", got)
-	}
-
-	page = NewHomePage(model.HomeModel{
-		Workspaces:  []model.Workspace{{Name: "Saved", Path: "/saved", Active: true}},
-		Directories: []model.DirectoryItem{{Path: "/saved", ResolvedPath: "/saved", HasGit: true, GitReadiness: model.GitReadinessNeedsCommit, IsWorkspace: true}},
-	})
-	if got := page.workspaceSetupWarning(); got != "Workspace Saved at /saved needs an initial commit before Swarm can isolate agent work in managed worktrees." {
-		t.Fatalf("saved unborn warning = %q", got)
+	if got := page.workspaceSetupWarning(); got != "" {
+		t.Fatalf("workspaceSetupWarning() = %q, want empty (warning removed)", got)
 	}
 	if err := page.keybinds.Set(KeybindGlobalWorkspaceSelect, "ctrl+w"); err != nil {
 		t.Fatal(err)

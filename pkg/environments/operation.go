@@ -11,6 +11,9 @@ import (
 	"unicode/utf8"
 )
 
+// MaxOperationOutputBytes bounds each retained exec stream (also the provider cap).
+const MaxOperationOutputBytes = 4 * 1024 * 1024
+
 // Domain limits for environment operations
 const (
 	maxActionBytes             = 64
@@ -40,6 +43,7 @@ const (
 
 // Standard operation actions
 const (
+	OperationActionBuild    = "build"
 	OperationActionDeploy   = "deploy"
 	OperationActionEnsure   = "ensure"
 	OperationActionExec     = "exec"
@@ -84,26 +88,33 @@ type OperationActivity struct {
 
 // OperationResult captures safe, bounded completion results.
 type OperationResult struct {
-	ExitCode     int    `json:"exit_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	FailureKind  string `json:"failure_kind,omitempty"`
-	Summary      string `json:"summary,omitempty"`
+	Build        *ImageBuildResult `json:"build,omitempty"`
+	ExitCode     int               `json:"exit_code"`
+	ErrorMessage string            `json:"error_message,omitempty"`
+	FailureKind  string            `json:"failure_kind,omitempty"`
+	Summary      string            `json:"summary,omitempty"`
+	Stdout       string            `json:"stdout,omitempty"`
+	Stderr       string            `json:"stderr,omitempty"`
+	Truncated    bool              `json:"truncated,omitempty"`
 }
 
 // EnvironmentOperation models a durable, supervised operation on an environment or deployment.
 type EnvironmentOperation struct {
-	OperationID    string               `json:"operation_id"`
-	AccountScopeID string               `json:"account_scope_id"`
-	WorkspaceID    string               `json:"workspace_id"`
-	Action         string               `json:"action"`
-	EnvironmentID  string               `json:"environment_id,omitempty"`
-	DeploymentID   string               `json:"deployment_id,omitempty"`
-	LeaseID        string               `json:"lease_id,omitempty"`
-	Attribution    OperationAttribution `json:"attribution"`
-	Status         OperationStatus      `json:"status"`
-	Revision       uint64               `json:"revision"`
-	IdempotencyKey string               `json:"idempotency_key,omitempty"`
-	RequestHash    string               `json:"request_hash,omitempty"`
+	ProductResult     string                `json:"product_result,omitempty"`
+	BuildConnectionID string                `json:"build_connection_id,omitempty"`
+	BuildDefinition   *ImageBuildDefinition `json:"build_definition,omitempty"`
+	OperationID       string                `json:"operation_id"`
+	AccountScopeID    string                `json:"account_scope_id"`
+	WorkspaceID       string                `json:"workspace_id"`
+	Action            string                `json:"action"`
+	EnvironmentID     string                `json:"environment_id,omitempty"`
+	DeploymentID      string                `json:"deployment_id,omitempty"`
+	LeaseID           string                `json:"lease_id,omitempty"`
+	Attribution       OperationAttribution  `json:"attribution"`
+	Status            OperationStatus       `json:"status"`
+	Revision          uint64                `json:"revision"`
+	IdempotencyKey    string                `json:"idempotency_key,omitempty"`
+	RequestHash       string                `json:"request_hash,omitempty"`
 
 	CreatedAt   int64 `json:"created_at"`
 	StartedAt   int64 `json:"started_at,omitempty"`
@@ -269,6 +280,11 @@ func (op *EnvironmentOperation) Validate() error {
 	}
 
 	// Validate result fields
+	for _, output := range []string{op.Result.Stdout, op.Result.Stderr} {
+		if len(output) > MaxOperationOutputBytes || !utf8.ValidString(output) {
+			return errors.New("result output exceeds limit or is invalid UTF-8")
+		}
+	}
 	if len(op.Result.ErrorMessage) > maxErrorMessageLength || !utf8.ValidString(op.Result.ErrorMessage) {
 		return fmt.Errorf("result error_message exceeds %d bytes or is invalid UTF-8", maxErrorMessageLength)
 	}
@@ -297,6 +313,14 @@ func (op *EnvironmentOperation) Clone() *EnvironmentOperation {
 		return nil
 	}
 	cp := *op
+	if op.BuildDefinition != nil {
+		b := *op.BuildDefinition
+		cp.BuildDefinition = &b
+	}
+	if op.Result.Build != nil {
+		b := *op.Result.Build
+		cp.Result.Build = &b
+	}
 	return &cp
 }
 
@@ -390,6 +414,9 @@ type OperationHistoryQuery struct {
 // OperationRequestHashInput specifies parameters for computing an immutable request hash.
 // Secrets in env are never retained raw; values are hashed individually.
 type OperationRequestHashInput struct {
+	ProductResult     string               `json:"product_result,omitempty"`
+	BuildDigest       string               `json:"build_digest,omitempty"`
+	BuildOperationID  string               `json:"build_operation_id,omitempty"`
 	Action            string               `json:"action"`
 	EnvironmentID     string               `json:"environment_id,omitempty"`
 	DeploymentID      string               `json:"deployment_id,omitempty"`
@@ -417,6 +444,16 @@ func ComputeOperationRequestHash(in OperationRequestHashInput) string {
 	writePart := func(s string) {
 		h.Write([]byte(s))
 		h.Write([]byte{0})
+	}
+	if in.ProductResult != "" {
+		writePart("project-result-v1")
+		writePart(in.ProductResult)
+	}
+	// Preserve legacy request hashes when no managed build is involved.
+	if in.BuildDigest != "" || in.BuildOperationID != "" {
+		writePart("managed-build-v1")
+		writePart(in.BuildDigest)
+		writePart(in.BuildOperationID)
 	}
 	writePart(strings.TrimSpace(in.Action))
 	writePart(strings.TrimSpace(in.EnvironmentID))

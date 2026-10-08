@@ -3702,11 +3702,18 @@ func taskPathWithinRoot(root, target string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// retainTaskResolvedWorkspace keeps implicit creative read roots out of the
-// explicit workspace selector carried into later scheduler cohorts.
-func retainTaskResolvedWorkspace(launch *taskLaunchSpec, program *taskProgramSpec, index int, target string) {
+// retainTaskResolvedWorkspace keeps the approved program selector bound to its
+// captured source, not the parent's runtime worktree. Cohort admission resolves
+// that source again through the authenticated repository lane. The caller must
+// first validate target with resolveTaskTargetWorkspace; this is a projection,
+// not an authority to equate arbitrary worktrees of the same repository.
+// Implicit creative read roots never become explicit workspace selectors.
+func retainTaskResolvedWorkspace(parent pebblestore.SessionSnapshot, launch *taskLaunchSpec, program *taskProgramSpec, index int, target string) {
 	if !agentruntime.IsCoderAgentName(launch.RequestedSubagentType) && !agentruntime.IsFinderAgentName(launch.RequestedSubagentType) {
 		return
+	}
+	if source := mapString(parent.Metadata, "swarm_v3_source_workspace_path"); program != nil && source != "" && parent.WorktreeEnabled && sameTaskProgramPath(target, parent.WorktreeRootPath) {
+		target = source
 	}
 	launch.TargetWorkspacePath = target
 	if program != nil && index >= 0 && index < len(program.Jobs) {
@@ -3790,9 +3797,31 @@ func (s *Service) resolveTaskTargetWorkspace(parentSession pebblestore.SessionSn
 	if err != nil {
 		return "", "", err
 	}
+	if err := s.validateTaskRepositoryContinuationBases(parentSession, principal); err != nil {
+		return "", "", err
+	}
 	scope, err := s.resolveRunWorkspaceScope(parentSession, principal)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve parent shared workspace roots: %w", err)
+	}
+	if projectID := pebblestore.ProjectConversationID(parentSession); projectID != "" {
+		if requested == "" || !filepath.IsAbs(requested) || filepath.Clean(requested) != requested || s.workspace == nil {
+			return "", "", errors.New("project delegation requires an explicit canonical workspace_path")
+		}
+		project, found, err := s.sessions.Store().GetProject(principal.AccountScopeID, projectID)
+		if err != nil || !found || project == nil {
+			return "", "", errors.New("project delegation authority unavailable")
+		}
+		resolved, err := s.workspace.ScopeForPathForPrincipal(principal, requested)
+		if err != nil || !resolved.Matched || resolved.WorkspacePath != requested || resolved.ResolvedPath != requested || resolved.WorkspaceID == "" || resolved.WorkspaceGeneration <= 0 {
+			return "", "", errors.New("project delegation target is not an authorized catalog root")
+		}
+		for _, ref := range project.Workspaces {
+			if ref.Path == requested && ref.WorkspaceID == resolved.WorkspaceID {
+				return requested, resolved.WorkspaceName, nil
+			}
+		}
+		return "", "", errors.New("project delegation target is not a member of this project")
 	}
 	if requested == "" {
 		return scope.PrimaryPath, strings.TrimSpace(parentSession.WorkspaceName), nil
@@ -4291,7 +4320,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if targetErr != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] workspace target: %w", i, targetErr)
 		}
-		retainTaskResolvedWorkspace(&launch, parsed.Program, i, targetWorkspacePath)
+		retainTaskResolvedWorkspace(parentSession, &launch, parsed.Program, i, targetWorkspacePath)
 		parsed.Launches[i] = launch
 		requested := strings.TrimSpace(launch.RequestedSubagentType)
 		if requested == "" {
@@ -4454,7 +4483,13 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			for _, job := range parsed.Program.Jobs {
 				if agentruntime.IsCoderAgentName(job.RequestedSubagentType) {
 					hasCoder = true
-					coderWorkspacePath = strings.TrimSpace(firstNonEmptyString(job.TargetWorkspacePath, parent.WorktreeRootPath, parent.WorkspacePath))
+					// The retained selector is source identity; Git admission still
+					// inspects the authenticated runtime base, not the captured checkout.
+					var targetErr error
+					coderWorkspacePath, _, targetErr = s.resolveTaskTargetWorkspace(parentSession, identity.Principal{}, &taskLaunchSpec{RequestedSubagentType: job.RequestedSubagentType, TargetWorkspacePath: job.TargetWorkspacePath})
+					if targetErr != nil {
+						return taskLaunchManifest{}, targetErr
+					}
 				}
 			}
 			if hasCoder {

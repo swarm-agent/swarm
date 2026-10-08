@@ -103,10 +103,7 @@ func CalculateBaselineCost(provider, model string, inputTokens, outputTokens, ca
 		return 0.0
 	}
 
-	regularInput := inputTokens - cacheReadTokens
-	if regularInput < 0 {
-		regularInput = 0
-	}
+	regularInput := uncachedInputTokens(provider, inputTokens, cacheReadTokens)
 
 	var cost float64
 	cost += (float64(regularInput) / 1_000_000.0) * pricing.InputPricePerMillion
@@ -121,15 +118,51 @@ func CalculateBaselineCost(provider, model string, inputTokens, outputTokens, ca
 	return cost
 }
 
+// uncachedInputTokens returns the input tokens billed at the full input rate.
+// Anthropic reports input_tokens as the uncached remainder only (cache reads and
+// cache writes are separate counters); other providers report prompt tokens
+// that include cache reads.
+func uncachedInputTokens(provider string, inputTokens, cacheReadTokens int64) int64 {
+	if strings.EqualFold(strings.TrimSpace(provider), "anthropic") {
+		return max(inputTokens, 0)
+	}
+	return max(inputTokens-cacheReadTokens, 0)
+}
+
+// catalogCacheWritePricePerMillion returns the catalog's standard-tier 5-minute
+// cache-write rate, the TTL the Anthropic adapter requests.
+func catalogCacheWritePricePerMillion(pricing json.RawMessage) (float64, bool) {
+	var p struct {
+		Billing struct {
+			Lines []struct {
+				Variant  string   `json:"variant"`
+				PriceUSD *float64 `json:"price_usd"`
+			} `json:"lines"`
+		} `json:"billing"`
+	}
+	if err := json.Unmarshal(pricing, &p); err != nil {
+		return 0, false
+	}
+	for _, line := range p.Billing.Lines {
+		if strings.EqualFold(strings.TrimSpace(line.Variant), "cache_write_5m") && line.PriceUSD != nil && *line.PriceUSD > 0 {
+			return *line.PriceUSD, true
+		}
+	}
+	return 0, false
+}
+
 // CalculateCost computes estimated cost in USD based on stored catalog pricing.
 // If pricing is absent or unpriced, it returns 0.0 without guessing fallback rates.
-func (s *SessionStore) CalculateCost(provider, model string, inputTokens, outputTokens, cacheReadTokens, thinkingTokens int64) float64 {
-	cost, _ := s.CalculateCostWithStatus(provider, model, inputTokens, outputTokens, cacheReadTokens, thinkingTokens)
+func (s *SessionStore) CalculateCost(provider, model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, thinkingTokens int64) float64 {
+	cost, _ := s.CalculateCostWithStatus(provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, thinkingTokens)
 	return cost
 }
 
 // CalculateCostWithStatus evaluates cost and reports whether the pricing is known, subscription, free, or unknown.
-func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputTokens, outputTokens, cacheReadTokens, thinkingTokens int64) (float64, string) {
+// Anthropic cache writes are billed at the catalog cache-write rate; when a
+// receipt has cache writes but the catalog has no such rate, the known portion
+// is returned with status "unknown" rather than pricing the writes at a guess.
+func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, thinkingTokens int64) (float64, string) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	model = strings.ToLower(strings.TrimSpace(model))
 	if provider == "codex" {
@@ -163,10 +196,7 @@ func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputToke
 					hasCached = true
 				}
 				if inp > 0 || outVal > 0 {
-					regInput := inputTokens - cacheReadTokens
-					if regInput < 0 {
-						regInput = 0
-					}
+					regInput := uncachedInputTokens(provider, inputTokens, cacheReadTokens)
 					var cost float64
 					cost += (float64(regInput) / 1_000_000.0) * inp
 					if hasCached && cachedVal > 0 {
@@ -175,6 +205,13 @@ func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputToke
 						cost += (float64(cacheReadTokens) / 1_000_000.0) * inp
 					}
 					cost += (float64(outputTokens+thinkingTokens) / 1_000_000.0) * outVal
+					if provider == "anthropic" && cacheWriteTokens > 0 {
+						writeRate, ok := catalogCacheWritePricePerMillion(rec.Pricing)
+						if !ok {
+							return cost, "unknown"
+						}
+						cost += (float64(cacheWriteTokens) / 1_000_000.0) * writeRate
+					}
 					return cost, "known"
 				}
 			}
@@ -1029,65 +1066,109 @@ func (s *SessionStore) GetTodayUsageTotal(accountScopeID string) (float64, int64
 	if s == nil || s.store == nil {
 		return 0, 0, errors.New("store is not configured")
 	}
-	now := time.Now().UTC()
-	todayDate := now.Format("2006-01-02")
+	return s.getUsageTotalForDay(accountScopeID, time.Now().UTC())
+}
+
+func (s *SessionStore) getUsageTotalForDay(accountScopeID string, now time.Time) (float64, int64, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
+	if accountScopeID == "" {
+		return 0, 0, errors.New("account_scope_id is required")
+	}
+	now = now.UTC()
+	todayDate := now.Format("2006-01-02")
+
+	// Share the receipt writers' lock across store wrappers. Recheck the cache
+	// under the lock so concurrent misses perform only one rebuild, and no
+	// committed receipt delta can be overwritten by the rebuilt accumulator.
+	unlock := s.store.sessionMutations.lockSessions("account:" + accountScopeID)
+	defer unlock()
 
 	acc, found, err := s.GetDailyUsageAccumulator(accountScopeID, todayDate)
-	if err == nil && found {
-		return acc.TotalCostUSD, acc.TotalTokens, nil
-	}
-
-	// Recompute from turns for today if accumulator not yet present
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).UnixMilli()
-	turns, err := s.ListAllTurnUsage(accountScopeID, 10000)
 	if err != nil {
 		return 0, 0, err
 	}
+	if found {
+		return acc.TotalCostUSD, acc.TotalTokens, nil
+	}
 
-	var totalCost float64
-	var totalTokens int64
-	turnCount := 0
-	for _, rec := range turns {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	end := start.AddDate(0, 0, 1).UnixMilli()
+	acc = DailyUsageAccumulator{AccountScopeID: accountScopeID, Date: todayDate, UpdatedAt: now.UnixMilli()}
+	// Legacy receipts may predate the account index. Stream the primary keys,
+	// retaining only scalar accounting fields, never provider payload/history.
+	// Memory is bounded by one encoded receipt, not the number of receipts.
+	const iterateAll = int(^uint(0) >> 1)
+	err = s.store.IteratePrefix("session_turn_usage/", iterateAll, func(_ string, value []byte) error {
+		var rec struct {
+			SessionID        string  `json:"session_id"`
+			RunID            string  `json:"run_id"`
+			AccountScopeID   string  `json:"account_scope_id"`
+			Provider         string  `json:"provider"`
+			Model            string  `json:"model"`
+			InputTokens      int64   `json:"input_tokens"`
+			OutputTokens     int64   `json:"output_tokens"`
+			CacheReadTokens  int64   `json:"cache_read_tokens"`
+			ThinkingTokens   int64   `json:"thinking_tokens"`
+			TotalTokens      int64   `json:"total_tokens"`
+			EstimatedCostUSD float64 `json:"estimated_cost_usd"`
+			CreatedAt        int64   `json:"created_at"`
+			UpdatedAt        int64   `json:"updated_at"`
+		}
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return err
+		}
+		// Unscoped legacy receipts belong to the default account, never every account.
+		account := strings.TrimSpace(rec.AccountScopeID)
+		if account == "" {
+			account = "default"
+		}
+		if account != accountScopeID || strings.TrimSpace(rec.SessionID) == "" || strings.TrimSpace(rec.RunID) == "" {
+			return nil
+		}
 		ts := rec.CreatedAt
 		if ts <= 0 {
 			ts = rec.UpdatedAt
 		}
-		if ts < startOfDay {
-			continue
+		if ts < start.UnixMilli() || ts >= end {
+			return nil
 		}
 		cost := rec.EstimatedCostUSD
 		if cost <= 0 {
 			cost = CalculateBaselineCost(rec.Provider, rec.Model, rec.InputTokens, rec.OutputTokens, rec.CacheReadTokens, rec.ThinkingTokens)
 		}
-		totalCost += cost
-		totalTokens += rec.TotalTokens
-		turnCount++
+		acc.TotalCostUSD += cost
+		acc.TotalTokens += rec.TotalTokens
+		acc.TurnCount++
+		return nil
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("rebuild daily turn usage: %w", err)
 	}
-
-	mediaRecords, _ := s.ListMediaUsage(accountScopeID, 2000)
-	mediaCost := 0.0
-	mediaCalls := 0
-	for _, m := range mediaRecords {
-		ts := m.CreatedAt
-		if ts < startOfDay {
-			continue
+	err = s.store.IteratePrefix(SessionMediaUsagePrefix(accountScopeID), iterateAll, func(_ string, value []byte) error {
+		var rec struct {
+			ID             string  `json:"id"`
+			AccountScopeID string  `json:"account_scope_id"`
+			CostUSD        float64 `json:"cost_usd"`
+			CreatedAt      int64   `json:"created_at"`
 		}
-		mediaCost += m.CostUSD
-		mediaCalls++
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return err
+		}
+		if rec.ID == "" || strings.TrimSpace(rec.AccountScopeID) != accountScopeID || rec.CreatedAt < start.UnixMilli() || rec.CreatedAt >= end {
+			return nil
+		}
+		acc.MediaCostUSD += rec.CostUSD
+		acc.MediaCalls++
+		return nil
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("rebuild daily media usage: %w", err)
 	}
-	totalCost += mediaCost
-
-	acc = DailyUsageAccumulator{
-		AccountScopeID: accountScopeID,
-		Date:           todayDate,
-		TotalCostUSD:   totalCost,
-		TotalTokens:    totalTokens,
-		TurnCount:      turnCount,
-		MediaCalls:     mediaCalls,
-		MediaCostUSD:   mediaCost,
-		UpdatedAt:      now.UnixMilli(),
+	acc.TotalCostUSD += acc.MediaCostUSD
+	// Keep legacy pricing coverage uncertified, as before: rebuilding totals
+	// does not establish pricing evidence for old receipts.
+	if err := s.PutDailyUsageAccumulator(acc); err != nil {
+		return 0, 0, err
 	}
-	_ = s.PutDailyUsageAccumulator(acc)
-	return totalCost, totalTokens, nil
+	return acc.TotalCostUSD, acc.TotalTokens, nil
 }

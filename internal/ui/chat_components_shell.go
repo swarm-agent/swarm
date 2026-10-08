@@ -41,12 +41,9 @@ func (p *ChatPage) drawHeader(s tcell.Screen, rect Rect) {
 	}
 
 	todoBadge := formatAgentTodoBadge(p.meta)
-	rightParts := make([]string, 0, 3)
+	rightParts := make([]string, 0, 2)
 	if todoBadge != "" {
 		rightParts = append(rightParts, todoBadge)
-	}
-	if branch := chatHeaderBranchLabel(p.meta.Branch); branch != "" {
-		rightParts = append(rightParts, branch)
 	}
 	if status != "" {
 		rightParts = append(rightParts, status)

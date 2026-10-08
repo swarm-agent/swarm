@@ -41,6 +41,9 @@ func TestWorkspaceDefinitionPromptIsBoundedAndIncludesRootAgents(t *testing.T) {
 	}
 }
 
+// Purpose: buildWorkspaceDefinitionPrompt must bound each root document and the
+// total input without padding small repositories. The prompt-builder layer proves
+// both limits; per-file truncation must not be mistaken for the total-budget cap.
 func TestWorkspaceDefinitionPromptHardCapDoesNotPadSmallRepositories(t *testing.T) {
 	root := t.TempDir()
 	large := strings.Repeat("purpose and architecture ", workspaceDefinitionMaxInputTokens)
@@ -57,8 +60,12 @@ func TestWorkspaceDefinitionPromptHardCapDoesNotPadSmallRepositories(t *testing.
 	if got := workspaceDefinitionInputTokenUpperBound(prompt); got > workspaceDefinitionMaxInputTokens {
 		t.Fatalf("prompt token upper bound=%d, max=%d", got, workspaceDefinitionMaxInputTokens)
 	}
-	if !strings.Contains(prompt, "hard token cap") {
-		t.Fatalf("large prompt did not report truncation")
+	if strings.Count(prompt, "[truncated]") != 2 {
+		t.Fatalf("both oversized root documents must report per-file truncation")
+	}
+	capped := truncateWorkspaceDefinitionInput(large, workspaceDefinitionMaxInputTokens)
+	if len(capped) > workspaceDefinitionMaxInputTokens || !strings.Contains(capped, "hard token cap") {
+		t.Fatal("aggregate input cap must bound and report truncation")
 	}
 
 	small := truncateWorkspaceDefinitionInput("small", workspaceDefinitionMaxInputTokens)

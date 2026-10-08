@@ -111,6 +111,9 @@ func ValidateExecutablePlanDocument(doc *pebblestore.SessionPlanDocument) error 
 		add("document", "structured document is required")
 		return validationErr
 	}
+	if err := validatePlanRequirements(doc); err != nil {
+		add("requirements", err.Error())
+	}
 	if doc.AutomationV2 != nil {
 		if doc.Automation != nil {
 			add("automation_v2", "V1 and V2 cannot coexist")
@@ -272,6 +275,9 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 			return fmt.Errorf("plan document active_checkpoint_id %q does not match a checkpoint", activeID)
 		}
 	}
+	if err := validatePlanRequirements(doc); err != nil {
+		return err
+	}
 	if err := validatePlanCheckpointContinuity(doc); err != nil {
 		return err
 	}
@@ -282,6 +288,10 @@ func ValidatePlanDocument(doc *pebblestore.SessionPlanDocument) error {
 // documents. The service applies the whole patch atomically and stores exactly
 // one normal plan revision for the accepted update.
 type PlanDocumentPatch struct {
+	BaseRevisionID     string                                           `json:"base_revision_id,omitempty"`
+	Requirement        *pebblestore.SessionPlanRequirement              `json:"requirement,omitempty"`
+	RequirementID      string                                           `json:"requirement_id,omitempty"`
+	RequirementOrder   []string                                         `json:"requirement_order,omitempty"`
 	Operation          string                                           `json:"operation,omitempty"`
 	Title              string                                           `json:"title,omitempty"`
 	Info               *pebblestore.SessionPlanInfo                     `json:"info,omitempty"`
@@ -416,6 +426,14 @@ func ApplyPlanDocumentPatch(planID, title string, existing *pebblestore.SessionP
 		ops = []PlanDocumentPatchOperation{patch}
 	}
 	for _, op := range ops {
+		if strings.Contains(strings.ToLower(op.Operation), "requirement") {
+			if existing == nil || patch.BaseRevisionID == "" || patch.BaseRevisionID != existing.RevisionID {
+				return nil, errors.New("requirement edit revision conflict: reload the reviewed plan")
+			}
+		}
+	}
+	doc.RequirementChanges = nil
+	for _, op := range ops {
 		if err := applyPlanDocumentPatchOperation(doc, op); err != nil {
 			return nil, err
 		}
@@ -449,6 +467,8 @@ func applyPlanDocumentPatchOperation(doc *pebblestore.SessionPlanDocument, op Pl
 		}
 	}
 	switch operation {
+	case "add_requirement", "edit_requirement", "remove_requirement", "reorder_requirements":
+		return applyRequirementEdit(doc, op)
 	case "update_info", "patch_info":
 		if op.Info == nil && len(op.InfoFields) == 0 {
 			return errors.New("update_info plan document patch requires info")
@@ -1031,6 +1051,8 @@ func clonePlanDocument(doc *pebblestore.SessionPlanDocument) *pebblestore.Sessio
 		return nil
 	}
 	clone := *doc
+	clone.Requirements = append([]pebblestore.SessionPlanRequirement(nil), doc.Requirements...)
+	clone.RequirementChanges = cloneStringSlice(doc.RequirementChanges)
 	clone.Automation = clonePlanAutomation(doc.Automation)
 	if doc.AutomationV2 != nil {
 		a := *doc.AutomationV2

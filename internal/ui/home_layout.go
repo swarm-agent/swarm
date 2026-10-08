@@ -1,5 +1,7 @@
 package ui
 
+import "strings"
+
 type homeSection struct {
 	kind string
 	h    int
@@ -55,27 +57,46 @@ func resolveHomeResponsiveLayout(width, height int) homeResponsiveLayout {
 	return profile
 }
 
-func buildHomeSections(variant layoutVariant) []homeSection {
+func (p *HomePage) buildHomeSections(variant layoutVariant) []homeSection {
 	metaH := 1
 	if variant.ShowDirectory {
 		metaH = 2
 	}
 
-	sections := make([]homeSection, 0, 5)
+	sections := make([]homeSection, 0, 6)
+	hasActiveProject := p != nil && strings.TrimSpace(p.model.ActiveProjectID) != ""
+
 	if variant.UseSwarmTopBar {
-		if variant.ShowHero {
+		if hasActiveProject {
+			tasksH := len(p.model.ProjectTasks) + 2
+			if len(p.model.ProjectTasks) == 0 {
+				tasksH = 4
+			} else if tasksH > 10 {
+				tasksH = 10
+			}
+			sections = append(sections, homeSection{kind: "tasks", h: tasksH})
+		} else if variant.ShowHero {
 			sections = append(sections, homeSection{kind: "hero", h: 5})
 		}
 		if variant.ShowPresets {
 			sections = append(sections, homeSection{kind: "presets", h: 1})
 		}
-		sections = append(sections, homeSection{kind: "input", h: 3})
 		if variant.ShowTips {
 			sections = append(sections, homeSection{kind: "tips", h: 1})
 		}
+		sections = append(sections, homeSection{kind: "input", h: 3})
 		return sections
 	}
 
+	if hasActiveProject {
+		tasksH := len(p.model.ProjectTasks) + 2
+		if len(p.model.ProjectTasks) == 0 {
+			tasksH = 4
+		} else if tasksH > 6 {
+			tasksH = 6
+		}
+		sections = append(sections, homeSection{kind: "tasks", h: tasksH})
+	}
 	if variant.InputFirst {
 		sections = append(sections, homeSection{kind: "input", h: 3})
 		sections = append(sections, homeSection{kind: "meta", h: metaH})

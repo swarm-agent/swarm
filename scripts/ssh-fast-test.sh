@@ -286,9 +286,9 @@ printf 'ssh-fast-test: copying git bundle to %s:%s\n' "${SSH_ALIAS}" "${REMOTE_B
 copy_bundle_to_remote "${LOCAL_BUNDLE}" "${REMOTE_BUNDLE_PATH}"
 trap 'rm -f -- "${LOCAL_BUNDLE}"; cleanup_remote_bundle "${REMOTE_BUNDLE_PATH}" >/dev/null 2>&1 || true' EXIT
 
-if [[ "${FROM_ZERO}" == "true" ]]; then
+if [[ "${RESTART_SERVICE}" == "true" ]]; then
   printf 'ssh-fast-test: stopping remote service before checkout update\n'
-  remote_service_action stop
+  remote_service_action stop || true
 fi
 
 remote_command="bash -s --"
@@ -448,7 +448,7 @@ if [[ "$1" == '-n' ]]; then shift; fi
 [[ $# -ge 1 ]] || { printf 'ssh-fast-test: privileged command is required\n' >&2; exit 2; }
 case "$(basename -- "$1")" in
   systemctl) shift ;;
-  *) exit 1 ;;
+  *) exec /usr/bin/sudo "$@" ;;
 esac
 case "$*" in
   'daemon-reload') action='swarm-service-reload' ;;
@@ -469,10 +469,14 @@ SUDO_SHIM
 chmod 0700 "${sudo_shim_dir}/sudo"
 SWARM_SKIP_SYSTEMD_UNIT=1 PATH="${sudo_shim_dir}:${PATH}" ./rebuild f
 rm -rf -- "${sudo_shim_dir}"
+pkill -x swarmd >/dev/null 2>&1 || true
+pkill -x swarm >/dev/null 2>&1 || true
 trap - EXIT
 REMOTE_SSH_FAST_TEST
 
 if [[ "${RESTART_SERVICE}" == "true" ]]; then
+  remote_service_action stop || true
+  sleep 1
   remote_service_action reload
   remote_service_action restart
   sleep 2

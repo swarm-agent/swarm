@@ -427,18 +427,68 @@ type PermissionAction struct {
 
 func (PermissionAction) isV3ChatAction() {}
 
+// ChangeDomain identifies which functional domain of the state was modified.
+type ChangeDomain uint32
+
+const (
+	DomainNone      ChangeDomain = 0
+	DomainTransport ChangeDomain = 1 << 0 // Cursor, keepalive, transport watermarks
+	DomainSession   ChangeDomain = 1 << 1 // Session title, git status, run state, model, usage, plan, connection
+	DomainContent   ChangeDomain = 1 << 2 // Messages, tools, live segments, reasoning, permissions, pending, draft
+)
+
+func (d ChangeDomain) HasVisibleChange() bool {
+	return (d & (DomainSession | DomainContent)) != 0
+}
+
+func (d ChangeDomain) HasContentChange() bool {
+	return (d & DomainContent) != 0
+}
+
 // Reduce returns a detached next state. Maps and slices are copied before they
 // are changed so render selectors can safely retain an older snapshot.
 func Reduce(current State, action Action) State {
-	next := cloneState(current)
+	next, _ := ReduceWithDomain(current, action)
+	return next
+}
+
+// ReduceWithDomain returns a detached next state along with the change domain(s) modified.
+func ReduceWithDomain(current State, action Action) (State, ChangeDomain) {
 	switch value := action.(type) {
+	case RealtimeFrameAction:
+		kind := strings.ToLower(strings.TrimSpace(value.Frame.Kind))
+		switch kind {
+		case "projection.high_watermark", "endpoint.watermark", "hello", "keepalive", "replay.started", "replay.complete":
+			cursor := strings.TrimSpace(value.Frame.EndpointCursor)
+			if cursor == "" || cursor == current.EndpointCursor {
+				return current, DomainNone
+			}
+			next := current
+			next.EndpointCursor = cursor
+			return next, DomainTransport
+		case "cursor.error", "slow_consumer.reconnect_required", "auth.denied":
+			next := cloneState(current)
+			return reduceRealtimeFrame(next, value.Frame), DomainSession
+		case "live.patch":
+			next := cloneState(current)
+			return reduceRealtimeFrame(next, value.Frame), DomainContent
+		case "event":
+			next := cloneState(current)
+			return reduceRealtimeFrame(next, value.Frame), DomainContent | DomainSession
+		default:
+			next := cloneState(current)
+			return reduceRealtimeFrame(next, value.Frame), DomainContent | DomainSession
+		}
 	case HydrateAction:
-		next = reduceHydrated(next, value.Snapshot)
+		next := cloneState(current)
+		return reduceHydrated(next, value.Snapshot), DomainContent | DomainSession | DomainTransport
 	case PrimeNewSessionAction:
-		next = reducePrimedNewSession(value.Create, value.Selection)
+		return reducePrimedNewSession(value.Create, value.Selection), DomainContent | DomainSession
 	case DraftModeAction:
+		next := cloneState(current)
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Mode))
 		applyDraftModeSelection(&next.Model, value.Selection)
+		return next, DomainSession
 	case PrimeRoutedDraftAction:
 		draft := value.Draft
 		draft.Prompt = strings.TrimSpace(draft.Prompt)
@@ -454,21 +504,26 @@ func Reduce(current State, action Action) State {
 		draft.Metadata = cloneAnyMap(draft.Metadata)
 		draft.Status = RoutedDraftReady
 		draft.Error = ""
-		next = NewState()
+		next := NewState()
 		next.RoutedDraft = &draft
+		return next, DomainContent
 	case RoutedDraftRoutingAction:
+		next := cloneState(current)
 		if next.RoutedDraft != nil && next.RoutedDraft.Status != RoutedDraftResolved {
 			next.RoutedDraft.Status = RoutedDraftRouting
 			next.RoutedDraft.Error = ""
 		}
+		return next, DomainContent
 	case RoutedDraftFailedAction:
+		next := cloneState(current)
 		if next.RoutedDraft != nil && next.RoutedDraft.Status != RoutedDraftResolved {
 			next.RoutedDraft.Status = RoutedDraftFailed
 			next.RoutedDraft.Error = strings.TrimSpace(value.Error)
 		}
+		return next, DomainContent
 	case RoutedDraftResolvedAction:
-		draft := next.RoutedDraft
-		next = reduceHydrated(NewState(), value.Response.Hydrated())
+		draft := current.RoutedDraft
+		next := reduceHydrated(NewState(), value.Response.Hydrated())
 		if draft != nil {
 			resolved := *draft
 			resolved.Metadata = cloneAnyMap(draft.Metadata)
@@ -476,7 +531,9 @@ func Reduce(current State, action Action) State {
 			resolved.Error = ""
 			next.RoutedDraft = &resolved
 		}
+		return next, DomainContent | DomainSession | DomainTransport
 	case PendingUserAction:
+		next := cloneState(current)
 		pending := value.Pending
 		if id := strings.TrimSpace(pending.ID); id != "" {
 			pending.ID = id
@@ -485,21 +542,26 @@ func Reduce(current State, action Action) State {
 			}
 			next.Pending[id] = pending
 		}
+		return next, DomainContent
 	case MessageResultAction:
-		next = reduceMessageResult(next, value.Result)
-	case RealtimeFrameAction:
-		next = reduceRealtimeFrame(next, value.Frame)
+		next := cloneState(current)
+		return reduceMessageResult(next, value.Result), DomainContent
 	case ConnectionAction:
+		next := cloneState(current)
 		next.Connection = value.Status
 		next.StaleReason = strings.TrimSpace(value.Reason)
 		if value.Status != ConnectionStale {
 			next.NeedsRehydrate = false
 		}
+		return next, DomainSession
 	case ModelPreferenceAction:
+		next := cloneState(current)
 		next.Model.Preference = normalizeModelPreference(value.Resolved.Preference)
 		next.Model.ContextWindow = value.Resolved.ContextWindow
 		next.Model.MaxOutputTokens = value.Resolved.MaxOutputTokens
+		return next, DomainSession
 	case DraftModelPreferenceAction:
+		next := cloneState(current)
 		next.Model.Preference = normalizeModelPreference(value.Preference)
 		next.Model.ContextWindow = value.ContextWindow
 		next.Model.MaxOutputTokens = value.MaxOutputTokens
@@ -507,21 +569,32 @@ func Reduce(current State, action Action) State {
 		next.Model.LockReason = ""
 		next.Model.ProfileName = ""
 		next.Model.ProfileSource = "temporary"
+		return next, DomainSession
 	case ModelProfileAction:
+		next := cloneState(current)
 		applyAgentModelPolicy(&next.Model, value.Policy.Preference, value.Policy.ContextWindow, value.Policy.MaxOutputTokens, value.Policy)
+		return next, DomainSession
 	case ModeAction:
+		next := cloneState(current)
 		next.Session.Mode = strings.ToLower(strings.TrimSpace(value.Resolved.Mode))
 		applyAgentModelPolicy(&next.Model, value.Resolved.Preference, value.Resolved.ContextWindow, value.Resolved.MaxOutputTokens, value.Resolved.AgentModelPolicy)
+		return next, DomainSession
 	case GitStatusAction:
+		next := cloneState(current)
 		next.Session.GitBranch = strings.TrimSpace(value.Branch)
 		next.Session.GitHasGit = value.HasGit
 		next.Session.GitDirtyCount = maxInt(0, value.DirtyCount)
+		return next, DomainSession
 	case PermissionsAction:
+		next := cloneState(current)
 		next.Permissions = permissionsFromClient(value.Records)
+		return next, DomainContent
 	case PermissionAction:
-		next = applyPermissionRecord(next, value.Record, 0)
+		next := cloneState(current)
+		return applyPermissionRecord(next, value.Record, 0), DomainContent
+	default:
+		return cloneState(current), DomainNone
 	}
-	return next
 }
 
 func reducePrimedNewSession(create client.SessionCreateOptions, selection DraftModeSelection) State {

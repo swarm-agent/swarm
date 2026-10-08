@@ -39,6 +39,7 @@ export interface SyncResources {
   active_plan?: boolean
   plan_revisions?: boolean
   permission_summaries?: boolean
+  permission_details?: boolean
   notifications?: boolean
   notification_summary?: boolean
   tasks?: boolean
@@ -132,6 +133,7 @@ export interface DesktopV3MediaCapability {
   snapshot_version?: string
   snapshot_source?: string
   denial_reasons?: string[]
+  resolution_error?: string
   capabilities: DesktopV3MediaCapabilityEntry[]
 }
 
@@ -234,6 +236,7 @@ export interface V3SessionRunIntent {
   account_scope_id?: string
   run_id: string
   epoch_id?: string
+  task_wait_owner_run_id?: string
   status: string
   blocked_reason?: string
   created_at: number
@@ -725,7 +728,7 @@ export interface SessionSettingsMutationResponse {
 export interface SessionArchiveMutationResponse {
   ok?: boolean
   archived?: boolean
-  results?: Array<{ session_id?: string; archived?: boolean; tombstone?: unknown }>
+  results?: Array<{ session_id?: string; archived?: boolean; tombstone?: unknown; projection?: V3SessionProjection }>
   [key: string]: unknown
 }
 
@@ -890,6 +893,7 @@ export interface LiveRunOverlay {
   sessionId: string
   runId: string
   status:
+    | 'waiting_tasks'
     | 'pending_executor'
     | 'running'
     | 'dispatch_blocked'
@@ -1020,6 +1024,8 @@ export interface DesktopV3CacheState {
   desktopSidebarBootstrap: DesktopSidebarBootstrapState
   desktopInitialHydrate: DesktopInitialHydrateState
   sessionsById: Record<string, SessionCacheRecord>
+  projectConversationSummaries?: Record<string, SessionSnapshot[]>
+  projectArchiveSummaries?: Record<string, V3SessionTombstone[]>
   projectionsBySession: Record<string, V3SessionProjection>
   sessionOrderByScope: Record<string, string[]>
   sessionViewsById: Record<string, DesktopV3SessionView>
@@ -1078,6 +1084,8 @@ export type DesktopV3CacheAction =
   | { type: 'desktopSidebarBootstrap.update'; patch: Partial<DesktopSidebarBootstrapState> }
   | { type: 'desktopInitialHydrate.update'; patch: Partial<DesktopInitialHydrateState> }
   | { type: 'session.select'; sessionId?: string }
+  | { type: 'projectConversations.applySummaries'; projectId: string; sessions: SessionSnapshot[]; requestSessionIds?: string[]; attention?: Record<string, DesktopV3SessionView> }
+  | { type: 'projectConversations.applyArchiveSummaries'; projectId: string; tombstones: V3SessionTombstone[] }
   | { type: 'snapshot.apply'; source: 'bootstrap'; scopeId: string; snapshot: SyncSnapshotResponse }
   | { type: 'hydrate.apply'; source: 'hydrate'; scopeId: string; requestedSessionIds: string[]; snapshot: SyncSnapshotResponse }
   | { type: 'messages.prependHistoryResult'; sessionId: string; messages: MessageSnapshot[]; sourceMessageCount?: number; knownFull?: boolean }

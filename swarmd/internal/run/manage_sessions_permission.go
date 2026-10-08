@@ -37,6 +37,12 @@ func (s *Service) buildManageSessionsPermissionPayload(sessionID string, call to
 		return payload, nil
 	}
 	if action == "commit" {
+		if mapBool(args, "recovery") {
+			// Recovery authorizes an explicit repository, not an attributed target
+			// session. The ordinary permission gate still reviews these exact args;
+			// runtime independently checks catalog ownership and Git guards.
+			return map[string]any{"action": action, "recovery": true, "approved_arguments": cloneGenericMap(args), "request": cloneGenericMap(args)}, nil
+		}
 		return s.buildManageSessionsCommitPermissionPayload(sessionID, args)
 	}
 	if action != "archive" && action != "unarchive" {

@@ -180,14 +180,13 @@ func TestOnboardingFlowIdentityAndWorkspace(t *testing.T) {
 	if p.onboarding.Focus != onboardingFocusSwarmName || p.pendingHomeAction != nil {
 		t.Fatal("first field submitted")
 	}
-	key(tcell.KeyEnter)
-	if p.onboarding.Error == "" {
-		t.Fatal("missing name unexplained")
-	}
-	p.model.OnboardingSwarmName = "Studio"
+	// Pressing Enter on SwarmName with empty string falls back to default swarm name and saves
 	key(tcell.KeyEnter)
 	if p.pendingHomeAction == nil || p.pendingHomeAction.Kind != HomeActionSaveOnboarding {
-		t.Fatal("final field did not save")
+		t.Fatal("identity did not save with fallback swarm name")
+	}
+	if p.pendingHomeAction.SwarmName != "default" {
+		t.Fatalf("expected fallback swarm name 'default', got %q", p.pendingHomeAction.SwarmName)
 	}
 	first := p.pendingHomeAction
 	key(tcell.KeyEnter)
@@ -219,7 +218,7 @@ func TestOnboardingFlowProviderBusyAndConnected(t *testing.T) {
 	}
 	p.authModal.Loading = false
 	p.handleOnboardingKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
-	if !p.OnboardingWorkspaceActive() || p.authModal.Editor != nil {
+	if (!p.OnboardingProjectActive() && !p.OnboardingWorkspaceActive()) || p.authModal.Editor != nil {
 		t.Fatal("connected choice asked for credentials")
 	}
 }

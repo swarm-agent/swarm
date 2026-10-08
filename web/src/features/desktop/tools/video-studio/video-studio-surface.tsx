@@ -642,7 +642,8 @@ export const VideoIterationSidebar = memo(function VideoIterationSidebar(props: 
 })
 
 function videoSessionRenderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
-  return left.committed === right.committed
+  return left.taskActivities === right.taskActivities
+    && left.committed === right.committed
     && left.pendingUser === right.pendingUser
     && left.liveRuns === right.liveRuns
     && left.runIntents === right.runIntents

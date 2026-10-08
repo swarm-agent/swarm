@@ -51,6 +51,7 @@ import { AutomationV2PlanReview, automationV2PermissionProposal } from '../../to
 import { DesktopPlanAgentSidecar } from '../../chat/components/desktop-plan-agent-sidecar'
 
 const DismissWithoutDecisionContext = createContext(false)
+const InlinePermissionContext = createContext(false)
 
 interface DesktopPermissionModalProps {
   dismissWithoutDecision?: boolean
@@ -169,6 +170,7 @@ function ModalShell({
   showSessionMeta?: boolean
 }) {
   const dismissWithoutDecision = useContext(DismissWithoutDecisionContext)
+  const inline = useContext(InlinePermissionContext)
   const handleRequestClose = () => {
     if (shortcutsDisabled) {
       return
@@ -181,7 +183,7 @@ function ModalShell({
   }
 
   usePermissionKeyboardShortcuts({
-    open,
+    open: open && !inline,
     disabled: shortcutsDisabled,
     onPrimary: onPrimaryShortcut,
     onDeny: dismissWithoutDecision ? handleRequestClose : onDenyShortcut ?? handleRequestClose,
@@ -190,6 +192,19 @@ function ModalShell({
   if (!open) {
     return null
   }
+
+  if (inline) return (
+    <section aria-label={title} data-testid="desktop-inline-permission" className="min-w-0 max-w-full rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-text)] [overflow-wrap:anywhere] [&_button]:whitespace-normal">
+      <header className="min-w-0 space-y-2 border-b border-[var(--app-border)] p-3">
+        <h3 className="font-semibold">{title}</h3>
+        {subtitle && <p className="text-xs text-[var(--app-text-muted)]">{subtitle}</p>}
+        {headerExtra}
+        {headerActions && <div className="flex flex-wrap gap-2">{headerActions}</div>}
+      </header>
+      <div className="min-w-0 max-w-full overflow-x-auto p-3">{children}</div>
+      <div className="min-w-0 max-w-full overflow-x-auto">{footer}</div>
+    </section>
+  )
 
   return (
     <Dialog
@@ -277,6 +292,7 @@ function PermissionActionBar({
   leadingAction?: ReactNode
 }) {
   const [noteOpen, setNoteOpen] = useState(false)
+  const inline = useContext(InlinePermissionContext)
   const showPersistentGroup = showPersistentActions && (onAlwaysDeny || onAlwaysAllow)
   const showNoteToggle = Boolean(onNoteChange)
   const hasNote = Boolean(note?.trim())
@@ -325,7 +341,7 @@ function PermissionActionBar({
             variant="primary"
             onClick={onApprove}
             disabled={loading}
-            title="Enter"
+            title={inline ? undefined : 'Enter'}
             className="order-1 w-full sm:order-4 sm:w-auto sm:min-w-36"
           >
             {approveLabel}
@@ -357,7 +373,7 @@ function PermissionActionBar({
           ) : null}
         </div>
       </div>
-      {shortcutHint ? <div className="mt-2 text-center text-[11px] text-[var(--app-text-subtle)] sm:text-right">{shortcutHint}</div> : null}
+      {shortcutHint ? <div className="mt-2 text-center text-[11px] text-[var(--app-text-subtle)] sm:text-right">{inline ? 'Choose an action above' : shortcutHint}</div> : null}
     </div>
   )
 }
@@ -1960,6 +1976,7 @@ function AskUserModal({
   onOpenChange,
   onResolve,
 }: DesktopPermissionModalProps) {
+  const inline = useContext(InlinePermissionContext)
   const payload = useMemo(() => (permission ? parseAskUserPermission(permission) : null), [permission])
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [customInputs, setCustomInputs] = useState<Record<string, string>>({})
@@ -1974,14 +1991,14 @@ function AskUserModal({
     const nextCustomInputs: Record<string, string> = {}
     for (const question of payload.questions) {
       const first = question.options[0]
-      nextAnswers[question.id] = first?.allowCustom ? '' : (first?.value ?? '')
+      nextAnswers[question.id] = inline || first?.allowCustom ? '' : (first?.value ?? '')
       nextCustomInputs[question.id] = ''
     }
     setAnswers(nextAnswers)
     setCustomInputs(nextCustomInputs)
     setError(null)
     setLoading(false)
-  }, [open, payload, permission?.id])
+  }, [inline, open, payload, permission?.id])
 
   if (!permission || !payload) {
     return null
@@ -2072,6 +2089,9 @@ function AskUserModal({
                             ? 'border-[var(--app-border-accent)] bg-[color-mix(in_oklab,var(--app-primary)_10%,var(--app-surface))]'
                             : 'border-[var(--app-border)] bg-[var(--app-surface)] hover:border-[var(--app-border-strong)] hover:bg-[var(--app-bg-alt)]',
                         )}
+                        aria-label={option.label}
+                        aria-pressed={isSelected}
+                        disabled={loading}
                         onClick={() => updateAnswer(question.id, option.value, option.allowCustom)}
                       >
                         <span className="text-sm font-medium text-[var(--app-text)]">{option.label}</span>
@@ -2085,6 +2105,7 @@ function AskUserModal({
                   <label className="mt-3 grid gap-2">
                     <span className="text-xs font-medium uppercase tracking-[0.08em] text-[var(--app-text-subtle)]">Custom response</span>
                     <Textarea
+                      disabled={loading}
                       value={customInputs[question.id] ?? ''}
                       onChange={(event) => setCustomInputs((current) => ({ ...current, [question.id]: event.target.value }))}
                       placeholder="Type your response…"
@@ -3494,6 +3515,21 @@ function AutomationV2Modal(props: DesktopPermissionModalProps) {
       </div>
     </ModalShell>
   )
+}
+
+// Share the canonical kind dispatch and decision serializers without portals,
+// dismissal actions or global shortcuts. Each request owns its retryable error.
+export function DesktopInlinePermission(props: Omit<DesktopPermissionModalProps, 'open' | 'onOpenChange' | 'dismissWithoutDecision'>) {
+  const [error, setError] = useState('')
+  return <InlinePermissionContext.Provider value={true}>
+    <DesktopPermissionModalContent {...props} open onOpenChange={() => undefined} onResolve={async (...args) => {
+      setError('')
+      try { await props.onResolve(...args) } catch (error) {
+        setError(error instanceof Error ? error.message : 'Decision failed. Please retry.')
+      }
+    }} />
+    {error && <p role="alert">{error}</p>}
+  </InlinePermissionContext.Provider>
 }
 
 export function DesktopPermissionModal(props: DesktopPermissionModalProps) {

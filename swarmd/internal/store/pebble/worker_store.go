@@ -134,6 +134,7 @@ type WorkerRevisionRecord struct {
 }
 
 type WorkerRunRecord struct {
+	Placement          *WorkerRunPlacement            `json:"placement,omitempty"`
 	ModelProfile       *SessionModelProfileSnapshot   `json:"model_profile,omitempty"`
 	CancelRequested    bool                           `json:"cancel_requested,omitempty"`
 	UserID             string                         `json:"user_id,omitempty"`
@@ -2392,6 +2393,9 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	existingOk, runErr := ws.store.GetJSON(KeyWorkerRun(account, workerID, run.ID), &existingRun)
 	if runErr != nil {
 		return WorkerRunRecord{}, runErr
+	}
+	if run.Placement != nil || (existingOk && existingRun.Placement != nil) {
+		return WorkerRunRecord{}, fmt.Errorf("%w: remote outcomes require adapter fencing", ErrWorkerConflict)
 	}
 	if existingOk {
 		if existingRun.UserID != run.UserID {

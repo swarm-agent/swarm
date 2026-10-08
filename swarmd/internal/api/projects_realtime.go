@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -16,6 +17,12 @@ func (s *Server) ConfigureProjectRealtime(store *pebblestore.Store) {
 		return
 	}
 	store.SetProjectPublisher(func(record pebblestore.V3RealtimeOutboxRecord) {
+		var payload struct {
+			ProjectID string `json:"project_id"`
+		}
+		if json.Unmarshal(record.Event.Payload, &payload) == nil && payload.ProjectID != "" {
+			s.reconcileProjectTaskWaits(record.AccountScopeID, payload.ProjectID)
+		}
 		if err := s.publishCommittedV3RealtimeOutbox(record); err != nil {
 			log.Print("project realtime wake failed; durable replay required")
 		}
@@ -153,6 +160,19 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 			})
 			return err
 		}
+		state, found, stateErr := db.GetV3SessionRunState(job.SessionID)
+		if stateErr != nil {
+			return stateErr
+		}
+		if found && projectTaskDeclaredBlocker(task, session, state) {
+			_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+				if t.SessionID == job.SessionID && t.ActiveAttemptID == task.ActiveAttemptID && projectTaskCurrentRunEvent(db, accountScopeID, job, status) && !t.IsIntegrated && t.Status != "completed" && t.Status != "rejected" {
+					projectTaskDeclaredBlocker(t, session, state)
+				}
+				return nil
+			})
+			return err
+		}
 		// A provider turn ending does not complete an approved checkpoint plan.
 		if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
 			plan, found, planErr := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
@@ -188,10 +208,12 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 					return nil
 				}
 			}
+			// Unknown delivery must clear stale Git claims without erasing the
+			// independently recorded execution result or integration receipt.
+			t.IsIntegrated = gitState.isIntegrated
+			t.UnintegratedCommits = gitState.unintegratedCommits
+			t.GitStatus = gitState.gitStatus
 			if gitState.gitStatus != "unknown" {
-				t.UnintegratedCommits = gitState.unintegratedCommits
-				t.GitStatus = gitState.gitStatus
-				t.IsIntegrated = gitState.isIntegrated
 				t.BehindCommits = gitState.behindCommits
 				t.DiffSummary = gitState.diffSummary
 				t.IsDirty = gitState.isDirty

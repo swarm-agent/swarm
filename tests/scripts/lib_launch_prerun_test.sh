@@ -73,7 +73,7 @@ nine_status=$?
 set -e
 [[ "${zero_status}" != "0" && "${nine_status}" != "0" ]] || fail "invalid job limits were accepted"
 
-EXPECTED_SUITES=$'critical\nonboarding\ninstalled-new-user\ninstalled-existing-user\ninstalled-normal-user\ndesktop\ntui\nplan-auto\ntask-routing\ntask-program\nprovider-sync\nomarchy-install\nattach-inspect\nworkspace-routing\nworkspace-workers\nworkspace-safety\nworkspace-browser'
+EXPECTED_SUITES=$'critical\nonboarding\ninstalled-new-user\ninstalled-existing-user\ninstalled-normal-user\ndesktop\ntui\ntask-routing\ntask-program\nprovider-sync\nomarchy-install\nattach-inspect\nworkspace-routing\nworkspace-workers\nworkspace-safety\nworkspace-browser'
 ACTUAL_SUITES="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --list-suites)"
 [[ "${ACTUAL_SUITES}" == "${EXPECTED_SUITES}" ]] || fail "canonical suite manifest changed unexpectedly"
 critical_dry_run="$("${ROOT_DIR}/scripts/run-testbench-launch-prerun.sh" --dry-run --suite critical)" || fail "critical lane dry run failed"
@@ -140,17 +140,16 @@ off_status=$?
 invalid_status=$?
 set -e
 [[ "${off_status}" == 0 && "${invalid_status}" != 0 ]] || fail "testbench thinking validation did not accept off and reject invalid"
-BASIC_RUNNER="${ROOT_DIR}/scripts/runners/basic-plan-auto.mjs"
-TASK_ROUTING_RUNNER="${ROOT_DIR}/scripts/runners/task-routing.mjs"
+# Purpose: task-routing now owns the explicit Orchestrator scenario adapter, not
+# legacy role-model discovery. Exercise its CLI boundary without credentials;
+# current session/model/proposal protocol assertions live in orchestrator-pr.test.mjs.
 TASK_PROGRAM_RUNNER="${ROOT_DIR}/scripts/runners/task-program-worktrees.mjs"
-for runner in "${BASIC_RUNNER}" "${TASK_ROUTING_RUNNER}"; do
-  grep -Fq -- '--action-model and --plan-model are required' "${runner}" || fail "$(basename "${runner}") does not fail closed without explicit Action/Plan models"
-  if grep -Fq 'recommendedAssignment' "${runner}"; then fail "$(basename "${runner}") still discovers model recommendations"; fi
-  if grep -Fq "service_tier: 'fast'" "${runner}"; then fail "$(basename "${runner}") still hardcodes a Codex-era fast tier for Fireworks"; fi
-  grep -Fq "function sameRuntimeModel" "${runner}" || fail "$(basename "${runner}") does not normalize Fireworks runtime request paths to catalog IDs"
-done
-grep -Fq "ensure basic plan workspace binding" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not idempotently ensure its requested workspace binding"
-grep -Fq "workspace_binding_ready" "${BASIC_RUNNER}" || fail "basic Plan/Auto runner does not report its workspace-binding gate"
+set +e
+legacy_routing="$(node "${ROOT_DIR}/scripts/runners/task-routing.mjs" --action-model unapproved --plan-model unapproved 2>&1)"
+legacy_routing_status=$?
+set -e
+[[ "${legacy_routing_status}" == 2 ]] || fail "task-routing accepted retired role-model overrides"
+grep -Fq 'selectors retired' <<<"${legacy_routing}" || fail "task-routing did not explain retired inputs"
 grep -Fq -- '--coder-model is required' "${TASK_PROGRAM_RUNNER}" || fail "task-program runner does not fail closed without the configured Coder model"
 if grep -Fq "includes('5.6-luna')" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still discovers a model fallback"; fi
 if grep -Fq "service_tier: 'fast'" "${TASK_PROGRAM_RUNNER}"; then fail "task-program runner still hardcodes a Codex-era fast tier for Fireworks"; fi

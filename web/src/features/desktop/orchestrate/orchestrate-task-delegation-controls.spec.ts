@@ -82,7 +82,9 @@ const mockAgentModelSettings: AgentModelSettings = {
 test('Explicit New Task delegation: Small feature vs Big feature vs Audit without prompt heuristics', () => {
   // Requirement: User wants New Task explicit Small feature/fix vs Big feature:
   // - small -> Coder, outcome code_pr, tier direct
-  // - big -> plan-mode orchestration visible proposed plan awaiting approval, outcome plan_spec, tier complex
+  // - big -> Swarm action model, outcome code_pr, tier complex (not manual Plan mode)
+  // Authority: resolveDeployImpendingConfig; pure helper tests are the narrowest
+  // layer proving routing/model metadata without executing agents or changing permissions.
   // - audit -> Finder, outcome audit_report, tier discovery
   // - Mentioning media words (PNG, image, screen record) in prompt MUST NOT hijack code engineering into media generation.
 
@@ -97,10 +99,14 @@ test('Explicit New Task delegation: Small feature vs Big feature vs Audit withou
 
   // Case 2: Big feature / complex overhaul
   const bigConfig = resolveDeployImpendingConfig('code', 'big', '', mockAgentModelSettings)
-  assert.equal(bigConfig.targetAgent, 'plan', 'Big feature must target Plan agent')
-  assert.equal(bigConfig.targetOutcomeType, 'plan_spec', 'Big feature must target plan_spec outcome')
+  assert.equal(bigConfig.targetAgent, 'swarm', 'Big feature must target Swarm agent')
+  assert.equal(bigConfig.targetOutcomeType, 'code_pr', 'Big feature must target code_pr outcome')
   assert.equal(bigConfig.targetTier, 'complex', 'Big feature must use complex execution tier')
-  assert.equal(bigConfig.resolvedModel, 'gpt-6-astra-plan', 'Big feature must use account Swarm plan model')
+  assert.equal(bigConfig.resolvedModel, 'gemini-2.5-pro', 'Big feature must use account Swarm action model')
+  assert.equal(bigConfig.provider, 'google')
+  assert.equal(bigConfig.thinking, 'medium')
+  const missingAction = { ...mockAgentModelSettings, swarm: { ...mockAgentModelSettings.swarm, action: undefined } } as unknown as AgentModelSettings
+  assert.equal(resolveDeployImpendingConfig('code', 'big', '', missingAction).resolvedModel, 'Account default', 'Must not silently use Plan model')
   assert.equal(bigConfig.isOverridden, false)
 
   // Case 3: Audit exploration

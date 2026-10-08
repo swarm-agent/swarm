@@ -77,7 +77,10 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit intent code with feature_size big produces plan agent with complex tier", func(t *testing.T) {
+	// Purpose: RouteAndPlanProjectTaskWithOptions must default big code work to
+	// Swarm, not a read-only Plan run. This pure routing test checks agent and output;
+	// explicit Plan and invalid configurations remain separate cases below.
+	t.Run("explicit intent code with feature_size big produces swarm agent with complex tier", func(t *testing.T) {
 		result, err := RouteAndPlanProjectTaskWithOptions(TaskPlanOptions{
 			Prompt:             "Architect and implement multi-region sync engine",
 			RequestedWorkspace: "/workspace/backend",
@@ -89,17 +92,17 @@ func TestRouteAndPlanProjectTask(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		if result.Agent != "plan" {
-			t.Fatalf("expected agent plan, got %q", result.Agent)
+		if result.Agent != "swarm" {
+			t.Fatalf("expected agent swarm, got %q", result.Agent)
 		}
 		if result.Tier != "complex" {
 			t.Fatalf("expected tier complex, got %q", result.Tier)
 		}
-		if result.OutcomeType != "plan_spec" {
-			t.Fatalf("expected outcome plan_spec, got %q", result.OutcomeType)
+		if result.OutcomeType != "code_pr" {
+			t.Fatalf("expected outcome code_pr, got %q", result.OutcomeType)
 		}
-		if len(result.Deliverables) == 0 || result.Deliverables[0].Kind != "report" {
-			t.Fatalf("expected structured plan deliverable, got %+v", result.Deliverables)
+		if len(result.Deliverables) == 0 || result.Deliverables[0].Kind != "pr" {
+			t.Fatalf("expected code deliverable, got %+v", result.Deliverables)
 		}
 	})
 

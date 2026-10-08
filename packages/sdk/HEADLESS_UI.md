@@ -1,5 +1,7 @@
 # Build a real headless UI with the SDK
 
+For planned SDK completeness, safe tool control and non-production qualification, see the [five-step headless application plan](HEADLESS_PLAN.md). That roadmap is not a claim of implemented capabilities.
+
 ## Trust boundary
 
 Run the administrative Node SDK in your backend-for-frontend **inside the same container as swarmd**, using its configured private Unix socket. Do not mount/export that socket, put daemon credentials in browser code, or forward arbitrary browser-selected daemon paths. Authenticate your app's users, check Origin/CSRF, and allowlist app operations. Never log credential request bodies. The separate `--container-sdk-port` listener remains session-only: it cannot onboard providers, change settings, or create workspaces.

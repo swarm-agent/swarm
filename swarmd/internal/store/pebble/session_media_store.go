@@ -266,6 +266,12 @@ func SanitizeMediaFilename(raw, assetID, fileType string) string {
 	return base
 }
 
+// DetectSessionMediaMIME exposes the storage detector for read-only admission so
+// task validation and durable retention use identical byte-derived MIME facts.
+func DetectSessionMediaMIME(payload []byte) string {
+	return detectSessionMediaMIME(payload)
+}
+
 func detectSessionMediaMIME(payload []byte) string {
 	detected := normalizeSessionMediaMIME(http.DetectContentType(payload))
 	if detected != "application/octet-stream" || len(payload) < 12 || !bytes.Equal(payload[4:8], []byte("ftyp")) {

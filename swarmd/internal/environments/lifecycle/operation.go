@@ -85,16 +85,19 @@ type OperationService interface {
 
 // SubmitOperationRequest specifies parameters for submitting a supervised environment operation.
 type SubmitOperationRequest struct {
-	AccountScopeID string                            `json:"account_scope_id"`
-	WorkspaceID    string                            `json:"workspace_id"`
-	Action         string                            `json:"action"` // "ensure", "deploy", "exec", "stop", "start", "release", "destroy", "cancel"
-	EnvironmentID  string                            `json:"environment_id,omitempty"`
-	DeploymentID   string                            `json:"deployment_id,omitempty"`
-	LeaseID        string                            `json:"lease_id,omitempty"`
-	Attribution    environments.OperationAttribution `json:"attribution"`
-	IdempotencyKey string                            `json:"idempotency_key,omitempty"`
-	Deadline       int64                             `json:"deadline,omitempty"` // epoch millis
-	Timeout        time.Duration                     `json:"timeout,omitempty"`
+	// Internal authenticated resolver; never decoded from API/tool arguments.
+	BuildProductResolver BuildProductResolver              `json:"-"`
+	BuildOperationID     string                            `json:"build_operation_id,omitempty"`
+	AccountScopeID       string                            `json:"account_scope_id"`
+	WorkspaceID          string                            `json:"workspace_id"`
+	Action               string                            `json:"action"` // "ensure", "deploy", "exec", "stop", "start", "release", "destroy", "cancel"
+	EnvironmentID        string                            `json:"environment_id,omitempty"`
+	DeploymentID         string                            `json:"deployment_id,omitempty"`
+	LeaseID              string                            `json:"lease_id,omitempty"`
+	Attribution          environments.OperationAttribution `json:"attribution"`
+	IdempotencyKey       string                            `json:"idempotency_key,omitempty"`
+	Deadline             int64                             `json:"deadline,omitempty"` // epoch millis
+	Timeout              time.Duration                     `json:"timeout,omitempty"`
 
 	// Deploy / Ensure specific:
 	ConnectionID     string                    `json:"connection_id,omitempty"`
@@ -281,7 +284,7 @@ func (m *DeploymentManager) validateAdmission(
 
 	// 3. Action-specific validation
 	switch req.Action {
-	case environments.OperationActionEnsure, environments.OperationActionDeploy:
+	case environments.OperationActionBuild, environments.OperationActionEnsure, environments.OperationActionDeploy:
 		if req.EnvironmentID == "" {
 			return nil, nil, nil, errors.New("environment_id is required for deploy/ensure")
 		}
@@ -296,6 +299,9 @@ func (m *DeploymentManager) validateAdmission(
 			return nil, nil, nil, fmt.Errorf("environment %q: %w", req.EnvironmentID, ErrEnvironmentNotFound)
 		}
 		env = &e
+		if _, err := applyBuildProduct(withBuildProduct(ctx, req.BuildProductResolver), env); err != nil {
+			return nil, nil, nil, err
+		}
 
 		// Resolve connection
 		c, err := m.ResolveConnection(ctx, req.AccountScopeID, req.WorkspaceID, req.ConnectionID, env)
@@ -303,6 +309,19 @@ func (m *DeploymentManager) validateAdmission(
 			return nil, nil, nil, fmt.Errorf("resolve connection: %w", err)
 		}
 		conn = c
+		if req.BuildProductResolver != nil {
+			req.ConnectionID = conn.ID
+		}
+		if req.Action == environments.OperationActionBuild {
+			if req.DeploymentID != "" || req.LeaseID != "" || req.WorkspacePath != "" || req.BuildOperationID != "" || len(req.Command) != 0 || len(req.Env) != 0 || len(req.EnvOverrides) != 0 || req.WorkingDir != "" {
+				return nil, nil, nil, errors.New("build does not accept runtime targets, commands, environment overrides or raw workspace paths")
+			}
+			if err := m.validateBuild(ctx, req.AccountScopeID, env, conn); err != nil {
+				return nil, nil, nil, err
+			}
+		} else if _, err := m.resolveBuildImage(withBuildProduct(ctx, req.BuildProductResolver), req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, env, conn); err != nil {
+			return nil, nil, nil, err
+		}
 
 		// Verify provider registration
 		if m.registry == nil {
@@ -385,7 +404,13 @@ func (m *DeploymentManager) validateAdmission(
 			if lease.DeploymentID != dep.ID {
 				return nil, nil, nil, fmt.Errorf("lease %q does not match deployment %q", req.LeaseID, dep.ID)
 			}
-			if lease.ConsumerID != "" && callerID != "" && lease.ConsumerID != callerID && req.ConsumerID != lease.ConsumerID {
+			if err := m.validateTaskLease(ctx, lease); err != nil {
+				return nil, nil, nil, err
+			}
+			if lease.Shared && (lease.PreparedSource == nil || !lease.PreparedSource.Matches(*dep)) {
+				return nil, nil, nil, ErrDeploymentUnusable
+			}
+			if !ownsLease(req.Attribution, lease) {
 				return nil, nil, nil, fmt.Errorf("%w: lease held by consumer %q, caller is %q", ErrDeploymentLeaseHeld, lease.ConsumerID, callerID)
 			}
 		} else {
@@ -396,7 +421,7 @@ func (m *DeploymentManager) validateAdmission(
 			if !hasActive || !activeLease.Active || activeLease.IsExpired(now) {
 				return nil, nil, nil, fmt.Errorf("active lease required to exec in deployment %q", dep.ID)
 			}
-			if activeLease.ConsumerID != "" && callerID != "" && activeLease.ConsumerID != callerID && req.ConsumerID != activeLease.ConsumerID {
+			if activeLease.Shared || !ownsLease(req.Attribution, activeLease) {
 				return nil, nil, nil, fmt.Errorf("%w: active lease held by consumer %q, caller is %q", ErrDeploymentLeaseHeld, activeLease.ConsumerID, callerID)
 			}
 			req.LeaseID = activeLease.ID
@@ -418,6 +443,27 @@ func (m *DeploymentManager) validateAdmission(
 		}
 		dep = &d
 
+		if req.Action != environments.OperationActionRelease {
+			lease, held, err := m.deployments.GetActiveLease(req.AccountScopeID, req.WorkspaceID, dep.ID)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if held && lease.Shared && lease.IsHeld(time.Now().UnixMilli()) {
+				return nil, nil, nil, ErrDeploymentLeaseHeld
+			}
+		}
+		if req.Action == environments.OperationActionRelease {
+			if req.LeaseID == "" || m.deployments.Leases() == nil {
+				return nil, nil, nil, ErrLeaseNotFound
+			}
+			lease, found, err := m.deployments.Leases().Get(req.AccountScopeID, req.WorkspaceID, req.LeaseID)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if !found || lease.DeploymentID != dep.ID || !ownsLease(req.Attribution, lease) {
+				return nil, nil, nil, ErrDeploymentLeaseHeld
+			}
+		}
 		if m.connections != nil && dep.ConnectionID != "" {
 			c, foundConn, err := m.connections.Get(req.AccountScopeID, req.WorkspaceID, dep.ConnectionID)
 			if err == nil && foundConn {
@@ -443,6 +489,13 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		return nil, errors.New("operation store is not configured")
 	}
 
+	m.activeOpsMu.RLock()
+	closing := m.closing
+	m.activeOpsMu.RUnlock()
+	if closing {
+		return nil, errors.New("environment operation manager is closing")
+	}
+
 	admissionCtx, cancelAdmission := context.WithTimeout(ctx, 2*time.Second)
 	defer cancelAdmission()
 
@@ -465,6 +518,9 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		activeOp, hasActive, _ := m.operations.GetActiveOperationForDeployment(req.AccountScopeID, req.WorkspaceID, dep.ID)
 		if hasActive && req.IdempotencyKey != "" && activeOp.IdempotencyKey == req.IdempotencyKey && activeOp.Action != req.Action {
 			return nil, fmt.Errorf("%w: idempotency key %q reused with different action (%s vs %s)", environments.ErrIdempotencyConflict, req.IdempotencyKey, req.Action, activeOp.Action)
+		}
+		if hasActive && req.Action == environments.OperationActionRelease && activeOp.LeaseID != req.LeaseID {
+			return nil, environments.ErrDeploymentOperationConflict
 		}
 		if hasActive && activeOp.Action == environments.OperationActionExec && activeOp.IsActive() {
 			_, _ = m.Cancel(admissionCtx, CancelOperationRequest{
@@ -521,29 +577,51 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		req.LeaseID = "lease_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
 
+	productResult := ""
+	if req.BuildProductResolver != nil {
+		p, err := req.BuildProductResolver(admissionCtx)
+		if err != nil {
+			return nil, err
+		}
+		productResult = p.Binding
+	}
 	opID := "op_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	reqHash := environments.ComputeOperationRequestHash(environments.OperationRequestHashInput{
+		BuildOperationID: req.BuildOperationID,
+		BuildDigest: func() string {
+			if env != nil && env.Build != nil {
+				return env.Build.Digest()
+			}
+			return ""
+		}(),
 		Action:            req.Action,
 		EnvironmentID:     envID,
 		DeploymentID:      depID,
 		LeaseID:           req.LeaseID,
 		TargetOperationID: req.TargetOperationID,
 		Attribution:       req.Attribution,
-		ConnectionID:      req.ConnectionID,
-		DeploymentName:    req.DeploymentName,
-		WorkspacePath:     req.WorkspacePath,
-		ConsumerType:      req.ConsumerType,
-		ConsumerID:        req.ConsumerID,
-		ConsumerMetadata:  req.ConsumerMetadata,
-		TTLMillis:         req.TTLMillis,
-		Command:           req.Command,
-		WorkingDir:        req.WorkingDir,
-		Env:               req.Env,
-		MaxOutput:         req.MaxOutput,
-		Reason:            req.Reason,
+		ConnectionID: func() string {
+			if req.Action == environments.OperationActionBuild && conn != nil {
+				return conn.ID
+			}
+			return req.ConnectionID
+		}(),
+		DeploymentName:   req.DeploymentName,
+		WorkspacePath:    req.WorkspacePath,
+		ConsumerType:     req.ConsumerType,
+		ConsumerID:       req.ConsumerID,
+		ConsumerMetadata: req.ConsumerMetadata,
+		ProductResult:    productResult,
+		TTLMillis:        req.TTLMillis,
+		Command:          req.Command,
+		WorkingDir:       req.WorkingDir,
+		Env:              req.Env,
+		MaxOutput:        req.MaxOutput,
+		Reason:           req.Reason,
 	})
 
 	op := environments.EnvironmentOperation{
+		ProductResult:  productResult,
 		OperationID:    opID,
 		AccountScopeID: req.AccountScopeID,
 		WorkspaceID:    req.WorkspaceID,
@@ -566,12 +644,31 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 		},
 	}
 
+	if req.Action == environments.OperationActionBuild {
+		b := *env.Build
+		op.BuildDefinition = &b
+		op.BuildConnectionID = conn.ID
+	}
 	if err := admissionCtx.Err(); err != nil {
 		return nil, fmt.Errorf("admission deadline exceeded before admit: %w", err)
 	}
 
+	// Serialize admission with cleanup/acquisition; no validator runs under this lock.
+	admitLock := m.getEnvLock(req.AccountScopeID, req.WorkspaceID, envID)
+	if err := admitLock.Lock(admissionCtx); err != nil {
+		return nil, err
+	}
+	// Admission and supervisor registration must precede Close's snapshot,
+	// including operations still waiting for capacity.
+	m.activeOpsMu.Lock()
+	defer m.activeOpsMu.Unlock()
+	if m.closing {
+		admitLock.Unlock()
+		return nil, errors.New("environment operation manager is closing")
+	}
 	// 3. Atomically admit operation into store
 	admittedOp, created, err := m.operations.AdmitOperation(op)
+	admitLock.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("admit operation: %w", err)
 	}
@@ -582,35 +679,70 @@ func (m *DeploymentManager) Submit(ctx context.Context, req SubmitOperationReque
 	}
 
 	// 5. Asynchronously execute under manager-owned supervision
-	go m.superviseOperation(admittedOp, req, env, conn, dep)
+	m.launchOperationLocked(admittedOp, req, env, conn, dep)
 
 	return &admittedOp, nil
 }
 
+// launchOperationLocked registers queued work before launching its goroutine.
+// The caller holds activeOpsMu and has checked that the manager is not closing.
+func (m *DeploymentManager) launchOperationLocked(
+	op environments.EnvironmentOperation,
+	req SubmitOperationRequest,
+	env *environments.Environment,
+	conn *environments.Connection,
+	dep *environments.Deployment,
+) *activeOpState {
+	opCtx, opCancel := context.WithDeadline(m.rootCtx, time.UnixMilli(op.Deadline))
+	state := &activeOpState{
+		opID: op.OperationID, accountID: op.AccountScopeID, workspaceID: op.WorkspaceID,
+		action: op.Action, depID: op.DeploymentID, cancel: opCancel, done: make(chan struct{}),
+	}
+	m.activeOps[op.OperationID] = state
+	go func() {
+		defer func() {
+			opCancel()
+			m.activeOpsMu.Lock()
+			delete(m.activeOps, op.OperationID)
+			close(state.done)
+			m.activeOpsMu.Unlock()
+		}()
+		m.superviseOperation(opCtx, state, op, req, env, conn, dep)
+	}()
+	return state
+}
+
 // superviseOperation manages lifecycle, heartbeats, progress, and terminal CAS transitions.
 func (m *DeploymentManager) superviseOperation(
+	opCtx context.Context,
+	state *activeOpState,
 	op environments.EnvironmentOperation,
 	req SubmitOperationRequest,
 	env *environments.Environment,
 	conn *environments.Connection,
 	dep *environments.Deployment,
 ) {
-	// Acquire bounded manager capacity
+	// The durable deadline includes time waiting for manager capacity.
+	admitCtx := opCtx
 	select {
 	case m.opSem <- struct{}{}:
-	case <-m.rootCtx.Done():
-		_, _ = m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
-			AccountScopeID:   op.AccountScopeID,
-			WorkspaceID:      op.WorkspaceID,
-			OperationID:      op.OperationID,
-			ExpectedRevision: op.Revision,
-			TargetStatus:     environments.OperationStatusCancelled,
-			Result: &environments.OperationResult{
-				FailureKind:  "manager_shutdown",
-				ErrorMessage: "manager is shutting down",
-			},
-			ObservedAt: time.Now().UnixMilli(),
-		})
+	case <-admitCtx.Done():
+		status := environments.OperationStatusCancelled
+		if admitCtx.Err() == context.DeadlineExceeded {
+			status = environments.OperationStatusTimedOut
+		}
+		cur, found, err := m.operations.Get(op.AccountScopeID, op.WorkspaceID, op.OperationID)
+		if err != nil || !found || !cur.IsActive() {
+			return
+		}
+		op = cur
+		if op.Status == environments.OperationStatusCancelling {
+			status = environments.OperationStatusCancelled
+		}
+		m.settleCleanupWithRetry(op, status, &environments.OperationResult{
+			FailureKind:  string(status),
+			ErrorMessage: "operation ended while waiting for execution capacity; provider was not started",
+		}, time.Now().UnixMilli())
 		return
 	}
 
@@ -630,30 +762,19 @@ func (m *DeploymentManager) superviseOperation(
 		}
 	}()
 
-	// Operation context with finite deadline independent of caller's context
-	deadline := time.UnixMilli(op.Deadline)
-	opCtx, opCancel := context.WithDeadline(m.rootCtx, deadline)
-	state := &activeOpState{
-		opID:        op.OperationID,
-		accountID:   op.AccountScopeID,
-		workspaceID: op.WorkspaceID,
-		action:      op.Action,
-		depID:       op.DeploymentID,
-		cancel:      opCancel,
-		done:        make(chan struct{}),
+	// A cancellation/deadline may race a newly available capacity token. Do
+	// not start a provider merely because select chose capacity in that race.
+	if opCtx.Err() != nil {
+		status := environments.OperationStatusCancelled
+		if opCtx.Err() == context.DeadlineExceeded {
+			status = environments.OperationStatusTimedOut
+		}
+		m.settleCleanupWithRetry(op, status, &environments.OperationResult{
+			FailureKind:  string(status),
+			ErrorMessage: "operation ended before execution; provider was not started",
+		}, time.Now().UnixMilli())
+		return
 	}
-
-	m.activeOpsMu.Lock()
-	m.activeOps[op.OperationID] = state
-	m.activeOpsMu.Unlock()
-
-	defer func() {
-		opCancel()
-		close(state.done)
-		m.activeOpsMu.Lock()
-		delete(m.activeOps, op.OperationID)
-		m.activeOpsMu.Unlock()
-	}()
 
 	now := time.Now().UnixMilli()
 	runningOp, err := m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
@@ -674,7 +795,9 @@ func (m *DeploymentManager) superviseOperation(
 	if err != nil {
 		cur, found, gErr := m.operations.Get(op.AccountScopeID, op.WorkspaceID, op.OperationID)
 		if gErr == nil && found && cur.Status == environments.OperationStatusCancelling {
-			m.finalizeCancellation(cur, nil, errors.New("cancelled while queued"), conn, dep)
+			m.settleCleanupWithRetry(cur, environments.OperationStatusCancelled, &environments.OperationResult{
+				FailureKind: "cancelled", ErrorMessage: "cancelled while queued; provider was not started",
+			}, time.Now().UnixMilli())
 		}
 		return
 	}
@@ -720,6 +843,7 @@ func (m *DeploymentManager) superviseOperation(
 					ObservedAt:       tNow,
 				})
 				if err == nil {
+					up.Result = currentOp.Result
 					currentOp = up
 				}
 				transMu.Unlock()
@@ -747,6 +871,7 @@ func (m *DeploymentManager) superviseOperation(
 		transMu.Lock()
 		latest := currentOp
 		transMu.Unlock()
+		redactOperationOutput(&latest.Result, req.MaxOutput, req.Env)
 
 		state.mu.Lock()
 		wasCancelled := state.isCancelled
@@ -754,6 +879,9 @@ func (m *DeploymentManager) superviseOperation(
 
 		tNow := time.Now().UnixMilli()
 
+		if outcome.res == nil {
+			outcome.res = &latest.Result
+		}
 		if wasCancelled || opCtx.Err() == context.Canceled {
 			m.finalizeCancellation(latest, outcome.res, outcome.err, conn, dep)
 			return
@@ -771,6 +899,9 @@ func (m *DeploymentManager) superviseOperation(
 				Summary:      "Operation failed: " + boundedString(outcome.err.Error(), 512),
 			}
 			if outcome.res != nil {
+				failResult.Stdout = outcome.res.Stdout
+				failResult.Stderr = outcome.res.Stderr
+				failResult.Truncated = outcome.res.Truncated
 				if outcome.res.ExitCode != 0 {
 					failResult.ExitCode = outcome.res.ExitCode
 				}
@@ -781,7 +912,18 @@ func (m *DeploymentManager) superviseOperation(
 					failResult.FailureKind = boundedString(outcome.res.FailureKind, 64)
 				}
 			}
-			m.transitionFinalWithRetry(latest, environments.OperationStatusFailed, &failResult, tNow, conn, dep)
+			failureStatus := environments.OperationStatusFailed
+			if errors.Is(outcome.err, provider.ErrOperationCleanupFailed) {
+				failureStatus = environments.OperationStatusCleanupFailed
+				failResult.FailureKind = "cleanup_failed"
+			}
+			if errors.Is(outcome.err, provider.ErrOperationNotConfirmed) {
+				failureStatus = environments.OperationStatusUnknown
+				failResult.FailureKind = "unknown"
+			}
+			failResult.ErrorMessage, _ = provider.SafeExecOutput(failResult.ErrorMessage, 2048, req.Env)
+			failResult.Summary, _ = provider.SafeExecOutput(failResult.Summary, 2048, req.Env)
+			m.transitionFinalWithRetry(latest, failureStatus, &failResult, tNow, conn, dep)
 			return
 		}
 
@@ -789,6 +931,9 @@ func (m *DeploymentManager) superviseOperation(
 		succResult := environments.OperationResult{
 			ExitCode: 0,
 			Summary:  fmt.Sprintf("%s completed successfully", req.Action),
+		}
+		if outcome.res != nil {
+			succResult = *outcome.res
 		}
 		if outcome.res != nil && outcome.res.Summary != "" {
 			succResult.Summary = boundedString(outcome.res.Summary, 2048)
@@ -803,6 +948,7 @@ func (m *DeploymentManager) superviseOperation(
 		transMu.Lock()
 		latest := currentOp
 		transMu.Unlock()
+		redactOperationOutput(&latest.Result, req.MaxOutput, req.Env)
 
 		state.mu.Lock()
 		wasCancelled := state.isCancelled
@@ -810,22 +956,25 @@ func (m *DeploymentManager) superviseOperation(
 
 		var cleanupTerminated bool
 		if wasCancelled || opCtx.Err() == context.Canceled {
-			cleanupTerminated = m.finalizeCancellation(latest, nil, errors.New("cancelled"), conn, dep)
+			cleanupTerminated = m.finalizeCancellation(latest, &latest.Result, errors.New("cancelled"), conn, dep)
 		} else {
-			cleanupTerminated = m.finalizeTimeout(latest, nil, errors.New("timed out"), conn, dep)
+			cleanupTerminated = m.finalizeTimeout(latest, &latest.Result, errors.New("timed out"), conn, dep)
 		}
 
 		if cleanupTerminated {
-			go func() {
-				<-actionDoneCh
-				releaseCapacityOnce()
-			}()
-			capacityReleased = true
+			// A confirmed remote cleanup releases admission capacity immediately.
+			releaseCapacityOnce()
 		} else {
 			// Provider refused cleanup or failed: retain blocked capacity to prevent unbounded leaks
 			capacityReleased = true
 			go func() {
-				<-actionDoneCh
+				select {
+				case <-actionDoneCh:
+				case <-m.rootCtx.Done():
+					// No further admission after shutdown; do not strand a
+					// capacity waiter behind an uncooperative provider.
+					return
+				}
 				select {
 				case <-m.opSem:
 				default:
@@ -833,13 +982,8 @@ func (m *DeploymentManager) superviseOperation(
 			}()
 		}
 
-	case <-m.rootCtx.Done():
-		close(heartbeatStop)
-		<-heartbeatDone
-		transMu.Lock()
-		latest := currentOp
-		transMu.Unlock()
-		m.finalizeCancellation(latest, nil, errors.New("manager shutting down"), conn, dep)
+		// opCtx inherits rootCtx: shutdown follows this same bounded cleanup
+		// and capacity-accounting path rather than racing a separate branch.
 	}
 }
 
@@ -862,7 +1006,7 @@ func (m *DeploymentManager) transitionFinalWithRetry(
 			m.finalizeCancellation(cur, result, errors.New("cancelled by user"), conn, dep)
 			return
 		}
-		if cur.IsTerminal() {
+		if cur.IsTerminal() || cur.IsUnresolved() {
 			return
 		}
 		_, transErr := m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
@@ -893,10 +1037,32 @@ func (m *DeploymentManager) executeAction(
 	conn *environments.Connection,
 	dep *environments.Deployment,
 ) (*environments.OperationResult, error) {
-	ctx = withOperationID(ctx, currentOp.OperationID)
+	transMu.Lock()
+	opID, productResult := currentOp.OperationID, currentOp.ProductResult
+	transMu.Unlock()
+	ctx = withBuildProduct(withOperationID(ctx, opID), req.BuildProductResolver)
+	if req.BuildProductResolver != nil {
+		p, err := req.BuildProductResolver(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if p.Binding != productResult {
+			return nil, errors.New("task result binding changed after admission")
+		}
+		if dep != nil {
+			current, found, err := m.deployments.Get(req.AccountScopeID, req.WorkspaceID, dep.ID)
+			if err != nil || !found || current.Build == nil || current.Build.ProductResult != p.Binding || current.Build.Product != p.Source || dep.Build == nil || *current.Build != *dep.Build || current.ConnectionID != dep.ConnectionID || current.EnvironmentID != dep.EnvironmentID || current.Runtime.ContainerID != dep.Runtime.ContainerID {
+				return nil, errors.New("deployment task result changed before execution")
+			}
+			dep = &current
+		}
+	}
 	switch req.Action {
+	case environments.OperationActionBuild:
+		return m.executeBuild(ctx, opID, req, env, conn)
 	case environments.OperationActionEnsure:
 		ensureReq := EnsureDeploymentRequest{
+			BuildOperationID: req.BuildOperationID,
 			AccountScopeID:   req.AccountScopeID,
 			WorkspaceID:      req.WorkspaceID,
 			EnvironmentID:    req.EnvironmentID,
@@ -925,6 +1091,7 @@ func (m *DeploymentManager) executeAction(
 
 	case environments.OperationActionDeploy:
 		deployReq := DeployDeploymentRequest{
+			BuildOperationID: req.BuildOperationID,
 			AccountScopeID:   req.AccountScopeID,
 			WorkspaceID:      req.WorkspaceID,
 			EnvironmentID:    req.EnvironmentID,
@@ -957,13 +1124,38 @@ func (m *DeploymentManager) executeAction(
 		if conn == nil || dep == nil {
 			return nil, errors.New("connection or deployment not resolved for exec")
 		}
+		lease, found, err := m.deployments.Leases().Get(req.AccountScopeID, req.WorkspaceID, req.LeaseID)
+		if err != nil {
+			return nil, err
+		}
+		if !found || !lease.IsHeld(time.Now().UnixMilli()) || !ownsLease(req.Attribution, lease) {
+			return nil, ErrDeploymentLeaseHeld
+		}
+		if err := m.validateTaskLease(ctx, lease); err != nil {
+			return nil, err
+		}
+		if lease.Shared {
+			current, found, err := m.deployments.Get(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
+			if err != nil {
+				return nil, err
+			}
+			if !found || lease.PreparedSource == nil || !lease.PreparedSource.Matches(current) {
+				return nil, ErrDeploymentUnusable
+			}
+			dep = &current
+		}
 		prov, ok := m.registry.Get(conn.Kind)
 		if !ok {
 			return nil, fmt.Errorf("provider for kind %q: %w", conn.Kind, ErrProviderNotRegistered)
 		}
 
+		if dep.Build != nil {
+			if _, err := prov.Inspect(ctx, conn, dep); err != nil {
+				return nil, err
+			}
+		}
 		execReq := provider.ExecRequest{
-			OperationID: currentOp.OperationID,
+			OperationID: opID,
 			Command:     req.Command,
 			WorkingDir:  req.WorkingDir,
 			Env:         req.Env,
@@ -971,6 +1163,23 @@ func (m *DeploymentManager) executeAction(
 			OnProgress: func(p provider.ExecProgress) {
 				transMu.Lock()
 				defer transMu.Unlock()
+				if ctx.Err() != nil {
+					return
+				}
+				// Capture before heartbeat throttling; even a hung/disconnected
+				// transport must leave useful bounded partial diagnostics.
+				limit := provider.DefaultMaxOutputBytes
+				output := &currentOp.Result.Stdout
+				if p.Stream == "stderr" {
+					output = &currentOp.Result.Stderr
+				}
+				remaining := limit - len(*output)
+				data := p.Data
+				if len(data) > remaining {
+					data = data[:remaining]
+					currentOp.Result.Truncated = true
+				}
+				*output += string(data)
 				now := time.Now()
 				if now.Sub(*lastProgressWrite) < 250*time.Millisecond {
 					return
@@ -990,37 +1199,90 @@ func (m *DeploymentManager) executeAction(
 					ObservedAt:       tNow,
 				})
 				if err == nil {
+					up.Result = currentOp.Result // partial output is finalized after redaction
 					*currentOp = up
 				}
 			},
 		}
 
+		if deadline, ok := ctx.Deadline(); ok {
+			execReq.Timeout = time.Until(deadline)
+			if execReq.Timeout <= 0 {
+				return nil, context.DeadlineExceeded
+			}
+		}
+
+		// A provider probe may return after supervision has already settled.
+		// Do not touch storage or dispatch work after its lifetime has ended.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Re-read after provider probing: revoked receipts and changed source must
+		// fail before any command side effect. Callback runs without manager locks.
+		lease, found, err = m.deployments.Leases().Get(req.AccountScopeID, req.WorkspaceID, req.LeaseID)
+		if err != nil {
+			return nil, err
+		}
+		if !found || lease.DeploymentID != dep.ID || !lease.IsHeld(time.Now().UnixMilli()) || !ownsLease(req.Attribution, lease) {
+			return nil, ErrDeploymentLeaseHeld
+		}
+		if err := m.validateTaskLease(ctx, lease); err != nil {
+			return nil, err
+		}
+		current, found, err := m.deployments.Get(req.AccountScopeID, req.WorkspaceID, dep.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !found || !current.IsUsable() || current.ReviewExpired(time.Now().UnixMilli()) || (lease.PreparedSource != nil && !lease.PreparedSource.Matches(current)) {
+			return nil, ErrDeploymentUnusable
+		}
+		dep = &current
+		if req.BuildProductResolver != nil {
+			p, err := req.BuildProductResolver(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if dep.Build == nil || dep.Build.ProductResult != p.Binding || dep.Build.Product != p.Source {
+				return nil, errors.New("task product changed during provider probe")
+			}
+		}
 		execRes, err := prov.Exec(ctx, conn, dep, execReq)
+		result := &environments.OperationResult{}
+		if execRes != nil {
+			result.ExitCode = execRes.ExitCode
+			result.Stdout = execRes.Stdout
+			result.Stderr = execRes.Stderr
+			result.Truncated = execRes.Truncated
+		}
+		redactOperationOutput(result, req.MaxOutput, req.Env)
 		if err != nil {
 			exitCode := 1
 			if execRes != nil && execRes.ExitCode != 0 {
 				exitCode = execRes.ExitCode
 			}
-			return &environments.OperationResult{
-				ExitCode:     exitCode,
-				ErrorMessage: err.Error(),
-				FailureKind:  "exec_error",
-				Summary:      "Exec failed: " + err.Error(),
-			}, err
+			if execRes == nil {
+				transMu.Lock()
+				result.Stdout, result.Stderr, result.Truncated = currentOp.Result.Stdout, currentOp.Result.Stderr, currentOp.Result.Truncated
+				transMu.Unlock()
+				redactOperationOutput(result, req.MaxOutput, req.Env)
+			}
+			result.ExitCode = exitCode
+			result.ErrorMessage, _ = provider.SafeExecOutput(err.Error(), 2048, req.Env)
+			result.FailureKind = "exec_error"
+			result.Summary = boundedString("Exec failed: "+result.ErrorMessage, 2048)
+			return result, err
+		}
+		if execRes == nil {
+			return nil, errors.New("exec provider returned no result")
 		}
 		if execRes.ExitCode != 0 {
-			return &environments.OperationResult{
-				ExitCode:     execRes.ExitCode,
-				ErrorMessage: fmt.Sprintf("command exited with code %d", execRes.ExitCode),
-				FailureKind:  "non_zero_exit",
-				Summary:      fmt.Sprintf("Exit code %d", execRes.ExitCode),
-			}, fmt.Errorf("command exited with code %d", execRes.ExitCode)
+			result.ErrorMessage = fmt.Sprintf("command exited with code %d", execRes.ExitCode)
+			result.FailureKind = "non_zero_exit"
+			result.Summary = fmt.Sprintf("Exit code %d", execRes.ExitCode)
+			return result, errors.New(result.ErrorMessage)
 		}
-
-		return &environments.OperationResult{
-			ExitCode: 0,
-			Summary:  sanitizeOutput(execRes.Stdout),
-		}, nil
+		result.Summary = "Exec completed successfully"
+		return result, nil
 
 	case environments.OperationActionStop:
 		err := m.StopDeployment(ctx, req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
@@ -1047,6 +1309,7 @@ func (m *DeploymentManager) executeAction(
 			AccountScopeID: req.AccountScopeID,
 			WorkspaceID:    req.WorkspaceID,
 			LeaseID:        req.LeaseID,
+			Attribution:    req.Attribution,
 			Reason:         req.Reason,
 		})
 		if err != nil {
@@ -1112,13 +1375,17 @@ func (m *DeploymentManager) finalizeCancellation(
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cleanupCancel()
 
-	terminated, cleanupErr := m.cleanupTargetProcess(cleanupCtx, op, conn, dep)
+	terminated, cleanupErr := m.cleanupTargetProcessBounded(cleanupCtx, op, conn, dep)
 
 	now := time.Now().UnixMilli()
 	latestOp, found, err := m.operations.Get(op.AccountScopeID, op.WorkspaceID, op.OperationID)
 	if err == nil && found {
 		op = latestOp
 	}
+	if res != nil {
+		op.Result.Stdout, op.Result.Stderr, op.Result.Truncated = res.Stdout, res.Stderr, res.Truncated
+	}
+	redactOperationOutput(&op.Result, 0, nil)
 
 	if cleanupErr != nil || !terminated {
 		targetStatus := environments.OperationStatusCleanupFailed
@@ -1127,42 +1394,28 @@ func (m *DeploymentManager) finalizeCancellation(
 		}
 		errMsg := "target cleanup failed"
 		if cleanupErr != nil {
-			errMsg = cleanupErr.Error()
+			errMsg, _ = provider.SafeExecOutput(cleanupErr.Error(), 2048, nil)
 		}
-		_, _ = m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
-			AccountScopeID:   op.AccountScopeID,
-			WorkspaceID:      op.WorkspaceID,
-			OperationID:      op.OperationID,
-			ExpectedRevision: op.Revision,
-			TargetStatus:     targetStatus,
-			Result: &environments.OperationResult{
-				ExitCode:     130,
-				ErrorMessage: boundedString(errMsg, 2048),
-				FailureKind:  string(targetStatus),
-				Summary:      "Target process cleanup could not be confirmed; deployment blocked against reuse",
-			},
-			ObservedAt: now,
-		})
+		m.settleCleanupWithRetry(op, targetStatus, &environments.OperationResult{
+			ExitCode:     130,
+			ErrorMessage: boundedString(errMsg, 2048),
+			FailureKind:  string(targetStatus),
+			Summary:      "Target process cleanup could not be confirmed; deployment blocked against reuse",
+			Stdout:       op.Result.Stdout, Stderr: op.Result.Stderr, Truncated: op.Result.Truncated,
+		}, now)
 		if dep != nil {
 			_, _ = m.deployments.UpdateStatus(op.AccountScopeID, op.WorkspaceID, dep.ID, dep.Status, environments.HealthStatusUnhealthy, "cleanup failed: "+errMsg)
 		}
 		return false
 	}
 
-	_, _ = m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
-		AccountScopeID:   op.AccountScopeID,
-		WorkspaceID:      op.WorkspaceID,
-		OperationID:      op.OperationID,
-		ExpectedRevision: op.Revision,
-		TargetStatus:     environments.OperationStatusCancelled,
-		Result: &environments.OperationResult{
-			ExitCode:     130,
-			ErrorMessage: "operation cancelled by user",
-			FailureKind:  "cancelled",
-			Summary:      "Operation was cancelled and target process terminated",
-		},
-		ObservedAt: now,
-	})
+	m.settleCleanupWithRetry(op, environments.OperationStatusCancelled, &environments.OperationResult{
+		ExitCode:     130,
+		ErrorMessage: "operation cancelled by user",
+		FailureKind:  "cancelled",
+		Summary:      "Operation was cancelled and target process terminated",
+		Stdout:       op.Result.Stdout, Stderr: op.Result.Stderr, Truncated: op.Result.Truncated,
+	}, now)
 	return true
 }
 
@@ -1181,13 +1434,17 @@ func (m *DeploymentManager) finalizeTimeout(
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cleanupCancel()
 
-	terminated, cleanupErr := m.cleanupTargetProcess(cleanupCtx, op, conn, dep)
+	terminated, cleanupErr := m.cleanupTargetProcessBounded(cleanupCtx, op, conn, dep)
 
 	now := time.Now().UnixMilli()
 	latestOp, found, err := m.operations.Get(op.AccountScopeID, op.WorkspaceID, op.OperationID)
 	if err == nil && found {
 		op = latestOp
 	}
+	if res != nil {
+		op.Result.Stdout, op.Result.Stderr, op.Result.Truncated = res.Stdout, res.Stderr, res.Truncated
+	}
+	redactOperationOutput(&op.Result, 0, nil)
 
 	if cleanupErr != nil || !terminated {
 		targetStatus := environments.OperationStatusCleanupFailed
@@ -1196,43 +1453,77 @@ func (m *DeploymentManager) finalizeTimeout(
 		}
 		errMsg := "timeout cleanup failed"
 		if cleanupErr != nil {
-			errMsg = cleanupErr.Error()
+			errMsg, _ = provider.SafeExecOutput(cleanupErr.Error(), 2048, nil)
 		}
-		_, _ = m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
-			AccountScopeID:   op.AccountScopeID,
-			WorkspaceID:      op.WorkspaceID,
-			OperationID:      op.OperationID,
-			ExpectedRevision: op.Revision,
-			TargetStatus:     targetStatus,
-			Result: &environments.OperationResult{
-				ExitCode:     124,
-				ErrorMessage: boundedString(errMsg, 2048),
-				FailureKind:  string(targetStatus),
-				Summary:      "Operation timed out and target cleanup failed; deployment blocked against reuse",
-			},
-			ObservedAt: now,
-		})
+		m.settleCleanupWithRetry(op, targetStatus, &environments.OperationResult{
+			ExitCode:     124,
+			ErrorMessage: boundedString(errMsg, 2048),
+			FailureKind:  string(targetStatus),
+			Summary:      "Operation timed out and target cleanup failed; deployment blocked against reuse",
+			Stdout:       op.Result.Stdout, Stderr: op.Result.Stderr, Truncated: op.Result.Truncated,
+		}, now)
 		if dep != nil {
 			_, _ = m.deployments.UpdateStatus(op.AccountScopeID, op.WorkspaceID, dep.ID, dep.Status, environments.HealthStatusUnhealthy, "timeout cleanup failed: "+errMsg)
 		}
 		return false
 	}
 
-	_, _ = m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
-		AccountScopeID:   op.AccountScopeID,
-		WorkspaceID:      op.WorkspaceID,
-		OperationID:      op.OperationID,
-		ExpectedRevision: op.Revision,
-		TargetStatus:     environments.OperationStatusTimedOut,
-		Result: &environments.OperationResult{
-			ExitCode:     124,
-			ErrorMessage: "operation exceeded deadline",
-			FailureKind:  "timed_out",
-			Summary:      "Operation exceeded maximum allotted deadline",
-		},
-		ObservedAt: now,
-	})
+	m.settleCleanupWithRetry(op, environments.OperationStatusTimedOut, &environments.OperationResult{
+		ExitCode:     124,
+		ErrorMessage: "operation exceeded deadline",
+		FailureKind:  "timed_out",
+		Summary:      "Operation exceeded maximum allotted deadline",
+		Stdout:       op.Result.Stdout, Stderr: op.Result.Stderr, Truncated: op.Result.Truncated,
+	}, now)
 	return true
+}
+
+// settleCleanupWithRetry guards cancellation/progress CAS races without repeating
+// remote cleanup or allowing late success to overwrite an unresolved outcome.
+func (m *DeploymentManager) settleCleanupWithRetry(op environments.EnvironmentOperation, status environments.OperationStatus, result *environments.OperationResult, now int64) {
+	for attempt := 0; attempt < 5; attempt++ {
+		cur, found, err := m.operations.Get(op.AccountScopeID, op.WorkspaceID, op.OperationID)
+		if err != nil || !found || cur.IsTerminal() || cur.IsUnresolved() {
+			return
+		}
+		_, err = m.operations.TransitionOperation(pebblestore.OperationTransitionInput{
+			AccountScopeID: cur.AccountScopeID, WorkspaceID: cur.WorkspaceID,
+			OperationID: cur.OperationID, ExpectedRevision: cur.Revision,
+			TargetStatus: status, Result: result, ObservedAt: now,
+		})
+		if !errors.Is(err, environments.ErrOperationConflict) {
+			return
+		}
+	}
+}
+
+// redactOperationOutput is the only durable exec-output boundary.
+func redactOperationOutput(result *environments.OperationResult, limit int, env map[string]string) {
+	var truncated bool
+	result.Stdout, truncated = provider.SafeExecOutput(result.Stdout, limit, env)
+	result.Truncated = result.Truncated || truncated
+	result.Stderr, truncated = provider.SafeExecOutput(result.Stderr, limit, env)
+	result.Truncated = result.Truncated || truncated
+}
+
+// cleanupTargetProcessBounded does not trust provider context cooperation. A
+// disconnected SSH transport cannot keep the durable operation running forever.
+func (m *DeploymentManager) cleanupTargetProcessBounded(ctx context.Context, op environments.EnvironmentOperation, conn *environments.Connection, dep *environments.Deployment) (bool, error) {
+	type outcome struct {
+		terminated bool
+		err        error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		terminated, err := m.cleanupTargetProcess(ctx, op, conn, dep)
+		done <- outcome{terminated, err}
+	}()
+	select {
+	case result := <-done:
+		return result.terminated, result.err
+	case <-ctx.Done():
+		return false, fmt.Errorf("%w: cleanup deadline expired; restore connection access and reconcile operation %s on deployment %s", provider.ErrOperationNotConfirmed, op.OperationID, op.DeploymentID)
+	}
 }
 
 // cleanupTargetProcess terminates the owned container process tree via provider.OperationCanceler.
@@ -1243,6 +1534,29 @@ func (m *DeploymentManager) cleanupTargetProcess(
 	conn *environments.Connection,
 	dep *environments.Deployment,
 ) (bool, error) {
+	if op.Action == environments.OperationActionBuild {
+		if m.connections == nil || m.registry == nil {
+			return false, errors.New("build cleanup authority unavailable")
+		}
+		c, found, err := m.connections.Get(op.AccountScopeID, op.WorkspaceID, op.BuildConnectionID)
+		if err != nil || !found {
+			return false, errors.New("build cleanup connection unavailable")
+		}
+		p, ok := m.registry.Get(c.Kind)
+		if !ok {
+			return false, ErrProviderNotRegistered
+		}
+		b, ok := p.(provider.ImageBuilder)
+		if !ok {
+			return false, errors.New("build cleanup unsupported")
+		}
+		if remote, ok := b.(provider.ConnectionBuildCleaner); ok {
+			err = remote.CleanupConnectionBuild(ctx, &c, op.OperationID)
+		} else {
+			err = b.CleanupBuild(ctx, op.OperationID)
+		}
+		return err == nil, err
+	}
 	if (conn == nil || dep == nil) && m.connections != nil && m.deployments != nil && op.DeploymentID != "" {
 		d, found, _ := m.deployments.Get(op.AccountScopeID, op.WorkspaceID, op.DeploymentID)
 		if found {
@@ -1293,6 +1607,9 @@ func (m *DeploymentManager) cleanupTargetProcess(
 		if err := prov.Destroy(ctx, conn, dep); err != nil {
 			return false, fmt.Errorf("destroy partial deployment: %w", err)
 		}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		_, _ = m.deployments.UpdateStatus(op.AccountScopeID, op.WorkspaceID, dep.ID, environments.DeploymentStatusTerminated, environments.HealthStatusUnknown, "cancelled during deploy")
 		return true, nil
 
@@ -1300,12 +1617,18 @@ func (m *DeploymentManager) cleanupTargetProcess(
 		if err := prov.Stop(ctx, conn, dep); err != nil {
 			return false, fmt.Errorf("stop container during cleanup: %w", err)
 		}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
 		_, _ = m.deployments.UpdateStatus(op.AccountScopeID, op.WorkspaceID, dep.ID, environments.DeploymentStatusStopped, environments.HealthStatusUnknown, "stopped during cleanup")
 		return true, nil
 
 	case "destroy":
 		if err := prov.Destroy(ctx, conn, dep); err != nil {
 			return false, fmt.Errorf("destroy container during cleanup: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return false, err
 		}
 		_, _ = m.deployments.UpdateStatus(op.AccountScopeID, op.WorkspaceID, dep.ID, environments.DeploymentStatusTerminated, environments.HealthStatusUnknown, "destroyed during cleanup")
 		return true, nil
@@ -1379,7 +1702,7 @@ func (m *DeploymentManager) Cancel(ctx context.Context, req CancelOperationReque
 		return nil, fmt.Errorf("transition to cancelling: %w", err)
 	}
 
-	// Signal in-memory execution if running
+	// Signal registered supervision, including work waiting for capacity.
 	m.activeOpsMu.Lock()
 	state, hasState := m.activeOps[req.OperationID]
 	if hasState {
@@ -1388,14 +1711,26 @@ func (m *DeploymentManager) Cancel(ctx context.Context, req CancelOperationReque
 		state.mu.Unlock()
 		state.cancel()
 	}
-	m.activeOpsMu.Unlock()
 
 	// If not executing in this process (e.g. orphaned from restart), run standalone cleanup
 	if !hasState {
-		go func() {
-			m.finalizeCancellation(cancellingOp, nil, errors.New("cancelled"), nil, nil)
-		}()
+		if !m.closing {
+			// Track standalone orphan cleanup in Close's join set as well.
+			state := &activeOpState{opID: req.OperationID, accountID: req.AccountScopeID,
+				workspaceID: req.WorkspaceID, done: make(chan struct{}), cancel: func() {}}
+			m.activeOps[req.OperationID] = state
+			go func() {
+				defer func() {
+					m.activeOpsMu.Lock()
+					delete(m.activeOps, req.OperationID)
+					close(state.done)
+					m.activeOpsMu.Unlock()
+				}()
+				m.finalizeCancellation(cancellingOp, nil, errors.New("cancelled"), nil, nil)
+			}()
+		}
 	}
+	m.activeOpsMu.Unlock()
 
 	return &cancellingOp, nil
 }
@@ -1580,25 +1915,33 @@ func (m *DeploymentManager) Close() error {
 	if m == nil {
 		return nil
 	}
+	m.activeOpsMu.Lock()
+	m.closing = true
 	m.rootCancel()
-
-	m.activeOpsMu.RLock()
 	doneChans := make([]chan struct{}, 0, len(m.activeOps))
 	for _, st := range m.activeOps {
 		doneChans = append(doneChans, st.done)
 	}
-	m.activeOpsMu.RUnlock()
+	m.activeOpsMu.Unlock()
 
 	cleanupTimeout := m.cleanupTimeout
 	if cleanupTimeout <= 0 {
 		cleanupTimeout = provider.CleanupTimeout
 	}
-	deadline := time.After(cleanupTimeout)
+	// Allow the bounded cleanup call to expire and its supervisor to persist
+	// the outcome and join. Returning at exactly the provider cleanup deadline
+	// races that final persistence; never silently report an incomplete join.
+	joinTimeout := m.probeTimeout
+	if joinTimeout <= 0 {
+		joinTimeout = provider.ProbeTimeout
+	}
+	timer := time.NewTimer(cleanupTimeout + joinTimeout)
+	defer timer.Stop()
 	for _, ch := range doneChans {
 		select {
 		case <-ch:
-		case <-deadline:
-			return nil
+		case <-timer.C:
+			return errors.New("environment operation supervisors did not stop within cleanup window")
 		}
 	}
 	return nil

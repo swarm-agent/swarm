@@ -1,0 +1,219 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { build } from 'esbuild'
+import { build as buildStyles } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
+import { chromium } from 'playwright'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import { fixtureRead, project, sessionId, snapshot } from './swarm-responsive-browser-fixtures'
+
+// Purpose: OrchestratePage/View must resolve browser names before API calls and
+// provenance admission. Render the real page with bounded HTTP/controller fixtures
+// to prove ID bookmark migration, reload, session switching and compact geometry.
+// Session changes must retain the exact sidebar DOM owner while replacing chat;
+// Back/Forward and direct links must not restore stale drafts. DOM identity is
+// the narrowest proof of this remount regression in OrchestratePage. Usage must
+// mount the real dashboard via its real API adapter, with loading/error/retry/empty
+// states, without obscuring the persistent sidebar or main Tasks/Workers controls.
+// A delayed successful New session receipt must update membership without stealing
+// a newer route/draft; an on-route success must navigate without clearing context.
+// This guards newConversation's route-scope boundary with actual browser history.
+// Cached session switching must not refetch admission, membership or shell data;
+// project-only entry must replace its URL with the first visible sidebar session
+// after discovery, without overriding deep links or creating a session.
+// This is deterministic browser integration, not live daemon/provider evidence.
+test('project name URLs preserve API identity, reload and compact navigation', { timeout: 60000 }, async () => {
+  const js = await build({ stdin: { resolveDir: process.cwd(), loader: 'tsx', contents: `import {mountResponsiveFixture} from './src/features/desktop/orchestrate/swarm-responsive-browser-fixtures'; mountResponsiveFixture('populated', true);` }, bundle: true, write: false, format: 'iife', platform: 'browser', jsx: 'automatic', logLevel: 'silent' })
+  const styles = await buildStyles({ configFile: false, logLevel: 'silent', publicDir: false, plugins: [tailwindcss()], build: { write: false, rollupOptions: { input: path.resolve('src/theme.css') } } })
+  const outputs = (Array.isArray(styles) ? styles : [styles]).flatMap(result => 'output' in result ? result.output : [])
+  const css = outputs.filter(asset => asset.type === 'asset' && asset.fileName.endsWith('.css')).map(asset => asset.type === 'asset' ? String(asset.source) : '').join('\n') + await readFile('src/features/desktop/orchestrate/swarm-section.css', 'utf8')
+  const browser = await chromium.launch({ headless: true, channel: process.env.SWARM_TEST_BROWSER_CHANNEL || 'chrome' })
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, locale: 'en-US' })
+    page.setDefaultTimeout(7000)
+    const requests: string[] = [], errors: string[] = []
+    let clearRejected = true
+    let usageState: 'error' | 'empty' | 'populated' = 'error'
+    let releaseUsage: (() => void) | undefined
+    const usageGate = new Promise<void>(resolve => { releaseUsage = resolve })
+    let creationState: 'error' | 'delayed' | 'success' = 'error'
+    let releaseCreation: (() => void) | undefined
+    const creationGate = new Promise<void>(resolve => { releaseCreation = resolve })
+    const clearBodies: any[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    const conversation = (id: string) => ({ ...snapshot().sessions_by_id[sessionId], id, title: `Session ${id}`, metadata: { agent_name: 'system-orchestrator', project_id: project.id } })
+    await page.route('**/*', route => {
+      const req = route.request(), url = new URL(req.url())
+      if (req.isNavigationRequest()) return route.fulfill({ contentType: 'text/html', body: '<div id="root" style="height:100vh"></div>' })
+      requests.push(`${req.method()} ${url.pathname}`)
+      if (url.pathname === '/v3/usage') return usageGate.then(() => route.fulfill(usageState === 'error'
+        ? { status: 503, json: { error: 'Usage temporarily unavailable' } }
+        : { json: { ok: true, summary: { total_tokens: usageState === 'empty' ? 0 : 12345, input_tokens: usageState === 'empty' ? 0 : 12000, output_tokens: usageState === 'empty' ? 0 : 345, cached_tokens: 0, thinking_tokens: 0, total_cost_usd: usageState === 'empty' ? 0 : 1.25, codex_nominal_cost_usd: 0, total_turns: usageState === 'empty' ? 0 : 2, total_sessions: usageState === 'empty' ? 0 : 1, total_media_calls: 0, media_cost_usd: 0 }, daily: [], by_provider: [], by_model: [], recent_sessions: [], media: { total_count: 0, total_cost_usd: 0, image_count: 0, video_count: 0, audio_count: 0, recent_items: [] }, meta: { generated_at: 1, time_range: '30d', total_records_analyzed: 1 } } }))
+      if (url.pathname.endsWith('/context/clear')) {
+        clearBodies.push(req.postDataJSON())
+        if (clearRejected) return route.fulfill({ status: 409, json: { error: 'Session is active; finish work first.' } })
+        return route.fulfill({ json: { ok: true, session_id: sessionId, mutation: { realtime_outbox: { endpoint_seq: 4, endpoint_cursor: 'opaque-clear', session_id: sessionId, event: { id: 'clear-event', session_id: sessionId, seq: 4, event_type: 'execution_epoch.began', payload: { reason: 'context_cleared' }, ts_unix_ms: 4 }, projection: { session_id: sessionId, last_event_seq: 4, projection_high_watermark_seq: 4, updated_at: 4 }, created_at: 4 } } } })
+      }
+      if (req.method() === 'POST' && url.pathname === `/v3/projects/${project.id}/sessions`) {
+        if (creationState === 'error') return route.fulfill({ status: 503, json: { error: 'Creation unavailable in this fixture' } })
+        const id = creationState === 'delayed' ? 'created-late' : 'created-now'
+        const complete = () => route.fulfill({ json: { ok: true, session_id: id, session: conversation(id) } })
+        return creationState === 'delayed' ? creationGate.then(complete) : complete()
+      }
+      if (url.pathname === '/v3/projects') return route.fulfill({ json: { projects: [{ ...project, name: 'Swarm Go' }] } })
+      if (url.pathname === `/v3/projects/${project.id}/sessions`) return route.fulfill({ json: { sessions: Array.from({ length: 30 }, (_, i) => ({ session: conversation(i ? `session-${i}` : sessionId) })) } })
+      if ([`/v3/sessions/${sessionId}`, '/v3/sessions/session-1', '/v3/sessions/created-now'].includes(url.pathname)) return route.fulfill({ json: { session: conversation(url.pathname.split('/').at(-1)!) } })
+      if (url.pathname === '/v3/sync/hydrate') {
+        const ids = req.postDataJSON().session_ids || [sessionId]
+        const data = snapshot()
+        for (const key of ['projections_by_session', 'messages_by_session', 'events_by_session', 'session_views_by_id', 'permission_summaries_by_session'] as const) {
+          if (!ids.includes(sessionId)) (data as any)[key] = {}
+        }
+        return route.fulfill({ json: { ...data, session_order: ids, sessions_by_id: Object.fromEntries(ids.map((id: string) => [id, conversation(id)])) } })
+      }
+      if (url.pathname === '/v1/account/avatar') return route.fulfill({ json: { image: '', user_id: url.searchParams.get('user_id'), account_scope_id: url.searchParams.get('account_scope_id') } })
+      const data = fixtureRead(url, 'populated')
+      return route.fulfill({ status: data === undefined ? 501 : 200, json: data ?? { error: 'Unconfigured fixture read' } })
+    })
+    const mount = async (url: string) => {
+      await page.goto(url); await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js.outputFiles[0].text })
+      await page.waitForFunction(() => document.querySelector<HTMLSelectElement>('[aria-label="Current project"]')?.value === 'responsive-project')
+    }
+    await mount(`https://project.test/projects/${project.id}/sessions/${sessionId}?section=workers#retained`)
+    await page.waitForURL(`**/projects/swarm-go/sessions/${sessionId}?section=workers#retained`)
+    const nav = page.getByRole('navigation', { name: 'Swarm destinations' })
+    assert.equal(await nav.locator('[aria-current="page"]').count(), 0)
+    assert.equal(await page.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page')
+    assert.equal(await nav.evaluate(el => el.previousElementSibling?.tagName), 'HEADER')
+    await page.getByTestId('orchestrator-chat-input').waitFor()
+    // Clear requires confirmation and stays on this conversation; New session
+    // uses the separate project creation API even after clear succeeds.
+    const clear = page.getByRole('button', { name: 'Clear context', exact: true })
+    await clear.waitFor()
+    page.once('dialog', dialog => dialog.dismiss())
+    await clear.click()
+    assert.equal(clearBodies.length, 0)
+    page.once('dialog', dialog => dialog.accept())
+    await clear.click()
+    await page.getByRole('alert').filter({ hasText: 'Session is active' }).waitFor()
+    assert.equal(clearBodies.length, 1)
+    clearRejected = false
+    page.once('dialog', dialog => dialog.accept())
+    await clear.click()
+    await page.getByRole('status').filter({ hasText: 'Context cleared; history preserved.' }).waitFor()
+    assert.equal(clearBodies.length, 2)
+    assert.equal(clearBodies[1].expected_last_event_seq, 3)
+    assert.match(page.url(), new RegExp('/sessions/' + sessionId))
+    assert.equal(requests.filter(request => request === `POST /v3/projects/${project.id}/sessions`).length, 0)
+    await page.getByRole('button', { name: 'New session', exact: true }).click()
+    await page.getByRole('alert').filter({ hasText: 'Creation unavailable' }).waitFor()
+    assert.equal(requests.filter(request => request === `POST /v3/projects/${project.id}/sessions`).length, 1)
+    assert.equal(clearBodies.length, 2)
+    await page.getByTestId('orchestrator-chat-input').fill('Only the first session draft')
+    await page.getByRole('status').filter({ hasText: 'Loading sessions…' }).waitFor({ state: 'hidden' })
+    const beforeSwitch = requests.length
+    await page.evaluate(() => { (window as any).retainedSidebar = document.querySelector('.swarm-navigation-sidebar') })
+    await page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link', { name: 'Session session-1 Swarm Go', exact: true }).click()
+    await page.waitForURL('**/projects/swarm-go/sessions/session-1')
+    await page.getByRole('heading', { name: 'Session session-1', exact: true, level: 2 }).waitFor()
+    assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
+    assert.equal(await page.getByTestId('orchestrator-chat-input').inputValue(), '')
+    assert.equal(requests.slice(beforeSwitch).some(request => [
+      'GET /v3/sessions/session-1', 'GET /v3/projects',
+      `GET /v3/projects/${project.id}/sessions`, 'GET /v1/workspace/list',
+    ].includes(request)), false, 'switching an already hydrated row must not reload sidebar or admission')
+    await page.goBack()
+    await page.waitForURL(`**/sessions/${sessionId}?section=workers#retained`)
+    await page.getByRole('heading', { name: `Session ${sessionId}`, exact: true, level: 2 }).waitFor()
+    assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
+    await page.goForward()
+    await page.waitForURL('**/sessions/session-1')
+    await page.getByRole('heading', { name: 'Session session-1', exact: true, level: 2 }).waitFor()
+    assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
+    creationState = 'delayed'
+    await page.getByRole('button', { name: 'New session', exact: true }).click()
+    await page.getByRole('button', { name: 'Creating…', exact: true }).waitFor()
+    await page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link', { name: `Session ${sessionId} Swarm Go`, exact: true }).click()
+    await page.waitForURL(`**/sessions/${sessionId}`)
+    await page.getByTestId('orchestrator-chat-input').fill('Keep this newer draft')
+    releaseCreation!()
+    await page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link', { name: 'Session created-late Swarm Go', exact: true }).waitFor()
+    assert.ok(page.url().endsWith(`/sessions/${sessionId}`))
+    assert.equal(await page.getByTestId('orchestrator-chat-input').inputValue(), 'Keep this newer draft')
+    assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
+    creationState = 'success'
+    await page.getByRole('button', { name: 'New session', exact: true }).click()
+    await page.waitForURL('**/sessions/created-now')
+    await page.getByRole('heading', { name: 'Session created-now', exact: true, level: 2 }).waitFor()
+    assert.equal(await page.getByTestId('orchestrator-chat-input').inputValue(), '')
+    assert.equal(clearBodies.length, 2, 'creation must never clear the old context')
+    assert.equal(await page.evaluate(() => (window as any).retainedSidebar === document.querySelector('.swarm-navigation-sidebar')), true)
+    await mount(page.url())
+    assert.equal(await page.getByLabel('Current project').inputValue(), project.id)
+    assert.ok(requests.includes(`GET /v3/projects/${project.id}/sessions`))
+    assert.equal(requests.includes('GET /v3/sessions/session-1'), false)
+    assert.equal(requests.some(url => url.includes('/v3/projects/swarm-go')), false)
+    for (const label of ['Deliverables', 'Settings', 'Agents']) {
+      await nav.getByRole('link', { name: label, exact: true }).click()
+      await page.waitForFunction(label => document.querySelector('.swarm-route-navigation [aria-current="page"]')?.getAttribute('aria-label') === label, label)
+      assert.equal(await nav.locator('[aria-current="page"]').count(), 1)
+    }
+    await page.goBack()
+    await page.waitForFunction(() => document.querySelector('.swarm-route-navigation [aria-current="page"]')?.getAttribute('aria-label') === 'Settings')
+    await page.goForward()
+    await page.waitForFunction(() => document.querySelector('.swarm-route-navigation [aria-current="page"]')?.getAttribute('aria-label') === 'Agents')
+    await nav.getByRole('link', { name: 'Usage', exact: true }).click()
+    await page.waitForURL('**?section=usage')
+    await page.getByRole('status').filter({ hasText: 'Analyzing session usage' }).waitFor()
+    releaseUsage!()
+    await page.getByRole('alert').filter({ hasText: 'Usage temporarily unavailable' }).waitFor()
+    usageState = 'empty'
+    await page.getByRole('button', { name: 'Retry usage', exact: true }).click()
+    await page.getByRole('status').filter({ hasText: 'No usage recorded for this period.' }).waitFor()
+    usageState = 'populated'
+    await page.getByRole('button', { name: 'Refresh', exact: true }).click()
+    await page.getByText('12,345', { exact: true }).waitFor()
+    assert.ok(requests.includes('GET /v3/usage'))
+    if (process.env.SWARM_PROJECT_PAGE_SCREENSHOT) await page.screenshot({ path: process.env.SWARM_PROJECT_PAGE_SCREENSHOT.replace('.png', '-usage.png') })
+    assert.equal(await page.getByRole('status').filter({ hasText: 'No usage recorded' }).count(), 0)
+    assert.equal(await page.getByRole('link', { name: 'Tasks', exact: true }).count(), 1)
+    assert.equal(await page.getByRole('link', { name: 'Workers', exact: true }).count(), 1)
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 })
+      if (width === 390) await page.getByRole('button', { name: 'Open Swarm navigation', exact: true }).click()
+      const sidebar = page.locator('.swarm-navigation-sidebar')
+      assert.equal(await sidebar.evaluate(el => el.scrollWidth <= el.clientWidth), true)
+      assert.equal(await sidebar.evaluate(el => {
+        const children = [...el.children].filter(child => getComputedStyle(child).display !== 'none').map(child => child.getBoundingClientRect()).filter(rect => rect.height > 0)
+        return children.every((rect, index) => !index || rect.top >= children[index - 1].bottom - 1)
+      }), true, 'sidebar sections must not overlap')
+      assert.equal(await sidebar.getByRole('alert').count(), 0, 'healthy fixture must not expose hydration failures')
+      await sidebar.getByRole('button', { name: 'New session', exact: true }).scrollIntoViewIfNeeded()
+      assert.equal(await sidebar.getByRole('button', { name: 'New session', exact: true }).isVisible(), true)
+      if (process.env.SWARM_PROJECT_PAGE_SCREENSHOT) await sidebar.screenshot({ path: process.env.SWARM_PROJECT_PAGE_SCREENSHOT.replace('.png', `-${width}.png`) })
+    }
+    await page.setViewportSize({ width: 1440, height: 900 })
+    await mount(`https://project.test/projects/${project.id}/sections/workers`)
+    await page.waitForURL('**/projects/swarm-go/sections/workers')
+    assert.equal(await page.getByRole('link', { name: 'Workers', exact: true }).getAttribute('aria-current'), 'page')
+    const beforeEntry = requests.length
+    await mount('https://project.test/projects/swarm-go?section=workers#retained')
+    await page.getByRole('status').filter({ hasText: 'Loading sessions…' }).waitFor({ state: 'hidden' })
+    const firstLink = page.getByRole('navigation', { name: 'Conversation sessions' }).getByRole('link').first()
+    const firstHref = await firstLink.getAttribute('href')
+    assert.ok(firstHref)
+    await page.waitForURL(url => url.pathname === firstHref!.split('?')[0])
+    assert.equal(new URL(page.url()).searchParams.get('section'), 'workers')
+    assert.equal(new URL(page.url()).hash, '#retained')
+    await page.getByTestId('orchestrator-chat-input').waitFor()
+    assert.equal(requests.slice(beforeEntry).some(request => request === `POST /v3/projects/${project.id}/sessions`), false)
+    const beforeUnknown = requests.length
+    await page.goto('https://project.test/projects/missing-project/sessions/session-1')
+    await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js.outputFiles[0].text })
+    await page.getByRole('alert').filter({ hasText: 'Project not found or name is ambiguous' }).waitFor()
+    assert.equal(requests.slice(beforeUnknown).some(url => url.includes('/v3/projects/missing-project')), false)
+    assert.equal(await page.getByTestId('orchestrator-chat-input').count(), 0)
+    assert.deepEqual(errors, [])
+  } finally { await browser.close() }
+})

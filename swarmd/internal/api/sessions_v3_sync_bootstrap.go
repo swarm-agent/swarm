@@ -73,6 +73,7 @@ type sessionsV3ResolvedSyncOptions struct {
 	Principal                         identity.Principal
 	Surface                           string
 	IncludePermissionSummaryAttention bool
+	IncludePermissionDetails          bool
 }
 
 func (s *Server) handleSessionsV3SyncBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +145,9 @@ func sessionsV3SyncBootstrapOptions(principal identity.Principal, req sessionsV3
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, err
 	}
 
+	if req.Resources.PermissionDetails {
+		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("permission_details requires targeted hydrate")
+	}
 	if req.Resources.SessionView {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync bootstrap does not support resources.session_view; use /v3/sync/hydrate")
 	}
@@ -192,7 +196,7 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 	if len(ids) == 0 {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync hydrate requires session_ids")
 	}
-	if req.Resources.SessionView && len(ids) > sessionsV3SyncHydrateMaxSessionViews {
+	if (req.Resources.SessionView || req.Resources.PermissionDetails) && len(ids) > sessionsV3SyncHydrateMaxSessionViews {
 		return sessionsV3ResolvedSyncOptions{}, nil, nil, errors.New("sync hydrate resources.session_view cannot target more than 8 sessions")
 	}
 	if err := validateSessionsV3SyncHydrateSelector(req, ids); err != nil {
@@ -226,6 +230,7 @@ func sessionsV3SyncHydrateOptions(principal identity.Principal, req sessionsV3Sy
 		Principal:                         principal,
 		Surface:                           normalizeV3SyncSurface(req.Surface),
 		IncludePermissionSummaryAttention: false,
+		IncludePermissionDetails:          req.Resources.PermissionDetails,
 	}
 
 	return options, selector, sessionsV3SyncHydrateResourceSet(req), nil
@@ -555,10 +560,10 @@ type sessionsV3ExecutionEpochView struct {
 
 type sessionsV3SessionView struct {
 	Identity              *sessionsV3SessionIdentity       `json:"identity,omitempty"`
-	AgenticSettings       sessionsV3AgenticSettings        `json:"agentic_settings"`
-	MediaCapability       sessionsV3MediaCapability        `json:"media_capability"`
+	AgenticSettings       sessionsV3AgenticSettings        `json:"agentic_settings,omitzero"`
+	MediaCapability       sessionsV3MediaCapability        `json:"media_capability,omitzero"`
 	CurrentExecutionEpoch *sessionsV3ExecutionEpochView    `json:"current_execution_epoch,omitempty"`
-	PendingPermissions    []pebblestore.PermissionRecord   `json:"pending_permissions"`
+	PendingPermissions    []pebblestore.PermissionRecord   `json:"pending_permissions,omitzero"`
 	UsageSummary          *pebblestore.SessionUsageSummary `json:"usage_summary,omitempty"`
 	CurrentRunState       *pebblestore.V3SessionRunState   `json:"current_run_state,omitempty"`
 	HasActivePlan         *bool                            `json:"has_active_plan,omitempty"`
@@ -858,6 +863,31 @@ func (s *Server) sessionsV3SyncSnapshotResponse(ctx context.Context, options ses
 		}
 		response.SessionViewsByID = views
 	}
+	if options.IncludePermissionDetails && !options.Snapshot.IncludeSessionView {
+		if response.SessionViewsByID == nil {
+			response.SessionViewsByID = make(map[string]sessionsV3SessionView)
+		}
+		for _, id := range snapshot.SessionOrder {
+			owned, ok := snapshot.SessionsByID[id]
+			if !ok || owned.AccountScopeID != options.Principal.AccountScopeID {
+				return sessionsV3SyncSnapshotResponseBody{}, errors.New("permission detail session outside account scope")
+			}
+			pending := []pebblestore.PermissionRecord{}
+			if s.perm != nil {
+				var err error
+				pending, err = s.perm.ListPending(id, 200)
+				if err != nil {
+					return sessionsV3SyncSnapshotResponseBody{}, err
+				}
+			}
+			if pending == nil {
+				pending = []pebblestore.PermissionRecord{}
+			}
+			view := response.SessionViewsByID[id]
+			view.PendingPermissions = pending
+			response.SessionViewsByID[id] = view
+		}
+	}
 	if timings != nil {
 		response.logTimings = timings
 	}
@@ -1087,6 +1117,12 @@ func sessionsV3SyncShellMetadataKeyAllowed(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case "agent_name",
 		"model_profile",
+		// Preserve server-owned project provenance across hydration/reconnect.
+		// Generic metadata writes still reject these reserved authority keys.
+		"project_id",
+		"swarm_v3_project_id",
+		"role",
+		"task_id",
 		// Bounded canonical occurrence attribution is required for protected
 		// automation composers, handoffs and links after hydration/reconnect.
 		"automation_v2_occurrence_id",
@@ -1300,6 +1336,9 @@ func sessionsV3SyncResourceSet(resources sessionsV3WorksetResources, history ses
 	if resources.SessionView {
 		out = append(out, "session_view")
 	}
+	if resources.PermissionDetails {
+		out = append(out, "permission_details")
+	}
 	if resources.PermissionSummaries {
 		out = append(out, "permission_summaries")
 	}
@@ -1360,11 +1399,12 @@ func sessionsV3SyncHistoryOptionsFromRequest(req sessionsV3WorksetHistory, resou
 		return pebblestore.V3SyncSnapshotHistoryOptions{}, errors.New("sync snapshot max_events_per_session cannot exceed 200")
 	}
 	return pebblestore.V3SyncSnapshotHistoryOptions{
-		Mode:                  mode,
-		MaxMessagesPerSession: maxMessages,
-		MaxEventsPerSession:   maxEvents,
-		ManifestPolicy:        req.ManifestPolicy,
-		IncludeMessages:       mode == pebblestore.V3SyncSnapshotHistoryModeTail || mode == pebblestore.V3SyncSnapshotHistoryModeFull,
-		IncludeEvents:         includeEvents,
+		Mode:                      mode,
+		MaxMessagesPerSession:     maxMessages,
+		MaxMessageBytesPerSession: pebblestore.V3RecentMessageByteBudget,
+		MaxEventsPerSession:       maxEvents,
+		ManifestPolicy:            req.ManifestPolicy,
+		IncludeMessages:           mode == pebblestore.V3SyncSnapshotHistoryModeTail || mode == pebblestore.V3SyncSnapshotHistoryModeFull,
+		IncludeEvents:             includeEvents,
 	}, nil
 }

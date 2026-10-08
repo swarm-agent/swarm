@@ -194,3 +194,15 @@ test('DeploymentsView renders empty state when no deployments exist', () => {
   assert.match(markup, /data-testid="empty-deployments"/)
   assert.match(markup, /No deployments found/)
 })
+
+// Purpose: DeploymentsView must report a missing exact navigation target even
+// for an empty list, without substituting a different workspace's deployment.
+// SSR is the narrow boundary for these observable empty/mismatch states.
+test('selected missing deployment reports an alert for empty and foreign lists', () => {
+  for (const deployments of [[], [{ ...mockDeployments[0], workspace_id: 'foreign' }]]) {
+    const html = renderToStaticMarkup(<DeploymentsView workspaceId="ws-1" selectedDeploymentId="dep-1" deployments={deployments} activeLeases={{}} environments={[]}
+      onRefresh={() => {}} onStartDeployment={async () => {}} onStopDeployment={async () => {}} onReleaseDeployment={async () => {}} onDestroyDeployment={async () => {}} />)
+    assert.match(html, /Selected deployment unavailable in this workspace/)
+    assert.doesNotMatch(html, /Active Test Runner/)
+  }
+})

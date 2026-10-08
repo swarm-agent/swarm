@@ -11,7 +11,9 @@ import tailwindcss from '@tailwindcss/vite'
 // fixtures. This is the narrowest browser boundary proving one-click exact previews,
 // no retired gallery, sandbox/download separation, historical edits and visible CAS
 // failure without selection-on-browse. Stored-preview thumbnails must be sandboxed
-// and noninteractive so ready outputs remain one-click targets. This is not provider evidence.
+// and noninteractive. Creative threads must retain the same iframe and exact preview
+// request while a later edit runs/fails; unrelated project events must not reload it.
+// Authority: DesignMediaTasks, desktopDesigns and DesignMediaViewer. This is not provider evidence.
 test('Media Center opens independent designs directly and preserves historical edit authority', { timeout: 60_000 }, async () => {
   const result = await build({ configFile: false, logLevel: 'error', plugins: [react(), tailwindcss(), {
     name: 'design-media-fixture',
@@ -24,7 +26,7 @@ test('Media Center opens independent designs directly and preserves historical e
       import '${process.cwd()}/src/theme.css';
       const root = createRoot(document.getElementById('root')); const client = new QueryClient({defaultOptions:{queries:{retry:false}}});
       window.showProject = projectId => root.render(React.createElement(QueryClientProvider,{client},React.createElement(HistoricalMediaLibrary,{projectId,key:projectId})));
-      window.refreshDesigns = () => acceptDesktopDesignEvent({kind:'project.updated', project_id:'first'});
+      window.refreshDesigns = (project = 'first') => acceptDesktopDesignEvent({kind:'project.updated', project_id:project});
       window.showProject('first');
     ` },
   }], build: { write: false, minify: false, rolldownOptions: { input: 'virtual:design-media', output: { inlineDynamicImports: true } } } })
@@ -39,10 +41,10 @@ test('Media Center opens independent designs directly and preserves historical e
     const ref = (revision: number) => ({ artifact_id: 'design', revision, sha256: `hash-${revision}` })
     const revisions = [1, 2, 3].map(n => ({ ref: ref(n), kind: 'html', request_id: 'request', candidate: 0, attempt: { number: 1, state: 'succeeded', result: ref(n) }, ...(n > 1 ? { base: ref(1) } : {}) }))
     const actions: Record<string, unknown>[] = []; const messages: unknown[] = []
-    let accepted = false; let editKey = ''
+    let accepted = false; let editKey = ''; let editState = 'running'; let projectReads = 0
     const wrapper = '<!doctype html><p>Stored capture</p><script>parent.__unsafeDesign=true</script>'
     const row = { project_id: 'first', title: 'Landing page', request: { id: 'request', parent_session_id: 'session', state: 'partial_success', candidates: [
-      { spec: { artifact_id: 'design', kind: 'html' }, state: 'succeeded', attempts: [revisions[2].attempt] },
+      { spec: { artifact_id: 'design', kind: 'html' }, state: 'succeeded', attempts: revisions.map(revision => revision.attempt) },
       { spec: { artifact_id: 'failed', kind: 'html' }, state: 'failed', failure_reason: 'validation_failed', router_alert: 'Model configuration warning' },
       { spec: { artifact_id: 'queued', kind: 'html' }, state: 'queued' },
     ] } }
@@ -51,7 +53,10 @@ test('Media Center opens independent designs directly and preserves historical e
       if (url.pathname === '/fixture') return route.fulfill({ contentType: 'text/html', body: '<div id="root" style="height:100vh"></div>' })
       if (url.pathname === '/v1/auth/desktop/session') return route.fulfill({ json: { user_id: 'fixture', account_scope_id: 'fixture' } })
       if (url.pathname === '/v3/projects/second/designs') return route.fulfill({ json: { designs: [], next_cursor: '' } })
-      if (url.pathname === '/v3/projects/first/designs') return route.fulfill({ json: { designs: [row, ...(accepted ? [{ ...row, title: 'Edit landing page', request: { ...row.request, id: 'edit', source_message_id: 'edit-message', client_request_id: editKey, state: 'running', candidates: [{ spec: { artifact_id: 'design', kind: 'html', base: ref(1) }, state: 'running' }] } }] : [])], next_cursor: '' } })
+      if (url.pathname === '/v3/projects/first/designs') {
+        projectReads++
+        return route.fulfill({ json: { designs: [row, ...(accepted ? [{ ...row, title: 'Edit landing page', request: { ...row.request, id: 'edit', source_message_id: 'edit-message', client_request_id: editKey, state: editState, candidates: [{ spec: { artifact_id: 'design', kind: 'html', base: ref(1) }, state: editState, ...(editState === 'failed' ? { failure_reason: 'edit_failed' } : {}) }] } }] : [])], next_cursor: '' } })
+      }
       if (url.pathname === '/v3/sessions/session/messages') return route.fulfill({ json: { messages, has_more_older: false } })
       if (url.pathname === '/v3/sessions/session/designs/artifacts/design') {
         if (route.request().method() === 'GET') return route.fulfill({ json: { artifact: { id: 'design', kind: 'html', revision_count: 3, selection_version: 4, selected: ref(2) }, revisions } })
@@ -72,11 +77,22 @@ test('Media Center opens independent designs directly and preserves historical e
       return route.fulfill({ json: { artifacts: [] } })
     })
     await page.goto('http://localhost/fixture'); await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js, type: 'module' })
-    const readyOutput = page.getByRole('button', { name: 'Preview Landing page candidate 1', exact: true })
-    const thumbnail = readyOutput.locator('iframe')
+    const card = page.getByTestId('media-task-card')
+    const readyOutput = card.getByRole('button', { name: 'Open selected output', exact: true })
+    const thumbnail = card.locator('iframe')
     await thumbnail.waitFor()
     assert.equal(await thumbnail.getAttribute('sandbox'), '')
     assert.equal(await thumbnail.evaluate(element => getComputedStyle(element).pointerEvents), 'none')
+    await thumbnail.evaluate(element => { (window as any).retainedThumbnail = element })
+    await card.evaluate(element => { (window as any).retainedCard = element })
+    const initialPreviewReads = actions.filter(action => action.action === 'preview_html').length
+    const initialProjectReads = projectReads
+    await page.evaluate(async () => {
+      (window as any).refreshDesigns('unrelated')
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    })
+    assert.equal(projectReads, initialProjectReads)
+    assert.equal(actions.filter(action => action.action === 'preview_html').length, initialPreviewReads)
     await readyOutput.click()
     const dialog = page.getByRole('dialog')
     await dialog.locator('iframe[title="Design revision 3"]').waitFor()
@@ -98,6 +114,11 @@ test('Media Center opens independent designs directly and preserves historical e
     accepted = true
     await page.evaluate(() => (window as unknown as { refreshDesigns(): void }).refreshDesigns())
     await dialog.getByText('Edit from revision 1: accepted · running', { exact: true }).waitFor()
+    assert.equal(await card.count(), 1)
+    assert.equal(await card.evaluate(element => element === (window as any).retainedCard), true)
+    assert.equal(await card.getByRole('tab').count(), 2)
+    assert.equal(await thumbnail.evaluate(element => element === (window as any).retainedThumbnail), true)
+    assert.equal(actions.filter(action => action.action === 'preview_html').length, initialPreviewReads)
     await dialog.getByRole('button', { name: 'Select this revision' }).click()
     await dialog.getByRole('alert').filter({ hasText: '409' }).waitFor()
     const selection = actions.find(action => action.action === 'select')!
@@ -126,13 +147,28 @@ test('Media Center opens independent designs directly and preserves historical e
     await page.getByRole('button', { name: 'Close viewer' }).click()
     for (const width of [375, 1440]) {
       await page.setViewportSize({ width, height: 800 })
-      await page.getByRole('button', { name: 'Preview Landing page candidate 1', exact: true }).scrollIntoViewIfNeeded()
+      await readyOutput.scrollIntoViewIfNeeded()
       if (evidenceDir) await page.screenshot({ path: resolve(evidenceDir, `design-library-${width}.png`) })
     }
+    editState = 'failed'
+    await page.evaluate(() => (window as any).refreshDesigns())
+    await card.getByRole('alert').filter({ hasText: 'edit_failed' }).waitFor()
+    assert.equal(await card.getByRole('tab').count(), 2)
+    assert.equal(await thumbnail.evaluate(element => element === (window as any).retainedThumbnail), true)
+    assert.equal(await readyOutput.isEnabled(), true)
+    assert.equal(actions.filter(action => action.action === 'preview_html').length, initialPreviewReads)
+    assert.equal(actions.filter(action => action.action === 'edit').length, 1)
     await page.evaluate(() => (window as unknown as { showProject(id: string): void }).showProject('second'))
     assert.equal(await page.locator('iframe').count(), 0)
     await page.getByText('No media artifacts found').waitFor()
     assert.equal(await page.getByText('Landing page', { exact: true }).count(), 0)
+    // Fresh runtime hydration must reconstruct the same two-turn request thread.
+    await page.reload()
+    await page.addStyleTag({ content: css }); await page.addScriptTag({ content: js, type: 'module' })
+    await page.getByTestId('media-task-card').getByRole('tab').nth(1).waitFor()
+    assert.equal(await page.getByTestId('media-task-card').count(), 1)
+    assert.equal(await page.getByTestId('media-task-card').getByRole('tab').count(), 2)
+    assert.equal(await page.getByTestId('media-task-card').getByRole('button', { name: 'Open selected output', exact: true }).isEnabled(), true)
   } catch (error) {
     console.error((await page.locator('body').innerText()).slice(0, 6000))
     if (evidenceDir) await page.screenshot({ path: resolve(evidenceDir, 'design-failure.png') })

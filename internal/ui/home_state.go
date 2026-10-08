@@ -75,9 +75,13 @@ func (p *HomePage) handleTopTarget(target clickTarget) {
 		p.lastPasteBatchSize = 0
 		p.statusLine = "press Enter to open workspace manager"
 		return
-	case "workspace-selector", "workspace":
+	case "workspace-selector", "workspace", "project-selector", "project":
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionOpenWorkspaceSelector}
-		p.statusLine = "opening workspace selector..."
+		p.statusLine = "opening project switcher..."
+		return
+	case "project-select":
+		p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectProject, ProjectIndex: target.Index}
+		p.statusLine = "switching project..."
 		return
 	case "workspace-select":
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectWorkspace, WorkspaceIndex: target.Index}

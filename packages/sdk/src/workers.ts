@@ -1,4 +1,5 @@
 import type { SwarmTransport } from './transport.js';
+import { SwarmWorkerControlNamespace } from './worker-control.js';
 import type {
   WorkerRecord,
   WorkerRevisionRecord,
@@ -39,10 +40,12 @@ import { SwarmValidationError } from './errors.js';
  * Distinct from legacy SwarmAutomationsNamespace which targets /v3/automations/v2.
  */
 export class SwarmWorkersNamespace {
+  readonly control: SwarmWorkerControlNamespace;
   private transport: SwarmTransport;
 
   constructor(transport: SwarmTransport) {
     this.transport = transport;
+    this.control = new SwarmWorkerControlNamespace(transport);
   }
 
   /**

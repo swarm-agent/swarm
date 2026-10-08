@@ -38,6 +38,7 @@ type sessionsV3MediaCapability struct {
 	SnapshotVersion   string                           `json:"snapshot_version,omitempty"`
 	SnapshotSource    string                           `json:"snapshot_source,omitempty"`
 	DenialReasons     []string                         `json:"denial_reasons,omitempty"`
+	ResolutionError   string                           `json:"resolution_error,omitempty"`
 	Capabilities      []sessionsV3MediaCapabilityEntry `json:"capabilities"`
 }
 
@@ -81,7 +82,7 @@ func (s *Server) handleSessionV3MediaCapability(w http.ResponseWriter, r *http.R
 	}
 	contract, err := s.sessionsV3MediaContract(principal, session)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "media_capability": sessionsV3MediaCapability{Status: "unavailable", Capabilities: []sessionsV3MediaCapabilityEntry{}}})
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("resolve session media capability: %w", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "media_capability": projectSessionsV3MediaCapability(contract)})
@@ -279,18 +280,18 @@ func (s *Server) handleSessionV3MediaAsset(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) sessionsV3MediaContract(principal identity.Principal, session pebblestore.SessionSnapshot) (provideriface.SessionMediaContract, error) {
-	if s == nil || s.v3SessionExecutor == nil {
-		return provideriface.SessionMediaContract{}, errors.New("v3 session executor is not configured")
+	if s == nil {
+		return provideriface.SessionMediaContract{}, errors.New("v3 session service is not configured")
 	}
-	resolved, err := s.v3SessionExecutor.resolveSessionV3Runtime(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID, RunID: "media-admission"})
+	// A resolver value has no worker lifecycle and requires no execution setup.
+	resolver := &sessionV3Executor{server: s}
+	resolved, err := resolver.resolveSessionV3Capabilities(sessionV3ExecutorJob{Principal: principal, SessionID: session.ID})
 	if err != nil {
 		return provideriface.SessionMediaContract{}, err
 	}
-	contract := resolved.MediaContract
-	if !runruntime.SessionMediaProviderEnabled(contract.ProviderID) {
-		return provideriface.SessionMediaContract{}, errors.New("media admission is restricted to reviewed conversational provider surfaces")
-	}
-	return contract, nil
+	// Unsupported surfaces are valid denied contracts with useful provenance,
+	// unlike resolution failures, which the read handler exposes as errors.
+	return resolved.MediaContract, nil
 }
 
 func sessionMediaAllowedCapability(contract provideriface.SessionMediaContract, modality, mimeType, fileType string) (provideriface.MediaContractCapability, bool) {

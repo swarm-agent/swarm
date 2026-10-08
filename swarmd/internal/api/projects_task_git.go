@@ -2,134 +2,109 @@ package api
 
 import (
 	"context"
-	"fmt"
-	"os/exec"
-	"strconv"
 	"strings"
-	"time"
 
-	"swarm/packages/swarmd/internal/gitstatus"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/worktree"
 )
 
-// inspectTaskGitState requires actual source ancestry, matching integration receipts.
-// Patch-equivalent commits remain pending until their history reaches the captured target.
 func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
-	res := taskGitState{worktreeBranch: task.WorktreeBranch, worktreeName: task.WorktreeName, gitStatus: "unknown"}
+	return inspectTaskGitStateContext(context.Background(), task, db)
+}
+
+func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
+	a := &pebblestore.TaskDeliveryAssessment{
+		AccountID: task.AccountID, TaskID: task.ID, TaskRevision: task.Revision,
+		AttemptID: task.ActiveAttemptID, SessionID: task.SessionID,
+		WorkspaceID: task.SourceWorkspace.WorkspaceID, WorkspaceGeneration: task.SourceWorkspace.WorkspaceGeneration,
+		BaseOID: task.BaseCommit, SourceBranch: task.WorktreeBranch, TargetBranch: task.BaseBranch,
+		State: "unavailable", ReasonCode: "lane_unavailable", Reason: "Authenticated captured task lane is unavailable", Freshness: "unknown", AllowedActions: []string{},
+	}
+	res := taskGitState{worktreeBranch: task.WorktreeBranch, worktreeName: task.WorktreeName, gitStatus: "unknown", deliveryAssessment: a}
 	if db == nil || task.SessionID == "" || task.Archived || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return res
 	}
 	session, found, err := db.GetSession(task.SessionID)
-	if err != nil || !found || !session.WorktreeEnabled || session.WorktreeRootPath == "" || session.WorktreeBranch == "" || session.WorktreeBaseBranch == "" || (task.AccountID != "" && task.AccountID != session.AccountScopeID) || (task.WorktreeBranch != "" && task.WorktreeBranch != session.WorktreeBranch) || (task.BaseBranch != "" && task.BaseBranch != session.WorktreeBaseBranch) {
+	if err != nil || !found || task.AccountID == "" || task.SourceWorkspace.WorkspaceID == "" || task.SourceWorkspace.WorkspaceGeneration <= 0 || verifyProjectTaskSession(&task, session, task.AccountID) != nil || !session.WorktreeEnabled || session.WorktreeBranch == "" || session.WorktreeBaseBranch == "" || (task.WorktreeBranch != "" && task.WorktreeBranch != session.WorktreeBranch) || (task.BaseBranch != "" && task.BaseBranch != session.WorktreeBaseBranch) {
 		return res
 	}
-	res.worktreeBranch = session.WorktreeBranch
-	res.worktreeName = strings.TrimPrefix(strings.TrimPrefix(res.worktreeBranch, "agent/"), "worktree/")
+	claims, claimErr := db.InspectWorktreeOwnership(task.AccountID, session.UserID, []string{session.WorktreeRootPath})
+	if claimErr != nil || len(claims) != 1 || claims[0].OwnerSessionID != session.ID || claims[0].ClaimantSessionID != "" {
+		return res
+	}
 	source := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "swarm_v3_source_workspace_path"))
 	base := strings.TrimSpace(sessionsV3MetadataString(session.Metadata, "base_commit"))
-	if source == "" || base == "" || source == session.WorktreeRootPath || (task.SourceWorkspace.Path != "" && task.SourceWorkspace.Path != source) || (task.BaseCommit != "" && task.BaseCommit != base) {
+	if source == "" || base == "" || source == session.WorktreeRootPath || task.SourceWorkspace.Path != source || (task.BaseCommit != "" && task.BaseCommit != base) {
 		return res
 	}
-	res.baseBranch = session.WorktreeBaseBranch
-	res.baseCommit = base
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	checkout, err := gitstatus.SnapshotForPath(ctx, source, gitstatus.Options{})
-	if err != nil || !checkout.HasGit || !checkout.Clean || checkout.Branch != res.baseBranch || checkout.HeadOID == "" {
-		return res
+	res.worktreeBranch, res.baseBranch, res.baseCommit = session.WorktreeBranch, session.WorktreeBaseBranch, base
+	res.worktreeName = strings.TrimPrefix(strings.TrimPrefix(res.worktreeBranch, "agent/"), "worktree/")
+	a.BaseOID, a.SourceBranch, a.TargetBranch = base, res.worktreeBranch, res.baseBranch
+	assessment := worktree.AssessTaskDelivery(ctx, worktree.TaskDeliveryInput{Identity: *a, SourcePath: session.WorktreeRootPath, TargetPath: source})
+	assessment = worktree.ObserveTaskDeltaReceipt(ctx, worktree.TaskDeliveryInput{Identity: assessment, SourcePath: session.WorktreeRootPath, TargetPath: source}, task.Integration)
+	if attempt := task.ActiveAttempt(); attempt != nil && attempt.Recovery != nil && attempt.Recovery.PreparedHead != "" && assessment.SourceOID == attempt.Recovery.PreparedHead {
+		assessment.State, assessment.ReasonCode, assessment.Reason = "ambiguous", "unresolved_recovery", "Resolve and commit the retained task-delta conflicts in the repair session before integration"
+		assessment.AllowedActions = []string{}
 	}
-	sourceWatch, err := gitstatus.ResolveWatchPaths(ctx, source)
-	if err != nil {
-		return res
+	res.deliveryAssessment = &assessment
+	if assessment.State != "integrated" && assessment.State != "empty" {
+		res.actionNeeded = assessment.Reason
 	}
-	childWatch, err := gitstatus.ResolveWatchPaths(ctx, session.WorktreeRootPath)
-	if err != nil || gitstatus.NormalizePath(sourceWatch.CommonDir) != gitstatus.NormalizePath(childWatch.CommonDir) || gitstatus.NormalizePath(sourceWatch.RepoRoot) == gitstatus.NormalizePath(childWatch.RepoRoot) {
-		return res
-	}
-	child, err := gitstatus.SnapshotForPath(ctx, session.WorktreeRootPath, gitstatus.Options{})
-	if err != nil || !child.HasGit || child.Branch != session.WorktreeBranch || child.HeadOID == "" {
-		return res
-	}
-	res.dirtyCount = child.DirtyCount
-	res.isDirty = !child.Clean
-	if child.HeadOID == base {
+	switch assessment.State {
+	case "integrated":
+		res.gitStatus, res.isIntegrated = "clean", true
+	case "empty", "recovered", "equivalent":
 		res.gitStatus = "clean"
-		if res.isDirty {
-			res.gitStatus = "dirty"
-			res.actionNeeded = fmt.Sprintf("Action Needed: %d modified file(s) waiting to be committed.", res.dirtyCount)
-		}
-		return res
-	}
-	if res.isDirty {
-		res.gitStatus = "dirty"
-		res.actionNeeded = fmt.Sprintf("Action Needed: %d modified file(s) waiting to be committed.", res.dirtyCount)
-		return res
-	}
-	if err := exec.CommandContext(ctx, "git", "-C", source, "merge-base", "--is-ancestor", base, child.HeadOID).Run(); err != nil {
-		return res
-	}
-	// Count actual missing commits against the inspected checkout HEAD, not a
-	// patch-equivalence classifier or a mutable branch/remote-tracking ref.
-	output, err := exec.CommandContext(ctx, "git", "-C", source, "rev-list", "--count", checkout.HeadOID+".."+child.HeadOID).Output()
-	if err != nil {
-		return res
-	}
-	missing, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil || missing < 0 {
-		return res
-	}
-	if missing == 0 {
-		res.gitStatus = "clean"
-		res.isIntegrated = true
-		res.actionNeeded = fmt.Sprintf("No Action Required: Integrated into %s", res.baseBranch)
-	} else {
+	case "dirty":
+		res.gitStatus, res.isDirty = "dirty", true
+	case "candidate_work":
+		res.gitStatus, res.unintegratedCommits = "diverged", assessment.CandidateCommits
+	case "history_equivalent", "history_rewritten", "ambiguous":
 		res.gitStatus = "diverged"
-		res.unintegratedCommits = missing
-		res.actionNeeded = fmt.Sprintf("Action Needed: %d unintegrated commit(s) on %s ready to integrate.", res.unintegratedCommits, res.worktreeBranch)
 	}
-	return res
-}
-
-// reconcileTaskGitState projects verified Git observations into the response only.
-// Reads must never publish project.updated and invalidate their own consumers.
-func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord) error {
-	if task == nil || db == nil || task.SessionID == "" || task.Archived || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
-		return nil
+	res.isDirty = assessment.SourceDirty
+	if assessment.SourceDirty || assessment.TargetDirty {
+		res.gitStatus = "dirty"
+		res.actionNeeded = "Source or target has uncommitted changes"
 	}
-	state := inspectTaskGitState(*task, db)
-	if state.gitStatus == "unknown" {
-		// An unavailable checkout must not confirm stale integration or pending work.
-		task.GitStatus = "unknown"
-		task.IsIntegrated = false
-		task.UnintegratedCommits = 0
-		return nil
-	}
-	if state.isIntegrated && (task.TaskProgramID != "" || task.TaskProgram != nil) {
+	if res.isIntegrated && (task.TaskProgramID != "" || task.TaskProgram != nil) {
 		programID := task.TaskProgramID
 		if programID == "" && task.TaskProgram != nil {
 			programID = task.TaskProgram.ID
 		}
 		program, found, err := db.GetTaskProgram(task.SessionID, programID)
 		if err != nil || !found || program.State != pebblestore.TaskProgramStateCompleted {
-			state.isIntegrated = false
-			state.gitStatus = "unknown"
-			state.actionNeeded = "Task Program is not fully completed and promoted to the captured target"
+			res.isIntegrated, res.gitStatus = false, "unknown"
+			assessment.State, assessment.ReasonCode, assessment.Reason = "unavailable", "program_incomplete", "Task Program is not fully completed and promoted to the captured target"
+			assessment.AllowedActions = []string{}
+			res.actionNeeded = assessment.Reason
 		}
 	}
-	apply := func(t *pebblestore.ProjectTaskRecord) {
-		t.WorktreeBranch, t.WorktreeName, t.BaseBranch, t.BaseCommit = state.worktreeBranch, state.worktreeName, state.baseBranch, state.baseCommit
-		t.GitStatus, t.UnintegratedCommits, t.IsIntegrated = state.gitStatus, state.unintegratedCommits, state.isIntegrated
-		t.IsDirty, t.DirtyCount = state.isDirty, state.dirtyCount
-		t.BehindCommits, t.SyncWarning, t.DiffSummary = state.behindCommits, state.syncWarning, state.diffSummary
-		if state.actionNeeded != "" || t.IsIntegrated || t.Integration != nil {
-			t.ActionNeeded = state.actionNeeded
-		}
-		if t.IsIntegrated && t.Status != "rejected" && t.Status != "in_progress" && task.Status != "in_progress" {
-			t.Status = "completed"
-		} else if !t.IsIntegrated && t.Status == "completed" && (t.Integration != nil || state.gitStatus == "diverged" || state.gitStatus == "dirty") {
-			t.Status = "needs_review"
-		}
+	return res
+}
+
+// Reads project ephemeral facts only: never change execution outcome, historical
+// integration receipts, actionable errors, or publish read-triggered events.
+func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord) error {
+	if task == nil {
+		return nil
 	}
-	apply(task)
+	return reconcileTaskGitStateContext(context.Background(), db, task)
+}
+
+func reconcileTaskGitStateContext(ctx context.Context, db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord) error {
+	if task == nil {
+		return nil
+	}
+	state := inspectTaskGitStateContext(ctx, *task, db)
+	task.DeliveryAssessment = state.deliveryAssessment
+	task.GitStatus, task.UnintegratedCommits, task.IsIntegrated = state.gitStatus, state.unintegratedCommits, state.isIntegrated
+	task.IsDirty, task.DirtyCount = state.isDirty, state.dirtyCount
+	if state.baseCommit != "" {
+		task.WorktreeBranch, task.WorktreeName, task.BaseBranch, task.BaseCommit = state.worktreeBranch, state.worktreeName, state.baseBranch, state.baseCommit
+	}
+	if task.LastError == "" && (task.Integration == nil || task.Integration.Error == "") {
+		task.ActionNeeded = state.actionNeeded
+	}
 	return nil
 }

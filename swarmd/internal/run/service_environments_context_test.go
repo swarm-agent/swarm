@@ -433,7 +433,7 @@ func TestResolveDefaultTestbench_ActiveDeploymentsAndLeases(t *testing.T) {
 	if len(result.ActiveDeployments) != 2 {
 		t.Fatalf("expected 2 active deployments, got %d", len(result.ActiveDeployments))
 	}
-	if result.ActiveDeployments[0].DeploymentID != "dep-1" || result.ActiveDeployments[0].LeaseID != "lease-active-1" {
+	if result.ActiveDeployments[0].DeploymentID != "dep-1" || !result.ActiveDeployments[0].Leased || result.ActiveDeployments[0].LeaseID != "" {
 		t.Errorf("unexpected active deployment 0: %+v", result.ActiveDeployments[0])
 	}
 	if result.ActiveDeployments[1].DeploymentID != "dep-2" || result.ActiveDeployments[1].LeaseID != "" {
@@ -774,8 +774,9 @@ func TestResolveDefaultTestbench_RealPebbleIntegration(t *testing.T) {
 	if len(envCtx.ActiveDeployments) != 1 {
 		t.Errorf("expected 1 active deployment, got %d", len(envCtx.ActiveDeployments))
 	}
-	if envCtx.ActiveDeployments[0].LeaseID != ensureRes.Lease.ID {
-		t.Errorf("expected active deployment lease %s, got %s", ensureRes.Lease.ID, envCtx.ActiveDeployments[0].LeaseID)
+	// Context reports occupancy, never a transferable execution receipt.
+	if !envCtx.ActiveDeployments[0].Leased || envCtx.ActiveDeployments[0].LeaseID != "" {
+		t.Error("expected leased status without receipt")
 	}
 
 	promptBlock := FormatWorkspaceEnvironmentPromptBlock(envCtx)

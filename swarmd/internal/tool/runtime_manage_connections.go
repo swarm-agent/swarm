@@ -16,7 +16,7 @@ func manageConnectionsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_connections",
-		Description: "List, get, create, update, delete, check, and inspect environment host connections (Docker/SSH).",
+		Description: "List, get, create, update, delete, check, and inspect environment host connections (Docker, rootless local Podman, SSH).",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -24,7 +24,7 @@ func manageConnectionsDefinition() Definition {
 				"workspace_path": map[string]any{"type": "string", "description": "Optional workspace path"},
 				"id":             map[string]any{"type": "string", "description": "Connection ID"},
 				"name":           map[string]any{"type": "string", "description": "Connection name"},
-				"kind":           map[string]any{"type": "string", "enum": []string{"local_docker", "ssh"}, "description": "local_docker|ssh"},
+				"kind":           map[string]any{"type": "string", "enum": []string{"local_docker", "local_podman", "ssh"}, "description": "local_docker|local_podman|ssh"},
 				"host":           map[string]any{"type": "string", "description": "SSH host"},
 				"user":           map[string]any{"type": "string", "description": "SSH user"},
 				"port":           map[string]any{"type": "integer", "description": "SSH port (default 22)"},
@@ -39,6 +39,9 @@ func manageConnectionsDefinition() Definition {
 }
 
 func (r *Runtime) executeManageConnections(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
+	if _, err := r.authorizeEnvironmentAccess(scope, "manage_connections"); err != nil {
+		return "", err
+	}
 	if r == nil || r.connections == nil {
 		return "", errors.New("manage_connections connection store is not configured")
 	}
@@ -98,7 +101,7 @@ func (r *Runtime) executeManageConnections(ctx context.Context, scope WorkspaceS
 		}
 		kindStr := strings.ToLower(strings.TrimSpace(asString(args["kind"])))
 		if kindStr == "" {
-			return "", errors.New("kind is required for create action (local_docker|ssh)")
+			return "", errors.New("kind is required for create action (local_docker|local_podman|ssh)")
 		}
 
 		connKind := environments.ConnectionKind(kindStr)
@@ -128,6 +131,11 @@ func (r *Runtime) executeManageConnections(ctx context.Context, scope WorkspaceS
 				SupportsPortForward: true,
 			}
 
+		case environments.ConnectionKindLocalPodman:
+			if err := validatePodmanConnectionArgs(args); err != nil {
+				return "", err
+			}
+			// Capabilities remain unverified until an explicit provider probe.
 		case environments.ConnectionKindSSH:
 			host := strings.TrimSpace(asString(args["host"]))
 			user := strings.TrimSpace(asString(args["user"]))
@@ -201,6 +209,15 @@ func (r *Runtime) executeManageConnections(ctx context.Context, scope WorkspaceS
 			return "", fmt.Errorf("connection %q not found", id)
 		}
 
+		current = *current.Clone()
+		if current.Kind == environments.ConnectionKindLocalPodman {
+			if err := validatePodmanConnectionArgs(args); err != nil {
+				return "", err
+			}
+		}
+		if kind, ok := args["kind"]; ok && asString(kind) != string(current.Kind) {
+			return "", errors.New("connection kind cannot be changed")
+		}
 		if name := strings.TrimSpace(asString(args["name"])); name != "" {
 			current.Name = name
 		}
@@ -334,7 +351,7 @@ func (r *Runtime) executeManageConnections(ctx context.Context, scope WorkspaceS
 		// Persist updated capabilities if changed
 		conn.Capabilities = caps
 		if _, saveErr := r.connections.Save(conn); saveErr != nil {
-			// Retain error but continue
+			return "", fmt.Errorf("persist verified capabilities: %w", saveErr)
 		}
 		response["id"] = id
 		response["capabilities"] = caps
@@ -371,4 +388,14 @@ func (r *Runtime) executeManageConnections(ctx context.Context, scope WorkspaceS
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func validatePodmanConnectionArgs(args map[string]any) error {
+	allowed := map[string]bool{"action": true, "workspace_path": true, "id": true, "name": true, "kind": true, "description": true, "is_default": true, "set_default": true}
+	for key := range args {
+		if !allowed[key] {
+			return fmt.Errorf("local_podman does not accept %q; capabilities are probed, not overridden", key)
+		}
+	}
+	return nil
 }

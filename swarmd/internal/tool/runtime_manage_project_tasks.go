@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -43,6 +44,82 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 	result := map[string]any{"tool": "manage_projects", "action": action, "project_id": projectID, "status": "ok"}
 	taskID := strings.TrimSpace(asString(args["task_id"]))
 	switch action {
+	case "wait_tasks":
+		run, ok := VideoRunContextFromContext(ctx)
+		if !ok || run.SessionID != scope.SessionID || r.sessions == nil {
+			return "", errors.New("wait_tasks requires trusted current provider run context")
+		}
+		var ids []string
+		raw, err := json.Marshal(args["task_ids"])
+		if err != nil {
+			return "", err
+		}
+		if err := json.Unmarshal(raw, &ids); err != nil || len(ids) == 0 || len(ids) > 16 {
+			return "", errors.New("task_ids must contain 1-16 task IDs")
+		}
+		key := "task-wait:" + run.RunID
+		payload, _ := json.Marshal(ids)
+		mutation, err := r.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+			SessionID: scope.SessionID, UserID: scope.Principal.UserID, AccountScopeID: account,
+			Kind: pebblestore.V3SessionMutationRecordRunIntent, EventType: "session.run.waiting_tasks",
+			ClientRequestID: key, PayloadHash: projectID + string(payload),
+			TaskWait: &pebblestore.V3ProjectTaskWaitMutation{RunID: run.RunID, ProjectID: projectID, TaskIDs: ids},
+		})
+		if err != nil {
+			return "", err
+		}
+		result["status"], result["run_id"], result["next_action"] = "waiting_tasks", run.RunID, "yield_until_task_outcome"
+		result["event_seq"] = mutation.PrimarySeq
+		result["task_ids"] = ids
+	case "edit_requirements":
+		task, found, err := r.projects.GetProjectTask(account, projectID, taskID)
+		if err != nil {
+			return "", err
+		}
+		if !found || task == nil || task.Archived || task.Status != "pending_approval" || task.PlanBinding == nil {
+			return "", errors.New("requirement edits require a pending task with a bound plan")
+		}
+		owner, found, err := r.sessions.GetSession(task.PlanBinding.SessionID)
+		if err != nil {
+			return "", err
+		}
+		if !found || owner.AccountScopeID != account || owner.UserID != scope.Principal.UserID {
+			return "", errors.New("plan session ownership mismatch")
+		}
+		object, err := parseJSONEncodedObject(args["document_patch"], "document_patch")
+		if err != nil {
+			return "", err
+		}
+		var patch sessionruntime.PlanDocumentPatch
+		raw, err := json.Marshal(object)
+		if err != nil {
+			return "", fmt.Errorf("invalid document_patch: %w", err)
+		}
+		if err = json.Unmarshal(raw, &patch); err != nil {
+			return "", fmt.Errorf("invalid document_patch: %w", err)
+		}
+		ops := patch.Operations
+		if len(ops) == 0 {
+			ops = []sessionruntime.PlanDocumentPatch{patch}
+		}
+		for _, op := range ops {
+			switch op.Operation {
+			case "add_requirement", "edit_requirement", "remove_requirement", "reorder_requirements":
+			default:
+				return "", errors.New("edit_requirements accepts only targeted requirement operations")
+			}
+		}
+		service, ok := r.projectTaskLifecycle.(interface {
+			EditProjectTaskRequirements(string, string, string, string, sessionruntime.PlanDocumentPatch) (sessionruntime.ProjectTaskPlanSubmissionResult, error)
+		})
+		if !ok {
+			return "", errors.New("canonical plan editing unavailable")
+		}
+		submitted, err := service.EditProjectTaskRequirements(account, scope.Principal.UserID, projectID, taskID, patch)
+		if err != nil {
+			return "", err
+		}
+		result["review"] = submitted
 	case "reopen_task":
 		if taskID == "" {
 			return "", errors.New("task_id is required")
@@ -104,7 +181,23 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 		}
 		copyTask.Attempts = rows
 		result["task"], result["next_cursor"] = &copyTask, next
-	case "update_task", "archive_task", "delete_task":
+		if task.PlanBinding != nil {
+			reader, ok := r.sessions.(interface {
+				GetPlan(string, string) (pebblestore.SessionPlanSnapshot, bool, error)
+			})
+			if !ok {
+				return "", errors.New("bound plan reader unavailable")
+			}
+			plan, found, err := reader.GetPlan(task.PlanBinding.SessionID, task.PlanBinding.PlanID)
+			if err != nil {
+				return "", err
+			}
+			if !found || plan.AccountScopeID != account || plan.UserID != scope.Principal.UserID {
+				return "", errors.New("bound plan unavailable for principal")
+			}
+			result["plan"] = plan
+		}
+	case "update_task", "archive_task", "unarchive_task", "delete_task":
 		if taskID == "" {
 			return "", errors.New("task_id is required")
 		}
@@ -124,6 +217,20 @@ func (r *Runtime) executeManageProjectTasksContext(ctx context.Context, scope Wo
 			}
 			result["deleted"] = true
 			result["task_id"] = taskID
+			break
+		}
+		if action == "unarchive_task" {
+			restorer, ok := r.projects.(interface {
+				UnarchiveProjectTaskIfRevision(string, string, string, int) (*pebblestore.ProjectTaskRecord, error)
+			})
+			if !ok {
+				return "", errors.New("atomic guarded task unarchive unavailable")
+			}
+			updated, err := restorer.UnarchiveProjectTaskIfRevision(account, projectID, taskID, revision)
+			if err != nil {
+				return "", err
+			}
+			result["task"] = projectTaskSummary(*updated)
 			break
 		}
 		if action == "archive_task" {

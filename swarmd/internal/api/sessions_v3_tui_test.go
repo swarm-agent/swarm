@@ -221,3 +221,41 @@ func postSessionsV3TUIDirectoryCreate(t *testing.T, server *Server, clientReques
 	}
 	return payload
 }
+
+func TestSessionsV3TUIProjectOrchestratorVisibleWithoutWorkspacePath(t *testing.T) {
+	t.Setenv("SWARM_V3_DIAGNOSTICS", "0")
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	principal := testPrincipal()
+
+	err := sessionSvc.Store().PutProject(principal.AccountScopeID, &pebblestore.ProjectRecord{
+		ID:        "proj_test_123",
+		AccountID: principal.AccountScopeID,
+		Name:      "TestProject",
+	})
+	if err != nil {
+		t.Fatalf("PutProject() error = %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v3/projects/proj_test_123/sessions", strings.NewReader(`{"client_request_id":"req-test-orch-1","title":"Orchestrator","agent_name":"system-orchestrator"}`))
+	createRec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(createRec, withTestPrincipal(createReq))
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create project session status = %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created struct {
+		Session struct {
+			ID string `json:"id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal created session: %v", err)
+	}
+
+	// Requesting /v3/tui/sessions/{id}?workspace_path=/any/path must succeed (200 OK), not 404
+	req := httptest.NewRequest(http.MethodGet, "/v3/tui/sessions/"+created.Session.ID+"?workspace_path=/some/workspace", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}

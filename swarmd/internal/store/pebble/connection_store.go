@@ -118,6 +118,9 @@ func (s *ConnectionStore) Save(conn environments.Connection) (environments.Conne
 	if err != nil {
 		return environments.Connection{}, err
 	}
+	if found && current.Kind != conn.Kind && (current.Kind == environments.ConnectionKindLocalPodman || conn.Kind == environments.ConnectionKindLocalPodman) {
+		return environments.Connection{}, errors.New("cannot change a connection to or from local_podman; create a distinct connection")
+	}
 	if found {
 		conn.CreatedAt = current.CreatedAt
 	} else if conn.CreatedAt <= 0 {

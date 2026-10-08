@@ -3,6 +3,7 @@ import type { DesktopNotificationCenterRecord, DesktopNotificationSummary, Deskt
 import { isDesktopPermissionPending } from '../permissions/services/desktop-permission-normalization'
 import type { DesktopPermissionSummary, DesktopToolActivity, DesktopV3CacheState, LiveRunOverlay, MessageListCache, MessageSnapshot, PendingUserMessage, SessionCacheRecord, SessionSnapshot, V3SessionProjection, V3SessionRunIntent, V3SessionTombstone } from './desktop-v3-cache-types'
 import type { WorkspaceTodoItem } from '../../workspaces/todos/types'
+import { EMPTY_TASK_EVENTS, selectTaskActivities, type DesktopTaskActivity } from './desktop-v3-task-updates'
 import { isAutomationExecutionSession } from './desktop-automation-purpose'
 import { isDesktopV3NavigationHiddenRecord, isDesktopV3NavigationHiddenSession, isDesktopV3VideoStudioRecord, isDesktopV3VideoStudioSession } from './desktop-v3-session-visibility'
 
@@ -57,6 +58,7 @@ export interface DesktopV3SidebarPlanExecution {
 }
 
 export interface RenderedSessionMessages {
+  taskActivities?: DesktopTaskActivity[]
   committed: MessageSnapshot[]
   pendingUser: PendingUserMessage[]
   liveRuns: LiveRunOverlay[]
@@ -407,7 +409,7 @@ function isArchivedTombstone(tombstone: V3SessionTombstone | undefined): boolean
   return Boolean(tombstone && tombstone.kind === 'archived' && tombstone.archived === true && tombstone.deleted !== true)
 }
 
-function buildDesktopSidebarPlanState(state: DesktopV3CacheState, sessionId: string): Pick<DesktopV3SidebarRow, 'hasActivePlan' | 'activePlan' | 'planExecution'> {
+export function buildDesktopSidebarPlanState(state: DesktopV3CacheState, sessionId: string): Pick<DesktopV3SidebarRow, 'hasActivePlan' | 'activePlan' | 'planExecution'> {
   if (state.hasActivePlanBySession[sessionId] !== true) {
     return { hasActivePlan: false }
   }
@@ -626,6 +628,7 @@ export function selectRenderedSessionMessages(state: DesktopV3CacheState, sessio
   const runIntents = selectSessionRunIntents(state, sessionId)
   return {
     committed: selectCommittedMessages(state, sessionId),
+    taskActivities: selectTaskActivities(state.eventsBySession[sessionId] ?? EMPTY_TASK_EVENTS, sessionId),
     pendingUser: selectPendingUserMessages(state, sessionId),
     liveRuns: selectLiveRuns(state, sessionId),
     runIntents,
@@ -675,7 +678,8 @@ export function selectSessionNeedsHydrate(state: DesktopV3CacheState, sessionId:
 export function isDesktopV3SessionViewReady(state: DesktopV3CacheState, sessionId: string): boolean {
   const normalized = sessionId.trim()
   if (!normalized) return false
-  return Boolean(state.sessionViewsById[normalized])
+  // Permission-only/card views must not masquerade as a ready composer.
+  return Boolean(state.sessionViewsById[normalized]?.agentic_settings)
 }
 
 export function isDesktopV3SessionTailReady(

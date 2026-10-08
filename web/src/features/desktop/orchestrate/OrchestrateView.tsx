@@ -1,4 +1,6 @@
 import { PersonalAvatar } from './personal-avatar'
+import { ProjectCreationFlow } from './project-creation-flow'
+import { creationProjectSummary, projectContextPending, type CreationProject } from '../state/project-creation'
 import { ContextRemaining } from './orchestrator-composer-surface'
 import { ProjectHeaderIdentity, ProjectImageSettings } from './project-header-identity'
 import { useLayoutEffect, useState, useReducer, useMemo, useEffect, useCallback, useRef, useSyncExternalStore, useId } from 'react'
@@ -6,14 +8,23 @@ import { MediaTaskSelect, MediaTaskDefault, MediaTaskHelp, MediaTaskScenes, Medi
 import { ImagePromptControls, imagePromptReducer, initialImagePromptState, imagePromptEnhancement } from './image-task-prompt'
 import { DurableWorkerReviews } from '../chat/components/durable-worker-reviews'
 import { taskReopenOperations, taskReopenKey, type TaskReopenOutcome } from './task-reopen-operation'
-import { taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
-import { taskOutcome } from './task-outcome'
-import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
+import { taskIntegrationBatches, integrationSkipReason, MAX_INTEGRATION_BATCH } from './task-integration-batch'
+import { integrationLanePending, taskIntegrationRequest, taskIntegrationOperations, taskIntegrationKey, taskIntegrationFailureIdentity, taskIntegrationPhase, type TaskIntegrationOperation, type TaskIntegrationResult } from './task-integration-operation'
+import { taskDelivery, taskOutcome } from './task-outcome'
+import { TaskOutcomeDetails } from './task-outcome-view'
 import { TaskAttemptHistory } from './task-attempt-history'
 import { TaskUsageFooter, TaskWorkerBudgetMetadata } from './task-usage-metadata'
 import { useOrchestratorDictation } from './use-orchestrator-dictation'
 import { TaskSessionErrors } from './task-session-error'
-import { SidebarModeSelector } from './sidebar-mode-selector'
+import { admittedConversationId, cachedProjectConversation, firstProjectConversation } from './project-entry-policy'
+import { createProjectConversation, projectConversationLink, projectConversationMessageMetadata, requireProjectConversation } from './project-conversations'
+import { useProjectConversations } from '../runtime/project-conversations'
+import { ProjectNavigation } from './project-navigation'
+import { UsagePage } from '../usage/pages/usage-page'
+import { ProjectConversationSidebar } from './project-conversation-sidebar'
+import { confirmMediaBatch } from './media-admission'
+import { clearSessionContext, ContextClearRejected } from '../session-v3/context-clear-api'
+import { projectRouteSegment, resolveProjectRoute } from './project-route'
 import { resolveDesktopChatRouteFromSession } from '../chat/services/chat-routing'
 import { integrationFailure, repairUnavailable, redactIntegrationDiagnostic, orchestratorDrafts, type IntegrationFailure } from './integration-recovery'
 import { useVideoTaskDefault } from './use-video-task-default'
@@ -24,6 +35,7 @@ import { filterOrchestrateCommands, parseOrchestrateCommand, ORCHESTRATE_TIPS, t
 import { SwarmLayoutControls, useSwarmResponsiveLayout, useSwarmModalFocus } from './swarm-responsive-layout'
 import { OrchestrateSettings } from './orchestrate-settings'
 import { OrchestrateAgents } from './orchestrate-agents'
+import { navigateToProjectAgents } from './orchestrator-header-actions'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -43,7 +55,6 @@ import {
   FolderGit2,
   GitBranch,
   GitPullRequest,
-  Home,
   Image as ImageIcon,
   Layers,
   ListChecks,
@@ -55,10 +66,8 @@ import {
   Paperclip,
   Play,
   Plus,
-  RefreshCw,
   RotateCcw,
   Search,
-  Settings,
   Settings2,
   Sparkles,
   Tag,
@@ -70,13 +79,17 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { requestJson, getDesktopSessionIdentitySnapshot, updateDesktopSessionUsername } from '../../../app/api'
+import { requestJson, requestStartupJson, ensureDesktopSession, getDesktopSessionIdentitySnapshot, updateDesktopSessionUsername } from '../../../app/api'
+import { backgroundRead } from '../../../app/background-read'
+import { projectStartupState } from './project-startup'
+import { StartupScreen } from '../../../app/startup-recovery'
+import { StartupLoading, useStartupPalette } from '../../../app/startup-loading'
+import { readProjectCatalog, invalidateProjectCatalog } from '../runtime/project-catalog'
 import { WorkerHub, type SelectedWorker } from './worker-hub'
 import { submitWithWorkerSelection } from './worker-message-context'
-import { DurableWorkerCount } from '../layout/durable-worker-sidebar'
 import { ProjectWorkerSidebar } from '../layout/project-worker-sidebar'
 import { OrchestratorNotifications } from '../notifications/components/orchestrator-notifications'
-import { swarmWorkerLink, swarmWorkerHref, swarmActivePage } from './swarm-navigation'
+import { swarmWorkerHref, swarmActivePage } from './swarm-navigation'
 import { useDesktopV3CacheSelector, getDesktopV3CacheSnapshot } from '../state/desktop-v3-cache-store'
 import { selectPendingWorkerSidebarReviews } from '../state/desktop-automation-v2-state'
 import { desktopAutomationV2 } from '../runtime/desktop-automation-v2'
@@ -89,12 +102,20 @@ import {
 import { selectAndHydrateDesktopV3Session, hydrateDesktopV3ChildCard } from '../state/desktop-v3-session-hydrator'
 import { requireDesktopV3RealtimeControllerReady } from '../realtime/v3-realtime-controller'
 import { HistoricalMediaLibrary, MediaViewerModal, type MediaLibraryItem } from '../tools/media-library'
+import { mediaJobIdentity } from '../tools/media-library/media-job-identity'
+import { toMediaLibraryItem } from '../tools/media-library/media-classifier'
+import type { DesktopV3ArtifactCatalogEntry } from '../session-v3/artifact-api'
 import type { MediaGenerationJob, MediaGenerationRequest, MediaGenerationSettings } from '../tools/media-library/media-generation'
 import type { QuickRouteMode } from '../tools/media-library/media-viewer-modal'
-import { MediaTaskCard } from './media-task-card'
-import { archiveQueue } from '../runtime/archive-queue'
+import { MediaTaskCard, isCreativeMediaTask, type MediaTaskActions } from './media-task-card'
+import { ProjectMediaTasks } from './project-media-tasks'
+import { mediaSelectionCards } from './media-selection'
+import { ArchivedTaskList } from './archived-task-list'
+import { unarchiveProjectTask } from '../runtime/project-task-unarchive'
+import { archiveProjectTask, projectTaskArchiveQueue } from '../runtime/project-task-archive'
+import { DesktopCodexUsageModal } from '../codex/desktop-codex-usage-modal'
 import { subscribeDesktopSessionReset } from '../../../app/api'
-import { DesignMediaTasks, useProjectDesigns } from '../tools/media-library/design-media'
+import { useProjectDesigns } from '../tools/media-library/design-media'
 import { ORCHESTRATE_THEMES } from './orchestrate-themes'
 import { TaskCardHandoff, TaskCardAgents, TaskCardOutputs, TaskExpectedOutputs } from './task-card-details'
 import { TaskCardSummary, formatElapsedString, formatElapsedSeconds } from './task-card-summary'
@@ -102,9 +123,9 @@ import { taskWithCurrentSessions } from './task-card-sessions'
 import { TaskCardActionButtons } from './task-card-action-buttons'
 import { TaskCardActivity } from './task-card-activity'
 import { SessionPermissionAttention, TaskAttention, useTaskAttention } from './task-attention'
-import { TaskListHeader, TaskListToolbar } from './task-list-toolbar'
+import { TaskListHeader, TaskListToolbar, type TaskStatusFilter } from './task-list-toolbar'
 import { useQuery } from '@tanstack/react-query'
-import { fetchGitStatus, gitStatusQueryKey } from '../git/api'
+import { projectWorkspaces, taskMatchesWorkspace, useProjectWorkspaceGit } from '../runtime/use-project-workspace-git'
 import { inheritedSwarmThemeStyle, projectThemePatch, resolveSwarmProjectTheme } from './swarm-section-theme'
 import { createProjectThemeRefresh } from './project-theme-refresh'
 import { WORKSPACE_THEME_OPTIONS, setWorkspaceThemeCatalog, formatWorkspaceThemeLabel } from '../../workspaces/launcher/services/workspace-theme'
@@ -386,8 +407,8 @@ function deliverableToMediaItem(
     return {
     id: d.id,
     title: d.title,
-    filename: `${d.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${kind === 'image' ? 'png' : 'mp4'}`,
-    mediaType: kind === 'image' ? 'image/png' : 'video/mp4',
+    filename: `${d.title.replace(/[^a-zA-Z0-9_-]/g, '_')}.${kind === 'image' ? 'png' : kind === 'audio' ? 'wav' : 'mp4'}`,
+    mediaType: kind === 'image' ? 'image/png' : kind === 'audio' ? 'audio/wav' : 'video/mp4',
     kind,
     createdAt: createdDate.getTime(),
     formattedDate,
@@ -422,7 +443,7 @@ function deliverableToMediaItem(
       label: d.title,
       filename: d.title,
       kind,
-      mediaType: kind === 'image' ? 'image/png' : 'video/mp4',
+      mediaType: kind === 'image' ? 'image/png' : kind === 'audio' ? 'audio/wav' : 'video/mp4',
       description: d.prompt || d.title,
       model,
       aspectRatio,
@@ -552,7 +573,7 @@ function DeliverableThumbnail({
         onClick={onPlay}
         className="group/thumb relative aspect-video w-full cursor-pointer overflow-hidden rounded-lg border border-slate-800/80 bg-[#090d16] transition-all hover:border-blue-500/40"
       >
-        <img src={src} alt="Deliverable" className="w-full h-full object-cover transition-transform group-hover/thumb:scale-105 duration-300" />
+        <img src={src} loading="lazy" decoding="async" alt="Deliverable" className="w-full h-full object-cover transition-transform group-hover/thumb:scale-105 duration-300" />
         {duration && (
           <span className="absolute bottom-1 right-1 z-20 rounded bg-black/80 px-1 py-0.5 font-mono text-[9px] font-semibold text-slate-300 backdrop-blur-sm border border-white/10">
             {duration}
@@ -667,6 +688,9 @@ function TaskElapsedTimer({
  * Free of highlight gradients and pill badges. Displays "Action Needed",
  * worktree/unmerged git status, and "What did it do?" vs "What's not done yet?".
  */
+import { TaskPlanChecklist, TaskProposalChecklist, isTaskPlanReviewable } from './task-requirements'
+import { TaskPlanDetails, taskPlanDocument } from './task-plan-details'
+
 export function MinimalTaskCard({
   task,
   isSelected,
@@ -774,6 +798,13 @@ export function MinimalTaskCard({
   const disclosureBinding = task.planBinding || task.plan_binding
   const disclosurePlanId = disclosureBinding?.planId || disclosureBinding?.plan_id
   const disclosureRevision = disclosureBinding?.definitionRevision ?? disclosureBinding?.definition_revision
+  // Pending bound cards need their exact review document even while collapsed.
+  // Hydration never approves, expands, or attaches the execution conversation.
+  useEffect(() => {
+    if (projectId && !task.detailLoaded && !task.detailError &&
+      (expanded || (isPendingApproval && disclosurePlanId))) desktopProjects.inspectTask(projectId, task.id)
+  }, [expanded, isPendingApproval, projectId, task.id, task.revision, task.detailLoaded,
+    task.detailError, disclosurePlanId, disclosureRevision])
   // New tasks and durable definition revisions start with titles only. Status
   // chatter must not reopen details or discard the user's current expansion.
   useEffect(() => {
@@ -782,13 +813,13 @@ export function MinimalTaskCard({
 
   const modelPreviewQuery = useQuery({
     queryKey: ['projects', projectId, 'tasks', task.id, 'model-preview'],
-    queryFn: async () => {
-      const res = await requestJson<{ task: any; model_preview: BackendTaskModelPreview }>(
-        `/v3/projects/${projectId}/tasks/${task.id}/model-preview`
-      )
+    queryFn: async ({ signal }) => {
+      const res = await backgroundRead(() => requestStartupJson<{ task: any; model_preview: BackendTaskModelPreview }>(
+        `/v3/projects/${projectId}/tasks/${task.id}/model-preview`, { signal }
+      ), signal)
       return res.model_preview
     },
-    enabled: Boolean(projectId && task.id && isPendingApproval),
+    enabled: Boolean(projectId && task.id && isPendingApproval && (expanded || isModelChangerOpen)),
     staleTime: 60_000,
   })
   const [isRefineOpen, setIsRefineOpen] = useState(false)
@@ -824,11 +855,13 @@ export function MinimalTaskCard({
   const integrationPhase = taskIntegrationPhase(task, integrationOperation)
   const isIntegrating = integrationPhase === 'pending'
   const hasIntegrationReceipt = integrationPhase !== 'ready'
-  const hasUnintegrated = task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
+  const delivery = taskDelivery(task)
+  const hasUnintegrated = delivery ? (delivery.actionable || delivery.recoverable) : task.gitStatus === 'diverged' && !task.isIntegrated && (task.unintegratedCommits ?? 0) > 0
+  const deliveryNeedsReview = Boolean(delivery && !delivery.actionable && !delivery.recoverable && !delivery.integrated && !delivery.recovered)
   const canReopen = !isPendingApproval && !isRejected && !isRunning && Boolean(onReopen) &&
     (isNeedsReview || isCompleted || isFailed || task.isIntegrated || integrationPhase === 'success')
-  const showComplete = isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && !task.isIntegrated && Boolean(onComplete)
-  const isIntegratedAction = integrationPhase === 'success' || Boolean(task.isIntegrated && !hasIntegrationReceipt)
+  const showComplete = !deliveryNeedsReview && isNeedsReview && !hasUnintegrated && !hasIntegrationReceipt && !task.isIntegrated && Boolean(onComplete)
+  const isIntegratedAction = integrationPhase === 'success' || Boolean((delivery?.integrated ?? task.isIntegrated) && !hasIntegrationReceipt)
   const reopenButtonRef = useRef<HTMLButtonElement>(null)
   const reopenFormId = useId()
   const closeReopen = () => {
@@ -855,19 +888,7 @@ export function MinimalTaskCard({
   )
 
   const rawPlanDoc = task.planDocument || (task as any).plan_document || (task as any).document
-  const planDoc = useMemo(() => {
-    if (!rawPlanDoc) return null
-    if (typeof rawPlanDoc === 'string') {
-      try {
-        return JSON.parse(rawPlanDoc)
-      } catch {
-        return null
-      }
-    }
-    return rawPlanDoc?.document || rawPlanDoc
-  }, [rawPlanDoc])
-  const planDocTitle = planDoc?.title || task.planSummary || ''
-  const planDocGoal = planDoc?.info?.goal || planDoc?.goal || planDoc?.objective || ''
+  const planDoc: any = useMemo(() => taskPlanDocument(rawPlanDoc), [rawPlanDoc])
   const planCheckpointsToRender = useMemo(() => {
     if (planDoc?.checkpoints && Array.isArray(planDoc.checkpoints) && planDoc.checkpoints.length > 0) {
       return planDoc.checkpoints
@@ -880,12 +901,15 @@ export function MinimalTaskCard({
   const hasTaskProgramSpec = Boolean(taskProgramDef && ((taskProgramDef.stages && taskProgramDef.stages.length > 0) || (taskProgramDef.jobs && taskProgramDef.jobs.length > 0)))
   const hasStructuredPlan = planCheckpointsToRender.length > 0 || hasTaskProgramSpec
   const isPlanRejected = Boolean(
+    task.boardSummary?.plan?.approval_state === 'rejected' ||
+    task.boardSummary?.plan?.status === 'rejected' ||
     planDoc?.status === 'rejected' ||
     planDoc?.approval_state === 'rejected' ||
     planDoc?.approvalState === 'rejected'
   )
   const isPlanTaskWithoutStructuredPlan = Boolean(
-    (task.agentType === 'plan' || task.outcomeType === 'plan_spec') && !hasStructuredPlan
+    task.boardSummary?.plan_binding_stale ||
+    (task.agentType === 'plan' || task.outcomeType === 'plan_spec' || Boolean(task.planBinding || (task as any).plan_binding || rawPlanDoc)) && !isTaskPlanReviewable(planDoc)
   )
   const bindingRevision =
     task.planBinding?.definitionRevision ??
@@ -898,6 +922,7 @@ export function MinimalTaskCard({
     (task as any).plan_binding?.planId ||
     (task as any).plan_binding?.plan_id
   )
+  const isPlanCard = Boolean(hasPlanBinding || rawPlanDoc || task.agentType === 'plan' || task.outcomeType === 'plan_spec')
   const isPlanBindingMissingRevision = Boolean(
     hasPlanBinding && (typeof bindingRevision !== 'number' || bindingRevision <= 0)
   )
@@ -947,7 +972,7 @@ export function MinimalTaskCard({
     task.outcomeType === 'media_bundle' ||
     task.outcomeType === 'video_story' ||
     task.outcomeType === 'video_clip'
-  const showIntegration = !isPendingApproval && !isMediaTask && (hasUnintegrated || hasIntegrationReceipt || task.isIntegrated)
+  const showIntegration = !isPendingApproval && !isMediaTask && (deliveryNeedsReview || hasUnintegrated || hasIntegrationReceipt || task.isIntegrated)
 
   const isSingleVideo =
     task.agentType === 'video' &&
@@ -1119,19 +1144,20 @@ export function MinimalTaskCard({
         <div className="swarm-task-action-row flex items-center flex-wrap gap-2 text-xs" data-testid="task-primary-actions">
           {showIntegration && <div className="flex items-center flex-wrap gap-2" data-testid="task-pending-worktree-bar">
             <span role="status" aria-live="polite">
-              {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? 'Integrated:' : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
+              {isIntegrating ? 'Integrating worktree' : integrationPhase === 'error' ? 'Integration needs attention' : isIntegratedAction ? (delivery?.recovered ? 'Task delta delivered:' : 'Integrated:') : deliveryNeedsReview ? delivery?.summary : task.baseBranch ? 'Ready to integrate' : 'Target unavailable'}
             </span>
-            {onIntegrate && <button type="button"
+            {deliveryNeedsReview && <button type="button" onClick={event => { event.stopPropagation(); handleToggleExpand() }}>Review task</button>}
+            {onIntegrate && !deliveryNeedsReview && <button type="button"
               disabled={isIntegrating || isReopening || isIntegratedAction || !task.baseBranch}
               aria-busy={isIntegrating}
-              aria-label={isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
+              aria-label={isIntegrating ? 'Integrating…' : isIntegratedAction ? (delivery?.recovered ? 'Task delta delivered' : 'Integrated') : delivery?.recoverable ? 'Recover & integrate' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
               onClick={event => { event.stopPropagation(); onIntegrate() }}
               className="swarm-outline-action inline-grid min-h-7 items-center rounded-lg border border-amber-500/50 px-3 py-1 font-medium disabled:opacity-70 disabled:cursor-not-allowed"
               title={task.baseBranch ? `Integrate changes into ${task.baseBranch}` : 'Target branch unavailable; refresh task lineage'}>
               <span aria-hidden="true" className="invisible col-start-1 row-start-1 flex items-center gap-1.5"><GitPullRequest size={12} />{task.baseBranch ? `Retry integrate into ${task.baseBranch}` : 'Target unavailable'}</span>
               <span className="col-start-1 row-start-1 flex items-center justify-center gap-1.5">
                 {isIntegrating ? <Loader2 size={12} className="animate-spin motion-reduce:animate-none" /> : isIntegratedAction ? <Check size={12} /> : <GitPullRequest size={12} />}
-                {isIntegrating ? 'Integrating…' : isIntegratedAction ? 'Integrated' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
+                {isIntegrating ? 'Integrating…' : isIntegratedAction ? (delivery?.recovered ? 'Task delta delivered' : 'Integrated') : delivery?.recoverable ? 'Recover & integrate' : task.baseBranch ? `${integrationPhase === 'error' ? 'Retry integrate' : 'Integrate'} into ${task.baseBranch}` : 'Target unavailable'}
               </span>
             </button>}
           </div>}
@@ -1177,6 +1203,11 @@ export function MinimalTaskCard({
         {onApprove && isPendingApproval && <button type="button" disabled={isApproving} data-testid="retry-approve-btn" onClick={onApprove}>Retry</button>}
         {onClearError && !reopenOperation.error && !localReopenError && <button type="button" onClick={onClearError}>Dismiss</button>}
       </div>}
+      {/* Retained plan data is not approval authority. The accepted task response
+          updates status immediately; only a fresh pending revision restores this preview. */}
+      {isPendingApproval && (isPlanCard
+        ? <TaskPlanChecklist document={planDoc} />
+        : task.agentType === 'coder' && <TaskProposalChecklist description={task.description} />)}
       <TaskUsageFooter task={task} projectId={projectId}>
       <button ref={detailsToggleRef} type="button" className="swarm-task-details-toggle shrink-0"
         aria-expanded={expanded} aria-controls={`${detailsId} ${detailsId}-continued`} data-testid="toggle-task-details-btn"
@@ -1184,13 +1215,19 @@ export function MinimalTaskCard({
         {expanded ? 'Hide details' : 'Show details'}
       </button>
       </TaskUsageFooter>
+      {/* Pending decisions must remain actionable independently of details disclosure. */}
+      <TaskAttention attention={attention} />
       <div id={detailsId} hidden={!expanded} className="swarm-task-details" onClick={event => event.stopPropagation()}>
       {expanded && <>
+      {(isPlanCard || task.agentType === 'coder') && <section aria-label={isPlanCard ? 'Full current plan' : 'Full proposed task'} className="min-w-0 space-y-3">
+        <TaskPlanDetails document={rawPlanDoc} program={taskProgramDef} checkpoints={task.activePlanCheckpoints}
+          markdown={task.fullPlanMarkdown} description={!isPlanCard ? task.description : undefined} />
+      </section>}
       <TaskWorkerBudgetMetadata task={task} />
       <h4>Result / current work</h4>
       {showIntegration && <div className="text-xs font-mono" data-testid="task-integration-lineage">
         {task.worktreeBranch || 'Source unavailable'} → {task.baseBranch || 'Target unavailable'}
-        {task.unintegratedCommits ? ` (${task.unintegratedCommits} ${task.unintegratedCommits === 1 ? 'commit' : 'commits'})` : ''}
+        {delivery ? ` · ${delivery.summary}` : task.unintegratedCommits ? ` (${task.unintegratedCommits} ${task.unintegratedCommits === 1 ? 'commit' : 'commits'})` : ''}
       </div>}
       <TaskCardHandoff task={task} />
       {expanded && onInvestigateSession && <TaskSessionErrors task={task} onInvestigate={onInvestigateSession} />}
@@ -1232,7 +1269,6 @@ export function MinimalTaskCard({
           )}
         </div>
       )}
-      <TaskAttention attention={attention} />
       {/* ROUTER AGENT FAILURE ALERT BANNER */}
       {expanded && (task.routerAlert || (task as any).router_alert) && (
         <div className="flex items-start gap-2.5 p-3 rounded-lg bg-amber-950/40 border border-amber-500/60 text-amber-200 text-xs">
@@ -1618,13 +1654,14 @@ export function MinimalTaskCard({
           {isMediaTask && <p>Planned: {variantSlots.length} {task.agentType} output(s) · {task.aspectRatio || 'aspect ratio unspecified'}</p>}
 
           </>}
-          {/* Expandable Structured Plan or Task Program or Fallback Markdown */}
-          {(hasStructuredPlan || task.fullPlanMarkdown) && (
+          {/* Technical execution details remain available on demand. */}
+          {(!isPlanCard || expanded) && (hasStructuredPlan || task.fullPlanMarkdown || task.boardSummary?.plan || task.boardSummary?.program) && (
             <div className="min-w-0 max-w-full whitespace-normal [overflow-wrap:anywhere] border border-slate-800/80 rounded bg-[#070b14]/90" data-testid="task-plan-spec">
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation()
+                  if (!isFullPlanOpen && projectId && !task.detailLoaded) desktopProjects.inspectTask(projectId, task.id)
                   setIsFullPlanOpen(!isFullPlanOpen)
                 }}
                 className="w-full flex items-center justify-between px-2.5 py-1.5 text-[10px] font-mono text-slate-400 hover:text-slate-200 transition-colors"
@@ -1636,170 +1673,16 @@ export function MinimalTaskCard({
                   <FileText size={11} className="text-blue-400" />
                   <span>
                     {hasStructuredPlan
-                      ? (isFullPlanOpen ? 'Hide tasks and acceptance criteria' : 'Review structured plan and acceptance criteria')
+                      ? (isFullPlanOpen ? 'Hide execution details' : 'Show execution details')
                       : (isFullPlanOpen ? 'Hide Full Plan Spec' : 'Read Full Plan Spec & Criteria')}
                   </span>
                 </span>
                 {isFullPlanOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
               </button>
-              {!isFullPlanOpen && planCheckpointsToRender.length === 0 && (
-                <div className="min-w-0 px-3 pb-3 text-[11px] text-slate-300 [overflow-wrap:anywhere]" data-testid="task-plan-summary">
-                  {hasTaskProgramSpec ? <>
-                    <p>{taskProgramDef.jobs?.length || 0} jobs across {taskProgramDef.stages?.length || 1} stages</p>
-                    <ul className="space-y-1">
-                      {(taskProgramDef.jobs || []).slice(0, 3).map((job: any, index: number) => <li key={job.id || index}>{job.title || job.id}</li>)}
-                    </ul>
-                    {taskProgramDef.jobs?.length > 3 && <p>+{taskProgramDef.jobs.length - 3} more jobs · expand to review</p>}
-                  </> : <p className="line-clamp-3 whitespace-pre-wrap">{task.fullPlanMarkdown}</p>}
-                </div>
-              )}
               <div id={`${detailsId}-plan`}>
-              {(isFullPlanOpen || planCheckpointsToRender.length > 0) && (
+              {isFullPlanOpen && (
                 <div data-testid="task-plan-reader" className="min-w-0 p-3 border-t border-slate-800 text-[11px] text-slate-300 font-mono leading-relaxed whitespace-normal [overflow-wrap:anywhere] space-y-3">
-                  {/* Render Structured Plan Document Checkpoints */}
-                  {planCheckpointsToRender.length > 0 && (
-                    <div className="space-y-2">
-                      {isFullPlanOpen && (planDocTitle || planDocGoal) && (
-                        <div className="min-w-0 text-xs font-bold text-white space-y-1 border-b border-slate-800/80 pb-1">
-                          {planDocTitle && <div>{planDocTitle}</div>}
-                          {planDocGoal && (
-                            <div className="text-[10px] text-slate-400 font-normal">{planDocGoal}</div>
-                          )}
-                        </div>
-                      )}
-                      <div className="space-y-2">
-                        {planCheckpointsToRender.map((cp: any, idx: number) => {
-                          const tasksList = (cp.tasks && Array.isArray(cp.tasks) && cp.tasks.length > 0)
-                            ? cp.tasks
-                            : (cp.subtasks && Array.isArray(cp.subtasks) ? cp.subtasks : [])
-                          const criteriaList = (cp.acceptanceCriteria && Array.isArray(cp.acceptanceCriteria) && cp.acceptanceCriteria.length > 0)
-                            ? cp.acceptanceCriteria
-                            : (cp.acceptance_criteria && Array.isArray(cp.acceptance_criteria) && cp.acceptance_criteria.length > 0)
-                            ? cp.acceptance_criteria
-                            : (cp.criteria && Array.isArray(cp.criteria) ? cp.criteria : [])
-                          return (
-                            <section key={cp.id || idx} className="swarm-plan-step space-y-1.5" data-testid={`plan-checkpoint-${cp.id || idx}`}>
-                              <div className="swarm-plan-step-title min-w-0 flex items-start gap-1.5 font-semibold">
-                                <span className="text-blue-400 font-mono shrink-0">{idx + 1}.</span>
-                                <span className={isFullPlanOpen ? 'min-w-0' : 'swarm-plan-step-title-collapsed min-w-0'} title={cp.title}>{cp.title}</span>
-                              </div>
-                              {isFullPlanOpen && <>
-                              {cp.objective && (
-                                <p className="text-[10px] text-slate-400 leading-snug">{cp.objective}</p>
-                              )}
-                              {tasksList.length > 0 && (
-                                <div className="space-y-0.5 pt-0.5">
-                                  <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wider">Tasks:</span>
-                                  <ul className="list-disc list-inside space-y-0.5 text-[10px] text-slate-300 pl-1">
-                                    {tasksList.map((tText: any, tIdx: number) => {
-                                      const label = typeof tText === 'string' ? tText : (tText?.title || tText?.text || JSON.stringify(tText))
-                                      return (
-                                        <li key={tIdx}>{label}</li>
-                                      )
-                                    })}
-                                  </ul>
-                                </div>
-                              )}
-                              {criteriaList.length > 0 && (
-                                <div className="space-y-0.5 pt-0.5">
-                                  <span className="text-[9px] font-semibold text-emerald-400/90 uppercase tracking-wider">Acceptance Criteria:</span>
-                                  <ul className="space-y-0.5 text-[10px] text-slate-300 pl-1">
-                                    {criteriaList.map((cText: any, cIdx: number) => {
-                                      const label = typeof cText === 'string' ? cText : (cText?.title || cText?.text || cText?.criterion || JSON.stringify(cText))
-                                      return (
-                                        <li key={cIdx} className="flex items-start gap-1">
-                                          <span className="text-emerald-400 font-bold">✓</span>
-                                          <span className="min-w-0">{label}</span>
-                                        </li>
-                                      )
-                                    })}
-                                  </ul>
-                                </div>
-                              )}
-                              {cp.notes && (
-                                <div className="text-[9px] text-slate-500 italic pt-0.5">Note: {cp.notes}</div>
-                              )}
-                              </>}
-                            </section>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Render Structured Task Program Spec */}
-                  {isFullPlanOpen && taskProgramDef && (taskProgramDef.stages?.length > 0 || taskProgramDef.jobs?.length > 0) && (
-                    <div className="space-y-2 border-t border-slate-800/80 pt-2" data-testid="task-program-spec">
-                      <div className="text-xs font-bold text-indigo-300 flex flex-wrap items-start gap-1.5 justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <Layers size={12} className="text-indigo-400" />
-                          <span>Task Program Specification ({taskProgramDef.jobs?.length || 0} Jobs across {taskProgramDef.stages?.length || 1} Stages)</span>
-                        </span>
-                        {taskProgramDef.id && (
-                          <span className="font-mono text-[9px] text-slate-400">{taskProgramDef.id}</span>
-                        )}
-                      </div>
-                      <div className="space-y-2">
-                        {(taskProgramDef.stages || []).map((stage: any, sIdx: number) => {
-                          const stageJobs = (taskProgramDef.jobs || []).filter((j: any) => j.stage_id === stage.id || (!j.stage_id && sIdx === 0))
-                          return (
-                            <div key={stage.id || sIdx} className="p-2 rounded bg-slate-900/60 border border-slate-800/80 space-y-1.5" data-testid={`program-stage-${stage.id || sIdx}`}>
-                              <div className="flex flex-wrap items-start gap-1.5 justify-between font-mono text-[10px]">
-                                <span className="font-bold text-slate-200">
-                                  Stage {sIdx + 1}: {stage.id}
-                                </span>
-                                {stage.depends_on && stage.depends_on.length > 0 && (
-                                  <span className="text-slate-400 text-[9px]">depends on: {stage.depends_on.join(', ')}</span>
-                                )}
-                              </div>
-                              {stage.dependency_evidence && (
-                                <p className="text-[10px] text-slate-400 italic">{stage.dependency_evidence}</p>
-                              )}
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-mono text-[10px]">
-                                {stageJobs.map((job: any) => (
-                                  <div key={job.id} className="min-w-0 p-1.5 rounded bg-slate-950/80 border border-slate-800 space-y-1">
-                                    <div className="flex flex-wrap items-start gap-1.5 justify-between">
-                                      <span className="text-[9px] uppercase font-bold px-1 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-500/30">
-                                        @{job.agent_type || 'coder'}
-                                      </span>
-                                      <span className="min-w-0 font-bold text-white text-[10px]">{job.title || job.id}</span>
-                                    </div>
-                                    {job.owned_scope && job.owned_scope.length > 0 && (
-                                      <div className="text-[9px] text-slate-400">
-                                        <span className="text-slate-500">scope:</span> {job.owned_scope.join(', ')}
-                                      </div>
-                                    )}
-                                    {job.deliverable && (
-                                      <div className="text-[9px] text-slate-400">
-                                        <span className="text-slate-500">deliverable:</span> {job.deliverable}
-                                      </div>
-                                    )}
-                                    {job.acceptance_criteria && job.acceptance_criteria.length > 0 && (
-                                      <div className="text-[9px] text-emerald-400/90 pt-0.5">
-                                        <span>Acceptance Criteria:</span>
-                                        <ul className="list-disc list-inside space-y-0.5">
-                                          {job.acceptance_criteria.map((criterion: string, criterionIdx: number) => (
-                                            <li key={criterionIdx}>{criterion}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Fallback Markdown if no structured items */}
-                  {planCheckpointsToRender.length === 0 && (!taskProgramDef || (!taskProgramDef.stages?.length && !taskProgramDef.jobs?.length)) && task.fullPlanMarkdown && (
-                    <div className="whitespace-pre-wrap">
-                      {task.fullPlanMarkdown}
-                    </div>
-                  )}
+                  <TaskPlanDetails document={rawPlanDoc} program={taskProgramDef} checkpoints={task.activePlanCheckpoints} markdown={task.fullPlanMarkdown} />
                 </div>
               )}
               </div>
@@ -1809,6 +1692,17 @@ export function MinimalTaskCard({
           {/* Refine / Actions Bar */}
           <div className="flex flex-col gap-2 pt-1 border-t border-blue-500/20">
 
+            {isPlanCard && !task.detailLoaded && projectId && (
+              <div role="status" className="text-xs text-slate-300" data-testid="task-review-hydration">
+                <span>{task.detailError
+                  ? `Could not load the current plan: ${task.detailError}`
+                  : 'Loading the current plan for review. Approval remains unavailable until it is verified.'}</span>
+                {task.detailError && <button type="button" className="swarm-outline-action ml-2 px-2 py-1"
+                  onClick={event => { event.stopPropagation(); desktopProjects.inspectTask(projectId, task.id) }}>
+                  Retry loading plan
+                </button>}
+              </div>
+            )}
             {isPlanRejected && (
               <div className="p-2.5 rounded bg-rose-950/40 border border-rose-500/50 text-rose-200 text-xs flex items-center gap-2" data-testid="task-plan-rejected-banner">
                 <AlertTriangle size={13} className="text-rose-400 shrink-0" />
@@ -1846,10 +1740,10 @@ export function MinimalTaskCard({
                       setIsRefineOpen(!isRefineOpen)
                     }}
                     className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-[10px] font-medium transition-colors border border-slate-700/60"
-                    title="Send instructions back to the Router / Plan Agent to adjust workspaces or plan"
+                    title="Ask Orchestrator to change only the affected requirements"
                   >
                     <Sparkles size={10} className="text-indigo-400" />
-                    <span>{isRefineOpen ? 'Cancel' : 'Refine Plan'}</span>
+                    <span>{isRefineOpen ? 'Cancel' : 'Request changes'}</span>
                   </button>
                 )}
               </div>
@@ -1917,7 +1811,8 @@ export function MinimalTaskCard({
                   value={refineFeedback}
                   onClick={(e) => e.stopPropagation()}
                   onChange={(e) => setRefineFeedback(e.target.value)}
-                  placeholder="e.g. Keep in web workspace only, don't touch daemon API..."
+                  aria-label="Requested requirement changes"
+                  placeholder="What should change? e.g. Remove email notifications"
                   className="flex-1 bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && refineFeedback.trim()) {
@@ -1941,7 +1836,7 @@ export function MinimalTaskCard({
                   }}
                   className="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white font-bold text-[10px] transition-colors flex-shrink-0"
                 >
-                  Send to Router
+                  Request changes
                 </button>
               </div>
             )}
@@ -2287,7 +2182,7 @@ export function MinimalTaskCard({
               <>
                 <span>•</span>
                 <span className="text-amber-400 font-semibold">
-                  Not integrated ({task.unintegratedCommits} commit(s))
+                  {delivery?.summary || `Not integrated (${task.unintegratedCommits} commit(s))`}
                 </span>
               </>
             )}
@@ -2443,6 +2338,7 @@ export function OrchestratorChatComposer({
     return () => { observer.disconnect(); window.removeEventListener('resize', resize) }
   }, [draft])
   const [commandsOpen, setCommandsOpen] = useState(false)
+  const [codexUsageOpen, setCodexUsageOpen] = useState(false)
   const [commandQuery, setCommandQuery] = useState('')
   const [commandIndex, setCommandIndex] = useState(0)
   const composingRef = useRef(false)
@@ -2450,7 +2346,8 @@ export function OrchestratorChatComposer({
   const selectCommand = (command: OrchestrateCommand) => {
     setCommandsOpen(false)
     setSendError(null)
-    if (onCommandNavigate) onCommandNavigate(command.page)
+    if ('action' in command) setCodexUsageOpen(true)
+    else if (onCommandNavigate) onCommandNavigate(command.page)
     else setSendError('Navigation is unavailable. Return to the Orchestrate workspace to use commands.')
     composerRef.current?.focus()
   }
@@ -2558,7 +2455,7 @@ export function OrchestratorChatComposer({
     const parsed = parseOrchestrateCommand(text)
     if (parsed.kind === 'command') { selectCommand(parsed.command); return }
     if (parsed.kind === 'unsupported') {
-      setSendError(`Unsupported Orchestrate command ${parsed.token}. Type / for navigation; chat commands and command arguments are not supported.`)
+      setSendError(`Unsupported Orchestrate command ${parsed.token}. Type / for available commands; command arguments are not supported.`)
       setCommandsOpen(false)
       return
     }
@@ -2572,10 +2469,7 @@ export function OrchestratorChatComposer({
 
     try {
       let finalContent = creatingWorker ? `Please propose a new worker for human approval. Here is the job I want it to do:\n\n${text}` : text
-      let finalMetadata: Record<string, unknown> = {
-        orchestrate_view: true,
-        ...(project ? { project_id: project.id } : {}),
-      }
+      let finalMetadata = projectConversationMessageMetadata()
 
       // Check if task context was intended (either targetTask or selectedTaskId is present)
       const contextTasks = targetTask ? [targetTask] : attachedTasks
@@ -2666,6 +2560,10 @@ export function OrchestratorChatComposer({
       className="swarm-chat-composer-lane border-t border-slate-800 bg-[#0a0f1d] text-xs space-y-2 flex-shrink-0"
       data-testid="orchestrator-chat-composer"
     >
+      <DesktopCodexUsageModal open={codexUsageOpen} onOpenChange={open => {
+        setCodexUsageOpen(open)
+        if (!open) composerRef.current?.focus()
+      }} onOpenAuthSettings={() => onCommandNavigate?.('settings')} />
       {contextControls && <div className="swarm-composer-context">{contextControls}</div>}
       {commandsOpen && <div id="orchestrate-command-list" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setCommandsOpen(false); composerRef.current?.focus() } }} role="listbox" aria-label="Orchestrate commands" className="max-h-64 overflow-y-auto rounded-xl border border-[var(--app-border)] bg-[var(--app-surface)] p-1">
         {commands.map((command, index) => <button key={command.name} id={`orchestrate-command-${command.name}`} type="button" role="option" aria-selected={index === commandIndex} onClick={() => selectCommand(command)} className={`block w-full rounded-lg p-2 text-left text-[var(--app-text)] ${index === commandIndex ? 'bg-[var(--app-surface-hover)]' : ''}`}>
@@ -2914,13 +2812,15 @@ export function OrchestratorChatComposer({
  * Right AI Chat Panel: Supports switching between Executive Project Orchestrator
  * and individual Task Worker sessions with a back-button navigation bar.
  */
-function OrchestratorChatSidebar({
+export function OrchestratorChatSidebar({
+  onOpenMediaArtifact,
   workspaceSlug,
   repairSession = false,
   creatingWorker,
   onWorkerCreationSent,
   sessionId,
   project,
+  projectSegment,
   activeTask,
   selectedTask,
   selectedTaskId,
@@ -2928,7 +2828,6 @@ function OrchestratorChatSidebar({
   onRemoveAttachedTask,
   allTasks,
   onBackToOrchestrator,
-  onOrchestratorSessionReset,
   onDeselectTask,
   selectedWorker,
   currentSelectedWorker,
@@ -2937,12 +2836,14 @@ function OrchestratorChatSidebar({
   sessionId: string
   workspaceSlug?: string
   repairSession?: boolean
+  onOpenMediaArtifact?: (artifact: DesktopV3ArtifactCatalogEntry) => boolean
   creatingWorker?: boolean
   onWorkerCreationSent?: () => void
   selectedWorker?: SelectedWorker | null
   currentSelectedWorker?: () => SelectedWorker | null
   onDeselectWorker?: (consumed: SelectedWorker | null) => void
   project?: ProjectSummary
+  projectSegment?: string
   activeTask?: RunningTask
   selectedTask?: RunningTask | null
   selectedTaskId?: string
@@ -2950,12 +2851,12 @@ function OrchestratorChatSidebar({
   onRemoveAttachedTask?: (id: string) => void
   allTasks?: RunningTask[]
   onBackToOrchestrator?: () => void
-  onOrchestratorSessionReset?: (newSessionId: string) => void
   onDeselectTask?: () => void
 }) {
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const navigate = useNavigate()
+  const projectPageLink = (page: SwarmPage) => project?.id ? { ...projectConversationLink(projectSegment || project.id, sessionId || project.primarySessionId), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const [clearingContext, setClearingContext] = useState(false)
   const [clearSuccess, setClearSuccess] = useState(false)
 
@@ -2965,6 +2866,7 @@ function OrchestratorChatSidebar({
   const messages = useDesktopV3CacheSelector(
     useCallback((state) => selectRenderedSessionMessages(state, sessionId), [sessionId]),
     (left, right) =>
+      left.taskActivities === right.taskActivities &&
       left.committed === right.committed &&
       left.pendingUser === right.pendingUser &&
       left.liveRuns === right.liveRuns &&
@@ -3003,46 +2905,59 @@ function OrchestratorChatSidebar({
   )
 
   const [clearError, setClearError] = useState('')
+  const clearRequest = useRef<{ id: string; seq: number } | null>(null)
+  const clearInFlight = useRef(false)
+  const contextSequence = useDesktopV3CacheSelector(useCallback(state => state.projectionsBySession[sessionId]?.last_event_seq, [sessionId]))
   const clearScope = useRef(`${project?.id}:${sessionId}`)
   clearScope.current = `${project?.id}:${sessionId}`
   useEffect(() => { clearScope.current = `${project?.id}:${sessionId}`; return () => { clearScope.current = '' } }, [project?.id, sessionId])
-  useEffect(() => { setClearError(''); setClearSuccess(false); setClearingContext(false) }, [project?.id, sessionId])
+  useEffect(() => { clearRequest.current = null; setClearError(''); setClearSuccess(false); setClearingContext(false) }, [project?.id, sessionId])
 
   const handleClearContext = async () => {
-    if (!project?.id || clearingContext || repairSession || activeTask) return
+    if (!project?.id || clearInFlight.current || repairSession || activeTask || contextSequence === undefined) return
+    if (!window.confirm('Clear AI context for this session? Saved messages remain in history. No new session will be created. Active work or plans must be finished first.')) return
+    clearInFlight.current = true
     const scope = clearScope.current
     setClearError('')
     setClearingContext(true)
     setClearSuccess(false)
     try {
-      const res = await requestJson<{ ok: boolean; session_id: string }>(
-        `/v3/projects/${project.id}/orchestrator:clear-context`,
-        { method: 'POST' }
-      )
+      clearRequest.current ||= { id: `desktop-v3-clear:${crypto.randomUUID()}`, seq: contextSequence }
+      await clearSessionContext(sessionId, clearRequest.current.id, clearRequest.current.seq)
       if (clearScope.current !== scope) return
-      if (res?.ok && res.session_id) {
-        onDeselectTask?.()
-        onOrchestratorSessionReset?.(res.session_id)
-        setClearSuccess(true)
-        setTimeout(() => setClearSuccess(false), 2500)
-      } else {
-        throw new Error('Context reset returned no authoritative session. Please retry.')
-      }
+      clearRequest.current = null
+      onDeselectTask?.()
+      setClearSuccess(true)
     } catch (e) {
-      if (clearScope.current === scope) setClearError(e instanceof Error ? e.message : 'Failed to clear orchestrator context.')
+      if (clearScope.current === scope) {
+        // Keep request identity on uncertain failures so retry cannot clear twice.
+        if (e instanceof ContextClearRejected) { clearRequest.current = null; setAttempt(value => value + 1) }
+        setClearError(e instanceof Error ? e.message : 'Failed to clear orchestrator context.')
+      }
     } finally {
+      clearInFlight.current = false
       if (clearScope.current === scope) setClearingContext(false)
     }
   }
 
   useEffect(() => {
     let active = true
+    let releaseDemand: (() => void) | undefined
     setError(false)
+    // The active transcript owns its demand independently of list-row leases
+    // and global selection. Reconnect restores this same canonical V3 scope.
+    void requireDesktopV3RealtimeControllerReady().then(controller => {
+      if (!active) return
+      const demand = controller.acquireSessionDemand('orchestrator-active-conversation', sessionId)
+      releaseDemand = () => demand.release()
+      return demand.ready
+    }).catch(() => { if (active) setError(true) })
     void selectAndHydrateDesktopV3Session(sessionId).catch(() => {
       if (active) setError(true)
     })
     return () => {
       active = false
+      releaseDemand?.()
     }
   }, [sessionId, attempt])
 
@@ -3050,9 +2965,9 @@ function OrchestratorChatSidebar({
     <aside
       aria-label="Swarm Orchestrator AI Chat"
       data-swarm-transcript-lane="sidebar"
-      className="swarm-ai-sidebar relative flex min-h-0 w-[440px] flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
+      className="swarm-ai-sidebar relative flex min-h-0 min-w-0 w-full max-w-full flex-1 flex-col overflow-hidden rounded-3xl border border-slate-800/80 shadow-[var(--shadow-panel)]"
     >
-      {/* Top Header: Task Navigation vs Orchestrator Header */}
+      {/* Task and integration-repair navigation */}
       {activeTask ? (
         <div className="flex items-center justify-between p-3 border-b border-slate-800 bg-[#0a0f1d] text-xs">
           <div className="flex items-center gap-2.5 min-w-0">
@@ -3106,7 +3021,20 @@ function OrchestratorChatSidebar({
       )}
 
       <DesktopV3ExistingConversationPane
+        onOpenMediaArtifact={onOpenMediaArtifact}
         presentation="sidebar"
+        orchestratorHeader={!activeTask && !repairSession ? {
+          projectName: project?.name || 'Orchestrator',
+          onOpenAgents: () => {
+            navigateToProjectAgents(navigate, {
+              projectId: project?.id,
+              projectSegment,
+              sessionId,
+              primarySessionId: project?.primarySessionId,
+              workspaceSlug,
+            })
+          },
+        } : undefined}
         sessionId={sessionId}
         session={currentSession}
         initialHydrateStatus={error ? 'error' : hydrating ? 'loading' : ready ? 'ready' : 'loading'}
@@ -3118,10 +3046,11 @@ function OrchestratorChatSidebar({
             key={`${project?.id}:${sessionId}`}
             contextControls={<>
               <ContextRemaining usage={sessionUsage} />
-              {!activeTask && <button type="button" onClick={() => void handleClearContext()} disabled={clearingContext || repairSession} data-testid="clear-orchestrator-context-btn">{clearingContext ? 'Clearing…' : clearSuccess ? 'Cleared!' : 'Clear context'}</button>}
+              {!activeTask && <button type="button" onClick={() => void handleClearContext()} disabled={clearingContext || repairSession || !ready || contextSequence === undefined} data-testid="clear-orchestrator-context-btn">{clearingContext ? 'Clearing…' : 'Clear context'}</button>}
+              {clearSuccess && <span role="status">Context cleared; history preserved.</span>}
               {clearError && <span role="alert">{clearError}</span>}
             </>}
-            onCommandNavigate={(page) => { void navigate(swarmPageLink(workspaceSlug, page)) }}
+            onCommandNavigate={(page) => { void navigate(projectPageLink(page)) }}
             sessionId={sessionId}
             session={currentSession}
             project={project}
@@ -3179,12 +3108,9 @@ function OrchestratorChatSidebar({
                   planDefinitionRevision: targetTask.planBinding?.definitionRevision ?? (targetTask as any).plan_binding?.definition_revision,
                   snapshotTimestamp: Date.now(),
                 },
-                { orchestrate_view: true, project_id: project?.id }
+                projectConversationMessageMetadata()
               )
-            : {
-                orchestrate_view: true,
-                ...(project ? { project_id: project.id } : {}),
-              }
+            : projectConversationMessageMetadata()
         }
       />
     </aside>
@@ -3194,7 +3120,6 @@ function OrchestratorChatSidebar({
 export function OrchestrateView({
   workerDetailId,
   workspaceSlug: workspaceSlugProp,
-  onNavigateHome,
   initialThemeId = 'modern_navy',
 }: OrchestrateViewProps) {
   const theme = ORCHESTRATE_THEMES[initialThemeId] || ORCHESTRATE_THEMES.modern_navy
@@ -3209,11 +3134,41 @@ export function OrchestrateView({
   const [isUpdatingAccountName, setIsUpdatingAccountName] = useState(false)
   const [accountNameError, setAccountNameError] = useState<string | null>(null)
 
+  const projectRouteParams = useRouterState({ select: state => state.matches[state.matches.length - 1]?.params as { projectId?: string; sessionId?: string; swarmSection?: string } }) ?? {}
+  const routeConversationId = projectRouteParams.sessionId || ''
+  const [conversationAdmission, setConversationAdmission] = useState<{ projectId: string; sessionId: string; accountScopeId?: string } | null>(null)
+  const createProjectIntent = useRouterState({ select: state => (state.location.search as { createProject?: boolean }).createProject === true })
   // Projects State
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [selectedProjectId, setSelectedProjectId] = useState<string>('')
-  const [, setIsLoadingProjects] = useState<boolean>(true)
-  const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0]
+  const [projectsLoaded, setProjectsLoaded] = useState(false)
+  const [projectLoadError, setProjectLoadError] = useState('')
+  const [projectLoadAttempt, setProjectLoadAttempt] = useState(0)
+  const [themeCatalogReady, setThemeCatalogReady] = useState(false)
+  const routeProjectSegment = projectRouteParams.projectId || ''
+  const resolvedProject = resolveProjectRoute(routeProjectSegment, projects)
+  const selectedProjectId = resolvedProject?.id || ''
+  const selectedProjectSegment = resolvedProject ? projectRouteSegment(resolvedProject, projects) : ''
+  const projectRouteError = projectsLoaded && routeProjectSegment && !resolvedProject ? 'Project not found or name is ambiguous. Choose a project.' : ''
+  const admittedParentId = admittedConversationId(conversationAdmission, selectedProjectId, routeConversationId, getDesktopSessionIdentitySnapshot()?.accountScopeId)
+  const conversationRouteScope = `${selectedProjectId}:${routeConversationId}`
+  const appliedConversationRouteScope = useRef(conversationRouteScope)
+  const currentConversationRouteScope = useRef(conversationRouteScope)
+  currentConversationRouteScope.current = conversationRouteScope
+  const projectLink = (projectId: string, sessionId?: string) => {
+    const project = projects.find(item => item.id === projectId)
+    return projectConversationLink(project ? projectRouteSegment(project, projects) : projectId, sessionId)
+  }
+  const setSelectedProjectId = (projectId: string) => { void navigate(projectId ? projectLink(projectId) : { to: '/projects' }) }
+  const conversations = useProjectConversations(selectedProjectId)
+  const [conversationError, setConversationError] = useState('')
+  const [creatingConversation, setCreatingConversation] = useState(false)
+  const conversationRequest = useRef('')
+  const conversationCreating = useRef(false)
+  const [admissionAttempt, setAdmissionAttempt] = useState(0)
+  const selectedProject = useMemo(() => {
+    const project = projects.find(p => p.id === selectedProjectId)
+    return project ? { ...project, primarySessionId: admittedParentId || undefined } : undefined
+  }, [projects, selectedProjectId, admittedParentId])
   const selectedProjectRef = useRef(selectedProject?.id)
   selectedProjectRef.current = selectedProject?.id
   const [themeRoot, setThemeRoot] = useState<HTMLDivElement | null>(null)
@@ -3272,37 +3227,28 @@ export function OrchestrateView({
   }
 
   // Project Onboarding & Creation State
-  const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(false)
-  const [onboardingName, setOnboardingName] = useState('Swarm Platform')
-  const [onboardingDescription, setOnboardingDescription] = useState('Core daemon, desktop client, and multi-workspace initiative')
-  const [onboardingWorkspaces, setOnboardingWorkspaces] = useState<Array<{ id?: string; path: string; label: string; role: 'primary_code' | 'auxiliary'; selected: boolean }>>([])
-  const [customFolderPath, setCustomFolderPath] = useState('')
-  const [isEditingContext, setIsEditingContext] = useState(false)
-  const [isSynthesizing, setIsSynthesizing] = useState(false)
-  const [isActivating, setIsActivating] = useState(false)
-  const [onboardingContext, setOnboardingContext] = useState('')
+  const [isOnboardingActive, setIsOnboardingActive] = useState<boolean>(createProjectIntent)
+  useEffect(() => { setIsOnboardingActive(createProjectIntent) }, [createProjectIntent, routeProjectSegment, routeConversationId])
+  const [creationProject, setCreationProject] = useState<CreationProject>()
+  const saveCreationProject = (project: CreationProject) => {
+    setProjects(previous => {
+      const summary = creationProjectSummary(project)
+      return previous.some(item => item.id === project.id)
+        ? previous.map(item => item.id === project.id ? { ...item, projectContext: project.project_context, contextGeneration: project.context_generation } : item)
+        : [summary, ...previous]
+    })
+  }
 
   // Canonical Desktop Projects runtime state
-  const projectState = useDesktopProject(selectedProjectId)
+  const projectState = useDesktopProject(selectedProjectId, selectedProject?.workspaces)
   const tasks = projectState?.tasks ?? []
   const uploadedMedia = projectState?.media ?? []
   const projectTasksError = projectState?.error
-  const projectGitPath = selectedProject?.repoPath || ''
-  const projectGit = useQuery({
-    queryKey: gitStatusQueryKey(projectGitPath),
-    queryFn: ({ signal }) => fetchGitStatus(projectGitPath, 0, '', signal),
-    enabled: Boolean(projectGitPath && projectGitPath !== '.'),
-    refetchOnWindowFocus: false,
-    refetchInterval: false,
-  })
-  const orchestratorState = useDesktopV3CacheSelector(state => {
-    const id = selectedProject?.primarySessionId
-    if (!id) return 'inactive' as const
-    const run = state.sessionViewsById[id]?.current_run_state
-    const intent = state.currentRunIntentBySession[id]
-    if (intent) return intent.status === 'running' ? 'active' as const : 'inactive' as const
-    return run ? run.active ? 'active' as const : 'inactive' as const : 'unknown' as const
-  })
+  const headerWorkspaces = useMemo(() => projectWorkspaces(selectedProject), [selectedProject])
+  const workspaceGit = useProjectWorkspaceGit(headerWorkspaces)
+  const [workspaceFilter, setWorkspaceFilter] = useState<string | null>(null)
+  const selectedTaskWorkspace = headerWorkspaces.find(workspace => workspace.key === workspaceFilter)
+  useEffect(() => { setWorkspaceFilter(null) }, [selectedProjectId])
 
   const taskSessionCohort = useDesktopV3CacheSelector(
     state => ({ source: tasks, tasks: tasks.map(task => taskWithCurrentSessions(task, state)) }),
@@ -3379,15 +3325,16 @@ export function OrchestrateView({
   const shelfFileInputRef = useRef<HTMLInputElement>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [taskSourceFilter, setTaskSourceFilter] = useState<'all' | 'worker'>('all')
-  const [statusFilter, setStatusFilter] = useState<'all' | 'running' | 'needs_review' | 'queued' | 'completed'>('all')
+  const [statusFilter, setStatusFilter] = useState<TaskStatusFilter>('all')
   const [selectedTag] = useState<string>('all')
   const [markedTaskIds, setMarkedTaskIds] = useState<Set<string>>(() => new Set())
   const [managementBusy, setManagementBusy] = useState(false)
   const managementPending = useRef(new Set<string>())
   const managementEpoch = useRef(0)
+  const [managementOwner] = useState(() => crypto.randomUUID())
   useEffect(() => () => { managementEpoch.current++ }, [])
-  useEffect(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}) }, [selectedProject?.id])
-  useEffect(() => subscribeDesktopSessionReset(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}) }), [])
+  useEffect(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}); setArchivedTasks([]); setArchivedError(''); setArchivedLoading(false); setArchivedOpen(false) }, [selectedProject?.id])
+  useEffect(() => subscribeDesktopSessionReset(() => { managementEpoch.current++; managementPending.current.clear(); setManagementBusy(false); setManagementMessage(''); setTaskActionErrors({}); setArchivedTasks([]); setArchivedError(''); setArchivedLoading(false); setArchivedOpen(false) }), [])
   const [managementMessage, setManagementMessage] = useState('')
   const [archivedOpen, setArchivedOpen] = useState(false)
   const [archivedTasks, setArchivedTasks] = useState<RunningTask[]>([])
@@ -3419,6 +3366,9 @@ export function OrchestrateView({
   // Uploaded & Tagged Media State
   const [taggedMedia, setTaggedMedia] = useState<ProjectTaskMediaRef[]>([])
   const [isUploadingMedia, setIsUploadingMedia] = useState<boolean>(false)
+  // Synchronous admission guard: React state alone misses same-tick submission
+  // and overlapping uploads. Replacing this scope cancels late UI writes.
+  const mediaUploadScopeRef = useRef({ pending: 0, failedFiles: [] as File[], inFlight: new Set<File>() })
   const [isUploadedMediaExpanded, setIsUploadedMediaExpanded] = useState<boolean>(true)
   const [isPasteDocOpen, setIsPasteDocOpen] = useState<boolean>(false)
   const [pastedDocTitle, setPastedDocTitle] = useState<string>('')
@@ -3430,6 +3380,14 @@ export function OrchestrateView({
     select: (state) => state.matches[state.matches.length - 1]?.params as { workspaceSlug?: string; swarmSection?: string; workerId?: string } | undefined,
   }) ?? {}
   const navigate = useNavigate()
+  const projectLocation = useRouterState({ select: state => state.location })
+  useEffect(() => {
+    if (!selectedProjectSegment || selectedProjectSegment === routeProjectSegment) return
+    const parts = projectLocation.pathname.split('/')
+    if (parts[1] !== 'projects') return
+    parts[2] = encodeURIComponent(selectedProjectSegment)
+    void navigate({ to: parts.join('/'), search: true, hash: true, replace: true })
+  }, [selectedProjectSegment, routeProjectSegment, projectLocation.pathname, navigate])
   const routeWorkerId = useRouterState({ select: state => {
     const search = state.location.search as { workerId?: unknown }
     return typeof search?.workerId === 'string' && (search.workerId.startsWith('worker_') || search.workerId.startsWith('worker-')) ? search.workerId : undefined
@@ -3451,10 +3409,12 @@ export function OrchestrateView({
       setSelectedWorker(null)
     }
   }, [workerContextScope])
-  const inspectedWorkerId = routeParams.workerId || workerDetailId || (routeParams.swarmSection === 'workers' ? routeWorkerId : undefined)
-  const activeNavTab: SwarmPage = swarmActivePage(routeParams.swarmSection, inspectedWorkerId)
+  const inspectedWorkerId = routeParams.workerId || workerDetailId || routeWorkerId
+  const routeSection = useRouterState({ select: state => (state.location.search as { section?: string }).section })
+  const activeNavTab: SwarmPage = swarmActivePage(routeSection || routeParams.swarmSection || (!selectedProjectId ? 'projects' : undefined), inspectedWorkerId)
+  const projectPageLink = (page: SwarmPage) => selectedProjectId ? { ...projectLink(selectedProjectId, routeConversationId || undefined), search: { section: page } } : swarmPageLink(workspaceSlug, page)
   const showFullMediaCenter = activeNavTab === 'media'
-  const setActiveNavTab = (page: SwarmPage) => { void navigate(swarmPageLink(workspaceSlug, page)) }
+  const setActiveNavTab = (page: SwarmPage) => { void navigate(projectPageLink(page)) }
   const setShowFullMediaCenter = (open: boolean) => {
     if (open) setActiveNavTab('media')
     else if (showFullMediaCenter) setActiveNavTab('home')
@@ -3602,12 +3562,12 @@ export function OrchestrateView({
       model: newTaskModelOverride || undefined,
       workspace: newTaskWorkspace.trim(),
       workspaceCatalog: selectedProject?.workspaces,
-      agent: taskIntent === 'code' ? (featureSize === 'big' ? 'plan' : 'coder') : (taskIntent === 'audit' ? 'finder' : taskIntent),
+      agent: taskIntent === 'code' ? (featureSize === 'big' ? 'swarm' : 'coder') : (taskIntent === 'audit' ? 'finder' : taskIntent),
       tier: taskIntent === 'code' ? (featureSize === 'big' ? 'complex' : 'direct') : (taskIntent === 'audit' ? 'discovery' : 'direct'),
     }],
     queryFn: async () => {
       const targetAgent = taskIntent === 'code'
-        ? (featureSize === 'big' ? 'plan' : 'coder')
+        ? (featureSize === 'big' ? 'swarm' : 'coder')
         : taskIntent === 'audit'
           ? 'finder'
           : taskIntent === 'image'
@@ -3616,7 +3576,7 @@ export function OrchestrateView({
               ? 'video'
               : 'sound'
       const targetOutcomeType = taskIntent === 'code'
-        ? (featureSize === 'big' ? 'plan_spec' : 'code_pr')
+        ? 'code_pr'
         : taskIntent === 'audit'
           ? 'audit_report'
           : taskIntent === 'image'
@@ -3813,23 +3773,33 @@ export function OrchestrateView({
     setThemeError('')
     setShelfUploadError(null)
     setShelfFailedFiles([])
+    mediaUploadScopeRef.current = { pending: 0, failedFiles: [], inFlight: new Set<File>() }
     setIsUploadingMedia(false)
     setIsPasteDocOpen(false)
     setPastedDocTitle('')
     setPastedDocContent('')
-    setActiveSessionId(selectedProject?.primarySessionId || '')
+    setActiveSessionId('')
   }, [selectedProjectId])
 
-  // 1. Fetch User Auth, Workspaces, Automations, and Projects on mount
+  // Independent reads begin together; only the project catalog and task snapshot
+  // own first-screen readiness. Auth remains owned by the canonical API boundary.
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
+    const stopOnReset = subscribeDesktopSessionReset(() => {
+      cancelled = true
+      controller.abort()
+      setProjects([])
+      setProjectsLoaded(false)
+      setProjectLoadError('Your desktop authentication changed. Reload to reconnect securely.')
+    })
 
-    async function bootstrap() {
-      // 1. User Session
+    async function loadProfile() {
+      // Reuse the canonical identity rather than issuing a second auth read.
       try {
-        const auth = await requestJson<{ ok: boolean; user_id?: string; account_scope_id?: string; username?: string }>('/v1/auth/desktop/session')
-        if (auth?.user_id && !cancelled) {
-          const rawId = auth.user_id
+        const auth = await ensureDesktopSession()
+        if (auth?.userId && !cancelled) {
+          const rawId = auth.userId
           const displayName = auth.username || (rawId.startsWith('user_') ? `Operator (${rawId.slice(5, 11)})` : rawId)
           setUserProfile({
             id: rawId,
@@ -3838,7 +3808,7 @@ export function OrchestrateView({
         }
       } catch {}
       try {
-        const me = await requestJson<{ userID?: string; username?: string }>('/v1/me')
+        const me = await requestStartupJson<{ userID?: string; username?: string }>('/v1/me', { signal: controller.signal })
         if (me?.username && !cancelled) {
           setUserProfile((prev) => ({
             ...prev,
@@ -3847,24 +3817,12 @@ export function OrchestrateView({
         }
       } catch {}
 
-      // 2. Discover Registered Workspaces
+    }
+    async function loadProjects() {
+      setProjectLoadError('')
+      // Account-scoped catalog is shared with the entry route.
       try {
-        const wsRes = await requestJson<{ workspaces?: Array<{ path: string; name?: string; id?: string }> }>('/v1/workspace/list?limit=200')
-        if (wsRes?.workspaces && wsRes.workspaces.length > 0 && !cancelled) {
-          const detected = wsRes.workspaces.map((w, idx) => ({
-            id: w.id || '',
-            path: w.path,
-            label: w.name || w.path.split('/').filter(Boolean).pop() || 'Workspace',
-            role: (idx === 0 ? ('primary_code' as const) : ('auxiliary' as const)),
-            selected: true,
-          }))
-          setOnboardingWorkspaces(detected)
-        }
-      } catch {}
-
-      // 4. Projects from Pebble
-      try {
-        const res = await requestJson<{ projects?: any[] }>('/v3/projects')
+        const res = await readProjectCatalog()
         if (cancelled) return
 
         if (res?.projects && res.projects.length > 0) {
@@ -3883,36 +3841,42 @@ export function OrchestrateView({
             pendingDeliverablesCount: 0,
             runningTasksCount: 0,
             projectContext: p.project_context,
+            contextGeneration: p.context_generation,
             themeId: p.theme_id || '',
             iconPNGDataURL: p.icon_png_data_url || '',
-            primarySessionId: p.primary_session_id,
+            primarySessionId: undefined,
           }))
           setProjects(loaded)
-          setSelectedProjectId(loaded[0].id)
-          if (loaded[0].primarySessionId) {
-            setActiveSessionId(loaded[0].primarySessionId)
-          }
+          // Route identity selects the project, never implicit workspace membership.
         } else {
           if (!cancelled) {
             setProjects([])
-            setSelectedProjectId('')
             setActiveSessionId('')
             setIsOnboardingActive(true)
           }
         }
       } catch (err) {
-        console.warn('Failed to load projects from Pebble:', err)
+        if (!cancelled) setProjectLoadError(err instanceof Error ? err.message : 'Unable to load projects')
+      } finally {
+        if (!cancelled) setProjectsLoaded(true)
       }
 
-      // 5. Image, Video & Audio Models Catalog and UI Defaults
+    }
+    async function loadMediaCatalog() {
+      // Media and model defaults are optional enrichment.
       try {
         const [settingsRes, catalogRes] = await Promise.all([
-          getUISettings(),
-          requestJson<{ image_models?: any[]; video_generation_models?: any[]; video_models?: any[]; audio_models?: any[]; default_image_model?: string; default_video_model?: string; default_audio_model?: string }>('/v1/media/settings/catalog').catch(() => null),
+          getUISettings().then(settings => {
+            if (!cancelled) {
+              setWorkspaceThemeCatalog(settings.theme)
+              setThemeCatalogRevision(revision => revision + 1)
+              setThemeCatalogReady(true)
+            }
+            return settings
+          }),
+          requestStartupJson<{ image_models?: any[]; video_generation_models?: any[]; video_models?: any[]; audio_models?: any[]; default_image_model?: string; default_video_model?: string; default_audio_model?: string }>('/v1/media/settings/catalog', { signal: controller.signal }).catch(() => null),
         ])
         if (!cancelled) {
-          setWorkspaceThemeCatalog(settingsRes?.theme)
-          setThemeCatalogRevision((revision) => revision + 1)
           const configuredImage = settingsRes?.tools?.image?.default_model || ''
           const configuredAudio = settingsRes?.tools?.audio?.default_model || ''
 
@@ -3958,16 +3922,20 @@ export function OrchestrateView({
         console.warn('Failed to load media catalog in OrchestrateView:', err)
       } finally {
         if (!cancelled) {
-          setIsLoadingProjects(false)
+          setThemeCatalogReady(true)
         }
       }
     }
 
-    void bootstrap()
+    void loadProfile()
+    void loadProjects()
+    void loadMediaCatalog()
     return () => {
       cancelled = true
+      controller.abort()
+      stopOnReset()
     }
-  }, [])
+  }, [projectLoadAttempt])
 
   // Reconcile task selection against live project tasks:
   // Invariant: Never implicitly auto-selects tasks. Prunes stale selections if task was deleted.
@@ -3978,7 +3946,7 @@ export function OrchestrateView({
     }
   }, [tasks, selectedTaskId])
 
-  const mediaSyncError = projectTasksError
+  const mediaSyncError = projectState?.mediaError
   const handleUpdateTaskModel = useCallback(
     async (taskId: string, newModel: string, scopeInput?: AgentModelControlTaskOverrideInput | null) => {
       if (!selectedProject?.id) return
@@ -4097,47 +4065,27 @@ export function OrchestrateView({
   }, [])
 
   // Helper to ensure an active orchestrator session exists for a project
-  const ensureOrchestratorSession = useCallback(async (project: ProjectSummary): Promise<string | null> => {
-    const scope = workerConversationScopeRef.current
-    if (project.primarySessionId) {
-      setActiveSessionId(project.primarySessionId)
-      return project.primarySessionId
-    }
-    const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
+  const newConversation = async (): Promise<string | null> => {
+    if (!selectedProject || conversationCreating.current || projectContextPending(selectedProject)) return null
+    conversationCreating.current = true
+    setCreatingConversation(true); setConversationError('')
+    const projectId = selectedProject.id
+    const routeScope = currentConversationRouteScope.current
+    conversationRequest.current ||= `desktop-v3-create:${crypto.randomUUID()}`
     try {
-      const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_request_id: clientRequestId,
-          title: `Project Orchestrator: ${project.name}`,
-          workspace_id: project.primaryWorkspaceId || project.workspaces?.[0]?.workspace_id || undefined,
-          workspace_path: project.repoPath || '.',
-          agent_name: 'system-orchestrator',
-          metadata: {
-            project_id: project.id,
-            role: 'project_orchestrator',
-          },
-        }),
-      })
-      if (sessRes?.session?.id) {
-        const sid = sessRes.session.id
-        if (workerConversationScopeRef.current === scope) setActiveSessionId(sid)
-        await requestJson(`/v3/projects/${project.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ primary_session_id: sid }),
-        }).catch(() => {})
-        setProjects((prev) =>
-          prev.map((p) => (p.id === project.id ? { ...p, primarySessionId: sid } : p))
-        )
-        return sid
+      const sid = await createProjectConversation(projectId, conversationRequest.current)
+      conversationRequest.current = ''
+      if (selectedProjectRef.current === projectId && currentConversationRouteScope.current === routeScope) {
+        responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false)
+        void navigate(projectLink(projectId, sid))
       }
-    } catch (e) {
-      console.warn('Failed to ensure orchestrator session:', e)
-    }
-    return null
-  }, [])
+      return sid
+    } catch (cause) {
+      if (selectedProjectRef.current === projectId && currentConversationRouteScope.current === routeScope) setConversationError(cause instanceof Error ? cause.message : 'Unable to create conversation')
+      return null
+    } finally { conversationCreating.current = false; setCreatingConversation(false) }
+  }
+  const ensureOrchestratorSession = async (_project: ProjectSummary) => activeSessionId && !activeTaskId ? activeSessionId : newConversation()
 
   const openWorkerConversation = async (worker: SelectedWorker | null) => {
     if (workerChatStarting.current) return
@@ -4152,17 +4100,11 @@ export function OrchestrateView({
     setActiveTaskId(null)
     setSelectedTaskId('')
     try {
-      let sessionId: string | null = activeSessionId || null
+      let sessionId: string | null = !activeTaskId ? activeSessionId || null : null
       if (!sessionId && selectedProject) {
         sessionId = await ensureOrchestratorSession(selectedProject)
       } else if (!sessionId) {
-        // The server resolves the account's default workspace; never guess a local path.
-        workerChatRequestId.current ||= `desktop-v3-create:${crypto.randomUUID()}`
-        const response = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ client_request_id: workerChatRequestId.current, title: 'Worker Orchestrator', agent_name: 'system-orchestrator' }),
-        })
-        sessionId = response?.session?.id || null
+        throw new Error('Choose a project before opening a worker conversation.')
       }
       if (workerConversationScopeRef.current !== scope) return
       if (!sessionId) throw new Error('Could not open Orchestrator. Check your workspace connection and try again.')
@@ -4175,11 +4117,43 @@ export function OrchestrateView({
     } finally { workerChatStarting.current = false }
   }
 
-  // Synchronize active orchestrator session with selected project
+  const firstConversationId = firstProjectConversation(conversations.rows, conversations.ready, conversations.loading, conversations.error)
   useEffect(() => {
-    if (!selectedProject || isOnboardingActive) return
-    void ensureOrchestratorSession(selectedProject)
-  }, [selectedProject?.id, isOnboardingActive, ensureOrchestratorSession])
+    // Named section routes remain section routes; explicit session links always win.
+    if (!selectedProjectId || routeConversationId || projectRouteParams.swarmSection || !firstConversationId) return
+    // Let ID-to-name canonicalization finish before selecting the initial chat.
+    if (routeProjectSegment !== selectedProjectSegment) return
+    void navigate({ ...projectConversationLink(selectedProjectSegment, firstConversationId), search: true, hash: true, replace: true })
+  }, [selectedProjectId, selectedProjectSegment, routeProjectSegment, routeConversationId, projectRouteParams.swarmSection, firstConversationId, navigate])
+
+  // Verify provenance before mounting a transcript, composer or permission prompt.
+  useEffect(() => {
+    let active = true
+    appliedConversationRouteScope.current = conversationRouteScope
+    setConversationAdmission(null)
+    setActiveSessionId(''); setActiveTaskId(null); setSelectedTaskId(''); setAttachedTaskIds([])
+    setConversationError(''); conversationRequest.current = ''
+    if (selectedProject) {
+      try { localStorage.setItem(`swarm:last-project:${accountScopeId || ''}`, selectedProject.id) } catch { /* Optional navigation preference; route remains authoritative. */ }
+    }
+    if (accountScopeId && selectedProject && routeConversationId) {
+      const cached = cachedProjectConversation(getDesktopV3CacheSnapshot(), selectedProject.id, routeConversationId)
+      if (cached) {
+        setConversationAdmission({ projectId: selectedProject.id, sessionId: cached.id, accountScopeId })
+        setActiveSessionId(cached.id)
+        return () => { active = false }
+      }
+      void requestStartupJson<{ session: SessionSnapshot }>(`/v3/sessions/${encodeURIComponent(routeConversationId)}`).then(({ session }) => {
+        requireProjectConversation(selectedProject.id, session)
+        if (session.id !== routeConversationId) throw new Error('Session identity mismatch')
+        if (active && getDesktopSessionIdentitySnapshot()?.accountScopeId === accountScopeId) {
+          setConversationAdmission({ projectId: selectedProject.id, sessionId: session.id, accountScopeId })
+          setActiveSessionId(session.id)
+        }
+      }).catch(cause => { if (active) setConversationError(cause instanceof Error ? cause.message : 'Unable to open conversation') })
+    }
+    return () => { active = false }
+  }, [selectedProject?.id, routeConversationId, accountScopeId, admissionAttempt])
 
   // Selecting task details is not consent to leave the current conversation.
   const handleSelectTask = (task: RunningTask) => {
@@ -4200,33 +4174,25 @@ export function OrchestrateView({
     setActiveTaskId(null)
     setSelectedTaskId('')
     setWorkerCreationRequested(false)
-    if (selectedProject?.primarySessionId) {
-      setActiveSessionId(selectedProject.primarySessionId)
-    }
+    setActiveSessionId(admittedParentId)
   }
-
-  const handleOrchestratorSessionReset = useCallback((newSessionId: string) => {
-    setActiveSessionId(newSessionId)
-    setSelectedTaskId('')
-    if (selectedProject) {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === selectedProject.id ? { ...p, primarySessionId: newSessionId } : p))
-      )
-    }
-    void selectAndHydrateDesktopV3Session(newSessionId)
-  }, [selectedProject?.id])
 
   // Media handling: file uploads, pasted docs, tagging, and studio library integration
   const [shelfFailedFiles, setShelfFailedFiles] = useState<File[]>([])
   const [shelfUploadError, setShelfUploadError] = useState<string | null>(null)
 
   const handleFileUpload = async (files: FileList | File[] | null) => {
-    if (!files || files.length === 0 || !selectedProject?.id) return
+    if (!files || files.length === 0 || !selectedProject?.id || isDeployingTaskRef.current) return
+    const scope = mediaUploadScopeRef.current
+    const fileArray = [...new Set(Array.from(files))].filter(file => !scope.inFlight.has(file))
+    if (fileArray.length === 0) return
+    fileArray.forEach(file => scope.inFlight.add(file))
+    const isCurrentUpload = () => mediaUploadScopeRef.current === scope && selectedProjectRef.current === selectedProject.id
+    scope.pending += 1
+    scope.failedFiles = scope.failedFiles.filter(file => !fileArray.includes(file))
+    setShelfFailedFiles(scope.failedFiles)
+    if (scope.failedFiles.length === 0) setShelfUploadError(null)
     setIsUploadingMedia(true)
-    setShelfUploadError(null)
-    setShelfFailedFiles([])
-    const fileArray = Array.from(files)
-    const failed: File[] = []
 
     try {
       for (const file of fileArray) {
@@ -4245,7 +4211,7 @@ export function OrchestrateView({
           let textData = ''
           if (kind === 'doc' && isDoc) {
             textData = await file.text()
-            if (selectedProjectRef.current !== selectedProject.id) return
+            if (!isCurrentUpload()) return
             if (taskIntent === 'video') {
               // Text stays in prompt for video task flow
               setNewTaskPrompt((prev) => (prev.trim() ? `${prev.trim()}\n\n${textData.trim()}` : textData.trim()))
@@ -4255,8 +4221,7 @@ export function OrchestrateView({
             if (taskIntent === 'video') {
               const validation = validateVideoAttachment(file, selectedVideoOption?.generationOptions)
               if (!validation.valid) {
-                setVideoAttachmentError(validation.error || 'Invalid video reference image')
-                continue
+                throw new Error(validation.error || 'Invalid video reference image')
               }
               setVideoAttachmentError(null)
             }
@@ -4268,7 +4233,7 @@ export function OrchestrateView({
             })
           }
 
-          if (selectedProjectRef.current !== selectedProject.id) return
+          if (!isCurrentUpload()) return
           const newMedia: ProjectTaskMediaRef = {
             id: `med_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
             title: file.name,
@@ -4291,7 +4256,7 @@ export function OrchestrateView({
           )
 
           if (!res?.media?.id || !res.media.kind || (!res.media.url && !res.media.data)) throw new Error('Upload returned no persisted media. Please retry.')
-          if (selectedProjectRef.current !== selectedProject.id) return
+          if (!isCurrentUpload()) return
           const savedMedia = res.media
           desktopProjects.setOptimisticMedia(selectedProject.id, (prev) => {
             if (prev.some((m) => m.id === savedMedia.id)) return prev
@@ -4308,19 +4273,19 @@ export function OrchestrateView({
           }
           desktopProjects.invalidate(selectedProject.id)
         } catch (fileErr: any) {
-          if (selectedProjectRef.current !== selectedProject.id) return
-          failed.push(file)
+          if (!isCurrentUpload()) return
+          if (!scope.failedFiles.includes(file)) scope.failedFiles = [...scope.failedFiles, file]
+          setShelfFailedFiles(scope.failedFiles)
           setShelfUploadError(fileErr?.message || `Failed to upload "${file.name}"`)
         }
       }
     } catch (err: any) {
-      if (selectedProjectRef.current !== selectedProject.id) return
+      if (!isCurrentUpload()) return
       setShelfUploadError(err?.message || 'Failed to upload media')
     } finally {
-      if (selectedProjectRef.current === selectedProject.id) {
-        if (failed.length > 0) setShelfFailedFiles(failed)
-        setIsUploadingMedia(false)
-      }
+      fileArray.forEach(file => scope.inFlight.delete(file))
+      scope.pending -= 1
+      if (isCurrentUpload()) setIsUploadingMedia(scope.pending > 0)
     }
   }
 
@@ -4484,7 +4449,8 @@ export function OrchestrateView({
   }, [tasks, uploadedMedia, selectedProject, projectDesigns.items])
 
   const handleOpenDeliverableInMediaCenter = (d: MediaDeliverable, parentTask?: RunningTask, mode?: QuickRouteMode) => {
-    const item = deliverableToMediaItem(d, parentTask, selectedProject)
+    const owner = tasks.find(task => task.deliverables?.some(output => output.id === d.id)) ?? parentTask
+    const item = deliverableToMediaItem(d, owner, selectedProject)
     setActiveMediaViewerItem(item)
     setMediaViewerInitialMode(mode ?? null)
   }
@@ -4601,6 +4567,7 @@ export function OrchestrateView({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            id: tempJobId,
             prompt: composedPrompt,
             intent: targetIntent,
             operation: targetIntent === 'video' ? (isVideo ? (action === 'next_scene' ? 'extend' : 'edit') : 'create') : undefined,
@@ -4678,19 +4645,20 @@ export function OrchestrateView({
     const seenTaskIds = new Set<string>()
 
     for (const t of tasks) {
-      if (!t.attachedMedia || t.attachedMedia.length === 0) continue
+      if (!isCreativeMediaTask(t)) continue
       seenTaskIds.add(t.id)
 
-      for (const am of t.attachedMedia) {
-        const localJob = localGenerationJobs.find((job) => job.taskId === t.id && job.sourceId === am.id)
+      // One durable task is one turn, regardless of candidate or attachment count.
+      const parentIds = [...new Set((t.deliverables ?? []).flatMap(output => [output.parentDeliverableId, output.sourceMediaRef].filter((id): id is string => Boolean(id))))]
+      const sourceId = parentIds.length === 1 ? parentIds[0]! : t.attachedMedia?.length === 1 ? t.attachedMedia[0].id : t.deliverables?.[0]?.id ?? ''
+      for (const am of [{ id: sourceId }]) {
+        const localJob = localGenerationJobs.find((job) => job.taskId === t.id)
         let status: string = t.status
         if (t.status === 'failed') {
           status = 'failed'
         } else if (t.status === 'in_progress' || t.status === 'running') {
-          const hasDelivs = t.deliverables && t.deliverables.length > 0
-          const allReady = hasDelivs && t.deliverables?.every((d) => d.status === 'ready' || d.status === 'accepted')
-          if (allReady) status = 'completed'
-          else status = 'in_progress'
+          // Successful prior outputs do not complete a newly running request.
+          status = 'in_progress'
         } else if (t.status === 'completed' || t.status === 'needs_review') {
           status = t.lastError ? 'partial_failure' : 'completed'
         } else if (t.status === 'queued' || t.status === 'pending') {
@@ -4698,12 +4666,11 @@ export function OrchestrateView({
         }
 
         jobs.push({
-          id: localJob?.id || `${t.id}_${am.id}`,
+          ...mediaJobIdentity(t.id, am.id, localGenerationJobs),
           taskId: t.id,
           prompt: localJob?.prompt || t.description || t.title,
           createdAt: localJob?.createdAt || t.createdAt,
-          outputIds: t.deliverables?.filter((d) => (d.status === 'ready' || d.status === 'accepted') && (d.mediaUrl || d.previewUrl)).map((d) => d.id) || [],
-          sourceId: am.id,
+          outputIds: t.deliverables?.filter((d) => d.status === 'ready' || d.status === 'accepted').map((d) => d.id) || [],
           title: t.title,
           count: t.variantCount || t.deliverables?.length || 1,
           status,
@@ -4812,8 +4779,20 @@ export function OrchestrateView({
   // Submit Task Proposal with Intent, Visual Controls & Auto-Approve Policy
   const handleDeployModalSubmit = async () => {
     if (isDeployingTaskRef.current) return
+    if (mediaUploadScopeRef.current.pending > 0 || isUploadingMedia) {
+      setDeployError('Wait for attachment uploads to finish before creating the task.')
+      return
+    }
+    if (mediaUploadScopeRef.current.failedFiles.length > 0) {
+      setDeployError('Retry failed attachments or explicitly discard them before creating the task.')
+      return
+    }
     const prompt = taskIntent === 'image' ? newTaskPrompt : newTaskPrompt.trim()
     if (!prompt.trim() || !selectedProject?.id) return
+    if (taskIntent === 'code' && !newTaskWorkspace.trim()) {
+      setDeployError('Select the intended coding workspace. Git setup affects tasks only; project chat remains available.')
+      return
+    }
     const scenePrompts = taskIntent === 'video' ? videoScenePrompts.split('\n').map(value => value.trim()).filter(Boolean) : []
 
     if (taskIntent === 'video') {
@@ -4866,7 +4845,7 @@ export function OrchestrateView({
         : (newTaskModelOverride.trim() || undefined)
 
       const targetAgent = taskIntent === 'code'
-        ? (featureSize === 'big' ? 'plan' : 'coder')
+        ? (featureSize === 'big' ? 'swarm' : 'coder')
         : taskIntent === 'audit'
           ? 'finder'
           : taskIntent === 'image'
@@ -4877,8 +4856,8 @@ export function OrchestrateView({
 
       const attachedMediaForTask = taggedMedia
 
-      // Omitted Auto-detect is resolved by the backend only if there is exactly one
-      // authorized project repository. Explicit choices must match the project catalog.
+      // Coding requires an explicit source. Audit routing remains backend-owned;
+      // every selection must match the authorized project catalog.
       const workspaceSelection = taskIntent === 'code' || taskIntent === 'audit'
         ? taskWorkspaceSelection(newTaskWorkspace, selectedProject)
         : {}
@@ -4936,6 +4915,11 @@ export function OrchestrateView({
       ])
       desktopProjects.invalidate(selectedProject.id)
       setIsDeployModalOpen(false)
+      if (isCreativeMediaTask(mapBackendTask(res.task))) {
+        setStatusFilter('media')
+        setActiveNavTab('home')
+        responsiveLayout.setPanel('main')
+      }
       setNewTaskPrompt('')
       dispatchImagePrompt({ type: 'reset' })
       setNewTaskModelOverride('')
@@ -4957,6 +4941,13 @@ export function OrchestrateView({
   const integrationForTask = (task: RunningTask) => taskIntegrationOperations.get(taskIntegrationKey(selectedProject?.id || '', task))
   const recoveryProjectRef = useRef(selectedProject?.id)
   recoveryProjectRef.current = selectedProject?.id
+  const batchSourceRef = useRef<{ projectId?: string; tasks: RunningTask[] }>({ tasks: [] })
+  const batchNavigation = useRef({ projectId: selectedProject?.id, generation: 0 })
+  if (batchNavigation.current.projectId !== selectedProject?.id) batchNavigation.current = { projectId: selectedProject?.id, generation: batchNavigation.current.generation + 1 }
+  batchSourceRef.current = { projectId: selectedProject?.id, tasks }
+  useEffect(() => () => { batchNavigation.current.generation++ }, [])
+  const integrationBatches = useSyncExternalStore(taskIntegrationBatches.subscribe, taskIntegrationBatches.getSnapshot, taskIntegrationBatches.getSnapshot)
+  const integrationBatch = integrationBatches.get(selectedProject?.id || '')
   useSyncExternalStore(taskReopenOperations.subscribe, taskReopenOperations.getSnapshot, taskReopenOperations.getSnapshot)
 
   const handleClearTaskError = useCallback((taskId: string) => {
@@ -4975,6 +4966,7 @@ export function OrchestrateView({
 
     const targetTask = tasks.find((t) => t.id === taskId) || liveTasks.find((t) => t.id === taskId)
     if (!targetTask) return
+    if (!confirmMediaBatch(targetTask, message => window.confirm(message))) return
 
     // Pre-flight validation against illegal or premature approval
     if (
@@ -5008,6 +5000,11 @@ export function OrchestrateView({
       return
     }
 
+    if (targetTask.boardSummary?.plan_binding_stale || (targetTask.boardSummary?.plan && !isTaskPlanReviewable(planDoc))) {
+      desktopProjects.inspectTask(selectedProject.id, taskId)
+      setTaskActionErrors(prev => ({ ...prev, [taskId]: 'Open and review the full current plan before approving. Retry after detail loads.' }))
+      return
+    }
     const acceptanceBody = buildTaskAcceptancePayload(targetTask)
     const isPlanTask = Boolean(
       targetTask.agentType === 'plan' ||
@@ -5102,7 +5099,8 @@ export function OrchestrateView({
   const managementNavigation = useRef({ activeTaskId, selectedTaskId })
   managementNavigation.current = { activeTaskId, selectedTaskId }
   // Every management mutation is guarded by the stored revision. Never remove a task optimistically.
-  const manageTasks = async (rows: RunningTask[], action: 'archive' | 'delete') => {
+  const manageTasks = async (rows: RunningTask[], action: 'archive' | 'unarchive' | 'delete') => {
+    if (taskIntegrationBatches.getSnapshot().get(selectedProject?.id || '')?.pending) return
     const projectId = selectedProject?.id
     if (!projectId || rows.length === 0) return
     const epoch = managementEpoch.current
@@ -5111,36 +5109,35 @@ export function OrchestrateView({
     if (!rows.length) return
     if (action === 'delete' && !window.confirm(`Permanently delete ${rows.length} selected task${rows.length === 1 ? '' : 's'}? This cannot be undone. Only archived, unlaunched tasks can be deleted; launched tasks and their work are retained.`)) return
     rows.forEach(row => managementPending.current.add(row.id))
-    setTaskActionErrors(prev => ({ ...prev, ...Object.fromEntries(rows.map(row => [row.id, action === 'archive' ? 'Archiving…' : 'Deleting…'])) }))
+    setTaskActionErrors(prev => ({ ...prev, ...Object.fromEntries(rows.map(row => [row.id, action === 'archive' ? 'Archiving…' : action === 'unarchive' ? 'Unarchiving…' : 'Deleting…'])) }))
     setManagementBusy(true)
     setManagementMessage('')
     const failures: string[] = []
     const succeeded: string[] = []
     await Promise.all(rows.map(async row => {
       try {
-        await archiveQueue.run(JSON.stringify(['task', epoch, projectId, row.id]), async () => {
+        await projectTaskArchiveQueue.run(JSON.stringify(['task', managementOwner, epoch, projectId, row.id]), async () => {
         if (!current()) throw new Error('Project or account changed')
         let revision = row.revision
-        if (typeof revision !== 'number' || revision <= 0) throw new Error('Missing task revision; refresh and retry')
-        if (action === 'delete') {
+        if (!Number.isSafeInteger(revision) || (revision ?? 0) <= 0) throw new Error('Missing task revision; refresh and retry')
+        if (action === 'unarchive') {
+          const receipt = await unarchiveProjectTask(projectId, row, current)
+          if (!receipt) return
+          desktopProjects.unarchiveReceipt(projectId, receipt)
+          setArchivedTasks(previous => previous.filter(task => task.id !== row.id))
+        } else if (action === 'delete') {
           if (row.sessionId || row.taskProgramId || row.planBinding) {
             throw new Error('Launched task has retained execution; archive instead of deleting')
           }
-          const archived = await requestJson<{ task: { id: string; revision: number; archived: boolean } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
-          })
-          if (!current()) return
-          if (archived.task.id !== row.id) throw new Error('Task archive identity mismatch')
-          desktopProjects.archiveReceipt(projectId, archived.task)
-          revision = archived.task.revision
+          const receipt = await archiveProjectTask(projectId, row, current)
+          if (!receipt) return
+          desktopProjects.archiveReceipt(projectId, receipt)
+          revision = receipt.revision
           await requestJson(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}?revision=${revision}`, { method: 'DELETE' })
         } else {
-          const archived = await requestJson<{ task: { id: string; revision: number; archived: boolean } }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(row.id)}/archive`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
-          })
-          if (!current()) return
-          if (archived.task.id !== row.id) throw new Error('Task archive identity mismatch')
-          desktopProjects.archiveReceipt(projectId, archived.task)
+          const receipt = await archiveProjectTask(projectId, row, current)
+          if (!receipt) return
+          desktopProjects.archiveReceipt(projectId, receipt)
         }
         })
         if (!current()) return
@@ -5159,9 +5156,9 @@ export function OrchestrateView({
       }
     }))
     if (!current()) return
-    setManagementMessage(`${succeeded.length} ${action === 'archive' ? 'archived' : 'deleted'}, ${failures.length} failed.${failures.length ? ` Retry after refresh: ${failures.join('; ')}` : ''}`)
+    setManagementMessage(`${succeeded.length} ${action === 'archive' ? 'archived' : action === 'unarchive' ? 'unarchived' : 'deleted'}, ${failures.length} failed.${failures.length ? ` Retry after refresh: ${failures.join('; ')}` : ''}`)
     setMarkedTaskIds(prev => new Set([...prev].filter(id => !succeeded.includes(id))))
-    if (archivedOpen) void loadArchivedTasks(projectId)
+    if (archivedOpen && action !== 'unarchive') void loadArchivedTasks(projectId, true)
 
   }
 
@@ -5233,17 +5230,35 @@ export function OrchestrateView({
     if (!outcome.ok) desktopProjects.invalidate(failure.projectId)
   }
 
+  const handleIntegrateSelected = async (rows: RunningTask[]) => {
+    const project = selectedProject
+    if (!project || managementBusy) return
+    const generation = batchNavigation.current.generation
+    await taskIntegrationBatches.run(project, rows,
+      id => batchNavigation.current.generation === generation && batchSourceRef.current.projectId === project.id ? batchSourceRef.current.tasks.find(task => task.id === id) : undefined,
+      (task, token) => {
+        const request = taskIntegrationRequest(project.id, task)
+        return taskIntegrationOperations.run(project, task, () =>
+          requestJson<TaskIntegrationResult>(request.url, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(request.body),
+          }), () => {}, token)
+      },
+      () => desktopProjects.invalidate(project.id))
+  }
+
   // Integrate / Promote task commits into target branch
   const handleIntegrateTask = async (taskId: string) => {
     const project = selectedProject
     const task = tasks.find(row => row.id === taskId)
     if (!project || !task) return
     const projectId = project.id
+    const request = taskIntegrationRequest(projectId, task)
     await taskIntegrationOperations.run(project, task, () =>
-      requestJson<TaskIntegrationResult>(`/v3/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/integrate`, {
+      requestJson<TaskIntegrationResult>(request.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: task.sessionId, source_branch: task.worktreeBranch, target_branch: task.baseBranch }),
+        body: JSON.stringify(request.body),
       }),
       () => desktopProjects.invalidate(projectId),
     )
@@ -5257,6 +5272,16 @@ export function OrchestrateView({
     const guards = buildTaskAcceptancePayload(targetTask)
     handleClearTaskError(taskId)
     try {
+      if (targetTask.status === 'pending_approval') {
+        if (!activeSessionId) throw new Error('Open an Orchestrator conversation before requesting changes.')
+        await continueDesktopV3Conversation(createDesktopV3ExistingMessageOperation({
+          sessionId: activeSessionId,
+          prompt: !targetTask.planBinding
+            ? `Author the first structured plan for pending task ${taskId} in project ${selectedProject.id} on the same card. Read get_task first; submit refine_task with plan_document and expected_revision ${targetTask.revision}. Include authored requirements with stable IDs, each bound to an exact checkpoint acceptance criterion. Do not create a replacement task or approve it. User request: ${feedback?.trim() || errorSummary?.trim() || ''}`
+            : `Request changes to the requirements on task ${taskId} in project ${selectedProject.id}. Reviewed binding: ${JSON.stringify(guards)}. User request: ${feedback?.trim() || errorSummary?.trim() || ''}\nRead the current bound plan; apply only targeted requirement edits with edit_requirements. Preserve unrelated requirements and execution details. Do not delegate to Plan or regenerate the plan. Summarize the changed requirements on the same card for fresh approval.`,
+        }))
+        return
+      }
       await requestJson(`/v3/projects/${selectedProject.id}/tasks/${taskId}/refine`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5347,11 +5372,15 @@ export function OrchestrateView({
     return tasksWithSessions.map((task) => aggregateTaskLiveState(task, liveTaskSessionsData))
   }, [tasksWithSessions, liveTaskSessionsData])
 
-  // Task counts by source and status
+  const workspaceTasks = useMemo(() => selectedTaskWorkspace ? liveTasks.filter(task => taskMatchesWorkspace(task, selectedTaskWorkspace)) : liveTasks, [liveTasks, selectedTaskWorkspace])
+  const codeTasks = useMemo(() => workspaceTasks.filter(task => !isCreativeMediaTask(task)), [workspaceTasks])
+  const mediaCardCount = useMemo(() => mediaSelectionCards(workspaceTasks, projectDesigns.data?.designs ?? []).length, [workspaceTasks, projectDesigns.data])
+
+  // Task counts and every task layout share the same non-media projection.
   const filteredBySourceTasks = useMemo(() => {
-    if (taskSourceFilter === 'all') return liveTasks
-    return liveTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim()))
-  }, [liveTasks, taskSourceFilter])
+    if (taskSourceFilter === 'all') return codeTasks
+    return codeTasks.filter((t) => Boolean(t.workerId?.trim() || t.worker_id?.trim()))
+  }, [codeTasks, taskSourceFilter])
 
   const filteredBySourceRunningCount = useMemo(() => {
     return filteredBySourceTasks.filter((t) => t.status === 'running' || t.status === 'in_progress').length
@@ -5401,23 +5430,36 @@ export function OrchestrateView({
     })
   }, [filteredBySourceTasks, searchQuery, statusFilter, selectedTag])
 
+  const mediaActions = (task: RunningTask): MediaTaskActions => ({
+    onPreview: (output, mode) => handleOpenDeliverableInMediaCenter(output, task, mode),
+    onApprove: () => handleApproveTask(task.id),
+    onArchive: selectionProps(task).onArchiveTask,
+    onDelete: () => handleDeleteTask(task.id),
+    isApproving: approvingTaskIds.has(task.id), error: taskActionErrors[task.id],
+  })
   const markedRows = filteredTasks.filter(row => markedTaskIds.has(row.id))
-  useEffect(() => { setMarkedTaskIds(new Set()); setManagementMessage(''); setArchivedOpen(false) }, [selectedProjectId, searchQuery, taskSourceFilter, statusFilter])
+  useEffect(() => { setMarkedTaskIds(new Set()); setManagementMessage(''); setArchivedOpen(false) }, [selectedProjectId, searchQuery, taskSourceFilter, statusFilter, workspaceFilter])
   useEffect(() => {
     setMarkedTaskIds(prev => {
       const valid = new Set(filteredTasks.map(row => row.id))
       return [...prev].every(id => valid.has(id)) ? prev : new Set([...prev].filter(id => valid.has(id)))
     })
   }, [filteredTasks])
-  const loadArchivedTasks = async (projectId: string) => {
+  const archivedRequest = useRef<{ projectId: string; epoch: number; promise: Promise<void> } | null>(null)
+  const loadArchivedTasks = (projectId: string, force = false): Promise<void> => {
+    const epoch = managementEpoch.current
+    const pending = archivedRequest.current
+    if (!force && pending?.projectId === projectId && pending.epoch === epoch) return pending.promise
     setArchivedLoading(true)
     setArchivedError('')
-    try {
-      const result = await requestJson<{ tasks: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks?view=archived`)
-      setArchivedTasks(mapBackendTasks(result.tasks || []))
-    } catch (err) {
-      setArchivedError(err instanceof Error ? err.message : 'Failed to load archived tasks')
-    } finally { setArchivedLoading(false) }
+    const current = () => managementEpoch.current === epoch && selectedProjectRef.current === projectId && archivedRequest.current === entry
+    const entry = { projectId, epoch, promise: Promise.resolve() }
+    entry.promise = requestJson<{ tasks: any[] }>(`/v3/projects/${encodeURIComponent(projectId)}/tasks?view=archived`)
+      .then(result => { if (current()) setArchivedTasks(mapBackendTasks(result.tasks || [])) })
+      .catch(err => { if (current()) setArchivedError(err instanceof Error ? err.message : 'Failed to load archived tasks') })
+      .finally(() => { if (current()) setArchivedLoading(false); if (archivedRequest.current === entry) archivedRequest.current = null })
+    archivedRequest.current = entry
+    return entry.promise
   }
   useEffect(() => {
     if (!archivedOpen || !selectedProjectId) return
@@ -5462,8 +5504,8 @@ export function OrchestrateView({
   })
 
   const selectedTaskForSplit = useMemo(() => {
-    return selectedTaskId ? liveTasks.find((t) => t.id === selectedTaskId) || null : null
-  }, [liveTasks, selectedTaskId])
+    return selectedTaskId ? codeTasks.find((t) => t.id === selectedTaskId) || null : null
+  }, [codeTasks, selectedTaskId])
 
   const handleDeleteProject = async (projectId: string, e?: React.MouseEvent) => {
     e?.stopPropagation()
@@ -5480,7 +5522,6 @@ export function OrchestrateView({
               setActiveSessionId(next[0].primarySessionId)
             }
           } else {
-            setSelectedProjectId('')
             setActiveSessionId('')
             setIsOnboardingActive(true)
           }
@@ -5492,161 +5533,35 @@ export function OrchestrateView({
     }
   }
 
-  // Workspaces toggling for project onboarding
-  const handleToggleWorkspace = (path: string) => {
-    setOnboardingWorkspaces((prev) =>
-      prev.map((w) => (w.path === path ? { ...w, selected: !w.selected } : w))
-    )
-  }
-
-  const handleAddCustomFolder = () => {
-    const trimmed = customFolderPath.trim()
-    if (!trimmed) return
-    if (onboardingWorkspaces.some((w) => w.path === trimmed)) {
-      setOnboardingWorkspaces((prev) =>
-        prev.map((w) => (w.path === trimmed ? { ...w, selected: true } : w))
-      )
-    } else {
-      const base = trimmed.split('/').filter(Boolean).pop() || 'Workspace'
-      setOnboardingWorkspaces((prev) => [
-        ...prev,
-        { path: trimmed, label: base, role: 'auxiliary', selected: true },
-      ])
-    }
-    setCustomFolderPath('')
-  }
-
-  const handleSynthesizeContext = async () => {
-    setIsSynthesizing(true)
-    try {
-      const selectedWs = onboardingWorkspaces.filter((w) => w.selected).map((w) => w.path)
-      const res = await requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: onboardingName.trim() || 'Project Architecture',
-          workspaces: selectedWs,
-        }),
-      })
-      if (res?.project_context) {
-        setOnboardingContext(res.project_context)
-      }
-    } catch (err) {
-      console.warn('Context synthesis failed, generating local fallback:', err)
-      const selectedWs = onboardingWorkspaces.filter((w) => w.selected)
-      const synthesized = `# ${onboardingName.trim() || 'Project Architecture'}
-
-## Overview
-${onboardingDescription.trim() || 'Multi-workspace software initiative managed by Swarm Orchestrator.'}
-
-## Subsystems & Workspaces
-${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
-
-## Operational Directives
-- Local-first architecture; session records persist to Pebble database.
-- Subagents execute inside isolated Git worktrees.
-- Autonomous project tasks deliver verified outcomes (code_pr, media_bundle, bug_patch, audit_report).
-- Verification gate: all pull requests and deliverables require review before promotion.
-`
-      setOnboardingContext(synthesized)
-    } finally {
-      setIsSynthesizing(false)
-    }
-  }
-
-  const handleCreateAndActivateProject = async () => {
-    setIsActivating(true)
-    const selectedWs = onboardingWorkspaces.filter((w) => w.selected).map((w) => ({
-      workspace_id: w.id || '',
-      path: w.path,
-      role: w.role,
-      label: w.label,
-    }))
-
-    const payload = {
-      name: onboardingName.trim() || 'My Project',
-      description: onboardingDescription.trim(),
-      workspaces: selectedWs,
-      project_context: onboardingContext,
-    }
-
-    let newId = `proj_${Date.now()}`
-    try {
-      const res = await requestJson<{ project: { id: string } }>('/v3/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-      if (res?.project?.id) {
-        newId = res.project.id
-      }
-    } catch (err) {
-      console.warn('Backend /v3/projects save failed:', err)
-    }
-
-    // Spawn primary orchestrator session with valid client_request_id and model preference
-    let orchSessionId = ''
-    const clientRequestId = `desktop-v3-create:${crypto.randomUUID()}`
-    try {
-      const sessRes = await requestJson<{ session: { id: string } }>('/v3/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_request_id: clientRequestId,
-          title: `Project Orchestrator: ${payload.name}`,
-          workspace_id: selectedWs[0]?.workspace_id || undefined,
-          workspace_path: selectedWs[0]?.path || '.',
-          agent_name: 'system-orchestrator',
-          metadata: {
-            project_id: newId,
-            role: 'project_orchestrator',
-          },
-        }),
-      })
-      if (sessRes?.session?.id) {
-        orchSessionId = sessRes.session.id
-        await requestJson(`/v3/projects/${newId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ primary_session_id: orchSessionId }),
-        }).catch(() => {})
-      }
-    } catch (e) {
-      console.warn('Failed to spawn initial orchestrator session:', e)
-    }
-
-    const newProject: ProjectSummary = {
-      id: newId,
-      name: payload.name,
-      slug: payload.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-      description: payload.description,
-      repoPath: selectedWs[0]?.path || '.',
-      branch: 'dev',
-      gitStatus: 'clean',
-      linkedWorkspaces: selectedWs.map((w) => w.path),
-      activeWorkersCount: 0,
-      pendingDeliverablesCount: 0,
-      runningTasksCount: 0,
-      projectContext: payload.project_context,
-      primarySessionId: orchSessionId,
-    }
-
-    setProjects((prev) => [newProject, ...prev])
-    setSelectedProjectId(newProject.id)
-    if (orchSessionId) {
-      setActiveSessionId(orchSessionId)
-      setActiveTaskId(null)
-    }
-    setIsOnboardingActive(false)
-    setIsActivating(false)
-  }
-
   useEffect(() => {
     if (activeTask || workerChatOpen) responsiveLayout.setPanel('chat')
   }, [activeTask?.id, workerChatOpen])
 
+  const startup = projectStartupState({
+    catalogLoaded: projectsLoaded, catalogError: projectLoadError, routeError: projectRouteError,
+    projectId: selectedProjectId, tasksObserved: projectState?.lastObservedAt !== undefined,
+    tasksError: projectTasksError,
+  })
+  const screenTheme = useMemo(() => ({ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style,
+    ...(projectTheme.state === 'missing' && !themeCatalogReady ? {
+      '--swarm-background': 'var(--startup-background)', '--swarm-text': 'var(--startup-text)', '--swarm-accent': 'var(--startup-accent)',
+    } : {}),
+    ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) }) as React.CSSProperties,
+  [theme, initialThemeId, selectedProject?.themeId, themeCatalogRevision, themeCatalogReady])
+  useStartupPalette(screenTheme, Boolean(selectedProjectId) && (projectTheme.state !== 'missing' || themeCatalogReady))
+  if (startup.phase === 'loading') return <StartupLoading />
+  if (startup.phase === 'error') return <StartupScreen><main className="swarm-startup-loading">
+    <h1>Unable to open project</h1><p role="alert">{startup.message}</p>
+    <button type="button" onClick={() => {
+      if (startup.retry === 'tasks') void desktopProjects.refresh(selectedProjectId, false)
+      else { void invalidateProjectCatalog(); setProjectsLoaded(false); setProjectLoadAttempt(value => value + 1) }
+    }}>Try again</button>
+    <Link to="/projects">Choose a project</Link>
+    <button type="button" onClick={() => window.location.reload()}>Reload page</button>
+  </main></StartupScreen>
+
   return (
-    <div
+    <StartupScreen><div
       ref={setThemeRoot}
       className="swarm-section swarm-responsive-shell relative font-sans"
       data-layout={responsiveLayout.mode}
@@ -5654,7 +5569,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
       data-panel={responsiveLayout.panel}
       data-navigation-open={responsiveLayout.navigationOpen}
       data-project-theme={projectTheme.state}
-      style={{ ...theme.customVars, ...inheritedSwarmThemeStyle(initialThemeId), ...projectTheme.style, ...(projectTheme.colorScheme ? { colorScheme: projectTheme.colorScheme } : {}) } as React.CSSProperties}
+      style={screenTheme}
     >
       <SwarmLayoutControls layout={responsiveLayout} />
       {/* ─────────────────────────────────────────────────────────────
@@ -5668,107 +5583,28 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             <div className="flex min-w-0 flex-1 items-center gap-2.5">
               <ProjectHeaderIdentity project={selectedProject} projects={projects}
                 onSelect={id => { setSelectedProjectId(id); setIsOnboardingActive(false); setActiveTaskId(null) }}
-                onCreate={() => { setIsOnboardingActive(true); setActiveNavTab('home') }}
+                onCreate={() => { setCreationProject(undefined); void navigate({ to: '/swarm', search: { createProject: true } }) }}
                 onManage={() => { setIsOnboardingActive(false); setActiveNavTab('projects') }} />
             </div>
 
             {accountScopeId && <OrchestratorNotifications accountScopeId={accountScopeId} workspaceSlug={workspaceSlug} />}
           </div>
         </header>
-        <ProjectTaskAttention tasks={liveTasks} onOpen={task => {
-          setSelectedTaskId(task.id); setExpandedTaskId(task.id); setStatusFilter('all'); setActiveNavTab('home')
-          responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false)
-          if (task.sessionId) { setActiveTaskId(task.id); setActiveSessionId(task.sessionId); setWorkerChatOpen(true) }
-        }} />
+        <ProjectNavigation activePage={activeNavTab} projectSegment={selectedProjectSegment} sessionId={routeConversationId || undefined}
+          workspaceSlug={workspaceSlug} deliverableCount={liveTasks.flatMap(task => task.deliverables || []).length}
+          mediaCount={allMediaLibraryItems.length}
+          onSelect={() => { setIsOnboardingActive(projects.length === 0); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }} />
 
-        <SidebarModeSelector mode="swarm" workspaceSlug={workspaceSlug} pendingReviews={pendingReviews.length}
-          onNavigateChat={onNavigateHome} onNavigate={() => responsiveLayout.setNavigationOpen(false)} />
-        {/* Navigation Menu Links */}
-        <nav aria-label="Swarm destinations" className="swarm-route-navigation p-3 border-b border-slate-800/80 space-y-1" onClick={() => { setIsOnboardingActive(false); responsiveLayout.setPanel('main'); responsiveLayout.setNavigationOpen(false) }}>
-          <Link
-            {...swarmPageLink(workspaceSlug, 'home')}
-            aria-label="Tasks"
-            activeOptions={{ exact: true, includeSearch: false }}
-            aria-current={activeNavTab === 'home' ? 'page' : undefined}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'home'
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <Home size={15} />
-            <span>Tasks</span>
-          </Link>
-          <Link
-            {...swarmPageLink(workspaceSlug, 'projects')}
-            aria-label="Projects"
-            aria-current={activeNavTab === 'projects' ? 'page' : activeNavTab === 'charter' ? 'location' : undefined}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              (activeNavTab === 'projects' || activeNavTab === 'charter')
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <Folder size={15} />
-            <span>Projects ({projects.length})</span>
-          </Link>
-          <Link
-            {...swarmPageLink(workspaceSlug, 'workers')}
-            aria-label="Workers"
-            activeOptions={{ exact: true, includeSearch: false }}
-            aria-current={activeNavTab === 'workers' ? 'page' : undefined}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'workers'
-                ? 'bg-blue-600/15 text-blue-400 border border-blue-500/30 font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <div className="flex items-center gap-2.5">
-              <Bot size={15} />
-              <span>Workers</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] font-mono text-slate-500">{accountScopeId ? <DurableWorkerCount accountScopeId={accountScopeId} /> : '…'}</span>
-              {pendingReviews.length > 0 && <span className="text-[10px] text-amber-400">{pendingReviews.length} pending reviews</span>}
-            </div>
-          </Link>
-          <Link
-            {...swarmPageLink(workspaceSlug, 'deliverables')}
-            aria-label="Deliverables"
-            aria-current={activeNavTab === 'deliverables' ? 'page' : undefined}
-            className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
-              activeNavTab === 'deliverables'
-                ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
-            }`}
-          >
-            <Layers size={15} />
-            <span>Deliverables ({liveTasks.flatMap((t) => t.deliverables || []).length})</span>
-          </Link>
-          <Link
-            {...swarmPageLink(workspaceSlug, 'media')}
-            aria-label="Media Studio and Library"
-            aria-current={activeNavTab === 'media' ? 'page' : undefined}
-            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all ${activeNavTab === 'media' ? 'bg-white/[0.08] text-white shadow-sm font-semibold' : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'}`}
-          >
-            <div className="flex items-center gap-2.5">
-              <Film size={15} className="text-blue-400" />
-              <span>Media Studio & Library</span>
-            </div>
-            {allMediaLibraryItems.length > 0 && (
-              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-950/60 border border-blue-500/30 text-blue-300">
-                {allMediaLibraryItems.length}
-              </span>
-            )}
-          </Link>
-          {(['agents', 'settings'] as const).map((page) => <Link key={page} {...swarmPageLink(workspaceSlug, page)} aria-label={page === 'agents' ? 'Agents' : 'Settings'} aria-current={activeNavTab === page ? 'page' : undefined} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/[0.08]">
-            {page === 'agents' ? <Bot size={15} /> : <Settings size={15} />}<span>{page === 'agents' ? 'Agents' : 'Settings'}</span>
-          </Link>)}
-        </nav>
+        <ProjectConversationSidebar projectId={selectedProjectSegment} projectName={selectedProject?.name}
+          selectedId={routeConversationId} sessions={conversations.sessions} rows={conversations.rows} loading={conversations.loading}
+          creating={creatingConversation} error={projectRouteError || conversationError || conversations.error}
+          onCreate={() => void newConversation()} onLoadArchived={conversations.loadArchived}
+          onRetry={() => { conversations.refresh(); if (routeConversationId && !admittedParentId) setAdmissionAttempt(value => value + 1) }}
+          onSelect={() => { setIsOnboardingActive(false); setActiveTaskId(null); setActiveSessionId(admittedParentId); responsiveLayout.setPanel('chat'); responsiveLayout.setNavigationOpen(false) }} />
 
         {/* Workers for the selected project only. Project management lives in the header. */}
         <div className="p-3 border-b border-slate-800/80 flex-1 overflow-y-auto">
-          {accountScopeId && selectedProject && <ProjectWorkerSidebar key={selectedProject.id} accountScopeId={accountScopeId} projectId={selectedProject.id} showActivity onBrowse={() => setActiveNavTab('workers')} onInspect={id => { void navigate(swarmWorkerLink(workspaceSlug, id)) }} />}
+          {accountScopeId && selectedProject && <ProjectWorkerSidebar key={selectedProject.id} accountScopeId={accountScopeId} projectId={selectedProject.id} showActivity onBrowse={() => setActiveNavTab('workers')} onInspect={id => { void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId: id } }) }} />}
 
         </div>
 
@@ -6000,185 +5836,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {!showFullMediaCenter && <main className="swarm-main-panel relative min-w-0 flex flex-1 flex-col overflow-hidden rounded-3xl border bg-[#0d121f]/95 border-slate-800/80 shadow-[inset_0_1px_1px_rgba(255,255,255,0.06),0_18px_40px_rgba(0,0,0,0.65)]">
         <nav aria-label="Tasks and Workers views" className="flex shrink-0 gap-2 border-b border-slate-800 p-3 text-xs">
-          <Link {...swarmPageLink(workspaceSlug, 'home')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
-          <Link {...swarmPageLink(workspaceSlug, 'workers')} activeOptions={{ exact: true, includeSearch: false }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
+          <Link {...projectPageLink('home')} activeOptions={{ exact: true, includeSearch: true }} aria-current={activeNavTab === 'home' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Tasks</Link>
+          <Link {...projectPageLink('workers')} activeOptions={{ exact: true, includeSearch: true }} aria-current={activeNavTab === 'workers' ? 'page' : undefined} className="rounded-lg border border-slate-700 px-3 py-2">Workers</Link>
         </nav>
-        {isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects') ? (
-          <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
-            {/* Onboarding Header */}
-            <div className="flex items-start justify-between border-b border-slate-800/80 pb-5">
-              <div>
-                <div className="flex items-center gap-2 text-blue-400 font-semibold text-xs uppercase tracking-wider mb-1">
-                  <Sparkles size={14} className="text-blue-400 animate-pulse" />
-                  <span>Project Setup & Architecture Synthesis</span>
-                </div>
-                <h1 className="text-xl font-bold text-white tracking-tight">Create Your Project</h1>
-                <p className="text-xs text-slate-400 mt-1 max-w-xl">
-                  A Project elevates your local workspaces into an executive space coordinated by the Swarm Orchestrator.
-                </p>
-              </div>
-              {projects.length > 0 && (
-                <button
-                  onClick={() => setIsOnboardingActive(false)}
-                  className="text-xs text-slate-400 hover:text-slate-200 px-3 py-1.5 rounded-xl border border-slate-800 hover:bg-slate-800 transition-colors"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-
-            {/* Project Identity Inputs */}
-            <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
-              <div className="text-xs font-semibold text-slate-300">Project Identity</div>
-              <div className="swarm-content-grid grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[11px] text-slate-400 mb-1 block">Project Name</label>
-                  <input
-                    type="text"
-                    value={onboardingName}
-                    onChange={(e) => setOnboardingName(e.target.value)}
-                    placeholder="e.g. Swarm Platform"
-                    className="w-full text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 transition-all font-medium"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] text-slate-400 mb-1 block">Description</label>
-                  <input
-                    type="text"
-                    value={onboardingDescription}
-                    onChange={(e) => setOnboardingDescription(e.target.value)}
-                    placeholder="e.g. Core Go daemon, desktop client, and video production pipeline"
-                    className="w-full text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 transition-all font-medium"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Section 1: Workspace Selection */}
-            <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs font-semibold text-slate-300">1. Select Bound Workspaces</div>
-                  <p className="text-[11px] text-slate-500">Choose existing repositories on your machine to bind into this project.</p>
-                </div>
-                <span className="text-[11px] text-blue-400 font-medium">
-                  {onboardingWorkspaces.filter((w) => w.selected).length} selected
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 gap-2 pt-1">
-                {onboardingWorkspaces.map((ws) => (
-                  <div
-                    key={ws.path}
-                    onClick={() => handleToggleWorkspace(ws.path)}
-                    className={`flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer ${
-                      ws.selected
-                        ? 'border-blue-500/40 bg-blue-950/20 text-white shadow-sm'
-                        : 'border-slate-800/80 bg-slate-950/40 text-slate-400 hover:border-slate-700/80 hover:text-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`h-4 w-4 rounded flex items-center justify-center border transition-all ${
-                        ws.selected ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-700 bg-slate-900'
-                      }`}>
-                        {ws.selected && <Check size={11} strokeWidth={3} />}
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold flex items-center gap-2">
-                          <span>{ws.label}</span>
-                          <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
-                            ws.role === 'primary_code' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-slate-800 text-slate-400'
-                          }`}>
-                            {ws.role}
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-slate-500 font-mono mt-0.5">{ws.path}</div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Add folder inline */}
-              <div className="pt-2 flex items-center gap-2">
-                <input
-                  type="text"
-                  value={customFolderPath}
-                  onChange={(e) => setCustomFolderPath(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddCustomFolder()}
-                  placeholder="Enter path to another workspace folder on this machine..."
-                  className="flex-1 text-xs rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500/60 font-mono"
-                />
-                <button
-                  type="button"
-                  onClick={handleAddCustomFolder}
-                  className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-all"
-                >
-                  Add Folder
-                </button>
-              </div>
-            </div>
-
-            {/* Section 2: AI Context Synthesis */}
-            <div className="rounded-2xl border border-slate-800/80 bg-slate-900/60 p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs font-semibold text-slate-300">2. Authoritative Project Context (project.md)</div>
-                  <p className="text-[11px] text-slate-500">
-                    Synthesizes architectural boundaries from selected workspaces to inject into Swarm Orchestrator.
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleSynthesizeContext}
-                    disabled={isSynthesizing || onboardingWorkspaces.filter((w) => w.selected).length === 0}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-medium transition-all disabled:opacity-50"
-                  >
-                    <Sparkles size={12} className={isSynthesizing ? 'animate-spin' : ''} />
-                    <span>{isSynthesizing ? 'Synthesizing...' : 'Generate with AI'}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsEditingContext(!isEditingContext)}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition-all"
-                  >
-                    <Edit3 size={12} />
-                    <span>{isEditingContext ? 'Preview' : 'Edit'}</span>
-                  </button>
-                </div>
-              </div>
-
-              {isEditingContext ? (
-                <textarea
-                  value={onboardingContext}
-                  onChange={(e) => setOnboardingContext(e.target.value)}
-                  rows={10}
-                  className="w-full text-xs font-mono rounded-xl bg-slate-950/80 border border-slate-800 p-3 text-slate-200 focus:outline-none focus:border-blue-500/60 transition-all leading-relaxed"
-                />
-              ) : (
-                <div className="rounded-xl bg-slate-950/80 border border-slate-800 p-3 max-h-56 overflow-y-auto font-mono text-[11px] text-slate-300 whitespace-pre-wrap leading-relaxed">
-                  {onboardingContext || 'Click "Generate with AI" to synthesize architecture from selected workspaces.'}
-                </div>
-              )}
-            </div>
-
-            {/* Submit Action */}
-            <div className="flex items-center justify-between pt-2">
-              <div className="text-[11px] text-slate-500">
-                Local-first • Saved securely in Swarm Pebble database
-              </div>
-              <button
-                type="button"
-                onClick={handleCreateAndActivateProject}
-                disabled={isActivating || onboardingWorkspaces.filter((w) => w.selected).length === 0}
-                className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs shadow-lg shadow-blue-600/20 transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <span>{isActivating ? 'Activating...' : 'Create & Activate Project'}</span>
-                <ArrowRight size={14} />
-              </button>
-            </div>
-          </div>
+        {(isOnboardingActive && (activeNavTab === 'home' || activeNavTab === 'projects')) || (!routeConversationId && selectedProject?.contextGeneration && (projectContextPending(selectedProject) || conversations.rows.length === 0)) ? (
+          <ProjectCreationFlow key={isOnboardingActive ? creationProject?.id || 'new' : selectedProjectId}
+            project={isOnboardingActive ? creationProject : selectedProject ? { id: selectedProject.id, name: selectedProject.name, description: selectedProject.description, project_context: selectedProject.projectContext, context_generation: selectedProject.contextGeneration } : undefined}
+            onSaved={saveCreationProject}
+            onCancel={() => { setIsOnboardingActive(false); void navigate({ to: '/projects' }) }}
+            onOpen={(project, sessionId) => {
+              saveCreationProject(project); setIsOnboardingActive(false); setCreationProject(undefined)
+              setActiveTaskId(null); responsiveLayout.setPanel('chat')
+              void navigate(projectConversationLink(projectRouteSegment(project, projects.some(item => item.id === project.id) ? projects : [project, ...projects]), sessionId))
+            }} />
         ) : activeNavTab === 'projects' ? (
           /* PROJECTS OVERVIEW TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
@@ -6188,14 +5858,14 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <p className="text-xs text-slate-400 mt-0.5">Projects managed by Swarm Orchestrator with Pebble persistence</p>
               </div>
               <button
-                onClick={() => setIsOnboardingActive(true)}
+                onClick={() => { setCreationProject(undefined); void navigate({ to: '/swarm', search: { createProject: true } }) }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold"
               >
                 <Plus size={13} />
                 <span>+ New Project</span>
               </button>
             </div>
-            {selectedProject && <Link {...swarmPageLink(workspaceSlug, 'charter')} aria-label="Project Charter" className="swarm-project-charter-link">
+            {selectedProject && <Link {...projectPageLink('charter')} aria-label="Project Charter" className="swarm-project-charter-link">
               <FileText size={15} aria-hidden="true" /><span>Project Charter · {selectedProject.name}</span>
             </Link>}
             <div className="swarm-content-grid grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -6204,7 +5874,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   key={p.id}
                   onClick={() => {
                     setSelectedProjectId(p.id)
-                    setActiveNavTab('home')
                     setActiveTaskId(null)
                   }}
                   className={`p-4 rounded-2xl border transition-all cursor-pointer ${
@@ -6249,7 +5918,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
             </div>
           </div>
         ) : activeNavTab === 'workers' ? (
-          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={inspectedWorkerId} onInspectWorker={id => { if (id) void navigate(swarmWorkerLink(workspaceSlug, id)); else setActiveNavTab('workers') }} onSelectWorker={worker => { void openWorkerConversation(worker) }} onAddWorker={() => { void openWorkerConversation(null) }} />
+          <WorkerHub workspaceSlug={workspaceSlug} initialWorkerId={inspectedWorkerId} onInspectWorker={id => { if (id) void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId: id } }); else setActiveNavTab('workers') }} onSelectWorker={worker => { void openWorkerConversation(worker) }} onAddWorker={() => { void openWorkerConversation(null) }} />
         ) : activeNavTab === 'deliverables' ? (
           /* DELIVERABLES TAB */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
@@ -6377,6 +6046,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
           </div>
+        ) : activeNavTab === 'usage' ? (
+          <UsagePage embedded />
         ) : activeNavTab === 'agents' ? (
           <OrchestrateAgents />
         ) : activeNavTab === 'settings' ? (
@@ -6402,12 +6073,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         ) : activeNavTab === 'charter' ? (
           /* Project-scoped editor; preserve the existing charter deep link. */
           <div className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-4">
-            <Link {...swarmPageLink(workspaceSlug, 'projects')} className="swarm-project-charter-link">← Projects</Link>
+            <Link {...projectPageLink('projects')} className="swarm-project-charter-link">← Projects</Link>
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <div>
                 <h2 className="text-base font-bold text-white">Project Charter: {selectedProject?.name}</h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Authoritative project.md context injected into Swarm Orchestrator prompt
+                  Authoritative project context injected into Swarm Orchestrator prompt
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -6420,53 +6091,22 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     <span>Delete Project</span>
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (selectedProject?.linkedWorkspaces) {
-                      setIsSynthesizing(true)
-                      requestJson<{ project_context: string }>('/v3/projects/synthesize-context', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                          name: selectedProject.name,
-                          workspaces: selectedProject.linkedWorkspaces,
-                        }),
-                      })
-                        .then((res) => {
-                          if (res?.project_context) {
-                            requestJson(`/v3/projects/${selectedProject.id}`, {
-                              method: 'PATCH',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ project_context: res.project_context }),
-                            }).then(() => {
-                              setProjects((prev) =>
-                                prev.map((p) => (p.id === selectedProject.id ? { ...p, projectContext: res.project_context } : p))
-                              )
-                            })
-                          }
-                        })
-                        .finally(() => setIsSynthesizing(false))
-                    }
-                  }}
-                  disabled={isSynthesizing}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold transition-all disabled:opacity-50"
-                >
-                  <RefreshCw size={12} className={isSynthesizing ? 'animate-spin' : ''} />
-                  <span>{isSynthesizing ? 'Synthesizing...' : 'Re-synthesize Context'}</span>
-                </button>
+                {projectContextPending(selectedProject) && <button type="button" onClick={() => setActiveNavTab('home')}>Resume context generation</button>}
               </div>
             </div>
             <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
               <pre className="font-mono text-xs text-slate-300 whitespace-pre-wrap leading-relaxed overflow-x-auto">
-                {selectedProject?.projectContext || 'No synthesized context available. Click "Re-synthesize Context" to scan bound repositories.'}
+                {selectedProject?.projectContext || 'No generated project context is available for this project.'}
               </pre>
             </div>
           </div>
         ) : (
           /* HOME: 5-VARIANT TASK MANAGEMENT CANVAS */
           <>
-            <TaskListHeader title={selectedProject?.name || 'Swarm Local'} branch={projectGit.data?.status.branch} workspaceCount={selectedProject?.linkedWorkspaces?.length ?? 0} orchestratorState={orchestratorState} onNewTask={() => setIsDeployModalOpen(true)} />
+            <TaskListHeader workspaces={workspaceGit.workspaces} selectedWorkspace={selectedTaskWorkspace?.key ?? null}
+              onWorkspace={key => setWorkspaceFilter(previous => previous === key ? null : key)}
+              onRefreshGit={workspaceGit.refresh}
+              onNewTask={() => setIsDeployModalOpen(true)} />
 
             {/* PROJECT-TOP PENDING WORKER BANNER (SURFACES PROPOSALS FOR ASSIGNED PROJECT) */}
             {pendingReviews.length > 0 && (
@@ -6535,8 +6175,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
             {/* MAIN BODY: 5 DISTINCT VARIANTS */}
             <div className="flex-1 overflow-hidden flex flex-col">
+              {projectState?.mediaError && <div role="alert">Failed to load project media: {projectState.mediaError} <button type="button" onClick={() => void desktopProjects.refresh(selectedProjectId, false)}>Retry media</button></div>}
               {projectTasksError && (
-                <div className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
+                <div role="alert" className="mx-3.5 mt-2 p-3 bg-red-950/60 border border-red-500/40 rounded-xl text-xs text-red-300 flex items-center justify-between">
                   <span>Failed to load project tasks: {projectTasksError}</span>
                   <button
                     type="button"
@@ -6553,35 +6194,59 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               <TaskListToolbar
                 search={searchQuery} onSearch={setSearchQuery} source={taskSourceFilter} onSource={setTaskSourceFilter}
                 status={statusFilter} onStatus={setStatusFilter}
+                mediaCount={mediaCardCount} mediaCountIncomplete={Boolean(projectDesigns.data?.next_cursor || projectDesigns.loading || projectDesigns.error || projectState?.loading || projectTasksError)}
                 counts={{ all: filteredBySourceTasks.length, running: filteredBySourceRunningCount, needs_review: filteredBySourceReviewCount, queued: filteredBySourceQueuedCount, completed: filteredBySourceCompletedCount }}
-                total={filteredTasks.length} selected={markedRows.length} busy={markedRows.length > 0 && markedRows.every(row => managementPending.current.has(row.id))}
+                total={filteredTasks.length} selected={markedRows.length} busy={Boolean(integrationBatch?.pending) || (markedRows.length > 0 && markedRows.every(row => managementPending.current.has(row.id)))}
+                integrationEligible={markedRows.filter(row => !integrationSkipReason(selectedProjectId, row)).length}
+                integrationDisabled={managementBusy || integrationLanePending() || markedRows.length > MAX_INTEGRATION_BATCH}
+                onIntegrate={() => void handleIntegrateSelected(markedRows)}
                 onSelectAll={() => setMarkedTaskIds(new Set(filteredTasks.map(row => row.id)))}
                 onClear={() => setMarkedTaskIds(new Set())}
                 onArchive={() => void manageTasks(markedRows, 'archive')} onDelete={() => void manageTasks(markedRows, 'delete')}
                 onArchived={() => setArchivedOpen(true)} archivedRef={archivedTriggerRef}
               />
+              {markedRows.length > 0 && <details className="px-4 text-xs text-slate-400"><summary>Integration eligibility</summary><ul>{markedRows.map(row => <li key={row.id}>{row.title}: {integrationSkipReason(selectedProjectId, row) || 'Ready to integrate'}</li>)}</ul>{markedRows.length > MAX_INTEGRATION_BATCH && <p>Select at most {MAX_INTEGRATION_BATCH} tasks.</p>}</details>}
+              {integrationBatch && <section aria-label="Selected integration results" className="px-4 text-xs text-slate-400">
+                <p role="status">{integrationBatch.pending ? 'Integrating selected tasks… ' : 'Integration batch finished. '}{(['integrated', 'already_integrated', 'recovered', 'equivalent', 'skipped', 'failed', 'not_attempted', 'pending', 'queued'] as const).map(status => `${integrationBatch.entries.filter(entry => entry.status === status).length} ${status.replace('_', ' ')}`).join(' · ')}</p>
+                {integrationBatch.refreshError && <p role="alert">{integrationBatch.refreshError}</p>}
+                <details><summary>Per-task results (successful integrations are not rolled back)</summary><ul>{integrationBatch.entries.map(entry => <li key={entry.id}>{entry.title}: {entry.status.replace('_', ' ')}{entry.reason ? ` — ${entry.reason}` : ''}</li>)}</ul></details>
+              </section>}
               {managementBusy && <span role="status" className="px-4 text-slate-400 text-[11px]">Updating tasks…</span>}
               {managementMessage && <span role="status" className="px-4 text-amber-300 text-[11px]">{managementMessage}</span>}
               {archivedOpen && <div className="fixed inset-0 z-[100] bg-black/70 flex items-center justify-center p-4" onMouseDown={e => { if (e.target === e.currentTarget) { setArchivedOpen(false); archivedTriggerRef.current?.focus() } }}>
                 <section role="dialog" aria-modal="true" aria-labelledby="archived-tasks-title" className="swarm-local-dialog w-full max-w-xl max-h-[85vh] overflow-hidden flex flex-col rounded-xl border border-slate-700 bg-[#0a101e] p-4 text-white shadow-2xl">
                   <div className="flex items-center justify-between gap-3"><h2 id="archived-tasks-title" className="text-base font-semibold">Archived tasks</h2><button type="button" ref={archivedCloseRef} onClick={() => { setArchivedOpen(false); archivedTriggerRef.current?.focus() }} aria-label="Close archived tasks">Close</button></div>
-                  {selectedProject && <div className="overflow-y-auto min-h-0"><DesignMediaTasks projectId={selectedProject.id} archived onPreview={item => { setArchivedOpen(false); setActiveMediaViewerItem(item) }} /></div>}
-                  <p className="text-xs text-slate-400 my-2">Archived tasks in this project are read-only. Their sessions, branches and code remain untouched.</p>
-                  {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.length === 0 ? <p>No archived tasks.</p> : <ul className="overflow-y-auto min-h-0 space-y-2">{archivedTasks.map(row => <li key={row.id} className="p-3 rounded border border-slate-700"><strong className="block text-sm">{row.title}</strong><span className="text-xs text-slate-400">{row.status} · {row.workerName || 'Task'}</span></li>)}</ul>}
+                  <button type="button" disabled={managementBusy || archivedLoading} onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId, true)}>Refresh archived tasks</button>
+                  {managementMessage && <p role="status">{managementMessage}</p>}
+                  <p className="text-xs text-slate-400 my-2">Unarchive restores the task’s preserved status. Sessions, branches and code remain untouched.</p>
+                  {archivedLoading ? <p role="status">Loading archived tasks…</p> : archivedError ? <div role="alert">{archivedError} <button type="button" onClick={() => selectedProjectId && void loadArchivedTasks(selectedProjectId)}>Retry</button></div> : archivedTasks.filter(task => !isCreativeMediaTask(task)).length === 0 ? <p>No archived tasks.</p> : <ArchivedTaskList tasks={archivedTasks.filter(task => !isCreativeMediaTask(task))} busy={managementBusy} errors={taskActionErrors} onUnarchive={rows => void manageTasks(rows, 'unarchive')} />}
                 </section>
               </div>}
+
+              {/* Keep media mounted across filter changes to retain selected turns and previews. */}
+              <section aria-label="Project media" hidden={statusFilter !== 'media'} className="swarm-task-media">
+                {selectedProject && <ProjectMediaTasks
+                  key={selectedProject.id} projectId={selectedProject.id} tasks={workspaceTasks} actions={mediaActions}
+                  active={statusFilter === 'media'} selectionScope={JSON.stringify([searchQuery, taskSourceFilter, selectedTag, archivedOpen, workspaceFilter])}
+                  onPreviewDesign={setActiveMediaViewerItem} onLibrary={() => setShowFullMediaCenter(true)}
+                  loading={projectState?.loading} error={projectTasksError || mediaSyncError || undefined}
+                  onRetry={() => void desktopProjects.refresh(selectedProject.id, false)}
+                  archivedTasks={archivedTasks} archivedLoading={archivedLoading} archivedError={archivedError}
+                  onLoadArchived={() => void loadArchivedTasks(selectedProject.id, true)}
+                  onUnarchive={rows => void manageTasks(rows, 'unarchive')} unarchiveBusy={managementBusy} unarchiveErrors={taskActionErrors}
+                />}
+              </section>
 
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 1: COMPACT MATRIX & EXPANDABLE DRAWER
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'matrix' && (
+              {statusFilter !== 'media' && middleVariant === 'matrix' && (
                 <div className="flex-1 flex flex-col overflow-hidden p-3.5 space-y-3">
 
                   {/* Task rows */}
                   <div className="flex-1 overflow-y-auto space-y-3 pr-1" data-testid="orchestrate-task-list">
-                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
                     {filteredTasks.length > 0 ? (
-                      filteredTasks.map((t) => (
+                      filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => (
                         <MinimalTaskCard
                           key={t.id}
                           task={t}
@@ -6590,7 +6255,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           isExpanded={expandedTaskId === t.id}
                           workspaceSlug={workspaceSlug}
                           onOpenWorkerDetail={(workerId) => {
-                            void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                            void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                           }}
                           onToggleExpand={() => setExpandedTaskId(expandedTaskId === t.id ? null : t.id)}
                           onSelect={() => handleSelectTask(t)}
@@ -6607,7 +6272,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                           onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                          projectId={selectedProject?.id}
+                          projectId={selectedProjectId || undefined}
                           isApproving={approvingTaskIds.has(t.id)}
                           previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                           taskError={taskActionErrors[t.id]}
@@ -6644,7 +6309,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 2: MISSION PIPELINE KANBAN
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'kanban' && (
+              {statusFilter !== 'media' && middleVariant === 'kanban' && (
                 <div className="flex-1 flex overflow-x-auto p-4 gap-3">
                   {(
                     [
@@ -6657,6 +6322,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     ] as const
                   ).map((col) => {
                     const colTasks = filteredTasks.filter((t) => {
+                      if (isCreativeMediaTask(t)) return false
                       if (col.key === 'queued') return t.status === 'queued' || t.status === 'pending_approval' || t.status === 'planning'
                       if (col.key === 'running') return t.status === 'running' || t.status === 'in_progress'
                       if (col.key === 'failed') return t.status === 'failed' || t.status === 'rejected'
@@ -6690,7 +6356,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         </div>
 
                         <div className="flex-1 overflow-y-auto space-y-2.5 pr-0.5">
-                          {selectedProject && <DesignMediaTasks projectId={selectedProject.id} column={col.key} onPreview={setActiveMediaViewerItem} />}
                           {colTasks.map((t) => (
                             <MinimalTaskCard
                               key={t.id}
@@ -6699,7 +6364,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           {...selectionProps(t)}
                               workspaceSlug={workspaceSlug}
                               onOpenWorkerDetail={(workerId) => {
-                                void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                                void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                               }}
                               onSelect={() => handleSelectTask(t)}
                               onOpenChat={() => handleOpenTaskSession(t)}
@@ -6715,7 +6380,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                               onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                               onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                               onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                              projectId={selectedProject?.id}
+                              projectId={selectedProjectId || undefined}
                               isApproving={approvingTaskIds.has(t.id)}
                               previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                               taskError={taskActionErrors[t.id]}
@@ -6744,7 +6409,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 3: AUTONOMOUS WORKER FLEET
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'fleet' && (
+              {statusFilter !== 'media' && middleVariant === 'fleet' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
                   <div className="flex items-center justify-between">
                     <div>
@@ -6808,9 +6473,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   {/* Tasks List in Fleet */}
                   <div className="pt-2 space-y-3">
                     <h4 className="text-xs font-bold text-white">Project Tasks ({filteredTasks.length})</h4>
-                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
                     <div className="space-y-2.5">
-                      {filteredTasks.map((task) => (
+                      {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((task) => (
                         <MinimalTaskCard
                           key={task.id}
                           task={task}
@@ -6818,7 +6482,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           {...selectionProps(task)}
                           workspaceSlug={workspaceSlug}
                           onOpenWorkerDetail={(workerId) => {
-                            void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                            void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                           }}
                           onSelect={() => handleSelectTask(task)}
                           onOpenChat={() => handleOpenTaskSession(task)}
@@ -6834,7 +6498,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                           onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                           onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                           onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                          projectId={selectedProject?.id}
+                          projectId={selectedProjectId || undefined}
                           isApproving={approvingTaskIds.has(task.id)}
                           previousRuns={renderPreviousRuns(task)} integrationRecovery={renderIntegrationRecovery(task)}
                           taskError={taskActionErrors[task.id]}
@@ -6861,13 +6525,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 4: SPLIT STUDIO CONSOLE
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'split' && (
+              {statusFilter !== 'media' && middleVariant === 'split' && (
                 <div className="flex-1 flex overflow-hidden">
                   {/* Left Column: Tasks List */}
                   <div className="w-1/2 border-r border-slate-800/80 flex flex-col p-3 overflow-y-auto space-y-2">
                     <div className="text-xs font-bold text-white pb-1">Tasks ({filteredTasks.length})</div>
-                    {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                    {filteredTasks.map((t) => {
+                    {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => {
                       const isSel = selectedTaskId === t.id
                       const isWorker = Boolean(t.workerId?.trim() || t.worker_id?.trim())
                       return (
@@ -6895,7 +6558,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                                 href={swarmWorkerHref(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!)}
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  void navigate(swarmWorkerLink(workspaceSlug, (t.workerId?.trim() || t.worker_id?.trim())!))
+                                  void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId: (t.workerId?.trim() || t.worker_id?.trim())! } })
                                 }}
                                 className="text-indigo-400 hover:text-indigo-300 underline flex items-center gap-1 cursor-pointer"
                                 data-testid="worker-link"
@@ -6927,7 +6590,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         {...selectionProps(selectedTaskForSplit)}
                         workspaceSlug={workspaceSlug}
                         onOpenWorkerDetail={(workerId) => {
-                          void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                          void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                         }}
                         onSelect={() => handleSelectTask(selectedTaskForSplit)}
                         onOpenChat={() => handleOpenTaskSession(selectedTaskForSplit)}
@@ -6943,7 +6606,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                         onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                         onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                        projectId={selectedProject?.id}
+                        projectId={selectedProjectId || undefined}
                         isApproving={approvingTaskIds.has(selectedTaskForSplit.id)}
                         previousRuns={renderPreviousRuns(selectedTaskForSplit)} integrationRecovery={renderIntegrationRecovery(selectedTaskForSplit)}
                         taskError={taskActionErrors[selectedTaskForSplit.id]}
@@ -6968,18 +6631,17 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               {/* ─────────────────────────────────────────────────────────────
                   VARIANT 5: TIMELINE ACTIVITY STREAM
                  ───────────────────────────────────────────────────────────── */}
-              {middleVariant === 'timeline' && (
+              {statusFilter !== 'media' && middleVariant === 'timeline' && (
                 <div className="flex-1 overflow-y-auto p-4 space-y-3">
                   <div className="text-xs font-bold text-white pb-1">Activity Stream ({filteredTasks.length})</div>
-                  {selectedProject && <DesignMediaTasks projectId={selectedProject.id} onPreview={setActiveMediaViewerItem} />}
-                  {filteredTasks.map((t) => (
+                  {filteredTasks.filter(task => !isCreativeMediaTask(task)).map((t) => (
                     <MinimalTaskCard
                       key={t.id}
                       task={t}
                       isSelected={selectedTaskId === t.id}
                       workspaceSlug={workspaceSlug}
                       onOpenWorkerDetail={(workerId) => {
-                        void navigate(swarmWorkerLink(workspaceSlug, workerId))
+                        void navigate({ ...projectPageLink('workers'), search: { section: 'workers', workerId } })
                       }}
                       onSelect={() => handleSelectTask(t)}
                       onOpenChat={() => handleOpenTaskSession(t)}
@@ -6995,7 +6657,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       onUpdateModel={(taskId, model) => handleUpdateTaskModel(taskId, model)}
                       onOpenAgentSettings={(agentName) => handleOpenAgentSettings(agentName)}
                       onOpenTaskModelChanger={handleOpenTaskModelChanger}
-                      projectId={selectedProject?.id}
+                      projectId={selectedProjectId || undefined}
                       isApproving={approvingTaskIds.has(t.id)}
                       previousRuns={renderPreviousRuns(t)} integrationRecovery={renderIntegrationRecovery(t)}
                       taskError={taskActionErrors[t.id]}
@@ -7025,23 +6687,31 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           PANEL 3: RIGHT PANEL (CANONICAL DESKTOP V3 AI CHAT SIDEBAR)
          ───────────────────────────────────────────────────────────── */}
       {workerChatOpen && workerChatError && <div role="alert" className="max-w-sm p-4 text-sm text-red-300">{workerChatError}<button className="ml-2 underline" onClick={() => setWorkerChatError('')}>Dismiss</button></div>}
-      {activeSessionId ? (
+
+      {appliedConversationRouteScope.current === conversationRouteScope && activeSessionId && selectedProject && ((activeTaskId && tasks.some(task => task.id === activeTaskId && (extractTaskSessionIds(task).includes(activeSessionId) || taskOutcome(task).repairSessionId === activeSessionId))) || (admittedParentId && activeSessionId === admittedParentId)) ? (
         // Keep the chat bounded to the page, below the optional worker header.
         <div className="swarm-conversation-panel flex min-h-0 shrink-0 flex-col">
         {activeNavTab === 'workers' && workerChatOpen && <div className="flex max-w-[440px] shrink-0 items-center justify-between gap-3 p-3 text-xs text-slate-300"><span>{workerCreationRequested ? 'Add worker: describe its job to Orchestrator below. Nothing runs until you approve.' : 'Discuss this worker with Orchestrator'}</span><button onClick={() => { setWorkerChatOpen(false); setWorkerCreationRequested(false) }}>Close</button></div>}
         <OrchestratorChatSidebar
+        onOpenMediaArtifact={(artifact) => {
+          const selected = toMediaLibraryItem(artifact)
+          if (!selected) return false
+          setActiveMediaViewerItem(selected)
+          setMediaViewerInitialMode(null)
+          return true
+        }}
           workspaceSlug={workspaceSlug}
           key={activeSessionId}
           repairSession={tasks.some(task => taskOutcome(task).repairSessionId === activeSessionId)}
           sessionId={activeSessionId}
           project={selectedProject}
+          projectSegment={selectedProjectSegment}
           activeTask={activeTask}
           selectedTask={null}
           attachedTasks={tasks.filter(task => attachedTaskIds.includes(task.id))}
           onRemoveAttachedTask={id => setAttachedTaskIds(ids => ids.filter(value => value !== id))}
           allTasks={tasks}
           onBackToOrchestrator={handleBackToOrchestrator}
-          onOrchestratorSessionReset={handleOrchestratorSessionReset}
           onDeselectTask={handleDeselectTask}
           selectedWorker={selectedWorker}
           currentSelectedWorker={() => selectedWorkerRef.current}
@@ -7055,10 +6725,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
           <div className="h-12 w-12 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400 mb-3 shadow-lg shadow-blue-600/10">
             <Bot size={22} />
           </div>
-          <h3 className="font-bold text-sm text-white mb-1">Swarm Project Orchestrator</h3>
+          <h3 className="font-bold text-sm text-white mb-1">{selectedProject?.name || 'Welcome to Swarm'}</h3>
           <p className="text-slate-400 text-xs max-w-xs leading-relaxed">
-            {workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Connecting executive orchestrator session...' : 'Select or create a project to activate the executive AI orchestrator.'}
+            {conversationError ? 'Unable to open this conversation. Retry sessions in the sidebar.' : routeConversationId && selectedProject ? 'Opening conversation…' : workerChatOpen ? 'Opening Worker Orchestrator… If the connection fails, retry Add worker or Ask Orchestrator.' : selectedProject ? 'Choose a conversation or start a new session.' : 'Create your first project. Workspaces can be added later.'}
           </p>
+          {selectedProject && !routeConversationId && <ul aria-label="Project conversations">{conversations.sessions.map(session => <li key={session.id}><Link {...projectLink(selectedProject.id, session.id)}>{session.title || 'New conversation'}</Link></li>)}</ul>}
+          {selectedProject ? <button type="button" disabled={creatingConversation} onClick={() => { void newConversation() }}>New session</button> : <button type="button" onClick={() => { setIsOnboardingActive(true); setActiveNavTab('projects') }}>Create a project</button>}
         </aside>
       )}
 
@@ -7086,7 +6758,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
 
             {/* Keep coding work distinct from media generation. */}
             <div className="space-y-3">
-              <fieldset className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
+              <fieldset disabled={isUploadingMedia || isDeployingTask} className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
                 <legend className="px-2 text-[11px] font-semibold text-slate-300">Coding</legend>
                 <div className="swarm-dialog-intents grid grid-cols-3 gap-1 text-[11px]">
                   <button
@@ -7137,7 +6809,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </button>
                 </div>
               </fieldset>
-              <fieldset className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
+              <fieldset disabled={isUploadingMedia || isDeployingTask} className="min-w-0 rounded-xl border border-slate-800 bg-slate-950 p-2">
                 <legend className="px-2 text-[11px] font-semibold text-slate-300">Media</legend>
                 <div className="swarm-dialog-intents grid grid-cols-3 gap-1 text-[11px]">
                   <button
@@ -7197,7 +6869,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   </span>
                   <span className="font-bold text-white px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
                     {taskIntent === 'code'
-                      ? (featureSize === 'big' ? '@plan (Orchestrator Plan Mode)' : '@coder (Coder)')
+                      ? (featureSize === 'big' ? '@swarm (Swarm)' : '@coder (Coder)')
                       : '@finder (Finder)'}
                   </span>
                 </div>
@@ -7262,8 +6934,11 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               )}
 
               <p className="text-[10px] text-slate-400 leading-normal">
-                {taskIntent === 'code' && featureSize === 'small' && 'Direct autonomous code generation and tests on an isolated worktree branch via @coder.'}
-                {taskIntent === 'code' && featureSize === 'big' && 'Plan-mode orchestration: builds a structured proposed plan and criteria awaiting user approval before launching worker agents.'}
+                {taskIntent === 'code' && featureSize === 'small' && 'Code and test authoring on an isolated worktree via @coder; parent-run validation.'}
+                {taskIntent === 'code' && featureSize === 'big' && <>
+                  Swarm handles big features directly, including Bash and test execution subject to configured tools and permissions.{' '}
+                  <Link {...projectPageLink('settings')} hash="permissions" onClick={() => setIsDeployModalOpen(false)} className="underline hover:text-slate-200">/permissions</Link> (no permissions are changed automatically).
+                </>}
                 {taskIntent === 'audit' && 'Read-only architectural audit and code exploration via @finder, producing an audit report.'}
               </p>
             </div>
@@ -7303,6 +6978,29 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </div>
             )}
 
+            {isUploadingMedia && (
+              <p role="status" className="text-xs text-blue-300">Uploading attachments… Task creation is paused until all uploads finish.</p>
+            )}
+            {(shelfUploadError || shelfFailedFiles.length > 0) && (
+              <div role="alert" className="space-y-2 rounded-lg border border-red-500/30 bg-red-950/30 p-3 text-xs text-red-300">
+                <p>{shelfUploadError}</p>
+                {shelfFailedFiles.length > 0 && (
+                  <>
+                    <p>Not attached: {shelfFailedFiles.map(file => file.name).join(', ')}</p>
+                    <div className="flex gap-3">
+                      <button type="button" disabled={isUploadingMedia || isDeployingTask} onClick={() => void handleFileUpload(shelfFailedFiles)} className="underline disabled:opacity-40">Retry failed attachments</button>
+                      <button type="button" disabled={isUploadingMedia || isDeployingTask} onClick={() => {
+                        mediaUploadScopeRef.current.failedFiles = []
+                        setShelfFailedFiles([])
+                        setShelfUploadError(null)
+                        setDeployError(null)
+                      }} className="underline disabled:opacity-40">Discard failed attachments</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
             {/* Form inputs */}
             <div className="space-y-3 text-xs">
               <div>
@@ -7339,8 +7037,19 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     }
                   }}
                   onPaste={(e) => {
-                    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
-                      void handleFileUpload(e.clipboardData.files)
+                    // Some browsers expose pasted images only through items.
+                    // Use one representation, never both (which duplicates images).
+                    const files = Array.from(e.clipboardData.files || [])
+                    if (files.length === 0) {
+                      for (const item of Array.from(e.clipboardData.items || [])) {
+                        if (item.kind !== 'file') continue
+                        const file = item.getAsFile()
+                        if (file) files.push(file)
+                      }
+                    }
+                    if (files.length > 0) {
+                      if (!e.clipboardData.getData('text/plain')) e.preventDefault()
+                      void handleFileUpload(files)
                     }
                   }}
                 />
@@ -7359,7 +7068,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                         accept={taskIntent === 'video' ? 'image/png,image/jpeg,.png,.jpg,.jpeg' : undefined}
                         aria-label="Upload attachment"
                         className={taskIntent === 'image' || taskIntent === 'video' ? 'sr-only' : 'hidden'}
-                        onChange={(e) => void handleFileUpload(e.target.files)}
+                        disabled={isDeployingTask}
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || [])
+                          e.target.value = ''
+                          void handleFileUpload(files)
+                        }}
                       />
                     </label>
                     <button
@@ -7628,7 +7342,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-[11px] text-slate-400 font-medium">Target Workspace</label>
                     <span className="text-[10px] text-blue-400 font-mono">
-                      {resolveTaskWorkspace(newTaskWorkspace) || 'Let Router Decide'}
+                      {resolveTaskWorkspace(newTaskWorkspace) || (taskIntent === 'code' ? 'Select a workspace' : 'Let Router Decide')}
                     </span>
                   </div>
                   {selectedProject?.workspaces && selectedProject.workspaces.length > 0 ? (
@@ -7640,7 +7354,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       }}
                       className="w-full rounded-lg bg-slate-950 border border-slate-800 px-3 py-2 text-white focus:outline-none focus:border-blue-500/60 text-xs"
                     >
-                      <option value="">✨ Let Router Decide (automatic)</option>
+                      <option value="">{taskIntent === 'code' ? 'Select the intended coding workspace' : '✨ Let Router Decide (automatic)'}</option>
                       {selectedProject.workspaces.map((ws) => (
                         <option key={ws.workspace_id || ws.path} value={ws.path}>
                           {ws.label ? `${ws.label} — ` : ''}{ws.path}
@@ -7649,10 +7363,10 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                     </select>
                   ) : (
                     <div className="text-[11px] font-mono text-slate-400 px-3 py-1.5 rounded-lg bg-slate-950/60 border border-slate-800/80 truncate">
-                      {resolveTaskWorkspace(newTaskWorkspace) || 'Let Router Decide — link a project workspace to enable routing'}
+                      {resolveTaskWorkspace(newTaskWorkspace) || 'Link a project workspace to enable repository tasks'}
                     </div>
                   )}
-                  <p className="mt-1 text-[10px] text-slate-400">Router selects an authorized source and read-only context on submission. Your approval setting still controls launch.</p>
+                  <p className="mt-1 text-[10px] text-slate-400">{taskIntent === 'code' ? 'Choose the intended source. Coding requires a committed Git repository and isolated worktree; setup errors do not block project chat.' : 'Router selects an authorized source and read-only context on submission. Your approval setting still controls launch.'}</p>
                   {deployPreviewQuery.data?.workspaceDiagnostic && (
                     <p className="mt-1 text-[10px] text-amber-400" role="status">Workspace: {deployPreviewQuery.data.workspaceDiagnostic}</p>
                   )}
@@ -7673,8 +7387,8 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 </div>
               )}
 
-              {/* Auto-Approve Permission Policy Toggle */}
-              <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
+              {/* Media admission is server-owned; this toggle only controls non-media tasks. */}
+              {(taskIntent === 'code' || taskIntent === 'audit') && <div className="flex items-start gap-2.5 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80">
                 <input
                   type="checkbox"
                   id="auto-approve-toggle"
@@ -7693,7 +7407,12 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                       : '🔒 Pending Review (Default): The router stages the blueprint for your inspection and approval before launching.'}
                   </span>
                 </label>
-              </div>
+              </div>}
+              {(taskIntent === 'image' || taskIntent === 'video' || taskIntent === 'sound') && (
+                <p className="text-[11px] text-slate-400">
+                  Media starts immediately within supported limits. Batches of 25 or more require confirmation of the full batch in the Media tab before generation.
+                </p>
+              )}
             </div>
 
             {/* Actions */}
@@ -7707,7 +7426,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
               </button>
               <button
                 type="button"
-                disabled={!newTaskPrompt.trim() || isDeployingTask}
+                disabled={!newTaskPrompt.trim() || isDeployingTask || isUploadingMedia || shelfFailedFiles.length > 0}
                 onClick={handleDeployModalSubmit}
                 className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold text-white bg-blue-600 hover:bg-blue-500 shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -7715,7 +7434,9 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
                 <span>
                   {isDeployingTask
                     ? 'Routing & Compiling...'
-                    : autoApproveTask
+                    : taskIntent === 'image' && imageVariants >= 25
+                    ? `Review ${imageVariants} iterations`
+                    : taskIntent === 'image' || taskIntent === 'video' || taskIntent === 'sound' || autoApproveTask
                     ? 'Deploy & Start'
                     : 'Create Pending Task'}
                 </span>
@@ -7793,8 +7514,7 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
          ───────────────────────────────────────────────────────────── */}
       {activeMediaViewerItem && (
         <MediaViewerModal
-          key={activeMediaViewerItem.id}
-          item={activeMediaViewerItem}
+          item={allMediaLibraryItems.find(item => item.id === activeMediaViewerItem.id) ?? activeMediaViewerItem}
           items={allMediaLibraryItems}
           isGenerating={isDeployingTask}
           onClose={() => {
@@ -7908,6 +7628,6 @@ ${selectedWs.map((w) => `- \`${w.path}\`: ${w.label} (${w.role})`).join('\n')}
         onApplyTaskModel={handleApplyTaskModelFromControl}
         onResetTaskModel={handleResetTaskModelFromControl}
       />
-    </div>
+    </div></StartupScreen>
   )
 }

@@ -5,6 +5,82 @@ All notable Swarm release changes should be recorded here.
 Release entries are the source checkpoint for public docs verification. Each entry must include a `Docs impact` section. If a release has no docs-impacting changes, write `Docs impact: none`.
 
 ## Unreleased
+- Read qualification project-tool evidence from canonical raw results rather than summarized display previews; retain strict pending-task and once-only consent gates, add completion/rehydration regressions, and emit fixed phase/transport/decode diagnostics without exception bodies. Live Chat root cause remains unverified. Docs impact: none.
+- Correct the qualification permission wire regression to distinguish read-generated rule timestamps from durable policy changes; check exact stored bytes and immutable effective policy snapshots after once-only decisions, with a real saved-rule insertion control. Docs impact: none.
+- Require the canonical explicit `saved_rule: null` qualification `allow_once` response, rejecting malformed envelopes and persistent rules with bounded safe diagnostics; align continuation fixtures with actual wire types and add handler/service/store regressions for normalization and resolution races. Docs impact: none.
+- Recognize semantically empty stored qualification permission overrides (including normalized `'{}'`) at pending and resolved boundaries, with separate safe override diagnostics; reject malformed/nonempty overrides and missing executor-call evidence without display-summary fallback, preserving exact-call consent and pending-task zero-execution gates. Docs impact: none.
+- Add bounded, exact-call `allow_once` consent for qualification Orchestrator source discovery and the owned pending-only Big Feature Swarm proposal; reject unknown, mismatched and stale permissions without bypass or saved rules, and retain canonical completion/zero-intent gates. Docs impact: none.
+- Observe qualification runs by exact canonical identity and semantic durable progress, fail promptly on blocked/permission states, and retain secret-safe pre-stop failure diagnostics without extending deadlines; add multi-snapshot observer regressions. This improves failure observation, not a proven repair of the underlying provider stall. Docs impact: none.
+- Namespace qualification runner project, session and message request keys by scenario and operation, preserving build receipt identity and deterministic retries; add shared-account collision regressions and allow required read-only Orchestrator source discovery. Docs impact: none.
+
+- Reconcile Orchestrator source-filter regressions with the segmented Task scope UI; retain approval/archive guards and strengthen pressed-state, callback, count and keyboard-accessibility assertions without changing production styling. Docs impact: none.
+
+- Retire the obsolete basic-plan-auto session chatmode runner and its launch/release receipt requirements; require explicit runner selection without fallback, preserving current session API, Task Program and Orchestrator coverage. Docs impact: `docs/testing/new-task-browser-smoke.md` documents retirement and qualification-helper rollout ordering.
+
+- Ensure resilient APT toolchain installation and explicit GCC verification for qualification runner CGO compilation. Docs impact: none.
+
+- Enable TAP and spec test reporters for deterministic Orchestrator qualification suites. Docs impact: none.
+
+- Fix test-install-distro container setup to ensure mint suppression guard is copied into active container namespace under Docker runtime. Docs impact: none.
+
+
+- Modernize workspace onboarding recovery test assertions to validate the canonical 4-step Desktop onboarding lifecycle, ensuring smooth step transitions, accurate multi-step navigation checks, and clean error recovery. Docs impact: none.
+
+- Author comprehensive E2E tests for New Task creation across all 6 modal flows (small coder feature, big swarm feature, audit finder, image, video, and sound) with Chromium form submission, durable store verification, UI card rendering, and reload persistence. Add live Orchestrator E2E test suite and runner covering in-chat task proposals without self-approval, structured plan suggestion handoff to Swarm Default, and multi-stage Task Program dependency consumption. Docs impact: none.
+
+- Correct the retained repository-continuation scheduler fixture to use the correction attempt's run identity for Task Program admission, preserving exact-head and sentinel assertions. Docs impact: none.
+
+- Accept canonical successful Task Program integration receipts after child worktree cleanup, including nonblocking cleanup failure, when authenticating retained repository continuation results; preserve exact result provenance and isolated correction bases. Docs impact: none.
+
+- Authenticate retained Task Program checkpoint runs and correction ancestry, bypass only provably empty terminal launch failures, and inspect committed repository-specific results through the existing task inspection route. Repair restart and canonical workspace regression fixtures. Docs impact: none.
+
+- Retain authenticated per-repository Task Program results across project-task follow-ups, including intervening no-op attempts; pin correction bases before allocation and preserve isolated downstream Coder sources without promoting unvalidated changes. Docs impact: none.
+
+- Add explicit PR selection preserving session API/security coverage and the existing Orchestrator seed suite; replace obsolete UI/default-Plan runner selectors with bounded, identity-bound session/chat/media qualification and an adapter to the owned New Task browser smoke. Repair explicit Plan reconciliation fixtures against durable publication/current-run authority. Docs impact: `web/README.md` and `docs/testing/new-task-browser-smoke.md` document runner argv, receipt validation, reuse and unverified live-proof limits.
+
+- Preserve exact authorized repository sources across task reopen and recover previously cleared bindings from retained approved definitions and owned session grants, with fresh catalog/readiness validation and fail-closed reapproval guidance. Keep new attempt/session/run identities and scheduler guards intact. Docs impact: none.
+
+- Add SSH Docker exact committed-context image builds and receipt-bound remote test deployments with connection-edit fencing, strict external SSH authentication, loopback port publication and explicit uncertain remote build cleanup; preserve local Podman contracts and task consumer leases. Docs impact: `docs/managed-ssh-test-environments.md` documents the generic operator-owned host workflow, provenance, cleanup limits and cloud-access separation; no live cloud validation is claimed.
+
+- Separate Favorites into This chat, Default, and Default + this chat in Desktop and TUI; target Orchestrator's Plan default separately from deployed Swarm's Action default and report partial combined-save failures. Rename TUI `/profiles` to `/favorites`. Docs impact: command help updated.
+
+- Restore Orchestrator chat header project identity in place of generic Workspaces, enable opening model favorites and updating Orchestrator model via canonical session API with rehydration, and route Agents to Orchestrator-owned agents settings. Docs impact: none.
+
+- Fix TUI Ctrl+X shortcut so it opens the session switcher modal across home and chat views, and filter the switcher to display only orchestration sessions (excluding task and subagent worker sessions). Default initial filter to active chats when review is empty, and support Ctrl+X toggle close. Docs impact: none.
+
+- Ensure typing prompts on the TUI homepage creates and opens a completely new canonical project session instead of reusing prior sessions or sending messages to an existing thread. Preserve task session resumption when explicitly navigated into the task board via Ctrl+Up. Docs impact: none.
+
+- Remove Git branch from TUI header and project info box, wire canonical new project session creation via /new command, start initial focus on prompt box with Enter not capturing top task, and enable Ctrl+Up / Ctrl+Down navigation between prompt and task box. Docs impact: none.
+
+- Resolve TUI message dispatch to project orchestrator and checkout-free sessions by allowing project-scoped and unscoped sessions through TUI path visibility and workset filtering. Dock prompt box at bottom of TUI screen, remove Git workspace setup warning, default workspace selection to first workspace, and upgrade top header to Project Box with workspace display (or count if > 4) and project switcher integration. Docs impact: none.
+
+- Implement TUI orchestration focus mode with active project task board display on initial load, keyboard task selection and session launching, direct prompt submission to project orchestrator, Ctrl+X project orchestrator toggling, automatic primary orchestrator resolution, empty-task board guidance, and project switching integration via workspace switcher modal. Docs impact: none.
+
+- Optimize TUI scrollback performance, reading viewport anchoring, and input responsiveness. Implement structured item layout caching, incremental Markdown rendering, stable timeline item viewport anchoring during streaming and appends, change domain tracking and transport-only wake suppression in V3 chat store, non-blocking render requests, and bounded event batching in the terminal application event loop. Docs impact: none.
+- Show task-linked environments on task cards with exact deployment navigation and event-driven status; gate browser opening on deployment-snapshotted frontend declarations, fresh bounded HTTP readiness checks and verified loopback port mappings. Docs impact: `docs/managed-local-systemd-environments.md` documents browser configuration, safety and unrun frontend/manual qualification.
+
+- Persist revision-guarded task environment attachments, source-bound per-consumer access, durable task invalidations and finite managed review cleanup; distinguish preparation handoff from task execution and lease ownership. Docs impact: `docs/managed-local-systemd-environments.md` documents task attach/acquire/release, explicit rebuild/reassignment and retention; live qualification remains separate.
+
+- Expose environment management to Orchestrator while preserving saved capability denials; enforce durable Swarm/Orchestrator session admission on environment tools and HTTP routes, and add an internal source-bound independent-consumer lease foundation. Docs impact: none; task attachment wiring and live environment qualification remain separate.
+
+- Add supervised local managed image builds from exact catalog-authorized committed product/recipe inputs, bounded clean contexts, operation-owned cancellation/cleanup and immutable deployment provenance. Preserve manual onboarding state on lease release. Docs impact: `docs/managed-local-systemd-environments.md` and environment tool help describe admission, action flow and live-validation limits.
+
+- Preserve bounded, redacted local-engine failure diagnostics and add an explicit rootless Podman/systemd managed-environment contract with capability admission, private cgroups, PID limits, no host mounts, and loopback-only ports. Docs impact: managed-environment tool schema/help documents the typed runtime and host prerequisites; live runtime qualification remains separate.
+
+- Add headless worker control, runtime journaling, verified-host SSH transport probe, and GCP compute target registration. Support fenced runtime claims, command acknowledgement, and target capacity reservations in store, runtime execution service, and TypeScript SDK (`WorkerControl`). Docs impact: none.
+
+- Add typed SDK permission views and explicit structured/custom answers, confirmed browser/bridge resolution with recoverable errors, duplicate guards and durable pending-request reconciliation. Never auto-answer ask-user, and remove bypass/model configuration from chat quickstarts. Docs impact: explicit-decision examples and permission protocol migration guidance in `packages/sdk/README.md` and SDK quickstarts.
+
+- Reject missing or malformed browser SDK subscription session IDs before opening a connection or changing the selected conversation. Docs impact: none.
+
+- Keep SDK chat subscriptions usable across repeated turns, conversation switching and reconnects; add canonical project conversation helpers and a browser-only entry point, reject foreign-origin bridge upgrades, and disconnect failed upstream watches. Docs impact: SDK conversation lifecycle and browser bridge usage in `packages/sdk/README.md`.
+
+- Add native WebSocket streaming bridge (`SwarmWebSocketBridge`, `client.chat.attachWebSocket`) and universal browser WebSocket client (`SwarmBrowserChat`) to `@swarm-agent/sdk`, allowing web frontends to hook directly into Swarm's bidirectional WebSocket stream for realtime assistant tokens, model reasoning deltas, live tool execution events, and permission approvals. Docs impact: none.
+- Add high-level interactive Chat namespace (`client.chat`), permissions and permissionless mode namespace (`client.permissions`), automatic environment and Codex credential auto-configuration (`client.auth.autoConfigure`), verified provider fleet recommendations and router assignment (`applyProviderFleet`, `restoreDefaults`), auto-permission approval during session runs (`autoApprovePermissions`), and comprehensive 0->1 quickstart examples (`chat-quickstart.ts`, `orchestrator-quickstart.ts`) to `@swarm-agent/sdk`. Docs impact: none.
+
+- Require test-only mint suppression before native qualification installation, reject ineffective service suppression at startup, and verify the daemon environment after installation, reinstallation, and restart for root/sudo scenarios. Add hermetic guard and repeated reporter-suppression regressions without changing real-user defaults; keep the publication path check limited to the exact test-only systemd drop-in statement. Docs impact: mandatory no-mint qualification requirements and evidence limits in `docs/main-deploy-checklist.md`.
+
+- Document a five-step headless application SDK roadmap covering incremental non-production testing, sessions and orchestration, safe tools/media, durable state and parallel-workload qualification. Docs impact: add `packages/sdk/HEADLESS_PLAN.md` and link it from the headless UI guide; no new runtime capabilities are claimed.
 
 - Bump release version candidate to v0.1.47 for npm package publication with bypass-2fa authentication. Docs impact: none.
 

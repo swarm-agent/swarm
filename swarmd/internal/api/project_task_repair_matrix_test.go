@@ -367,28 +367,13 @@ func (f *matrixTestFixture) createProject(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w := f.callAPI(http.MethodPost, "", map[string]any{
-		"name": "Matrix Test Project",
-		"workspaces": []map[string]string{
-			{"workspace_id": entry.WorkspaceID, "path": repo, "role": "primary_code"},
-		},
-	}, p)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create project failed %d: %s", w.Code, w.Body.String())
+	// Task tests seed an existing project; AI creation is tested separately by
+	// TestProjectContext. Do not start unrelated background generation here.
+	project := &pebblestore.ProjectRecord{ID: "matrix-project", Name: "Matrix Test Project", Workspaces: []pebblestore.ProjectWorkspaceRef{{WorkspaceID: entry.WorkspaceID, Path: repo, Role: "primary_code"}}}
+	if err := f.server.sessions.Store().PutProject(p.AccountScopeID, project); err != nil {
+		t.Fatal(err)
 	}
-	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode project response: %v: %s", err, w.Body.String())
-	}
-	proj, ok := resp["project"].(map[string]any)
-	if !ok {
-		t.Fatalf("project response missing project object: %s", w.Body.String())
-	}
-	id, ok := proj["id"].(string)
-	if !ok || id == "" {
-		t.Fatalf("project response missing project id: %s", w.Body.String())
-	}
-	return id
+	return project.ID
 }
 
 // -----------------------------------------------------------------------------
@@ -397,10 +382,10 @@ func (f *matrixTestFixture) createProject(t *testing.T) string {
 func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T) {
 	// Requirement-first Purpose:
 	// - Invariant: Manual creation of small task routes to Coder, enforces authenticated identity,
-	//   reserves Coder profile and isolated worktree, remains in pending_approval, and when approved
-	//   starts real Coder execution via canonical machinery without executing before approval.
+	//   reserves Coder profile and isolated worktree and immediately admits one run.
 	// - Authority: handleProjectTaskCreate, deployProjectTaskExecution, handleProjectTaskApprove in api/projects.go.
-	// - Threat/regression: Premature execution before approval, unisolated worktrees, or missing Coder profile.
+	// - Threat/regression: Empty approval gates, duplicate runs, or unisolated execution.
+	//   The HTTP/store fixture is the narrowest layer proving execution admission.
 	f := setupMatrixTestFixture(t)
 	defer f.db.Close()
 	projID := f.createProject(t)
@@ -408,10 +393,11 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 
 	// 1. Create small task via REST API
 	w := f.callAPI(http.MethodPost, "/"+projID+"/tasks", map[string]any{
-		"title":        "Fix parser edge-case",
-		"prompt":       "Fix parser edge case in lexer.go",
-		"agent":        "coder",
-		"feature_size": "small",
+		"workspace_path": filepath.Join(f.dir, "repo"),
+		"title":          "Fix parser edge-case",
+		"prompt":         "Fix parser edge case in lexer.go",
+		"agent":          "coder",
+		"feature_size":   "small",
 	}, p)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create small task failed %d: %s", w.Code, w.Body.String())
@@ -419,12 +405,12 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 	taskMap := requireMatrixTaskResponse(t, w, http.StatusCreated)
 	taskID := taskMap["id"].(string)
 
-	// Verify task routed to Coder with pending_approval
+	// Verify task routed to Coder for immediate execution
 	if taskMap["agent"] != "coder" {
 		t.Fatalf("expected agent 'coder', got %v", taskMap["agent"])
 	}
-	if taskMap["status"] != "pending_approval" {
-		t.Fatalf("expected status 'pending_approval', got %v", taskMap["status"])
+	if taskMap["status"] != "in_progress" {
+		t.Fatalf("expected status 'in_progress', got %v", taskMap["status"])
 	}
 	sessID := taskMap["session_id"].(string)
 	if sessID == "" {
@@ -443,12 +429,10 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 		t.Fatalf("session identity mismatch: user=%q acct=%q", sess.UserID, sess.AccountScopeID)
 	}
 
-	// Verify NO run intent is pending execution yet
-	intents, _ := f.server.sessions.Store().ListRunIntents(sessID, 10)
-	for _, intent := range intents {
-		if intent.Status == pebblestore.V3RunIntentPendingExecutor {
-			t.Fatal("pending small task must NOT have run intent pending executor before approval")
-		}
+	// Direct requests admit work immediately; a redundant approval cannot add a run.
+	intents, err := f.server.sessions.Store().ListRunIntents(sessID, 10)
+	if err != nil || len(intents) != 1 || taskMap["plan_binding"] != nil {
+		t.Fatalf("expected one direct run without plan: %+v %v", intents, err)
 	}
 
 	// 2. Approve small task
@@ -460,8 +444,8 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 	if err := json.Unmarshal(w.Body.Bytes(), &appResp); err != nil {
 		t.Fatalf("decode approval response: %v: %s", err, w.Body.String())
 	}
-	if appResp["status"] != "approved" {
-		t.Fatalf("expected status 'approved', got %v", appResp["status"])
+	if appResp["status"] != "already_approved" {
+		t.Fatalf("expected status 'already_approved', got %v", appResp["status"])
 	}
 
 	// Verify task status transitioned to in_progress
@@ -475,8 +459,8 @@ func TestTaskMatrix_Case1_ManualSmallTaskIdentityProfileWorktreeRun(t *testing.T
 
 	// Verify run intent was created for Coder execution
 	intentsAfter, _ := f.server.sessions.Store().ListRunIntents(sessID, 10)
-	if len(intentsAfter) == 0 {
-		t.Fatal("expected run intent to be created after task approval")
+	if len(intentsAfter) != 1 {
+		t.Fatal("redundant approval must not create a second run")
 	}
 	if intentsAfter[0].UserID != f.userID || intentsAfter[0].AccountScopeID != f.accountID {
 		t.Fatalf("run intent identity mismatch: user=%q", intentsAfter[0].UserID)

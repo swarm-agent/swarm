@@ -43,7 +43,7 @@ import { DesktopV3ConversationPane as ConversationPane } from '../chat/component
 import { SidebarModeSelector } from '../orchestrate/sidebar-mode-selector'
 import { DesktopV3ChatHeader } from '../chat/components/desktop-v3-chat-header'
 import { DesktopV3AgenticComposer } from '../chat/components/desktop-v3-agentic-composer'
-import { applyDesktopV3RoutedStartResponse, clearDesktopV3RoutedStartOperation, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
+import { applyDesktopV3RoutedStartResponse, createDesktopV3NewSessionOperation, desktopV3RoutedWorkspaceAuthority, startNewDesktopV3Session, type DesktopV3RoutedStartResult, type DesktopV3RoutedWorkspaceAuthority } from '../session-v3/new-session-flow'
 import { DesktopPlanModal } from '../chat/components/desktop-plan-modal'
 import { buildDesktopChatRouteOptions, getDesktopSessionCreateTarget, type DesktopChatRoute } from '../chat/services/chat-routing'
 import { resolveDesktopV3AgentModelLock } from '../chat/services/agent-model-preferences'
@@ -343,7 +343,8 @@ function runIntentArrayEqual(left: V3SessionRunIntent[], right: V3SessionRunInte
 }
 
 function desktopV3RenderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
-  return left.committed === right.committed
+  return left.taskActivities === right.taskActivities
+    && left.committed === right.committed
     && pendingUserMessagesEqual(left.pendingUser, right.pendingUser)
     && liveRunsEqual(left.liveRuns, right.liveRuns)
     && runIntentArrayEqual(left.runIntents, right.runIntents)
@@ -2817,7 +2818,7 @@ export function DesktopAppPage() {
   const isOrchestrateRoute = Boolean(workspaceOrchestrateMatch || globalOrchestrateMatch)
   const isWorkersRoute = Boolean(workspaceWorkersMatch || workspaceWorkersDetailMatch || workspaceWorkerDetailMatch || workspaceAutomationsMatch || globalWorkersMatch || globalWorkersDetailMatch)
   const workspaceTaskMatch = matchRoute({ to: '/$workspaceSlug/task', fuzzy: false })
-  const workspaceSessionMatch = matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
+  const workspaceSessionMatch = matchRoute({ to: '/history/$workspaceSlug/$sessionId', fuzzy: false }) || matchRoute({ to: '/$workspaceSlug/$sessionId', fuzzy: false })
   const workspaceMatch = matchRoute({ to: '/$workspaceSlug', fuzzy: false })
   const routeWorkspaceSlug = (workspaceWorkersMatch
     ? workspaceWorkersMatch.workspaceSlug
@@ -3804,7 +3805,7 @@ export function DesktopAppPage() {
       return
     }
     void navigate({
-      to: '/$workspaceSlug/$sessionId',
+      to: '/history/$workspaceSlug/$sessionId',
       params: { workspaceSlug: canonicalWorkspaceSlug, sessionId: session.id },
       replace: true,
     })
@@ -3891,29 +3892,12 @@ export function DesktopAppPage() {
   }, [navigate, workspaceSlugByPath])
 
   const handleStartNewSessionInWorkspace = useCallback((
-    wsPath: string,
-    wsName: string,
-    options: { prompt?: string; planModeRequested?: boolean } = {},
+    _wsPath: string,
+    _wsName: string,
+    _options: { prompt?: string; planModeRequested?: boolean } = {},
   ) => {
-    const nextIntent = {
-      workspacePath: wsPath,
-      prompt: options.prompt?.trim() ?? '',
-      planModeRequested: options.planModeRequested === true,
-    }
-    // An explicit New Session gesture is an abandonment boundary, not an
-    // interrupted-start retry. Drop persisted retry identity and force a fresh
-    // pane even when navigation targets the workspace URL already on screen.
-    clearDesktopV3RoutedStartOperation()
-    setNewSessionEpoch((current) => current + 1)
-    setNewSessionIntent(nextIntent)
-    dispatchDesktopV3Cache(selectSession(undefined))
-    setMobileSidebarOpen(false)
-    const workspaceSlug = workspaceSlugByPath.get(wsPath)
-      ?? workspaceRouteSlugBase({ path: wsPath, workspaceName: wsName })
-    const search = nextIntent.planModeRequested ? { newPlan: '1' } : {}
-    void navigate({ to: '/$workspaceSlug', params: { workspaceSlug }, search })
-    setComposerFocusSignal((current) => current + 1)
-  }, [navigate, workspaceSlugByPath])
+    void navigate({ to: '/projects' })
+  }, [navigate])
 
   const handleNewSessionStarted = useCallback(async (sessionId: string): Promise<void> => {
     const workspace = topWorkspace
@@ -4558,14 +4542,14 @@ export function DesktopAppPage() {
     {
       id: 'new-session',
       label: 'New session',
-      description: 'Start a fresh chat in the current or top selected workspace.',
+      description: 'Choose a project to start a Swarm conversation.',
       keys: ['⌘/Ctrl', 'Alt', 'N'],
-      availability: 'Requires a selected workspace.',
-      enabled: canStartNewSession,
-      disabledReason: 'Select a workspace before starting a new session.',
+      availability: 'Project conversations',
+      enabled: true,
+      disabledReason: '',
       icon: Plus,
       onRun: () => {
-        if (topWorkspacePath) handleStartNewSessionInWorkspace(topWorkspacePath, topWorkspaceLabel)
+        void navigate({ to: '/projects' })
         setQuickActionsOpen(false)
       },
     },

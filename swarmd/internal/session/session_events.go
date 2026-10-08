@@ -310,6 +310,13 @@ func (s *Service) ListSessionMessagesBefore(sessionID string, beforeSeq uint64, 
 	return s.store.ListV3SessionMessagesBefore(sessionID, beforeSeq, limit)
 }
 
+func (s *Service) ListSessionMessagesBeforeByteBudget(sessionID string, beforeSeq uint64, limit, maxBytes int) ([]pebblestore.MessageSnapshot, bool, error) {
+	if s == nil || s.store == nil {
+		return nil, false, errors.New("session store is not configured")
+	}
+	return s.store.ListV3SessionMessagesBeforeByteBudget(sessionID, beforeSeq, limit, maxBytes)
+}
+
 func (s *Service) GetSessionProjection(sessionID string) (SessionProjection, bool, error) {
 	if s == nil || s.store == nil {
 		return SessionProjection{}, false, errors.New("session store is not configured")

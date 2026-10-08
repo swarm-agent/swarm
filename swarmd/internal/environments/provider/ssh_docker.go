@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -48,7 +49,7 @@ func (p *SSHDockerProvider) ValidateConnection(ctx context.Context, conn *enviro
 	if conn == nil {
 		return errors.New("connection cannot be nil")
 	}
-	if err := conn.Validate(); err != nil {
+	if err := conn.Clone().Validate(); err != nil {
 		return fmt.Errorf("invalid connection: %w", err)
 	}
 	if conn.Kind != environments.ConnectionKindSSH {
@@ -58,6 +59,8 @@ func (p *SSHDockerProvider) ValidateConnection(ctx context.Context, conn *enviro
 		return errors.New("ssh configuration is required")
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
 	_, dest, err := p.buildSSHBaseArgs(conn)
 	if err != nil {
 		return err
@@ -69,14 +72,14 @@ func (p *SSHDockerProvider) ValidateConnection(ctx context.Context, conn *enviro
 		if errors.As(err, &exitErr) {
 			switch exitErr.ExitCode() {
 			case 255:
-				return fmt.Errorf("ssh connection to %s failed (network, auth, or reachability error): %w (output: %s)", dest, err, strings.TrimSpace(string(out)))
+				return fmt.Errorf("ssh connection to %s failed (network, auth, or reachability error): %w (output: %s)", dest, err, commandDiagnostic(string(out)))
 			case 127:
-				return fmt.Errorf("ssh connection to %s succeeded, but docker is not installed or not in PATH (exit code 127): %w (output: %s)", dest, err, strings.TrimSpace(string(out)))
+				return fmt.Errorf("ssh connection to %s succeeded, but docker is not installed or not in PATH (exit code 127): %w (output: %s)", dest, err, commandDiagnostic(string(out)))
 			default:
-				return fmt.Errorf("remote docker daemon validation on %s failed: %w (output: %s)", dest, err, strings.TrimSpace(string(out)))
+				return fmt.Errorf("remote docker daemon validation on %s failed: %w (output: %s)", dest, err, commandDiagnostic(string(out)))
 			}
 		}
-		return fmt.Errorf("ssh docker connection validation failed on %s: %w (output: %s)", dest, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("ssh docker connection validation failed on %s; restore noninteractive authentication, reachability and Docker access: %s", dest, commandDiagnostic(err.Error()+": "+string(out)))
 	}
 	return nil
 }
@@ -91,31 +94,55 @@ func (p *SSHDockerProvider) Capabilities(ctx context.Context, conn *environments
 		RemoteOS:            "linux",
 	}
 
-	if conn != nil && conn.SSH != nil {
-		out, err := p.runSSH(ctx, conn, "docker", "version", "--format", "{{.Server.Version}}")
-		if err == nil {
-			caps.EngineVersion = strings.TrimSpace(string(out))
-		}
+	if err := p.ValidateConnection(ctx, conn); err != nil {
+		return environments.ConnectionCapabilities{}, err
 	}
+	probeCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
+	out, err := p.runSSH(probeCtx, conn, "docker", "version", "--format", "{{.Server.Version}}")
+	if err != nil {
+		return environments.ConnectionCapabilities{}, errors.New("remote Docker version unavailable; supply host runtime/access")
+	}
+	caps.EngineVersion = strings.TrimSpace(string(out))
 	return caps, nil
 }
 
 // Deploy provisions and starts a Docker container on the remote SSH host.
-func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*DeployResult, error) {
+func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (_ *DeployResult, retErr error) {
 	if req.Connection == nil {
 		return nil, errors.New("connection cannot be nil")
 	}
 	if req.Environment == nil {
 		return nil, errors.New("environment cannot be nil")
 	}
+	if err := ValidateRuntimeConnection(req.Connection, req.Environment); err != nil {
+		return nil, err
+	}
+	if req.Environment.Build != nil && (req.Deployment == nil || req.Deployment.Build == nil) {
+		return nil, errors.New("successful managed build receipt required before SSH deployment")
+	}
+	if req.Environment.Build != nil || (req.Deployment != nil && req.Deployment.Build != nil) {
+		if len(req.Environment.FrontendEndpoints) != 0 || (req.Environment.HealthCheck != nil && req.Environment.HealthCheck.HTTPPath != "") {
+			return nil, errors.New("SSH managed tests do not support direct remote HTTP endpoints; use container health commands")
+		}
+		if req.Environment.Container.Privileged || len(req.Environment.Provisioning.Mounts) != 0 || req.Environment.Provisioning.Strategy.Kind != environments.SourceStrategyKindRegistryImage {
+			return nil, errors.New("SSH managed deployment forbids host mounts and privileged access")
+		}
+	}
 	if req.Deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
+	}
+	if err := validateSSHBuildDeployment(req.Connection, req.Deployment); err != nil {
+		return nil, err
 	}
 	if req.Connection.Kind != environments.ConnectionKindSSH {
 		return nil, fmt.Errorf("unsupported connection kind: %q", req.Connection.Kind)
 	}
 	if req.Connection.SSH == nil {
 		return nil, errors.New("ssh configuration is required")
+	}
+	if req.Deployment.Build != nil && req.Environment.Container.Image != req.Deployment.Build.ImageID {
+		return nil, errors.New("SSH runtime image differs from successful receipt")
 	}
 	if err := req.Environment.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid environment definition: %w", err)
@@ -131,11 +158,37 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		defer cancel()
 	}
 
+	if req.Deployment.Build != nil {
+		if err := p.ValidateConnection(deployCtx, req.Connection); err != nil {
+			return nil, err
+		}
+	}
 	cName := containerName(req.Environment.ID, req.Deployment.ID)
+	owned := false
+	defer func() {
+		if retErr != nil && owned && req.Deployment.Build != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
+			defer cancel()
+			err := p.cleanupSSHDeployment(cleanupCtx, req.Connection, req.Deployment, cName)
+			if err != nil {
+				retErr = errors.Join(retErr, ErrOperationCleanupFailed, errors.New("SSH deployment cleanup unconfirmed"))
+			}
+		}
+	}()
+
+	if req.Deployment.Build != nil {
+		out, err := p.runSSH(deployCtx, req.Connection, "docker", "container", "ls", "--all", "--filter", "name="+cName, "--format", "{{.Names}}")
+		if err != nil || strings.TrimSpace(string(out)) != "" {
+			return nil, errors.New("SSH container collision preflight unavailable or name already allocated")
+		}
+	}
 
 	// Check if a container with this name already exists on the remote host
 	inspectOut, inspectErr := p.runSSH(deployCtx, req.Connection, "docker", "inspect", cName)
 	if inspectErr == nil {
+		if req.Deployment.Build != nil {
+			return nil, errors.New("SSH managed deployment name collision; no replacement permitted")
+		}
 		ins, parseErr := parseDockerInspect(inspectOut)
 		if parseErr == nil && ins.State.Running && req.Environment.DeploymentPolicy.Reuse {
 			// Container is already running and reusable on remote host
@@ -171,7 +224,14 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		"--label", "swarm.account_scope_id="+req.Deployment.AccountScopeID,
 	)
 	for k, v := range req.Environment.Labels {
+		if strings.HasPrefix(k, "swarm.") {
+			return nil, errors.New("reserved Swarm ownership label")
+		}
 		runArgs = append(runArgs, "--label", fmt.Sprintf("%s=%s", k, v))
+	}
+
+	if req.Deployment.Build != nil {
+		runArgs = append(runArgs, "--label", "swarm.build_receipt="+req.Deployment.Build.OperationID, "--pull=never")
 	}
 
 	// Resource limits
@@ -208,8 +268,14 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		if port.Protocol != "" {
 			proto = port.Protocol
 		}
+		prefix := ""
+		if req.Deployment.Build != nil {
+			prefix = "127.0.0.1:"
+		}
 		if port.HostPort > 0 {
-			runArgs = append(runArgs, "-p", fmt.Sprintf("%d:%d/%s", port.HostPort, port.ContainerPort, proto))
+			runArgs = append(runArgs, "-p", prefix+fmt.Sprintf("%d:%d/%s", port.HostPort, port.ContainerPort, proto))
+		} else if prefix != "" {
+			runArgs = append(runArgs, "-p", prefix+fmt.Sprintf(":%d/%s", port.ContainerPort, proto))
 		} else {
 			runArgs = append(runArgs, "-p", fmt.Sprintf("%d/%s", port.ContainerPort, proto))
 		}
@@ -319,6 +385,8 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 		runArgs = append(runArgs, req.Environment.Container.Args...)
 	}
 
+	// A timed-out create may still have allocated the exact owned name.
+	owned = true
 	// Run container on remote host over SSH
 	runOut, runErr := p.runSSH(deployCtx, req.Connection, runArgs...)
 	if runErr != nil {
@@ -326,6 +394,14 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 	}
 
 	containerID := strings.TrimSpace(string(runOut))
+
+	if req.Deployment.Build != nil {
+		inspection := *req.Deployment
+		inspection.Runtime = environments.RuntimeMetadata{ContainerID: containerID, ProviderResourceID: cName}
+		if _, err := p.Inspect(deployCtx, req.Connection, &inspection); err != nil {
+			return nil, err
+		}
+	}
 
 	// Execute setup commands if defined
 	if len(req.Environment.Container.SetupCommands) > 0 {
@@ -335,27 +411,26 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 			if setupErr != nil {
 				// Destroy failed container on remote host
 				rmArgs := []string{"docker", "rm", "-f", "-v", cName}
-				_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+				if req.Deployment.Build == nil {
+					_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+				}
 				return nil, fmt.Errorf("setup command [%d] %q failed on remote container %s: %w (output: %s)", i, cmdStr, cName, setupErr, sanitizeOutput(string(setupOut)))
 			}
 		}
 	}
 
 	// Inspect container to obtain dynamic runtime state (ports, IP, health)
-	insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
-		ID:            req.Deployment.ID,
-		EnvironmentID: req.Environment.ID,
-		Runtime: environments.RuntimeMetadata{
-			ContainerID:        containerID,
-			ProviderResourceID: cName,
-		},
-	})
+	inspection := *req.Deployment
+	inspection.Runtime = environments.RuntimeMetadata{ContainerID: containerID, ProviderResourceID: cName}
+	insRes, err := p.Inspect(deployCtx, req.Connection, &inspection)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect newly deployed remote container: %w", err)
 	}
 	if insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed {
 		rmArgs := []string{"docker", "rm", "-f", "-v", cName}
-		_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+		if req.Deployment.Build == nil {
+			_, _ = p.runSSH(context.Background(), req.Connection, rmArgs...)
+		}
 		return nil, fmt.Errorf("deployed container %s is not running (status: %s)", cName, insRes.Status)
 	}
 
@@ -400,8 +475,13 @@ func (p *SSHDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*Dep
 
 // Inspect retrieves live container status, mapped ports, and health on the remote host.
 func (p *SSHDockerProvider) Inspect(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment) (*InspectResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
+	}
+	if err := validateSSHBuildDeployment(conn, deployment); err != nil {
+		return nil, err
 	}
 	target := resolveContainerTarget(deployment)
 	if target == "" {
@@ -416,6 +496,16 @@ func (p *SSHDockerProvider) Inspect(ctx context.Context, conn *environments.Conn
 	ins, err := parseDockerInspect(out)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse inspect output for container %s on %s: %w", target, sshHostName(conn), err)
+	}
+
+	if deployment.Build != nil {
+		var records []struct {
+			Image  string
+			Config struct{ Labels map[string]string }
+		}
+		if json.Unmarshal(out, &records) != nil || len(records) != 1 || normalizedBuildImageID(records[0].Image) != deployment.Build.ImageID || records[0].Config.Labels["swarm.build_receipt"] != deployment.Build.OperationID || records[0].Config.Labels["swarm.account_scope_id"] != deployment.AccountScopeID || records[0].Config.Labels["swarm.deployment_id"] != deployment.ID {
+			return nil, errors.New("SSH runtime image or deployment ownership mismatch")
+		}
 	}
 
 	// Status mapping
@@ -475,9 +565,12 @@ func (p *SSHDockerProvider) Inspect(ctx context.Context, conn *environments.Conn
 			proto = parts[1]
 		}
 		for _, b := range bindings {
+			if deployment.Build != nil && b.HostIP != "127.0.0.1" && b.HostIP != "::1" {
+				return nil, errors.New("SSH managed port binding is not loopback-only")
+			}
 			hPort, _ := strconv.Atoi(b.HostPort)
 			endpointURL := ""
-			if proto == "tcp" {
+			if proto == "tcp" && deployment.Build == nil {
 				endpointURL = fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(hPort)))
 			}
 			ap := environments.AssignedPort{
@@ -525,9 +618,17 @@ func (p *SSHDockerProvider) Start(ctx context.Context, conn *environments.Connec
 		return errors.New("cannot start deployment without container target or ID")
 	}
 
+	if err := validateSSHBuildDeployment(conn, deployment); err != nil {
+		return err
+	}
+	if deployment.Build != nil {
+		if _, err := p.Inspect(ctx, conn, deployment); err != nil {
+			return err
+		}
+	}
 	out, err := p.runSSH(ctx, conn, "docker", "start", target)
 	if err != nil {
-		return fmt.Errorf("failed to start container %s on %s: %w (output: %s)", target, sshHostName(conn), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("failed to start container %s on %s: %w (output: %s)", target, sshHostName(conn), err, commandDiagnostic(string(out)))
 	}
 	return nil
 }
@@ -542,9 +643,17 @@ func (p *SSHDockerProvider) Stop(ctx context.Context, conn *environments.Connect
 		return errors.New("cannot stop deployment without container target or ID")
 	}
 
+	if err := validateSSHBuildDeployment(conn, deployment); err != nil {
+		return err
+	}
+	if deployment.Build != nil {
+		if _, err := p.Inspect(ctx, conn, deployment); err != nil {
+			return err
+		}
+	}
 	out, err := p.runSSH(ctx, conn, "docker", "stop", "-t", "10", target)
 	if err != nil {
-		return fmt.Errorf("failed to stop container %s on %s: %w (output: %s)", target, sshHostName(conn), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("failed to stop container %s on %s: %w (output: %s)", target, sshHostName(conn), err, commandDiagnostic(string(out)))
 	}
 	return nil
 }
@@ -559,9 +668,12 @@ func (p *SSHDockerProvider) Destroy(ctx context.Context, conn *environments.Conn
 		return errors.New("cannot destroy deployment without container target or ID")
 	}
 
+	if deployment.Build != nil {
+		return p.cleanupSSHDeployment(ctx, conn, deployment, target)
+	}
 	out, err := p.runSSH(ctx, conn, "docker", "rm", "-f", "-v", target)
 	if err != nil {
-		return fmt.Errorf("failed to destroy container %s on %s: %w (output: %s)", target, sshHostName(conn), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("failed to destroy container %s on %s: %w (output: %s)", target, sshHostName(conn), err, commandDiagnostic(string(out)))
 	}
 	return nil
 }
@@ -571,6 +683,9 @@ func (p *SSHDockerProvider) ResolveAccess(ctx context.Context, conn *environment
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
+	if err := validateSSHBuildDeployment(conn, deployment); err != nil {
+		return nil, err
+	}
 	target := resolveContainerTarget(deployment)
 	if target == "" {
 		return nil, errors.New("cannot resolve access without container target or ID")
@@ -579,6 +694,9 @@ func (p *SSHDockerProvider) ResolveAccess(ctx context.Context, conn *environment
 	// Inspect container for fresh runtime ports and state on remote host
 	insRes, err := p.Inspect(ctx, conn, deployment)
 	if err != nil {
+		if deployment.Build != nil {
+			return nil, err
+		}
 		// Fallback to cached runtime if present
 		if deployment.Runtime.ContainerID != "" || deployment.Runtime.ProviderResourceID != "" {
 			return p.accessFromRuntime(deployment.Runtime, conn), nil
@@ -632,6 +750,14 @@ func (t *sshDockerTransport) RunExecCombined(ctx context.Context, execArgs ...st
 
 // Exec executes a command inside the running remote container over SSH with supervisor process group management.
 func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
+	if err := validateSSHBuildDeployment(conn, deployment); err != nil {
+		return nil, err
+	}
+	if deployment != nil && deployment.Build != nil {
+		if _, err := p.Inspect(ctx, conn, deployment); err != nil {
+			return nil, err
+		}
+	}
 	target, err := validateExecParams(deployment, req)
 	if err != nil {
 		return nil, err
@@ -642,6 +768,14 @@ func (p *SSHDockerProvider) Exec(ctx context.Context, conn *environments.Connect
 
 // CancelExec cancels a running or orphaned execution operation inside the remote target container.
 func (p *SSHDockerProvider) CancelExec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req CancelExecRequest) (*CancelExecResult, error) {
+	if err := validateSSHBuildDeployment(conn, deployment); err != nil {
+		return nil, err
+	}
+	if deployment != nil && deployment.Build != nil {
+		if _, err := p.Inspect(ctx, conn, deployment); err != nil {
+			return nil, err
+		}
+	}
 	target, err := validateCancelParams(deployment, req)
 	if err != nil {
 		return nil, err
@@ -664,6 +798,9 @@ func (p *SSHDockerProvider) buildSSHBaseArgs(conn *environments.Connection) ([]s
 		return nil, "", errors.New("ssh host cannot be empty")
 	}
 	user := strings.TrimSpace(conn.SSH.User)
+	if strings.HasPrefix(host, "-") || strings.ContainsAny(host, " \t\r\n\x00/@") || strings.HasPrefix(user, "-") || strings.ContainsAny(user, " \t\r\n\x00/@") {
+		return nil, "", errors.New("unsafe SSH host or user identity")
+	}
 
 	dest := host
 	if user != "" {
@@ -671,6 +808,12 @@ func (p *SSHDockerProvider) buildSSHBaseArgs(conn *environments.Connection) ([]s
 	}
 
 	args := []string{
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "ForwardAgent=no",
+		"-o", "ClearAllForwardings=yes",
+		"-o", "RequestTTY=no",
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=2",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 	}

@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { AlertTriangle, Bot, ChevronRight, GitBranch, Plus } from 'lucide-react'
 import { queryClient } from '../../../../app/query-client'
 import { Button } from '../../../../components/ui/button'
 import { Input } from '../../../../components/ui/input'
-import { ModalCloseButton } from '../../../../components/ui/modal-close-button'
-import { acceptOnboardingProviderCredential, patchDesktopOnboarding, startWorkspaceOnboardingSession } from '../api'
+import { acceptOnboardingProviderCredential, patchDesktopOnboarding } from '../api'
 import type { DesktopOnboardingStatus } from '../types'
 import { startCodexOAuth } from '../../settings/mutations/start-codex-oauth'
 import { getCodexOAuthStatus } from '../../settings/queries/get-codex-oauth-status'
@@ -16,73 +14,66 @@ import { listProviders } from '../../settings/queries/list-providers'
 import type { AuthMethod, CodexOAuthSession, ProviderStatus, StartCodexOAuthInput, UpsertAuthCredentialInput } from '../../settings/types/auth'
 import { CodexDeviceCode } from '../../settings/auth/components/codex-device-code'
 import { codexSetupRecommendation } from '../../settings/auth/codex-setup-recommendation'
-import { WorkspaceFolderTree } from '../../../workspaces/launcher/components/workspace-folder-tree'
 import { WorkspaceStatus } from '../../../workspaces/launcher/components/workspace-status'
 import { applyWorkspaceTheme, workspaceThemeDefaultId } from '../../../workspaces/launcher/services/workspace-theme'
-import { useWorkspaceLauncher } from '../../../workspaces/launcher/state/use-workspace-launcher'
-import { buildWorkspaceRouteSlugMap, workspaceRouteSlugBase } from '../../../workspaces/launcher/services/workspace-route'
 import { formatWorkspacePath } from '../../../workspaces/launcher/services/workspace-format'
 import { agentStateQueryOptions, draftModelQueryOptions, modelOptionsQueryOptions, modelProfilesQueryOptions } from '../../../queries/query-options'
-import type { WorkspaceDiscoverEntry, WorkspaceResolution } from '../../../workspaces/launcher/types/workspace'
-import {
-  WorkspaceRepositoryPrerequisiteError,
-  type WorkspaceRepositoryState,
-} from '../../../workspaces/launcher/services/workspace-repository'
-import { applyDesktopV3RoutedStartResponse } from '../../session-v3/new-session-flow'
-import { inspectRepository } from '../../../workspaces/launcher/services/repository-review'
-import { RepositoryReviewPanel } from './repository-review-panel'
-import { WorkspaceOnboardingAssistant } from './workspace-onboarding-assistant'
+import { ArrowUp, ChevronRight, FileText, FolderPlus, GitBranch, RefreshCw, Search } from 'lucide-react'
 
-type OnboardingStep = 'identity' | 'provider' | 'workspace'
+import { completeAccountOnboarding } from '../../orchestrate/project-entry-policy'
+import { requestJson } from '../../../../app/api'
+import { registerProjectFolder } from '../../runtime/project-creation'
+import { createProjectConversation, projectConversationLink } from '../../orchestrate/project-conversations'
+import { projectRouteSegment } from '../../orchestrate/project-route'
+import { PersonalizingCard } from '../../orchestrate/project-creation-flow'
+import type { CreationProject, CreationWorkspace } from '../../state/project-creation'
+
+type OnboardingStep = 'identity' | 'provider' | 'project' | 'workspaces'
 type CodexOAuthMode = StartCodexOAuthInput['method']
 type ProviderSetupMode = 'api' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | null
-type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'workspace' | null
+type PendingAction = 'identity' | 'provider-save' | 'oauth-device' | 'oauth-browser' | 'oauth-manual' | 'oauth-complete' | 'finalize' | 'project-create' | 'folder-add' | 'folder-create' | null
 
-type OnboardingView = OnboardingStep | 'setup'
+interface WorkspaceItem {
+  id?: string
+  path: string
+  name: string
+  isGitRepo: boolean
+  hasSwarm: boolean
+  hasClaude?: boolean
+  isSaved?: boolean
+  isLaunchFolder?: boolean
+}
+
+function fallbackFolderName(path: string): string {
+  const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] || path.trim() || 'workspace'
+}
+
+type OnboardingView = OnboardingStep | 'setup' | 'personalizing'
 
 const SWARM_MARK_SRC = '/favicon.svg'
 const STEP_TRANSITION_MS = 220
 const ONBOARDING_READY_HOLD_MS = 1_000
-const WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY = 'swarm.desktop.workspace-onboarding-assistant.v1'
-
-type WorkspaceOnboardingAssistantResume = { sessionId: string; path: string }
-
-function loadWorkspaceOnboardingAssistantResume(): WorkspaceOnboardingAssistantResume | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const value = JSON.parse(window.sessionStorage.getItem(WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY) ?? '') as Partial<WorkspaceOnboardingAssistantResume>
-    const sessionId = String(value.sessionId ?? '').trim()
-    const path = String(value.path ?? '').trim()
-    return sessionId && path ? { sessionId, path } : null
-  } catch {
-    return null
-  }
-}
-
-function saveWorkspaceOnboardingAssistantResume(value: WorkspaceOnboardingAssistantResume | null): void {
-  if (typeof window === 'undefined') return
-  if (value) {
-    window.sessionStorage.setItem(WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY, JSON.stringify(value))
-  } else {
-    window.sessionStorage.removeItem(WORKSPACE_ONBOARDING_ASSISTANT_RESUME_KEY)
-  }
-}
-
 const ONBOARDING_STEPS: Record<OnboardingStep, { stepLabel: string; title: string; subtitle: string }> = {
   identity: {
-    stepLabel: 'Step 1 of 3 · Identity',
+    stepLabel: 'Step 1 of 4 · Identity',
     title: 'Hi, I’m Swarm — your AI command center.',
     subtitle: 'Start with the basics: your username and this device name.',
   },
   provider: {
-    stepLabel: 'Step 2 of 3 · Provider',
+    stepLabel: 'Step 2 of 4 · Provider',
     title: 'Connect your AI provider.',
-    subtitle: 'Connect a provider now or skip ahead. You’ll choose your first workspace next.'
+    subtitle: 'Connect a provider now or skip ahead. No workspace or credit card required.',
   },
-  workspace: {
-    stepLabel: 'Step 3 of 3 · Workspace',
-    title: 'Choose your first workspace.',
-    subtitle: 'Use your home folder or create a new project folder (recommended). A separate folder keeps project work apart from your personal files.',
+  project: {
+    stepLabel: 'Step 3 of 4 · Project',
+    title: 'Name your first project.',
+    subtitle: 'Projects organize your conversations, workspaces, and AI context.',
+  },
+  workspaces: {
+    stepLabel: 'Step 4 of 4 · Workspaces',
+    title: 'Add workspaces to your project.',
+    subtitle: 'Select code folders to personalize AI context, or skip straight to chatting with Swarm.',
   },
 }
 
@@ -94,12 +85,7 @@ interface DesktopOnboardingGateProps {
 }
 
 function deriveInitialStep(status: DesktopOnboardingStatus): OnboardingStep {
-  return status.identity.bootstrapped && status.config.swarmName ? 'provider' : 'identity'
-}
-
-function fallbackWorkspaceNameFromPath(path: string): string {
-  const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
-  return parts[parts.length - 1] || path.trim() || 'workspace'
+  return status.identity.bootstrapped ? 'provider' : 'identity'
 }
 
 function apiCompatibleMethods(provider: ProviderStatus): AuthMethod[] {
@@ -150,8 +136,12 @@ function pendingMessage(action: PendingAction): string | null {
       return 'Completing sign-in…'
     case 'finalize':
       return 'Setting up your Swarm…'
-    case 'workspace':
-      return 'Setting up your workspace…'
+    case 'project-create':
+      return 'Creating your project…'
+    case 'folder-add':
+      return 'Registering workspace folder…'
+    case 'folder-create':
+      return 'Creating workspace folder…'
     default:
       return null
   }
@@ -164,9 +154,14 @@ function waitForOnboardingReadyHold(): Promise<void> {
   })
 }
 
-function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; step: OnboardingStep; visible: boolean }) {
+function OnboardingBrandHeader({ restart, step, visible, projectName }: { restart: boolean; step: OnboardingStep; visible: boolean; projectName?: string }) {
   const stepCopy = ONBOARDING_STEPS[step]
-  const stepIndex = (['identity', 'provider', 'workspace'] as OnboardingStep[]).indexOf(step) + 1
+  const visibleSteps: OnboardingStep[] = restart ? ['identity', 'provider'] : ['identity', 'provider', 'project', 'workspaces']
+  const stepIndex = visibleSteps.indexOf(step) + 1
+  const stepLabel = restart ? `Step ${stepIndex} of 2 · ${step === 'identity' ? 'Identity' : 'Provider'}` : stepCopy.stepLabel
+  const title = step === 'workspaces' && projectName?.trim()
+    ? `Add workspaces into ${projectName.trim()}?`
+    : stepCopy.title
 
   return (
     <div
@@ -183,10 +178,10 @@ function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; s
             <span className="text-xs text-[var(--app-text-muted)]">{restart ? 'Setup review' : 'First launch'}</span>
           </div>
         </div>
-        <div className="grid min-w-32 gap-2 text-right" aria-label={stepCopy.stepLabel}>
-          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{stepIndex} / 3</span>
-          <div className="grid grid-cols-3 gap-1">
-            {(['identity', 'provider', 'workspace'] as OnboardingStep[]).map((item) => (
+        <div className="grid min-w-32 gap-2 text-right" aria-label={stepLabel}>
+          <span className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--app-text-subtle)]">{stepIndex} / {visibleSteps.length}</span>
+          <div className="grid grid-flow-col auto-cols-fr gap-1">
+            {visibleSteps.map((item) => (
               <span
                 key={item}
                 className={item === step ? 'h-0.5 bg-[var(--app-primary)]' : 'h-0.5 bg-[color-mix(in_oklab,var(--app-border)_62%,transparent)]'}
@@ -196,7 +191,7 @@ function OnboardingBrandHeader({ restart, step, visible }: { restart: boolean; s
         </div>
       </div>
       <div className="grid gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">{stepCopy.title}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-[var(--app-text)]">{title}</h1>
         <p className="max-w-2xl text-sm leading-6 text-[var(--app-text-muted)]">{stepCopy.subtitle}</p>
       </div>
     </div>
@@ -213,7 +208,7 @@ function OnboardingSetupPane() {
         <div className="grid gap-2">
           <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Setting up your Swarm…</h2>
           <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-            Holding the onboarding surface steady while the workspace is confirmed.
+            Finishing account setup before opening your projects.
           </p>
         </div>
       </div>
@@ -268,6 +263,89 @@ function OnboardingButtonLabel({ idle, pending, isPending }: { idle: string; pen
   )
 }
 
+function WorkspaceCard({
+  item,
+  selected,
+  onToggle,
+  onBrowse,
+}: {
+  item: WorkspaceItem
+  selected: boolean
+  onToggle: () => void
+  onBrowse?: () => void
+}) {
+  return (
+    <div
+      onClick={onToggle}
+      className={[
+        'group relative flex items-start gap-3 rounded-xl border p-3 cursor-pointer transition-all select-none',
+        selected
+          ? 'border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_12%,transparent)] shadow-xs'
+          : 'border-[var(--app-border)] bg-[color-mix(in_oklab,var(--app-surface)_40%,transparent)] hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)]',
+      ].join(' ')}
+    >
+      <div className="pt-0.5">
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(e) => {
+            e.stopPropagation()
+            onToggle()
+          }}
+          className="size-4 rounded accent-[var(--app-primary)] cursor-pointer"
+        />
+      </div>
+
+      <div className="grid min-w-0 flex-1 gap-1">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="truncate text-sm font-semibold text-[var(--app-text)]">
+            {item.name}
+          </span>
+          {item.hasSwarm ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[color-mix(in_oklab,var(--app-primary)_60%,transparent)] bg-[color-mix(in_oklab,var(--app-primary)_18%,transparent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-text)] shadow-xs">
+              <FileText size={10} className="text-[var(--app-primary)]" />
+              AGENTS.md
+            </span>
+          ) : null}
+          {item.isGitRepo ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+              <GitBranch size={10} />
+              git
+            </span>
+          ) : null}
+          {item.isLaunchFolder ? (
+            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+              launch folder
+            </span>
+          ) : null}
+          {item.isSaved ? (
+            <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2 py-0.5 text-[10px] font-medium text-[var(--app-text-muted)]">
+              saved
+            </span>
+          ) : null}
+        </div>
+        <span className="truncate font-mono text-xs text-[var(--app-text-muted)]" title={item.path}>
+          {formatWorkspacePath(item.path)}
+        </span>
+      </div>
+
+      {onBrowse ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onBrowse()
+          }}
+          title={`Browse ${item.path}`}
+          className="shrink-0 p-1 rounded-md text-[var(--app-text-muted)] opacity-60 hover:opacity-100 hover:text-[var(--app-text)] hover:bg-[var(--app-surface)]"
+        >
+          <ChevronRight size={16} />
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 export function DesktopOnboardingGate({ status: initialStatus, restart = false, onReload, onComplete }: DesktopOnboardingGateProps) {
   const navigate = useNavigate()
   const [status, setStatus] = useState(initialStatus)
@@ -289,6 +367,36 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const [username, setUsername] = useState(initialStatus.identity.username)
   const [swarmName, setSwarmName] = useState(initialStatus.config.swarmName)
+  const [projectName, setProjectName] = useState('')
+  const [projectDescription, setProjectDescription] = useState('')
+
+  // Step 4 Rich Workspaces State
+  const [workspaceItems, setWorkspaceItems] = useState<WorkspaceItem[]>([])
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([])
+  const [workspaceSearch, setWorkspaceSearch] = useState('')
+  const [workspacesLoading, setWorkspacesLoading] = useState(false)
+  const [workspacesError, setWorkspacesError] = useState<string | null>(null)
+  const [workspaceTab, setWorkspaceTab] = useState<'discovered' | 'browse'>('discovered')
+
+  // Directory Browser State
+  const [currentBrowsePath, setCurrentBrowsePath] = useState('')
+  const [browseEntries, setBrowseEntries] = useState<WorkspaceItem[]>([])
+  const [browseParentPath, setBrowseParentPath] = useState<string | null>(null)
+  const [browseLoading, setBrowseLoading] = useState(false)
+
+  // Folder Creation State
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [newFolderBusy, setNewFolderBusy] = useState(false)
+  const [newFolderError, setNewFolderError] = useState<string | null>(null)
+
+  // Custom path manual input
+  const [customFolderPath, setCustomFolderPath] = useState('')
+  const [addingCustomFolder, setAddingCustomFolder] = useState(false)
+
+  const [createdProject, setCreatedProject] = useState<CreationProject | null>(null)
+  const [personalizingBusy, setPersonalizingBusy] = useState(false)
+  const autoOpenedRef = useRef(false)
 
   const [providerRecords, setProviderRecords] = useState<ProviderStatus[]>(status.auth.providers)
   const [providerLoading, setProviderLoading] = useState(false)
@@ -304,44 +412,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const [codexOAuthMode, setCodexOAuthMode] = useState<CodexOAuthMode>('device')
   const [oauthSession, setOAuthSession] = useState<CodexOAuthSession | null>(null)
   const [callbackInput, setCallbackInput] = useState('')
-  const [workspaceSearch, setWorkspaceSearch] = useState('')
-  const [namingProject, setNamingProject] = useState(false)
-  const [projectName, setProjectName] = useState('')
-  const [projectParent, setProjectParent] = useState('')
-  const projectDestination = projectName.trim() ? `${projectParent.trim().replace(/\/$/, '')}/${projectName.trim()}` : ''
-  const [workspaceError, setWorkspaceError] = useState<string | null>(null)
-  const [workspaceExplorerOpen, setWorkspaceExplorerOpen] = useState(false)
-  const [reviewPath, setReviewPath] = useState<string | null>(null)
-  const [workspaceRepositoryState, setWorkspaceRepositoryState] = useState<WorkspaceRepositoryState | null>(null)
-  const [pendingFolder, setPendingFolder] = useState<Pick<WorkspaceDiscoverEntry, 'path' | 'name'> | null>(null)
-  const [repositoryHelpBusy, setRepositoryHelpBusy] = useState(false)
-  const [onboardingAssistant, setOnboardingAssistant] = useState<WorkspaceOnboardingAssistantResume | null>(() => loadWorkspaceOnboardingAssistantResume())
-  const [repositoryRecheckBusy, setRepositoryRecheckBusy] = useState(false)
-  const [repositoryRecheckError, setRepositoryRecheckError] = useState<string | null>(null)
-
-  const {
-    workspaces,
-    discovered,
-    loading: workspaceLoading,
-    refreshing: workspaceRefreshing,
-    selectingPath,
-    savingPath,
-    browser,
-    browserLoading,
-    browserError,
-    loadError: workspaceLoadError,
-    actionError: workspaceActionError,
-    openWorkspace,
-    saveWorkspace,
-    setupWorkspaceRepository,
-    createFolder,
-    refresh: refreshWorkspaces,
-    browsePath,
-  } = useWorkspaceLauncher({
-    applyDocumentTheme: false,
-    autoRefresh: step === 'workspace',
-  })
-
   const selectedProvider = useMemo(
     () => providerOptions.find((provider) => provider.id === providerID) ?? providerOptions[0] ?? null,
     [providerID, providerOptions],
@@ -359,45 +429,19 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
   const submitting = pendingAction !== null || !panelVisible
   const progress = pendingMessage(pendingAction)
   const mustUseOnboardingProviderAPI = status.heuristics.credentialCount === 0 && status.heuristics.agentCount === 0
-  const workspaceSlugByPath = useMemo(() => buildWorkspaceRouteSlugMap(workspaces), [workspaces])
-  const savedWorkspaceByPath = useMemo(() => new Map(workspaces.map((workspace) => [workspace.path, workspace])), [workspaces])
-  const visibleSavedWorkspaces = useMemo(() => {
-    const query = workspaceSearch.trim().toLowerCase()
-    if (!query) {
-      return workspaces
-    }
-    return workspaces.filter((workspace) => [workspace.workspaceName, workspace.path].join(' ').toLowerCase().includes(query))
-  }, [workspaceSearch, workspaces])
-  const filteredDiscovered = useMemo(() => {
-    const query = workspaceSearch.trim().toLowerCase()
-    const rows = discovered
-      .filter((entry) => !savedWorkspaceByPath.has(entry.path))
-      .map((entry) => ({ entry, savedWorkspace: savedWorkspaceByPath.get(entry.path) }))
-    if (!query) {
-      return rows.slice(0, 8)
-    }
-    return rows.filter(({ entry, savedWorkspace }) => [entry.name, entry.path, savedWorkspace?.workspaceName ?? ''].join(' ').toLowerCase().includes(query)).slice(0, 12)
-  }, [discovered, savedWorkspaceByPath, workspaceSearch])
-  const workspaceStatusError = workspaceError || workspaceActionError || workspaceLoadError
-  const canUseOnboardingAssistant = status.auth.credentialCount > 0 && status.auth.activeProviders.length > 0
   const finishButtonLabel = pendingAction === 'finalize'
     ? 'Finishing…'
-    : providerAlreadyConnected
-      ? 'Continue'
-      : providerOptions.length === 0
-        ? 'Continue without provider'
-        : 'Skip for now'
+    : restart
+      ? 'Finish setup review'
+      : providerAlreadyConnected
+        ? 'Continue to project'
+        : providerOptions.length === 0
+          ? 'Continue without provider'
+          : 'Skip for now'
 
   useEffect(() => {
     applyWorkspaceTheme(workspaceThemeDefaultId())
   }, [])
-
-  useEffect(() => {
-    if (!onboardingAssistant || canUseOnboardingAssistant) return
-    saveWorkspaceOnboardingAssistantResume(null)
-    setOnboardingAssistant(null)
-    setWorkspaceError('Onboarding Swarm needs an active provider credential. Reconnect the provider or fix the repository manually and retry.')
-  }, [canUseOnboardingAssistant, onboardingAssistant?.path, onboardingAssistant?.sessionId])
 
   useEffect(() => {
     return () => {
@@ -485,8 +529,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
             await refreshAuthDependentQueries()
             if (cancelled) return
             setOAuthSession(next)
-            setNotice('Provider connected. Choose your workspace when you’re ready.')
-            transitionToStep('workspace')
+            if (restart) {
+              setNotice('Provider connected. Review complete.')
+              transitionToStep('provider')
+            } else {
+              setNotice('Provider connected. Advancing to project setup…')
+              transitionToStep('project')
+            }
           }
         })
         .catch((err) => {
@@ -546,7 +595,6 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     clearStepTransition()
     setPanelVisible(false)
     transitionTimerRef.current = window.setTimeout(() => {
-      setWorkspaceExplorerOpen(false)
       setView('setup')
       transitionTimerRef.current = null
       revealTransitionPanel()
@@ -563,24 +611,11 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setProviderReloadNonce((value) => value + 1)
   }, [])
 
-  const retryWorkspaceLoad = useCallback(() => {
-    setWorkspaceError(null)
-    void refreshWorkspaces()
-  }, [refreshWorkspaces])
-
-  const retryBrowsePath = useCallback(() => {
-    setWorkspaceError(null)
-    void browsePath(browser?.resolvedPath || browser?.homePath || '')
-  }, [browsePath, browser?.homePath, browser?.resolvedPath])
-
   const persistIdentity = async () => {
     const normalizedUsername = username.trim()
-    const normalizedName = swarmName.trim()
+    const normalizedName = swarmName.trim() || 'default'
     if (!status.identity.bootstrapped && !normalizedUsername) {
       throw new Error('Username is required for the product owner identity.')
-    }
-    if (!normalizedName) {
-      throw new Error('Swarm name is required.')
     }
     // A previous request can succeed even if its response was lost.
     const current = await onReload()
@@ -597,57 +632,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     return refreshed
   }
 
-  const finalizeOnboarding = async (preserveReview = false) => {
-    if (!preserveReview) { setPendingAction('finalize'); transitionToSetup() }
+  const finalizeOnboarding = async () => {
+    setPendingAction('finalize'); transitionToSetup()
     const [, next] = await Promise.all([
       waitForOnboardingReadyHold(),
       patchDesktopOnboarding({ desktopOnboardingComplete: true }).then(() => reloadStatus()),
     ])
     setStatus(next)
     return next
-  }
-
-  const saveAndOpenReadyWorkspace = async (path: string, name: string, confirmCommittedOnly = false): Promise<WorkspaceResolution> => {
-    await saveWorkspace({
-      path,
-      name: name || fallbackWorkspaceNameFromPath(path),
-      themeId: 'inherit',
-      makeCurrent: true,
-      confirmCommittedOnly,
-    })
-    await refreshWorkspaces()
-    return openWorkspace(path)
-  }
-
-  const navigateToWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string) => {
-    const resolvedPath = resolution.resolvedPath.trim() || fallbackPath.trim()
-    const workspaceSlug = workspaceSlugByPath.get(resolvedPath) ?? workspaceRouteSlugBase({
-      path: resolvedPath,
-      workspaceName: resolution.workspaceName || fallbackWorkspaceNameFromPath(resolvedPath),
-    })
-    if (workspaceSlug) {
-      await navigate({
-        to: '/$workspaceSlug',
-        params: { workspaceSlug },
-      })
-    } else {
-      await navigate({ to: '/' })
-    }
-  }
-
-  const finishWithWorkspace = async (resolution: WorkspaceResolution, fallbackPath: string, preserveReview = false) => {
-    const next = await finalizeOnboarding(preserveReview)
-    await refreshAuthDependentQueries()
-    if (next.needsOnboarding) {
-      throw new Error('Swarm is still finishing onboarding. Try opening the workspace again in a moment.')
-    }
-    await navigateToWorkspace(resolution, fallbackPath)
-    setClosing(true)
-    await new Promise<void>((resolve) => {
-      const setTimeoutFn = typeof window !== 'undefined' ? window.setTimeout.bind(window) : setTimeout
-      setTimeoutFn(resolve, 200)
-    })
-    onComplete(next)
   }
 
   const handleProviderContinue = () => {
@@ -659,177 +651,15 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     setCredentialValue('')
     setCallbackInput('')
     setOAuthSession(null)
-    transitionToStep('workspace')
-  }
-
-  const handleOpenWorkspace = (path: string) => {
-    if (submitting || pendingActionRef.current !== null) {
-      return
-    }
-    setPendingFolder(null)
-    void (async () => {
-      setPendingAction('workspace')
-      setError(null)
-      setWorkspaceError(null)
-      setWorkspaceExplorerOpen(false)
-      setWorkspaceRepositoryState(null)
-      transitionToSetup()
-      try {
-        const resolution = await openWorkspace(path)
-        await finishWithWorkspace(resolution, path)
-      } catch (err) {
-        transitionToStep('workspace')
-        if (err instanceof WorkspaceRepositoryPrerequisiteError) {
-          setWorkspaceRepositoryState(err.repository)
-          setWorkspaceError(null)
-        } else {
-          setWorkspaceError(err instanceof Error ? err.message : 'Failed to open workspace')
-        }
-      } finally {
-        setPendingAction(null)
-      }
-    })()
-  }
-
-  const handleSaveAndOpenFolder = (entry: Pick<WorkspaceDiscoverEntry, 'path' | 'name'>) => {
-    if (submitting || pendingActionRef.current !== null) {
-      return
-    }
-    setPendingFolder(entry)
-    void (async () => {
-      setPendingAction('workspace')
-      setError(null)
-      setWorkspaceError(null)
-      setWorkspaceExplorerOpen(false)
-      setWorkspaceRepositoryState(null)
-      try {
-        const repository = await inspectRepository(entry.path)
-        if (repository.state !== 'ready' || repository.needsReview) {
-          setWorkspaceRepositoryState(repository)
-          return
-        }
-        const selectedResolution = await saveAndOpenReadyWorkspace(
-          entry.path,
-          entry.name || fallbackWorkspaceNameFromPath(entry.path),
-        )
-        await finishWithWorkspace(selectedResolution, entry.path)
-      } catch (err) {
-        transitionToStep('workspace')
-        if (err instanceof WorkspaceRepositoryPrerequisiteError) {
-          setWorkspaceRepositoryState(err.repository)
-          setWorkspaceError(null)
-        } else {
-          setWorkspaceError(err instanceof Error ? err.message : 'Failed to save and open workspace')
-        }
-      } finally {
-        setPendingAction(null)
-      }
-    })()
-  }
-
-  const initializeOnboardingRepository = async () => {
-    const repository = workspaceRepositoryState
-    if (submitting || pendingActionRef.current !== null || repositoryHelpBusy || !repository?.path || (!repository.canSetup && repository.state !== 'directory_missing')) return
-    if (!window.confirm(`Create ${repository.path} if needed, initialize Git with only an empty starting commit, and open it? No existing files will be staged or committed; they stay outside managed worktrees.`)) return
-    setPendingAction('workspace')
-    setWorkspaceError(null)
-    try {
-      const ready = await setupWorkspaceRepository(repository.path, repository.path)
-      setWorkspaceRepositoryState(ready)
-      if (ready.state !== 'ready') throw new WorkspaceRepositoryPrerequisiteError(ready)
-      const selectedResolution = await saveAndOpenReadyWorkspace(
-        ready.path,
-        fallbackWorkspaceNameFromPath(ready.path),
-        true,
-      )
-      await finishWithWorkspace(selectedResolution, ready.path)
-    } catch (error) {
-      setClosing(false)
-      transitionToStep('workspace')
-      if (error instanceof WorkspaceRepositoryPrerequisiteError) setWorkspaceRepositoryState(error.repository)
-      setWorkspaceError(error instanceof Error ? error.message : 'Failed to initialize Git repository')
-    } finally {
-      setPendingAction(null)
-    }
-  }
-
-  const askSwarmForOnboardingRepositoryHelp = async () => {
-    if (pendingActionRef.current !== null || repositoryHelpBusy) return
-    const repository = workspaceRepositoryState
-    if (!repository || repository.state !== 'needs_assisted_setup') {
-      setWorkspaceError('Onboarding Swarm is available only for an unsaved folder containing existing files that still needs repository setup.')
-      return
-    }
-    if (!canUseOnboardingAssistant) {
-      setWorkspaceError('Connect a provider in the previous onboarding step before starting Onboarding Swarm.')
-      return
-    }
-    setPendingAction('workspace')
-    setRepositoryHelpBusy(true)
-    setWorkspaceError(null)
-    try {
-      const clientRequestId = `desktop-workspace-onboarding:${crypto.randomUUID()}`
-      const launched = await startWorkspaceOnboardingSession({
-        path: repository.path,
-        expectedResolvedPath: repository.path,
-        clientRequestId,
-      })
-      applyDesktopV3RoutedStartResponse({
-        session_id: launched.sessionId,
-        session: launched.session,
-        first_message: launched.firstMessage,
-        projection: launched.projection,
-        mutation: launched.mutation,
-      })
-      setRepositoryRecheckError(null)
-      const assistant = { sessionId: launched.sessionId, path: launched.repository.path }
-      saveWorkspaceOnboardingAssistantResume(assistant)
-      setOnboardingAssistant(assistant)
-    } catch (error) {
-      setWorkspaceError(error instanceof Error ? `${error.message} Fix the folder manually or retry.` : 'Could not start Onboarding Swarm. Fix the folder manually or retry.')
-    } finally {
-      setRepositoryHelpBusy(false)
-      setPendingAction(null)
-    }
-  }
-
-  const recheckOnboardingRepository = async () => {
-    const assistant = onboardingAssistant
-    if (!assistant || pendingActionRef.current !== null || repositoryRecheckBusy) return
-    setPendingAction('workspace')
-    setRepositoryRecheckBusy(true)
-    setRepositoryRecheckError(null)
-    try {
-      const selectedResolution = await saveAndOpenReadyWorkspace(
-        assistant.path,
-        fallbackWorkspaceNameFromPath(assistant.path),
-      )
-      await finishWithWorkspace(selectedResolution, assistant.path)
-      saveWorkspaceOnboardingAssistantResume(null)
-      setOnboardingAssistant(null)
-      setWorkspaceRepositoryState(null)
-    } catch (error) {
-      setClosing(false)
-      transitionToStep('workspace')
-      if (error instanceof WorkspaceRepositoryPrerequisiteError) {
-        setWorkspaceRepositoryState(error.repository)
-        setRepositoryRecheckError(`Repository is not ready yet. ${error.repository.message}`)
-      } else {
-        setRepositoryRecheckError(error instanceof Error ? error.message : 'Could not verify and add this repository. Retry after the first commit exists.')
-      }
-    } finally {
-      setRepositoryRecheckBusy(false)
-      setPendingAction(null)
-    }
-  }
-
-  const openWorkspaceExplorer = () => {
-    setPendingFolder(null)
-    setWorkspaceError(null)
-    setWorkspaceExplorerOpen(true)
-    if (!browser && !browserLoading) {
-      void browsePath('')
-    }
+    void completeAccountOnboarding({
+      finalize: () => finalizeOnboarding(),
+      refreshAuth: refreshAuthDependentQueries,
+      openProjects: () => navigate({ to: '/projects' }),
+      complete: next => { setClosing(true); onComplete(next) },
+    }).catch(err => {
+      setError(err instanceof Error ? err.message : 'Unable to finish onboarding')
+      transitionToStep('provider')
+    }).finally(() => setPendingAction(null))
   }
 
   const handleIdentitySubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -842,9 +672,9 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
   const handleIdentityContinue = async () => {
     if (pendingActionRef.current !== null) return
-    const invalid = !status.identity.bootstrapped && !username.trim() ? 'desktop-onboarding-username' : !swarmName.trim() ? 'desktop-onboarding-swarm-name' : null
+    const invalid = !status.identity.bootstrapped && !username.trim() ? 'desktop-onboarding-username' : null
     if (invalid) {
-      setError(invalid === 'desktop-onboarding-username' ? 'Your name is required.' : 'Swarm name is required.')
+      setError('Your name is required.')
       document.getElementById(invalid)?.focus()
       return
     }
@@ -861,6 +691,357 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setPendingAction(null)
     }
   }
+
+  const loadWorkspaceData = useCallback(async () => {
+    setWorkspacesLoading(true)
+    setWorkspacesError(null)
+    try {
+      const [listRes, discRes] = await Promise.all([
+        requestJson<{ workspaces?: Array<{ id?: string; workspace_id?: string; path: string; name?: string; is_git_repo?: boolean }> }>('/v1/workspace/list?limit=200').catch(() => ({ workspaces: [] })),
+        requestJson<{ directories?: Array<{ path: string; name: string; is_git_repo: boolean; has_swarm: boolean; has_claude?: boolean; last_modified?: number }> }>('/v1/workspace/discover?limit=200').catch(() => ({ directories: [] })),
+      ])
+
+      const map = new Map<string, WorkspaceItem>()
+      const homePath = status.workspaceGuidance?.home_path || ''
+
+      for (const w of (listRes.workspaces || [])) {
+        const id = w.id || w.workspace_id
+        const p = (w.path || '').trim()
+        if (!p) continue
+        map.set(p, {
+          id,
+          path: p,
+          name: w.name || fallbackFolderName(p),
+          isGitRepo: Boolean(w.is_git_repo),
+          hasSwarm: false,
+          isSaved: true,
+          isLaunchFolder: Boolean(homePath && p === homePath),
+        })
+      }
+
+      for (const d of (discRes.directories || [])) {
+        const p = (d.path || '').trim()
+        if (!p) continue
+        const existing = map.get(p)
+        if (existing) {
+          existing.hasSwarm = Boolean(d.has_swarm)
+          existing.hasClaude = Boolean(d.has_claude)
+          existing.isGitRepo = existing.isGitRepo || Boolean(d.is_git_repo)
+        } else {
+          map.set(p, {
+            path: p,
+            name: d.name || fallbackFolderName(p),
+            isGitRepo: Boolean(d.is_git_repo),
+            hasSwarm: Boolean(d.has_swarm),
+            hasClaude: Boolean(d.has_claude),
+            isSaved: false,
+            isLaunchFolder: Boolean(homePath && p === homePath),
+          })
+        }
+      }
+
+      if (homePath && !map.has(homePath)) {
+        map.set(homePath, {
+          path: homePath,
+          name: fallbackFolderName(homePath),
+          isGitRepo: false,
+          hasSwarm: false,
+          isSaved: false,
+          isLaunchFolder: true,
+        })
+      }
+
+      const all = Array.from(map.values())
+      all.sort((a, b) => {
+        if (a.hasSwarm !== b.hasSwarm) return a.hasSwarm ? -1 : 1
+        if (a.isLaunchFolder !== b.isLaunchFolder) return a.isLaunchFolder ? -1 : 1
+        if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+
+      setWorkspaceItems(all)
+      if (!currentBrowsePath && homePath) {
+        setCurrentBrowsePath(homePath)
+      }
+    } catch (err) {
+      setWorkspacesError(err instanceof Error ? err.message : 'Unable to discover workspaces')
+    } finally {
+      setWorkspacesLoading(false)
+    }
+  }, [currentBrowsePath, status.workspaceGuidance?.home_path])
+
+  useEffect(() => {
+    if (step !== 'workspaces') return
+    void loadWorkspaceData()
+  }, [step, loadWorkspaceData])
+
+  const handleBrowsePath = useCallback(async (targetPath: string) => {
+    if (!targetPath.trim()) return
+    setBrowseLoading(true)
+    setError(null)
+    try {
+      const res = await requestJson<{
+        browser?: {
+          requested_path: string
+          resolved_path: string
+          parent_path: string | null
+          home_path: string
+          entries: Array<{
+            path: string
+            name: string
+            is_directory: boolean
+            is_git_repo: boolean
+            has_swarm: boolean
+            has_claude?: boolean
+          }>
+        }
+      }>(`/v1/workspace/browse?path=${encodeURIComponent(targetPath.trim())}`)
+
+      if (res.browser) {
+        setCurrentBrowsePath(res.browser.resolved_path)
+        setBrowseParentPath(res.browser.parent_path)
+        const entries: WorkspaceItem[] = (res.browser.entries || [])
+          .filter((e) => e.is_directory)
+          .map((e) => ({
+            path: e.path,
+            name: e.name,
+            isGitRepo: Boolean(e.is_git_repo),
+            hasSwarm: Boolean(e.has_swarm),
+            hasClaude: Boolean(e.has_claude),
+            isSaved: false,
+          }))
+        entries.sort((a, b) => {
+          if (a.hasSwarm !== b.hasSwarm) return a.hasSwarm ? -1 : 1
+          if (a.isGitRepo !== b.isGitRepo) return a.isGitRepo ? -1 : 1
+          return a.name.localeCompare(b.name)
+        })
+        setBrowseEntries(entries)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Unable to browse ${targetPath}`)
+    } finally {
+      setBrowseLoading(false)
+    }
+  }, [])
+
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim()
+    if (!name || newFolderBusy) return
+    const parent = currentBrowsePath || status.workspaceGuidance?.home_path || '.'
+    setNewFolderBusy(true)
+    setNewFolderError(null)
+    try {
+      const res = await requestJson<{ ok: boolean; folder?: { path: string; name: string } }>('/v1/workspace/folders/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parent_path: parent, name }),
+      })
+      const createdPath = res.folder?.path || `${parent.replace(/\/+$/, '')}/${name}`
+      const registered = await registerProjectFolder(createdPath)
+      const newItem: WorkspaceItem = {
+        id: registered.workspace_id,
+        path: registered.path,
+        name: registered.label || name,
+        isGitRepo: false,
+        hasSwarm: false,
+        isSaved: true,
+      }
+      setWorkspaceItems((prev) => [newItem, ...prev.filter((w) => w.path !== newItem.path)])
+      setSelectedPaths((prev) => [...new Set([...prev, newItem.path])])
+      setNewFolderName('')
+      setShowNewFolderInput(false)
+      setNotice(`Created and selected folder: ${newItem.path}`)
+      if (currentBrowsePath) {
+        void handleBrowsePath(currentBrowsePath)
+      }
+    } catch (err) {
+      setNewFolderError(err instanceof Error ? err.message : 'Unable to create folder')
+    } finally {
+      setNewFolderBusy(false)
+    }
+  }
+
+  const handleAddCustomFolder = async () => {
+    const raw = customFolderPath.trim()
+    if (!raw || submitting || addingCustomFolder) return
+    setAddingCustomFolder(true)
+    setError(null)
+    try {
+      const reg = await registerProjectFolder(raw)
+      const newItem: WorkspaceItem = {
+        id: reg.workspace_id,
+        path: reg.path,
+        name: reg.label || fallbackFolderName(reg.path),
+        isGitRepo: false,
+        hasSwarm: false,
+        isSaved: true,
+      }
+      setWorkspaceItems((prev) => [newItem, ...prev.filter((w) => w.path !== newItem.path)])
+      setSelectedPaths((prev) => [...new Set([...prev, newItem.path])])
+      setCustomFolderPath('')
+      setNotice(`Folder registered and selected: ${reg.path}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to register folder')
+    } finally {
+      setAddingCustomFolder(false)
+    }
+  }
+
+  const togglePathSelection = (path: string) => {
+    setSelectedPaths((prev) =>
+      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path]
+    )
+  }
+
+  const filteredWorkspaces = useMemo(() => {
+    const q = workspaceSearch.trim().toLowerCase()
+    if (!q) return workspaceItems
+    return workspaceItems.filter((w) =>
+      w.name.toLowerCase().includes(q) ||
+      w.path.toLowerCase().includes(q) ||
+      (w.hasSwarm && 'agents.md'.includes(q)) ||
+      (w.isGitRepo && 'git'.includes(q))
+    )
+  }, [workspaceItems, workspaceSearch])
+
+  const agentsWorkspaces = useMemo(
+    () => filteredWorkspaces.filter((w) => w.hasSwarm),
+    [filteredWorkspaces]
+  )
+
+  const otherWorkspaces = useMemo(
+    () => filteredWorkspaces.filter((w) => !w.hasSwarm),
+    [filteredWorkspaces]
+  )
+
+  const finishAndOpenProjectChat = async (project: CreationProject) => {
+    setPendingAction('finalize')
+    try {
+      await patchDesktopOnboarding({ desktopOnboardingComplete: true })
+      const next = await reloadStatus()
+      await refreshAuthDependentQueries()
+      const sessionId = await createProjectConversation(project.id, `desktop-project-first:${project.id}`)
+      setClosing(true)
+      onComplete(next)
+      void navigate(projectConversationLink(projectRouteSegment(project, [project]), sessionId))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to complete project setup')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const handleCreateAndPersonalize = async () => {
+    if (submitting || !projectName.trim()) return
+    setPendingAction('project-create')
+    setError(null)
+    setNotice(null)
+    try {
+      const chosenWorkspaces: CreationWorkspace[] = await Promise.all(
+        selectedPaths.map(async (path) => {
+          const item = workspaceItems.find((w) => w.path === path)
+          if (item?.id) {
+            return {
+              workspace_id: item.id,
+              path: item.path,
+              label: item.name,
+              role: 'auxiliary' as const,
+            }
+          }
+          return await registerProjectFolder(path)
+        }),
+      )
+      const clientRequestId = `desktop-project:${crypto.randomUUID()}`
+      const { project } = await requestJson<{ project: CreationProject }>('/v3/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_request_id: clientRequestId,
+          name: projectName.trim(),
+          description: projectDescription.trim(),
+          workspaces: chosenWorkspaces,
+        }),
+      })
+      if (!project?.id) throw new Error('Project creation failed: no project ID returned.')
+      setCreatedProject(project)
+      setView('personalizing')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create project')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const handleCreateWithoutWorkspaces = async () => {
+    if (submitting || !projectName.trim()) return
+    setPendingAction('project-create')
+    setError(null)
+    setNotice(null)
+    try {
+      const clientRequestId = `desktop-project:${crypto.randomUUID()}`
+      const { project } = await requestJson<{ project: CreationProject }>('/v3/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_request_id: clientRequestId,
+          name: projectName.trim(),
+          description: projectDescription.trim(),
+          workspaces: [],
+        }),
+      })
+      if (!project?.id) throw new Error('Project creation failed: no project ID returned.')
+      await finishAndOpenProjectChat(project)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create project')
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  const handlePersonalizeRefresh = async () => {
+    if (!createdProject?.id || personalizingBusy) return
+    setPersonalizingBusy(true)
+    try {
+      const { project } = await requestJson<{ project: CreationProject }>(`/v3/projects/${encodeURIComponent(createdProject.id)}`)
+      if (project) setCreatedProject(project)
+    } catch { /* ignore */ }
+    finally { setPersonalizingBusy(false) }
+  }
+
+  const handlePersonalizeRetry = async () => {
+    if (!createdProject?.id || personalizingBusy) return
+    setPersonalizingBusy(true)
+    try {
+      const { project } = await requestJson<{ project: CreationProject }>(`/v3/projects/${encodeURIComponent(createdProject.id)}/context:retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expected_attempt: createdProject.context_generation?.attempt ?? 0 }),
+      })
+      if (project) setCreatedProject(project)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to retry context generation')
+    } finally { setPersonalizingBusy(false) }
+  }
+
+  useEffect(() => {
+    if (view !== 'personalizing' || !createdProject?.id) return
+    if (createdProject.context_generation?.status === 'ready' || createdProject.context_generation?.status === 'failed') return
+    const timer = setInterval(() => {
+      void handlePersonalizeRefresh()
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [view, createdProject?.id, createdProject?.context_generation?.status])
+
+  useEffect(() => {
+    if (view !== 'personalizing' || !createdProject || autoOpenedRef.current) return
+    if (createdProject.context_generation?.status === 'ready') {
+      autoOpenedRef.current = true
+      const timer = setTimeout(() => {
+        void finishAndOpenProjectChat(createdProject)
+      }, 700)
+      return () => clearTimeout(timer)
+    }
+  }, [view, createdProject])
 
   const handleProviderSave = async () => {
     if (submitting || pendingActionRef.current !== null) {
@@ -910,9 +1091,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setCredentialValue('')
       const next = await reloadStatus()
       await refreshAuthDependentQueries()
-      setNotice('Provider connected. Choose your workspace when you’re ready.')
       setStatus(next)
-      transitionToStep('workspace')
+      if (restart) {
+        setNotice('Provider connected. Review complete.')
+        transitionToStep('provider')
+      } else {
+        setNotice('Provider connected. Advancing to project setup…')
+        transitionToStep('project')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save provider credential')
     } finally {
@@ -1001,8 +1187,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
       setCallbackInput('')
       await reloadStatus()
       await refreshAuthDependentQueries()
-      setNotice('Provider connected. Choose your workspace when you’re ready.')
-      transitionToStep('workspace')
+      if (restart) {
+        setNotice('Provider connected. Review complete.')
+        transitionToStep('provider')
+      } else {
+        setNotice('Provider connected. Advancing to project setup…')
+        transitionToStep('project')
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to complete remote sign-in')
     } finally {
@@ -1010,25 +1201,13 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
     }
   }
 
-  if (onboardingAssistant && canUseOnboardingAssistant) {
-    return (
-      <WorkspaceOnboardingAssistant
-        sessionId={onboardingAssistant.sessionId}
-        path={onboardingAssistant.path}
-        onCheckRepository={() => void recheckOnboardingRepository()}
-        checkingRepository={repositoryRecheckBusy}
-        checkError={repositoryRecheckError}
-      />
-    )
-  }
-
   return (
     <div className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black px-6 py-8 text-[var(--app-text)] transition-opacity duration-200 ease-out ${closing ? 'pointer-events-none opacity-0' : 'opacity-100'}`}>
       <main className="relative w-full max-w-5xl overflow-hidden rounded-[2rem] border border-[color-mix(in_oklab,var(--app-border)_58%,transparent)] bg-[color-mix(in_oklab,var(--app-surface)_88%,black)] shadow-[0_24px_90px_rgb(0_0_0/0.55)] outline outline-1 outline-offset-2 outline-[color-mix(in_oklab,var(--app-border)_34%,transparent)] transition-[box-shadow,transform] duration-300 ease-out">
-        <div className={view === 'setup' ? 'grid min-h-[42rem] place-items-center p-8' : 'grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8'}>
-          {view !== 'setup' ? (
+        <div className={view === 'setup' || view === 'personalizing' ? 'grid min-h-[42rem] place-items-center p-8' : 'grid min-h-[42rem] grid-rows-[auto_auto_minmax(0,1fr)] gap-5 p-8'}>
+          {view !== 'setup' && view !== 'personalizing' ? (
             <>
-              <OnboardingBrandHeader restart={restart} step={step} visible={panelVisible} />
+              <OnboardingBrandHeader restart={restart} step={step} visible={panelVisible} projectName={projectName} />
               <FeedbackSlot error={error} notice={notice} progress={progress} />
             </>
           ) : null}
@@ -1073,18 +1252,18 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
 
                   <div className="grid gap-2">
                     <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-swarm-name">
-                      Name your Swarm.
+                      Name your Swarm (optional).
                     </label>
                     <Input
                       id="desktop-onboarding-swarm-name"
                       autoFocus={Boolean(status.identity.username)}
                       value={swarmName}
                       onChange={(event) => setSwarmName(event.target.value)}
-                      placeholder="Studio MacBook"
+                      placeholder="default"
                       disabled={submitting}
                     />
                     <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                      This is the device label Swarm shows in launcher screens. It does not change your username.
+                      This is the device label Swarm shows in launcher screens. It defaults to &apos;default&apos; if omitted.
                     </p>
                   </div>
 
@@ -1123,7 +1302,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                       <div className="grid gap-3">
                         <div>
                           <h2 className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]">Choose provider</h2>
-                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Pick a provider to connect, or use a connected provider and open workspace setup.</p>
+                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Pick a provider to connect, or use a connected provider and continue to projects.</p>
                         </div>
                         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                           {providerOptions.map((provider) => {
@@ -1136,7 +1315,7 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                                 onClick={() => {
                                   if (pendingActionRef.current !== null) return
                                   setProviderID(provider.id)
-                                  if (connected) transitionToStep('workspace')
+                                  if (connected) transitionToStep('provider')
                                   setError(null)
                                   setNotice(null)
                                 }}
@@ -1359,14 +1538,14 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                           </div>
                         ) : (
                           <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                            The selected provider does not expose a quick auth method here. Continue to workspace setup and connect it later from Settings.
+                            The selected provider does not expose a quick auth method here. Continue to projects and connect it later from Settings.
                           </p>
                         )}
                       </div>
                     </>
                   ) : !providerLoading ? (
                     <div className="rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-4 py-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                      No providers are available yet. Continue to workspace setup and connect one later from Settings.
+                      No providers are available yet. Continue to projects and connect one later from Settings.
                     </div>
                   ) : null}
 
@@ -1374,223 +1553,456 @@ export function DesktopOnboardingGate({ status: initialStatus, restart = false, 
                     <Button type="button" variant="outline" onClick={() => transitionToStep('identity')} disabled={submitting}>
                       Back
                     </Button>
-                    <Button type="button" variant={providerAlreadyConnected || providerOptions.length === 0 ? 'primary' : 'outline'} onClick={handleProviderContinue} disabled={submitting}>
+                    <Button
+                      type="button"
+                      variant={providerAlreadyConnected || providerOptions.length === 0 ? 'primary' : 'outline'}
+                      onClick={restart ? handleProviderContinue : () => transitionToStep('project')}
+                      disabled={submitting}
+                      aria-label={finishButtonLabel}
+                    >
                       {finishButtonLabel}
                     </Button>
                   </div>
                 </div>
               ) : null}
 
-              {view === 'workspace' ? (
-                <div className="grid h-full min-h-0 content-start gap-5">
-                  <div className="grid min-h-0 content-start gap-5">
-                    {status.workspaceGuidance ? <section className="grid gap-2 text-sm" aria-label="Runtime identity">
-                      <p>Work runs as Linux account {status.workspaceGuidance.runtime_username || status.workspaceGuidance.runtime_uid}. This account already exists; Swarm sign-in and project access are separate prerequisites.</p>
-                      <p>Administrative changes use the installation terminal and OS authentication, never passwords in this form. Access or trust failures do not authorize permission or Git-trust changes.</p>
-                      {status.workspaceGuidance.home_path ? <Button type="button" disabled={submitting} onClick={() => { setNamingProject(false); handleSaveAndOpenFolder({path: status.workspaceGuidance!.home_path, name: 'Home'}) }}>Use home folder</Button> : null}
-                      <Button type="button" disabled={submitting} onClick={() => { setProjectParent(current => current || status.workspaceGuidance!.home_path || ''); setNamingProject(true); setWorkspaceRepositoryState(null); setPendingFolder(null) }}>Create a new project folder (recommended)</Button>
-                      <p>Git setup creates only an empty starting commit. Existing home files are never automatically staged or committed.</p>
-                    </section> : null}
-                    {namingProject ? <section aria-label="New project folder" className="grid gap-3" onKeyDown={event => { if (event.key === 'Escape' && !submitting) { event.stopPropagation(); setNamingProject(false) } }}>
-                      <label>Project name<Input value={projectName} onChange={event => setProjectName(event.target.value)} disabled={submitting} autoFocus /></label>
-                      <label>Parent location<Input value={projectParent} onChange={event => setProjectParent(event.target.value)} disabled={submitting} /></label>
-                      <p className="break-all">Destination: {projectDestination || 'Enter a project name'}</p>
-                      <Button type="button" disabled={submitting || !projectName.trim() || ['.', '..'].includes(projectName.trim()) || projectName.includes('/') || projectName.includes('\\') || !projectParent.trim().startsWith('/')} onClick={() => { setNamingProject(false); handleSaveAndOpenFolder({path: projectDestination, name: projectName.trim()}) }}>Continue to setup confirmation</Button>
-                      <Button type="button" variant="outline" disabled={submitting} onClick={() => setNamingProject(false)}>Back (keep draft)</Button>
-                    </section> : null}
-                    {workspaceStatusError ? (
-                      <WorkspaceStatus
-                        kind="error"
-                        title="Workspace action needs attention"
-                        message={workspaceStatusError}
-                        actionLabel={workspaceLoadError ? 'Reload workspaces' : workspaceActionError ? 'Try browsing again' : 'Dismiss'}
-                        onAction={workspaceLoadError ? retryWorkspaceLoad : workspaceActionError ? retryBrowsePath : () => setWorkspaceError(null)}
-                      />
-                    ) : null}
-
-                    {workspaceError && pendingFolder && (!workspaceRepositoryState || workspaceRepositoryState.state === 'ready') ? <div className="grid gap-2">
-                      <p className="break-all text-sm">Selected folder: {pendingFolder.path}</p>
-                      <Button type="button" disabled={submitting} onClick={() => handleSaveAndOpenFolder(pendingFolder)}>Retry adding this folder</Button>
-                    </div> : null}
-                    {workspaceRepositoryState ? (
-                      <section className="grid gap-3 rounded-2xl border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-4 py-4" role="alert" aria-live="polite">
-                        <div className="flex items-start gap-3">
-                          <AlertTriangle size={18} className="mt-0.5 shrink-0 text-[var(--app-warning)]" />
-                          <div className="grid gap-1">
-                            <h2 className="text-sm font-semibold text-[var(--app-text)]">{workspaceRepositoryState.state === 'git_unavailable' ? 'Git is not installed or available' : workspaceRepositoryState.state === 'needs_initial_commit' ? 'Create the first Git commit' : 'A committed Git repository is required'}</h2>
-                            <p className="break-all font-mono text-xs text-[var(--app-text)]">{workspaceRepositoryState.path}</p>
-                            <p className="text-sm leading-6 text-[var(--app-text-muted)]">Swarm isolates agent work in managed worktrees. {workspaceRepositoryState.message}</p>
-                          </div>
-                        </div>
-                        {workspaceRepositoryState.needsReview ? <Button type="button" disabled={submitting} onClick={() => setReviewPath(workspaceRepositoryState.path)}>Review and select content — no provider required</Button> : null}
-                        {(workspaceRepositoryState.canSetup && !workspaceRepositoryState.needsReview) || workspaceRepositoryState.state === 'directory_missing' ? (
-                          <Button type="button" onClick={() => void initializeOnboardingRepository()} disabled={submitting || repositoryHelpBusy}>
-                            <GitBranch size={15} />
-                            Set up folder + empty starting commit + open
-                          </Button>
-                        ) : workspaceRepositoryState.state === 'git_unavailable' ? (
-                          <div className="grid gap-2 text-sm text-[var(--app-warning)]">
-                            <p className="font-medium">Git is unavailable to the daemon. Ask the installation administrator to repair the runtime prerequisite, then use Recheck below. Your identity and workspace setup are preserved.</p>
-                          </div>
-                        ) : (
-                          <div className="grid gap-3">
-                            <p className="text-sm leading-6 text-[var(--app-text-muted)]">
-                              {workspaceRepositoryState.state === 'needs_assisted_setup' ? 'Onboarding Swarm can inspect this exact unsaved folder and recommend ignore rules. Git initialization, staging, and the first commit still require your explicit approval.' : 'Review this folder manually before retrying. For an existing repository without a commit, review ignore rules and stage only intended files before creating the first commit. For a nested folder, choose the repository root instead.'}
-                            </p>
-                            <div className="flex flex-wrap gap-2">
-                              {workspaceRepositoryState.state === 'needs_assisted_setup' ? <Button type="button" onClick={() => void askSwarmForOnboardingRepositoryHelp()} disabled={submitting || repositoryHelpBusy || !canUseOnboardingAssistant}>
-                                <Bot size={15} />
-                                {repositoryHelpBusy ? 'Starting Onboarding Swarm…' : 'Talk to Onboarding Swarm'}
-                              </Button> : null}
-                            </div>
-                            {!canUseOnboardingAssistant && workspaceRepositoryState.state === 'needs_assisted_setup' ? (
-                              <p className="text-sm font-medium text-[var(--app-warning)]">AI assistance is optional. Use Review and select content above to prepare this folder without a provider.</p>
-                            ) : (
-                              <p className="text-xs leading-5 text-[var(--app-text-muted)]">Manual requirements: this selected folder must be the repository root and HEAD must resolve to an initial commit.</p>
-                            )}
-                          </div>
-                        )}
-                        <Button type="button" variant="outline" disabled={submitting || repositoryHelpBusy} onClick={() => handleSaveAndOpenFolder({ path: workspaceRepositoryState.path, name: fallbackWorkspaceNameFromPath(workspaceRepositoryState.path) })}>Recheck and add this folder</Button>
-                        <Button type="button" variant="outline" disabled={submitting || repositoryHelpBusy} onClick={() => { setWorkspaceRepositoryState(null); openWorkspaceExplorer() }}>Choose another folder</Button>
-                      </section>
-                    ) : null}
-
-                    {reviewPath ? <RepositoryReviewPanel key={reviewPath} path={reviewPath} onCancel={() => setReviewPath(null)} onReady={async (path, committedOnly) => {
-                      if (pendingActionRef.current !== null) throw new Error('Another onboarding action is running.')
-                      setPendingAction('workspace')
-                      try {
-                        const resolution = await saveAndOpenReadyWorkspace(path, fallbackWorkspaceNameFromPath(path), committedOnly)
-                        await finishWithWorkspace(resolution, path, true)
-                      } finally { setPendingAction(null) }
-                    }} /> : null}
-                    <section className="grid gap-3">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h2 className="text-xs font-semibold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">All workspaces</h2>
-                            <span className="text-[11px] text-[var(--app-text-subtle)]">
-                              {workspaces.length} saved · {discovered.length} discovered{workspaceLoading || workspaceRefreshing ? ' · refreshing' : ''}
-                            </span>
-                          </div>
-                          <p className="mt-1 text-sm text-[var(--app-text-muted)]">Folders with AGENTS.md or git repos</p>
-                        </div>
-                        <Input
-                          value={workspaceSearch}
-                          onChange={(event) => setWorkspaceSearch(event.target.value)}
-                          placeholder="Search workspaces…"
-                          disabled={submitting}
-                          className="sm:max-w-56"
-                        />
-                      </div>
-                      <div className="grid gap-2 lg:grid-cols-3">
-                        {visibleSavedWorkspaces.map((workspace) => (
-                          <button
-                            key={workspace.path}
-                            type="button"
-                            onClick={() => handleOpenWorkspace(workspace.path)}
-                            disabled={submitting || selectingPath === workspace.path}
-                            className="grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent px-4 py-3 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60"
-                          >
-                            <span className="flex min-w-0 items-center justify-between gap-3">
-                              <span className="truncate text-sm font-medium text-[var(--app-text)]">{workspace.workspaceName || fallbackWorkspaceNameFromPath(workspace.path)}</span>
-                              <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
-                            </span>
-                            <span className="truncate text-xs text-[var(--app-text-muted)]">{formatWorkspacePath(workspace.path)}</span>
-                          </button>
-                        ))}
-                        {filteredDiscovered.map(({ entry, savedWorkspace }) => (
-                          <button
-                            key={entry.path}
-                            type="button"
-                            onClick={() => (savedWorkspace ? handleOpenWorkspace(savedWorkspace.path) : handleSaveAndOpenFolder(entry))}
-                            disabled={submitting || selectingPath === entry.path || savingPath === entry.path}
-                            className={`group relative grid gap-1 rounded-lg border border-[var(--app-border)] bg-transparent py-3 pl-4 text-left transition-colors hover:border-[var(--app-border-accent)] hover:bg-[var(--app-surface-hover)] disabled:cursor-wait disabled:opacity-60 ${savedWorkspace ? 'pr-4' : 'pr-12'}`}
-                          >
-                            <span className="flex min-w-0 items-center justify-between gap-3">
-                              <span className="truncate text-sm font-medium text-[var(--app-text)]">{savedWorkspace?.workspaceName || entry.name}</span>
-                              {savedWorkspace ? (
-                                <span className="shrink-0 text-xs text-[var(--app-text-muted)]">Open</span>
-                              ) : (
-                                <span
-                                  className="absolute right-4 top-1/2 grid size-8 -translate-y-1/2 place-items-center text-[var(--app-text-muted)] opacity-0 transition-[color,opacity] group-hover:text-[var(--app-text)] group-hover:opacity-100 group-focus-visible:text-[var(--app-text)] group-focus-visible:opacity-100"
-                                  title="Add workspace"
-                                >
-                                  <ChevronRight size={18} strokeWidth={2} aria-hidden="true" />
-                                  <span className="sr-only">Add workspace</span>
-                                </span>
-                              )}
-                            </span>
-                            <span className="truncate text-xs text-[var(--app-text-muted)]">{formatWorkspacePath(entry.path)}</span>
-                          </button>
-                        ))}
-                      </div>
-                      {visibleSavedWorkspaces.length === 0 && filteredDiscovered.length === 0 ? (
-                        <p className="border-l border-[var(--app-border)] py-2 pl-4 text-sm leading-6 text-[var(--app-text-muted)]">
-                          {workspaceSearch.trim() ? 'No matching workspaces. Clear the search or open Explorer.' : 'No saved workspaces yet. Open Explorer to browse, add, or create one.'}
-                        </p>
-                      ) : null}
-                    </section>
+              {view === 'project' ? (
+                <div className="grid h-full content-start gap-6">
+                  <div className="grid gap-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-project-name">
+                      Project name.
+                    </label>
+                    <Input
+                      id="desktop-onboarding-project-name"
+                      autoFocus
+                      value={projectName}
+                      onChange={(event) => setProjectName(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
+                        event.preventDefault()
+                        if (projectName.trim()) {
+                          setError(null)
+                          transitionToStep('workspaces')
+                        } else {
+                          setError('Project name is required.')
+                        }
+                      }}
+                      placeholder="e.g. My Application"
+                      disabled={submitting}
+                    />
+                    <p className="text-sm leading-6 text-[var(--app-text-muted)]">
+                      Name your first project. Git is not required; you can attach code folders in the next step or chat with Swarm directly.
+                    </p>
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--app-border)] pt-4">
+                  <div className="grid gap-2">
+                    <label className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--app-text-muted)]" htmlFor="desktop-onboarding-project-description">
+                      Description (optional).
+                    </label>
+                    <Input
+                      id="desktop-onboarding-project-description"
+                      value={projectDescription}
+                      onChange={(event) => setProjectDescription(event.target.value)}
+                      placeholder="e.g. Main web application and services"
+                      disabled={submitting}
+                    />
+                  </div>
+
+                  <div className="mt-auto flex items-center justify-between gap-3 pt-1">
                     <Button type="button" variant="outline" onClick={() => transitionToStep('provider')} disabled={submitting}>
                       Back
                     </Button>
-                    <Button
-                      type="button"
-                      onClick={openWorkspaceExplorer}
-                      disabled={submitting}
-                      className="min-w-40 border-[var(--app-primary)] bg-[var(--app-primary)] text-[var(--app-primary-text)] shadow-[0_12px_30px_rgb(0_0_0/0.28)] hover:bg-[var(--app-primary-hover)] hover:text-[var(--app-primary-text)] active:bg-[var(--app-primary-active)]"
-                    >
-                      <Plus size={16} />
-                      Add from Explorer
-                    </Button>
+                    <div className="flex items-center gap-3">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleProviderContinue}
+                        disabled={submitting}
+                        aria-label="Continue to projects"
+                      >
+                        Continue to projects
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="primary"
+                        disabled={!projectName.trim() || submitting}
+                        onClick={() => {
+                          if (projectName.trim()) {
+                            setError(null)
+                            transitionToStep('workspaces')
+                          } else {
+                            setError('Project name is required.')
+                          }
+                        }}
+                      >
+                        Continue to workspaces
+                      </Button>
+                    </div>
                   </div>
                 </div>
               ) : null}
+
+              {view === 'workspaces' ? (
+                <div className="grid h-full content-start gap-4">
+                  {/* Top toolbar: Search + Tabs + New Folder + Selected Count */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-1 items-center gap-2">
+                      <div className="relative flex-1 max-w-xs">
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)]" />
+                        <Input
+                          value={workspaceSearch}
+                          onChange={(e) => setWorkspaceSearch(e.target.value)}
+                          placeholder="Search workspaces or folders…"
+                          className="pl-8 text-sm"
+                          disabled={submitting}
+                        />
+                      </div>
+                      <div className="flex rounded-lg border border-[var(--app-border)] p-0.5 bg-[var(--app-surface-subtle)] text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setWorkspaceTab('discovered')}
+                          className={[
+                            'px-3 py-1.5 rounded-md font-medium transition-colors',
+                            workspaceTab === 'discovered'
+                              ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-xs'
+                              : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]',
+                          ].join(' ')}
+                        >
+                          Discovered ({workspaceItems.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWorkspaceTab('browse')
+                            if (browseEntries.length === 0 && currentBrowsePath) {
+                              void handleBrowsePath(currentBrowsePath)
+                            }
+                          }}
+                          className={[
+                            'px-3 py-1.5 rounded-md font-medium transition-colors',
+                            workspaceTab === 'browse'
+                              ? 'bg-[var(--app-surface)] text-[var(--app-text)] shadow-xs'
+                              : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]',
+                          ].join(' ')}
+                        >
+                          Browse folders
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowNewFolderInput((prev) => !prev)}
+                        disabled={submitting}
+                        className="flex items-center gap-1.5 text-xs"
+                      >
+                        <FolderPlus size={14} />
+                        New folder
+                      </Button>
+                      <span className="rounded-full border border-[var(--app-border)] bg-[var(--app-surface-subtle)] px-2.5 py-1 text-xs font-medium text-[var(--app-text)]">
+                        {selectedPaths.length} selected
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Inline New Folder Form */}
+                  {showNewFolderInput ? (
+                    <div className="grid gap-2 rounded-xl border border-[var(--app-primary)] bg-[color-mix(in_oklab,var(--app-primary)_6%,transparent)] p-3">
+                      <div className="flex items-center justify-between text-xs font-medium text-[var(--app-text)]">
+                        <span>
+                          Create new folder in: <span className="font-mono text-[var(--app-primary)]">{formatWorkspacePath(currentBrowsePath || status.workspaceGuidance?.home_path || '.')}</span>
+                        </span>
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          autoFocus
+                          value={newFolderName}
+                          onChange={(e) => setNewFolderName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              void handleCreateFolder()
+                            } else if (e.key === 'Escape') {
+                              setShowNewFolderInput(false)
+                            }
+                          }}
+                          placeholder="new-project-folder"
+                          disabled={newFolderBusy}
+                          className="flex-1 text-sm"
+                        />
+                        <Button
+                          type="button"
+                          variant="primary"
+                          disabled={!newFolderName.trim() || newFolderBusy}
+                          onClick={() => void handleCreateFolder()}
+                        >
+                          <OnboardingButtonLabel idle="Create folder" pending="Creating…" isPending={newFolderBusy} />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={newFolderBusy}
+                          onClick={() => setShowNewFolderInput(false)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                      {newFolderError ? <p className="text-xs text-[var(--app-danger)]">{newFolderError}</p> : null}
+                    </div>
+                  ) : null}
+
+                  {/* Main Workspaces Area */}
+                  {workspaceTab === 'discovered' ? (
+                    <div className="grid gap-4 max-h-[18rem] overflow-y-auto pr-1">
+                      {workspacesError ? (
+                        <div className="rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-3 text-xs text-[var(--app-danger)]">
+                          {workspacesError}
+                        </div>
+                      ) : null}
+
+                      {workspacesLoading ? (
+                        <div className="flex items-center justify-center p-8 text-sm text-[var(--app-text-muted)] gap-2">
+                          <RefreshCw size={16} className="animate-spin" />
+                          Scanning system for workspaces and repositories…
+                        </div>
+                      ) : null}
+
+                      {/* AGENTS.md Section (Show FIRST!) */}
+                      {agentsWorkspaces.length > 0 ? (
+                        <div className="grid gap-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex size-2 rounded-full bg-[var(--app-primary)] animate-pulse" />
+                              <h3 className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--app-primary)]">
+                                Workspaces with AGENTS.md ({agentsWorkspaces.length})
+                              </h3>
+                            </div>
+                            <span className="text-[11px] text-[var(--app-text-muted)]">
+                              Prioritized with AI instructions
+                            </span>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {agentsWorkspaces.map((item) => (
+                              <WorkspaceCard
+                                key={item.path}
+                                item={item}
+                                selected={selectedPaths.includes(item.path)}
+                                onToggle={() => togglePathSelection(item.path)}
+                                onBrowse={() => {
+                                  setWorkspaceTab('browse')
+                                  void handleBrowsePath(item.path)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {/* Other Discovered Directories & Repositories */}
+                      {otherWorkspaces.length > 0 ? (
+                        <div className="grid gap-2">
+                          <div className="flex items-center justify-between">
+                            <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)]">
+                              Directories &amp; Repositories ({otherWorkspaces.length})
+                            </h3>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            {otherWorkspaces.map((item) => (
+                              <WorkspaceCard
+                                key={item.path}
+                                item={item}
+                                selected={selectedPaths.includes(item.path)}
+                                onToggle={() => togglePathSelection(item.path)}
+                                onBrowse={() => {
+                                  setWorkspaceTab('browse')
+                                  void handleBrowsePath(item.path)
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {!workspacesLoading && filteredWorkspaces.length === 0 ? (
+                        <div className="rounded-xl border border-[var(--app-border)] p-6 text-center text-sm text-[var(--app-text-muted)]">
+                          {workspaceSearch.trim()
+                            ? 'No workspaces match your search.'
+                            : 'No discovered workspaces found yet. Use Browse folders or add a folder path below.'}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    /* Directory Browser Tab */
+                    <div className="grid gap-3 max-h-[18rem] overflow-y-auto pr-1">
+                      <div className="flex items-center gap-2 rounded-lg border border-[var(--app-border)] bg-[var(--app-surface-subtle)] p-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={!browseParentPath || browseLoading}
+                          onClick={() => {
+                            if (browseParentPath) void handleBrowsePath(browseParentPath)
+                          }}
+                          className="flex items-center gap-1 text-xs"
+                          title="Navigate to parent directory"
+                        >
+                          <ArrowUp size={13} />
+                          Up
+                        </Button>
+                        <span className="font-mono text-xs text-[var(--app-text)] truncate flex-1" title={currentBrowsePath}>
+                          {formatWorkspacePath(currentBrowsePath || '—')}
+                        </span>
+                        {selectedPaths.includes(currentBrowsePath) ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => togglePathSelection(currentBrowsePath)}
+                            className="text-xs"
+                          >
+                            Deselect folder
+                          </Button>
+                        ) : (
+                          <Button
+                            type="button"
+                            variant="primary"
+                            size="sm"
+                            disabled={!currentBrowsePath}
+                            onClick={() => togglePathSelection(currentBrowsePath)}
+                            className="text-xs"
+                          >
+                            + Select this folder
+                          </Button>
+                        )}
+                      </div>
+
+                      {browseLoading ? (
+                        <div className="flex items-center justify-center p-6 text-sm text-[var(--app-text-muted)] gap-2">
+                          <RefreshCw size={14} className="animate-spin" />
+                          Loading directory contents…
+                        </div>
+                      ) : browseEntries.length > 0 ? (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {browseEntries.map((item) => (
+                            <WorkspaceCard
+                              key={item.path}
+                              item={item}
+                              selected={selectedPaths.includes(item.path)}
+                              onToggle={() => togglePathSelection(item.path)}
+                              onBrowse={() => void handleBrowsePath(item.path)}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-[var(--app-border)] p-4 text-center text-sm text-[var(--app-text-muted)]">
+                          No subdirectories found in this folder. You can select this folder directly or create a new folder.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Add Folder by Path input */}
+                  <div className="flex items-center gap-2 pt-2 border-t border-[var(--app-border)]">
+                    <span className="text-xs font-medium uppercase tracking-[0.16em] text-[var(--app-text-muted)] whitespace-nowrap">
+                      Path:
+                    </span>
+                    <Input
+                      id="desktop-onboarding-add-folder"
+                      value={customFolderPath}
+                      onChange={(e) => setCustomFolderPath(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void handleAddCustomFolder()
+                        }
+                      }}
+                      placeholder="/path/to/my/project"
+                      disabled={submitting}
+                      className="text-sm"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!customFolderPath.trim() || submitting || addingCustomFolder}
+                      onClick={() => void handleAddCustomFolder()}
+                      className="whitespace-nowrap text-xs"
+                    >
+                      <OnboardingButtonLabel idle="Add path" pending="Adding…" isPending={addingCustomFolder} />
+                    </Button>
+                  </div>
+
+                  <p className="text-xs text-[var(--app-text-muted)]">
+                    Swarm AI Router will synthesize project context directly into Swarm’s durable Pebble database. Zero files will be written to disk.
+                  </p>
+
+                  {/* Action Footer */}
+                  <div className="mt-auto flex items-center justify-between gap-3 pt-1">
+                    <Button type="button" variant="outline" onClick={() => transitionToStep('project')} disabled={submitting}>
+                      Back
+                    </Button>
+                    <div className="flex items-center gap-3">
+                      {selectedPaths.length > 0 ? (
+                        <>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={() => void handleCreateWithoutWorkspaces()}
+                            disabled={submitting}
+                          >
+                            Skip workspaces &amp; Talk to Swarm
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="primary"
+                            onClick={() => void handleCreateAndPersonalize()}
+                            disabled={submitting}
+                          >
+                            <OnboardingButtonLabel
+                              idle={`Personalize & Talk to Swarm (${selectedPaths.length})`}
+                              pending="Creating…"
+                              isPending={pendingAction === 'project-create'}
+                            />
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="primary"
+                          onClick={() => void handleCreateWithoutWorkspaces()}
+                          disabled={submitting}
+                        >
+                          <OnboardingButtonLabel
+                            idle="Skip to Talk to Swarm"
+                            pending="Creating…"
+                            isPending={pendingAction === 'project-create'}
+                          />
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {view === 'personalizing' && createdProject ? (
+                <div className="grid h-full content-center">
+                  <PersonalizingCard
+                    project={createdProject}
+                    busy={personalizingBusy}
+                    onRetry={() => void handlePersonalizeRetry()}
+                    onRefresh={() => void handlePersonalizeRefresh()}
+                    onOpen={() => void finishAndOpenProjectChat(createdProject)}
+                  />
+                </div>
+              ) : null}
+
             </div>
           </div>
         </div>
       </main>
 
-      {workspaceExplorerOpen && view === 'workspace' ? (
-        <div
-          className={[
-            'fixed inset-0 z-[10000] grid place-items-center p-3 transition-opacity duration-200 ease-out sm:p-6 motion-reduce:transition-none',
-            panelVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
-          ].join(' ')}
-          role="dialog"
-          aria-modal="true"
-          aria-label="Add workspace from Explorer"
-        >
-          <button type="button" className="absolute inset-0 bg-[var(--app-backdrop)]" onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
-          <div className="relative z-10 flex h-[min(44rem,calc(100dvh-24px))] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-[var(--app-border)] bg-[var(--app-surface)] shadow-[var(--shadow-panel)]">
-            <div className="flex items-start justify-between gap-4 border-b border-[var(--app-border)] px-5 py-4 sm:px-6">
-              <div className="grid gap-1">
-                <h2 className="text-xl font-semibold tracking-tight text-[var(--app-text)]">Add workspace</h2>
-                <p className="text-sm leading-6 text-[var(--app-text-muted)]">Add an existing folder or create and add a new one. We’ll guide you through any Git prerequisites.</p>
-              </div>
-              <ModalCloseButton onClick={() => setWorkspaceExplorerOpen(false)} aria-label="Close Explorer" />
-            </div>
-            <div className="min-h-0 flex-1">
-              <WorkspaceFolderTree
-                browser={browser}
-                browserLoading={browserLoading}
-                browserError={browserError}
-                workspaces={workspaces}
-                selectingPath={selectingPath}
-                savingPath={savingPath}
-                openCreatedFolder
-                showPathInWorkspaceAction
-                onBrowsePath={(path) => void browsePath(path)}
-                onOpenWorkspace={handleOpenWorkspace}
-                onCreateWorkspace={handleSaveAndOpenFolder}
-                onCreateFolder={createFolder}
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }

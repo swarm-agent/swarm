@@ -74,6 +74,11 @@ func deleteSessionRecentIndexKeysFromReader(batch *pebble.Batch, reader pebble.R
 }
 
 func replaceSessionRecentIndexInBatch(batch *pebble.Batch, previous *SessionSnapshot, next *SessionSnapshot) error {
+	if batch != nil {
+		if err := replaceProjectConversationInBatch(batch, previous, next); err != nil {
+			return err
+		}
+	}
 	if batch == nil {
 		return fmt.Errorf("session recent index update requires batch")
 	}

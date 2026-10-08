@@ -59,6 +59,9 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	runSvc := runruntime.NewService(sessionSvc, modelSvc, nil, tool.NewRuntime(1), permissionSvc, agentSvc, nil, nil)
 	server = NewServer(nil, agentSvc, modelSvc, runSvc, sessionSvc, nil, nil, nil, nil, permissionSvc, nil, eventLog, stream.NewHub(eventLog))
 	uiSettingsSvc := uisettings.NewService(pebblestore.NewUISettingsStore(store))
+	// These handler tests do not exercise the background archive scheduler.
+	// Do not start an unjoined goroutine that can outlive the temporary store.
+	server.reviewAutoArchiveOnce.Do(func() {})
 	server.SetUISettingsService(uiSettingsSvc)
 	agentSettingsStore := pebblestore.NewAgentModelSettingsStore(store)
 	agentSettings := testAgentModelSettingsRecord(testPrincipal().AccountScopeID)

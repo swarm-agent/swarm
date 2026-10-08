@@ -23,7 +23,7 @@ type rootedWorkspacePath struct {
 func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWorkspacePath, error) {
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
 	if workspacePath == "" {
-		return nil, errors.New("workspace path is empty")
+		return nil, errors.New("no ambient workspace checkout; project chats must use manage_projects list_sources then inspect_files with an explicit workspace_id/workspace_path or exact task_id/attempt_id/source_session_id; inspect_files supports read/list/search/find without granting an ambient checkout. Validate committed results via manage_environments project_result and ensure/exec/release. Explicit account-authorized Bash Git recovery remains separate; do not infer a checkout")
 	}
 	requested = strings.TrimSpace(requested)
 	if requested == "" {

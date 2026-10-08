@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -127,9 +125,9 @@ func (a *legacyDeployerLifecycleAdapter) CreateProjectTask(ctx context.Context, 
 	if input.FeatureSize == "small" && (agentName == "" || agentName == "coder") {
 		agentName = "coder"
 		outcomeType = "code_pr"
-	} else if input.FeatureSize == "big" && (agentName == "" || agentName == "swarm" || agentName == "plan") {
-		agentName = "plan"
-		outcomeType = "plan_spec"
+	} else if input.FeatureSize == "big" && (agentName == "" || agentName == "swarm") {
+		agentName = "swarm"
+		outcomeType = "code_pr"
 		if tier == "" {
 			tier = "complex"
 		}
@@ -305,13 +303,17 @@ func manageProjectsDefinition() Definition {
 	return Definition{
 		Type:        "function",
 		Name:        "manage_projects",
-		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, delete_task, reconcile_tasks. Task edits never transition execution status; delete_task only removes an archived, unlaunched task.",
+		Description: "Inspect and manage Projects aggregating workspaces, context (project.md), and ongoing tasks. Supported actions: list, get, list_sources, inspect_source, inspect_files, create, update, delete, synthesize_context, list_media, get_media, propose_task, approve_task, accept_task, deploy_task, refine_task, create_task, reopen_task, list_tasks, get_task, update_task, archive_task, unarchive_task, delete_task, reconcile_tasks, edit_requirements, wait_tasks, report_task. wait_tasks durably yields the current project goal on 1-16 delegated task_ids; resumes on all review-ready/completed outcomes or any actionable blocker. No polling or timeout/provider calls while waiting. needs_review is not user acceptance. Stop/archive/new user messages invalidate the wait. Task edits never transition execution status; unarchive_task restores visibility at expected_revision without changing status, attempts or linked sessions (already unarchived is an error); delete_task only removes an archived, unlaunched task.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
+				"attempt_id":        map[string]any{"type": "string", "description": "Exact linked task attempt from wait_tasks/get_task for inspect_files"},
+				"source_session_id": map[string]any{"type": "string", "description": "Exact linked task session for inspect_files; not a regular task_call_id recovery source"},
+				"head_commit":       map[string]any{"type": "string", "description": "Expected committed task result HEAD; omit only for initial inspection, then retain returned reference"},
+				"inspection":        map[string]any{"type": "object", "description": "inspect_files optionally runs a bounded read-only tool against the selected catalog source or exact task result; arguments are the normal read/list/search/find arguments, with paths relative to that tree", "properties": map[string]any{"tool": map[string]any{"type": "string", "enum": []string{"read", "list", "search", "find"}}, "arguments": map[string]any{"type": "object"}}, "required": []string{"tool", "arguments"}, "additionalProperties": false},
 				"action": map[string]any{
 					"type":        "string",
-					"description": "Action: list|get|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|delete_task|reconcile_tasks",
+					"description": "Action: list|get|list_sources|inspect_source|inspect_files|create|update|delete|synthesize_context|list_media|get_media|propose_task|approve_task|accept_task|deploy_task|refine_task|create_task|reopen_task|list_tasks|get_task|update_task|archive_task|unarchive_task|delete_task|reconcile_tasks|edit_requirements|wait_tasks|report_task",
 				},
 				"id": map[string]any{
 					"type":        "string",
@@ -360,7 +362,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"agent": map[string]any{
 					"type":        "string",
-					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm). Small code tasks route to Coder; exploratory big features route to Plan agent.",
+					"description": "Optional agent assignment override (coder, finder, designer, image, video, sound, plan, swarm). Small code tasks route to Coder; big features route directly to Swarm. Plan is only for explicitly requested Plan workflows.",
 				},
 				"intent": map[string]any{
 					"type":        "string",
@@ -368,7 +370,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"feature_size": map[string]any{
 					"type":        "string",
-					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex multi-stage architecture requiring plan agent or direct structured plan)",
+					"description": "Optional feature size for code tasks: 'small' (direct coder bug fix / single component) or 'big' (complex work routed to Swarm; Orchestrator may supply its own structured plan for card review)",
 				},
 				"worker_name": map[string]any{
 					"type":        "string",
@@ -378,8 +380,11 @@ func manageProjectsDefinition() Definition {
 					"type":        "string",
 					"description": "Read-only task status filter for list_tasks; status changes require canonical lifecycle actions",
 				},
+				"update_kind":       map[string]any{"type": "string", "enum": []string{"progress", "attention", "wake_request"}, "description": "report_task only: progress is informational; attention flags actionable input; wake_request explicitly requests Orchestrator attention. Recorded is not delivered or accepted."},
+				"summary":           map[string]any{"type": "string", "maxLength": 4000, "description": "report_task only: bounded task update, treated as untrusted data. Ownership is derived from the authenticated active task run; never supply parent/session/attempt IDs."},
+				"task_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1, "maxItems": 16, "description": "wait_tasks only: distinct deployed tasks in this orchestrator's project; pins current attempts and yields execution until outcomes, without polling."},
 				"repair":            map[string]any{"type": "boolean", "description": "reopen_task only: use authenticated originating failed integration source; never silently merge unintegrated work."},
-				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task and delete_task"},
+				"expected_revision": map[string]any{"type": "integer", "description": "Required exact task revision for reopen_task, update_task, archive_task, unarchive_task and delete_task"},
 				"priority":          map[string]any{"type": "string", "description": "Task organization: low|medium|high|urgent"},
 				"group":             map[string]any{"type": "string", "description": "Task grouping label (empty clears)"},
 				"order":             map[string]any{"type": "integer", "description": "Nonnegative task order within group"},
@@ -391,9 +396,13 @@ func manageProjectsDefinition() Definition {
 					"type":        "boolean",
 					"description": "Set true to automatically deploy the task immediately upon creation for small tasks or Task Programs; structured plans require explicit user review in the task card",
 				},
+				"document_patch": map[string]any{
+					"type":        "object",
+					"description": "For edit_requirements: base_revision_id and operations containing add_requirement, edit_requirement, remove_requirement or reorder_requirements. Stable requirement id/text/checkpoint_id bind directly to executable acceptance criteria.",
+				},
 				"plan_document": map[string]any{
 					"type":        "object",
-					"description": "Optional structured plan document {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]} for big-feature tasks. When provided, submits the plan directly to the task card for user review without running a separate Plan agent investigation pass.",
+					"description": "Optional structured plan document {id, title, info: {goal}, checkpoints: [{id, title, tasks, acceptance_criteria}]} for big-feature tasks. With propose_task, submits the Orchestrator-authored plan for card review. With refine_task, replaces the same card's unapproved plan using exact session_id, plan_id and definition_revision guards, without launching a Plan agent.",
 				},
 				"document": map[string]any{
 					"type":        "object",
@@ -489,13 +498,16 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 	if r == nil || r.projects == nil {
 		return "", errors.New("manage_projects service is not configured")
 	}
+	if strings.ToLower(strings.TrimSpace(asString(args["action"]))) == "report_task" {
+		return r.executeProjectTaskReport(ctx, scope, args)
+	}
 	historyOnly := scope.TaskHistoryOnly
 	if r.sessions != nil && scope.SessionID != "" {
 		current, found, err := r.sessions.GetSession(scope.SessionID)
 		if err != nil {
 			return "", err
 		}
-		if found && current.Metadata["resolved_agent_name"] == "swarm" {
+		if found && (current.Metadata["resolved_agent_name"] == "swarm" || asString(current.Metadata["task_id"]) != "" || asString(current.Metadata["project_task_id"]) != "") {
 			historyOnly = true
 		}
 	}
@@ -549,6 +561,28 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			return "", fmt.Errorf("project %q not found", id)
 		}
 		response["project"] = proj
+
+	case "inspect_files":
+		return r.inspectProjectFiles(ctx, scope, args)
+
+	case "list_sources", "inspect_source":
+		projectID := strings.TrimSpace(asString(args["project_id"]))
+		if projectID == "" {
+			return "", errors.New("project_id is required for source inspection")
+		}
+		inspector, ok := r.projectTaskLifecycle.(interface {
+			InspectProjectSources(context.Context, identity.Principal, string, string, string, int64, bool) (map[string]any, error)
+		})
+		if !ok {
+			return "", errors.New("project source inspection service is unavailable")
+		}
+		result, err := inspector.InspectProjectSources(ctx, p, projectID, asString(args["workspace_path"]), asString(args["workspace_id"]), int64(asInt(args["workspace_generation"], 0)), actionName == "list_sources")
+		if err != nil {
+			return "", err
+		}
+		for key, value := range result {
+			response[key] = value
+		}
 
 	case "list_media":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
@@ -634,19 +668,13 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 
 		var wsRefs []pebblestore.ProjectWorkspaceRef
-		if wsRaw, ok := args["workspaces"].([]any); ok {
-			for _, item := range wsRaw {
-				if m, ok := item.(map[string]any); ok {
-					ref := pebblestore.ProjectWorkspaceRef{
-						WorkspaceID: asString(m["workspace_id"]),
-						Path:        asString(m["path"]),
-						Role:        asString(m["role"]),
-						Label:       asString(m["label"]),
-					}
-					if ref.Path != "" {
-						wsRefs = append(wsRefs, ref)
-					}
-				}
+		if raw, present := args["workspaces"]; present {
+			data, err := json.Marshal(raw)
+			if err != nil {
+				return "", err
+			}
+			if err := json.Unmarshal(data, &wsRefs); err != nil {
+				return "", errors.New("workspaces must contain registered workspace references")
 			}
 		}
 
@@ -657,7 +685,14 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			Workspaces:     wsRefs,
 			ProjectContext: pCtx,
 		}
-		if err := r.projects.PutProject(accountScopeID, proj); err != nil {
+		creator, ok := r.getProjectTaskLifecycleService().(interface {
+			CreateProject(context.Context, identity.Principal, pebblestore.ProjectRecord, string) (*pebblestore.ProjectRecord, error)
+		})
+		if !ok {
+			return "", errors.New("project creation lifecycle unavailable")
+		}
+		proj, err = creator.CreateProject(ctx, p, *proj, strings.TrimSpace(asString(args["client_request_id"])))
+		if err != nil {
 			return "", err
 		}
 		response["project"] = proj
@@ -678,7 +713,34 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 				return "", err
 			}
 		}
+		var authorizedRefs []pebblestore.ProjectWorkspaceRef
+		if raw, present := args["workspaces"]; present {
+			data, err := json.Marshal(raw)
+			if err != nil {
+				return "", err
+			}
+			if err := json.Unmarshal(data, &authorizedRefs); err != nil {
+				return "", err
+			}
+			authorizer, ok := r.getProjectTaskLifecycleService().(interface {
+				AuthorizeProjectWorkspaces(identity.Principal, []pebblestore.ProjectWorkspaceRef) ([]pebblestore.ProjectWorkspaceRef, error)
+			})
+			if !ok {
+				return "", errors.New("project workspace authorization unavailable")
+			}
+			authorizedRefs, err = authorizer.AuthorizeProjectWorkspaces(p, authorizedRefs)
+			if err != nil {
+				return "", err
+			}
+		}
 		updated, err := r.projects.UpdateProject(accountScopeID, id, func(p *pebblestore.ProjectRecord) error {
+			if p.ContextGeneration != nil && p.ContextGeneration.Status != "ready" {
+				for _, key := range []string{"workspaces", "name", "description", "project_context"} {
+					if _, ok := args[key]; ok {
+						return errors.New("finish or retry project context before editing its inputs")
+					}
+				}
+			}
 			if _, present := args["theme_id"]; present {
 				p.ThemeID = themeID
 			}
@@ -706,7 +768,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 						}
 					}
 				}
-				p.Workspaces = wsRefs
+				p.Workspaces = authorizedRefs
 			}
 			return nil
 		})
@@ -730,52 +792,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		response["deleted"] = true
 
 	case "synthesize_context":
-		var wsPaths []string
-		if wsRaw, ok := args["workspaces"].([]any); ok {
-			for _, item := range wsRaw {
-				if m, ok := item.(map[string]any); ok {
-					if p := asString(m["path"]); p != "" {
-						wsPaths = append(wsPaths, p)
-					}
-				} else if s, ok := item.(string); ok && s != "" {
-					wsPaths = append(wsPaths, s)
-				}
-			}
-		}
-
-		projectName := strings.TrimSpace(asString(args["name"]))
-		if projectName == "" {
-			projectName = "Project"
-		}
-
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("# %s\n\n", projectName))
-		sb.WriteString("## Workspaces & Architecture\n")
-		for _, p := range wsPaths {
-			base := filepath.Base(p)
-			sb.WriteString(fmt.Sprintf("- `%s` (`%s`)\n", base, p))
-			for _, docName := range []string{"README.md", "AGENTS.md"} {
-				docPath := filepath.Join(p, docName)
-				if fi, err := os.Stat(docPath); err == nil && !fi.IsDir() {
-					if data, err := os.ReadFile(docPath); err == nil {
-						lines := strings.Split(string(data), "\n")
-						for i, l := range lines {
-							if i > 5 {
-								break
-							}
-							trimmed := strings.TrimSpace(l)
-							if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-								sb.WriteString(fmt.Sprintf("  > %s\n", trimmed))
-								break
-							}
-						}
-					}
-				}
-			}
-		}
-		sb.WriteString("\n## Operating Rules\n- Local-first architecture; durable V3 sessions.\n- Keep changes minimal, tested, and high-craft.\n")
-
-		response["synthesized_context"] = sb.String()
+		return "", errors.New("standalone context synthesis is retired; create a project for durable AI context generation")
 
 	case "propose_task", "create_task":
 		projectID := strings.TrimSpace(asString(args["project_id"]))
@@ -1070,7 +1087,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		}
 		response["proposal"] = proposal
 
-	case "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "delete_task", "reconcile_tasks":
+	case "wait_tasks", "edit_requirements", "reopen_task", "list_tasks", "get_task", "update_task", "archive_task", "unarchive_task", "delete_task", "reconcile_tasks":
 		return r.executeManageProjectTasksContext(ctx, scope, actionName, args)
 
 	case "approve_task", "accept_task":
@@ -1224,6 +1241,40 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		if !exists || existing == nil {
 			return "", errors.New("task not found")
 		}
+		rawDocument := args["plan_document"]
+		if rawDocument == nil {
+			rawDocument = args["document"]
+		}
+		if rawDocument != nil {
+			guards := ProjectTaskApprovalGuards{SessionID: strings.TrimSpace(asString(args["session_id"])), PlanID: strings.TrimSpace(asString(args["plan_id"])), DefinitionRevision: asInt(args["definition_revision"], 0)}
+			expectedTaskRevision := 0
+			if existing.PlanBinding == nil {
+				var err error
+				expectedTaskRevision, err = projectTaskInteger(args, "expected_revision", 1, 1<<30)
+				if err != nil {
+					return "", err
+				}
+				if existing.Archived || existing.Status != "pending_approval" || expectedTaskRevision != existing.Revision || guards.PlanID != "" || guards.DefinitionRevision != 0 {
+					return "", errors.New("first plan requires the exact pending unbound task revision")
+				}
+			} else if guards.SessionID == "" || guards.PlanID == "" || guards.DefinitionRevision <= 0 || feedback == "" {
+				return "", errors.New("structured refinement requires feedback and exact session_id, plan_id and definition_revision")
+			}
+			doc, err := parseSessionPlanDocument(rawDocument)
+			if err != nil {
+				return "", fmt.Errorf("invalid plan_document: %w", err)
+			}
+			result, err := r.getProjectTaskLifecycleService().SubmitProjectTaskPlan(ctx, sessionruntime.ProjectTaskPlanSubmissionInput{
+				AccountScopeID: accountScopeID, UserID: p.UserID, ProjectID: projectID, TaskID: taskID,
+				SessionID: guards.SessionID, ExpectedPlanID: guards.PlanID, ExpectedDefinitionRevision: guards.DefinitionRevision,
+				Document: doc, Feedback: feedback, ExpectedTaskRevision: expectedTaskRevision,
+			})
+			if err != nil {
+				return "", err
+			}
+			response["task"], response["status"], response["task_id"] = result.Task, result.Task.Status, taskID
+			break
+		}
 		if existing.PlanBinding != nil {
 			refiner, ok := r.getProjectTaskLifecycleService().(interface {
 				RefineBoundProjectTask(context.Context, identity.Principal, string, string, ProjectTaskApprovalGuards, string) (*pebblestore.ProjectTaskRecord, error)
@@ -1268,9 +1319,9 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 			if v := strings.TrimSpace(asString(args["feature_size"])); v != "" {
 				t.FeatureSize = v
 				if t.FeatureSize == "big" && t.Agent == "coder" {
-					t.Agent = "plan"
+					t.Agent = "swarm"
 					t.Tier = "complex"
-					t.OutcomeType = "plan_spec"
+					t.OutcomeType = "code_pr"
 				}
 			}
 			if v := strings.TrimSpace(asString(args["outcome_type"])); v != "" {

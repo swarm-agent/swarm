@@ -9,7 +9,8 @@ import { useDesktopV3CacheSelector } from '../../state/desktop-v3-cache-store'
 import { selectAndHydrateDesktopV3Session } from '../../state/desktop-v3-session-hydrator'
 
 function renderedMessagesEqual(left: RenderedSessionMessages, right: RenderedSessionMessages): boolean {
-  return left.committed === right.committed
+  return left.taskActivities === right.taskActivities
+    && left.committed === right.committed
     && left.pendingUser === right.pendingUser
     && left.liveRuns === right.liveRuns
     && left.runIntents === right.runIntents

@@ -1,7 +1,7 @@
 # Local testbench pool
 
 The local entrypoint is `bash scripts/testbench-local-deploy.sh ACTION --env-file FILE`.
-Actions: doctor, deploy, status, pool-status, touch, stop, reap, supervise. Existing remote scripts are unchanged. Status/touch/stop require `--generation` from the claim and the matching `--worktree`. This is trusted root-invoked host tooling, not a multi-user privileged RPC or a sudo allowlist for untrusted source.
+Actions: doctor, deploy, suspend, resume, status, pool-status, touch, stop, reap, supervise. Existing remote scripts are unchanged. Status/touch/stop require `--generation` from the claim and the matching `--worktree`. This is trusted root-invoked host tooling, not a multi-user privileged RPC or a sudo allowlist for untrusted source.
 
 ## Explicit prerequisites
 
@@ -68,3 +68,43 @@ bash -n scripts/testbench-local-deploy.sh
 ```
 
 31 focused pool/runtime/Codex tests passed on the candidate integration diff. Tests use real pool locks/files with bounded competing processes and fake runtime commands. They prove allocation/denial/recovery decisions and command construction, not kernel container isolation, successful guest build or provider access. Independent test review and inventory reconciliation remain pending; not promoted into the critical runner.
+
+## State-preserving restart (not cleanup)
+
+Use `suspend`, then `resume`, for an explicitly authorized retained lane. **Never
+use `stop`, `reap`, or a fresh deploy as a restart:** cleanup removes the image.
+Keep the original owner `--worktree` and exact `--generation`, including across a
+same-task repair handoff. A new repair checkout is not the old lane identity.
+
+```sh
+sudo -n python3 -B "$TOOLS/scripts/local_testbench_runtime.py" status --env-file "$CONFIG" --worktree "$OWNER" --generation "$GENERATION"
+sudo -n python3 -B "$TOOLS/scripts/local_testbench_runtime.py" suspend --env-file "$CONFIG" --worktree "$OWNER" --generation "$GENERATION"
+sudo -n python3 -B "$TOOLS/scripts/local_testbench_runtime.py" resume --env-file "$CONFIG" --worktree "$OWNER" --generation "$GENERATION" --expected-guest-head "$GUEST_HEAD"
+```
+
+`TOOLS` is reviewed trusted tooling; `GUEST_HEAD` is the full source commit already
+inside the retained image. Resume does not fetch, rebuild, change settings, seed
+credentials, or rewrite the immutable deployment manifest. An explicitly selected
+root-private provider UNIX relay can be rebound using `--provider-socket`; wait
+for its socket to exist before resuming. Provider setup is separate from runtime
+health. Never apply a provider-specific overlay to another provider's lane.
+
+Every start recreates volatile `/run/swarmd`, verifies the service account/home,
+prepares service-directory access, and checks executable/library/frontend access.
+Resume does not recursively chown the source or data: an idmapped image may contain
+unmapped source-file owners after privileged inspection. Do not repair that by
+changing broad host-image ownership. Preserve the account encryption identity.
+
+Startup stderr remains in the private bounded exchange `startup-error` file
+(1 MiB exchange, read at most 8 KiB), with a `failed-<phase>` marker. Authenticated
+resume does not echo arbitrary diagnostics: inspect a bounded secret-safe excerpt
+explicitly, fix the observed cause, and retry only after conditions change. Never
+redirect startup failures to `/dev/null` or publish raw provider logs. Failure
+retains the image and receipts; `ready`/`owned` metadata alone is not health proof.
+After startup check authenticated health, actual guest source and binary revision,
+frontend build provenance, unchanged model settings, and real persisted messages.
+
+This direct nspawn lifecycle is not a Docker environment deployment receipt. A
+managed adapter must implement lane/generation ownership, exact source identity,
+lease/heartbeat reconciliation, health/endpoints, bounded execution, and separate
+state-preserving restart versus destructive release before claiming integration.

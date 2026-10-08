@@ -42,6 +42,11 @@ func (s *Service) CommitV3PlanAcceptance(input PlanAcceptanceCommitInput) (PlanA
 	if s == nil || s.store == nil || input.ApplySessionMutation == nil {
 		return PlanAcceptanceCommitResult{}, errors.New("v3 plan acceptance mutation boundary is required")
 	}
+	if input.ExpectedBindingRevision > 0 {
+		if err := ValidateProjectPlanReview(input.Document); err != nil {
+			return PlanAcceptanceCommitResult{}, fmt.Errorf("plan review unavailable: %w", err)
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

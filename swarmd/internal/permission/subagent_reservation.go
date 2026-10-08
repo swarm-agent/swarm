@@ -54,7 +54,7 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		return SubagentReservationResult{}, errors.New("subagent wave must contain at least one launch")
 	}
 	if request.LaunchCount > MaxSubagentWaveSize {
-		record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Status: string(SubagentReservationDeny)}
+		record := pebblestore.SubagentWaveReservation{AccountScopeID: request.AccountScopeID, SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Status: string(SubagentReservationDeny)}
 		return SubagentReservationResult{Decision: SubagentReservationDeny, Reason: fmt.Sprintf("subagent wave exceeds absolute safety bound of %d", MaxSubagentWaveSize), Reservation: record}, nil
 	}
 
@@ -63,7 +63,7 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	if existing, ok, err := s.store.GetSubagentWaveReservation(request.SessionID, request.RunID, request.CallID); err != nil {
 		return SubagentReservationResult{}, err
 	} else if ok {
-		if existing.ManifestHash != request.ManifestHash || existing.LaunchCount != request.LaunchCount || existing.Program != request.Program || existing.ReadyCount != request.ReadyCount || existing.MaxConcurrency != request.MaxConcurrency {
+		if (existing.AccountScopeID != "" && existing.AccountScopeID != request.AccountScopeID) || existing.SwarmMode != request.SwarmMode || existing.ManifestHash != request.ManifestHash || existing.LaunchCount != request.LaunchCount || existing.Program != request.Program || existing.ReadyCount != request.ReadyCount || existing.MaxConcurrency != request.MaxConcurrency {
 			return SubagentReservationResult{}, errors.New("task call already reserved with a different exact wave or program")
 		}
 		return reservationResult(existing), nil
@@ -115,6 +115,13 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 			activeChildren += reservation.ActiveCount
 		}
 	}
+	if request.SwarmMode {
+		activeChildren, err = s.accountSwarmChildrenLocked(request.AccountScopeID)
+		if err != nil {
+			return SubagentReservationResult{}, err
+		}
+		activeChildren += len(s.designSlots[request.AccountScopeID])
+	}
 	requestedActive := request.LaunchCount
 	if request.Program {
 		requestedActive = request.ReadyCount
@@ -138,7 +145,7 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 		decision, reason = overBudgetSubagentDecision(policy, "the automatic wave budget is exhausted")
 	}
 	status := string(decision)
-	record := pebblestore.SubagentWaveReservation{SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Program: request.Program, ReadyCount: request.ReadyCount, MaxConcurrency: request.MaxConcurrency, Status: status}
+	record := pebblestore.SubagentWaveReservation{AccountScopeID: request.AccountScopeID, SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Program: request.Program, ReadyCount: request.ReadyCount, MaxConcurrency: request.MaxConcurrency, Status: status}
 	if decision != SubagentReservationDeny {
 		record.ActiveCount = requestedActive
 	}
@@ -175,6 +182,23 @@ func (s *Service) UpdateSubagentProgramCohort(sessionID, runID, callID string, a
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	record, found, err := s.store.GetSubagentWaveReservation(sessionID, runID, callID)
+	if err != nil {
+		return record, err
+	}
+	if found && record.SwarmMode && activeCount > record.ActiveCount {
+		state, err := s.refreshPermissionStatePolicyLocked(record.AccountScopeID)
+		if err != nil {
+			return record, err
+		}
+		active, err := s.accountSwarmChildrenLocked(record.AccountScopeID)
+		if err != nil {
+			return record, err
+		}
+		if active-record.ActiveCount+activeCount+len(s.designSlots[record.AccountScopeID]) > NormalizePolicy(state.Policy).Subagents.SwarmActiveChildLimit {
+			return record, errors.New("account Swarm capacity exhausted")
+		}
+	}
 	return s.store.UpdateSubagentProgramActiveCount(strings.TrimSpace(sessionID), strings.TrimSpace(runID), strings.TrimSpace(callID), activeCount, "approved")
 }
 
@@ -188,4 +212,14 @@ func (s *Service) FinishSubagentWave(sessionID, runID, callID, status string) er
 	record.ActiveCount = 0
 	record.Status = strings.TrimSpace(status)
 	return s.store.PutSubagentWaveReservation(record)
+}
+
+func (s *Service) accountSwarmChildrenLocked(accountID string) (int, error) {
+	if !s.swarmIndexReady {
+		if err := s.store.BackfillAccountSwarmReservations(); err != nil {
+			return 0, err
+		}
+		s.swarmIndexReady = true
+	}
+	return s.store.CountAccountSwarmChildren(accountID)
 }

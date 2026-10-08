@@ -20,11 +20,14 @@ type ConnectionKind string
 
 const (
 	ConnectionKindLocalDocker ConnectionKind = "local_docker"
+	ConnectionKindLocalPodman ConnectionKind = "local_podman"
 	ConnectionKindSSH         ConnectionKind = "ssh"
 )
 
 // ConnectionCapabilities describes the supported features of the connection host.
 type ConnectionCapabilities struct {
+	SupportsPodman      bool   `json:"supports_podman"`
+	RootlessSystemd     bool   `json:"rootless_systemd"`
 	SupportsDocker      bool   `json:"supports_docker"`
 	SupportsSSH         bool   `json:"supports_ssh"`
 	SupportsDirectMount bool   `json:"supports_direct_mount"`
@@ -121,6 +124,11 @@ func (c *Connection) Validate() error {
 					return errors.New("local_docker socket_path must be an absolute path")
 				}
 			}
+		}
+	case ConnectionKindLocalPodman:
+		// Local CLI only: no socket, remote target, or configurable runtime flags.
+		if c.LocalDocker != nil || c.SSH != nil {
+			return errors.New("local_podman does not accept Docker or SSH configuration")
 		}
 	case ConnectionKindSSH:
 		if c.LocalDocker != nil {

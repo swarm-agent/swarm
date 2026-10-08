@@ -515,6 +515,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	depStore := pebblestore.NewDeploymentStore(store)
 	providerReg := provider.NewRegistry()
 	providerReg.Register(provider.NewLocalDockerProvider(nil))
+	podmanProvider := provider.NewLocalPodmanProvider(nil)
+	podmanProvider.ConfigureBuildRoot(filepath.Join(cacheRoot, "environment-builds"))
+	providerReg.Register(podmanProvider)
 	providerReg.Register(provider.NewSSHDockerProvider(nil))
 	deploymentMgr := lifecycle.NewDeploymentManager(connStore, envStore, depStore, workspaceStore, providerReg)
 	toolRuntime.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
@@ -673,6 +676,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := deploymentMgr.Recover(bgCtx); err != nil {
 		log.Printf("warning: environment supervisor recovery: %v", err)
 	}
+	go deploymentMgr.RunReviewCleanup(bgCtx, func(err error) {
+		log.Printf("warning: environment review cleanup: %v", err)
+	})
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)

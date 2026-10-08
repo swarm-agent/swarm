@@ -38,7 +38,8 @@ type ActiveDeploymentSummary struct {
 	DeploymentID  string `json:"deployment_id"`
 	EnvironmentID string `json:"environment_id"`
 	Status        string `json:"status"`
-	LeaseID       string `json:"lease_id,omitempty"`
+	LeaseID       string `json:"-"` // Legacy in-process input; never serialize a receipt.
+	Leased        bool   `json:"leased,omitempty"`
 	ConsumerType  string `json:"consumer_type,omitempty"`
 	ConsumerID    string `json:"consumer_id,omitempty"`
 }
@@ -202,7 +203,7 @@ func (s *Service) ResolveDefaultTestbench(ctx context.Context, accountScopeID, w
 						Status:        string(dep.Status),
 					}
 					if isLeased {
-						summary.LeaseID = activeLease.ID
+						summary.Leased = true
 						summary.ConsumerType = string(activeLease.ConsumerType)
 						summary.ConsumerID = activeLease.ConsumerID
 					}
@@ -282,12 +283,12 @@ func FormatWorkspaceEnvironmentPromptBlock(envCtx *WorkspaceEnvironmentContext) 
 				break
 			}
 			leaseInfo := "unleased"
-			if dep.LeaseID != "" {
+			if dep.Leased || dep.LeaseID != "" {
 				consumer := dep.ConsumerID
 				if dep.ConsumerType != "" {
 					consumer = dep.ConsumerType + ":" + dep.ConsumerID
 				}
-				leaseInfo = fmt.Sprintf("leased by %s (lease: %s)", consumer, dep.LeaseID)
+				leaseInfo = fmt.Sprintf("leased by %s", consumer)
 			}
 			sb.WriteString(fmt.Sprintf("  - %s (env: %s, status: %s, %s)\n", dep.DeploymentID, dep.EnvironmentID, dep.Status, leaseInfo))
 		}
@@ -316,11 +317,33 @@ func (s *Service) WorkspaceEnvironmentPromptBlock(ctx context.Context, scope too
 	if accountScopeID == "" {
 		return ""
 	}
-	workspaceID := s.resolveWorkspaceIDForScope(scope)
-	if workspaceID == "" {
+	if scope.SessionID == "" || s.sessions == nil {
 		return ""
 	}
-	return s.WorkspaceEnvironmentPromptBlockForWorkspace(ctx, accountScopeID, workspaceID)
+	snapshot, found, err := s.sessions.GetSession(scope.SessionID)
+	if err != nil || !found || snapshot.AccountScopeID != accountScopeID || snapshot.UserID != scope.Principal.UserID || !tool.EnvironmentToolAllowed(snapshot.Metadata, "manage_environments") {
+		return ""
+	}
+	taskContext := ""
+	if projectID, ok := snapshot.Metadata["project_id"].(string); ok && projectID != "" {
+		if taskID, ok := snapshot.Metadata["task_id"].(string); ok && taskID != "" {
+			if task, found, err := s.sessions.Store().GetProjectTask(accountScopeID, projectID, taskID); err == nil && found && task.SessionID == snapshot.ID {
+				task.EnsureTaskAttempts()
+				taskContext = fmt.Sprintf("Task environment discovery: project_id=%q task_id=%q attempt_id=%q; %d retained attachments. Use manage_environments list_attachments for current state, including attachments added after this turn began. Select attachment_id explicitly and acquire your own receipt; retained evidence grants no execution or workspace scope.\n", projectID, taskID, task.ActiveAttemptID, len(task.EnvironmentAttachments))
+			}
+		}
+	}
+	if tool.TaskEnvironmentConsumer(snapshot.Metadata) {
+		if taskContext == "" {
+			return "Task environment discovery unavailable: current task identity must be restored before environment access."
+		}
+		return taskContext
+	}
+	workspaceID := s.resolveWorkspaceIDForScope(scope)
+	if workspaceID == "" {
+		return taskContext
+	}
+	return taskContext + s.WorkspaceEnvironmentPromptBlockForWorkspace(ctx, accountScopeID, workspaceID)
 }
 
 // WorkspaceEnvironmentPromptBlockForWorkspace generates the formatted environment prompt block for the specified workspace.
@@ -336,7 +359,7 @@ func (s *Service) WorkspaceEnvironmentPromptBlockForWorkspace(ctx context.Contex
 }
 
 func (s *Service) appendWorkspaceEnvironmentPromptBlock(base string, scope tool.WorkspaceScope) string {
-	if s == nil || (s.envDefinitions == nil && s.envWorkspaceSettings == nil) {
+	if s == nil {
 		return strings.TrimSpace(base)
 	}
 	block := s.WorkspaceEnvironmentPromptBlock(context.Background(), scope)

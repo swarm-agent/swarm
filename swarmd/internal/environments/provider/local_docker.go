@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm-refactor/swarmtui/pkg/environments"
@@ -23,8 +24,12 @@ var _ OperationCanceler = (*LocalDockerProvider)(nil)
 
 // LocalDockerProvider manages environment deployments on a local Docker daemon.
 type LocalDockerProvider struct {
-	runner  CommandRunner
-	httpGet func(ctx context.Context, url string) (int, error)
+	buildRoot  string
+	runtimeDir string
+	buildRuns  sync.Map
+	kind       environments.ConnectionKind
+	runner     CommandRunner
+	httpGet    func(ctx context.Context, url string) (int, error)
 }
 
 // NewLocalDockerProvider creates a new LocalDockerProvider using the supplied CommandRunner.
@@ -41,6 +46,9 @@ func NewLocalDockerProvider(runner CommandRunner) *LocalDockerProvider {
 
 // Kind returns ConnectionKindLocalDocker.
 func (p *LocalDockerProvider) Kind() environments.ConnectionKind {
+	if p.kind == environments.ConnectionKindLocalPodman {
+		return p.kind
+	}
 	return environments.ConnectionKindLocalDocker
 }
 
@@ -52,20 +60,37 @@ func (p *LocalDockerProvider) ValidateConnection(ctx context.Context, conn *envi
 	if err := conn.Validate(); err != nil {
 		return fmt.Errorf("invalid connection: %w", err)
 	}
-	if conn.Kind != environments.ConnectionKindLocalDocker {
+	if conn.Kind != p.Kind() {
 		return fmt.Errorf("unsupported connection kind for local docker provider: %q", conn.Kind)
 	}
 
+	if p.Kind() == environments.ConnectionKindLocalPodman {
+		_, err := p.podmanCapabilities(ctx, conn)
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
 	args := append(dockerHostArgs(conn), "info", "--format", "{{.ServerVersion}}")
-	out, err := p.runner.Run(ctx, "docker", args...)
+	out, err := p.runner.Run(ctx, localEngineCommand(conn), args...)
 	if err != nil {
-		return fmt.Errorf("docker connection validation failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("docker connection validation failed: %s", commandDiagnostic(err.Error()+": "+string(out)))
 	}
 	return nil
 }
 
 // Capabilities returns the supported capabilities for local Docker.
 func (p *LocalDockerProvider) Capabilities(ctx context.Context, conn *environments.Connection) (environments.ConnectionCapabilities, error) {
+	if p.Kind() == environments.ConnectionKindLocalPodman {
+		return p.podmanCapabilities(ctx, conn)
+	}
+	if conn == nil || conn.Kind != p.Kind() {
+		return environments.ConnectionCapabilities{}, errors.New("invalid local Docker connection")
+	}
+	if err := conn.Validate(); err != nil {
+		return environments.ConnectionCapabilities{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
+	defer cancel()
 	caps := environments.ConnectionCapabilities{
 		SupportsDocker:      true,
 		SupportsSSH:         false,
@@ -76,9 +101,13 @@ func (p *LocalDockerProvider) Capabilities(ctx context.Context, conn *environmen
 
 	if conn != nil {
 		args := append(dockerHostArgs(conn), "version", "--format", "{{.Server.Version}}")
-		out, err := p.runner.Run(ctx, "docker", args...)
-		if err == nil {
-			caps.EngineVersion = strings.TrimSpace(string(out))
+		out, err := p.runner.Run(ctx, localEngineCommand(conn), args...)
+		if err != nil {
+			return environments.ConnectionCapabilities{}, fmt.Errorf("docker capabilities failed: %s", commandDiagnostic(err.Error()+": "+string(out)))
+		}
+		caps.EngineVersion = strings.TrimSpace(string(out))
+		if caps.EngineVersion == "" {
+			return environments.ConnectionCapabilities{}, errors.New("docker returned an empty engine version")
 		}
 	}
 	return caps, nil
@@ -95,7 +124,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	if req.Deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
-	if req.Connection.Kind != environments.ConnectionKindLocalDocker {
+	if req.Connection.Kind != p.Kind() {
 		return nil, fmt.Errorf("unsupported connection kind: %q", req.Connection.Kind)
 	}
 	if err := req.Environment.Validate(); err != nil {
@@ -103,6 +132,15 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	}
 	if err := req.Deployment.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid deployment record: %w", err)
+	}
+
+	if err := ValidateRuntimeConnection(req.Connection, req.Environment); err != nil {
+		return nil, err
+	}
+	if p.Kind() == environments.ConnectionKindLocalPodman {
+		if _, err := p.podmanCapabilities(ctx, req.Connection); err != nil {
+			return nil, err
+		}
 	}
 
 	deployCtx := ctx
@@ -116,12 +154,18 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 
 	// Check if a container with this name already exists
 	inspectArgs := append(dockerHostArgs(req.Connection), "inspect", cName)
-	existingOut, inspectErr := p.runner.Run(deployCtx, "docker", inspectArgs...)
+	existingOut, inspectErr := p.runner.Run(deployCtx, localEngineCommand(req.Connection), inspectArgs...)
 	if inspectErr == nil {
+		if p.Kind() == environments.ConnectionKindLocalPodman {
+			if err := validatePodmanInspect(existingOut); err != nil {
+				return nil, err
+			}
+		}
 		ins, parseErr := parseDockerInspect(existingOut)
 		if parseErr == nil && ins.State.Running && req.Environment.DeploymentPolicy.Reuse {
 			// Container is already running and reusable
 			insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
+				Build:         req.Deployment.Build,
 				ID:            req.Deployment.ID,
 				EnvironmentID: req.Environment.ID,
 				Runtime: environments.RuntimeMetadata{
@@ -137,13 +181,20 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 				}, nil
 			}
 		}
+		if p.Kind() == environments.ConnectionKindLocalPodman {
+			return nil, errors.New("existing Podman container cannot be reused; explicitly release/destroy its owned deployment before recreation")
+		}
 		// Existing container is stopped, dead, or not reusable - remove it before recreation
 		rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
-		_, _ = p.runner.Run(deployCtx, "docker", rmArgs...)
+		_, _ = p.runner.Run(deployCtx, localEngineCommand(req.Connection), rmArgs...)
 	}
 
 	// Build `docker run -d` arguments with -i to keep STDIN open so interactive shell entrypoints do not exit
 	runArgs := append(dockerHostArgs(req.Connection), "run", "-d", "-i", "--name", cName)
+
+	if s := req.Environment.Container.RootlessSystemd; s != nil {
+		runArgs = append(runArgs, "--systemd=always", "--cgroupns=private", "--network=slirp4netns:allow_host_loopback=false", "--pids-limit", strconv.Itoa(s.PidsLimit), "--http-proxy=false", "--pid=private", "--ipc=private", "--pull=never", "--runtime=crun")
+	}
 
 	// Scoping and metadata labels
 	runArgs = append(runArgs,
@@ -175,7 +226,14 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 
 	// Environment variables
 	for k, v := range req.Environment.Container.EnvVars {
-		resolved := resolveEnvValue(v, req.EnvOverrides)
+		resolved := v
+		if p.Kind() == environments.ConnectionKindLocalPodman {
+			if override, ok := req.EnvOverrides[k]; ok {
+				resolved = override
+			}
+		} else {
+			resolved = resolveEnvValue(v, req.EnvOverrides)
+		}
 		runArgs = append(runArgs, "-e", fmt.Sprintf("%s=%s", k, resolved))
 	}
 	for k, v := range req.EnvOverrides {
@@ -275,22 +333,35 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	}
 
 	// Run container
-	runOut, runErr := p.runner.Run(deployCtx, "docker", runArgs...)
+	runOut, runErr := p.runner.Run(deployCtx, localEngineCommand(req.Connection), runArgs...)
 	if runErr != nil {
 		return nil, fmt.Errorf("failed to deploy docker container %s: %w (output: %s)", cName, runErr, strings.TrimSpace(string(runOut)))
 	}
 
 	containerID := strings.TrimSpace(string(runOut))
 
+	// Verify Podman's observed isolation before allowing any setup command.
+	if p.Kind() == environments.ConnectionKindLocalPodman {
+		if _, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{Build: req.Deployment.Build, Runtime: environments.RuntimeMetadata{ContainerID: containerID}}); err != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), CleanupTimeout)
+			defer cancel()
+			_, cleanupErr := p.runner.Run(cleanupCtx, "podman", append(dockerHostArgs(req.Connection), "rm", "-f", "-v", containerID)...)
+			if cleanupErr != nil {
+				return nil, fmt.Errorf("Podman isolation verification failed: %v; owned container cleanup failed: %s", err, commandDiagnostic(cleanupErr.Error()))
+			}
+			return nil, fmt.Errorf("Podman isolation verification failed; owned container removed: %w", err)
+		}
+	}
+
 	// Execute setup commands if defined
 	if len(req.Environment.Container.SetupCommands) > 0 {
 		for i, cmdStr := range req.Environment.Container.SetupCommands {
 			execArgs := append(dockerHostArgs(req.Connection), "exec", cName, "sh", "-c", cmdStr)
-			setupOut, setupErr := p.runner.RunCombined(deployCtx, "docker", execArgs...)
+			setupOut, setupErr := p.runner.RunCombined(deployCtx, localEngineCommand(req.Connection), execArgs...)
 			if setupErr != nil {
 				// Destroy failed container
 				rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
-				_, _ = p.runner.Run(context.Background(), "docker", rmArgs...)
+				_, _ = p.runner.Run(context.Background(), localEngineCommand(req.Connection), rmArgs...)
 				return nil, fmt.Errorf("setup command [%d] %q failed: %w (output: %s)", i, cmdStr, setupErr, sanitizeOutput(string(setupOut)))
 			}
 		}
@@ -298,6 +369,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 
 	// Inspect container to obtain dynamic runtime state (ports, IP, health)
 	insRes, err := p.Inspect(deployCtx, req.Connection, &environments.Deployment{
+		Build:         req.Deployment.Build,
 		ID:            req.Deployment.ID,
 		EnvironmentID: req.Environment.ID,
 		Runtime: environments.RuntimeMetadata{
@@ -310,7 +382,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	}
 	if insRes.Status == environments.DeploymentStatusStopped || insRes.Status == environments.DeploymentStatusFailed {
 		rmArgs := append(dockerHostArgs(req.Connection), "rm", "-f", "-v", cName)
-		_, _ = p.runner.Run(context.Background(), "docker", rmArgs...)
+		_, _ = p.runner.Run(context.Background(), localEngineCommand(req.Connection), rmArgs...)
 		return nil, fmt.Errorf("deployed container %s is not running (status: %s)", cName, insRes.Status)
 	}
 
@@ -354,6 +426,9 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 
 // Inspect retrieves live container status, mapped ports, and health.
 func (p *LocalDockerProvider) Inspect(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment) (*InspectResult, error) {
+	if err := p.validateLocalKind(conn); err != nil {
+		return nil, err
+	}
 	if deployment == nil {
 		return nil, errors.New("deployment cannot be nil")
 	}
@@ -363,11 +438,27 @@ func (p *LocalDockerProvider) Inspect(ctx context.Context, conn *environments.Co
 	}
 
 	args := append(dockerHostArgs(conn), "inspect", target)
-	out, err := p.runner.Run(ctx, "docker", args...)
+	out, err := p.runner.Run(ctx, localEngineCommand(conn), args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect container %s: %w", target, err)
 	}
 
+	if p.Kind() == environments.ConnectionKindLocalPodman {
+		if err := validatePodmanInspect(out); err != nil {
+			return nil, err
+		}
+	}
+	if deployment.Build != nil {
+		var records []struct {
+			Image string `json:"Image"`
+		}
+		// Engines may omit sha256: in inspect, but only full validated identities
+		// are equivalent. In particular, two malformed IDs must never compare equal.
+		imageID := normalizedBuildImageID(deployment.Build.ImageID)
+		if imageID == "" || json.Unmarshal(out, &records) != nil || len(records) != 1 || normalizedBuildImageID(records[0].Image) != imageID {
+			return nil, errors.New("deployment image does not match authenticated build result")
+		}
+	}
 	ins, err := parseDockerInspect(out)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse inspect output for container %s: %w", target, err)
@@ -471,6 +562,17 @@ func (p *LocalDockerProvider) Inspect(ctx context.Context, conn *environments.Co
 
 // Start starts a stopped deployment container.
 func (p *LocalDockerProvider) Start(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment) error {
+	if err := p.validateLocalKind(conn); err != nil {
+		return err
+	}
+	if p.Kind() == environments.ConnectionKindLocalPodman {
+		if _, err := p.podmanCapabilities(ctx, conn); err != nil {
+			return err
+		}
+		if _, err := p.Inspect(ctx, conn, deployment); err != nil {
+			return err
+		}
+	}
 	if deployment == nil {
 		return errors.New("deployment cannot be nil")
 	}
@@ -480,7 +582,7 @@ func (p *LocalDockerProvider) Start(ctx context.Context, conn *environments.Conn
 	}
 
 	args := append(dockerHostArgs(conn), "start", target)
-	out, err := p.runner.Run(ctx, "docker", args...)
+	out, err := p.runner.Run(ctx, localEngineCommand(conn), args...)
 	if err != nil {
 		return fmt.Errorf("failed to start container %s: %w (output: %s)", target, err, strings.TrimSpace(string(out)))
 	}
@@ -489,6 +591,9 @@ func (p *LocalDockerProvider) Start(ctx context.Context, conn *environments.Conn
 
 // Stop stops a running deployment container.
 func (p *LocalDockerProvider) Stop(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment) error {
+	if err := p.validateLocalKind(conn); err != nil {
+		return err
+	}
 	if deployment == nil {
 		return errors.New("deployment cannot be nil")
 	}
@@ -498,7 +603,7 @@ func (p *LocalDockerProvider) Stop(ctx context.Context, conn *environments.Conne
 	}
 
 	args := append(dockerHostArgs(conn), "stop", "-t", "10", target)
-	out, err := p.runner.Run(ctx, "docker", args...)
+	out, err := p.runner.Run(ctx, localEngineCommand(conn), args...)
 	if err != nil {
 		return fmt.Errorf("failed to stop container %s: %w (output: %s)", target, err, strings.TrimSpace(string(out)))
 	}
@@ -507,6 +612,9 @@ func (p *LocalDockerProvider) Stop(ctx context.Context, conn *environments.Conne
 
 // Destroy stops and cleans up the container and associated resources.
 func (p *LocalDockerProvider) Destroy(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment) error {
+	if err := p.validateLocalKind(conn); err != nil {
+		return err
+	}
 	if deployment == nil {
 		return errors.New("deployment cannot be nil")
 	}
@@ -516,7 +624,7 @@ func (p *LocalDockerProvider) Destroy(ctx context.Context, conn *environments.Co
 	}
 
 	args := append(dockerHostArgs(conn), "rm", "-f", "-v", target)
-	out, err := p.runner.Run(ctx, "docker", args...)
+	out, err := p.runner.Run(ctx, localEngineCommand(conn), args...)
 	if err != nil {
 		return fmt.Errorf("failed to destroy container %s: %w (output: %s)", target, err, strings.TrimSpace(string(out)))
 	}
@@ -536,6 +644,9 @@ func (p *LocalDockerProvider) ResolveAccess(ctx context.Context, conn *environme
 	// Inspect container for fresh runtime ports and state
 	insRes, err := p.Inspect(ctx, conn, deployment)
 	if err != nil {
+		if p.Kind() == environments.ConnectionKindLocalPodman {
+			return nil, err
+		}
 		// Fallback to cached runtime if present
 		if deployment.Runtime.ContainerID != "" || deployment.Runtime.ProviderResourceID != "" {
 			return p.accessFromRuntime(deployment.Runtime), nil
@@ -580,17 +691,28 @@ type localDockerTransport struct {
 func (t *localDockerTransport) RunExec(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, execArgs ...string) error {
 	args := append(dockerHostArgs(t.conn), "exec")
 	args = append(args, execArgs...)
-	return t.runner.RunWithIO(ctx, stdin, stdout, stderr, "docker", args...)
+	return t.runner.RunWithIO(ctx, stdin, stdout, stderr, localEngineCommand(t.conn), args...)
 }
 
 func (t *localDockerTransport) RunExecCombined(ctx context.Context, execArgs ...string) ([]byte, error) {
 	args := append(dockerHostArgs(t.conn), "exec")
 	args = append(args, execArgs...)
-	return t.runner.RunCombined(ctx, "docker", args...)
+	return t.runner.RunCombined(ctx, localEngineCommand(t.conn), args...)
 }
 
 // Exec executes a command inside the running deployment container under supervised process control.
 func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req ExecRequest) (*ExecResult, error) {
+	if err := p.validateLocalKind(conn); err != nil {
+		return nil, err
+	}
+	if p.Kind() == environments.ConnectionKindLocalPodman {
+		if _, err := p.podmanCapabilities(ctx, conn); err != nil {
+			return nil, err
+		}
+		if _, err := p.Inspect(ctx, conn, deployment); err != nil {
+			return nil, err
+		}
+	}
 	target, err := validateExecParams(deployment, req)
 	if err != nil {
 		return nil, err
@@ -601,6 +723,9 @@ func (p *LocalDockerProvider) Exec(ctx context.Context, conn *environments.Conne
 
 // CancelExec cancels a running or orphaned execution operation inside the target container.
 func (p *LocalDockerProvider) CancelExec(ctx context.Context, conn *environments.Connection, deployment *environments.Deployment, req CancelExecRequest) (*CancelExecResult, error) {
+	if err := p.validateLocalKind(conn); err != nil {
+		return nil, err
+	}
 	target, err := validateCancelParams(deployment, req)
 	if err != nil {
 		return nil, err
@@ -611,7 +736,17 @@ func (p *LocalDockerProvider) CancelExec(ctx context.Context, conn *environments
 
 // Internal helpers
 
+func localEngineCommand(conn *environments.Connection) string {
+	if conn != nil && conn.Kind == environments.ConnectionKindLocalPodman {
+		return "podman"
+	}
+	return "docker"
+}
+
 func dockerHostArgs(conn *environments.Connection) []string {
+	if conn != nil && conn.Kind == environments.ConnectionKindLocalPodman {
+		return []string{"--remote=false", "--cgroup-manager=systemd"}
+	}
 	if conn == nil || conn.LocalDocker == nil {
 		return nil
 	}

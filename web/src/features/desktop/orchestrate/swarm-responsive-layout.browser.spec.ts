@@ -144,7 +144,7 @@ test('real task and model dialogs contain focus and fit narrow lanes', { timeout
     const primary = page.getByRole('button', { name: 'New task', exact: true })
     await primary.waitFor()
     assert.ok((await primary.boundingBox())!.height >= 44)
-    await page.getByRole('button', { name: 'Select all', exact: true }).click()
+    await page.getByRole('checkbox', { name: 'Select all', exact: true }).click()
     assert.ok(await page.locator('.swarm-task-list-toolbar').evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'selected management groups wrap without clipping')
     assert.ok(await page.locator('.swarm-task-list-header').evaluate(node => node.scrollWidth <= node.clientWidth + 1), 'long title fits lane')
     await primary.click()

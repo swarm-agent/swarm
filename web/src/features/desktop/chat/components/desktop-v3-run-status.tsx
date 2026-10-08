@@ -1,7 +1,7 @@
 import { cn } from '../../../../lib/cn'
 import type { LiveRunOverlay, V3SessionRunIntent } from '../../state/desktop-v3-cache-types'
 
-export type DesktopV3RunStatusKind = 'starting' | 'active' | 'paused' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'expired'
+export type DesktopV3RunStatusKind = 'starting' | 'active' | 'waiting' | 'paused' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'expired'
 
 export interface DesktopV3RunStatusModel {
   kind: DesktopV3RunStatusKind
@@ -47,6 +47,11 @@ function runTiming(intent: V3SessionRunIntent | null | undefined, options: { act
   }
 }
 
+function taskResumeLabel(intent: V3SessionRunIntent | null | undefined): string {
+  if (!intent?.task_wait_owner_run_id?.trim()) return 'Running'
+  return intent.status === 'pending_executor' ? 'Resuming after tasks' : 'Resumed after tasks'
+}
+
 function terminalKind(status: string): DesktopV3RunStatusKind {
   switch (status) {
     case 'failed':
@@ -83,6 +88,9 @@ export function buildDesktopV3RunStatusModel(input: {
   liveRuns?: LiveRunOverlay[]
 }): DesktopV3RunStatusModel | null {
   const currentStatus = runIntentStatus(input.currentRunIntent)
+  if (currentStatus === 'waiting_tasks' || (!currentStatus && runIntentStatus(input.latestRunIntent) === 'waiting_tasks')) {
+    return { kind: 'waiting', label: 'Waiting for tasks', active: false }
+  }
   if (currentStatus === 'dispatch_blocked') {
     return {
       kind: 'paused',
@@ -96,7 +104,7 @@ export function buildDesktopV3RunStatusModel(input: {
     if (!timingPresent(timing)) return null
     return {
       kind: 'active',
-      label: 'Running',
+      label: taskResumeLabel(input.currentRunIntent),
       ...timing,
       active: true,
     }
@@ -116,7 +124,7 @@ export function buildDesktopV3RunStatusModel(input: {
     if (!timingPresent(timing)) return null
     return {
       kind: 'active',
-      label: 'Running',
+      label: taskResumeLabel(input.latestRunIntent),
       ...timing,
       active: true,
     }

@@ -55,7 +55,9 @@ func (a *App) requestV3ChatRender() {
 	}
 	select {
 	case a.pendingV3ChatRender <- struct{}{}:
-		a.screen.PostEventWait(tcell.NewEventInterrupt(interruptV3Chat))
+		if err := a.screen.PostEvent(tcell.NewEventInterrupt(interruptV3Chat)); err != nil {
+			go a.screen.PostEventWait(tcell.NewEventInterrupt(interruptV3Chat))
+		}
 	default:
 	}
 }
@@ -511,6 +513,9 @@ func (a *App) openExistingV3Chat(summary model.SessionSummary) error {
 	a.closeV3Chat()
 	a.v3Chat = a.newV3ChatPage(runtime, a.v3ChatSessionFooterRouteLabel(summary), "")
 	a.route = "v3chat"
+	if a.homeModel.ActiveProjectID != "" {
+		a.homeModel.ActiveProjectPrimarySessionID = sessionID
+	}
 	return nil
 }
 

@@ -104,6 +104,11 @@ func (s *PermissionStore) GetPermission(sessionID, permissionID string) (Permiss
 }
 
 func (s *PermissionStore) PutPermission(record PermissionRecord, previous *PermissionRecord) error {
+	unlock := s.store.sessionMutations.lockSessions(record.SessionID)
+	defer unlock()
+	if err := s.validateProjectPermissionTransitionLocked(record, previous); err != nil {
+		return err
+	}
 	record = sanitizePermissionRecord(record)
 	serialized, err := json.Marshal(record)
 	if err != nil {
@@ -122,6 +127,11 @@ func (s *PermissionStore) PutPermission(record PermissionRecord, previous *Permi
 }
 
 func (s *PermissionStore) PutPermissionWithSummary(record PermissionRecord, previous *PermissionRecord, summary PermissionSummary) error {
+	unlock := s.store.sessionMutations.lockSessions(record.SessionID)
+	defer unlock()
+	if err := s.validateProjectPermissionTransitionLocked(record, previous); err != nil {
+		return err
+	}
 	record = sanitizePermissionRecord(record)
 	summary = sanitizePermissionSummary(summary)
 	recordPayload, err := json.Marshal(record)

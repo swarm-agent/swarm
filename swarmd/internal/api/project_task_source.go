@@ -72,9 +72,12 @@ func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestor
 		}
 		if requireRepository {
 			state, err := s.workspace.InspectRepositoryForPrincipal(p, root)
-			if err != nil || state.State != workspace.RepositoryStateReady || state.Repository != root {
+			if err != nil {
+				return pebblestore.ProjectTaskSource{}, fmt.Errorf("inspect coding source %q: %w; restore source access or select another workspace; project chat remains available", root, err)
+			}
+			if state.State != workspace.RepositoryStateReady || state.Repository != root {
 				if path == root || id == scope.WorkspaceID {
-					return pebblestore.ProjectTaskSource{}, fmt.Errorf("project workspace %q requires a committed repository: %v", root, err)
+					return pebblestore.ProjectTaskSource{}, fmt.Errorf("project workspace %q is not coding-ready (state: %s): use workspace Git setup to initialize and commit the intended repository, or select another source; project chat remains available", root, state.State)
 				}
 				continue
 			}
@@ -92,7 +95,7 @@ func (s *Server) resolveProjectTaskSource(p identity.Principal, proj *pebblestor
 }
 
 func (s *Server) revalidateProjectTaskSource(p identity.Principal, proj *pebblestore.ProjectRecord, task *pebblestore.ProjectTaskRecord) error {
-	if task.Agent == "image" && task.SessionID == "" && task.TaskProgram == nil && task.TaskProgramID == "" && task.PlanBinding == nil && len(task.CoderAssignments) == 0 && len(task.ProgramSources) == 0 && task.SourceWorkspace.Path == "" {
+	if isOrdinaryMediaAgent(task.Agent) && task.SessionID == "" && task.TaskProgram == nil && task.TaskProgramID == "" && task.PlanBinding == nil && task.PlanDocument == nil && len(task.CoderAssignments) == 0 && len(task.ProgramSources) == 0 && task.SourceWorkspace.Path == "" {
 		_, err := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{Agent: task.Agent, OutcomeType: task.OutcomeType, Tier: task.Tier, VariantCount: task.VariantCount})
 		return err
 	}

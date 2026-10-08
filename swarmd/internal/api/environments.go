@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -64,14 +66,19 @@ type manageProviderRegistry interface {
 
 func (s *Server) SetEnvironmentServices(
 	connections manageConnectionStore,
-	environments manageEnvironmentStore,
+	definitions manageEnvironmentStore,
 	deployments manageDeploymentLifecycleService,
 	workspaceEnvSettings manageWorkspaceSettingsStore,
 	envProviders manageProviderRegistry,
 ) {
 	s.connections = connections
-	s.environments = environments
+	s.environments = definitions
 	s.deployments = deployments
+	if bound, ok := deployments.(interface {
+		SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error)
+	}); ok {
+		bound.SetTaskLeaseValidator(s.ValidateTaskEnvironmentLease)
+	}
 	s.workspaceEnvSettings = workspaceEnvSettings
 	s.envProviders = envProviders
 }
@@ -153,6 +160,10 @@ type connectionMutationRequest struct {
 }
 
 func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authorizeEnvironmentHTTPSession(r, "", "manage_connections"); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	if s.connections == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("connection service not configured"))
 		return
@@ -200,7 +211,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req connectionMutationRequest
-		if err := decodeJSON(r, &req); err != nil {
+		if err := decodeEnvironmentRequest(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -212,6 +223,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		action := strings.ToLower(strings.TrimSpace(req.Action))
+		if req.Kind == environments.ConnectionKindLocalPodman && (req.Host != "" || req.User != "" || req.Port != 0 || req.SSHKeyPath != "" || req.KnownHostsFile != "" || req.SocketPath != "" || req.DockerHost != "" || req.Capabilities != nil) {
+			writeError(w, http.StatusBadRequest, errors.New("local_podman forbids remote/socket configuration and capability overrides"))
+			return
+		}
 		switch action {
 		case "create", "update":
 			connID := strings.TrimSpace(req.ID)
@@ -244,6 +259,8 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 					conn.Capabilities.SupportsDocker = true
 					conn.Capabilities.SupportsDirectMount = true
 				}
+			case environments.ConnectionKindLocalPodman:
+				// No configuration or assumed capabilities: provider probe is authority.
 			case environments.ConnectionKindSSH:
 				port := req.Port
 				if port <= 0 {
@@ -272,6 +289,10 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 				if found {
+					if conn.Kind != existing.Kind {
+						writeError(w, http.StatusBadRequest, errors.New("connection kind cannot be changed"))
+						return
+					}
 					conn.CreatedAt = existing.CreatedAt
 					if conn.Name == "" {
 						conn.Name = existing.Name
@@ -326,6 +347,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 			} else {
 				conn = environments.Connection{
 					ID:             "check-temp",
+					Name:           "Connection check",
 					AccountScopeID: accountScopeID,
 					WorkspaceID:    workspaceID,
 					Kind:           req.Kind,
@@ -424,6 +446,7 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 type environmentMutationRequest struct {
+	BuildOperationID         string                    `json:"build_operation_id,omitempty"`
 	Action                   string                    `json:"action"`
 	WorkspaceID              string                    `json:"workspace_id"`
 	WorkspacePath            string                    `json:"workspace_path"`
@@ -454,6 +477,10 @@ type environmentMutationRequest struct {
 }
 
 func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authorizeEnvironmentHTTPSession(r, "", "manage_environments"); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	if s.environments == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("environment service not configured"))
 		return
@@ -602,7 +629,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			activeLeases := make(map[string]environments.DeploymentLease)
 			for _, dep := range list {
 				if lease, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID); ok {
-					activeLeases[dep.ID] = lease
+					activeLeases[dep.ID] = publicEnvironmentLease(lease)
 				}
 			}
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -641,7 +668,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":               true,
 				"deployment":       dep,
-				"active_lease":     lease,
+				"active_lease":     publicEnvironmentLease(lease),
 				"has_active_lease": hasLease,
 			})
 			return
@@ -693,7 +720,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req environmentMutationRequest
-		if err := decodeJSON(r, &req); err != nil {
+		if err := decodeEnvironmentRequest(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -704,6 +731,10 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if _, err := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments"); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
 		action := strings.ToLower(strings.TrimSpace(req.Action))
 
 		// Cancellation routing
@@ -776,7 +807,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 
-		case "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
+		case "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
 			if s.deployments == nil {
 				writeError(w, http.StatusInternalServerError, errors.New("deployment supervisor not configured"))
 				return
@@ -784,41 +815,52 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 
 			principal, _ := PrincipalFromRequest(r)
 			callerActor := principal.UserID
-			callerSessionID := ""
-			if req.SessionID != "" && s.sessions != nil {
-				if sess, found, _ := s.sessions.GetSession(strings.TrimSpace(req.SessionID)); found && sess.AccountScopeID == accountScopeID && sess.UserID == principal.UserID {
-					callerSessionID = sess.ID
-					if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
-						workspacePath = sess.WorktreeRootPath
-					}
-				}
+			sess, authErr := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments")
+			if authErr != nil {
+				writeError(w, http.StatusForbidden, authErr)
+				return
+			}
+			callerSessionID := sess.ID
+			if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+				workspacePath = sess.WorktreeRootPath
 			}
 
 			subReq := lifecycle.SubmitOperationRequest{
-				AccountScopeID: accountScopeID,
-				WorkspaceID:    workspaceID,
-				Action:         action,
-				EnvironmentID:  firstNonEmptyString(strings.TrimSpace(req.EnvironmentID), strings.TrimSpace(req.ID)),
-				DeploymentID:   strings.TrimSpace(req.DeploymentID),
-				LeaseID:        strings.TrimSpace(req.LeaseID),
-				ConnectionID:   strings.TrimSpace(req.ConnectionID),
-				DeploymentName: strings.TrimSpace(req.DeploymentName),
-				WorkspacePath:  workspacePath,
-				ConsumerType:   req.ConsumerType,
-				ConsumerID:     firstNonEmptyString(callerSessionID, strings.TrimSpace(req.ConsumerID)),
-				Command:        req.Command,
-				WorkingDir:     strings.TrimSpace(req.WorkingDir),
-				Env:            req.Env,
-				EnvOverrides:   req.EnvOverrides,
-				TTLMillis:      req.TTLMillis,
-				Deadline:       req.Deadline,
-				IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
-				Reason:         firstNonEmptyString(strings.TrimSpace(req.ReleaseReason), strings.TrimSpace(req.Reason)),
-				MaxOutput:      req.MaxOutput,
+				BuildOperationID: req.BuildOperationID,
+				AccountScopeID:   accountScopeID,
+				WorkspaceID:      workspaceID,
+				Action:           action,
+				EnvironmentID:    firstNonEmptyString(strings.TrimSpace(req.EnvironmentID), strings.TrimSpace(req.ID)),
+				DeploymentID:     strings.TrimSpace(req.DeploymentID),
+				LeaseID:          strings.TrimSpace(req.LeaseID),
+				ConnectionID:     strings.TrimSpace(req.ConnectionID),
+				DeploymentName:   strings.TrimSpace(req.DeploymentName),
+				WorkspacePath:    workspacePath,
+				ConsumerType:     req.ConsumerType,
+				ConsumerID:       firstNonEmptyString(callerSessionID, strings.TrimSpace(req.ConsumerID)),
+				Command:          req.Command,
+				WorkingDir:       strings.TrimSpace(req.WorkingDir),
+				Env:              req.Env,
+				EnvOverrides:     req.EnvOverrides,
+				TTLMillis:        req.TTLMillis,
+				Deadline:         req.Deadline,
+				IdempotencyKey:   strings.TrimSpace(req.IdempotencyKey),
+				Reason:           firstNonEmptyString(strings.TrimSpace(req.ReleaseReason), strings.TrimSpace(req.Reason)),
+				MaxOutput:        req.MaxOutput,
 				Attribution: environments.OperationAttribution{
 					Actor:     callerActor,
 					SessionID: callerSessionID,
 				},
+			}
+			if callerSessionID != "" {
+				subReq.ConsumerType = environments.ConsumerTypeSession
+				subReq.ConsumerID = callerSessionID
+			} else {
+				subReq.ConsumerType = environments.ConsumerTypeCustom
+				subReq.ConsumerID = callerActor
+			}
+			if action == "build" {
+				subReq.WorkspacePath = ""
 			}
 			if req.TimeoutMS > 0 {
 				subReq.Timeout = time.Duration(req.TimeoutMS) * time.Millisecond
@@ -841,7 +883,7 @@ func (s *Server) handleEnvironments(w http.ResponseWriter, r *http.Request) {
 				if dep, found, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, op.DeploymentID); found {
 					resp["deployment"] = dep
 				}
-				if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease {
+				if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease && lease.ID == op.LeaseID && lease.ConsumerID == firstNonEmptyString(callerSessionID, callerActor) {
 					resp["lease"] = lease
 				}
 			}
@@ -1008,6 +1050,10 @@ type deploymentMutationRequest struct {
 }
 
 func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.authorizeEnvironmentHTTPSession(r, "", "manage_environments"); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
 	if s.deployments == nil {
 		writeError(w, http.StatusInternalServerError, errors.New("deployment service not configured"))
 		return
@@ -1036,7 +1082,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":               true,
 				"deployment":       dep,
-				"active_lease":     lease,
+				"active_lease":     publicEnvironmentLease(lease),
 				"has_active_lease": hasLease,
 			})
 			return
@@ -1068,7 +1114,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 		activeLeases := make(map[string]environments.DeploymentLease)
 		for _, dep := range list {
 			if lease, ok, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, dep.ID); ok {
-				activeLeases[dep.ID] = lease
+				activeLeases[dep.ID] = publicEnvironmentLease(lease)
 			}
 		}
 
@@ -1081,7 +1127,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req deploymentMutationRequest
-		if err := decodeJSON(r, &req); err != nil {
+		if err := decodeEnvironmentRequest(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -1094,14 +1140,14 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 
 		principal, _ := PrincipalFromRequest(r)
 		callerActor := principal.UserID
-		callerSessionID := ""
-		if req.SessionID != "" && s.sessions != nil {
-			if sess, found, _ := s.sessions.GetSession(strings.TrimSpace(req.SessionID)); found && sess.AccountScopeID == accountScopeID && sess.UserID == principal.UserID {
-				callerSessionID = sess.ID
-				if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
-					workspacePath = sess.WorktreeRootPath
-				}
-			}
+		sess, authErr := s.authorizeEnvironmentHTTPSession(r, req.SessionID, "manage_environments")
+		if authErr != nil {
+			writeError(w, http.StatusForbidden, authErr)
+			return
+		}
+		callerSessionID := sess.ID
+		if sess.WorktreeEnabled && strings.TrimSpace(sess.WorktreeRootPath) != "" {
+			workspacePath = sess.WorktreeRootPath
 		}
 
 		action := strings.ToLower(strings.TrimSpace(req.Action))
@@ -1134,6 +1180,13 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 				SessionID: callerSessionID,
 			},
 		}
+		if callerSessionID != "" {
+			subReq.ConsumerType = environments.ConsumerTypeSession
+			subReq.ConsumerID = callerSessionID
+		} else {
+			subReq.ConsumerType = environments.ConsumerTypeCustom
+			subReq.ConsumerID = callerActor
+		}
 		if req.TimeoutMS > 0 {
 			subReq.Timeout = time.Duration(req.TimeoutMS) * time.Millisecond
 		}
@@ -1155,7 +1208,7 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 			if dep, found, _ := s.deployments.GetDeployment(accountScopeID, workspaceID, op.DeploymentID); found {
 				resp["deployment"] = dep
 			}
-			if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease {
+			if lease, hasLease, _ := s.deployments.GetActiveLease(accountScopeID, workspaceID, op.DeploymentID); hasLease && lease.ID == op.LeaseID && lease.ConsumerID == firstNonEmptyString(callerSessionID, callerActor) {
 				resp["lease"] = lease
 			}
 		}
@@ -1168,4 +1221,26 @@ func (s *Server) handleDeployments(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+// Reject ambiguous multi-value payloads before any environment side effect.
+func decodeEnvironmentRequest(w http.ResponseWriter, r *http.Request, dest any) error {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dest); err != nil {
+		return err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return errors.New("exactly one JSON request required")
+	}
+	return nil
+}
+
+// Preserve the existing status DTO shape without publishing a usable receipt or
+// another consumer's task binding through generic discovery.
+func publicEnvironmentLease(lease environments.DeploymentLease) environments.DeploymentLease {
+	lease.ID = ""
+	lease.PreparedSource = nil
+	lease.TaskBinding = nil
+	return lease
 }

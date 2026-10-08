@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"encoding/json"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -110,7 +111,7 @@ func TestCalculateCostWithStatusNoBaselineFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set catalog: %v", err)
 	}
-	cost, status := store.CalculateCostWithStatus("google", "gemini-unpriced-experiment", 1_000_000, 1_000_000, 0, 0)
+	cost, status := store.CalculateCostWithStatus("google", "gemini-unpriced-experiment", 1_000_000, 1_000_000, 0, 0, 0)
 	if status != "unknown" || cost != 0.0 {
 		t.Fatalf("expected status unknown and cost 0.0 without fallback, got status=%s cost=%f", status, cost)
 	}
@@ -130,7 +131,7 @@ func TestCalculateCostWithStatusNoBaselineFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set catalog: %v", err)
 	}
-	cost, status = store.CalculateCostWithStatus("google", "gemini-priced-test", 1_000_000, 100_000, 0, 0)
+	cost, status = store.CalculateCostWithStatus("google", "gemini-priced-test", 1_000_000, 100_000, 0, 0, 0)
 	if status != "known" {
 		t.Fatalf("expected status known, got %s", status)
 	}
@@ -140,8 +141,90 @@ func TestCalculateCostWithStatusNoBaselineFallback(t *testing.T) {
 	}
 
 	// 3. Codex model: subscription status and 0.0 billed cost
-	cost, status = store.CalculateCostWithStatus("codex", "gpt-5.6-sol", 100_000, 10_000, 0, 0)
+	cost, status = store.CalculateCostWithStatus("codex", "gpt-5.6-sol", 100_000, 10_000, 0, 0, 0)
 	if status != "subscription" || cost != 0.0 {
 		t.Fatalf("expected codex subscription with cost 0.0, got status=%s cost=%f", status, cost)
+	}
+}
+
+// Purpose: catalog cost for Anthropic receipts must follow Anthropic's usage
+// semantics. Requirement: Anthropic input_tokens is the uncached remainder only,
+// cache reads bill at the cached rate, and cache writes bill at the catalog
+// cache_write_5m rate (the TTL the adapter requests). Threat: subtracting cache
+// reads from input_tokens and ignoring cache writes under-reports spend, which
+// hides real cost from the usage dashboard and budget holds. A receipt with cache
+// writes but no catalog write rate must not be reported as fully known.
+// Authority: SessionStore.CalculateCostWithStatus over ModelCatalogStore pricing.
+// Layer: a temporary Pebble store with a seeded catalog record is the narrowest
+// layer that exercises the real catalog lookup.
+func TestCalculateCostWithStatusAnthropicCacheSemantics(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "test-calc-anthropic.pebble"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	store := NewSessionStore(db)
+	catStore := NewModelCatalogStore(db)
+
+	pricedJSON, _ := json.Marshal(map[string]any{
+		"input_price_per_million_tokens":        4.0,
+		"output_price_per_million_tokens":       20.0,
+		"cached_input_price_per_million_tokens": 0.2,
+		"billing": map[string]any{"lines": []map[string]any{
+			{"variant": "standard_input", "price_usd": 4.0},
+			{"variant": "cache_write_5m", "price_usd": 5.0},
+			{"variant": "cache_write_1h", "price_usd": 8.0},
+		}},
+	})
+	if err := catStore.SetRecord(ModelCatalogRecord{Provider: "anthropic", Model: "claude-priced-test", Pricing: pricedJSON}); err != nil {
+		t.Fatalf("set catalog: %v", err)
+	}
+	// 10k uncached input, 2M cache read, 100k cache write, 50k output.
+	cost, status := store.CalculateCostWithStatus("anthropic", "claude-priced-test", 10_000, 50_000, 2_000_000, 100_000, 0)
+	if status != "known" {
+		t.Fatalf("status = %s, want known", status)
+	}
+	want := 0.04 + 0.40 + 0.50 + 1.00
+	if math.Abs(cost-want) > 1e-9 {
+		t.Fatalf("cost = %f, want %f", cost, want)
+	}
+
+	// Cache reads larger than input_tokens must not zero out the uncached input.
+	cost, _ = store.CalculateCostWithStatus("anthropic", "claude-priced-test", 10_000, 0, 2_000_000, 0, 0)
+	if want := 0.04 + 0.40; math.Abs(cost-want) > 1e-9 {
+		t.Fatalf("read-heavy cost = %f, want %f", cost, want)
+	}
+
+	noWriteRateJSON, _ := json.Marshal(map[string]any{
+		"input_price_per_million_tokens":        4.0,
+		"output_price_per_million_tokens":       20.0,
+		"cached_input_price_per_million_tokens": 0.2,
+	})
+	if err := catStore.SetRecord(ModelCatalogRecord{Provider: "anthropic", Model: "claude-no-write-rate", Pricing: noWriteRateJSON}); err != nil {
+		t.Fatalf("set catalog: %v", err)
+	}
+	cost, status = store.CalculateCostWithStatus("anthropic", "claude-no-write-rate", 10_000, 0, 0, 100_000, 0)
+	if status != "unknown" {
+		t.Fatalf("status without write rate = %s, want unknown", status)
+	}
+	if want := 0.04; math.Abs(cost-want) > 1e-9 {
+		t.Fatalf("partial cost without write rate = %f, want %f (writes must not be priced at a guess)", cost, want)
+	}
+	if _, status := store.CalculateCostWithStatus("anthropic", "claude-no-write-rate", 10_000, 0, 0, 0, 0); status != "known" {
+		t.Fatalf("status without cache writes = %s, want known", status)
+	}
+
+	// Providers whose prompt tokens include cache reads keep the subtraction.
+	googleJSON, _ := json.Marshal(map[string]any{
+		"input_price_per_million_tokens":        1.0,
+		"output_price_per_million_tokens":       1.0,
+		"cached_input_price_per_million_tokens": 0.1,
+	})
+	if err := catStore.SetRecord(ModelCatalogRecord{Provider: "google", Model: "gemini-cache-test", Pricing: googleJSON}); err != nil {
+		t.Fatalf("set catalog: %v", err)
+	}
+	cost, _ = store.CalculateCostWithStatus("google", "gemini-cache-test", 1_000_000, 0, 500_000, 0, 0)
+	if want := 0.5 + 0.05; math.Abs(cost-want) > 1e-9 {
+		t.Fatalf("google cost = %f, want %f", cost, want)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"swarm-refactor/swarmtui/internal/buildinfo"
 	"swarm-refactor/swarmtui/internal/client"
@@ -38,8 +39,12 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 				status, statusErr := a.api.GetOnboardingStatus(ctx)
 				if statusErr == nil {
 					next.OnboardingRequired = status.NeedsOnboarding
+					next.OnboardingIdentityBootstrapped = status.Identity.Bootstrapped
 					next.OnboardingUsername = strings.TrimSpace(status.Identity.Username)
 					next.OnboardingSwarmName = strings.TrimSpace(status.Config.SwarmName)
+				} else {
+					next.OnboardingRequired = true
+					next.OnboardingIdentityBootstrapped = false
 				}
 				next.OnboardingRequired = true
 				next.HintLine = "Required onboarding: create username + swarm name before using Swarm."
@@ -54,8 +59,13 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		return next, fmt.Errorf("onboarding status: %w", err)
 	}
 	next.OnboardingRequired = status.NeedsOnboarding
+	next.OnboardingIdentityBootstrapped = status.Identity.Bootstrapped
 	next.OnboardingUsername = strings.TrimSpace(status.Identity.Username)
 	next.OnboardingSwarmName = strings.TrimSpace(status.Config.SwarmName)
+	if next.OnboardingRequired && !next.OnboardingIdentityBootstrapped {
+		next.HintLine = "Required onboarding: create username + swarm name before using Swarm."
+		return next, nil
+	}
 	if vault, err := a.api.GetVaultStatus(ctx); err == nil {
 		a.vault = vault
 		if vault.Enabled && !vault.Unlocked {
@@ -194,17 +204,90 @@ func (a *App) refreshHomeV3Model(ctx context.Context) (model.HomeModel, error) {
 		}
 	}
 
+	if projects, err := a.api.ListProjects(ctx); err == nil && len(projects) > 0 {
+		next.Projects = projects
+		var activeProj *client.ProjectRecord
+		if strings.TrimSpace(a.activeProjectID) != "" {
+			for i := range projects {
+				if projects[i].ID == a.activeProjectID {
+					activeProj = &projects[i]
+					break
+				}
+			}
+		}
+		if activeProj == nil && selectedPath != "" {
+			for i := range projects {
+				for _, ws := range projects[i].Workspaces {
+					if pathsEqual(ws.Path, selectedPath) {
+						activeProj = &projects[i]
+						break
+					}
+				}
+				if activeProj != nil {
+					break
+				}
+			}
+		}
+		if activeProj == nil {
+			activeProj = &projects[0]
+		}
+		a.activeProjectID = activeProj.ID
+		next.ActiveProjectID = activeProj.ID
+		next.ActiveProjectName = activeProj.Name
+		primarySessID := strings.TrimSpace(activeProj.PrimarySessionID)
+		if primarySessID == "" {
+			if sessList, err := a.api.ListProjectSessions(ctx, activeProj.ID); err == nil && len(sessList) > 0 {
+				primarySessID = strings.TrimSpace(sessList[0].ID)
+				if primarySessID != "" {
+					projID := activeProj.ID
+					go func() {
+						bgCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+						defer cancel()
+						_, _ = a.api.UpdateProject(bgCtx, projID, map[string]any{"primary_session_id": primarySessID})
+					}()
+				}
+			}
+		}
+		next.ActiveProjectPrimarySessionID = primarySessID
+
+		if tasks, err := a.api.ListProjectTasks(ctx, activeProj.ID); err == nil {
+			next.ProjectTasks = tasks
+		}
+	}
+	if !next.AuthConfigured {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingProvider = true
+	}
+	if len(next.Workspaces) == 0 {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingWorkspace = true
+	} else {
+		hasActive := false
+		for i := range next.Workspaces {
+			if next.Workspaces[i].Active {
+				hasActive = true
+				break
+			}
+		}
+		if !hasActive {
+			next.Workspaces[0].Active = true
+		}
+	}
+
 	next.QuickActions = homeQuickActions(next)
 	switch {
 	case activeWorkspaceIndex(next.Workspaces) < 0 && !next.AuthConfigured:
 		next.HintLine = "Choose a workspace and configure auth to start"
 		next.TipLine = "/workspace  •  /auth"
-	case activeWorkspaceIndex(next.Workspaces) < 0:
+	case activeWorkspaceIndex(next.Workspaces) < 0 && next.ActiveProjectID == "":
 		next.HintLine = "Choose a workspace to start"
 		next.TipLine = "/workspace"
 	case !next.AuthConfigured:
 		next.HintLine = "Auth is missing, run /auth"
 		next.TipLine = "/auth"
+	case next.ActiveProjectID != "":
+		next.HintLine = fmt.Sprintf("Project: %s · Type to plan or press Enter on a task", next.ActiveProjectName)
+		next.TipLine = "Ctrl+X: Sessions  •  Alt+W: Switch Project  •  ↑/↓: Select Task"
 	default:
 		next.HintLine = ""
 		next.TipLine = ""

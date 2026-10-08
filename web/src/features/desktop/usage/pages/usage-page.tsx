@@ -25,7 +25,7 @@ import { UsageSessionsTable } from '../components/usage-sessions-table'
 export type UsageTabID = 'overview' | 'providers' | 'models' | 'media' | 'sessions'
 export type UsageTimeRange = 'today' | '7d' | '30d' | '90d' | 'all'
 
-export function UsagePage() {
+export function UsagePage({ embedded = false }: { embedded?: boolean }) {
   const params = useParams({ strict: false }) as { workspaceSlug?: string }
   const navigate = useNavigate()
 
@@ -131,21 +131,21 @@ export function UsagePage() {
   )
 
   return (
-    <div className="absolute inset-0 overflow-y-auto bg-[var(--app-bg)] text-[var(--app-text)]">
+    <div className={`${embedded ? 'min-h-0 w-full flex-1' : 'absolute inset-0'} overflow-y-auto bg-[var(--app-bg)] text-[var(--app-text)]`}>
       <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-6 sm:px-8 sm:py-8 space-y-6">
         {/* Top Header */}
-        <header className="flex flex-col gap-4 border-b border-[var(--app-border)] pb-5 sm:flex-row sm:items-center sm:justify-between">
+        <header className={`flex flex-col gap-4 border-b border-[var(--app-border)] pb-5 ${embedded ? '' : 'sm:flex-row sm:items-center sm:justify-between'}`}>
           <div className="min-w-0">
-            <Button
+            {!embedded && <Button
               variant="ghost"
               className="mb-2 h-8 px-2 text-xs text-[var(--app-text-muted)]"
               onClick={handleBack}
             >
               <ArrowLeft size={14} className="mr-1.5" />
               {workspaceSlug ? 'Back to workspace' : 'Back to launcher'}
-            </Button>
+            </Button>}
             <div className="flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-primary)] shadow-sm">
+              <span className="grid size-10 shrink-0 place-items-center rounded-2xl border border-[var(--app-border)] bg-[var(--app-surface)] text-[var(--app-primary)] shadow-sm">
                 <Coins size={20} strokeWidth={1.8} />
               </span>
               <div>
@@ -220,22 +220,24 @@ export function UsagePage() {
 
         {/* Loading / Error State */}
         {isLoading && !data && (
-          <div className="flex h-64 flex-col items-center justify-center gap-3 text-xs text-[var(--app-text-muted)]">
+          <div role="status" className="flex h-64 flex-col items-center justify-center gap-3 text-xs text-[var(--app-text-muted)]">
             <Loader2 size={24} className="animate-spin text-[var(--app-primary)]" />
             <span>Analyzing session usage telemetry...</span>
           </div>
         )}
 
         {error && (
-          <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-600 dark:text-red-400">
+          <div role="alert" className="rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-xs text-red-600 dark:text-red-400">
             Failed to load usage statistics: {error instanceof Error ? error.message : String(error)}
+            <Button variant="ghost" size="sm" disabled={isFetching} onClick={() => void refetch()}>Retry usage</Button>
           </div>
         )}
 
         {data && (
           <>
+            {data.summary.total_turns === 0 && data.summary.total_tokens === 0 && data.summary.total_media_calls === 0 && <p role="status" className="text-sm text-[var(--app-text-muted)]">No usage recorded for this period.</p>}
             {/* KPI Summary Cards */}
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <div className={`grid grid-cols-2 gap-3 ${embedded ? '' : 'lg:grid-cols-5'}`}>
               {/* Card 1: Total Billed Cost */}
               <Card className="p-4 space-y-1">
                 <span className="text-[11px] font-medium text-[var(--app-text-muted)]">
@@ -300,7 +302,7 @@ export function UsagePage() {
               </Card>
 
               {/* Card 5: Sessions & Turns */}
-              <Card className="col-span-2 sm:col-span-2 lg:col-span-1 p-4 space-y-1">
+              <Card className={`col-span-2 ${embedded ? '' : 'lg:col-span-1'} p-4 space-y-1`}>
                 <span className="text-[11px] font-medium text-[var(--app-text-muted)]">
                   Activity
                 </span>

@@ -321,6 +321,7 @@ export interface SessionRecord {
 
 export interface CreateSessionParams {
   title?: string;
+  project_id?: string;
   workspace_id?: string;
   workspace_path?: string;
   agent_name?: string;
@@ -333,6 +334,7 @@ export interface CreateSessionParams {
 export interface ListSessionsParams {
   limit?: number;
   state?: string;
+  project_id?: string;
   workspace_id?: string;
   category?: 'video' | 'needs_review' | 'blocked' | 'in_progress' | 'active_chats' | 'archived';
   cursor?: string;
@@ -497,7 +499,16 @@ export interface ProjectTaskMediaRef {
   created_at?: number;
 }
 
+export interface ProjectContextGeneration {
+  status: 'pending' | 'running' | 'ready' | 'failed';
+  attempt: number;
+  lease_until?: number;
+  error?: string;
+  router_alert?: string;
+}
+
 export interface ProjectRecord {
+  context_generation?: ProjectContextGeneration;
   id: string;
   account_id?: string;
   name: string;
@@ -513,6 +524,8 @@ export interface ProjectRecord {
 }
 
 export interface CreateProjectParams {
+  /** Reuse this key with the same input after a lost creation response. */
+  client_request_id?: string;
   id?: string;
   name: string;
   description?: string;
@@ -1062,6 +1075,7 @@ export interface WorkerRevisionRecord {
 }
 
 export interface WorkerRunRecord {
+  placement?: import('./worker-control.js').WorkerRunPlacement;
   cancel_requested?: boolean;
   id: string;
   account_scope_id: string;

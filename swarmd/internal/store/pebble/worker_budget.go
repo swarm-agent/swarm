@@ -210,7 +210,7 @@ func (s *SessionStore) checkWorkerBudgetAdmissionLocked(account, worker string) 
 // This is a stop-before-next-call control, not an invoice-hard cap: an already
 // admitted provider operation can overshoot before its genuine receipt arrives.
 func (s *SessionStore) CheckWorkerSessionBudget(account, sessionID, provider, model string, operationIDs ...string) error {
-	_, status := s.CalculateCostWithStatus(provider, model, 1, 1, 0, 0)
+	_, status := s.CalculateCostWithStatus(provider, model, 1, 1, 0, 0, 0)
 	return s.CheckWorkerSessionBudgetWithPrice(account, sessionID, status, operationIDs...)
 }
 

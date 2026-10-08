@@ -12,35 +12,38 @@ import (
 // ProjectTaskAttempt records a coordinator reservation, not a copy of its transcript.
 // Zero legacy timestamps mean unknown; migration never dates old feedback.
 type ProjectTaskAttempt struct {
-	ID              string                     `json:"id"`
-	ClientRequestID string                     `json:"client_request_id,omitempty"`
-	PayloadHash     string                     `json:"payload_hash,omitempty"`
-	RequestRevision int                        `json:"request_revision,omitempty"`
-	UserID          string                     `json:"user_id,omitempty"`
-	Request         string                     `json:"request,omitempty"`
-	SessionID       string                     `json:"session_id"`
-	RunID           string                     `json:"run_id,omitempty"`
-	Role            string                     `json:"role"`
-	CreatedAt       int64                      `json:"created_at,omitempty"`
-	Status          string                     `json:"status"`
-	LaunchState     string                     `json:"launch_state,omitempty"`
-	LastError       string                     `json:"last_error,omitempty"`
-	Summary         string                     `json:"summary,omitempty"`
-	SummaryRunID    string                     `json:"summary_run_id,omitempty"`
-	Recovery        *ProjectTaskRecoverySource `json:"recovery,omitempty"`
-	PlanBinding     *ProjectTaskPlanBinding    `json:"plan_binding,omitempty"`
-	TaskProgramID   string                     `json:"task_program_id,omitempty"`
-	Deliverables    []ProjectTaskDeliverable   `json:"deliverables,omitempty"`
-	Integration     *ProjectTaskIntegration    `json:"integration,omitempty"`
-	WorkspacePath   string                     `json:"workspace_path,omitempty"`
-	WorktreeBranch  string                     `json:"worktree_branch,omitempty"`
-	BaseBranch      string                     `json:"base_branch,omitempty"`
-	BaseCommit      string                     `json:"base_commit,omitempty"`
-	AllocationHead  string                     `json:"allocation_head,omitempty"`
+	ID                      string                              `json:"id"`
+	ClientRequestID         string                              `json:"client_request_id,omitempty"`
+	PayloadHash             string                              `json:"payload_hash,omitempty"`
+	RequestRevision         int                                 `json:"request_revision,omitempty"`
+	UserID                  string                              `json:"user_id,omitempty"`
+	Request                 string                              `json:"request,omitempty"`
+	SessionID               string                              `json:"session_id"`
+	RunID                   string                              `json:"run_id,omitempty"`
+	Role                    string                              `json:"role"`
+	CreatedAt               int64                               `json:"created_at,omitempty"`
+	Status                  string                              `json:"status"`
+	LaunchState             string                              `json:"launch_state,omitempty"`
+	LastError               string                              `json:"last_error,omitempty"`
+	Summary                 string                              `json:"summary,omitempty"`
+	SummaryRunID            string                              `json:"summary_run_id,omitempty"`
+	Recovery                *ProjectTaskRecoverySource          `json:"recovery,omitempty"`
+	RepositoryContinuations []ProjectTaskRepositoryContinuation `json:"repository_continuations,omitempty"`
+	PlanBinding             *ProjectTaskPlanBinding             `json:"plan_binding,omitempty"`
+	TaskProgramID           string                              `json:"task_program_id,omitempty"`
+	Deliverables            []ProjectTaskDeliverable            `json:"deliverables,omitempty"`
+	Integration             *ProjectTaskIntegration             `json:"integration,omitempty"`
+	WorkspacePath           string                              `json:"workspace_path,omitempty"`
+	WorktreeBranch          string                              `json:"worktree_branch,omitempty"`
+	BaseBranch              string                              `json:"base_branch,omitempty"`
+	BaseCommit              string                              `json:"base_commit,omitempty"`
+	AllocationHead          string                              `json:"allocation_head,omitempty"`
 }
 
 // ProjectTaskRecoverySource is backend-inspected Git evidence, never UI grants.
 type ProjectTaskRecoverySource struct {
+	// Empty kind is the historical failed-integration repair contract.
+	Kind          string `json:"kind,omitempty"`
 	SessionID     string `json:"session_id"`
 	WorkspacePath string `json:"workspace_path"`
 	Branch        string `json:"branch"`
@@ -48,6 +51,8 @@ type ProjectTaskRecoverySource struct {
 	BaseCommit    string `json:"base_commit"`
 	TargetBranch  string `json:"target_branch"`
 	TargetHead    string `json:"target_head"`
+	PreparedHead  string `json:"prepared_head,omitempty"`
+	PreparedRef   string `json:"prepared_ref,omitempty"`
 }
 
 // EnsureTaskAttempts is an idempotent, evidence-only upgrade of single-session tasks.
@@ -100,14 +105,38 @@ func (s *SessionStore) ReserveTaskFollowup(account, project, taskID, user, key, 
 	return s.ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request, revision, now, nil)
 }
 
-func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource) (*ProjectTaskRecord, error) {
+func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource, origins ...string) (*ProjectTaskRecord, error) {
+	return s.ReserveTaskFollowupWithRepositories(account, project, taskID, user, key, request, revision, now, recovery, nil, origins...)
+}
+
+func (s *SessionStore) ReserveTaskFollowupWithRepositories(account, project, taskID, user, key, request string, revision int, now int64, recovery *ProjectTaskRecoverySource, repositories []ProjectTaskRepositoryContinuation, origins ...string) (*ProjectTaskRecord, error) {
 	if strings.TrimSpace(user) == "" || strings.TrimSpace(key) == "" || len(key) > 128 {
 		return nil, errors.New("user and bounded client_request_id required")
 	}
 	if strings.TrimSpace(request) == "" || len(request) > 32000 {
 		return nil, errors.New("feedback must contain 1-32000 bytes; no truncation is performed")
 	}
-	payload, _ := json.Marshal([]any{user, request, revision, recovery != nil})
+	origin := ""
+	if len(origins) > 0 {
+		origin = origins[0]
+	}
+	if origin != "" {
+		parent, found, err := s.GetSession(origin)
+		if err != nil {
+			return nil, err
+		}
+		if !found || ProjectConversationID(parent) != project {
+			return nil, errors.New("follow-up origin conversation unavailable")
+		}
+		if err := s.ValidateProjectConversation(parent, account, user); err != nil {
+			return nil, err
+		}
+	}
+	values := []any{user, request, revision, recovery != nil && recovery.Kind != "retained_continuation"}
+	if origin != "" {
+		values = append(values, origin)
+	}
+	payload, _ := json.Marshal(values)
 	sum := sha256.Sum256(payload)
 	hash := hex.EncodeToString(sum[:])
 	identity := sha256.Sum256([]byte(account + "\x00" + project + "\x00" + taskID + "\x00" + key))
@@ -127,6 +156,14 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 			if a.ID != t.ActiveAttemptID {
 				return errors.New("follow-up is historical; retrieve history instead of relaunching")
 			}
+			sources, err := s.ResolveTaskFollowupSources(t, user)
+			if err != nil {
+				return err
+			}
+			if !equalTaskRepositoryContinuations(a.RepositoryContinuations, repositories) {
+				return errors.New("retry repository continuation evidence changed")
+			}
+			t.ProgramSources = sources
 			return nil
 		}
 		if t.Status == "in_progress" && t.SessionID != "" {
@@ -143,8 +180,17 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 				}
 			}
 		}
-		if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed") {
+		if t.Archived || (t.Status != "needs_review" && t.Status != "completed" && t.Status != "failed" && t.Status != "blocked") {
 			return errors.New("task is running or requires structured review; follow-up rejected without mutation")
+		}
+		if t.Status == "blocked" {
+			sess, found, err := s.GetSession(t.SessionID)
+			if err != nil {
+				return err
+			}
+			if !found || sess.AccountScopeID != account || sess.Metadata["lifecycle_signal"] != "blocked" || sess.Metadata["lifecycle_signal_run_id"] != t.ExecutionRunID() {
+				return errors.New("blocked task requires structured lifecycle resolution")
+			}
 		}
 		if revision <= 0 || revision != t.Revision {
 			return errors.New("stale or missing task revision")
@@ -194,17 +240,58 @@ func (s *SessionStore) ReserveTaskFollowupWithRecovery(account, project, taskID,
 		if recovery != nil && (recovery.SessionID != t.SessionID || recovery.WorkspacePath != t.WorkspacePath || recovery.Branch != t.WorktreeBranch || recovery.BaseCommit != t.BaseCommit || recovery.TargetBranch != t.BaseBranch || recovery.HeadCommit == "" || recovery.HeadCommit == recovery.BaseCommit || recovery.TargetHead == "") {
 			return errors.New("repair evidence does not match originating task attempt")
 		}
+		if recovery != nil && recovery.Kind != "" && recovery.Kind != "retained_continuation" {
+			return errors.New("unknown follow-up source provenance")
+		}
+		sources, err := s.ResolveTaskFollowupSources(t, user)
+		if err != nil {
+			return err
+		}
+		if len(repositories) > 64 {
+			return errors.New("repository continuation inventory exceeds bound")
+		}
+		seenRepositories := map[string]bool{}
+		for _, retained := range repositories {
+			if seenRepositories[retained.Source.Path] {
+				return errors.New("duplicate repository continuation")
+			}
+			seenRepositories[retained.Source.Path] = true
+			admitted := retained.Source.SameIdentity(t.SourceWorkspace)
+			for _, source := range sources {
+				admitted = admitted || retained.Source.SameIdentity(source)
+			}
+			if !admitted {
+				return errors.New("repository continuation source is not admitted")
+			}
+			if _, err := s.AuthenticateTaskRepositoryContinuation(t, user, retained); err != nil {
+				return err
+			}
+		}
 		t.CaptureActiveAttempt()
-		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: "reserved", Recovery: recovery}
+		if origin != "" {
+			t.OriginSessionID = origin
+		}
+		a := ProjectTaskAttempt{ID: id, ClientRequestID: key, PayloadHash: hash, RequestRevision: revision, UserID: user, Request: request, SessionID: "task-followup-" + id, RunID: "desktop-v3-run:task-followup-" + id, Role: "swarm", CreatedAt: now, Status: "in_progress", LaunchState: "reserved", Recovery: recovery, RepositoryContinuations: append([]ProjectTaskRepositoryContinuation(nil), repositories...)}
 		t.Attempts = append(t.Attempts, a)
 		t.ActiveAttemptID, t.SessionID, t.Status, t.Agent = id, a.SessionID, "in_progress", "swarm"
 		t.WorkspacePath = t.SourceWorkspace.Path
 		t.WorktreeBranch, t.WorktreeName, t.BaseBranch, t.BaseCommit = "agent/followup-"+id, "followup-"+id, "", ""
+		if recovery != nil {
+			// Persist source and destination atomically with the reservation, before
+			// allocation. BaseCommit remains the integration delta base, not HEAD.
+			t.BaseBranch, t.BaseCommit = recovery.TargetBranch, recovery.BaseCommit
+			t.ActiveAttempt().AllocationHead = recovery.HeadCommit
+			if recovery.PreparedHead != "" {
+				t.BaseCommit = recovery.TargetHead
+				t.ActiveAttempt().AllocationHead = recovery.PreparedHead
+			}
+		}
 		t.PlanBinding, t.PlanDocument, t.TaskProgram, t.TaskProgramStatus = nil, nil, nil, nil
 		t.TaskProgramID, t.FullPlanMarkdown, t.PlanSummary, t.FeatureSize = "", "", "", "small"
 		t.OutcomeType, t.Tier = "general", "direct"
 		t.WorkerID, t.WorkerName, t.WorkerRunID, t.AutomationID = "", "", "", ""
-		t.ProgramSources = nil
+		// Carry only authenticated source identities, not prior execution bindings.
+		t.ProgramSources = sources
 		t.CoderAssignments = nil
 		t.Model, t.Provider, t.Thinking, t.ServiceTier, t.ContextMode = "", "", "", "", ""
 		t.IsIntegrated, t.IsDirty = false, false

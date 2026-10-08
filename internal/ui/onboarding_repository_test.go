@@ -26,9 +26,10 @@ func TestOnboardingVisibleControlsAndFrozenConsent(t *testing.T) {
 	p.ShowOnboardingProvider("")
 	p.HandleKey(tcell.NewEventKey(tcell.KeyTab, 0, 0))
 	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))
-	if !p.OnboardingWorkspaceActive() {
+	if !p.OnboardingProjectActive() && !p.OnboardingWorkspaceActive() {
 		t.Fatal("focusable skip failed")
 	}
+	p.ShowOnboardingWorkspace("")
 	p.SetOnboardingWorkspaceGuidance("worker", "/projects/new")
 	focusRepositoryControl(p, "new")
 	p.HandleKey(tcell.NewEventKey(tcell.KeyEnter, 0, 0))

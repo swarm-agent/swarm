@@ -18,7 +18,6 @@ Default suites:
   installed-normal-user   installed sudo-assisted human account and preservation
   desktop       real Desktop /new, /task, worktree, Plan-to-Auto lifecycle gate
   tui           real TUI /new, /task, worktree, and Plan launch gate
-  plan-auto     API Plan-to-Auto two-checkpoint lifecycle runner
   task-routing  API /task Auto/Plan routing from current, explicit saved, and existing sessions
   task-program  live same/linked-repo Task Programs across both parent modes
   provider-sync signed sync/realtime repair plus one real provider response
@@ -90,7 +89,7 @@ source "${ROOT_DIR}/scripts/lib-testbench-e2e.sh"
 # shellcheck source=scripts/lib-launch-prerun.sh
 source "${ROOT_DIR}/scripts/lib-launch-prerun.sh"
 
-DEFAULT_SUITES=(critical onboarding installed-new-user installed-existing-user installed-normal-user desktop tui plan-auto task-routing task-program provider-sync)
+DEFAULT_SUITES=(critical onboarding installed-new-user installed-existing-user installed-normal-user desktop tui task-routing task-program provider-sync)
 ALL_SUITES=("${DEFAULT_SUITES[@]}" omarchy-install attach-inspect workspace-routing workspace-workers workspace-safety workspace-browser)
 ATTACH_URL=""
 WALL_SECONDS=600
@@ -171,6 +170,7 @@ contains() {
 
 for suite in "${SELECTED[@]}" "${SKIPPED[@]}"; do
   [[ -n "${suite}" ]] || continue
+  [[ "${suite}" != plan-auto && "${suite}" != basic-plan-auto ]] || fail "${suite} is retired; choose an explicit supported suite with --list-suites; no replacement is selected"
   suite_known "${suite}" || fail "unknown suite ${suite}; use --list-suites"
 done
 
@@ -209,7 +209,7 @@ else
   done
   NEEDS_TESTBENCH=false
   for suite in "${SUITES[@]}"; do
-    case "$suite" in desktop|tui|plan-auto|task-routing|task-program|provider-sync) NEEDS_TESTBENCH=true ;; esac
+    case "$suite" in desktop|tui|task-routing|task-program|provider-sync) NEEDS_TESTBENCH=true ;; esac
   done
   if [[ "$NEEDS_TESTBENCH" == true ]]; then
     swarm_testbench_load_env "${ROOT_DIR}" || exit 1
@@ -274,10 +274,6 @@ suite_command() {
       ;;
     tui)
       built=("${ROOT_DIR}/scripts/run-testbench-tui-launch-e2e.sh" --timeout-seconds "${TUI_TIMEOUT_SECONDS}")
-      ;;
-    plan-auto)
-      runner_args args
-      built=("${ROOT_DIR}/scripts/run-testbench-runner.sh" basic-plan-auto "${args[@]}")
       ;;
     task-routing)
       runner_args args

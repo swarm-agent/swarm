@@ -29,6 +29,24 @@ PREFIX = 'SWARM_LOCAL_TESTBENCH_'
 TOOLS = ('git', 'systemd-run', 'systemctl', 'systemd-nspawn', 'systemd-socket-activate',
          'mount', 'umount')
 PROXY_HELPER = '/usr/lib/systemd/systemd-socket-proxyd'
+# Shared by first deployment and state-preserving resume: /run is volatile.
+GUEST_START = r'''phase daemon-start
+exec 2>/exchange/startup-error
+id swarm >/dev/null
+mkdir -p /run/swarmd /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /var/lib/swarm
+chmod 700 /run/swarmd /etc/swarmd /var/lib/swarmd /var/cache/swarmd
+usermod -d /var/lib/swarm swarm
+chown swarm:swarm /var/lib/swarm
+chown swarm:swarm /run/swarmd /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd
+runuser -u swarm -- test -x /out/swarmd
+runuser -u swarm -- test -r /out/libfff_c.so
+runuser -u swarm -- test -r /candidate/source/web/dist/index.html
+runuser -u swarm -- test -w /var/lib/swarmd
+socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
+socat UNIX-LISTEN:/exchange/desktop.sock,fork,mode=0600 TCP:127.0.0.1:5655 &
+runuser -u swarm -- env HOME=/var/lib/swarm LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source 2>/exchange/startup-error
+'''
+
 # No source checkout, home, database, or host manager socket is mounted.
 # Build/install is deliberately in the guest; dependency caches must be in base.
 GUEST = r'''set -Eeuo pipefail
@@ -73,16 +91,26 @@ cd /candidate/source/web
 phase web-build
 build_step pnpm run build
 export LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist
-phase daemon-start
-socat UNIX-LISTEN:/exchange/api.sock,fork,mode=0600 TCP:127.0.0.1:7881 &
-socat UNIX-LISTEN:/exchange/desktop.sock,fork,mode=0600 TCP:127.0.0.1:5655 &
-id swarm >/dev/null
-mkdir -p /var/lib/swarm
-usermod -d /var/lib/swarm swarm
-chown swarm:swarm /var/lib/swarm
-chown -R swarm:swarm /candidate /out /run/swarmd /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd
-runuser -u swarm -- env HOME=/var/lib/swarm LD_LIBRARY_PATH=/out SWARM_WEB_DIST_DIR=/candidate/source/web/dist /out/swarmd --listen 127.0.0.1:7881 --desktop-port 5655 --cwd /candidate/source 2>/exchange/startup-error
-'''
+# Initial materialization only; a preserved source may contain unmapped file owners.
+chown -R swarm:swarm /candidate /out /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd
+''' + GUEST_START
+
+GUEST_RESUME = r'''set -Eeuo pipefail
+umask 077
+phase() { current_phase=$1; printf '%s\n' "$1" > /exchange/phase; }
+trap 'printf "failed-%s\n" "$current_phase" > /exchange/phase' ERR
+exec 2>/exchange/startup-error
+phase source
+export TMPDIR=/var/tmp HOME=/root
+export SWARMD_DATA_DIR=/var/lib/swarmd SWARMD_CACHE_DIR=/var/cache/swarmd
+export SWARMD_RUNTIME_DIR=/run/swarmd SWARMD_CONFIG_DIR=/etc/swarmd SWARMD_LOG_DIR=/var/log/swarmd
+# Never fetch, checkout, build, reset state, or replace encryption identity on resume.
+test "$(git -c safe.directory=/candidate/source -C /candidate/source rev-parse HEAD)" = "$CANDIDATE_HEAD"
+if [[ -S /run/media-provider.sock ]]; then
+    socat TCP-LISTEN:18799,bind=127.0.0.1,reuseaddr,fork,max-children=8 UNIX-CONNECT:/run/media-provider.sock &
+    export HTTPS_PROXY=http://127.0.0.1:18799 HTTP_PROXY=http://127.0.0.1:18799 NO_PROXY=127.0.0.1,localhost
+fi
+''' + GUEST_START
 
 
 class Commands:
@@ -521,7 +549,7 @@ class NspawnRuntime:
         except OSError:
             pass
 
-    def wait_ready(self, record, lane):
+    def wait_ready(self, record, lane, private_diagnostics=False):
         deadline = time.monotonic() + self.settings.deadline
         next_touch = 0
         while time.monotonic() < deadline:
@@ -541,7 +569,8 @@ class NspawnRuntime:
                     pass
                 print('local testbench: phase=' + phase, file=sys.stderr, flush=True)
                 if phase == 'failed' or phase.startswith('failed-'):
-                    self.print_failure_diagnostic(record)
+                    if not private_diagnostics:
+                        self.print_failure_diagnostic(record)
                     raise PoolError('guest build failed at ' + phase)
                 next_touch = now + 10
             values = self.show(self.units(record)[0])
@@ -554,7 +583,8 @@ class NspawnRuntime:
                 except OSError:
                     pass
                 if phase.startswith('failed-') or phase in {'prebuild', 'go-build', 'web-build', 'daemon-start'}:
-                    self.print_failure_diagnostic(record)
+                    if not private_diagnostics:
+                        self.print_failure_diagnostic(record)
                 raise PoolError('candidate unit stopped at ' + phase + ': load=' + values.get('LoadState', 'missing') + ' active=' + values.get('ActiveState', 'missing'))
             ready = True
             for endpoint in ('api', 'desktop'):
@@ -573,6 +603,92 @@ class NspawnRuntime:
                 return
             time.sleep(0.5)
         raise PoolError('candidate build/start deadline exceeded')
+
+    def suspend(self, lane, generation):
+        """Stop only the owned guest unit, retaining image, proxies and receipts."""
+        with self.exclusive():
+            record = self.pool.status(lane, generation)
+            if record['state'] != 'ready' or self.inspect(record) != 'owned':
+                raise PoolError('retained ready generation with exact runtime ownership required')
+            unit = self.units(record)[0]
+            if self.unit_state(record, unit) == 'owned':
+                self.commands.run(['systemctl', 'stop', unit], timeout=20)
+            values = self.show(unit)
+            if values.get('LoadState') != 'not-found' and values.get('ActiveState') != 'inactive':
+                raise PoolError('guest stop not confirmed; image retained')
+            return dict(self.pool.touch(lane, generation), image_preserved=True, guest='stopped')
+
+    def resume(self, lane, generation, head, provider_socket=None):
+        """Start an already stopped owned image; never allocate, rebuild or clean it.
+
+        The owner remains the original Lane even when trusted tooling is invoked
+        from a repair worktree. Expected source HEAD is separately checked inside.
+        """
+        if not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', head or ''):
+            raise PoolError('full expected guest HEAD required')
+        binds = []
+        if provider_socket:
+            path = Path(provider_socket)
+            if (not path.is_absolute() or path.resolve(strict=True) != path
+                    or ':' in str(path) or any(c.isspace() for c in str(path))
+                    or not stat.S_ISSOCK(path.lstat().st_mode)):
+                raise PoolError('canonical provider UNIX socket required')
+            for parent in (path, *path.parents):
+                info = parent.stat()
+                if info.st_uid != 0 or info.st_mode & 0o022:
+                    raise PoolError('provider socket and parents must be root-owned and non-writable')
+            binds = ['--bind-ro=' + str(path) + ':/run/media-provider.sock:idmap']
+        with self.exclusive():
+            record = self.pool.status(lane, generation)
+            manifest = self.read_manifest(record)
+            if record['state'] != 'ready' or manifest is None or self.inspect(record) != 'owned':
+                raise PoolError('retained ready generation with exact runtime ownership required')
+            unit = self.units(record)[0]
+            if self.show(unit).get('ActiveState') not in {'inactive', 'failed'} and self.show(unit).get('LoadState') != 'not-found':
+                raise PoolError('resume requires stopped guest; concurrent daemon refused')
+            name, root = self.name(record), Path(self.pool.config.root)
+            image = root / (name + '.raw')
+            info = image.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size != self.pool.config.disk_mb * 1048576:
+                raise PoolError('retained bounded regular image required')
+            exchange = root / (name + '.exchange')
+            if exchange.is_symlink() or not os.path.ismount(exchange):
+                raise PoolError('existing bounded exchange mount required')
+            # Validate all entries before removing only obsolete endpoint sockets.
+            for endpoint in ('api.sock', 'desktop.sock'):
+                path = exchange / endpoint
+                if os.path.lexists(path) and not stat.S_ISSOCK(path.lstat().st_mode):
+                    raise PoolError('unexpected retained endpoint type')
+            for endpoint in ('phase', 'startup-error'):
+                path = exchange / endpoint
+                if os.path.lexists(path) and not stat.S_ISREG(path.lstat().st_mode):
+                    raise PoolError('unexpected diagnostic entry type')
+            self.pool.touch(lane, generation)
+            for endpoint in ('api.sock', 'desktop.sock'):
+                (exchange / endpoint).unlink(missing_ok=True)
+            (exchange / 'phase').write_text('source\n')
+            argv = self.start_args(record, unit) + [
+                'systemd-nspawn', '--quiet', '--settings=no', '--register=no', '--keep-unit',
+                '--machine=' + name, '--image=' + str(image), '--private-network',
+                '--private-users=pick', '--private-users-ownership=map', '--link-journal=no',
+                '--as-pid2', '--console=pipe', '--setenv=CANDIDATE_HEAD=' + head,
+                '--bind=' + str(exchange) + ':/exchange:idmap'] + binds + ['/bin/bash', '-c', GUEST_RESUME]
+            self.commands.run(argv)
+            # Authenticated preserved guests may log private data. Keep diagnostics
+            # bounded and private; do not echo arbitrary provider output to callers.
+            self.wait_ready(record, lane, private_diagnostics=True)
+            for index in range(2):
+                proxy = self.units(record)[index + 1]
+                values = self.show(proxy)
+                if values.get('LoadState') == 'not-found':
+                    self.commands.run(self.proxy_args(record, index))
+                    values = self.show(proxy)
+                if values.get('Description') != self.description(record) or values.get('ActiveState') != 'active':
+                    raise PoolError('endpoint inactive or ownership changed; retained image preserved')
+            record = self.pool.status(lane, generation)
+            return dict(record, expected_guest_head=head, original_deployment_head=manifest['head'],
+                        image_preserved=True, api_url='http://127.0.0.1:' + str(self.ports(record)[0]),
+                        desktop_url='http://127.0.0.1:' + str(self.ports(record)[1]))
 
     def deploy(self, lane, head, prebuild_script=None, browser_directory=None):
         if prebuild_script is not None:
@@ -651,16 +767,20 @@ def validate_prebuild_script(path, lane, head, commands):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['doctor', 'deploy', 'status', 'pool-status', 'touch', 'stop', 'reap', 'supervise'])
+    parser.add_argument('action', choices=['doctor', 'deploy', 'suspend', 'resume', 'status', 'pool-status', 'touch', 'stop', 'reap', 'supervise'])
     parser.add_argument('--env-file', required=True)
     parser.add_argument('--worktree', default=os.getcwd())
     parser.add_argument('--generation')
+    parser.add_argument('--expected-guest-head', help='Full source HEAD already in the preserved guest')
+    parser.add_argument('--provider-socket', help='Explicit root-private UNIX provider relay for resume only')
     parser.add_argument('--prebuild-script', help='Committed relative shell script; runs only inside the guest before builds')
     parser.add_argument('--browser-directory', help='Optional installed Chrome program directory, bound read-only into the guest (no profiles)')
     args = parser.parse_args(argv)
     try:
         if (args.prebuild_script or args.browser_directory) and args.action != 'deploy':
             raise PoolError('--prebuild-script requires deploy')
+        if (args.expected_guest_head or args.provider_socket) and args.action != 'resume':
+            raise PoolError('guest HEAD/provider socket require resume')
         settings = load_settings(args.env_file)
         commands = Commands()
         lane, head = git_identity(args.worktree, commands, clean=args.action == 'deploy')
@@ -671,6 +791,14 @@ def main(argv=None):
                 result = runtime.doctor(lane)
             elif args.action == 'deploy':
                 result = runtime.deploy(lane, head, args.prebuild_script, args.browser_directory)
+            elif args.action == 'suspend':
+                if not args.generation:
+                    raise PoolError('--generation required')
+                result = runtime.suspend(lane, args.generation)
+            elif args.action == 'resume':
+                if not args.generation:
+                    raise PoolError('--generation required')
+                result = runtime.resume(lane, args.generation, args.expected_guest_head, args.provider_socket)
             elif args.action == 'supervise':
                 import signal
                 import threading

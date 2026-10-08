@@ -18,8 +18,11 @@ export interface DesktopV3ChatHeaderProps {
   title: string
   workspaceName: string
   sessionId?: string
+  projectName?: string
   branchName?: string
   modelLabel?: string
+  onOpenModelFavorites?: () => void
+  modelFavoritesAnchorId?: string
   runStatus?: DesktopV3RunStatusModel | null
   runStatusNow?: number
   sessionActions?: DesktopV3ChatHeaderSessionActions | null
@@ -47,8 +50,11 @@ export function DesktopV3ChatHeader({
   title,
   workspaceName,
   sessionId,
+  projectName,
   branchName,
   modelLabel,
+  onOpenModelFavorites,
+  modelFavoritesAnchorId,
   runStatus = null,
   runStatusNow: controlledRunStatusNow,
   sessionActions = null,
@@ -62,6 +68,7 @@ export function DesktopV3ChatHeader({
   const displayWorkspace = sessionId ? 'Session workspaces' : normalizeWorkspaceName(workspaceName)
   const displayBranch = normalizeBranchName(branchName)
   const resolvedModelLabel = modelLabel?.trim() ?? ''
+  const resolvedProjectName = projectName?.trim() ?? ''
   const [liveRunStatusNow, setLiveRunStatusNow] = useState(() => Date.now())
   const runStatusNow = controlledRunStatusNow ?? liveRunStatusNow
   const mobileRunTimerLabel = runStatus ? formatDesktopV3RunTimerLabel(runStatus, runStatusNow) : ''
@@ -173,14 +180,28 @@ export function DesktopV3ChatHeader({
               </>
             ) : null}
             <div data-testid="session-workspace-row" className="min-w-0 max-w-full flex items-center overflow-hidden">
-              {sessionId ? <SessionAttachments key={sessionId} sessionId={sessionId} /> : (
-                <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:text-[11px]" title={displayWorkspace}>{displayWorkspace}</span>
+              {resolvedProjectName ? (
+                <span
+                  className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:text-[11px]"
+                  data-testid="desktop-v3-project-name"
+                  title={resolvedProjectName}
+                >
+                  {resolvedProjectName}
+                </span>
+              ) : sessionId ? (
+                <SessionAttachments key={sessionId} sessionId={sessionId} />
+              ) : (
+                <span className="min-w-0 truncate text-[10px] text-[var(--app-text-muted)] sm:text-[11px]" title={displayWorkspace}>
+                  {displayWorkspace}
+                </span>
               )}
             </div>
             {resolvedModelLabel ? (
               <>
-                <span aria-hidden="true" className="hidden shrink-0 text-[var(--app-text-subtle)] sm:inline">·</span>
-                <span className="hidden truncate sm:inline" data-testid="desktop-v3-resolved-model" title={resolvedModelLabel}>{resolvedModelLabel}</span>
+                <span aria-hidden="true" className={`${onOpenModelFavorites ? '' : 'hidden '}shrink-0 text-[var(--app-text-subtle)] sm:inline`}>·</span>
+                {onOpenModelFavorites ? (
+                  <button type="button" className="min-w-0 truncate rounded hover:underline focus-visible:ring-2 focus-visible:ring-[var(--app-focus-ring)]" data-testid="desktop-v3-resolved-model" data-model-favorites-anchor={modelFavoritesAnchorId} title={resolvedModelLabel} aria-label={`Model favorites: ${resolvedModelLabel}`} aria-haspopup="menu" onClick={onOpenModelFavorites}>{resolvedModelLabel}</button>
+                ) : <span className="hidden truncate sm:inline" data-testid="desktop-v3-resolved-model" title={resolvedModelLabel}>{resolvedModelLabel}</span>}
               </>
             ) : null}
             {mobileRunTimerLabel ? (

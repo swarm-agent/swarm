@@ -47,9 +47,24 @@ func CheckProjectTaskIntegration(t *ProjectTaskRecord, receipt *ProjectTaskInteg
 }
 
 func FinishProjectTaskIntegration(db ProjectTaskIntegrationStore, account string, task *ProjectTaskRecord, receipt *ProjectTaskIntegration) (*ProjectTaskRecord, error) {
+	return FinishProjectTaskIntegrationGuarded(db, account, task, receipt, 0, nil)
+}
+
+// The revision check and external promotion execute under the same task mutation
+// guard, so a concurrent reopen/update cannot pass between them. Git's own
+// expected-head lock remains the target authority.
+func FinishProjectTaskIntegrationGuarded(db ProjectTaskIntegrationStore, account string, task *ProjectTaskRecord, receipt *ProjectTaskIntegration, revision int, apply func() error) (*ProjectTaskRecord, error) {
 	return db.UpdateProjectTask(account, task.ProjectID, task.ID, func(t *ProjectTaskRecord) error {
+		if revision > 0 && t.Revision != revision {
+			return errors.New("task revision changed during recovery; refresh and retry")
+		}
 		if err := CheckProjectTaskIntegration(t, receipt); err != nil {
 			return err
+		}
+		if apply != nil {
+			if err := apply(); err != nil {
+				return err
+			}
 		}
 		copy := *receipt
 		t.Integration = &copy
@@ -63,6 +78,14 @@ func FinishProjectTaskIntegration(db ProjectTaskIntegrationStore, account string
 			t.ActionNeeded = ""
 			t.LastError = ""
 			t.WhatDidDo = append(t.WhatDidDo, "Integrated commits into "+receipt.TargetBranch+" (HEAD: "+receipt.ResultingTargetHead+")")
+		case "recovered", "equivalent":
+			// Delivery of a net delta is not original-source integration.
+			t.IsIntegrated = false
+			t.Status = "completed"
+			t.UnintegratedCommits = 0
+			t.GitStatus = "clean"
+			t.ActionNeeded, t.LastError = "", ""
+			t.WhatDidDo = append(t.WhatDidDo, "Verified task delta delivery ("+receipt.State+") to "+receipt.TargetBranch+" at "+receipt.ResultingTargetHead)
 		case "failed", "conflict":
 			t.IsIntegrated = false
 			t.ActionNeeded = receipt.Error

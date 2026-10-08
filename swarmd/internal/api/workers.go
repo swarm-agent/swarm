@@ -27,7 +27,7 @@ func workerHTTPError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
-	if errors.Is(err, errWorkerExecutionUnavailable) {
+	if errors.Is(err, errWorkerExecutionUnavailable) || errors.Is(err, pebblestore.ErrWorkerRemoteUnavailable) {
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	}
@@ -235,6 +235,8 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 
 	sub := parts[1]
 	switch sub {
+	case "context", "deployments", "target-reference", "ssh-targets", "gcp-targets":
+		s.handleWorkerControl(w, r, p, workerID, parts[1:])
 	case "accept":
 		if len(parts) != 2 {
 			writeError(w, http.StatusNotFound, errors.New("not found"))

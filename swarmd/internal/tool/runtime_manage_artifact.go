@@ -211,7 +211,7 @@ func manageArtifactDefinition() Definition {
 				"media_type":             map[string]any{"type": "string", "maxLength": 255, "description": "Artifact media type."},
 				"content":                map[string]any{"type": "string", "description": "Bounded UTF-8 artifact content."},
 				"draft_handle":           map[string]any{"type": "object", "description": "Draft handle from begin_v3/create/revise_v3. Call action='help' topic='workflow'."},
-				"operation":              map[string]any{"type": "object", "description": "Artifact V3 authoring operation. Call action='help' topic='workflow'."},
+				"operation":              map[string]any{"anyOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string", "enum": []string{"create", "extend", "edit"}}}, "description": "For generate_video: create, extend, or edit (distinct capability-checked operations); use the exact selected source reference for continuation. For author_v3: an authoring operation object; call help topic=workflow."},
 				"content_base64":         map[string]any{"type": "string", "description": "Bounded base64 replacement bytes."},
 				"initial_parts":          map[string]any{"type": "array", "minItems": 2, "maxItems": pebblestore.SessionArtifactMaxParts, "items": map[string]any{"type": "object"}, "description": "Two or more real independently byte-bearing initial parts for create (server owns all chain, composition, part identities). Mutually exclusive with monolithic content. Call action='help' for schema."},
 				"parts":                  map[string]any{"type": "array", "maxItems": pebblestore.SessionArtifactMaxParts, "items": part, "description": "Optional source-bound review/edit targets on one complete monolithic artifact (never create or prove independently replaceable bytes). For text/html, omit parts to let the server derive useful targets without splitting or rewriting the file; explicitly supplied parts remain authoritative. Use initial_parts only when independently stored bytes are required. Call action='help' for schema."},
@@ -231,7 +231,7 @@ func manageArtifactDefinition() Definition {
 				"limit":                  map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxListLimit, "description": "Maximum list items; use next_cursor/cursor to continue."},
 				"max_bytes":              map[string]any{"type": "integer", "minimum": 1, "maximum": manageArtifactMaxImageReadBytes, "description": "Maximum bytes returned by read. A response-quota error does not mean the artifact is unavailable; use materialize instead."},
 				"destination":            map[string]any{"type": "string", "maxLength": 4096, "description": "Canonical workspace path required for materialize/promote and materialize_batch; overwrite defaults to false."},
-				"model":                  map[string]any{"type": "string", "description": "Model identifier for audio generation/capability discovery only; not accepted for artifact import."},
+				"model":                  map[string]any{"type": "string", "description": "Model identifier for audio generation/capability discovery or generate_video. For video, pass only a user-authorized explicit selection; omission uses account settings, not the source model. Before spending on a video chain, confirm Tools.Video.IterationModel is configured or obtain an explicit supported model choice: editing and Omni extension require it, and creation support does not imply extension support. Source, operation capability, and same-credential checks still apply. Not accepted for artifact import."},
 				"message":                map[string]any{"type": "string", "description": "Optional native import commit message."},
 				"collection_name":        map[string]any{"type": "string", "description": "Optional destination collection label for legacy import."},
 				"collection_description": map[string]any{"type": "string", "description": "Optional destination collection description for legacy import."},
@@ -2392,9 +2392,15 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		case "action", "prompt", "title", "aspect_ratio", "resolution", "duration_seconds", "count",
 			"collection_id", "collection_name", "collection_description", "variant_id", "filename", "presentation",
 			"source_session_id", "source_collection_id", "source_variant_id", "source_event_seq",
-			"image", "image_path", "chain_from", "chain", "includes_audio", "operation":
+			"image", "image_path", "chain_from", "chain", "includes_audio", "operation", "model":
 		default:
 			return managedVideoArtifactResult{}, fmt.Errorf("manage_artifact generate_video contains unsupported field %q", key)
+		}
+	}
+	if raw, supplied := args["operation"]; supplied {
+		op, ok := raw.(string)
+		if !ok || (op != pebblestore.VideoOperationCreate && op != pebblestore.VideoOperationExtend && op != pebblestore.VideoOperationEdit) {
+			return managedVideoArtifactResult{}, errors.New("generate_video operation must be create, extend, or edit")
 		}
 	}
 	if r.videoGeneration == nil {
@@ -2608,6 +2614,7 @@ func (r *Runtime) generateManagedVideoArtifact(ctx context.Context, scope Worksp
 		})
 		generated, err := r.videoGeneration.GenerateManagedVideo(budgetCtx, videogen.ManagedVideoRequest{
 			Operation:       op,
+			Model:           strings.TrimSpace(asString(args["model"])),
 			Prompt:          prompt,
 			AspectRatio:     aspectRatio,
 			Resolution:      resolution,

@@ -1241,6 +1241,9 @@ export async function fetchSessionMessages(
   } else if (afterSeq > 0) {
     search.set("after_seq", String(afterSeq));
   }
+  if (tail || beforeSeq > 0) {
+    search.set("max_bytes", String(256 * 1024));
+  }
   resolveSessionApiForSession(normalizedSessionId, options);
   const response = await requestJson<MessagesResponseWire>(
     `/v3/sessions/${encodeURIComponent(normalizedSessionId)}/messages?${search.toString()}`,

@@ -95,7 +95,7 @@ func TestProjectSmallParallelCodersRejectsOverlapAndPreservesSingleCoder(t *test
 	}
 	w := f.callAPI(http.MethodPost, "/"+projectID+"/tasks", map[string]any{"title": "Single fix", "agent": "coder", "feature_size": "small"}, p)
 	task := requireMatrixTaskResponse(t, w, http.StatusCreated)
-	if task["agent"] != "coder" || task["status"] != "pending_approval" || task["coder_assignments"] != nil {
+	if task["agent"] != "coder" || task["status"] != "in_progress" || task["coder_assignments"] != nil {
 		t.Fatalf("single Coder contract changed: %+v", task)
 	}
 }

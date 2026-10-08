@@ -154,3 +154,40 @@ func TestCompileSessionMediaContractStableHashAndLineageInputs(t *testing.T) {
 		t.Fatalf("agent authorization change did not close admission and change hash: %+v", denied)
 	}
 }
+
+// Requirement: CompileSessionMediaContract must distinguish validated project
+// scope from absent authority without granting filesystem scope. This unit layer
+// proves missing-session denial and project-bound hashes; API tests separately
+// prove the durable ownership check that supplies ProjectScope.
+func TestCompileSessionMediaContractProjectScope(t *testing.T) {
+	input := SessionMediaContractInput{
+		ProviderID: "openai", Model: "vision-fixture", AgentAuthorized: true, ExecutionMode: "auto", SessionScope: "session",
+		CatalogMeta: &pebblestore.ModelCatalogMeta{SnapshotID: "snapshot", SnapshotVersion: "v1"},
+		Catalog: &pebblestore.ModelCatalogRecord{
+			Provider: "openai", Model: "vision-fixture", SourceSnapshotID: "snapshot", SourceSnapshotVersion: "v1",
+			Media: &pebblestore.ModelCatalogMediaCapabilities{State: pebblestore.ModelCatalogMediaStateSupported, ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses, CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey,
+				Inputs: []pebblestore.ModelCatalogMediaDirection{{Modality: "image", State: pebblestore.ModelCatalogMediaStateSupported, Semantics: "native", MIMETypes: []string{"image/png"}}}},
+		},
+		Adapter: provideriface.MediaAdapterDeclaration{
+			AdapterID: provideriface.MediaAdapterIDOpenAIResponsesV1, ProviderID: "openai", ProviderSurface: provideriface.MediaProviderSurfaceOpenAIResponses, CredentialSurface: provideriface.MediaCredentialSurfaceOpenAIAPIKey, CredentialFingerprint: "fixture",
+			Inputs: []provideriface.MediaAdapterCapability{{Modality: "image", Semantics: "native", MIMETypes: []string{"image/png"}, ContentTypes: []string{"input_image"}, MaxBytes: 1024, MaxCount: 2}},
+		},
+	}
+	missing := CompileSessionMediaContract(input)
+	if SessionMediaContractAllows(missing, "image", "image/png", "") {
+		t.Fatal("missing workspace and project admitted")
+	}
+	input.ProjectScope = "project"
+	project := CompileSessionMediaContract(input)
+	if !SessionMediaContractAllows(project, "image", "image/png", "") || project.WorkspaceScope != "" || project.Hash == missing.Hash {
+		t.Fatalf("project media scope lost or filesystem scope invented: %+v", project)
+	}
+	input.ProjectScope = "other-project"
+	if other := CompileSessionMediaContract(input); other.Hash == project.Hash {
+		t.Fatal("project authority omitted from contract hash")
+	}
+	input.SessionScope = ""
+	if denied := CompileSessionMediaContract(input); SessionMediaContractAllows(denied, "image", "image/png", "") || len(MaterializeSessionMediaTool(nil, denied)) != 0 {
+		t.Fatal("project alone admitted without session")
+	}
+}

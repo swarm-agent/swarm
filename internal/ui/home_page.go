@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"time"
 	"unicode"
 
@@ -86,6 +87,8 @@ type HomePage struct {
 	commandPaletteTargets           []clickTarget
 	commandPaletteOptionIndex       int
 	commandPaletteOptionOwner       string
+	taskCursorIndex                 int
+	taskBoxFocused                  bool
 	statusLine                      string
 	sessionMode                     string
 	showHomeTips                    bool
@@ -147,7 +150,7 @@ func NewHomePage(m model.HomeModel) *HomePage {
 		statusLine:   "Waiting...",
 		sessionMode:  "auto",
 		showHomeTips: true,
-		homeTipIndex: randomHomeTipIndex(-1),
+		homeTipIndex: 0,
 		swarmName:    "Local",
 		promptCursor: 0,
 	}
@@ -247,6 +250,16 @@ func (p *HomePage) HandleTick() bool {
 			p.pressedTopAction = ""
 		}
 	}
+	if p.onboarding.Visible && (p.onboarding.Personalizing || p.onboarding.PreFinish) {
+		p.onboarding.Tick++
+		if p.onboarding.PreFinish {
+			p.onboarding.PreFinishTicks++
+			if p.onboarding.PreFinishTicks >= 20 {
+				p.FinishOnboardingPreFinish()
+			}
+		}
+		changed = true
+	}
 	now := time.Now()
 	if p.toast.tick(now) {
 		changed = true
@@ -339,6 +352,53 @@ func (p *HomePage) HandleKey(ev *tcell.EventKey) {
 	if p.keybinds.Match(ev, KeybindGlobalCycleRoute) {
 		p.pendingHomeAction = &HomeAction{Kind: HomeActionCycleRoute}
 		return
+	}
+
+	isCtrlUp := p.keybinds.Match(ev, KeybindHomeFocusTasks) || (ev.Key() == tcell.KeyUp && ev.Modifiers()&tcell.ModCtrl != 0) || ev.Key() == tcell.KeyCtrlK
+	isCtrlDown := p.keybinds.Match(ev, KeybindHomeFocusPrompt) || (ev.Key() == tcell.KeyDown && ev.Modifiers()&tcell.ModCtrl != 0)
+
+	if isCtrlUp {
+		if len(p.model.ProjectTasks) > 0 {
+			p.taskBoxFocused = true
+			return
+		}
+	}
+
+	if p.taskBoxFocused {
+		if isCtrlDown || ev.Key() == tcell.KeyEsc {
+			p.taskBoxFocused = false
+			return
+		}
+		switch {
+		case p.keybinds.Match(ev, KeybindHomePaletteMoveUp) || ev.Key() == tcell.KeyUp:
+			p.MoveTaskSelection(-1)
+			return
+		case p.keybinds.Match(ev, KeybindHomePaletteMoveDown) || ev.Key() == tcell.KeyDown:
+			p.MoveTaskSelection(1)
+			return
+		case ev.Key() == tcell.KeyPgUp:
+			p.MoveTaskSelection(-5)
+			return
+		case ev.Key() == tcell.KeyPgDn:
+			p.MoveTaskSelection(5)
+			return
+		case ev.Key() == tcell.KeyHome:
+			p.SetSelectedTaskIndex(0)
+			return
+		case ev.Key() == tcell.KeyEnd:
+			if len(p.model.ProjectTasks) > 0 {
+				p.SetSelectedTaskIndex(len(p.model.ProjectTasks) - 1)
+			}
+			return
+		case ev.Key() == tcell.KeyEnter:
+			return
+		default:
+			if ev.Key() == tcell.KeyRune && unicode.IsPrint(ev.Rune()) {
+				p.taskBoxFocused = false
+			} else {
+				return
+			}
+		}
 	}
 
 	switch {
@@ -603,7 +663,8 @@ func (p *HomePage) Draw(s tcell.Screen) {
 		p.topBarTargets = p.topBarTargets[:0]
 	}
 
-	sections := buildHomeSections(variant)
+	hasActiveProject := p != nil && strings.TrimSpace(p.model.ActiveProjectID) != ""
+	sections := p.buildHomeSections(variant)
 	if len(sections) == 0 {
 		sections = []homeSection{{kind: "input", h: 3}}
 	}
@@ -681,10 +742,13 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	if profile.CenterStack && stackH < availableMainH {
 		startY = mainTop + (availableMainH-stackH)/2 + variant.TopPadding
 		inputOffset, inputFound := inputSectionOffset(sections)
-		if variant.UseSwarmTopBar && inputFound {
+		if variant.UseSwarmTopBar && inputFound && !hasActiveProject {
 			desiredInputY := h/2 - inputHeight/2
 			startY = desiredInputY - inputOffset + variant.TopPadding
 		}
+	}
+	if hasActiveProject {
+		startY = mainTop
 	}
 	if startY < minStart {
 		startY = minStart
@@ -721,7 +785,13 @@ func (p *HomePage) Draw(s tcell.Screen) {
 	hasInputRect := false
 	for i, sec := range sections {
 		rawRect := Rect{X: contentX, Y: y, W: contentW, H: sec.h}
-		if sec.kind == "input" {
+		if hasActiveProject {
+			if sec.kind == "input" {
+				rawRect = Rect{X: 0, Y: mainBottom - sec.h, W: w, H: sec.h}
+			} else if sec.kind == "tips" {
+				rawRect = Rect{X: contentX, Y: mainBottom - inputHeight - 1, W: contentW, H: sec.h}
+			}
+		} else if sec.kind == "input" {
 			rawRect = Rect{X: 0, Y: y, W: w, H: sec.h}
 		}
 		rect, ok := clipMainRect(rawRect)
@@ -729,6 +799,8 @@ func (p *HomePage) Draw(s tcell.Screen) {
 			switch sec.kind {
 			case "hero":
 				p.drawHeroPanel(s, rect, variant.CenterRows)
+			case "tasks":
+				p.drawProjectTasks(s, rect, variant.CenterRows)
 			case "meta":
 				p.drawMeta(s, rect, variant)
 			case "input":
@@ -741,9 +813,11 @@ func (p *HomePage) Draw(s tcell.Screen) {
 				p.drawTipsRow(s, rect, variant.CenterRows)
 			}
 		}
-		y += sec.h
-		if i < len(sections)-1 {
-			y += sectionGap
+		if !hasActiveProject || (sec.kind != "input" && sec.kind != "tips") {
+			y += sec.h
+			if i < len(sections)-1 {
+				y += sectionGap
+			}
 		}
 	}
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet } from '@tanstack/react-router'
+import { StartupLoading } from '../../../../app/startup-loading'
 import { StartupScreen } from '../../../../app/startup-recovery'
 import { DesktopV3RuntimeProvider } from '../../runtime/desktop-v3-runtime-provider'
 import { requestStartupJson } from '../../../../app/api'
@@ -141,11 +142,7 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
   }
 
   if (tailscaleApproval.loading) {
-    return (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black text-sm text-[var(--app-text-muted)]">
-        Loading Swarm…
-      </div>
-    )
+    return <StartupLoading />
   }
 
   if (tailscaleApproval.status?.required) {
@@ -174,11 +171,7 @@ export function DesktopVaultShell({ initialPreferredSessionId }: DesktopVaultShe
   }
 
   if (onboardingLoading || onboardingStatus === null) {
-    return (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black text-sm text-[var(--app-text-muted)]">
-        Loading Swarm…
-      </div>
-    )
+    return <StartupLoading />
   }
 
   if (onboardingStatus !== null && (onboardingStatus.needsOnboarding || onboardingFlowRequested)) {

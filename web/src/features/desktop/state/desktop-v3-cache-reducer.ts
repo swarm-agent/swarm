@@ -1,3 +1,4 @@
+import { requireProjectConversation } from './project-conversation-identity'
 import { reduceDesktopEnvironmentsState } from './desktop-environments-state'
 import { reduceAutomationV2Pages } from './desktop-automation-v2-state'
 import { reduceUsagePages } from './desktop-usage-state'
@@ -156,9 +157,11 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
     case 'automation.invalidate':
     case 'automation.evict':
       return { ...state, automationPages: reduceAutomationPages(state.automationPages, action) }
+    case 'projects.environmentCatalog':
     case 'projects.beginLoad':
     case 'projects.loadSuccess':
     case 'projects.loadError':
+    case 'projects.mediaResult':
     case 'projects.invalidateGit':
     case 'projects.updateTasks':
     case 'projects.updateMedia':
@@ -180,6 +183,21 @@ export function desktopV3CacheReducer(state: DesktopV3CacheState, action: Deskto
         ...action.patch,
       }
       return state
+    case 'projectConversations.applyArchiveSummaries':
+      // Archive display rows are not canonical hydrated tombstones or sessions.
+      state.projectArchiveSummaries = { ...state.projectArchiveSummaries, [action.projectId]: action.tombstones }
+      return state
+    case 'projectConversations.applySummaries': {
+      // Replace the requested membership, but retain creations committed while the
+      // read was in flight. A subsequent read can still remove stale membership.
+      const requested = new Set(action.requestSessionIds)
+      const concurrent = action.requestSessionIds ? (state.projectConversationSummaries?.[action.projectId] || []).filter(session => !requested.has(session.id)) : []
+      const sessions = [...new Map([...concurrent, ...action.sessions].map(session => [session.id, session])).values()]
+      // Display-only membership: never mark a partial session or transcript fully hydrated.
+      state.projectConversationSummaries = { ...state.projectConversationSummaries, [action.projectId]: sessions }
+      if (action.attention) applySessionViews(state, action.attention, new Set(action.sessions.map(session => session.id)), { clearMissing: false })
+      return state
+    }
     case 'session.select':
       state.selectedSessionId = action.sessionId?.trim() || undefined
       touchSessionTranscript(state, state.selectedSessionId)
@@ -911,6 +929,19 @@ export function applySessionCreateMutationResult(
     throw new Error('Desktop V3 create response has inconsistent session identity')
   }
 
+  const projectId = sidebarScopeId.startsWith('project:') ? sidebarScopeId.slice('project:'.length) : undefined
+  if (projectId !== undefined) requireProjectConversation(projectId, raw.session)
+  // An idempotent create receipt must not undo a later archive/delete.
+  if (projectId !== undefined && state.tombstonesBySession[sessionId]) return state
+
+  if (projectId !== undefined) {
+    const summaries = state.projectConversationSummaries?.[projectId] || []
+    state.projectConversationSummaries = {
+      ...state.projectConversationSummaries,
+      [projectId]: summaries.some(session => session.id === sessionId) ? summaries : [...summaries, raw.session],
+    }
+  }
+
   const existingProjection = state.projectionsBySession[sessionId]
   if (!existingProjection || projectionSeq(raw.projection) >= projectionSeq(existingProjection)) {
     state.sessionsById[sessionId] = {
@@ -1007,6 +1038,10 @@ export function applySessionArchiveMutationResult(
     if (result?.archived !== true) continue
     const sessionId = stringField(result.session_id) || stringField(recordValue(result.tombstone)?.session_id)
     if (!sessionId) continue
+    if (result.projection) {
+      if (projectionSeq(result.projection) < projectionSeq(state.projectionsBySession[sessionId])) continue
+      state.projectionsBySession[sessionId] = result.projection
+    }
     tombstonesBySession[sessionId] = archiveTombstoneFromMutationResult(state, sessionId, result.tombstone)
   }
   applyTombstonesBySession(state, tombstonesBySession)
@@ -1254,7 +1289,7 @@ export function applyCacheEvent(
 
   applyExecutionEpochFromEvent(state, event)
 
-  if (payload.session && eventType === 'session.reactivated') {
+  if (payload.session && incomingProjectionIsFresh && eventType === 'session.reactivated') {
     delete state.tombstonesBySession[sessionId]
     restoreSessionToSidebar(state, sessionId)
   }
@@ -1845,7 +1880,7 @@ export function upsertRunIntent(
     }
   }
 
-  if (isLatest && ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status)) {
+  if (isLatest && (ACTIVE_RUN_INTENT_STATUSES.has(enrichedRunIntent.status) || enrichedRunIntent.status === 'waiting_tasks')) {
     state.currentRunIntentBySession[sessionId] = enrichedRunIntent
     const record = state.sessionsById[sessionId]
     if (record?.kind === 'full' && isAutomationExecutionSession(record.session)) {
@@ -2208,7 +2243,7 @@ function mergeHistoricalMessagesForSession(
   const merged = buildMessageListCache(mergedItems, {
     knownTail: existing?.knownTail,
     knownFull: existing?.knownFull,
-    sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, incoming.length, mergedItems.length),
+    sourceMessageCount: Math.max(existing?.sourceMessageCount ?? 0, incoming.length),
     sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
     sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
     oldestLoadedSeq: minPositiveSeq(mergedItems),
@@ -2245,7 +2280,7 @@ function prependHistoricalMessagesForSession(
   const merged = buildMessageListCache(mergedItems, {
     knownTail: existing?.knownTail,
     knownFull: options.knownFull || existing?.knownFull,
-    sourceMessageCount: Math.max(options.sourceMessageCount ?? 0, existing?.sourceMessageCount ?? 0, incoming.length, mergedItems.length),
+    sourceMessageCount: Math.max(options.sourceMessageCount ?? 0, existing?.sourceMessageCount ?? 0, incoming.length),
     sourceLastMessageAt: Math.max(existing?.sourceLastMessageAt ?? 0, ...incoming.map((message) => message.created_at)),
     sourceProjectionHighWatermarkSeq: existing?.sourceProjectionHighWatermarkSeq,
     oldestLoadedSeq: minPositiveSeq(mergedItems),
@@ -2325,7 +2360,7 @@ export function buildMessageListCache(messages: MessageSnapshot[], options: Buil
     byGlobalSeq,
     knownTail: options.knownTail,
     knownFull: options.knownFull,
-    sourceMessageCount: options.sourceMessageCount,
+    sourceMessageCount: options.sourceMessageCount === undefined ? undefined : Math.max(options.sourceMessageCount, items.length),
     sourceLastMessageAt: options.sourceLastMessageAt,
     sourceProjectionHighWatermarkSeq: options.sourceProjectionHighWatermarkSeq,
     oldestLoadedSeq: options.oldestLoadedSeq ?? minPositiveSeq(items),
@@ -2549,7 +2584,8 @@ function applySessionViewsFromSyncSnapshot(
   const resourceSet = snapshot.sync_scope.resource_set
   const hasSessionView = syncResourceSetContains(resourceSet, 'session_view')
   const hasActivePlan = syncResourceSetContains(resourceSet, 'active_plan')
-  if (!hasSessionView && !hasActivePlan) return
+  const hasPermissionDetails = syncResourceSetContains(resourceSet, 'permission_details')
+  if (!hasSessionView && !hasActivePlan && !hasPermissionDetails) return
   applySessionViews(state, snapshot.session_views_by_id, authoritativeSessionIds, { clearMissing: hasSessionView })
 }
 
@@ -4211,6 +4247,7 @@ function flushLiveAssistantDraftToSegment(liveRun: LiveRunOverlay): void {
 
 function normalizeLiveRunStatus(status: string): LiveRunOverlay['status'] {
   switch (status) {
+    case 'waiting_tasks':
     case 'pending_executor':
     case 'running':
     case 'dispatch_blocked':

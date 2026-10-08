@@ -86,6 +86,9 @@ func (s *coderLineageWorktreeService) ValidateSessionRepositoryLane(source, lane
 }
 
 func (s *coderLineageWorktreeService) TaskCommitDescendsFrom(_, base, _ string) (bool, error) {
+	if base == "captured-base" || base == "captured-head" {
+		return true, nil
+	}
 	return s.integrated[base], nil
 }
 
@@ -266,7 +269,10 @@ func TestManageWorktreePromoteRejectsForeignTargetOutsideActiveLane(t *testing.T
 	}
 }
 
-func TestManageWorktreePromoteMultiSession(t *testing.T) {
+// Purpose: manageWorktreePromote must reject batches unsupported by the existing
+// ancestry-preserving service before preparation or target effects. The runtime
+// seam is the narrowest proof of admission, not a substitute for real Git tests.
+func TestManageWorktreePromoteRejectsMultiSession(t *testing.T) {
 	runtime, scope, worktrees, _ := newCoderLineageRuntime(t)
 	scope.Roots = []string{scope.PrimaryPath}
 	sessions := runtime.sessions.(*coderLineageSessionService)
@@ -301,20 +307,11 @@ func TestManageWorktreePromoteMultiSession(t *testing.T) {
 		"target_branch":         "dev",
 		"target_head":           "current-dev-head",
 	})
-	if err != nil {
-		t.Fatalf("promote multi-session: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "one source session at a time") || output != "" {
+		t.Fatalf("unsupported batch reported success: %s, %v", output, err)
 	}
-	if worktrees.applyCalls != 1 {
-		t.Fatalf("promotion applied %d times, want 1", worktrees.applyCalls)
-	}
-	if len(worktrees.preparedChildren) != 2 {
-		t.Fatalf("prepared children count = %d, want 2", len(worktrees.preparedChildren))
-	}
-	if worktrees.preparedChildren[0].SessionID != source1.ID || worktrees.preparedChildren[1].SessionID != "child-promote" {
-		t.Fatalf("prepared children = %#v", worktrees.preparedChildren)
-	}
-	if !strings.Contains(output, `"source_session_ids":["parent-session","child-promote"]`) {
-		t.Fatalf("output missing source_session_ids: %s", output)
+	if worktrees.applyCalls != 0 || len(worktrees.preparedChildren) != 0 || worktrees.states["/captured"].HeadCommit != "current-dev-head" {
+		t.Fatal("unsupported batch changed target")
 	}
 }
 

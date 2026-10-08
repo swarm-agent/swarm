@@ -33,6 +33,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { cn } from "../../../../lib/cn";
+import { isTaskOutcomeMessage, taskOutcomeActivity, type DesktopTaskActivity } from '../../state/desktop-v3-task-updates';
+import { DesktopV3TaskActivity } from './desktop-v3-task-activity';
 import { AutomationV2Detail, AutomationV2ScheduleHandoff } from '../../tools/automations/automation-v2-workspace';
 import { AutomationSessionPanel } from '../../tools/automations/automation-session';
 import { WorkerSessionBanner } from '../../tools/automations/worker-session-banner';
@@ -133,6 +135,9 @@ import {
   updateSessionV3ModelProfile,
   stopSessionV3Run,
 } from "../../session-v3/api";
+import { SessionMediaCapabilityReader } from '../services/session-media-capability';
+import { getDesktopSessionIdentitySnapshot, subscribeDesktopSessionReset } from '../../../../app/api';
+import type { DesktopV3MediaCapability } from '../../state/desktop-v3-cache-types';
 import { getDesktopV3MediaCapability, uploadDesktopV3MediaAsset } from "../../session-v3/write-api";
 import { admitComposerFile } from "../services/composer-attachments";
 import type { DesktopVideoSourceAttachment } from "../services/video-source-attachments";
@@ -156,7 +161,11 @@ import {
   fetchSessionMessages,
   resolveSessionPermission,
 } from "../queries/chat-queries";
-import type { AgentModelControlConfirmInput } from "./agent-model-control";
+import { AgentModelControl, type AgentModelControlConfirmInput } from "./agent-model-control";
+import {
+  applySessionModelFavorite,
+  resolveCanonicalHeaderModelLabel,
+} from "../../orchestrate/orchestrator-header-actions";
 import { DesktopPermissionModal } from "../../permissions/components/desktop-permission-modal";
 import {
   isAutomationPermission,
@@ -663,6 +672,7 @@ type DesktopV3PlanHandoffRenderFields = {
 };
 
 export type DesktopV3RenderItem =
+  | { type: "task-activity"; id: string; timelineSeq: number; activity: DesktopTaskActivity }
   | {
       type: "plan-break";
       message: MessageSnapshot;
@@ -1551,8 +1561,11 @@ export function buildDesktopV3ConversationRenderItems(
     visibleCommittedMessages.map(committedToolRenderKey).filter((key): key is string => Boolean(key)),
   );
   const items: DesktopV3RenderItem[] = [
+    ...(renderedMessages.taskActivities ?? []).map((activity) => ({ type: "task-activity" as const, id: activity.id, timelineSeq: activity.timelineSeq, activity })),
     ...visibleCommittedMessages.map((message) =>
-      isDesktopV3PlanExecutionBreakMessage(message)
+      isTaskOutcomeMessage(message)
+        ? { type: "task-activity" as const, id: `task-outcome:${message.id}`, timelineSeq: message.global_seq, activity: taskOutcomeActivity(message) }
+        : isDesktopV3PlanExecutionBreakMessage(message)
         ? buildDesktopV3PlanExecutionBreakItem(message)
         : isDesktopV3PlanCheckpointHandoffMessage(message)
           ? buildDesktopV3PlanHandoffItem(message, "plan-checkpoint-handoff")
@@ -1659,9 +1672,11 @@ export interface DesktopV3ExistingConversationPaneProps {
   onArtifactSelectionRequestHandled?: () => void;
   /** Keep artifact review inside an embedded Studio-owned surface. */
   artifactReviewPresentation?: "fullscreen" | "embedded";
+  onOpenMediaArtifact?: (artifact: DesktopV3ArtifactCatalogEntry) => boolean;
   artifactReviewPortalTarget?: HTMLElement | null;
   /** Reuse the canonical conversation as a constrained embedded surface. */
   presentation?: "page" | "sidebar";
+  orchestratorHeader?: { projectName: string; onOpenAgents: () => void };
   onMessageSent?: () => void;
 }
 
@@ -1776,8 +1791,10 @@ export function DesktopV3ExistingConversationPane({
   onContextChipRemove,
   onArtifactSelectionRequestHandled,
   artifactReviewPresentation = "fullscreen",
+  onOpenMediaArtifact,
   artifactReviewPortalTarget = null,
   presentation = "page",
+  orchestratorHeader,
   onMessageSent,
   startPresentation,
   emptyPresentation,
@@ -1957,6 +1974,8 @@ export function DesktopV3ExistingConversationPane({
   const [compactStartedAt, setCompactStartedAt] = useState<number | null>(null);
   const [thinkingTagsSaving, setThinkingTagsSaving] = useState(false);
   const [agentModelSaving, setAgentModelSaving] = useState(false);
+  const [headerModelRequest, setHeaderModelRequest] = useState({ sessionId: "", signal: 0 });
+  const headerModelOpenSignal = headerModelRequest.sessionId === normalizedSessionId ? headerModelRequest.signal : 0;
   const [planExecutionBusyAction, setPlanExecutionBusyAction] = useState<
     string | null
   >(null);
@@ -2025,19 +2044,12 @@ export function DesktopV3ExistingConversationPane({
     : (sessionProfilePreference ?? sessionAgentPreference ?? preference);
   // Header identity is presentation-only and must come from the hydrated session
   // snapshot/view. Local profile-picker state must never appear before resolution.
-  const canonicalHeaderPreference = sessionProfilePreference ?? cachedPreference;
-  const canonicalHeaderModelKey = modelOptionKey(
-    canonicalHeaderPreference.provider,
-    canonicalHeaderPreference.model,
-    canonicalHeaderPreference.contextMode,
-  );
-  const canonicalHeaderModelOption = modelOptions.find(
-    (option) => option.key === canonicalHeaderModelKey,
-  ) ?? null;
-  const canonicalHeaderModelLabel = canonicalHeaderPreference.provider.trim()
-    && canonicalHeaderPreference.model.trim()
-      ? canonicalHeaderModelOption?.label || canonicalHeaderPreference.model
-      : "";
+  const canonicalHeaderModelLabel = resolveCanonicalHeaderModelLabel({
+    metadata: sessionMetadata,
+    mode,
+    cachedPreference,
+    modelOptions,
+  });
   const selectedModelKey = modelOptionKey(
     displayedPreference.provider,
     displayedPreference.model,
@@ -2057,13 +2069,26 @@ export function DesktopV3ExistingConversationPane({
     displayedPreference.provider,
     authCredentialsQuery.data,
   );
-  const mediaCapabilityQuery = useQuery({
-    queryKey: ['desktop-v3-media-capability', normalizedSessionId, selectedAgent, displayedPreference.provider, displayedPreference.model, authCredentialsQuery.dataUpdatedAt],
-    queryFn: () => getDesktopV3MediaCapability(normalizedSessionId),
-    enabled: Boolean(normalizedSessionId),
-    staleTime: 0,
-  });
-  const mediaCapability = mediaCapabilityQuery.data ?? sessionMediaCapability;
+  const mediaReader = useRef(new SessionMediaCapabilityReader());
+  const [mediaState, setMediaState] = useState<{ scope: string; authority?: string; value: DesktopV3MediaCapability | null; error?: string }>({ scope: '', value: null });
+  const mediaAccount = getDesktopSessionIdentitySnapshot()?.accountScopeId;
+  const mediaScope = mediaAccount && normalizedSessionId ? JSON.stringify([mediaAccount, normalizedSessionId]) : '';
+  const mediaAuthority = JSON.stringify([selectedAgent, displayedPreference.provider, displayedPreference.model, mode, rawCachedPreference, cachedAgentModelPolicy]);
+  const mediaCredentials = JSON.stringify(authCredentialsQuery.data);
+  const mediaConnected = useDesktopV3CacheSelector(state => state.realtime.status === 'open');
+  useEffect(() => subscribeDesktopSessionReset(() => {
+    mediaReader.current.reset();
+    setMediaState({ scope: '', value: null });
+  }), []);
+  useEffect(() => {
+    void mediaReader.current.update({ scope: mediaScope, authority: mediaAuthority, hydrated: sessionMediaCapability,
+      credentials: mediaCredentials,
+      ready: !composerOverride && (initialHydrateStatus === 'ready' || initialHydrateStatus === 'cached'), connected: mediaConnected },
+      () => getDesktopV3MediaCapability(normalizedSessionId),
+      (value, error) => setMediaState({ scope: mediaScope, authority: mediaAuthority, value, error }));
+  }, [mediaScope, mediaAuthority, sessionMediaCapability, initialHydrateStatus, mediaConnected, normalizedSessionId, mediaCredentials, composerOverride]);
+  useEffect(() => () => mediaReader.current.reset(), []);
+  const mediaCapability = mediaState.scope === mediaScope && mediaState.authority === mediaAuthority ? mediaState.value : null;
   const cachedUsage = useMemo(
     () => normalizeUsageSummary(rawCachedUsage),
     [rawCachedUsage],
@@ -2445,6 +2470,7 @@ export function DesktopV3ExistingConversationPane({
     });
   }, [routeWorkspaceSlug]);
   const openArtifactFullView = useCallback((artifact: DesktopV3ArtifactCatalogEntry, partId = "", presentationGroupKey = "") => {
+    if (onOpenMediaArtifact?.(artifact)) return;
     const artifactKey = desktopV3ArtifactCatalogEntryKey(artifact);
     const groupKey = presentationGroupKey.trim();
     const openAsIterationGroup = groupKey.startsWith("turn:") || groupKey.startsWith("collection:");
@@ -2468,8 +2494,9 @@ export function DesktopV3ExistingConversationPane({
           : desktopV3ArtifactViewerSearch(artifact)),
       }),
     });
-  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug, onOpenMediaArtifact]);
   const navigateArtifactViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
+    if (onOpenMediaArtifact?.(artifact)) return;
     setArtifactGalleryInitialCollectionId("");
     setArtifactGalleryInitialGroupKey("");
     setArtifactGalleryInitialPartId("");
@@ -2481,7 +2508,7 @@ export function DesktopV3ExistingConversationPane({
       search: (previous) => ({ ...previous, artifact: undefined, collection: undefined, ...desktopV3ArtifactViewerSearch(artifact) }),
       replace: true,
     });
-  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug]);
+  }, [artifactReviewPresentation, navigate, routeWorkspaceSlug, onOpenMediaArtifact]);
   const navigateArtifactCollectionViewer = useCallback((artifact: DesktopV3ArtifactCatalogEntry) => {
     const collectionId = artifact.collectionId?.trim() ?? "";
     const sessionId = artifact.lineage?.parentSessionId || artifact.sessionId;
@@ -2734,25 +2761,14 @@ export function DesktopV3ExistingConversationPane({
 
   async function handleApplyModelFavorite(profile: ModelProfileRecord) {
     if (!normalizedSessionId) return;
-    const nextPreference = preferenceFromModelProfile(profile, mode, Date.now());
-    if (!nextPreference) throw new Error("Model favorite does not resolve for the current chat mode");
-    const response = await updateSessionV3ModelProfile(normalizedSessionId, {
-      kind: 'temporary',
-      profile: {
-        name: profile.name,
-        provider: profile.provider,
-        model: profile.model,
-        thinking: profile.thinking,
-        serviceTier: profile.serviceTier,
-        contextMode: profile.contextMode,
-      },
+    const result = await applySessionModelFavorite({
+      sessionId: normalizedSessionId,
+      profile,
+      mode,
     });
-    dispatchDesktopV3Cache({
-      type: "mutation.sessionSettingsResult",
-      raw: sessionV3ModelProfileSettingsMutationResponse(response, normalizedSessionId),
-    });
-    setPreference(nextPreference);
-    unlockedPreferenceRef.current = nextPreference;
+    if (!result) return;
+    setPreference(result.nextPreference);
+    unlockedPreferenceRef.current = result.nextPreference;
     localSettingsDirtyRef.current.preference = false;
   }
 
@@ -3338,11 +3354,14 @@ export function DesktopV3ExistingConversationPane({
       <DesktopV3ChatHeader
         sessionId={normalizedSessionId}
         title={session?.title || cacheSession?.title || (startPresentation ? "New chat" : "Conversation")}
+        projectName={orchestratorHeader?.projectName}
         workspaceName={
           sessionWorkspaceName || cacheSession?.workspace_name || startPresentation?.workspaceName || "Workspace"
         }
         branchName={headerBranchLabel}
         modelLabel={canonicalHeaderModelLabel}
+        onOpenModelFavorites={orchestratorHeader ? () => setHeaderModelRequest(value => ({ sessionId: normalizedSessionId, signal: value.signal + 1 })) : undefined}
+        modelFavoritesAnchorId={`orchestrator-model:${normalizedSessionId}`}
         runStatus={startPresentation?.runStatus ?? runStatusModel}
         onOpenChats={onOpenChats}
         onNewSession={onNewSession}
@@ -3350,6 +3369,28 @@ export function DesktopV3ExistingConversationPane({
         studioMode={presentation === "page" ? studioMode : null}
         onToggleStudioMode={presentation === "page" ? onToggleStudioMode : undefined}
       />
+      {orchestratorHeader ? <AgentModelControl
+        key={normalizedSessionId}
+        currentAgent={selectedAgent || "Agent"}
+        selectedPrimaryAgent={selectedAgent || ""}
+        agents={agentState.profiles}
+        selectedModel={selectedModelOption ?? null}
+        selectedThinking={displayedPreference.thinking}
+        selectedServiceTier={displayedPreference.serviceTier}
+        modelOptions={modelOptions}
+        modelProfiles={modelProfileState.profiles}
+        activeModelProfile={composerActiveModelProfile}
+        modelLocked={selectedAgentModelLock.locked}
+        modelLockNotice={selectedAgentModelLock.disabledReason}
+        busy={agentModelSaving}
+        showTrigger={false}
+        openSignal={headerModelOpenSignal}
+        popoverAnchorId={`orchestrator-model:${normalizedSessionId}`}
+        onOpenAgents={orchestratorHeader.onOpenAgents}
+        onApplyModelFavorite={handleApplyModelFavorite}
+        onApplyModelFavoriteChatOnly={handleApplyModelFavorite}
+        onConfirmAgentSettings={handleConfirmAgentSettings}
+      /> : null}
       <WorkerSessionBanner
         sessionId={normalizedSessionId}
         workspaceSlug={routeWorkspaceSlug}
@@ -3456,6 +3497,7 @@ export function DesktopV3ExistingConversationPane({
                 {showConversationLoading && !startPresentation ? (
                   <DesktopV3ConversationLoadingSpinner />
                 ) : null}
+                {mediaState.scope === mediaScope && mediaState.error && <p role="alert">Media unavailable: {mediaState.error}</p>}
                 {initialHydrateStatus === "error" &&
                 !messagesLoaded &&
                 !hasMessages ? (
@@ -3894,6 +3936,8 @@ export const DesktopV3RenderItemView = memo(function DesktopV3RenderItemView({
   }
 
   switch (item.type) {
+    case "task-activity":
+      return <DesktopV3TaskActivity activity={item.activity} />;
     case "plan-break":
       return <DesktopV3PlanExecutionBreak item={item} />;
     case "plan-checkpoint-handoff":

@@ -59,14 +59,19 @@ func TestMasterHarnessPromptRequiresTopLevelTaskPrompt(t *testing.T) {
 	}
 }
 
+// Purpose: masterHarnessPrompt must advertise authorized recovery rather than
+// trapping operators behind broken attribution. This wording contract test is
+// the narrowest prompt layer; runtime authority is tested with real Git repos.
 func TestMasterHarnessPromptGuidesSessionCommitAndWorktreePromotion(t *testing.T) {
 	prompt := masterHarnessPrompt("/workspace")
 	for _, want := range []string{
 		"Integrating and landing session work into the user's workspace repository (e.g. dev or main branch):",
 		"`manage-sessions action=commit`",
-		"The commit tool accepts up to 10 sessions in one call (`commits: [...]`)",
+		"(up to 10 sessions)",
+		"Broken session/task/checkpoint attribution is not a Git authorization denial",
+		"Authorized Bash recovery is also supported with explicit workspace_path",
+		"never bypass a permission denial",
 		"`manage-worktree action=promote`",
-		"single sessions (`source_session_id`) or multiple sessions at once (`source_session_ids:",
 		`manage-sessions (commit single session): {"action":"commit","commits":[{"session_id":`,
 		`manage-sessions (commit multiple sessions at once): {"action":"commit","commits":[{"session_id":"sess_1"`,
 		`manage-worktree (promote/integrate single session into dev/main): {"action":"promote","source_session_id":`,

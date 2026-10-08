@@ -11,7 +11,7 @@ import type { ProjectSummary, RunningTask } from './orchestrate-types'
 // the narrowest layer proving lifecycle ordering; wiring checks are supplementary,
 // not evidence of backend Git execution or rendered pixel/layout correctness.
 const project = { id: 'project-a', name: 'Project A' } as ProjectSummary
-const task = { id: 'task-a', title: 'Task A', sessionId: 'session-a', worktreeBranch: 'agent/a', baseBranch: 'dev', isIntegrated: false } as RunningTask
+const task = { id: 'task-a', title: 'Task A', status: 'needs_review', sessionId: 'session-a', worktreeBranch: 'agent/a', baseBranch: 'dev', isIntegrated: false } as RunningTask
 const success = (row = task): TaskIntegrationResult => ({ status: 'integrated', task: { id: row.id, session_id: row.sessionId!, is_integrated: true } })
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -50,9 +50,11 @@ test('failure persists with captured redacted recovery; explicit retry waits for
   const controller = createTaskIntegrationController()
   const key = taskIntegrationKey(project.id, task)
   const first = deferred<TaskIntegrationResult>()
-  const operation = controller.run(project, task, () => first.promise, () => { throw new Error('must not refresh after failure') })
+  let refreshes = 0
+  const operation = controller.run(project, task, () => first.promise, () => { refreshes++; throw new Error('refresh unavailable') })
   first.reject(new Error('Conflict token=secret-value'))
-  await operation
+  assert.equal((await operation).status, 'failed')
+  assert.equal(refreshes, 1, 'failure refreshes canonical repair evidence without replacing diagnostics')
   const error = controller.get(key)
   assert.equal(error.phase, 'error')
   if (error.phase !== 'error') throw new Error('Expected error')
@@ -68,7 +70,10 @@ test('failure persists with captured redacted recovery; explicit retry waits for
   assert.equal(controller.get(key).phase, 'success')
 })
 
-test('out-of-order outcomes remain scoped across project, task, session and target switches', async () => {
+// Purpose: the shared mutation/integration lock must reject a replacement lane
+// while the original request is outstanding; exact-key receipts must remain
+// isolated after release. Controller promises prove this without live Git.
+test('pending outcomes stay scoped and prevent overlapping target switches', async () => {
   const controller = createTaskIntegrationController()
   const other = { ...task, sessionId: 'session-b', baseBranch: 'release' }
   const a = deferred<TaskIntegrationResult>()
@@ -77,10 +82,13 @@ test('out-of-order outcomes remain scoped across project, task, session and targ
   assert.equal(controller.get(taskIntegrationKey('project-b', task)).phase, 'ready')
   assert.equal(controller.get(taskIntegrationKey(project.id, { ...task, id: 'task-b' })).phase, 'ready')
   const second = controller.run(project, other, () => b.promise, () => {})
-  b.resolve(success(other))
-  await second
+  assert.equal((await second).status, 'skipped')
+  assert.equal(controller.get(taskIntegrationKey(project.id, other)).phase, 'ready')
   a.reject(new Error('Old lane conflict'))
   await first
+  const retry = controller.run(project, other, () => b.promise, () => {})
+  b.resolve(success(other))
+  await retry
   assert.equal(controller.get(taskIntegrationKey(project.id, other)).phase, 'success')
   assert.equal(controller.get(taskIntegrationKey(project.id, task)).phase, 'error')
 })
@@ -91,7 +99,7 @@ test('missing lineage or unconfirmed/mismatched mutation result cannot report su
     let refreshed = false
     await controller.run(project, task, async () => result, () => { refreshed = true })
     assert.equal(controller.get(taskIntegrationKey(project.id, task)).phase, 'error')
-    assert.equal(refreshed, false)
+    assert.equal(refreshed, true, 'unconfirmed transport results refresh canonical task evidence')
   }
   const controller = createTaskIntegrationController()
   const missing = { ...task, baseBranch: undefined }
@@ -129,7 +137,8 @@ test('all task card consumers use the controller and send exact lineage without 
   const source = readFileSync(new URL('./OrchestrateView.tsx', import.meta.url), 'utf8')
   const handler = source.slice(source.indexOf('const handleIntegrateTask ='), source.indexOf('// Refine task with router'))
   assert.match(handler, /tasks\.find\(row => row\.id === taskId\)/)
-  assert.match(handler, /session_id: task\.sessionId, source_branch: task\.worktreeBranch, target_branch: task\.baseBranch/)
+  assert.match(handler, /taskIntegrationRequest\(projectId, task\)/)
+  assert.match(handler, /JSON\.stringify\(request\.body\)/)
   assert.match(handler, /taskIntegrationOperations\.run/)
   assert.equal((source.match(/integrationOperation=\{integrationForTask\(/g) || []).length, 5)
   assert.doesNotMatch(source, /integratingTaskFlights|integratingTaskIds|setIntegrationFailures/)

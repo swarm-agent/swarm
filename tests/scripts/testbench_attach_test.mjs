@@ -68,6 +68,9 @@ test('request deadline, response cap and redirects fail closed', {timeout:5000},
   const redirect=await server(t,(_req,res)=>{res.writeHead(302,{Location:noisy});res.end()})
   await assert.rejects(new AttachClient(redirect).inspect())
 })
+// Purpose: run-testbench-launch-prerun admission rejects unsafe and retired suites
+// before connection/mutation; the local HTTP fixture proves no additional requests
+// and no fake successful evidence, without deploying a testbench.
 test('canonical attach executes without .env and refuses unsafe suites/wrappers', {timeout:20000}, async t=>{
   const requests=[];const url=await server(t,fixture(requests))
   const scratch=await mkdtemp(path.join(process.env.TMPDIR,'attach-test-'))
@@ -81,11 +84,14 @@ test('canonical attach executes without .env and refuses unsafe suites/wrappers'
   const evidence=JSON.parse(await readFile(path.join(dir,'results.json'),'utf8'))
   assert.deepEqual(evidence.counts,{pass:1,fail:0,'not-run':0})
   const before=requests.length
-  for(const suite of ['task-routing','task-program','workspace-routing','workspace-workers','desktop','tui','provider-sync','plan-auto','onboarding','omarchy-install']) {
+  for(const suite of ['task-routing','task-program','workspace-routing','workspace-workers','desktop','tui','provider-sync','onboarding','omarchy-install']) {
     const denied=await shell(['scripts/run-testbench-launch-prerun.sh','--attach-only',url,'--suite',suite])
     assert.notEqual(denied.code,0)
     assert.match(denied.output,/not attach-safe/)
   }
+  const retired=await shell(['scripts/run-testbench-launch-prerun.sh','--attach-only',url,'--suite','plan-auto'])
+  assert.notEqual(retired.code,0)
+  assert.match(retired.output,/plan-auto is retired/)
   for(const entry of ['run-testbench-runner.sh','run-runner-test.sh','testbench-e2e-tunnel.sh','testbench-container-deploy.sh']) {
     const denied=await shell([`scripts/${entry}`,'run'],{SWARM_TESTBENCH_ATTACH_ONLY:'1'})
     assert.equal(denied.code,2)

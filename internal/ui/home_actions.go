@@ -20,6 +20,7 @@ const (
 	HomeActionCycleRoute                     HomeActionKind = "cycle-route"
 	HomeActionOpenWorkspaceSelector          HomeActionKind = "open-workspace-selector"
 	HomeActionSelectWorkspace                HomeActionKind = "select-workspace"
+	HomeActionSelectProject                  HomeActionKind = "select-project"
 	HomeActionSetDefaultSessionMode          HomeActionKind = "set-default-session-mode"
 	HomeActionOpenAlertSession               HomeActionKind = "open-alert-session"
 	HomeActionClearAlerts                    HomeActionKind = "clear-alerts"
@@ -32,25 +33,35 @@ const (
 	HomeActionBaselineOnboardingRepository   HomeActionKind = "baseline-onboarding-repository"
 	HomeActionSetupOnboardingRepository      HomeActionKind = "setup-onboarding-repository"
 	HomeActionCreateOnboardingFolder         HomeActionKind = "create-onboarding-folder"
+	HomeActionCreateOnboardingProject        HomeActionKind = "create-onboarding-project"
+	HomeActionFinishOnboardingProject        HomeActionKind = "finish-onboarding-project"
+	HomeActionOpenFinishSetup                HomeActionKind = "open-finish-setup"
 )
 
 type HomeAction struct {
-	Kind             HomeActionKind
-	SessionID        string
-	SessionTitle     string
-	SessionMode      string
-	WorkspacePath    string
-	WorkspaceName    string
-	WorktreeBranch   string
-	WorktreeEnabled  bool
-	WorktreeRootPath string
-	NotificationID   string
-	Username         string
-	SwarmName        string
-	ModelProfileID   string
-	WorkspaceIndex   int
-	ResetCreditID    string
-	IdempotencyKey   string
+	Kind               HomeActionKind
+	SessionID          string
+	SessionTitle       string
+	SessionMode        string
+	WorkspacePath      string
+	WorkspaceName      string
+	WorktreeBranch     string
+	WorktreeEnabled    bool
+	WorktreeRootPath   string
+	NotificationID     string
+	Username           string
+	SwarmName          string
+	ModelProfileID     string
+	FavoriteScope      FavoriteScope
+	WorkspaceIndex     int
+	ProjectIndex       int
+	ResetCreditID      string
+	IdempotencyKey     string
+	ProjectID          string
+	ProjectName        string
+	ProjectDescription string
+	AttachWorkspace    bool
+	WorkspacePaths     []string
 }
 
 func (p *HomePage) PopHomeAction() (HomeAction, bool) {
@@ -87,11 +98,15 @@ func (p *HomePage) queueOpenSessionAction(session model.SessionSummary) {
 }
 
 func (p *HomePage) QueueSelectModelProfile(profileID string) bool {
+	return p.QueueSelectModelProfileScope(profileID, FavoriteScopeDefault)
+}
+
+func (p *HomePage) QueueSelectModelProfileScope(profileID string, scope FavoriteScope) bool {
 	profileID = strings.TrimSpace(profileID)
 	if p == nil || profileID == "" {
 		return false
 	}
-	p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectModelProfile, ModelProfileID: profileID}
+	p.pendingHomeAction = &HomeAction{Kind: HomeActionSelectModelProfile, ModelProfileID: profileID, FavoriteScope: scope}
 	p.statusLine = "selecting profile..."
 	return true
 }

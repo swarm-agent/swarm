@@ -272,12 +272,12 @@ func (s *Service) recordProviderUsageSnapshot(sessionID, runID, providerID, mode
 	}
 	if s.sessions != nil && s.sessions.Store() != nil {
 		if turnUsage.EstimatedCostUSD == 0 && turnUsage.PriceStatus == "" && !strings.EqualFold(turnUsage.Provider, "codex") {
-			cost, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.BilledInputTokens, turnUsage.BilledOutputTokens, turnUsage.BilledCacheReadTokens, turnUsage.BilledThinkingTokens)
+			cost, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.BilledInputTokens, turnUsage.BilledOutputTokens, turnUsage.BilledCacheReadTokens, turnUsage.BilledCacheWriteTokens, turnUsage.BilledThinkingTokens)
 			turnUsage.CostProvenance = "catalog"
 			turnUsage.EstimatedCostUSD = cost
 			turnUsage.PriceStatus = status
 		} else if turnUsage.PriceStatus == "" {
-			_, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.BilledInputTokens, turnUsage.BilledOutputTokens, turnUsage.BilledCacheReadTokens, turnUsage.BilledThinkingTokens)
+			_, status := s.sessions.Store().CalculateCostWithStatus(turnUsage.Provider, turnUsage.Model, turnUsage.BilledInputTokens, turnUsage.BilledOutputTokens, turnUsage.BilledCacheReadTokens, turnUsage.BilledCacheWriteTokens, turnUsage.BilledThinkingTokens)
 			turnUsage.PriceStatus = status
 		}
 	}

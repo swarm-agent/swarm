@@ -1,0 +1,268 @@
+package lifecycle
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"swarm-refactor/swarmtui/pkg/environments"
+	"swarm/packages/swarmd/internal/environments/provider"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
+
+type managedBuildProvider struct {
+	*mockProvider
+	calls        int
+	mismatch     bool
+	cleanupCalls int
+	cleanupErr   error
+	buildErr     error
+	lastBuild    provider.ImageBuildRequest
+	afterBuild   func()
+}
+
+func (p *managedBuildProvider) BuildImage(_ context.Context, r provider.ImageBuildRequest) (*environments.ImageBuildResult, error) {
+	p.calls++
+	p.lastBuild = r
+	if p.afterBuild != nil {
+		p.afterBuild()
+	}
+	if p.buildErr != nil {
+		return nil, p.buildErr
+	}
+	b := &environments.ImageBuildResult{OperationID: r.OperationID, ConnectionID: r.Connection.ID, ConnectionDigest: environments.ConnectionTransportDigest(r.Connection), DefinitionDigest: r.Definition.Digest(), ImageID: "sha256:" + strings.Repeat("c", 64), ContextDigest: strings.Repeat("d", 64), Product: r.Definition.Product, Recipe: r.Definition.Recipe, RecipeFile: r.Definition.RecipeFile}
+	if p.mismatch {
+		b.Product.Commit = strings.Repeat("e", 40)
+	}
+	return b, nil
+}
+func (p *managedBuildProvider) CleanupBuild(context.Context, string) error {
+	p.cleanupCalls++
+	return p.cleanupErr
+}
+func buildLifecycleFixture(t *testing.T) (*supervisedTestHarness, environments.Environment, environments.Connection, *managedBuildProvider) {
+	t.Helper()
+	return buildLifecycleFixtureKind(t, environments.ConnectionKindLocalPodman)
+}
+
+func buildLifecycleFixtureKind(t *testing.T, kind environments.ConnectionKind) (*supervisedTestHarness, environments.Environment, environments.Connection, *managedBuildProvider) {
+	t.Helper()
+	h := setupSupervisedHarness(t)
+	product, err := h.workspaces.AddForAccount("account", t.TempDir(), "Product")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipe, err := h.workspaces.AddForAccount("account", t.TempDir(), "Recipe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := environments.Connection{ID: "build-connection", Name: "Build", AccountScopeID: "account", WorkspaceID: "workspace", Kind: kind}
+	if kind == environments.ConnectionKindSSH {
+		definition.SSH = &environments.SSHConfig{Host: "example.invalid", User: "tester", Port: 22}
+		definition.Capabilities.SupportsDocker = true
+	}
+	conn, err := h.connections.Save(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := createTestEnvironment(t, h.environments, "account", "workspace", "build-env", conn.ID, true, 1, environments.ReleaseBehaviorNone)
+	env.Container.Image = environments.ManagedBuildImage
+	if kind == environments.ConnectionKindLocalPodman {
+		env.Container.RootlessSystemd = &environments.RootlessSystemd{CgroupNamespace: "private", Network: "slirp4netns", PidsLimit: 1024}
+	}
+	env.Provisioning = environments.WorkspaceProvisioning{Strategy: environments.SourceStrategy{Kind: environments.SourceStrategyKindRegistryImage, RegistryImage: &environments.RegistryImageConfig{Image: environments.ManagedBuildImage, PullPolicy: "never"}}}
+	env.Build = &environments.ImageBuildDefinition{Product: environments.CommittedBuildSource{WorkspaceID: product.WorkspaceID, WorkspaceGeneration: product.WorkspaceGeneration, Commit: strings.Repeat("a", 40)}, Recipe: environments.CommittedBuildSource{WorkspaceID: recipe.WorkspaceID, WorkspaceGeneration: recipe.WorkspaceGeneration, Commit: strings.Repeat("b", 40)}, RecipeDirectory: "recipe", RecipeFile: "recipe/Containerfile"}
+	env, err = h.environments.Save(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &managedBuildProvider{mockProvider: newMockProvider(kind)}
+	h.manager.registry.Register(p)
+	return h, env, conn, p
+}
+
+// Purpose: DeploymentManager build admission must reject foreign/stale sources
+// before provider effects, and executeBuild must reject inconsistent provenance.
+// Real catalog stores plus an injected builder prove that authority boundary.
+func TestManagedBuildCatalogAuthority(t *testing.T) {
+	h, env, conn, p := buildLifecycleFixture(t)
+	ctx := context.Background()
+	for _, account := range []string{"foreign", "account"} {
+		bad := env.Clone()
+		if account == "account" {
+			bad.Build.Product.WorkspaceGeneration++
+		}
+		if _, err := h.manager.executeBuild(ctx, "op_rejected", SubmitOperationRequest{AccountScopeID: account}, bad, &conn); err == nil {
+			t.Fatal("unauthorized source accepted")
+		}
+	}
+	if p.calls != 0 {
+		t.Fatal("unauthorized request reached builder")
+	}
+	p.mismatch = true
+	if _, err := h.manager.executeBuild(ctx, "op_mismatch", SubmitOperationRequest{AccountScopeID: "account"}, &env, &conn); err == nil {
+		t.Fatal("mismatched product accepted")
+	}
+	p.mismatch = false
+	result, err := h.manager.executeBuild(ctx, "op_result", SubmitOperationRequest{AccountScopeID: "account"}, &env, &conn)
+	if err != nil || result.Build.Product != env.Build.Product {
+		t.Fatalf("%+v %v", result, err)
+	}
+	runtime := runtimeBuildEnvironment(env, result.Build)
+	if runtime.Container.Image != result.Build.ImageID || runtime.Build != nil || env.Container.Image != environments.ManagedBuildImage || env.Build == nil {
+		t.Fatal("runtime substitution mutated saved definition")
+	}
+}
+
+// Purpose: resolveBuildImage must require an account/workspace-scoped successful
+// durable operation with exact environment, connection and source identity.
+// Real operation transitions prove rejection without deployment side effects.
+func TestManagedBuildResultAdmission(t *testing.T) {
+	h, env, conn, _ := buildLifecycleFixture(t)
+	ctx := context.Background()
+	res, err := h.manager.executeBuild(ctx, "op_receipt", SubmitOperationRequest{AccountScopeID: "account"}, &env, &conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	op := environments.EnvironmentOperation{OperationID: "op_receipt", AccountScopeID: "account", WorkspaceID: "workspace", Action: environments.OperationActionBuild, EnvironmentID: env.ID, BuildConnectionID: conn.ID, BuildDefinition: env.Build, Status: environments.OperationStatusQueued, CreatedAt: now, ObservedAt: now, Deadline: now + 60000}
+	op, _, err = h.opStore.AdmitOperation(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.manager.resolveBuildImage(ctx, "account", "workspace", op.OperationID, &env, &conn); err == nil {
+		t.Fatal("queued operation accepted")
+	}
+	op, err = h.opStore.TransitionOperation(pebblestore.OperationTransitionInput{AccountScopeID: "account", WorkspaceID: "workspace", OperationID: op.OperationID, ExpectedRevision: op.Revision, TargetStatus: environments.OperationStatusRunning, ObservedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err = h.opStore.TransitionOperation(pebblestore.OperationTransitionInput{AccountScopeID: "account", WorkspaceID: "workspace", OperationID: op.OperationID, ExpectedRevision: op.Revision, TargetStatus: environments.OperationStatusSucceeded, Result: res, ObservedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = h.manager.resolveBuildImage(ctx, "account", "workspace", op.OperationID, &env, &conn); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []string{"foreign", "workspace", "connection", "source", "missing"} {
+		t.Run(tc, func(t *testing.T) {
+			account, workspace, id := "account", "workspace", op.OperationID
+			bad := env.Clone()
+			c := conn
+			switch tc {
+			case "foreign":
+				account = "other"
+			case "workspace":
+				workspace = "other"
+			case "connection":
+				c.ID = "other"
+			case "source":
+				bad.Build.Product.Commit = strings.Repeat("e", 40)
+			case "missing":
+				id = ""
+			}
+			if _, err := h.manager.resolveBuildImage(ctx, account, workspace, id, bad, &c); err == nil {
+				t.Fatal("invalid result accepted")
+			}
+		})
+	}
+	deps, err := h.deployments.ListByEnvironment("account", "workspace", env.ID, 10)
+	if err != nil || len(deps) != 0 {
+		t.Fatal("receipt lookup mutated deployments")
+	}
+}
+
+// Purpose: durable running build operations must recover by exact owned cleanup,
+// never replay a recipe or invent success. DeploymentManager.Recover and the
+// real operation store prove cancelled versus unknown cleanup outcomes.
+func TestManagedBuildRecoveryNoReplay(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "confirmed", true: "unconfirmed"}[fail], func(t *testing.T) {
+			h, env, conn, p := buildLifecycleFixture(t)
+			if fail {
+				p.cleanupErr = errors.New("injected termination uncertainty")
+			}
+			now := time.Now().UnixMilli()
+			op, _, err := h.opStore.AdmitOperation(environments.EnvironmentOperation{OperationID: "op_recover", AccountScopeID: "account", WorkspaceID: "workspace", Action: environments.OperationActionBuild, EnvironmentID: env.ID, BuildConnectionID: conn.ID, BuildDefinition: env.Build, Status: environments.OperationStatusQueued, CreatedAt: now, ObservedAt: now, Deadline: now + 60000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			op, err = h.opStore.TransitionOperation(pebblestore.OperationTransitionInput{AccountScopeID: "account", WorkspaceID: "workspace", OperationID: op.OperationID, ExpectedRevision: op.Revision, TargetStatus: environments.OperationStatusRunning, ObservedAt: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := h.manager.Recover(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got, found, err := h.opStore.Get("account", "workspace", op.OperationID)
+			want := environments.OperationStatusCancelled
+			if fail {
+				want = environments.OperationStatusUnknown
+			}
+			if err != nil || !found || got.Status != want || got.Result.Build != nil || p.calls != 0 || p.cleanupCalls != 1 {
+				t.Fatalf("recovery: %+v calls=%d cleanup=%d err=%v", got, p.calls, p.cleanupCalls, err)
+			}
+		})
+	}
+}
+
+// Purpose: executeBuild must retain the actionable build/admission rejection when
+// cleanup also fails. This service-level test proves nil receipts, original cause
+// identity and cleanup_failed classification without running an engine.
+func TestManagedBuildRejectionDiagnostics(t *testing.T) {
+	for _, admission := range []bool{false, true} {
+		for _, cleanupFails := range []bool{false, true} {
+			h, env, conn, p := buildLifecycleFixture(t)
+			primary := errors.New("exact committed build source is unavailable")
+			want := primary.Error()
+			if admission {
+				p.mismatch = true
+				want = "provider returned mismatched build provenance"
+			} else {
+				p.buildErr = primary
+			}
+			if cleanupFails {
+				p.cleanupErr = errors.New("owned build storage unmount failed")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			out, err := h.manager.executeBuild(ctx, "op_rejection", SubmitOperationRequest{AccountScopeID: "account"}, &env, &conn)
+			cancel()
+			if out != nil || err == nil || !strings.Contains(err.Error(), want) || p.cleanupCalls != 1 {
+				t.Fatalf("rejection lost: out=%+v err=%v cleanup=%d", out, err, p.cleanupCalls)
+			}
+			if !admission && !errors.Is(err, primary) {
+				t.Fatal("original error identity lost")
+			}
+			if errors.Is(err, provider.ErrOperationCleanupFailed) != cleanupFails {
+				t.Fatalf("wrong cleanup classification: %v", err)
+			}
+			if cleanupFails && !strings.Contains(err.Error(), p.cleanupErr.Error()) {
+				t.Fatalf("cleanup cause lost: %v", err)
+			}
+		}
+	}
+}
+
+// Purpose: executeBuild must pass the observed command status to the operation
+// supervisor even when owned cleanup fails, without passing an image receipt.
+// The service boundary is the narrowest layer for this result propagation.
+func TestManagedBuildCommandExitPropagation(t *testing.T) {
+	for _, cleanupFails := range []bool{false, true} {
+		h, env, conn, p := buildLifecycleFixture(t)
+		p.buildErr = &provider.BuildCommandError{Phase: "build", Kind: "exit", Code: 125}
+		if cleanupFails {
+			p.cleanupErr = errors.New("owned build storage unmount failed")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		out, err := h.manager.executeBuild(ctx, "op_exit", SubmitOperationRequest{AccountScopeID: "account"}, &env, &conn)
+		cancel()
+		if err == nil || out == nil || out.ExitCode != 125 || out.Build != nil || p.cleanupCalls != 1 || !errors.Is(err, p.buildErr) {
+			t.Fatalf("command result lost or admitted: %+v %v", out, err)
+		}
+		if errors.Is(err, provider.ErrOperationCleanupFailed) != cleanupFails {
+			t.Fatalf("cleanup classification lost: %v", err)
+		}
+	}
+}

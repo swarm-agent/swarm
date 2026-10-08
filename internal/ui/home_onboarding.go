@@ -17,6 +17,7 @@ type onboardingPhase int
 const (
 	onboardingPhaseIdentity onboardingPhase = iota
 	onboardingPhaseProvider
+	onboardingPhaseProject
 	onboardingPhaseWorkspace
 )
 
@@ -30,32 +31,45 @@ const (
 )
 
 type onboardingState struct {
-	Visible            bool
-	Locked             bool
-	Phase              onboardingPhase
-	Focus              onboardingFocus
-	Status             string
-	Error              string
-	Pending            bool
-	WorkspacePath      string
-	WorkspaceReady     bool
-	SetupConsent       bool
-	EditingPath        bool
-	RuntimeAccount     string
-	HomePath           string
-	ProjectName        string
-	ProjectParent      string
-	NamingProject      bool
-	ProjectField       int
-	PreviousPath       string
-	ActionIndex        int
-	ChoosingRepository bool
-	Repositories       []client.WorkspaceDiscoverEntry
-	Repository         *client.OnboardingRepository
-	Review             *client.OnboardingReview
-	Selected           map[string]bool
-	ConfirmOmissions   bool
-	BaselineAttempt    *client.OnboardingBaseline
+	Visible              bool
+	Locked               bool
+	Phase                onboardingPhase
+	Focus                onboardingFocus
+	Status               string
+	Error                string
+	Pending              bool
+	Personalizing        bool
+	PreFinish            bool
+	PreFinishTicks       int
+	PreFinishProjectID   string
+	PreFinishProjectName string
+	PreFinishWorkspaces  []string
+	Tick                 int
+	AddingWorkspaces     bool
+	CreatingFolder       bool
+	NewFolderPath        string
+	WorkspacePath        string
+	WorkspaceReady       bool
+	SetupConsent         bool
+	EditingPath          bool
+	RuntimeAccount       string
+	HomePath             string
+	ProjectNamed         bool
+	ProjectName          string
+	ProjectParent        string
+	ProjectDescription   string
+	ProjectFocus         int
+	NamingProject        bool
+	ProjectField         int
+	PreviousPath         string
+	ActionIndex          int
+	ChoosingRepository   bool
+	Repositories         []client.WorkspaceDiscoverEntry
+	Repository           *client.OnboardingRepository
+	Review               *client.OnboardingReview
+	Selected             map[string]bool
+	ConfirmOmissions     bool
+	BaselineAttempt      *client.OnboardingBaseline
 }
 
 func (p *HomePage) SetOnboardingRequired(required bool, username, swarmName string) {
@@ -79,7 +93,7 @@ func (p *HomePage) ShowOnboardingLocked(status string) {
 	p.onboarding.Locked = true
 	if !wasVisible {
 		p.onboarding.Phase = onboardingPhaseIdentity
-		if p.model.OnboardingUsername != "" && p.model.OnboardingSwarmName != "" {
+		if p.model.OnboardingIdentityBootstrapped && p.model.OnboardingUsername != "" {
 			p.onboarding.Phase = onboardingPhaseProvider
 		}
 		p.onboarding.Focus = onboardingFocusUsername
@@ -100,6 +114,17 @@ func (p *HomePage) OnboardingProviderActive() bool {
 	return p != nil && p.onboarding.Visible && p.onboarding.Phase == onboardingPhaseProvider
 }
 
+func (p *HomePage) OnboardingProjectActive() bool {
+	return p != nil && p.onboarding.Visible && (p.onboarding.Phase == onboardingPhaseProject || p.onboarding.NamingProject)
+}
+
+func (p *HomePage) OnboardingProjectName() string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.onboarding.ProjectName)
+}
+
 func (p *HomePage) OnboardingWorkspaceActive() bool {
 	return p != nil && p.onboarding.Visible && p.onboarding.Phase == onboardingPhaseWorkspace
 }
@@ -114,7 +139,16 @@ func (p *HomePage) SetOnboardingWorkspaceGuidance(account, home string) {
 }
 
 func (p *HomePage) OnboardingWorkspacePath() string {
-	return p.onboarding.WorkspacePath
+	if p.onboarding.NamingProject {
+		return p.onboardingProjectDestination()
+	}
+	if p.onboarding.WorkspacePath != "" {
+		return p.onboarding.WorkspacePath
+	}
+	if !p.model.WorkspaceSetupHasGit && p.model.CWD != "" {
+		return strings.TrimSpace(p.model.CWD)
+	}
+	return ""
 }
 
 func (p *HomePage) SetOnboardingWorkspacePath(path string) {
@@ -148,19 +182,86 @@ func (p *HomePage) ShowOnboardingProvider(status string) {
 	}
 }
 
-func (p *HomePage) ShowOnboardingWorkspace(status string) {
-	if p == nil || !p.onboarding.Visible {
+func (p *HomePage) ShowOnboardingProject(status string) {
+	if p == nil {
 		return
 	}
+	p.onboarding.Visible = true
+	p.authModal.Editor = nil
+	p.authModal.Login = nil
+	p.authModal.Loading = false
+	p.onboarding.Phase = onboardingPhaseProject
+	p.onboarding.ProjectFocus = 0
+	p.onboarding.ActionIndex = 0
+	p.onboarding.ProjectNamed = false
+	p.onboarding.Pending = false
+	p.onboarding.Error = ""
+	if strings.TrimSpace(status) != "" {
+		p.onboarding.Status = strings.TrimSpace(status)
+	}
+}
+
+func (p *HomePage) ShowOnboardingWorkspace(status string) {
+	if p == nil {
+		return
+	}
+	p.onboarding.Visible = true
 	p.authModal.Editor = nil
 	p.authModal.Login = nil
 	p.authModal.Loading = false
 	p.onboarding.Phase = onboardingPhaseWorkspace
 	p.onboarding.ActionIndex = 0
 	p.onboarding.Pending = false
+	p.onboarding.Personalizing = false
+	p.onboarding.PreFinish = false
+	p.onboarding.AddingWorkspaces = false
+	p.onboarding.CreatingFolder = false
 	p.onboarding.Error = ""
 	if strings.TrimSpace(status) != "" {
 		p.onboarding.Status = strings.TrimSpace(status)
+	}
+}
+
+func (p *HomePage) ShowOnboardingPreFinish(projectID, projectName string, workspaces []string) {
+	if p == nil {
+		return
+	}
+	s := &p.onboarding
+	s.Visible = true
+	s.Phase = onboardingPhaseWorkspace
+	s.Personalizing = false
+	s.PreFinish = true
+	s.PreFinishProjectID = strings.TrimSpace(projectID)
+	s.PreFinishProjectName = strings.TrimSpace(projectName)
+	if s.PreFinishProjectName == "" {
+		s.PreFinishProjectName = strings.TrimSpace(s.ProjectName)
+	}
+	s.PreFinishWorkspaces = workspaces
+	s.PreFinishTicks = 0
+	s.Pending = false
+	s.Error = ""
+	s.Status = ""
+	s.ActionIndex = 0
+}
+
+func (p *HomePage) OnboardingPreFinishActive() bool {
+	return p != nil && p.onboarding.Visible && p.onboarding.PreFinish
+}
+
+func (p *HomePage) FinishOnboardingPreFinish() {
+	if p == nil {
+		return
+	}
+	s := &p.onboarding
+	projID := strings.TrimSpace(s.PreFinishProjectID)
+	projName := strings.TrimSpace(s.PreFinishProjectName)
+	if projName == "" {
+		projName = strings.TrimSpace(s.ProjectName)
+	}
+	p.pendingHomeAction = &HomeAction{
+		Kind:        HomeActionFinishOnboardingProject,
+		ProjectID:   projID,
+		ProjectName: projName,
 	}
 }
 
@@ -208,6 +309,8 @@ func (p *HomePage) handleOnboardingKey(ev *tcell.EventKey) {
 	switch p.onboarding.Phase {
 	case onboardingPhaseProvider:
 		p.handleOnboardingProviderKey(ev)
+	case onboardingPhaseProject:
+		p.handleOnboardingProjectKey(ev)
 	case onboardingPhaseWorkspace:
 		p.handleOnboardingWorkspaceKey(ev)
 	default:
@@ -234,6 +337,10 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 		p.clearOnboardingField()
 		return
 	case p.keybinds.Match(ev, KeybindEditorSubmit):
+		if p.onboarding.Focus == onboardingFocusCancel {
+			p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
+			return
+		}
 		if p.onboarding.Focus == onboardingFocusUsername && strings.TrimSpace(p.model.OnboardingUsername) != "" {
 			p.onboarding.Focus = onboardingFocusSwarmName
 			p.onboarding.Error = ""
@@ -242,7 +349,7 @@ func (p *HomePage) handleOnboardingIdentityKey(ev *tcell.EventKey) {
 		p.submitOnboardingIdentity()
 		return
 	case p.keybinds.Match(ev, KeybindEditorClose):
-		p.onboarding.Error = "Finish all three setup steps before entering Swarm."
+		p.onboarding.Error = "Enter your username to continue."
 		return
 	}
 	if p.onboarding.Focus > onboardingFocusSwarmName || ev.Key() != tcell.KeyRune || !unicode.IsPrint(ev.Rune()) {
@@ -260,34 +367,64 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 	if p.authModal.Loading {
 		return
 	}
-	if p.authModal.Editor == nil && (ev.Key() == tcell.KeyTab || ev.Key() == tcell.KeyBacktab) {
-		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 1) % 3
-		return
-	}
-	if p.authModal.Editor == nil && ev.Key() == tcell.KeyEnter && p.onboarding.ActionIndex != 0 {
-		if p.onboarding.ActionIndex == 1 {
-			p.ShowOnboardingWorkspace("Provider skipped. Verify your workspace to finish.")
-			p.onboarding.ActionIndex = 0
-		} else {
-			p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
-		}
-		return
-	}
 	if p.authModal.Editor != nil {
+		if ev.Key() == tcell.KeyEscape {
+			p.authModal.Editor = nil
+			p.authModal.Status = "Editor closed"
+			return
+		}
+		if ev.Key() == tcell.KeyCtrlS {
+			p.authModal.Editor = nil
+			p.ShowOnboardingProject("Provider skipped. Enter a project name to continue.")
+			return
+		}
 		p.handleAuthModalEditorKey(ev)
 		return
 	}
-	if p.keybinds.Match(ev, KeybindEditorClose) {
-		p.ShowOnboardingWorkspace("Provider skipped. Choose home or a new project folder to finish setup.")
+	if ev.Key() == tcell.KeyTab {
+		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 1) % 3
 		return
 	}
-	if ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S') {
-		p.ShowOnboardingWorkspace("Provider skipped. Choose home or a new project folder to finish setup.")
+	if ev.Key() == tcell.KeyBacktab {
+		p.onboarding.ActionIndex = (p.onboarding.ActionIndex + 2) % 3
 		return
 	}
+	if (ev.Key() == tcell.KeyRune && (ev.Rune() == 's' || ev.Rune() == 'S')) || ev.Key() == tcell.KeyEscape {
+		p.ShowOnboardingProject("Provider skipped. Enter a project name to continue.")
+		return
+	}
+	if p.onboarding.ActionIndex == 1 { // Skip for now
+		switch {
+		case ev.Key() == tcell.KeyDown:
+			p.onboarding.ActionIndex = 2
+			return
+		case ev.Key() == tcell.KeyUp:
+			p.onboarding.ActionIndex = 0
+			return
+		case ev.Key() == tcell.KeyEnter:
+			p.ShowOnboardingProject("Provider skipped. Enter a project name to continue.")
+			p.onboarding.ActionIndex = 0
+			return
+		}
+	}
+	if p.onboarding.ActionIndex == 2 { // Cancel / Exit
+		switch {
+		case ev.Key() == tcell.KeyUp:
+			p.onboarding.ActionIndex = 1
+			return
+		case ev.Key() == tcell.KeyEnter:
+			p.pendingHomeAction = &HomeAction{Kind: HomeActionKind("exit-onboarding")}
+			return
+		}
+	}
+	// ActionIndex == 0 (In provider list)
 	switch {
 	case p.keybinds.MatchAny(ev, KeybindEditorFocusNext, KeybindEditorMoveDown), ev.Key() == tcell.KeyRight:
 		p.authModal.Focus = authModalFocusProviders
+		if len(p.authModal.Providers) > 0 && p.authModal.SelectedProvider >= len(p.authModal.Providers)-1 {
+			p.onboarding.ActionIndex = 1
+			return
+		}
 		p.moveAuthModalSelection(1)
 		p.onboarding.Error = ""
 		return
@@ -303,7 +440,7 @@ func (p *HomePage) handleOnboardingProviderKey(ev *tcell.EventKey) {
 			return
 		}
 		if provider, ok := p.selectedAuthProvider(); ok && provider.Ready && provider.Runnable {
-			p.ShowOnboardingWorkspace("Connected provider selected. Verify your workspace to finish.")
+			p.ShowOnboardingProject("Connected provider selected. Enter a project name to continue.")
 			return
 		}
 		p.triggerProviderLogin(providerID)
@@ -369,7 +506,19 @@ func (p *HomePage) advanceOnboardingFocus(delta int) {
 	if delta == 0 {
 		return
 	}
-	p.onboarding.Focus = onboardingFocus((int(p.onboarding.Focus) + delta + 4) % 4)
+	order := []onboardingFocus{onboardingFocusUsername, onboardingFocusSwarmName, onboardingFocusContinue, onboardingFocusCancel}
+	current := 0
+	for i, f := range order {
+		if p.onboarding.Focus == f {
+			current = i
+			break
+		}
+	}
+	next := (current + delta) % len(order)
+	if next < 0 {
+		next += len(order)
+	}
+	p.onboarding.Focus = order[next]
 	p.onboarding.Error = ""
 }
 
@@ -401,27 +550,27 @@ func (p *HomePage) onboardingField() *string {
 }
 
 func (p *HomePage) identityOnboardingComplete() bool {
-	return strings.TrimSpace(p.model.OnboardingUsername) != "" && strings.TrimSpace(p.model.OnboardingSwarmName) != ""
+	return strings.TrimSpace(p.model.OnboardingUsername) != ""
 }
 
 func (p *HomePage) submitOnboardingIdentity() {
-	if strings.TrimSpace(p.model.OnboardingUsername) == "" {
+	user := strings.TrimSpace(p.model.OnboardingUsername)
+	if user == "" {
 		p.onboarding.Focus = onboardingFocusUsername
-		p.onboarding.Error = "Your name is required."
+		p.onboarding.Error = "Your username is required."
 		return
 	}
-	if strings.TrimSpace(p.model.OnboardingSwarmName) == "" {
-		p.onboarding.Focus = onboardingFocusSwarmName
-		p.onboarding.Error = "Swarm name is required."
-		return
+	swarm := strings.TrimSpace(p.model.OnboardingSwarmName)
+	if swarm == "" {
+		swarm = "default"
 	}
 	p.pendingHomeAction = &HomeAction{
 		Kind:      HomeActionSaveOnboarding,
-		Username:  strings.TrimSpace(p.model.OnboardingUsername),
-		SwarmName: strings.TrimSpace(p.model.OnboardingSwarmName),
+		Username:  user,
+		SwarmName: swarm,
 	}
 	p.onboarding.Pending = true
-	p.onboarding.Status = "Saving identity..."
+	p.onboarding.Status = "Creating account and saving settings…"
 	p.onboarding.Error = ""
 }
 
@@ -447,6 +596,8 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 	switch p.onboarding.Phase {
 	case onboardingPhaseProvider:
 		p.drawOnboardingProvider(s, content)
+	case onboardingPhaseProject:
+		p.drawOnboardingProject(s, content)
 	case onboardingPhaseWorkspace:
 		p.drawOnboardingWorkspace(s, content)
 	default:
@@ -468,7 +619,7 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 		status = errText
 		statusStyle = p.theme.Error
 	}
-	if status != "" {
+	if status != "" && (!p.onboarding.Personalizing || p.onboarding.Error != "") && !p.onboarding.PreFinish {
 		lines := Wrap(status, rect.W-6)
 		for i, line := range lines {
 			if i >= 2 {
@@ -480,10 +631,24 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 	help := "Ctrl+C exit • Tab/↑/↓ move • Enter continue"
 	if p.onboarding.Phase == onboardingPhaseProvider {
 		help = "Ctrl+C exit • ←/→ select • Enter connect • s/Esc skip"
+	} else if p.onboarding.Phase == onboardingPhaseProject {
+		help = "Enter continue to workspaces · Esc back to provider"
 	} else if p.onboarding.Phase == onboardingPhaseWorkspace {
-		help = "Tab/↑/↓ choose · Enter activate · Esc back · Ctrl+C exit"
-		if p.onboarding.EditingPath {
-			help = "Type path · Ctrl+U clear · Enter select · Esc cancel"
+		if p.onboarding.PreFinish {
+			help = "Enter launch project · Space launch · Esc back"
+		} else if p.onboarding.Personalizing {
+			help = "AI Router is personalizing Swarm. Please wait…"
+		} else if p.onboarding.CreatingFolder {
+			help = "Type folder path · Enter create · Esc cancel"
+		} else if p.onboarding.AddingWorkspaces {
+			help = "Space/Enter toggle · Enter on Finish to submit · Esc back · s skip"
+		} else if strings.TrimSpace(p.onboarding.ProjectName) != "" {
+			help = "Enter choose · ↑/↓ navigate · Esc back to project name"
+		} else {
+			help = "Tab/↑/↓ choose · Enter activate · Esc back · s skip"
+			if p.onboarding.EditingPath {
+				help = "Type path · Ctrl+U clear · Enter select · Esc cancel"
+			}
 		}
 	}
 	DrawText(s, rect.X+3, rect.Y+rect.H-2, rect.W-6, p.theme.TextMuted, clampEllipsis(help, rect.W-6))
@@ -491,24 +656,40 @@ func (p *HomePage) drawOnboarding(s tcell.Screen) {
 
 func (p *HomePage) drawOnboardingHeader(s tcell.Screen, rect Rect) {
 	step := int(p.onboarding.Phase) + 1
-	labels := []string{"Identity", "Provider", "Workspace"}
+	if step > 4 {
+		step = 4
+	}
+	labels := []string{"Identity", "Provider", "Project", "Workspace (optional)"}
+	if p.onboarding.PreFinish {
+		labels[3] = "Ready"
+	}
 	DrawText(s, rect.X+3, rect.Y+1, rect.W-6, p.theme.Text, "SWARM  ·  FIRST LAUNCH")
-	DrawText(s, rect.X+3, rect.Y+2, rect.W-6, p.theme.TextMuted, fmt.Sprintf("STEP %d OF 3  ·  %s", step, labels[step-1]))
-	barW := maxInt(3, (rect.W-8)/3)
-	for i := 0; i < 3; i++ {
+	DrawText(s, rect.X+3, rect.Y+2, rect.W-6, p.theme.TextMuted, fmt.Sprintf("STEP %d OF 4  ·  %s", step, labels[step-1]))
+	barW := maxInt(3, (rect.W-12)/4)
+	for i := 0; i < 4; i++ {
 		style := p.theme.Border
 		marker := strings.Repeat("─", barW)
-		if i == step-1 {
+		if i == step-1 || (p.onboarding.PreFinish && i <= 3) {
 			style = p.theme.Primary
 			marker = strings.Repeat("━", barW)
 		}
 		DrawText(s, rect.X+3+i*(barW+1), rect.Y+3, barW, style, marker)
 	}
-	titles := []string{"Name your Swarm.", "Connect your AI provider.", "Create your first workspace."}
+	step4Title := "Attach a workspace folder."
+	step4Subtitle := "Optional: attach a folder now, or let Swarm Orchestrator manage workspaces."
+	if p.onboarding.PreFinish {
+		step4Title = "All systems online. Project ready to launch!"
+		step4Subtitle = "Swarm is primed with your project context and ready for instructions."
+	} else if strings.TrimSpace(p.onboarding.ProjectName) != "" {
+		step4Title = fmt.Sprintf("Add workspaces into %s?", strings.TrimSpace(p.onboarding.ProjectName))
+		step4Subtitle = "Add workspaces to your project or skip straight to Swarm."
+	}
+	titles := []string{"Name your Swarm.", "Connect your AI provider.", "Create your first project.", step4Title}
 	subtitles := []string{
 		"Start with your name and the name of this Swarm.",
-		"Connect now, or skip ahead. Your workspace is still required.",
-		"Git setup is built in. Create or choose a repo for managed worktrees.",
+		"Connect now, or skip ahead. Provider can be added later.",
+		"Projects organize your chats, plans, and tasks. Enter a name to get started.",
+		step4Subtitle,
 	}
 	DrawText(s, rect.X+3, rect.Y+4, rect.W-6, p.theme.Text, titles[step-1])
 	DrawText(s, rect.X+3, rect.Y+5, rect.W-6, p.theme.TextMuted, clampEllipsis(subtitles[step-1], rect.W-6))
@@ -521,7 +702,7 @@ func (p *HomePage) drawOnboardingIdentity(s tcell.Screen, content Rect) {
 		focus onboardingFocus
 	}{
 		{label: "Your name", value: p.model.OnboardingUsername, focus: onboardingFocusUsername},
-		{label: "Swarm name", value: p.model.OnboardingSwarmName, focus: onboardingFocusSwarmName},
+		{label: "Swarm name (optional)", value: p.model.OnboardingSwarmName, focus: onboardingFocusSwarmName},
 	}
 	y := content.Y + 1
 	for _, field := range fields {
@@ -537,17 +718,21 @@ func (p *HomePage) drawOnboardingIdentity(s tcell.Screen, content Rect) {
 		value := field.value
 		if value == "" {
 			value = "Type here"
+			if field.focus == onboardingFocusSwarmName {
+				value = "default (optional)"
+			}
 			valueStyle = p.theme.TextMuted
 		}
 		DrawText(s, fieldRect.X+2, fieldRect.Y+1, fieldRect.W-4, valueStyle, clampTail(value, fieldRect.W-4))
 		y += 5
 	}
-	label := "[ Continue ]   [ Cancel / Exit ]"
+
+	label := "[ Continue (Enter) ]   [ Cancel / Exit ]"
 	if p.onboarding.Focus == onboardingFocusContinue {
-		label = "› [ Continue ]   [ Cancel / Exit ]"
+		label = "› [ Continue (Enter) ]   [ Cancel / Exit ]"
 	}
 	if p.onboarding.Focus == onboardingFocusCancel {
-		label = "[ Continue ]   › [ Cancel / Exit ]"
+		label = "[ Continue (Enter) ]   › [ Cancel / Exit ]"
 	}
 	DrawText(s, content.X, content.Y+content.H-1, content.W, p.theme.Primary, label)
 }

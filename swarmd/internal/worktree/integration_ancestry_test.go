@@ -1,14 +1,18 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Purpose: project integration verifies source HEAD ancestry, so the explicit
 // PreserveAncestry mode of PrepareTaskIntegration/ApplyTaskIntegration must
 // preserve original commits, not report failure after a successful cherry-pick.
+// AssessTaskDelivery must admit advanced targets, leaving conflicts to preflight.
 // Real isolated Git repositories prove ancestry, bytes, idempotency, and conflict
 // rejection without changing the target; no provider or daemon is needed.
 func TestTaskIntegrationPreserveAncestry(t *testing.T) {
@@ -46,6 +50,10 @@ func TestTaskIntegrationPreserveAncestry(t *testing.T) {
 				git(repo, "commit", "-m", "target")
 			}
 			target := git(repo, "rev-parse", "HEAD")
+			assessment := AssessTaskDelivery(context.Background(), TaskDeliveryInput{SourcePath: child, TargetPath: repo, Identity: pebblestore.TaskDeliveryAssessment{BaseOID: base, SourceBranch: "agent/source", TargetBranch: "dev"}})
+			if assessment.State != "candidate_work" || assessment.CandidateCommits != 1 || len(assessment.AllowedActions) != 1 {
+				t.Fatalf("normal candidate not admitted: %+v", assessment)
+			}
 			svc := &Service{}
 			children := []TaskIntegrationChild{{SessionID: "source", BaseCommit: base, HeadCommit: head, PreserveAncestry: true}}
 			plan, err := svc.PrepareTaskIntegration(repo, "dev", target, children)
@@ -85,6 +93,12 @@ func TestTaskIntegrationPreserveAncestry(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(repo, "README.md"))
 			if err != nil || string(data) != "source change\n" {
 				t.Fatal("source bytes not integrated")
+			}
+			if scenario == "divergent" {
+				data, err := os.ReadFile(filepath.Join(repo, "target.txt"))
+				if err != nil || string(data) != "target change\n" {
+					t.Fatal("unrelated target edit lost")
+				}
 			}
 			retry, err := svc.PrepareTaskIntegration(repo, "dev", result.ResultingParentHead, children)
 			if err != nil {

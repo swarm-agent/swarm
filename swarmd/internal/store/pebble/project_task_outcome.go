@@ -13,7 +13,14 @@ func (s *SessionStore) completedTaskRunSummary(state V3SessionRunState) (string,
 		return "", false
 	}
 	event, found, err := s.GetV3SessionEvent(state.SessionID, state.EventSeq)
-	if err != nil || !found || event.SessionID != state.SessionID || event.EventType != "session.assistant.completed" {
+	if err != nil || !found {
+		return "", false
+	}
+	return completedTaskEventSummary(state, event)
+}
+
+func completedTaskEventSummary(state V3SessionRunState, event V3SessionEvent) (string, bool) {
+	if state.Active || state.Status != V3RunIntentCompleted || state.RunID == "" || state.EventSeq == 0 || event.Seq != state.EventSeq || event.SessionID != state.SessionID || event.EventType != "session.assistant.completed" {
 		return "", false
 	}
 	var payload v3SessionEventReplayPayload

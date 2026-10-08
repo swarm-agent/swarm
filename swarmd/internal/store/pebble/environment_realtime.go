@@ -62,6 +62,7 @@ func isAllowedEnvironmentKey(accountScopeID string, workspaceID string, key stri
 		return true
 	}
 	prefixes := []string{
+		"prepared-shared:" + KeyDeploymentActiveLeasePrefix + accountPart + "/" + workspacePart + "/",
 		KeyEnvironmentAccountPrefix + accountPart + "/" + workspacePart + "/",
 		KeyDeploymentAccountPrefix + accountPart + "/" + workspacePart + "/",
 		KeyDeploymentLeaseAccountPrefix + accountPart + "/" + workspacePart + "/",
@@ -119,9 +120,9 @@ func (s *Store) SetEnvironmentPublisher(publish func(V3RealtimeOutboxRecord)) {
 
 func (s *Store) commitEnvironmentRealtime(m *environmentRealtimeMutation) error {
 	requestID := uuid.NewString()
-	payload := m.eventPayload
-	if len(payload) == 0 {
-		payload = json.RawMessage(`{}`)
+	payload, err := s.taskEnvironmentEventPayload(m)
+	if err != nil {
+		return err
 	}
 	// Session ID is lowercase to satisfy canonical session validation
 	sessionID := "__environment__:" + strings.ToLower(m.accountScopeID) + ":" + strings.ToLower(m.workspaceID)

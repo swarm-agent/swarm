@@ -14,6 +14,7 @@ import (
 // SessionID is allocated by the store with the run identity and never supplied
 // by callers. Dispatch must use the returned receipt only.
 type WorkerRunAdmission struct {
+	Placement              *WorkerPlacementAdmission
 	ExpectedWorkerRevision uint64
 	ResolvedModelProfile   *SessionModelProfileSnapshot
 	WorkerID               string
@@ -94,6 +95,16 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes})
 	if err != nil {
 		return WorkerRunRecord{}, err
+	}
+	if req.Placement != nil {
+		hash, err = hashWorkerPayload(struct {
+			Base      string
+			Placement *WorkerPlacementAdmission
+			Revision  uint64
+		}{hash, req.Placement, req.ExpectedWorkerRevision})
+		if err != nil {
+			return WorkerRunRecord{}, err
+		}
 	}
 	ws.store.workersMu.Lock()
 	var published *workerRealtimeMutation
@@ -207,6 +218,9 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	req.SessionID = "worker-execution-" + runID
 	receipt := WorkerRunRecord{ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: req.UserID, workerID: worker.ID}
+	if err := ws.pinWorkerPlacement(account, req, worker, &receipt, m); err != nil {
+		return WorkerRunRecord{}, err
+	}
 	if err := m.put(KeyWorkerRun(account, worker.ID, receipt.ID), receipt); err != nil {
 		return WorkerRunRecord{}, err
 	}

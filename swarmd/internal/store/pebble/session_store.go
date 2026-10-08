@@ -202,17 +202,26 @@ type SessionPlanAutomationIntent struct {
 	Definition         AutomationDefinition `json:"definition"`
 }
 
+// SessionPlanRequirement is a stable, user-facing executable acceptance criterion.
+type SessionPlanRequirement struct {
+	ID           string `json:"id"`
+	Text         string `json:"text"`
+	CheckpointID string `json:"checkpoint_id"`
+}
+
 type SessionPlanDocument struct {
-	WorkerV2        *AutomationV2Settings        `json:"worker_v2,omitempty"`
-	AutomationV2    *AutomationV2Settings        `json:"automation_v2,omitempty"`
-	Automation      *SessionPlanAutomationIntent `json:"automation,omitempty"`
-	ID              string                       `json:"id"`
-	Title           string                       `json:"title"`
-	Status          string                       `json:"status,omitempty"`
-	SchemaVersion   string                       `json:"schema_version,omitempty"`
-	RevisionID      string                       `json:"revision_id,omitempty"`
-	Info            SessionPlanInfo              `json:"info,omitempty"`
-	ExecutionPolicy SessionPlanExecutionPolicy   `json:"execution_policy,omitempty"`
+	Requirements       []SessionPlanRequirement     `json:"requirements,omitempty"`
+	RequirementChanges []string                     `json:"requirement_changes,omitempty"`
+	WorkerV2           *AutomationV2Settings        `json:"worker_v2,omitempty"`
+	AutomationV2       *AutomationV2Settings        `json:"automation_v2,omitempty"`
+	Automation         *SessionPlanAutomationIntent `json:"automation,omitempty"`
+	ID                 string                       `json:"id"`
+	Title              string                       `json:"title"`
+	Status             string                       `json:"status,omitempty"`
+	SchemaVersion      string                       `json:"schema_version,omitempty"`
+	RevisionID         string                       `json:"revision_id,omitempty"`
+	Info               SessionPlanInfo              `json:"info,omitempty"`
+	ExecutionPolicy    SessionPlanExecutionPolicy   `json:"execution_policy,omitempty"`
 	// ExecutionOrigin distinguishes lightweight auto-session work from approved
 	// full-plan execution without relying on conversation history.
 	ExecutionOrigin     string                         `json:"execution_origin,omitempty"`
@@ -464,6 +473,8 @@ func (s *SessionStore) WorkerStore() *WorkerStore {
 }
 
 func (s *SessionStore) CreateSession(session SessionSnapshot) error {
+	unlock := s.store.sessionMutations.lockSessions(session.ID)
+	defer unlock()
 	session = normalizeSessionOwnership(session)
 	if err := validateCanonicalSessionID(session.ID); err != nil {
 		return err
@@ -474,6 +485,9 @@ func (s *SessionStore) CreateSession(session SessionSnapshot) error {
 	}
 	batch := s.store.NewBatch()
 	defer batch.Close()
+	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
 		return err
 	}
@@ -516,6 +530,8 @@ func (s *SessionStore) UpdateSessionForAccount(session SessionSnapshot, userID, 
 }
 
 func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
+	unlock := s.store.sessionMutations.lockSessions(session.ID)
+	defer unlock()
 	session = normalizeSessionOwnership(session)
 	if err := validateCanonicalSessionID(session.ID); err != nil {
 		return err
@@ -536,6 +552,9 @@ func (s *SessionStore) UpdateSession(session SessionSnapshot) error {
 				return err
 			}
 		}
+	}
+	if err := setTaskRelatedInBatch(batch, KeySession(session.ID), session); err != nil {
+		return err
 	}
 	if err := batch.Set([]byte(KeySession(session.ID)), payload, nil); err != nil {
 		return err
@@ -767,6 +786,15 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 		if loaded, ok, err := s.GetSession(sessionID); err != nil {
 			return err
 		} else if ok {
+			if kind == "archived" && loaded.Metadata["agent_name"] == "system-orchestrator" && loaded.Metadata["project_id"] != nil {
+				// Recheck under the same session lock as run creation: a stale UI
+				// cannot archive work that started after its last live update.
+				if _, active, err := s.GetV3SessionActiveRunIntent(sessionID); err != nil {
+					return err
+				} else if active {
+					return errors.New("project session has active work; stop it explicitly or wait before archiving")
+				}
+			}
 			existingByID[sessionID] = loaded
 		} else if tombstone, tombstoneOK, tombstoneErr := s.GetV3SessionTombstone(sessionID); tombstoneErr != nil {
 			return tombstoneErr
@@ -853,6 +881,11 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 				mutationKind = V3SessionMutationArchiveSession
 				eventType = "session.archived"
 			}
+			if kind == "archived" {
+				if err := s.setProjectTaskWaitTransition(batch, V3SessionMutationInput{SessionID: sessionID, Kind: mutationKind}, seq, now); err != nil {
+					return err
+				}
+			}
 			var replaySession *SessionSnapshot
 			if kind == "archived" {
 				replaySession = &existing
@@ -919,6 +952,9 @@ func (s *SessionStore) tombstoneSessions(sessionIDs []string, kind string) error
 					return err
 				}
 			}
+		}
+		if err := deleteTaskRelatedSessionInBatch(batch, sessionID, kind == "deleted"); err != nil {
+			return err
 		}
 		if err := batch.Delete([]byte(KeySession(sessionID)), nil); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 			return err
@@ -1136,6 +1172,9 @@ func setV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTombst
 	if err != nil {
 		return fmt.Errorf("marshal v3 session tombstone %q: %w", tombstone.SessionID, err)
 	}
+	if err := setProjectArchiveInBatch(batch, tombstone); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeyV3SessionTombstone(tombstone.SessionID)), payload, nil); err != nil {
 		return err
 	}
@@ -1181,6 +1220,9 @@ func removeV3SessionTombstoneInBatch(batch *pebble.Batch, tombstone V3SessionTom
 			return err
 		}
 		return nil
+	}
+	if err := deleteKey(projectArchiveKey(tombstone)); err != nil {
+		return err
 	}
 	if err := deleteKey(KeyV3SessionTombstone(tombstone.SessionID)); err != nil {
 		return err
@@ -2006,6 +2048,8 @@ func (s *SessionStore) PutPlanWithArchivedRevision(plan, archived SessionPlanSna
 }
 
 func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, archived *SessionPlanSnapshot) error {
+	unlock := s.store.sessionMutations.lockSessions(plan.SessionID)
+	defer unlock()
 	plan.UserID = strings.TrimSpace(plan.UserID)
 	plan.AccountScopeID = strings.TrimSpace(plan.AccountScopeID)
 	payload, err := json.Marshal(plan)
@@ -2037,6 +2081,9 @@ func (s *SessionStore) putPlanWithArchivedRevision(plan SessionPlanSnapshot, arc
 		return err
 	}
 	payload = planRevisionPayload
+	if err := setTaskRelatedInBatch(batch, KeySessionPlan(plan.SessionID, plan.ID), plan); err != nil {
+		return err
+	}
 	if err := batch.Set([]byte(KeySessionPlan(plan.SessionID, plan.ID)), payload, nil); err != nil {
 		return err
 	}

@@ -1,7 +1,8 @@
-// Purpose: soften Orchestrate actions without losing approval guards, source selection,
-// or archive eligibility. Boundary: OrchestrateView approval JSX, TaskListToolbar and scoped CSS.
-// Extracting leaf elements is the narrowest layer for callback/disabled/label contracts;
-// token assertions do not prove browser contrast, layout, or backend authorization.
+// Purpose: preserve quiet approval/archive actions and the distinct segmented Task scope
+// control without losing approval guards, source selection, counts or keyboard access.
+// Boundary: OrchestrateView approval JSX, TaskListToolbar and swarm-section.css.
+// Leaf elements and CSS rules are the narrowest proof of callbacks, native button semantics
+// and styling tokens; they do not prove browser contrast, actual focus or backend authorization.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -74,20 +75,49 @@ function assertQuiet(element: React.ReactElement<any>) {
   assert.match(element.props.className, /\bswarm-outline-action\b/)
   assert.doesNotMatch(element.props.className, /bg-|text-white|shadow|scale-|font-bold/)
 }
+// Requirement: TaskListToolbar source buttons must remain a labelled, keyboard-accessible
+// segmented pair, not bulk outline actions. Prevent coupled source/status callbacks,
+// ambiguous pressed states and counts migrating out of the status tabs at this leaf boundary.
 test('source filters retain mutually exclusive pressed state and actions; counts belong to status chips', () => {
+  const scopes = [{ value: 'all', label: 'All' }, { value: 'worker', label: 'Workers' }] as const
   for (const selected of ['all', 'worker'] as const) {
     const calls: string[] = []
-    const tree = TaskListToolbar({ ...toolbarDefaults, source: selected, onSource: value => calls.push(value) })
-    for (const target of ['all', 'worker']) {
-      const element = elements(tree).find(node => node.props['data-testid'] === `filter-${target}-tasks`)!
-      assertQuiet(element)
-      assert.equal(element.props['aria-pressed'], selected === target)
-      assert.match(element.props.className, /swarm-task-source-filter/)
-      assert.equal(element.props.children, target === 'all' ? 'All' : 'Workers')
+    const statusCalls: string[] = []
+    const tree = TaskListToolbar({ ...toolbarDefaults, source: selected,
+      onSource: value => calls.push(value), onStatus: value => statusCalls.push(value),
+    })
+    const group = elements(tree).find(node => node.props.role === 'group' && node.props['aria-label'] === 'Task scope')
+    assert.ok(group, 'source controls retain their accessible group label')
+    assert.match(group.props.className, /\bswarm-task-source-control\b/)
+    const filters = elements(group).filter(node => node.type === 'button')
+    assert.equal(filters.length, 2)
+    assert.equal(filters.filter(node => node.props['aria-pressed'] === true).length, 1)
+    assert.equal(filters.filter(node => node.props['aria-pressed'] === false).length, 1)
+    for (const [index, target] of scopes.entries()) {
+      const element = filters[index]
+      assert.equal(element.props['data-testid'], `filter-${target.value}-tasks`)
+      assert.equal(element.props.type, 'button', 'source selection must not submit a form')
+      assert.equal(element.props['aria-pressed'], selected === target.value)
+      assert.match(element.props.className, /\bswarm-task-source-filter\b/)
+      assert.doesNotMatch(element.props.className, /swarm-outline-action|bg-|text-white|shadow|scale-|font-bold/)
+      assert.equal(element.props.children, target.label, 'source labels have no status counts')
+      assert.ok(!element.props.disabled, 'both source scopes remain actionable')
+      assert.ok(element.props.tabIndex === undefined || element.props.tabIndex === 0, 'both native buttons remain in the tab order')
+      assert.match(renderToStaticMarkup(element), new RegExp(`aria-pressed="${selected === target.value}"`))
       element.props.onClick()
+    }
+    const tabs = elements(tree).filter(node => node.props.role === 'tab')
+    assert.equal(tabs.length, 6)
+    const expectedCounts = [3, 0, 2, 0, 1, 0]
+    for (const [index, tab] of tabs.entries()) {
+      const chips = elements(tab).filter(node => node.props.className === 'swarm-task-count')
+      assert.equal(chips.length, 1, 'each status tab retains its count chip, including zero')
+      assert.equal(React.Children.toArray(chips[0].props.children).join(''), String(expectedCounts[index]))
+      assert.equal(chips[0].props['data-zero'], expectedCounts[index] === 0)
     }
     assert.match(renderToStaticMarkup(tree), /Review<span[^>]*>2<\/span>/)
     assert.deepEqual(calls, ['all', 'worker'])
+    assert.deepEqual(statusCalls, [], 'source selection must not change the status filter')
   }
 })
 
@@ -116,12 +146,13 @@ test('archive retains native disabled guards and archives only the selected rows
   assert.match(source, /onArchive=\{\(\) => void manageTasks\(markedRows, 'archive'\)\}/, 'view forwards only selected rows')
 })
 
+function rule(selector: string) {
+  const start = css.indexOf(selector)
+  assert.notEqual(start, -1, selector)
+  return css.slice(start, css.indexOf('}', start) + 1)
+}
+
 test('quiet actions share semantic New Task outline, focus and enabled-only interactions', () => {
-  function rule(selector: string) {
-    const start = css.indexOf(selector)
-    assert.notEqual(start, -1, selector)
-    return css.slice(start, css.indexOf('}', start) + 1)
-  }
   const base = rule('.swarm-section .swarm-outline-action,')
   assert.match(base, /\.swarm-section \.swarm-new-task-cta/)
   assert.match(base, /border: 1px solid currentColor/)
@@ -132,8 +163,27 @@ test('quiet actions share semantic New Task outline, focus and enabled-only inte
   assert.match(rule('.swarm-section .swarm-outline-action:not(:disabled):active,'), /var\(--swarm-surface-subtle\)/)
   assert.match(rule('.swarm-section .swarm-outline-action:focus-visible,'), /outline: 2px solid currentColor; outline-offset: 2px/)
   assert.match(rule('.swarm-section .swarm-outline-action:disabled {'), /opacity: 0.4; cursor: not-allowed/)
-  const unselected = rule('.swarm-section .swarm-task-source-filter[aria-pressed="false"]')
-  assert.match(unselected, /border-color: transparent/)
-  assert.match(unselected, /color: var\(--swarm-text-muted\)/)
-  assert.doesNotMatch(unselected, /border-width|padding|font-weight/)
+})
+
+// Requirement: swarm-section.css gives Task scope its own inset segmented surface and
+// uses the shared section focus ring for both native buttons. Prevent accidental outline
+// restyling, lost pressed-state distinction or state-dependent geometry; rule inspection
+// is the narrowest deterministic layer for these tokens, not a browser focus/contrast test.
+test('source filters use segmented base and pressed styling with the shared focus ring', () => {
+  const control = rule('.swarm-task-source-control {')
+  assert.match(control, /display: flex/)
+  assert.match(control, /background: var\(--swarm-background-inset\)/)
+  const base = rule('.swarm-task-source-filter {')
+  assert.match(base, /color: var\(--swarm-text-muted\)/)
+  assert.match(base, /padding: 0 12px/)
+  assert.match(base, /border-radius: 5px/)
+  assert.doesNotMatch(base, /border:|background:|box-shadow:|font-weight:/)
+  const pressed = rule('.swarm-task-source-filter[aria-pressed="true"] {')
+  assert.match(pressed, /background: var\(--swarm-surface-hover\)/)
+  assert.match(pressed, /color: var\(--swarm-text\)/)
+  assert.match(pressed, /box-shadow: 0 1px 3px #0003/)
+  assert.doesNotMatch(pressed, /border:|border-width:|padding:|font-size:|font-weight:/)
+  const focus = rule('.swarm-section :focus-visible {')
+  assert.match(focus, /outline: 2px solid var\(--swarm-accent\)/)
+  assert.match(focus, /outline-offset: 2px/)
 })

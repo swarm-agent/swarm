@@ -21,8 +21,10 @@ import (
 	worktreeruntime "swarm/packages/swarmd/internal/worktree"
 )
 
-// Purpose: the registered integrate -> reopen path must retain inspected Git
-// provenance when preparation conflicts or equivalent patches lack source ancestry.
+// Purpose: legacy persisted preparation receipts must retain inspected Git
+// provenance across reopen; new integrate admission rejects ambiguous/equivalent
+// history without manufacturing receipts. Seed historical receipts through the
+// canonical Begin/Finish boundary from real Git inspection/preparation below.
 // The temporary store/repository layer is the narrowest proof of receipt durability, isolated
 // exact-source allocation and promotability; provider execution is not needed.
 // Threat: missing receipts block repair, current dev replaces unintegrated work,
@@ -142,15 +144,32 @@ func TestProjectTaskRepairPrepareConflictReceipt(t *testing.T) {
 			if equivalent {
 				expectedError, expectedStatus = "equivalent patches", http.StatusConflict
 				state := inspectTaskGitState(*read(), db)
-				if state.isIntegrated || state.unintegratedCommits != 1 {
+				if state.isIntegrated || state.unintegratedCommits != 0 || state.deliveryAssessment.State != "history_equivalent" {
 					t.Fatalf("equivalent history hidden before integrate: %+v", state)
 				}
 			}
+			_ = expectedStatus // Historical status; admission is now uniformly 409.
 			integrate := func() {
 				t.Helper()
+				before := read()
 				response := f.callAPI(http.MethodPost, "/project/tasks/task/integrate", map[string]any{"session_id": "origin", "source_branch": alloc.BranchName, "target_branch": "dev"}, p)
-				if response.Code != expectedStatus || !strings.Contains(response.Body.String(), expectedError) {
-					t.Fatalf("expected real prepare conflict: %d %s", response.Code, response.Body)
+				if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "not actionable") || !reflect.DeepEqual(before, read()) {
+					t.Fatalf("unsafe new admission: %d %s", response.Code, response.Body)
+				}
+				if !equivalent {
+					if _, err := service.PrepareTaskIntegration(repo, "dev", target, []worktreeruntime.TaskIntegrationChild{{SessionID: "origin", BaseCommit: base, HeadCommit: head, PreserveAncestry: true}}); err == nil {
+						t.Fatal("historical fixture must really conflict")
+					}
+				}
+				// Compatibility fixture for a receipt created before preview-first
+				// admission. This is not a claim that the current HTTP route wrote it.
+				receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: "origin", SourceBranch: alloc.BranchName, TargetBranch: "dev", TargetWorkspacePath: repo, SourceHead: head, PreviousTargetHead: target}
+				if err := pebblestore.BeginProjectTaskIntegration(f.server.sessions.Store(), f.accountID, before, receipt); err != nil {
+					t.Fatal(err)
+				}
+				receipt.State, receipt.Error = "conflict", expectedError
+				if _, err := pebblestore.FinishProjectTaskIntegration(f.server.sessions.Store(), f.accountID, before, receipt); err != nil {
+					t.Fatal(err)
 				}
 			}
 			integrate()

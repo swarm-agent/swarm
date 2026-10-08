@@ -1,5 +1,6 @@
 import { designRefKey, type DesignCandidate, type DesignRef, type DesignRevision, type ProjectDesign } from '../session-v3/design-api'
 import type { MediaLibraryItem } from '../tools/media-library/types'
+import { creativeThreads } from '../tools/media-library/creative-thread'
 
 export const designNodeId = (session: string, ref: DesignRef) => JSON.stringify(['design', session, designRefKey(ref)])
 export const designRequestId = (row: ProjectDesign) => JSON.stringify(['design-request', row.request.parent_session_id, row.request.id])
@@ -11,7 +12,7 @@ export function readyDesignRevision(candidate: DesignCandidate): DesignRevision 
 export function designMediaItem(row: ProjectDesign, candidate: number, revision: DesignRevision): MediaLibraryItem {
   const session = row.request.parent_session_id
   return {
-    source: 'independent-design', design: { projectId: row.project_id, requestId: row.request.id, candidate, revision },
+    source: 'independent-design', design: { projectId: row.project_id, requestId: row.request.id, candidate, revision: { ...revision, request_id: row.request.id, candidate } },
     id: designNodeId(session, revision.ref), title: `${row.title} · Candidate ${candidate + 1} · Revision ${revision.ref.revision}`,
     filename: `design-r${revision.ref.revision}.${revision.kind === 'plan' ? 'txt' : 'html'}`,
     kind: 'animation', mediaType: revision.kind === 'plan' ? 'text/plain' : 'text/html', directUrl: '',
@@ -33,4 +34,13 @@ export function designReadyItems(rows: readonly ProjectDesign[]): MediaLibraryIt
 }
 export function designStatus(state: string) {
   return state === 'succeeded' ? 'ready' : state === 'pending' || state === 'accepted' ? 'queued' : state.split('_').join(' ')
+}
+
+/** Exact bases connect requests; siblings stay in their originating request turn. */
+export function designThreads(rows: readonly ProjectDesign[]) {
+  return creativeThreads(rows.map(row => ({
+    id: designRequestId(row), value: row,
+    outputs: row.request.candidates.flatMap(candidate => (candidate.attempts ?? []).flatMap(attempt => attempt.result ? [designNodeId(row.request.parent_session_id, attempt.result)] : [])),
+    parents: row.request.candidates.flatMap(candidate => candidate.spec.base ? [designNodeId(row.request.parent_session_id, candidate.spec.base)] : []),
+  })))
 }

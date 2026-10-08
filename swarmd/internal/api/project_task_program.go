@@ -140,6 +140,10 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		return nil, errors.New("cross-account project access forbidden")
 	}
 
+	origin, err := s.projectTaskOrigin(ctx, p, projectID)
+	if err != nil {
+		return nil, err
+	}
 	prompt := strings.TrimSpace(input.Prompt)
 	if prompt == "" {
 		prompt = strings.TrimSpace(input.Description)
@@ -190,15 +194,20 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	isDirectVideo := input.Agent == "video" || reqOp == pebblestore.VideoOperationEdit || reqOp == pebblestore.VideoOperationExtend || (reqOp == pebblestore.VideoOperationCreate && input.Agent == "video")
 	requiresRepo := input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || (!isDirectVideo && input.Agent != "image" && input.Agent != "video" && input.Agent != "sound" && input.Agent != "audio")
 	isImage := input.Agent == "image" || input.Intent == "image"
+	isDirectSound := input.Agent == "sound" || input.Intent == "sound" || input.Agent == "audio" || input.Intent == "audio"
+	isDirectSimpleMedia := isImage || isDirectSound || (isDirectVideo && len(input.CoderAssignments) == 0 && input.Document == nil && input.PlanDocument == nil && input.TaskProgram == nil)
 	var source pebblestore.ProjectTaskSource
-	if isImage {
-		if input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || input.TaskProgramID != "" || len(input.CoderAssignments) > 0 || input.SessionID != "" || input.Operation != "" {
-			return nil, errors.New("image tasks cannot carry source execution, sessions, plans, or task programs")
+	if isDirectSimpleMedia {
+		if input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil || input.TaskProgramID != "" || len(input.CoderAssignments) > 0 || input.SessionID != "" {
+			return nil, errors.New("direct media tasks cannot carry source execution, sessions, plans, or task programs")
 		}
 		if _, err := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{Prompt: prompt, Agent: input.Agent, Intent: input.Intent, OutcomeType: input.OutcomeType, Tier: input.Tier, FeatureSize: input.FeatureSize, VariantCount: input.VariantCount}); err != nil {
 			return nil, err
 		}
 	} else {
+		if requiresRepo && (input.Agent != "finder" || input.Document != nil || input.PlanDocument != nil || input.TaskProgram != nil) && strings.TrimSpace(input.WorkspacePath) == "" && strings.TrimSpace(input.WorkspaceID) == "" {
+			return nil, errors.New("coding task source required: select the intended authorized workspace_id or workspace_path; project chat remains available")
+		}
 		if strings.TrimSpace(input.WorkspacePath) == "" && strings.TrimSpace(input.WorkspaceID) == "" && input.WorkspaceGeneration == 0 {
 			source, contextSources, err = s.routeProjectTaskSource(ctx, p, proj, prompt, requiresRepo)
 		} else {
@@ -257,7 +266,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 	tier := strings.TrimSpace(input.Tier)
 	if structDoc != nil {
-		if err := sessionruntime.ValidateExecutablePlanDocument(structDoc); err != nil {
+		if err := sessionruntime.ValidateProjectPlanReview(structDoc); err != nil {
 			return nil, err
 		}
 		if taskProg != nil {
@@ -454,6 +463,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	}
 
 	task := pebblestore.ProjectTaskRecord{
+		OriginSessionID:    origin,
 		ID:                 taskID,
 		ProjectID:          projectID,
 		AccountID:          p.AccountScopeID,
@@ -533,13 +543,21 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if structDoc != nil {
 		task.Status = "pending_approval"
 		task.ActionNeeded = "Review plan in task card and click Approve"
-	} else if task.Agent == "plan" || (task.Agent == "swarm" && task.FeatureSize == "big") {
+	} else if task.Agent == "plan" {
 		task.Status = "planning"
 		task.ActionNeeded = "Plan agent investigating and authoring structured plan..."
 		task.WhatDidDo = []string{"Started planning investigation"}
+	} else if task.Agent == "coder" && task.TaskProgram == nil && len(task.CoderAssignments) == 0 && task.FeatureSize != "big" {
+		if input.AutoApprove {
+			task.Status = "in_progress"
+			task.ActionNeeded = ""
+		} else {
+			task.Status = "pending_approval"
+			task.ActionNeeded = "Review task and click Approve to start Coder execution"
+		}
 	} else if task.TaskProgram == nil && (task.Agent == "coder" || (len(task.CoderAssignments) == 0 && (task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch"))) {
 		task.Status = "pending_approval"
-		task.ActionNeeded = "Review task and click Approve to start Coder execution"
+		task.ActionNeeded = "Review task and click Approve to start execution"
 		if input.AutoApprove {
 			task.Status = "in_progress"
 			task.ActionNeeded = ""
@@ -558,11 +576,8 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			task.ActionNeeded = "Review task program and click Approve"
 		}
 	} else if isDirectMedia {
-		if input.AutoApprove {
-			task.Status = "in_progress"
-		} else {
-			task.Status = "pending_approval"
-			task.ActionNeeded = "Review media task and click Approve"
+		if err := admitProjectMediaTask(&task); err != nil {
+			return nil, err
 		}
 	} else {
 		if input.AutoApprove {
@@ -595,7 +610,13 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 	if err := s.revalidateProjectTaskSource(p, proj, &task); err != nil {
 		return nil, err
 	}
-	// Persist task reservation FIRST
+	if structDoc == nil && task.TaskProgram != nil && len(task.AttachedMedia) > 0 {
+		return nil, errors.New("task attachments require a session seed; submit an executable plan instead of a bare task program")
+	}
+	if err := s.preflightProjectTaskAttachments(ctx, p, &task); err != nil {
+		return nil, err
+	}
+	// Persist task reservation only after attachment admission.
 	claimed, err := db.ReserveProjectTaskIfAbsent(p.AccountScopeID, &task)
 	if err != nil {
 		return nil, err
@@ -635,7 +656,7 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 			PlanText:        fullPlanMarkdown,
 			Title:           title,
 			WorkspacePath:   task.WorkspacePath,
-			ParentSessionID: proj.PrimarySessionID,
+			ParentSessionID: task.OriginSessionID,
 		})
 		if sErr != nil {
 			return nil, fmt.Errorf("submit structured plan: %w", sErr)
@@ -882,10 +903,7 @@ func (s *Server) deployProjectTaskProgram(p identity.Principal, proj *pebblestor
 	} else if len(history) != 0 {
 		return errors.New("task program already has run history; use explicit retry lifecycle")
 	}
-	parentSessionID := ""
-	if proj != nil {
-		parentSessionID = proj.PrimarySessionID
-	}
+	parentSessionID := task.OriginSessionID
 	runIntent := &pebblestore.V3SessionRunIntent{
 		SessionID:       task.SessionID,
 		RunID:           runID,
@@ -997,10 +1015,7 @@ func (s *Server) redeployTaskProgramJob(p identity.Principal, projectID, taskID,
 	})
 
 	runID := fmt.Sprintf("desktop-v3-run:tp-%s-retry-%d", task.ID, newAttempt)
-	parentSessionID := ""
-	if proj, pFound, _ := db.GetProject(p.AccountScopeID, projectID); pFound && proj != nil {
-		parentSessionID = proj.PrimarySessionID
-	}
+	parentSessionID := task.OriginSessionID
 	runIntent := &pebblestore.V3SessionRunIntent{
 		SessionID:       task.SessionID,
 		RunID:           runID,
@@ -1142,6 +1157,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		plan, ok, pErr := db.GetPlan(existingTask.SessionID, planID)
 		if pErr != nil || !ok {
 			return nil, fmt.Errorf("bound plan %q not found", planID)
+		}
+		if err := sessionruntime.ValidateProjectPlanReview(plan.Document); err != nil {
+			return nil, fmt.Errorf("plan review unavailable: %w", err)
 		}
 		if plan.AccountScopeID != p.AccountScopeID {
 			return nil, errors.New("cross-account plan approval forbidden")
@@ -1337,7 +1355,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 		runID := sessionsV3PlanModeRunID(existingTask.SessionID, plan.ID, checkpointID, attemptID)
 
 		now := time.Now().UnixMilli()
-		parentSessionID := proj.PrimarySessionID
+		parentSessionID := existingTask.OriginSessionID
 		runIntent := &pebblestore.V3SessionRunIntent{
 			SessionID:       existingTask.SessionID,
 			RunID:           runID,
@@ -1403,6 +1421,14 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	}
 
 	if existingTask.Agent == "image" || existingTask.Agent == "video" || existingTask.Agent == "sound" || existingTask.Agent == "audio" {
+		// Confirmation is a one-way transition. Retries must not recreate slots
+		// or dispatch the same generation again, including after completion/failure.
+		if existingTask.Status != "pending_approval" {
+			return existingTask, nil
+		}
+		if err := validateProjectMediaTaskSettings(s, existingTask, p); err != nil {
+			return nil, err
+		}
 		if err := s.deployProjectTaskExecution(p, proj, existingTask, "in_progress", ""); err != nil {
 			return nil, fmt.Errorf("deploy media execution: %w", err)
 		}
@@ -1449,7 +1475,7 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 
 	now := time.Now().UnixMilli()
 	runID := fmt.Sprintf("desktop-v3-run:task-%s", existingTask.ID)
-	parentSessionID := proj.PrimarySessionID
+	parentSessionID := existingTask.OriginSessionID
 	if len(existingTask.CoderAssignments) > 0 {
 		parentSessionID = "" // This Swarm session is the delegation parent, not a delegated child.
 	}
@@ -1562,6 +1588,12 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	}
 	if task.Status == "planning" || task.Agent == "plan" {
 		return errors.New("planning tasks must submit a structured plan before implementation")
+	}
+
+	// Direct media has no session run intent. Its persisted execution status is
+	// authoritative; generic deploy retries cannot regenerate an admitted batch.
+	if isOrdinaryMediaAgent(task.Agent) && task.Status != "queued" {
+		return nil
 	}
 
 	// Idempotent retry: if active run intent exists, avoid duplicate runs

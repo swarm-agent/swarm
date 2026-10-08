@@ -1,6 +1,38 @@
 import type { RunningTask } from './orchestrate-types'
 import { redactIntegrationDiagnostic } from './integration-recovery'
 
+// Assessment authority is bound to the current attempt and captured lane. A stale
+// observation must not fall back to legacy counts or integrated flags.
+export function taskDelivery(task: RunningTask) {
+  const a = task.deliveryAssessment
+  if (!a) return undefined
+  const current = a.task_id === task.id && a.session_id === (task.sessionId || '') &&
+    a.attempt_id === (task.activeAttemptId || '') && a.task_revision === task.revision &&
+    a.base_oid === task.baseCommit && a.source_branch === task.worktreeBranch &&
+    a.target_branch === task.baseBranch && a.workspace_id === task.sourceWorkspaceId &&
+    a.workspace_generation === task.sourceWorkspaceGeneration
+  const observed = current && a.freshness === 'observed' && task.gitStatus !== 'stale' && task.gitStatus !== 'unknown' && !task.syncWarning
+  const dirty = task.isDirty || a.source_dirty || a.target_dirty
+  const integrated = observed && a.state === 'integrated'
+  const recoveryPending = task.integration?.state === 'in_progress' && Boolean(task.integration.recovery_base)
+  const recovered = observed && !recoveryPending && ['recovered', 'equivalent'].includes(a.state)
+  const recoverable = observed && !dirty && ((['history_rewritten', 'history_equivalent'].includes(a.state) && a.allowed_actions?.includes('recover_integrate')) || (a.state === 'recovered' && recoveryPending))
+    && ['completed', 'needs_review', 'failed', 'blocked'].includes(task.status)
+  const actionable = observed && !dirty && a.state === 'candidate_work' && a.candidate_commits > 0 && a.allowed_actions?.includes('integrate')
+  const summary = !current ? 'Git assessment stale — refresh task'
+    : recovered ? a.state === 'equivalent' ? 'Task edits already present — no merge needed' : 'Task delta recovered & integrated'
+    : recoverable ? `Recover recorded task delta (${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'})`
+    : a.state === 'history_rewritten' ? 'History rewritten — review task'
+    : a.state === 'history_equivalent' ? 'Matching tree; integration not verified — review task'
+    : !observed ? task.syncWarning || (a.reason_code === 'not_assessed' ? 'Checking Git…'
+      : a.state === 'unavailable' && a.reason ? `Git assessment unavailable — ${a.reason}` : 'Git assessment stale — checking changes')
+    : integrated ? 'Integrated'
+    : actionable ? `${a.candidate_commits} task ${a.candidate_commits === 1 ? 'commit' : 'commits'} to integrate`
+    : a.reason || 'Integration needs review'
+  return { integrated, actionable, recovered, recoverable,
+    summary: observed && dirty ? `${summary} · ${a.target_dirty ? 'Target has uncommitted changes' : 'Changes pending commit'}` : summary }
+}
+
 // Projection only: durable task/attempt/program receipts own these facts. Neither
 // job assembly, a checklist nor prose mentioning tests proves validation/delivery.
 export function taskOutcome(task: RunningTask) {
@@ -29,15 +61,29 @@ export function taskOutcome(task: RunningTask) {
     : undefined
   const code = Boolean(task.worktreeBranch || task.agentType === 'coder' || currentProgram?.definition?.jobs?.some(job => job.agent_type === 'coder'))
   const assembled = currentProgram?.state === 'completed'
-  const delivered = task.isIntegrated === true && !integrationFailed && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0)
+  const assessment = taskDelivery(task)
+  const delivered = !integrationFailed && (assessment
+    ? assessment.integrated || assessment.recovered
+    : task.isIntegrated === true && task.gitStatus === 'clean' && !task.isDirty && !(task.unintegratedCommits && task.unintegratedCommits > 0))
+  // Unknown freshness is not evidence of undelivered work. Preserve explicit
+  // last-known dirty/commit facts during refresh, without claiming fresh delivery.
+  const deliveryAction = code && !running && (assembled || ['completed', 'needs_review'].includes(task.status))
+    ? task.syncWarning ? 'Git inspection failed'
+      : task.isDirty ? 'Changes pending commit'
+      : (task.unintegratedCommits || 0) > 0 ? 'Unintegrated commits'
+      : undefined
+    : undefined
+  const attentionReason = blocker?.title || deliveryAction
+    || (task.status === 'needs_review' ? 'Review requested' : task.status === 'pending_approval' ? 'Approval requested' : undefined)
   return {
+    attentionReason,
     blocker: blocker ? { ...blocker, message: redactIntegrationDiagnostic(blocker.message) } : undefined,
     integrationFailed, launchIncomplete, repairSessionId,
     execution: running ? 'Execution running' : interrupted ? 'Execution interrupted' : failed ? 'Execution failed' : blocked ? 'Execution blocked'
       : assembled ? 'Program assembled' : task.status === 'completed' ? 'Execution complete' : task.status.replace(/_/g, ' '),
     verification: failed || blocked ? 'Verification incomplete — review retained results' : 'Verification not established by task status',
-    delivery: code ? delivered ? `Integrated into ${task.baseBranch || 'captured target'}`
+    delivery: code ? delivered ? `${taskDelivery(task)?.recovered ? 'Task delta delivered to' : 'Integrated into'} ${task.baseBranch || 'captured target'}`
       : `Delivery to ${task.baseBranch || 'captured target'} not verified` : undefined,
-    needsAttention: Boolean(blocker) || (code && (assembled || task.status === 'completed') && !delivered),
+    needsAttention: Boolean(attentionReason),
   }
 }

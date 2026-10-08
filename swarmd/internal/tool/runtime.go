@@ -244,15 +244,18 @@ type WorkspaceScope struct {
 	// are immutable for the run. Calls outside those roots fail before the
 	// workspace permission subsystem can create a user-facing request.
 	RejectScopeExpansion bool
-	TaskHistoryOnly      bool
-	SessionID            string
-	Principal            identity.Principal
-	WorktreeEnabled      bool
-	WorktreeRootPath     string
-	WorktreeBranch       string
-	WorktreeBaseBranch   string
-	WorktreeBaseCommit   string
-	SourceWorkspacePath  string
+	// ExplicitRepositoryRecovery permits only independently catalog-authorized
+	// Git/Bash targets in a validated project conversation; ambient roots stay empty.
+	ExplicitRepositoryRecovery bool
+	TaskHistoryOnly            bool
+	SessionID                  string
+	Principal                  identity.Principal
+	WorktreeEnabled            bool
+	WorktreeRootPath           string
+	WorktreeBranch             string
+	WorktreeBaseBranch         string
+	WorktreeBaseCommit         string
+	SourceWorkspacePath        string
 }
 
 type manageSessionService interface {
@@ -458,6 +461,8 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
 	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
+	normalized.RejectScopeExpansion = scope.RejectScopeExpansion
+	normalized.ExplicitRepositoryRecovery = scope.ExplicitRepositoryRecovery
 	normalized.SessionID = strings.TrimSpace(scope.SessionID)
 	normalized.Principal = scope.Principal
 	normalized.WorktreeEnabled = scope.WorktreeEnabled
@@ -506,6 +511,9 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	if !ok {
 		return scope
 	}
+	if override.RejectScopeExpansion && strings.TrimSpace(override.PrimaryPath) == "" && len(override.Roots) == 0 {
+		return override
+	}
 	if strings.TrimSpace(override.PrimaryPath) == "" && len(override.Roots) == 0 {
 		// Some control-plane tools deliberately omit path roots and authorize from
 		// the durable principal/session identity instead. Preserve that identity
@@ -519,6 +527,8 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
 	normalized.TaskHistoryOnly = override.TaskHistoryOnly
+	normalized.RejectScopeExpansion = override.RejectScopeExpansion
+	normalized.ExplicitRepositoryRecovery = override.ExplicitRepositoryRecovery
 	normalized.SessionID = strings.TrimSpace(override.SessionID)
 	normalized.Principal = override.Principal
 	normalized.WorktreeEnabled = override.WorktreeEnabled
@@ -1053,7 +1063,8 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"command": map[string]any{"type": "string", "description": "Shell command to execute"},
+					"workspace_path": map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
+					"command":        map[string]any{"type": "string", "description": "Shell command to execute"},
 					"explanation": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -1124,8 +1135,13 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"message": map[string]any{"type": "string", "description": "Commit message"},
-					"all":     map[string]any{"type": "boolean", "description": "Stage tracked modifications before committing"},
+					"workspace_path":  map[string]any{"type": "string", "description": "Explicit account-authorized repository root for attribution-independent recovery. Requires files, expected_branch, expected_head and request_id; preserves the original index."},
+					"files":           map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
+					"expected_branch": map[string]any{"type": "string"},
+					"expected_head":   map[string]any{"type": "string"},
+					"request_id":      map[string]any{"type": "string", "description": "Stable exact-request retry identity"},
+					"message":         map[string]any{"type": "string", "description": "Commit message"},
+					"all":             map[string]any{"type": "boolean", "description": "Stage tracked modifications before committing"},
 				},
 				"required":             []string{"message"},
 				"additionalProperties": false,
@@ -1488,6 +1504,10 @@ func (r *Runtime) Definitions() []Definition {
 				"type": "object",
 				"properties": map[string]any{
 					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote|help"},
+					"recovery":              map[string]any{"type": "boolean", "description": "integrate: attribution-independent fast-forward of exact reviewed commits between account-authorized worktrees. Requires workspace_path, source_branch/head, target_workspace_path, target_branch/head and commits."},
+					"commits":               map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
+					"request_id":            map[string]any{"type": "string", "description": "Stable exact-request identity for recovery integration"},
+					"session_id":            map[string]any{"type": "string", "description": "Optional recovery evidence destination; bookkeeping failure never reverses Git success"},
 					"session_ids":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Selected Coder child session IDs"},
 					"child_session_id":      map[string]any{"type": "string"},
 					"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
@@ -2037,6 +2057,13 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "write":
 		return executeWrite(scope, args)
 	case "bash":
+		if path := stringValue(args["workspace_path"]); path != "" {
+			repo, err := r.recoveryRepository(scope, path)
+			if err != nil {
+				return "", err
+			}
+			scope.PrimaryPath = repo
+		}
 		return executeBash(ctx, scope, args, func(chunk string) {
 			if onProgress == nil {
 				return
@@ -2059,6 +2086,18 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "git_add":
 		return executeGitAdd(ctx, scope, args)
 	case "git_commit":
+		if stringValue(args["workspace_path"]) != "" {
+			repo, err := r.recoveryRepository(scope, stringValue(args["workspace_path"]))
+			if err != nil {
+				return "", err
+			}
+			return recoveryCommit(ctx, repo, args, scope.Principal.AccountScopeID+"/"+scope.Principal.UserID)
+		}
+		for _, key := range []string{"files", "request_id", "expected_head", "expected_branch"} {
+			if _, present := args[key]; present {
+				return "", errors.New("recovery commit arguments require explicit workspace_path")
+			}
+		}
 		return executeGitCommit(ctx, scope, args)
 	case "git_commit_initial":
 		return executeGitCommitInitial(ctx, scope, args)
@@ -6526,10 +6565,16 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 	case "inspect", "list":
 		return r.manageWorktreeInspect(scope, args)
 	case "inspect_source", "retain_source":
+		if scope.PrimaryPath == "" && scope.RejectScopeExpansion {
+			return "", errors.New("manage-worktree inspect_source/retain_source require regular-task recovery lineage; for a linked project task use manage_projects inspect_files with project_id, task_id, attempt_id and source_session_id")
+		}
 		return r.manageWorktreeRecoverySource(scope, args)
 	case "recall":
 		return r.manageWorktreeRecall(scope, args)
 	case "integrate":
+		if boolValue(args["recovery"]) {
+			return r.recoveryIntegrate(scope, args)
+		}
 		return r.manageWorktreeIntegrate(scope, args)
 	case "promote":
 		return r.manageWorktreePromote(scope, args)
@@ -6928,9 +6973,10 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		}
 
 		children = append(children, worktreeruntime.TaskIntegrationChild{
-			SessionID:  c.sessionID,
-			BaseCommit: deliveryBase,
-			HeadCommit: sourceState.HeadCommit,
+			SessionID:        c.sessionID,
+			BaseCommit:       deliveryBase,
+			HeadCommit:       sourceState.HeadCommit,
+			PreserveAncestry: true,
 		})
 		resolvedBranches = append(resolvedBranches, branch)
 		entry, err := r.promotionTask(scope, source, branch, sourceState.HeadCommit, resolvedTarget, expectedTargetBranch, "")
@@ -6942,6 +6988,14 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 		}
 	}
 
+	// The existing ancestry-preserving service accepts one whole source only.
+	// Reject unsupported batches and empty deliveries before any target effects.
+	if len(children) != 1 {
+		return "", errors.New("ancestry-preserving promotion requires one source session at a time")
+	}
+	if children[0].HeadCommit == children[0].BaseCommit {
+		return "", errors.New("promotion source has no commits since its captured base")
+	}
 	targetState, err := r.worktrees.InspectTaskWorkspace(primaryResolvedTarget)
 	if err != nil {
 		return "", fmt.Errorf("inspect promotion target checkout: %w", err)
@@ -6965,6 +7019,11 @@ func (r *Runtime) manageWorktreePromote(scope WorkspaceScope, args map[string]an
 	targetBranchName := targetState.BranchName
 	resolvedTargetHead := targetState.HeadCommit
 
+	baseOnTarget, baseErr := r.worktrees.TaskCommitDescendsFrom(primaryResolvedTarget, children[0].BaseCommit, resolvedTargetHead)
+	if baseErr != nil || !baseOnTarget {
+		err := errors.New("promotion target no longer contains the recorded source base; review rewritten history before integration")
+		return "", errors.Join(err, baseErr, r.finishPromotionTasks(scope, started, "failed", "", err))
+	}
 	plan, err := r.worktrees.PrepareTaskIntegration(primaryResolvedTarget, targetBranchName, resolvedTargetHead, children)
 	if err != nil {
 		return "", errors.Join(err, r.finishPromotionTasks(scope, started, "conflict", "", err))
@@ -10136,15 +10195,68 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 		return "", "", "", fmt.Errorf("%s requires an authenticated account scope", toolName)
 	}
 
+	snapshot, authErr := r.authorizeEnvironmentAccess(scope, toolName)
+	if authErr != nil {
+		return "", "", "", authErr
+	}
 	requestedPath := strings.TrimSpace(asString(args["workspace_path"]))
+	projectID := pebblestore.ProjectConversationID(snapshot)
+	if projectID == "" {
+		projectID = asString(snapshot.Metadata["project_id"])
+	}
+	if projectID != "" {
+		selection := map[string]any{"project_id": projectID, "workspace_path": requestedPath, "workspace_id": args["workspace_id"]}
+		if requestedPath == "" && asString(args["workspace_id"]) == "" && scope.WorktreeEnabled {
+			selection["workspace_path"] = scope.SourceWorkspacePath
+		}
+		if asString(selection["workspace_path"]) == "" && asString(selection["workspace_id"]) == "" {
+			return "", "", "", fmt.Errorf("%s requires an explicit project workspace selection", toolName)
+		}
+		target, resolveErr := r.resolveProjectInspection(context.Background(), scope, selection)
+		if resolveErr != nil {
+			return "", "", "", resolveErr
+		}
+		if scope.WorktreeEnabled && scope.WorktreeRootPath != "" {
+			if filepath.Clean(target.Root) != filepath.Clean(scope.SourceWorkspacePath) {
+				return "", "", "", fmt.Errorf("%s cannot retarget an isolated worktree", toolName)
+			}
+			target.Root = scope.WorktreeRootPath
+		}
+		return accountScopeID, target.Reference.WorkspaceID, target.Root, nil
+	}
+	if requestedPath == "" && scope.PrimaryPath == "" && asString(args["workspace_id"]) != "" {
+		if r.workspace == nil {
+			return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
+		}
+		entries, listErr := r.workspace.ListKnownForPrincipal(scope.Principal, 1000)
+		if listErr != nil {
+			return "", "", "", listErr
+		}
+		for _, entry := range entries {
+			if entry.WorkspaceID == asString(args["workspace_id"]) {
+				requestedPath = entry.Path
+				break
+			}
+		}
+		if requestedPath == "" {
+			return "", "", "", fmt.Errorf("%s workspace ID is not in the authorized catalog", toolName)
+		}
+	}
 	if requestedPath == "" {
 		requestedPath = "."
 	}
-	workspacePath, err = resolveWorkspacePath(scope, requestedPath)
+	if scope.PrimaryPath == "" && filepath.IsAbs(requestedPath) {
+		workspacePath = filepath.Clean(requestedPath)
+	} else {
+		workspacePath, err = resolveWorkspacePath(scope, requestedPath)
+	}
 	if err != nil {
 		return "", "", "", err
 	}
 	if scope.WorktreeEnabled && strings.TrimSpace(scope.WorktreeRootPath) != "" {
+		if requestedPath != "." && filepath.Clean(workspacePath) != filepath.Clean(scope.WorktreeRootPath) && filepath.Clean(workspacePath) != filepath.Clean(scope.SourceWorkspacePath) {
+			return "", "", "", fmt.Errorf("%s cannot retarget an isolated worktree", toolName)
+		}
 		workspacePath = filepath.Clean(scope.WorktreeRootPath)
 	}
 
@@ -10160,13 +10272,7 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 						wsScope = srcScope
 					}
 				}
-				if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
-					if current, ok, cErr := r.workspace.CurrentBindingForPrincipal(scope.Principal); cErr == nil && ok {
-						if curScope, curErr := r.workspace.ScopeForPathForPrincipal(scope.Principal, current.WorkspacePath); curErr == nil && curScope.Matched && strings.TrimSpace(curScope.WorkspaceID) != "" {
-							wsScope = curScope
-						}
-					}
-				}
+
 			}
 		}
 		if !wsScope.Matched || strings.TrimSpace(wsScope.WorkspaceID) == "" {
@@ -10177,13 +10283,7 @@ func (r *Runtime) resolveWorkspaceScopeForEnvironments(scope WorkspaceScope, arg
 			workspacePath = wsScope.WorkspacePath
 		}
 	} else {
-		if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" {
-			workspaceID = wsID
-		} else if len(scope.Roots) > 0 {
-			workspaceID = "ws-test"
-		} else {
-			return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
-		}
+		return "", "", "", fmt.Errorf("%s workspace service is not configured", toolName)
 	}
 
 	if wsID := strings.TrimSpace(asString(args["workspace_id"])); wsID != "" && wsID != workspaceID {

@@ -36,7 +36,7 @@ func masterHarnessPromptWithScope(scope tool.WorkspaceScope) string {
 
 func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestrator bool) string {
 	workspacePath := strings.TrimSpace(scope.PrimaryPath)
-	if workspacePath == "" {
+	if workspacePath == "" && !scope.RejectScopeExpansion {
 		workspacePath = "."
 	}
 	roots := make([]string, 0, len(scope.Roots))
@@ -113,7 +113,7 @@ func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestra
 		"  * Feedback routing: classify it by its effect on the deliverable contract, not by whether it is phrased as an imperative; choose the least disruptive valid route. inquiry or guidance only means answer or acknowledge without plan mutation when no current deliverable change is requested. localized additive patch whose existing checklist remains valid means add_subtask: continuing the same non-blocked/non-failed checkpoint without resetting its attempt history (subtask as a JSON object with a non-empty title; Do not pass title at the top level, do not pass subtask as bare text, and do not issue a partial call before this complete call. Never use add_subtask to clear a blocked or failed checkpoint). same-contract feedback that supersedes the checklist means replace_subtasks with the complete authoritative list (for example, ‘Make the hero headline blue’ or ‘Add 8px below the card title’), preserving checkpoint identity and attempt history. checkpoint redefinition that invalidates the objective or acceptance criteria means restart_checkpoint with complete replacement checkpoint_title, tasks, acceptance_criteria, and notes; If the new direction invalidates the checkpoint objective or acceptance criteria, you must call restart_checkpoint with the complete replacement contract; do not refuse or dismiss the redirection, complete or re-complete the superseded checkpoint, misclassify it as terminal post-handoff conversation, or emit a final handoff instead of restarting. Terminal checkpoint actions only finish the current checkpoint; do not use complete_checkpoint to encode new user feedback, to re-complete a plan already waiting for final review, or instead of restarting a stopped/paused checkpoint whose contract the user's redirection invalidates. use restart only when feedback invalidates the current objective or acceptance criteria, or for a true retry with unchanged requirements. Never restart an unchanged checkpoint merely to clear a block. independently shippable work or a separate review/failure boundary from a parent provider turn means transition_checkpoint_boundary with its own self-contained objective with full verbatim current user request in change_request. valid only from the parent conversation, never from a provider-managed checkpoint run. On a blocked plan, call transition_checkpoint_boundary directly; do not call resolve_blocked_checkpoint first. never claim the checkpoint was added after a failed tool result. When blocker is resolved, call resolve_blocked_checkpoint with start_next=true; the same checkpoint resumes in a fresh provider run (never completes the blocked checkpoint and never selects a later checkpoint); otherwise leave the checkpoint blocked and explain the exact resolution still needed. Failed checkpoints remain stopped. When next_lifecycle_action is await_review or await_final_review, the checkpoint is terminal and its handoff has been emitted: treat new user input as a normal conversation turn and respond conversationally without mutating the plan. Do not call add_subtask or complete_checkpoint on completed checkpoints. A user message after an explicit pause/stop already reactivates the paused checkpoint; treat the checkpoint as nonterminal; do not wait for the user to click Resume. Plain 'continue' means keep working. Use mark_needs_review only when user or audit judgment is inherently required; mark_blocked only for a named external dependency/input/unavailable permission; mark_failed only for a nonrecoverable execution error.",
 		"- Recovery ownership: distinguish implementation defects from external dependencies; safely repair local setup within authorized scope; try at most two materially distinct safe repairs before stopping. Resume through resolve_blocked_checkpoint after dependencies resolve.",
 		"- Private guidance: repository rules stay in AGENTS.md; private operational facts and credential-location references belong only in explicitly approved account memory. Never store credential values.",
-		"- Integrating and landing session work into the user's workspace repository (e.g. dev or main branch): (1) commit session work with `manage-sessions action=commit` and `commits: [...]` (The commit tool accepts up to 10 sessions in one call (`commits: [...]`)). (2) Promote into captured checkout with `manage-worktree action=promote` (supports single sessions (`source_session_id`) or multiple sessions at once (`source_session_ids:`)).",
+		"- Integrating and landing session work into the user's workspace repository (e.g. dev or main branch): Normally (1) commit session work with `manage-sessions action=commit` and `commits: [...]` (up to 10 sessions), then (2) promote with `manage-worktree action=promote`. Broken session/task/checkpoint attribution is not a Git authorization denial. For recovery use `manage-sessions action=commit recovery=true` (or `git_commit` where exposed) with explicit account-authorized workspace_path, literal files, expected_branch, expected_head, message and stable request_id; it preserves the original index, so inspect staged differences afterward. Use `manage-worktree action=integrate recovery=true` with workspace_path, source_branch/head, target_workspace_path, target_branch/head, stable request_id and exact ordered commits for safe fast-forward integration; divergence requires separately reviewed resolution. Authorized Bash recovery is also supported with explicit workspace_path, including project chats without an ambient checkout; review literal files/commits and source/destination branch/HEAD first, preserve unrelated work, inspect Git after errors before retrying, and never bypass a permission denial. Explicit recovery targets must be registered account workspace roots; project membership alone is not authority. Git success is independent of session bookkeeping; report actual SHAs/destination; use `manage-sessions action=git_status recovery=true workspace_path=...` for fresh Git status. An optional session_id records inspected evidence after Git success without completing any task/checkpoint; reconciliation errors remain pending and the exact Git request can be retried safely.",
 		"- Reusable environments, testbenches, and deployments: When handling test, evaluation, integration test, or E2E testbench requests: Inspect selected environment definition and worktree via `manage_environments action=\"get\"` or list available environments via `manage_environments action=\"list\"`. Deliberately acquire deployment lease via `manage_environments action=\"ensure\"` against the workspace default test environment (or specify environment_id). Execute commands via `manage_environments action=\"exec\"` using returned receipts without busy polling, and release with `manage_environments action=\"release\"` when done. Call `manage_environments action=\"help\"` for workflow guidance.",
 		"- Text formatting & copy tags: wrap commands, config, or file payloads users copy in <copy>...</copy> tags with optional label attribute. Keep copy tags exact and free of explanatory prose.",
 		"- Bash tool requirements: explanation must contain one direct, human-scannable sentence; do not narrate obvious shell mechanics, stdout/stderr capture, or generic build-artifact behavior. Use multiple concise items only when commands have several material effects (listeners and ports opened, public network exposure, privileges used, destructive actions). Set critical=true for sensitive reads or destructive/privileged actions. Critical reads are exceptional: secrets or credentials, production databases, private customer data, protected system files, large or expensive queries, and reads coupled to outbound exfiltration. Categories: category as exactly read, write, update, or delete; update is a non-removal in-place mutation and never means removal; delete removes state and always requires critical=true. Routine source reads, listings, searches, status checks, and ordinary local logs are noncritical. For mixed commands, use the highest-impact category.",
@@ -167,7 +167,7 @@ func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestra
 			}
 			filtered = append(filtered, line)
 		}
-		filtered = append(filtered, "- Orchestrator planning uses manage_projects task cards only: propose small Coder tasks directly, or submit structured plans on the exact project task card for explicit user acceptance. Do not create session checkpoints or session-plan approvals. The dedicated Plan agent may author big exploratory plans for task-card review.")
+		filtered = append(filtered, "- Orchestrator planning uses manage_projects task cards only: propose small Coder tasks directly, or submit structured plans on the exact project task card for explicit user acceptance. Do not create session checkpoints or session-plan approvals. Author and revise Orchestrator plans yourself; do not delegate planning to Plan. Submit plan_document via propose_task, then use get_task and refine_task with the complete revised plan_document and exact session_id, plan_id and definition_revision on feedback. Never implement before the user accepts the exact card. Big features without an Orchestrator-authored plan route directly to Swarm, with tools and testing governed by permissions.")
 		lines = filtered
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
@@ -395,6 +395,9 @@ func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
 
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 7)
+	// Check memory eligibility before any system-profile reconciliation can
+	// normalize a supplied mode to primary.
+	accountMemory := s.accountMemoryPromptBlock(scope, agentProfile)
 	isOrchestrator := agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name)
 	if isOrchestrator {
 		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
@@ -407,11 +410,11 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 	}
 	capacitySnapshot := s.ExecutionCapacitySnapshot(scope.Principal.AccountScopeID)
 	blocks = append(blocks, executionCapacityInstructions(capacitySnapshot))
-	if workspaceMap := s.accountMemoryPromptBlock(scope, agentProfile); workspaceMap != "" {
+	if accountMemory != "" {
 		// The account map is high-level orientation. Keep it before repository
 		// AGENTS.md blocks so those more specific rules remain adjacent to the
 		// active-agent instructions and cannot be mistaken for map content.
-		blocks = append(blocks, workspaceMap)
+		blocks = append(blocks, accountMemory)
 	}
 
 	agentName := strings.TrimSpace(agentProfile.Name)
@@ -527,6 +530,11 @@ func (s *Service) projectContextPromptBlock(scope tool.WorkspaceScope) string {
 	// 1. If sessionID is available, inspect session metadata for project_id
 	if sessionID != "" {
 		if sessionSnapshot, ok, err := s.sessions.GetSession(sessionID); err == nil && ok {
+			if pebblestore.ProjectConversationID(sessionSnapshot) != "" {
+				if err := db.ValidateProjectConversation(sessionSnapshot, accountScopeID, scope.Principal.UserID); err != nil {
+					return ""
+				}
+			}
 			if accountScopeID == "" {
 				accountScopeID = strings.TrimSpace(sessionSnapshot.AccountScopeID)
 			}
@@ -871,6 +879,16 @@ func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfil
 		}
 	}
 	lines = append(lines, "When approval is required, invoke the tool directly and let the permission system resolve it; never use ask-user for tool approvals.")
+	if agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
+		filtered := lines[:0]
+		for _, line := range lines {
+			if strings.Contains(line, "plan_manage") || strings.Contains(line, "exit_plan_mode") || strings.HasPrefix(line, "Execution expectation:") {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		lines = append(filtered, "Orchestrator expectation: author and revise structured plans yourself through manage_projects task cards; wait for exact-card user acceptance before implementation.")
+	}
 	return strings.Join(lines, "\n")
 }
 

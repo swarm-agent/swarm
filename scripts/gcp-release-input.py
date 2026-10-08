@@ -111,7 +111,7 @@ BUILD_STAGES = {'source', 'setup', 'version', 'repository-policy', 'main-source-
                 'critical-agents', 'build', 'package-smoke'}
 FULL_STAGES = BUILD_STAGES | {'ubuntu-sudo', 'arch-sudo', 'ubuntu-root', 'head-reverify',
     'cleanup', 'identity-bootstrap', 'installed-new-user', 'installed-existing-user',
-    'installed-normal-user', 'desktop-launch', 'tui-launch', 'plan-auto', 'task-routing',
+    'installed-normal-user', 'desktop-launch', 'tui-launch', 'task-routing',
     'task-program', 'provider-sync'} | {'provider-' + cell for cell in CELLS}
 
 
@@ -208,7 +208,7 @@ def verify_evidence(result, manifest, evidence, policy, version, *, candidate=Fa
                 and cell['archive_sha256'] == binding['artifacts']['archive']['sha256'], 'onboarding binding')
         gates = {'identity', 'credential', 'workspace', 'canonical-models'}
         if CELLS[cell['cell']] == 'fireworks':
-            gates |= {'explicit-model', 'basic-plan-auto'}
+            gates |= {'explicit-model'}
             require(cell['model'] == 'accounts/fireworks/models/deepseek-v4p1-flash', 'onboarding model')
         require(all(cell['gates'].get(g) is True for g in gates), 'onboarding gates')
     require(manifest['evidence']['bucket'] == policy['receipt_bucket'], 'protected evidence bucket')

@@ -73,7 +73,26 @@ func openWithOptions(path string, opts *pebble.Options) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("secure pebble db directory: %w", err)
 	}
-	return &Store{db: db, path: path, sessionMutations: newSessionMutationCoordinator()}, nil
+	store := &Store{db: db, path: path, sessionMutations: newSessionMutationCoordinator()}
+	if !opts.ReadOnly {
+		if err := NewSessionStore(store).prepareProjectPreviewCache(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if err := NewSessionStore(store).prepareProjectConversationIndex(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if err := NewSessionStore(store).prepareProjectArchiveIndex(); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if err := NewSessionStore(store).PrepareProjectTaskIndexes(context.Background()); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("prepare project task indexes before serving: %w", err)
+		}
+	}
+	return store, nil
 }
 
 func secureDirectory(path string) error {

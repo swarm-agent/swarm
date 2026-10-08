@@ -5,6 +5,7 @@ import "testing"
 // Purpose: the shared Begin/Finish boundary must atomically publish durable task
 // progress and completion, reject foreign/stale attempts, and retain conflicts.
 // This temp-store layer proves persisted postconditions rather than UI optimism.
+// Fixtures identify the required task agent to reach the integration boundary.
 func TestProjectTaskIntegrationLifecycle(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
@@ -19,7 +20,7 @@ func TestProjectTaskIntegrationLifecycle(t *testing.T) {
 			states = append(states, task.Integration.State)
 		}
 	})
-	task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Task", SessionID: "source", Status: "needs_review", Revision: 1, ActionNeeded: "Integrate"}
+	task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Task", Agent: "coder", SessionID: "source", Status: "needs_review", Revision: 1, ActionNeeded: "Integrate"}
 	if err := s.PutProjectTask("account", task); err != nil {
 		t.Fatal(err)
 	}
@@ -78,5 +79,45 @@ func TestProjectTaskIntegrationLifecycle(t *testing.T) {
 	current, _, _ := s.GetProjectTask("account", "project", "task")
 	if current.Status != "needs_review" || current.IsIntegrated {
 		t.Fatal("rejected completion changed state")
+	}
+}
+
+// Purpose: FinishProjectTaskIntegrationGuarded must reject a task revision
+// changed during preparation BEFORE invoking Git, while preserving receipt and
+// realtime authority. The store callback boundary is the narrowest proof of
+// ordering; worktree tests separately prove actual Git effects.
+func TestProjectTaskRecoveryRevisionGuard(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	task := &ProjectTaskRecord{ID: "task", ProjectID: "project", Title: "Task", Agent: "coder", SessionID: "source", Status: "needs_review", Revision: 1}
+	if err := s.PutProjectTask("account", task); err != nil {
+		t.Fatal(err)
+	}
+	task, _, _ = s.GetProjectTask("account", "project", "task")
+	r := &ProjectTaskIntegration{SessionID: "source", SourceHead: "original", RecoveryBase: "base", RecoveredHead: "recovered", TargetBranch: "dev"}
+	if err := BeginProjectTaskIntegration(s, "account", task, r); err != nil {
+		t.Fatal(err)
+	}
+	pending, _, _ := s.GetProjectTask("account", "project", "task")
+	if _, err := s.UpdateProjectTask("account", "project", "task", func(row *ProjectTaskRecord) error { row.Revision++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	if _, err := FinishProjectTaskIntegrationGuarded(s, "account", task, r, pending.Revision, func() error { called = true; return nil }); err == nil || called {
+		t.Fatal("stale task invoked promotion")
+	}
+	current, _, _ := s.GetProjectTask("account", "project", "task")
+	if current.Integration.State != "in_progress" || current.IsIntegrated {
+		t.Fatal("stale guard mutated receipt")
+	}
+	events := 0
+	db.SetProjectPublisher(func(_ V3RealtimeOutboxRecord) { events++ })
+	result, err := FinishProjectTaskIntegrationGuarded(s, "account", task, r, current.Revision, func() error { r.State, r.ResultingTargetHead = "recovered", "delivered"; return nil })
+	if err != nil || result.IsIntegrated || result.Status != "completed" || result.Integration.SourceHead != "original" || result.Integration.RecoveredHead != "recovered" || events != 1 {
+		t.Fatalf("untruthful or unpublished receipt: %+v %v events=%d", result, err, events)
 	}
 }

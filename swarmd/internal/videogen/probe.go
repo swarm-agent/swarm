@@ -14,6 +14,9 @@ import (
 )
 
 // VideoMetadata contains measured media attributes probed from actual video bytes.
+// DurationSeconds is ffprobe's format.duration (the container playback timeline,
+// including audio), not rounded display seconds or an individual video stream's
+// duration. Source and generated output probes must use this same time basis.
 type VideoMetadata struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 	Width           int     `json:"width"`

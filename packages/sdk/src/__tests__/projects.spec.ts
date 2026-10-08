@@ -1041,3 +1041,130 @@ test('SwarmProjectsNamespace: AbortSignal cancellation, waitForTask polling, and
     await closeTestServer(ctx);
   }
 });
+
+test('SwarmProjectsNamespace: ensureProject and getOrchestratorSession helpers', async () => {
+  let createdProjectBody: any = null;
+  let createdSessionBody: any = null;
+  const ctx = await createTestServer((req, res, body) => {
+    if (req.method === 'GET' && req.url === '/v3/projects?limit=50') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          projects: [
+            {
+              id: 'proj_existing_1',
+              name: 'existing-project',
+              created_at: 1000,
+              updated_at: 1000,
+            },
+          ],
+        })
+      );
+    } else if (req.method === 'POST' && req.url === '/v3/projects') {
+      createdProjectBody = body;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          project: {
+            id: 'proj_new_swarmtest',
+            name: body.name,
+            description: body.description,
+            workspaces: body.workspaces,
+            created_at: 2000,
+            updated_at: 2000,
+          },
+        })
+      );
+    } else if (req.method === 'GET' && req.url === '/v3/projects/proj_existing_1/sessions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          sessions: [
+            {
+              id: 'sess_orch_existing',
+              title: 'Orchestrator AI',
+              agent_name: 'system-orchestrator',
+              created_at: 1000,
+              updated_at: 1000,
+            },
+          ],
+        })
+      );
+    } else if (req.method === 'GET' && req.url === '/v3/projects/proj_new_swarmtest/sessions') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions: [] }));
+    } else if (req.method === 'POST' && req.url === '/v3/projects/proj_new_swarmtest/sessions') {
+      createdSessionBody = body;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          session: {
+            id: 'sess_orch_new',
+            title: body.title,
+            agent_name: body.agent_name,
+            created_at: 2000,
+            updated_at: 2000,
+          },
+        })
+      );
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    // 1. ensureProject returns existing if found
+    const existing = await ctx.projects.ensureProject('existing-project');
+    assert.equal(existing.id, 'proj_existing_1');
+    assert.equal(createdProjectBody, null);
+
+    // 2. ensureProject creates new project if not found
+    const created = await ctx.projects.ensureProject('swarmtest', { workspacePath: '/project/swarmtest' });
+    assert.equal(created.id, 'proj_new_swarmtest');
+    assert.equal(createdProjectBody?.name, 'swarmtest');
+    assert.deepEqual(createdProjectBody?.workspaces, [{ path: '/project/swarmtest' }]);
+
+    // 3. getOrchestratorSession returns existing session
+    const existingSess = await ctx.projects.getOrchestratorSession('proj_existing_1');
+    assert.equal(existingSess.id, 'sess_orch_existing');
+
+    // 4. getOrchestratorSession provisions new session if none exists
+    const newSess = await ctx.projects.getOrchestratorSession('proj_new_swarmtest');
+    assert.equal(newSess.id, 'sess_orch_new');
+    assert.equal(createdSessionBody?.agent_name, 'system-orchestrator');
+  } finally {
+    await closeTestServer(ctx);
+  }
+});
+
+// Purpose: SDK project creation must carry the durable idempotency identity required
+// by Server.CreateProject, preserve explicit retry keys, and expose fenced context
+// retries without creating another project. A loopback HTTP fixture is the narrowest
+// transport contract test; malformed retry identities must not be accepted.
+test('project creation identity and context retry receipts', { timeout: 10000 }, async () => {
+  let wrongIdentity = false;
+  const ctx = await createTestServer((req, res, body) => {
+    if (req.url === '/v3/projects' && !body.client_request_id) {
+      res.writeHead(400); res.end(JSON.stringify({ error: 'client_request_id required' })); return;
+    }
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ project: { id: wrongIdentity ? 'wrong' : 'project', name: 'Project', created_at: 1, updated_at: 1, context_generation: { status: 'running', attempt: 2 } } }));
+  });
+  try {
+    await ctx.projects.create({ name: 'Project' });
+    assert.match(ctx.receivedRequests[0].body.client_request_id, /^sdk-project-/);
+    const input = { name: 'Project', client_request_id: 'stable-request' };
+    await ctx.projects.create(input);
+    await ctx.projects.create(input);
+    assert.deepEqual(ctx.receivedRequests[1].body, ctx.receivedRequests[2].body);
+    assert.equal(ctx.receivedRequests[2].body.client_request_id, 'stable-request');
+    const retried = await ctx.projects.retryContext('project', 1);
+    assert.equal(retried.context_generation?.attempt, 2);
+    assert.equal(ctx.receivedRequests[3].url, '/v3/projects/project/context:retry');
+    assert.deepEqual(ctx.receivedRequests[3].body, { expected_attempt: 1 });
+    wrongIdentity = true;
+    await assert.rejects(() => ctx.projects.retryContext('project', 2), /identity mismatch/);
+    assert.equal(ctx.receivedRequests.filter(r => r.url === '/v3/projects').length, 3);
+  } finally { await closeTestServer(ctx); }
+});

@@ -80,6 +80,7 @@ export interface ProjectTaskMediaRef {
 }
 
 export interface ProjectSummary {
+  contextGeneration?: import('../state/project-creation').ProjectContextGeneration
   id: string
   name: string
   slug: string
@@ -287,6 +288,9 @@ export interface TaskIntegrationReceipt {
   session_id?: string
   target_branch?: string
   target_workspace_path?: string
+  recovery_base?: string
+  recovered_head?: string
+  recovery_ref?: string
   resulting_target_head?: string
   state: string
   error?: string
@@ -313,7 +317,36 @@ export interface TaskAttempt {
   integration?: TaskIntegrationReceipt
 }
 
+// Collection-only DTO: never a PlanDocument or TaskProgramRecord.
+export interface ProjectTaskBoardSummary {
+  plan_binding_stale?: boolean
+  plan?: {
+    id: string
+    session_id: string
+    account_scope_id: string
+    version: number
+    status: string
+    approval_state: string
+    accepted_definition_receipt: string
+    document?: {
+      active_checkpoint_id: string
+      execution_state?: { status: string }
+      checkpoints?: Array<{ id: string; status: string }> | null
+    } | null
+  }
+  program?: {
+    program_id: string
+    state: string
+    jobs: Array<{ job_id: string; current_session_id?: string; current_run_id?: string; excluded_session_ids?: string[] }>
+  }
+}
+
 export interface RunningTask {
+  environmentAttachments?: import('../environments/types/environments').TaskEnvironmentAttachment[]
+  environmentsStale?: boolean
+  boardSummary?: ProjectTaskBoardSummary
+  detailLoaded?: boolean
+  detailError?: string
   currentRunId?: string
   currentRunStatus?: string
   activeAttemptId?: string
@@ -385,6 +418,15 @@ export interface RunningTask {
   worktreeBranch?: string
   worktreeName?: string
   baseBranch?: string
+  deliveryAssessment?: {
+    task_id: string; task_revision: number; session_id: string; attempt_id: string
+    workspace_id: string; workspace_generation: number
+    base_oid: string; source_oid: string; target_oid: string
+    source_branch: string; target_branch: string
+    state: string; reason_code: string; reason: string; freshness: string
+    candidate_commits: number; allowed_actions: string[]
+    source_dirty?: boolean; target_dirty?: boolean
+  }
   unintegratedCommits?: number
   behindCommits?: number
   gitStatus?: string

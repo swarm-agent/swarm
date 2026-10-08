@@ -1,6 +1,7 @@
 import type { SwarmPage } from './swarm-navigation'
 
-// Orchestrate owns this catalog. No chat aliases or executable actions belong here.
+// Orchestrate owns navigation plus the existing chat Codex usage modal action.
+type CommandTarget = { page: SwarmPage } | { action: 'open-codex-usage' }
 export const ORCHESTRATE_COMMANDS = [
   { name: 'help', page: 'help', description: 'Learn the Orchestrate workflow' },
   { name: 'projects', page: 'projects', description: 'Select or create a project' },
@@ -9,7 +10,8 @@ export const ORCHESTRATE_COMMANDS = [
   { name: 'deliverables', page: 'deliverables', description: 'Review project outputs' },
   { name: 'agents', page: 'agents', description: 'Configure account-wide system role models' },
   { name: 'settings', page: 'settings', description: 'Account providers, safety and preferences' },
-] as const satisfies readonly { name: string; page: SwarmPage; description: string }[]
+  { name: 'codex', action: 'open-codex-usage', description: 'View Codex usage and available resets' },
+] as const satisfies readonly ({ name: string; description: string } & CommandTarget)[]
 export type OrchestrateCommand = typeof ORCHESTRATE_COMMANDS[number]
 
 // A leading /word followed by whitespace or end is command-shaped. Paths (/src/a),
@@ -39,5 +41,5 @@ export const ORCHESTRATE_TIPS = [
   'Workers are durable jobs; Agents are compiled system roles with account-wide model assignments.',
   'Use Agents to configure Swarm, Coder and Orchestrator. Orchestrator shares its assignment with Plan across the account.',
   'Settings contains account-wide providers, permissions, vault and preferences. Project Charter remains project-scoped.',
-  'Commands only navigate. They never send a message, start a run or execute an action. Your draft and attachments stay in the conversation.',
+  'Commands navigate or open Codex usage. They never send a message or start a run. Your draft and attachments stay in the conversation.',
 ] as const

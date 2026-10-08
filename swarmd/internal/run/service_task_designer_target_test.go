@@ -23,7 +23,7 @@ func TestTaskProgramDesignerImplicitRootSurvivesCohortAdmission(t *testing.T) {
 	if err != nil || target != root {
 		t.Fatalf("first admission: %q %v", target, err)
 	}
-	retainTaskResolvedWorkspace(&launch, program, 0, target)
+	retainTaskResolvedWorkspace(parent, &launch, program, 0, target)
 	if launch.TargetWorkspacePath != "" || program.Jobs[0].TargetWorkspacePath != "" {
 		t.Fatal("implicit root persisted as explicit target")
 	}
@@ -38,7 +38,7 @@ func TestTaskProgramDesignerImplicitRootSurvivesCohortAdmission(t *testing.T) {
 	for _, agent := range []string{"coder", "finder"} {
 		repositoryLaunch := taskLaunchSpec{RequestedSubagentType: agent}
 		repositoryProgram := &taskProgramSpec{Jobs: []taskProgramJob{{RequestedSubagentType: agent}}}
-		retainTaskResolvedWorkspace(&repositoryLaunch, repositoryProgram, 0, root)
+		retainTaskResolvedWorkspace(parent, &repositoryLaunch, repositoryProgram, 0, root)
 		if repositoryLaunch.TargetWorkspacePath != root || repositoryProgram.Jobs[0].TargetWorkspacePath != root {
 			t.Fatalf("%s target lost", agent)
 		}

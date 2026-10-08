@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +65,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/actions", Hint: "Open canonical workspace Actions", QuickTips: []string{"/actions", "/actions list"}},
 		{Command: "/alerts", Hint: "Open alerts / notifications (c clears all, Enter opens session)"},
 		{Command: "/agents", Hint: "Open agent cards and model setup"},
-		{Command: "/profiles", Hint: "Quick-switch the saved model profile used by new sessions"},
+		{Command: "/favorites", Hint: "Apply a favorite to This chat, Default, or Default + this chat"},
 		{Command: "/notifications", Hint: "Alias for /alerts"},
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/memory", Hint: "List, edit, or permanently forget saved memories", QuickTips: []string{"/memory", "/memory help"}},
@@ -120,14 +121,18 @@ func buildChatCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 }
 
 type onboardingWorkspaceResult struct {
-	repositories []client.WorkspaceDiscoverEntry
-	discovered   bool
-	repository   *client.OnboardingRepository
-	review       *client.OnboardingReview
-	prepared     bool
-	model        model.HomeModel
-	path         string
-	err          error
+	repositories   []client.WorkspaceDiscoverEntry
+	discovered     bool
+	repository     *client.OnboardingRepository
+	review         *client.OnboardingReview
+	prepared       bool
+	model          model.HomeModel
+	path           string
+	projectCreated bool
+	projectID      string
+	projectName    string
+	workspacePaths []string
+	err            error
 }
 
 type homeReloadResult struct {
@@ -252,6 +257,7 @@ type App struct {
 	api                 *client.API
 	startupCWD          string
 	activePath          string
+	activeProjectID     string
 	workspacePath       string
 	selectedChatRouteID string
 	homeModel           model.HomeModel
@@ -270,6 +276,8 @@ type App struct {
 	authLogging               atomic.Bool
 	onboardingDifferentUser   bool
 	onboardingWorkspaceCh     chan onboardingWorkspaceResult
+	onboardingProjectID       string
+	onboardingProjectName     string
 	codexPending              *codexCodeLoginState
 
 	voiceCaptureSeq        int64
@@ -493,238 +501,263 @@ func (a *App) Run() error {
 		}
 
 		ev := a.screen.PollEvent()
-		switch e := ev.(type) {
-		case *tcell.EventResize:
-			a.screen.Sync()
-			dirty = true
-		case *tcell.EventInterrupt:
-			key, _ := e.Data().(string)
-			switch key {
-			case interruptTick:
-				if a.handleTick() {
-					dirty = true
-				}
-			case interruptChatAsync:
-				requestedRender := a.consumePendingChatRender()
-				if a.handleChatAsync() || requestedRender {
-					dirty = true
-				}
-			case interruptReloadReady:
-				a.consumeReloadResult()
-				dirty = true
-			case interruptAuthReady:
-				a.consumeAuthLoginResult()
-				dirty = true
-			case interruptOnboardingReady:
-				a.consumeOnboardingWorkspaceResult()
-				dirty = true
-			case interruptVoiceReady:
-				a.consumeVoiceCaptureEvents()
-				dirty = true
-			case interruptStreamReady:
-				if a.consumeStreamReadyForRender(time.Now(), true) {
-					dirty = true
-				}
-			case interruptGitStatusReady:
-				if a.consumeGitStatusRefreshResults() {
-					dirty = true
-				}
-			case interruptNotificationReady:
-				a.consumeNotificationCountResult()
-				dirty = true
-			case interruptTaskCommandReady:
-				a.consumeTaskCommandResults()
-				dirty = true
-			case interruptV3Chat:
-				a.consumeV3ChatRender()
-				dirty = true
-			case interruptQuit:
-				if a.devUpdateRequested {
-					return updatehandoff.ErrDevUpdateRequested
-				}
-				if a.releaseUpdateRequested {
-					return updatehandoff.ErrReleaseUpdateRequested
-				}
-				return nil
+		if ev == nil {
+			return nil
+		}
+		quit, err := a.processAppEvent(ev, &dirty)
+		if quit {
+			return err
+		}
+
+		// Coalesce rapid bursts (mouse wheel, keystrokes, interrupt batches)
+		// without starving the screen or reordering events.
+		const maxBatchEvents = 16
+		for i := 0; i < maxBatchEvents && a.screen != nil && a.screen.HasPendingEvent(); i++ {
+			nextEv := a.screen.PollEvent()
+			if nextEv == nil {
+				break
 			}
-		case *tcell.EventMouse:
-			if a.startupNetworkWarningModalActive() {
-				if a.handleStartupNetworkWarningModalMouse(e) {
-					dirty = true
-					continue
-				}
+			quit, err := a.processAppEvent(nextEv, &dirty)
+			if quit {
+				return err
 			}
-			if a.permissionsBypassModalActive() {
-				if a.handlePermissionsBypassModalMouse(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.permissionsPolicyModalActive() {
-				if a.handlePermissionsPolicyModalMouse(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.quitRequested {
-				continue
-			}
-			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
-				if a.home.HandleChatOverlayMouse(e) {
-					a.consumeHomeOverlayActions()
-				}
-				dirty = true
-				continue
-			}
-			if a.config.Input.MouseEnabled && !a.mouseHintShown {
-				a.mouseHintShown = true
-				message := "mouse capture on: use /mouse off (or F8) to disable; Shift+drag to select/copy"
-				if a.route == "chat" && a.chat != nil {
-					a.chat.SetStatus(message)
-				} else {
-					a.home.SetStatus(message)
-				}
-				a.showToast(ui.ToastInfo, message)
-			}
-			if a.route == "v3chat" && a.v3Chat != nil {
-				a.v3Chat.HandleMouse(e)
-				if a.v3Chat.ConsumeOpenAgentsRequest() {
-					a.openAgentsModal()
-				}
-				dirty = true
-				continue
-			}
-			if a.route == "chat" && a.chat != nil {
-				a.chat.HandleMouse(e)
-				a.consumeChatActions()
-				dirty = true
-				continue
-			}
-			if a.route == "home" {
-				a.home.HandleMouse(e)
-				a.consumeHomeActions()
-				dirty = true
-			}
-		case *tcell.EventPaste:
-			if a.quitRequested {
-				continue
-			}
-			a.setPasteActive(e.Start())
-			dirty = true
-		case *tcell.EventKey:
-			// Onboarding exit precedes modal and paste dispatch, even while pending.
-			if a.home != nil && a.home.OnboardingVisible() && e.Key() == tcell.KeyCtrlC {
-				a.requestQuit()
-				continue
-			}
-			if a.startupNetworkWarningModalActive() {
-				if a.handleStartupNetworkWarningModalKey(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.permissionsBypassModalActive() {
-				if a.handlePermissionsBypassModalKey(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.permissionsPolicyModalActive() {
-				if a.handlePermissionsPolicyModalKey(e) {
-					dirty = true
-					continue
-				}
-			}
-			if a.quitRequested {
-				continue
-			}
-			if a.pasteActive {
-				if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
-					if a.home.HandlePasteKey(e) {
-						a.consumeHomeOverlayActions()
-						dirty = true
-					}
-					continue
-				}
-				if a.route == "chat" && a.chat != nil {
-					if a.chat.HandlePasteKey(e) {
-						dirty = true
-					}
-					continue
-				}
-				if a.route == "home" && a.home != nil {
-					if a.home.HandlePasteKey(e) {
-						dirty = true
-					}
-					a.consumeHomeActions()
-					continue
-				}
-				if a.route == "v3chat" && a.v3Chat != nil {
-					if a.v3Chat.HandlePasteKey(e) {
-						dirty = true
-					}
-					continue
-				}
-				a.setPasteActive(false)
-				dirty = true
-			}
-			if (a.route == "chat" || a.route == "v3chat") && a.home != nil {
-				if a.home.HandleChatOverlayKey(e) {
-					a.consumeHomeOverlayActions()
-					a.consumeHomeActions()
-					dirty = true
-					continue
-				}
-			}
-			if handled := a.handleGlobalKey(e); handled {
-				dirty = true
-				continue
-			}
-			if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
-				dirty = true
-				continue
-			}
-			if a.voiceInputLocked() {
-				dirty = true
-				continue
-			}
-			if a.route == "v3chat" && a.v3Chat != nil {
-				switch a.v3Chat.HandleKey(e) {
-				case v3chat.PageActionHome:
-					a.closeV3Chat()
-					a.route = "home"
-					a.home.SelectNextHomeTip()
-					a.home.SetStatus("home")
-				case v3chat.PageActionCommand:
-					a.handleV3ChatCommand()
-				case v3chat.PageActionOpenCurrentPlan:
-					a.showV3CurrentPlan()
-				}
-				dirty = true
-				continue
-			}
-			if a.route == "chat" && a.chat != nil {
-				if handled := a.handleChatKey(e); handled {
-					a.consumeChatActions()
-					dirty = true
-					continue
-				}
-				a.chat.HandleKey(e)
-				a.consumeChatActions()
-				dirty = true
-				continue
-			}
-			if handled := a.handleHomeKey(e); handled {
-				a.consumeHomeActions()
-				dirty = true
-				continue
-			}
-			a.refreshOnboardingWorkspaceGitReadinessBeforeSubmit(e)
-			a.home.HandleKey(e)
-			a.consumeHomeActions()
-			dirty = true
 		}
 	}
+}
+
+func (a *App) processAppEvent(ev tcell.Event, dirty *bool) (bool, error) {
+	switch e := ev.(type) {
+	case *tcell.EventResize:
+		a.screen.Sync()
+		*dirty = true
+	case *tcell.EventInterrupt:
+		key, _ := e.Data().(string)
+		switch key {
+		case interruptTick:
+			if a.handleTick() {
+				*dirty = true
+			}
+		case interruptChatAsync:
+			requestedRender := a.consumePendingChatRender()
+			if a.handleChatAsync() || requestedRender {
+				*dirty = true
+			}
+		case interruptReloadReady:
+			a.consumeReloadResult()
+			*dirty = true
+		case interruptAuthReady:
+			a.consumeAuthLoginResult()
+			*dirty = true
+		case interruptOnboardingReady:
+			a.consumeOnboardingWorkspaceResult()
+			*dirty = true
+		case interruptVoiceReady:
+			a.consumeVoiceCaptureEvents()
+			*dirty = true
+		case interruptStreamReady:
+			if a.consumeStreamReadyForRender(time.Now(), true) {
+				*dirty = true
+			}
+		case interruptGitStatusReady:
+			if a.consumeGitStatusRefreshResults() {
+				*dirty = true
+			}
+		case interruptNotificationReady:
+			a.consumeNotificationCountResult()
+			*dirty = true
+		case interruptTaskCommandReady:
+			a.consumeTaskCommandResults()
+			*dirty = true
+		case interruptV3Chat:
+			a.consumeV3ChatRender()
+			*dirty = true
+		case interruptQuit:
+			if a.devUpdateRequested {
+				return true, updatehandoff.ErrDevUpdateRequested
+			}
+			if a.releaseUpdateRequested {
+				return true, updatehandoff.ErrReleaseUpdateRequested
+			}
+			return true, nil
+		}
+	case *tcell.EventMouse:
+		if a.startupNetworkWarningModalActive() {
+			if a.handleStartupNetworkWarningModalMouse(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsBypassModalActive() {
+			if a.handlePermissionsBypassModalMouse(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsPolicyModalActive() {
+			if a.handlePermissionsPolicyModalMouse(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.quitRequested {
+			return false, nil
+		}
+		if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
+			if a.home.HandleChatOverlayMouse(e) {
+				a.consumeHomeOverlayActions()
+			}
+			*dirty = true
+			return false, nil
+		}
+		if a.config.Input.MouseEnabled && !a.mouseHintShown {
+			a.mouseHintShown = true
+			message := "mouse capture on: use /mouse off (or F8) to disable; Shift+drag to select/copy"
+			if a.route == "chat" && a.chat != nil {
+				a.chat.SetStatus(message)
+			} else {
+				a.home.SetStatus(message)
+			}
+			a.showToast(ui.ToastInfo, message)
+		}
+		if a.route == "v3chat" && a.v3Chat != nil {
+			a.v3Chat.HandleMouse(e)
+			if a.v3Chat.ConsumeOpenAgentsRequest() {
+				a.openAgentsModal()
+			}
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "chat" && a.chat != nil {
+			a.chat.HandleMouse(e)
+			a.consumeChatActions()
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "home" {
+			a.home.HandleMouse(e)
+			a.consumeHomeActions()
+			*dirty = true
+		}
+	case *tcell.EventPaste:
+		if a.quitRequested {
+			return false, nil
+		}
+		a.setPasteActive(e.Start())
+		*dirty = true
+	case *tcell.EventKey:
+		// Onboarding exit precedes modal and paste dispatch, even while pending.
+		if a.home != nil && a.home.OnboardingVisible() && e.Key() == tcell.KeyCtrlC {
+			a.requestQuit()
+			return false, nil
+		}
+		if a.startupNetworkWarningModalActive() {
+			if a.handleStartupNetworkWarningModalKey(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsBypassModalActive() {
+			if a.handlePermissionsBypassModalKey(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.permissionsPolicyModalActive() {
+			if a.handlePermissionsPolicyModalKey(e) {
+				*dirty = true
+				return false, nil
+			}
+		}
+		if a.quitRequested {
+			return false, nil
+		}
+		if a.pasteActive {
+			if a.route == "chat" && a.home != nil && a.home.ChatOverlayVisible() {
+				if a.home.HandlePasteKey(e) {
+					a.consumeHomeOverlayActions()
+					*dirty = true
+				}
+				return false, nil
+			}
+			if a.route == "chat" && a.chat != nil {
+				if a.chat.HandlePasteKey(e) {
+					*dirty = true
+				}
+				return false, nil
+			}
+			if a.route == "home" && a.home != nil {
+				if a.home.HandlePasteKey(e) {
+					*dirty = true
+				}
+				a.consumeHomeActions()
+				return false, nil
+			}
+			if a.route == "v3chat" && a.v3Chat != nil {
+				if a.v3Chat.HandlePasteKey(e) {
+					*dirty = true
+				}
+				return false, nil
+			}
+			a.setPasteActive(false)
+			*dirty = true
+		}
+		if (a.route == "chat" || a.route == "v3chat") && a.home != nil {
+			if a.home.HandleChatOverlayKey(e) {
+				a.consumeHomeOverlayActions()
+				a.consumeHomeActions()
+				*dirty = true
+				return false, nil
+			}
+		}
+		if handled := a.handleGlobalKey(e); handled {
+			*dirty = true
+			return false, nil
+		}
+		if (a.route == "chat" || a.route == "v3chat") && a.home != nil && a.home.ChatOverlayVisible() {
+			*dirty = true
+			return false, nil
+		}
+		if a.voiceInputLocked() {
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "v3chat" && a.v3Chat != nil {
+			switch a.v3Chat.HandleKey(e) {
+			case v3chat.PageActionHome:
+				a.closeV3Chat()
+				a.route = "home"
+				a.home.SelectNextHomeTip()
+				a.home.SetStatus("home")
+			case v3chat.PageActionCommand:
+				a.handleV3ChatCommand()
+			case v3chat.PageActionOpenCurrentPlan:
+				a.showV3CurrentPlan()
+			}
+			*dirty = true
+			return false, nil
+		}
+		if a.route == "chat" && a.chat != nil {
+			if handled := a.handleChatKey(e); handled {
+				a.consumeChatActions()
+				*dirty = true
+				return false, nil
+			}
+			a.chat.HandleKey(e)
+			a.consumeChatActions()
+			*dirty = true
+			return false, nil
+		}
+		if handled := a.handleHomeKey(e); handled {
+			a.consumeHomeActions()
+			*dirty = true
+			return false, nil
+		}
+		a.refreshOnboardingWorkspaceGitReadinessBeforeSubmit(e)
+		a.home.HandleKey(e)
+		a.consumeHomeActions()
+		*dirty = true
+	}
+	return false, nil
 }
 
 func (a *App) setPasteActive(active bool) {
@@ -1872,16 +1905,20 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 		}
 	}
 	if keybinds.Match(ev, ui.KeybindHomeOpenSessions) {
+		if a.home != nil && a.home.SessionsModalVisible() {
+			a.home.HideSessionsModal()
+			a.home.SetStatus("session manager closed")
+			return true
+		}
+		if a.chat != nil && a.chat.SessionsPaletteActive() {
+			a.chat.CloseSessionsPalette()
+			return true
+		}
 		if a.route == "chat" || a.route == "v3chat" {
 			a.handleSessionsCommand(nil)
 			return true
 		}
 		if a.route == "home" && a.home != nil {
-			if a.home.SessionsModalVisible() {
-				a.home.HideSessionsModal()
-				a.home.SetStatus("session manager closed")
-				return true
-			}
 			if a.home.AuthModalVisible() ||
 				a.home.VaultModalVisible() ||
 				a.home.WorkspaceModalVisible() ||
@@ -1902,6 +1939,10 @@ func (a *App) handleGlobalKey(ev *tcell.EventKey) bool {
 			return true
 		}
 		if a.workspaceSwitchHotkeyBlocked() {
+			return true
+		}
+		if len(a.homeModel.Projects) > 1 {
+			a.cycleNextProject()
 			return true
 		}
 		a.showWorkspaceSelector()
@@ -2038,7 +2079,35 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 	}
 
 	prompt := strings.TrimSpace(a.home.PromptValue())
+	if a.home.TaskBoxFocused() {
+		if task, ok := a.home.SelectedTask(); ok {
+			a.home.ClearCommandOverlay()
+			if strings.TrimSpace(task.SessionID) != "" {
+				if err := a.openSessionSummary(model.SessionSummary{ID: strings.TrimSpace(task.SessionID)}, ""); err != nil {
+					a.home.SetStatus(fmt.Sprintf("open task session failed: %v", err))
+				}
+				return true
+			}
+			if a.homeModel.ActiveProjectID != "" {
+				if err := a.createNewProjectSession(a.homeModel.ActiveProjectID, "auto", task.Title); err != nil {
+					a.home.SetStatus(fmt.Sprintf("start task session failed: %v", err))
+				}
+				return true
+			}
+			if err := a.openChatSession(task.Title, task.Title); err != nil {
+				a.home.SetStatus(fmt.Sprintf("start task session failed: %v", err))
+			}
+			return true
+		}
+	}
 	if prompt == "" {
+		if a.homeModel.ActiveProjectID != "" {
+			a.home.ClearCommandOverlay()
+			if err := a.openOrchestratorChat(""); err != nil {
+				a.home.SetStatus(fmt.Sprintf("open orchestrator chat failed: %v", err))
+			}
+			return true
+		}
 		return false
 	}
 
@@ -2055,6 +2124,14 @@ func (a *App) handleHomeKey(ev *tcell.EventKey) bool {
 	}
 
 	a.home.ClearCommandOverlay()
+	if a.homeModel.ActiveProjectID != "" {
+		if err := a.createNewProjectSession(a.homeModel.ActiveProjectID, "auto", prompt); err != nil {
+			a.home.SetStatus(fmt.Sprintf("start session failed: %v", err))
+			return true
+		}
+		a.home.ClearPrompt()
+		return true
+	}
 	if err := a.openChatSession("", prompt); err != nil {
 		a.home.SetStatus(fmt.Sprintf("open chat failed: %v", err))
 		return true
@@ -2208,7 +2285,7 @@ func (a *App) executeCommand(raw string) {
 		a.handleWorktreesCommand(args)
 	case "wt":
 		a.handleWorktreesCommand(args)
-	case "profiles":
+	case "favorites":
 		a.openProfilesModal()
 	case "agents", "agent":
 		a.handleAgentsCommand(args)
@@ -2284,7 +2361,7 @@ func (a *App) showHelp() {
 		"/worktrees [new|open|off|status|branch <name>]",
 		"/agents   (open agent cards and model setup)",
 
-		"/profiles   (quick-switch the saved model profile used by new sessions)",
+		"/favorites  (This chat, Default, or Default + this chat)",
 		fmt.Sprintf("%s   (open agents manager modal)", keybinds.Label(ui.KeybindGlobalOpenAgents)),
 		fmt.Sprintf("%s   (cycle saved model profiles)", keybinds.Label(ui.KeybindGlobalCycleProfiles)),
 		"/themes   (open theme modal with live preview)",
@@ -2549,6 +2626,18 @@ func (a *App) handleNewCommand(raw string) {
 		a.home.SetStatus("usage: /new [plan] [<prompt>]")
 		return
 	}
+	if a.homeModel.ActiveProjectID != "" {
+		a.home.ClearCommandOverlay()
+		mode := map[bool]string{true: "plan", false: "auto"}[command.PlanModeRequested]
+		initialPrompt := strings.TrimSpace(command.Prompt)
+		if err := a.createNewProjectSession(a.homeModel.ActiveProjectID, mode, initialPrompt); err != nil {
+			a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
+			if a.route == "chat" && a.chat != nil {
+				a.chat.SetStatus(fmt.Sprintf("/new failed: %v", err))
+			}
+		}
+		return
+	}
 	intent := a.home.SessionIntent()
 	intent.InitialPrompt = strings.TrimSpace(command.Prompt)
 	intent.Mode = map[bool]string{true: "plan", false: "auto"}[command.PlanModeRequested]
@@ -2557,6 +2646,74 @@ func (a *App) handleNewCommand(raw string) {
 		a.home.ClearCommandOverlay()
 		a.home.SetStatus(fmt.Sprintf("/new failed: %v", err))
 	}
+}
+
+func (a *App) createNewProjectSession(projectID string, mode string, initialPrompt string) error {
+	if a == nil || a.api == nil {
+		return errors.New("api client is not configured")
+	}
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return errors.New("project id is required")
+	}
+	if mode != "plan" {
+		mode = "auto"
+	}
+	title := "Orchestrator"
+	if initialPrompt != "" {
+		title = chatTitleFromPrompt(initialPrompt)
+	} else if a.homeModel.ActiveProjectName != "" {
+		title = fmt.Sprintf("Orchestrator · %s", a.homeModel.ActiveProjectName)
+	}
+
+	intent := a.home.SessionIntent()
+	pref := intent.Preference
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	created, err := a.api.CreateSessionV3WithOptions(ctx, client.SessionCreateOptions{
+		ProjectID:  projectID,
+		Title:      title,
+		Mode:       mode,
+		AgentName:  "system-orchestrator",
+		Preference: pref,
+	})
+	if err != nil {
+		return fmt.Errorf("create project session: %w", err)
+	}
+
+	sessionID := strings.TrimSpace(created.Session.ID)
+	if sessionID == "" {
+		return errors.New("created session has no id")
+	}
+
+	a.homeModel.ActiveProjectPrimarySessionID = sessionID
+	go func() {
+		bgCtx, bgCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer bgCancel()
+		_, _ = a.api.UpdateProject(bgCtx, projectID, map[string]any{"primary_session_id": sessionID})
+	}()
+
+	if a.v3Chat != nil {
+		a.closeV3Chat()
+	}
+
+	if err := a.openSessionSummary(model.SessionSummary{
+		ID:    sessionID,
+		Title: title,
+		Mode:  mode,
+		Metadata: map[string]any{
+			"project_id":          projectID,
+			"swarm_v3_project_id": projectID,
+			"agent_name":          "system-orchestrator",
+		},
+	}, initialPrompt); err != nil {
+		return err
+	}
+
+	a.home.ClearPrompt()
+	return nil
 }
 
 func (a *App) handlePlanCommand(args []string) {
@@ -2864,6 +3021,44 @@ func (a *App) openExistingSession(summary model.SessionSummary) error {
 	return a.openExistingV3Chat(summary)
 }
 
+func (a *App) openOrchestratorChat(initialPrompt string) error {
+	if a.homeModel.ActiveProjectID == "" {
+		return errors.New("no active project")
+	}
+	sessID := strings.TrimSpace(a.homeModel.ActiveProjectPrimarySessionID)
+	if sessID == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if a.api != nil {
+			if sessList, err := a.api.ListProjectSessions(ctx, a.homeModel.ActiveProjectID); err == nil && len(sessList) > 0 {
+				sessID = strings.TrimSpace(sessList[0].ID)
+			}
+			if sessID == "" {
+				title := "Orchestrator"
+				if a.homeModel.ActiveProjectName != "" {
+					title = fmt.Sprintf("Orchestrator · %s", a.homeModel.ActiveProjectName)
+				}
+				if created, err := a.api.CreateProjectSession(ctx, a.homeModel.ActiveProjectID, title); err == nil {
+					sessID = strings.TrimSpace(created.Session.ID)
+				}
+			}
+			if sessID != "" {
+				a.homeModel.ActiveProjectPrimarySessionID = sessID
+				projID := a.homeModel.ActiveProjectID
+				go func() {
+					bgCtx, bgCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer bgCancel()
+					_, _ = a.api.UpdateProject(bgCtx, projID, map[string]any{"primary_session_id": sessID})
+				}()
+			}
+		}
+	}
+	if sessID == "" {
+		return errors.New("orchestrator session unavailable")
+	}
+	return a.openSessionSummary(model.SessionSummary{ID: sessID}, initialPrompt)
+}
+
 func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt string) error {
 	sessionID := strings.TrimSpace(summary.ID)
 	if sessionID == "" {
@@ -2895,6 +3090,9 @@ func (a *App) openSessionSummary(summary model.SessionSummary, initialPrompt str
 		}
 		if scopePath == "" {
 			scopePath = strings.TrimSpace(a.startupCWD)
+		}
+		if scopePath == "" {
+			scopePath = "."
 		}
 		if strings.TrimSpace(a.activeWorkspacePath()) != "" {
 			workspaceScope = scopePath
@@ -3551,6 +3749,133 @@ func sessionSummaryPlanComplete(document *client.SessionPlanDocument, normalized
 		}
 	}
 	return true
+}
+
+func isOrchestrationSession(summary model.SessionSummary, activeProjectID string) bool {
+	if summary.Depth > 0 {
+		return false
+	}
+	if summary.Metadata != nil {
+		if parentID := strings.TrimSpace(fmt.Sprint(summary.Metadata["parent_session_id"])); parentID != "" && parentID != "<nil>" {
+			return false
+		}
+		if taskID := strings.TrimSpace(fmt.Sprint(summary.Metadata["task_id"])); taskID != "" && taskID != "<nil>" {
+			return false
+		}
+		if workerID := strings.TrimSpace(fmt.Sprint(summary.Metadata["worker_id"])); workerID != "" && workerID != "<nil>" {
+			return false
+		}
+		if role := strings.TrimSpace(fmt.Sprint(summary.Metadata["role"])); role == "project_task" || role == "task" {
+			return false
+		}
+	}
+
+	activeProjectID = strings.TrimSpace(activeProjectID)
+	if activeProjectID != "" {
+		if summary.Metadata != nil {
+			projID := strings.TrimSpace(fmt.Sprint(summary.Metadata["project_id"]))
+			swarmProjID := strings.TrimSpace(fmt.Sprint(summary.Metadata["swarm_v3_project_id"]))
+			if projID != "" && projID != "<nil>" && projID != activeProjectID {
+				return false
+			}
+			if swarmProjID != "" && swarmProjID != "<nil>" && swarmProjID != activeProjectID {
+				return false
+			}
+		}
+	}
+
+	agentName := ""
+	resolvedAgent := ""
+	role := ""
+	if summary.Metadata != nil {
+		agentName = strings.TrimSpace(fmt.Sprint(summary.Metadata["agent_name"]))
+		if agentName == "<nil>" {
+			agentName = ""
+		}
+		resolvedAgent = strings.TrimSpace(fmt.Sprint(summary.Metadata["resolved_agent_name"]))
+		if resolvedAgent == "<nil>" {
+			resolvedAgent = ""
+		}
+		role = strings.TrimSpace(fmt.Sprint(summary.Metadata["role"]))
+		if role == "<nil>" {
+			role = ""
+		}
+
+		if agentName == "coder" || agentName == "system-coder" ||
+			agentName == "finder" || agentName == "system-finder" ||
+			agentName == "designer" || agentName == "system-designer" {
+			return false
+		}
+
+		if agentName == "system-orchestrator" || resolvedAgent == "system-orchestrator" || role == "project_orchestrator" {
+			return true
+		}
+	}
+
+	title := strings.ToLower(strings.TrimSpace(summary.Title))
+	if strings.Contains(title, "orchestrat") {
+		return true
+	}
+
+	if activeProjectID == "" && agentName == "" {
+		return true
+	}
+
+	return false
+}
+
+func orchestrationSessionTabsFromSummaries(summaries []model.SessionSummary, activeProjectID string) []ui.ChatSessionTab {
+	tabs := make([]ui.ChatSessionTab, 0, len(summaries))
+	seen := make(map[string]struct{}, len(summaries))
+
+	for _, summary := range summaries {
+		if !isOrchestrationSession(summary, activeProjectID) {
+			continue
+		}
+		id := strings.TrimSpace(summary.ID)
+		title := strings.TrimSpace(summary.Title)
+		if id == "" && title == "" {
+			continue
+		}
+		if id == "" {
+			id = title
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		tabs = append(tabs, ui.ChatSessionTab{
+			ID:              id,
+			Title:           title,
+			WorkspaceName:   strings.TrimSpace(summary.WorkspaceName),
+			WorkspacePath:   strings.TrimSpace(summary.WorkspacePath),
+			WorktreeEnabled: summary.WorktreeEnabled,
+			WorktreeBranch:  strings.TrimSpace(summary.WorktreeBranch),
+			Mode:            strings.TrimSpace(summary.Mode),
+			CreatedAt:       summary.CreatedAt,
+			UpdatedAt:       summary.UpdatedAt,
+			ActiveStartedAt: sessionSummaryActiveStartedAt(summary),
+			UpdatedAgo:      strings.TrimSpace(summary.UpdatedAgo),
+			Active:          sessionSummaryActive(summary),
+			NeedsAttention:  summary.PendingPermissionCount > 0,
+			ActivityLabel:   sessionSummaryActivityLabel(summary),
+			Group:           sessionSummarySidebarGroup(summary),
+			ProgressLabel:   sessionSummaryPlanProgress(summary),
+			Provider:        strings.TrimSpace(summary.Preference.Provider),
+			ModelName:       strings.TrimSpace(summary.Preference.Model),
+			ServiceTier:     strings.TrimSpace(summary.Preference.ServiceTier),
+			ContextMode:     strings.TrimSpace(summary.Preference.ContextMode),
+			Background:      false,
+			ParentSessionID: "",
+			LineageKind:     "",
+			LineageLabel:    "",
+			AssignmentLabel: "",
+			TargetKind:      "",
+			TargetName:      "",
+			Depth:           0,
+		})
+	}
+	return tabs
 }
 
 func chatSessionTabsFromSummaries(summaries []model.SessionSummary) []ui.ChatSessionTab {
@@ -4861,9 +5186,19 @@ func (a *App) queueSessionManagerOpen(query, openRoute string) error {
 	if a.home != nil {
 		a.home.SetStatus("loading V3 sessions...")
 	}
+	activeProjID := ""
+	if a.homeModel.ActiveProjectID != "" {
+		activeProjID = a.homeModel.ActiveProjectID
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
+		var projSessions []client.SessionSummary
+		if activeProjID != "" {
+			if list, err := a.api.ListProjectSessions(ctx, activeProjID); err == nil {
+				projSessions = list
+			}
+		}
 		snapshot, err := a.api.GetSessionV3SyncBootstrap(ctx, client.SessionV3SyncBootstrapRequest{
 			Surface: "tui",
 			Selector: client.SessionV3SyncSelector{
@@ -4882,7 +5217,29 @@ func (a *App) queueSessionManagerOpen(query, openRoute string) error {
 		})
 		result := homeReloadResult{sessionQuery: query, sessionOpenRoute: openRoute, err: err}
 		if err == nil {
+			if len(projSessions) > 0 {
+				if snapshot.SessionsByID == nil {
+					snapshot.SessionsByID = make(map[string]client.SessionSummary)
+				}
+				for _, ps := range projSessions {
+					if _, exists := snapshot.SessionsByID[ps.ID]; !exists {
+						snapshot.SessionsByID[ps.ID] = ps
+						snapshot.SessionOrder = append([]string{ps.ID}, snapshot.SessionOrder...)
+					}
+				}
+			}
 			result.sessionSnapshot = &snapshot
+		} else if len(projSessions) > 0 {
+			minimal := client.SessionV3SyncSnapshot{
+				OK:           true,
+				SessionsByID: make(map[string]client.SessionSummary),
+			}
+			for _, ps := range projSessions {
+				minimal.SessionsByID[ps.ID] = ps
+				minimal.SessionOrder = append(minimal.SessionOrder, ps.ID)
+			}
+			result.sessionSnapshot = &minimal
+			result.err = nil
 		}
 		select {
 		case a.reloadCh <- result:
@@ -4896,7 +5253,8 @@ func (a *App) queueSessionManagerOpen(query, openRoute string) error {
 }
 
 func (a *App) openLoadedHomeSessionsModal(query string) {
-	items := chatSessionPaletteItemsFromTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	tabs := orchestrationSessionTabsFromSummaries(a.homeModel.RecentSessions, a.homeModel.ActiveProjectID)
+	items := chatSessionPaletteItemsFromTabs(tabs)
 	if !a.home.OpenSessionsModal(items, strings.TrimSpace(query)) {
 		a.home.SetStatus("session manager unavailable while another modal is open")
 		return
@@ -4907,6 +5265,12 @@ func (a *App) openLoadedHomeSessionsModal(query string) {
 func (a *App) openHomeSessionsModal(query string) {
 	a.home.ClearCommandOverlay()
 	if err := a.queueSessionManagerOpen(query, "home"); err != nil {
+		tabs := orchestrationSessionTabsFromSummaries(a.homeModel.RecentSessions, a.homeModel.ActiveProjectID)
+		items := chatSessionPaletteItemsFromTabs(tabs)
+		if len(items) > 0 {
+			a.home.OpenSessionsModal(items, strings.TrimSpace(query))
+			return
+		}
 		a.home.SetStatus(fmt.Sprintf("/sessions failed: %v", err))
 	}
 }
@@ -4915,7 +5279,8 @@ func (a *App) openLoadedChatSessionsPalette(query string) {
 	if a.chat == nil {
 		return
 	}
-	a.chat.SetSessionTabs(chatSessionTabsFromSummaries(a.homeModel.RecentSessions))
+	tabs := orchestrationSessionTabsFromSummaries(a.homeModel.RecentSessions, a.homeModel.ActiveProjectID)
+	a.chat.SetSessionTabs(tabs)
 	if !a.chat.OpenSessionsPalette(a.chat.SessionPaletteItems(), strings.TrimSpace(query)) {
 		a.home.SetStatus("sessions palette unavailable while another modal is open")
 		return
@@ -5165,6 +5530,8 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		}
 	case ui.HomeActionOpenWorkspaceSelector:
 		a.showWorkspaceSelector()
+	case ui.HomeActionSelectProject:
+		a.activateProjectIndex(action.ProjectIndex)
 	case ui.HomeActionSelectWorkspace:
 		a.activateWorkspaceAtIndex(action.WorkspaceIndex)
 	case ui.HomeActionOpenAgentsModal:
@@ -5172,7 +5539,11 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 	case ui.HomeActionOpenProfilesModal:
 		a.openProfilesModal()
 	case ui.HomeActionSelectModelProfile:
-		_ = a.selectHomeModelProfile(action.ModelProfileID)
+		if err := a.selectModelFavorite(action.ModelProfileID, action.FavoriteScope); err != nil {
+			a.home.SetFavoritesStatus(err.Error())
+		} else {
+			a.home.HideProfilesModal()
+		}
 	case ui.HomeActionRefreshCodexUsage:
 		a.refreshHomeCodexAccount()
 	case ui.HomeActionConsumeCodexReset:
@@ -5214,6 +5585,14 @@ func (a *App) handleHomeAction(action ui.HomeAction) {
 		a.createOnboardingWorkspaceWithSetup(action.WorkspacePath, true)
 	case ui.HomeActionCreateOnboardingWorkspace:
 		a.createOnboardingWorkspace(action.WorkspacePath)
+	case ui.HomeActionCreateOnboardingProject:
+		a.handleCreateOnboardingProject(action.ProjectName, action.ProjectDescription, action.WorkspacePaths)
+	case ui.HomeActionFinishOnboardingProject:
+		a.completeOnboardingWithProject(action.ProjectID, action.ProjectName)
+	case ui.HomeActionKind("skip-onboarding-workspace"):
+		a.handleSkipOnboardingWorkspace()
+	case ui.HomeActionOpenFinishSetup:
+		a.handleOpenFinishSetup()
 	}
 }
 
@@ -5345,8 +5724,8 @@ func (a *App) handleAuthModalAction(action ui.AuthModalAction) {
 		}
 		a.refreshAuthModalData("")
 		if a.home.OnboardingProviderActive() {
-			a.refreshOnboardingWorkspaceGitReadiness()
-			a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
+			a.home.HideAuthModal()
+			a.home.ShowOnboardingProject("Provider connected. Enter a project name to continue.")
 		}
 		if record.Connection != nil {
 			method := strings.TrimSpace(record.Connection.Method)
@@ -5674,6 +6053,70 @@ func (a *App) handleWorkspaceModalAction(action ui.WorkspaceModalAction) {
 			a.home.SetWorkspaceModalError("workspace switching is unavailable while a run is active")
 			return
 		}
+
+		var targetProject *client.ProjectRecord
+		if strings.HasPrefix(action.Path, "project:") {
+			projID := strings.TrimPrefix(action.Path, "project:")
+			for i := range a.homeModel.Projects {
+				if a.homeModel.Projects[i].ID == projID {
+					targetProject = &a.homeModel.Projects[i]
+					break
+				}
+			}
+		} else {
+			for i := range a.homeModel.Projects {
+				for _, ws := range a.homeModel.Projects[i].Workspaces {
+					if pathsEqual(ws.Path, action.Path) {
+						targetProject = &a.homeModel.Projects[i]
+						break
+					}
+				}
+				if targetProject != nil {
+					break
+				}
+			}
+		}
+		if targetProject != nil {
+			a.activeProjectID = targetProject.ID
+			a.homeModel.ActiveProjectID = targetProject.ID
+			a.homeModel.ActiveProjectName = targetProject.Name
+			primarySessID := strings.TrimSpace(targetProject.PrimarySessionID)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if primarySessID == "" && a.api != nil {
+				if sessList, err := a.api.ListProjectSessions(ctx, targetProject.ID); err == nil && len(sessList) > 0 {
+					primarySessID = strings.TrimSpace(sessList[0].ID)
+				}
+			}
+			a.homeModel.ActiveProjectPrimarySessionID = primarySessID
+			if a.api != nil {
+				if tasks, err := a.api.ListProjectTasks(ctx, targetProject.ID); err == nil {
+					a.homeModel.ProjectTasks = tasks
+				} else {
+					a.homeModel.ProjectTasks = nil
+				}
+			}
+			cancel()
+		}
+
+		if strings.HasPrefix(action.Path, "project:") {
+			if selectorMode {
+				a.home.HideWorkspaceModal()
+				name := action.Path
+				if targetProject != nil {
+					name = targetProject.Name
+				}
+				a.home.SetStatus(fmt.Sprintf("project active: %s", name))
+			} else {
+				a.home.SetWorkspaceModalDirectory(a.activeContextPath())
+				a.refreshWorkspaceModalData("")
+				if targetProject != nil {
+					a.home.SetWorkspaceModalStatus(fmt.Sprintf("project active: %s", targetProject.Name))
+				}
+			}
+			a.queueReload(false)
+			return
+		}
+
 		previousWorkspacePath := a.activeWorkspacePath()
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
@@ -6059,8 +6502,7 @@ func (a *App) consumeAuthLoginResult() {
 		if result.hideAuthModal {
 			a.home.HideAuthModal()
 			if a.home.OnboardingProviderActive() {
-				a.refreshOnboardingWorkspaceGitReadiness()
-				a.home.ShowOnboardingWorkspace("Provider connected. Choose home or a new project folder to finish setup.")
+				a.home.ShowOnboardingProject("Provider connected. Enter a project name to continue.")
 			}
 		} else {
 			a.home.SetAuthModalLoading(false)
@@ -6525,6 +6967,34 @@ func (a *App) loadWorkspaceModalEntries(statusHint string) ([]client.WorkspaceEn
 		return nil, err
 	}
 
+	if projects, err := a.api.ListProjects(ctx); err == nil && len(projects) > 0 {
+		for _, proj := range projects {
+			found := false
+			for _, ws := range proj.Workspaces {
+				for _, e := range entries {
+					if pathsEqual(e.Path, ws.Path) {
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				path := "project:" + proj.ID
+				if len(proj.Workspaces) > 0 && proj.Workspaces[0].Path != "" {
+					path = proj.Workspaces[0].Path
+				}
+				entries = append(entries, client.WorkspaceEntry{
+					WorkspaceName: proj.Name,
+					Path:          path,
+					Active:        proj.ID == a.activeProjectID,
+				})
+			}
+		}
+	}
+
 	a.home.SetWorkspaceModalData(mapWorkspaceModalEntries(entries))
 	a.home.SetWorkspaceModalLoading(false)
 	if len(entries) == 0 {
@@ -6578,10 +7048,236 @@ func (a *App) saveOnboarding(username, swarmName string) {
 		return
 	}
 	a.api.SetToken(session.Token)
+	a.homeModel.OnboardingIdentityBootstrapped = true
 	a.home.SetOnboardingRequired(status.NeedsOnboarding, strings.TrimSpace(status.Identity.Username), strings.TrimSpace(status.Config.SwarmName))
 	a.refreshOnboardingWorkspaceGuidance()
-	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue to workspace setup.")
+	a.home.ShowOnboardingProvider("Identity saved. Connect a provider, or press s to continue.")
 	a.refreshAuthModalData("Loading providers...")
+}
+
+func (a *App) handleCreateOnboardingProject(name, description string, workspacePaths []string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		a.home.SetOnboardingError("Project name is required")
+		return
+	}
+
+	if len(workspacePaths) == 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		reqID := fmt.Sprintf("onboarding-project-%d", time.Now().UnixNano())
+		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
+			ClientRequestID: reqID,
+			Name:            name,
+			Description:     strings.TrimSpace(description),
+		})
+		if err != nil {
+			a.home.SetOnboardingError(fmt.Sprintf("Failed to create project: %v", err))
+			return
+		}
+		a.onboardingProjectID = project.ID
+		a.onboardingProjectName = project.Name
+		a.completeOnboardingWithProject(project.ID, project.Name)
+		return
+	}
+
+	a.home.SetOnboardingStatus("Personalizing your Project..")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		var wsRefs []client.ProjectWorkspaceRef
+		for _, wsPath := range workspacePaths {
+			wsPath = strings.TrimSpace(wsPath)
+			if wsPath == "" {
+				continue
+			}
+			res, err := a.api.AddWorkspace(ctx, wsPath, "", "", false)
+			if err == nil && res.WorkspaceID != "" {
+				resolvedPath := res.WorkspacePath
+				if resolvedPath == "" {
+					resolvedPath = res.ResolvedPath
+				}
+				if resolvedPath == "" {
+					resolvedPath = wsPath
+				}
+				wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
+					WorkspaceID:   res.WorkspaceID,
+					Path:          resolvedPath,
+					WorkspaceName: res.WorkspaceName,
+				})
+			} else {
+				if list, lErr := a.api.ListWorkspaces(ctx, 200); lErr == nil {
+					for _, w := range list {
+						if pathsEqual(w.Path, wsPath) {
+							wsRefs = append(wsRefs, client.ProjectWorkspaceRef{
+								WorkspaceID:   w.WorkspaceID,
+								Path:          w.Path,
+								WorkspaceName: w.WorkspaceName,
+							})
+							break
+						}
+					}
+				}
+			}
+		}
+
+		reqID := fmt.Sprintf("onboarding-project-%d", time.Now().UnixNano())
+		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
+			ClientRequestID: reqID,
+			Name:            name,
+			Description:     strings.TrimSpace(description),
+			Workspaces:      wsRefs,
+		})
+		if err != nil {
+			log.Printf("onboarding: create project with workspaces failed: %v, falling back to clean project", err)
+			project, err = a.api.CreateProject(ctx, client.CreateProjectInput{
+				ClientRequestID: reqID + "-fallback",
+				Name:            name,
+			})
+			if err != nil {
+				a.onboardingWorkspaceCh <- onboardingWorkspaceResult{err: fmt.Errorf("failed to create project: %w", err)}
+				if a.screen != nil {
+					_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
+				}
+				return
+			}
+		}
+
+		a.onboardingProjectID = project.ID
+		a.onboardingProjectName = project.Name
+
+		pollDeadline := time.Now().Add(45 * time.Second)
+		for time.Now().Before(pollDeadline) {
+			rec, gErr := a.api.GetProject(ctx, project.ID)
+			if gErr == nil && rec.ContextGeneration != nil {
+				if rec.ContextGeneration.Status == "ready" || rec.ContextGeneration.Status == "failed" {
+					break
+				}
+			}
+			if a.screen != nil {
+				_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptTick))
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+
+		a.onboardingWorkspaceCh <- onboardingWorkspaceResult{
+			projectCreated: true,
+			projectID:      project.ID,
+			projectName:    project.Name,
+			workspacePaths: workspacePaths,
+		}
+		if a.screen != nil {
+			_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptOnboardingReady))
+		}
+	}()
+}
+
+func (a *App) handleSkipOnboardingWorkspace() {
+	projectID := strings.TrimSpace(a.onboardingProjectID)
+	projectName := strings.TrimSpace(a.onboardingProjectName)
+	if projectID == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		name := projectName
+		if name == "" {
+			name = strings.TrimSpace(a.home.OnboardingProjectName())
+		}
+		if name == "" {
+			name = "project"
+		}
+		reqID := fmt.Sprintf("onboarding-project-%d", time.Now().UnixNano())
+		project, err := a.api.CreateProject(ctx, client.CreateProjectInput{
+			ClientRequestID: reqID,
+			Name:            name,
+		})
+		if err == nil {
+			projectID = project.ID
+			projectName = project.Name
+			a.onboardingProjectID = project.ID
+			a.onboardingProjectName = project.Name
+		}
+	}
+	a.completeOnboardingWithProject(projectID, projectName)
+}
+
+func (a *App) completeOnboardingWithProject(projectID, projectName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	complete := true
+	acknowledged, err := a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{
+		DesktopOnboardingComplete: &complete,
+	})
+	if err != nil {
+		a.home.SetOnboardingError(fmt.Sprintf("Could not acknowledge onboarding completion: %v", err))
+		return
+	}
+
+	if projectID != "" {
+		a.activeProjectID = projectID
+	}
+	next, err := a.refreshHomeV3Model(ctx)
+	if err == nil {
+		next, _ = acknowledgeOnboardingHomeModel(next, acknowledged)
+	}
+	next.ActiveProjectID = projectID
+	next.ActiveProjectName = projectName
+
+	if !next.AuthConfigured {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingProvider = true
+	}
+	if len(next.Workspaces) == 0 {
+		next.FinishSetupNeeded = true
+		next.FinishSetupMissingWorkspace = true
+	}
+
+	a.syncActiveContextFromHomeModel(next)
+	a.applyHomeModel(next)
+	a.syncVaultUI()
+	a.home.CompleteOnboardingWorkspace()
+
+	if projectName != "" {
+		a.home.SetStatus(fmt.Sprintf("Project ready: %s. Swarm is ready.", projectName))
+	} else {
+		a.home.SetStatus("Swarm is ready.")
+	}
+
+	if next.AuthConfigured && projectID != "" {
+		activeProvider, activeModel, activeThinking, activeServiceTier, activeContextMode, _ := a.currentModelPreferenceState()
+		sess, err := a.api.CreateSessionV3WithOptions(ctx, client.SessionCreateOptions{
+			ProjectID: projectID,
+			Title:     projectName,
+			Mode:      "auto",
+			AgentName: "system-orchestrator",
+			Preference: client.ModelPreference{
+				Provider:    activeProvider,
+				Model:       activeModel,
+				Thinking:    activeThinking,
+				ServiceTier: activeServiceTier,
+				ContextMode: activeContextMode,
+			},
+		})
+		if err == nil && sess.Session.ID != "" {
+			_ = a.openExistingSession(model.SessionSummary{
+				ID:    sess.Session.ID,
+				Title: projectName,
+				Mode:  "auto",
+			})
+		}
+	}
+}
+
+func (a *App) handleOpenFinishSetup() {
+	if a.homeModel.FinishSetupMissingProvider {
+		a.openAuthModal()
+		return
+	}
+	if a.homeModel.FinishSetupMissingWorkspace {
+		a.showWorkspaceSelector()
+		return
+	}
 }
 
 func (a *App) refreshOnboardingWorkspaceGitReadinessBeforeSubmit(event *tcell.EventKey) {
@@ -6658,10 +7354,22 @@ func (a *App) createOnboardingWorkspaceWithSetup(path string, setup bool) {
 			next, err = a.refreshHomeV3Model(ctx)
 		}
 		readyPath := firstNonEmpty(normalizePath(resolution.WorkspacePath), normalizePath(resolution.ResolvedPath), path)
-		if err == nil && !homeModelHasActiveWorkspace(next, readyPath) {
-			err = fmt.Errorf("workspace API completed but refreshed workspace is not active and Git-ready at %s (Git readiness: %s)", displayPath(readyPath), homeModelWorkspaceGitReadiness(next, readyPath))
+		if err == nil && !homeModelHasWorkspace(next, readyPath) && !homeModelHasActiveWorkspace(next, readyPath) {
+			err = fmt.Errorf("workspace API completed but refreshed workspace is not available at %s", displayPath(readyPath))
 		}
 		if err == nil {
+			if projectID := strings.TrimSpace(a.onboardingProjectID); projectID != "" {
+				wsRef := []client.ProjectWorkspaceRef{
+					{
+						WorkspaceID:   resolution.WorkspaceID,
+						Path:          readyPath,
+						WorkspaceName: resolution.WorkspaceName,
+					},
+				}
+				_, _ = a.api.UpdateProject(ctx, projectID, map[string]any{
+					"workspaces": wsRef,
+				})
+			}
 			complete := true
 			var acknowledged client.OnboardingStatus
 			acknowledged, err = a.api.SaveOnboarding(ctx, client.SaveOnboardingInput{DesktopOnboardingComplete: &complete})
@@ -6689,6 +7397,19 @@ func acknowledgeOnboardingHomeModel(next model.HomeModel, acknowledged client.On
 	next.WorkspaceSetupHasGit = false
 	next.WorkspaceSetupGitReadiness = model.GitReadinessUnknown
 	return next, nil
+}
+
+func homeModelHasWorkspace(home model.HomeModel, path string) bool {
+	path = normalizePath(path)
+	if path == "" {
+		return false
+	}
+	for _, workspace := range home.Workspaces {
+		if pathsEqual(normalizePath(workspace.Path), path) {
+			return true
+		}
+	}
+	return false
 }
 
 func homeModelHasActiveWorkspace(home model.HomeModel, path string) bool {
@@ -6722,6 +7443,22 @@ func (a *App) consumeOnboardingWorkspaceResult() {
 	case result := <-a.onboardingWorkspaceCh:
 		if result.err != nil {
 			a.home.SetOnboardingError(fmt.Sprintf("workspace setup failed: %v", result.err))
+			return
+		}
+		if result.projectCreated {
+			a.onboardingProjectID = result.projectID
+			a.onboardingProjectName = result.projectName
+			a.home.ShowOnboardingPreFinish(result.projectID, result.projectName, result.workspacePaths)
+			if a.screen != nil {
+				go func() {
+					for i := 0; i < 20; i++ {
+						time.Sleep(250 * time.Millisecond)
+						if a.screen != nil {
+							_ = a.screen.PostEvent(tcell.NewEventInterrupt(interruptTick))
+						}
+					}
+				}()
+			}
 			return
 		}
 		if result.discovered {
@@ -6778,6 +7515,7 @@ func (a *App) openProfilesModal() {
 	a.home.HideThemeModal()
 	a.home.HideKeybindsModal()
 	a.home.ShowProfilesModal()
+	a.home.SetFavoritesChatAvailable(a.route == "v3chat" && a.v3Chat != nil && a.v3Chat.SessionID() != "")
 }
 
 func (a *App) openAgentsModal() {
@@ -6845,6 +7583,9 @@ func (a *App) refreshAgentsModalData(statusHint string) {
 
 func (a *App) refreshAuthModalData(statusHint string) {
 	if !a.home.AuthModalVisible() && !a.home.OnboardingProviderActive() {
+		return
+	}
+	if strings.TrimSpace(a.api.Token()) == "" {
 		return
 	}
 	a.home.ClearAuthModalSnapshot()
@@ -8840,6 +9581,49 @@ func (a *App) activateWorkspaceAtIndex(index int) {
 	}
 	a.home.SetStatus(fmt.Sprintf("workspace active: %s", resolution.WorkspaceName))
 	a.queueReload(false)
+}
+
+func (a *App) activateProjectIndex(index int) {
+	if a == nil || index < 0 || index >= len(a.homeModel.Projects) {
+		return
+	}
+	target := a.homeModel.Projects[index]
+	a.activeProjectID = target.ID
+	a.homeModel.ActiveProjectID = target.ID
+	a.homeModel.ActiveProjectName = target.Name
+	primarySessID := strings.TrimSpace(target.PrimarySessionID)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if primarySessID == "" && a.api != nil {
+		if sessList, err := a.api.ListProjectSessions(ctx, target.ID); err == nil && len(sessList) > 0 {
+			primarySessID = strings.TrimSpace(sessList[0].ID)
+		}
+	}
+	a.homeModel.ActiveProjectPrimarySessionID = primarySessID
+	if a.api != nil {
+		if tasks, err := a.api.ListProjectTasks(ctx, target.ID); err == nil {
+			a.homeModel.ProjectTasks = tasks
+		} else {
+			a.homeModel.ProjectTasks = nil
+		}
+	}
+	a.home.SetModel(a.homeModel)
+	a.home.SetStatus(fmt.Sprintf("switched to project %s", target.Name))
+}
+
+func (a *App) cycleNextProject() {
+	if a == nil || len(a.homeModel.Projects) <= 1 {
+		return
+	}
+	curIdx := -1
+	for i, p := range a.homeModel.Projects {
+		if p.ID == a.homeModel.ActiveProjectID {
+			curIdx = i
+			break
+		}
+	}
+	nextIdx := (curIdx + 1) % len(a.homeModel.Projects)
+	a.activateProjectIndex(nextIdx)
 }
 
 func (a *App) userFacingSessionPath(workspacePath string, worktreeEnabled bool, worktreeRootPath string) string {

@@ -285,3 +285,29 @@ test('reordered hydration and terminal repair converge monotonically', () => {
   assert.equal(tool.provenance.providerConstruction, true)
   assert.equal(tool.provenance.runtimeExecution, true)
 })
+
+// Purpose: Orchestrator runtime-only starts (no provider construction or output)
+// must populate the canonical rendered tool-call map immediately. applyCacheEvent
+// and applyToolLifecycleToRun own this boundary; reducer tests are the narrowest
+// proof of call identity, duplicate/replay monotonicity, and session isolation.
+test('runtime-only project start is renderable before output and repairs without session leakage', () => {
+  let state = createEmptyDesktopV3CacheState()
+  const start = durableToolEvent('session.tool.started', { call_id: 'project-call', tool_instance_id: 'step:project-call', tool_name: 'manage_projects', arguments: '{"action":"inspect_files","inspection":{"tool":"search","arguments":{"query":"sidebar"}}}' }, 1)
+  state = desktopV3CacheReducer(state, { type: 'realtime.applyEvent', event: start })
+  const getTool = () => state.liveRunsBySession[sessionId][runId].toolCallsByCallId['project-call']
+  assert.equal(getTool().status, 'running')
+  assert.equal(getTool().outputText, undefined)
+  assert.match(getTool().argumentsText ?? '', /inspect_files/)
+  assert.equal(Object.keys(state.liveRunsBySession[sessionId][runId].toolCallsByCallId).length, 1)
+  assert.equal(state.liveRunsBySession['other-session'], undefined)
+  state = desktopV3CacheReducer(state, { type: 'realtime.applyEvent', event: start })
+  state = desktopV3CacheReducer(state, { type: 'realtime.applyEvent', event: durableToolEvent('session.tool.delta', { call_id: 'project-call', output: 'partial' }, 2) })
+  assert.equal(getTool().outputText, 'partial')
+  state = desktopV3CacheReducer(state, { type: 'realtime.applyEvent', event: durableToolEvent('session.tool.failed', { call_id: 'project-call', error: 'denied' }, 3) })
+  assert.equal(getTool().status, 'failed')
+  assert.equal(getTool().errorText, 'denied')
+  state = desktopV3CacheReducer(state, { type: 'liveRun.mergeRepairEvents', sessionId, runId, events: [start] })
+  assert.equal(getTool().status, 'failed')
+  assert.equal(selectDesktopToolActivities(state, sessionId).length, 1)
+  assert.equal(selectDesktopToolActivities(state, 'other-session').length, 0)
+})

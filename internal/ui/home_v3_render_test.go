@@ -6,6 +6,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 
+	"swarm-refactor/swarmtui/internal/client"
 	"swarm-refactor/swarmtui/internal/model"
 )
 
@@ -66,15 +67,13 @@ func TestHomepageOutsideWorkspaceWarningRendersBelowTipsAndKeepsWorkspaceRow(t *
 	for _, want := range []string{
 		"Default",
 		"Shift+Tab toggles Plan on/off • Ctrl+X sessions • / for commands",
-		"Opened from unsaved Git repository /outside/project. Using workspace Default. Run /workspace",
-		"save to save the launch directory and switch to it.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("outside-workspace homepage missing %q:\n%s", want, text)
 		}
 	}
-	if tipsAt, warningAt := strings.Index(text, "Shift+Tab toggles Plan on/off"), strings.Index(text, "Opened from unsaved Git repository"); tipsAt < 0 || warningAt <= tipsAt {
-		t.Fatalf("outside-workspace warning was not rendered below tips:\n%s", text)
+	if strings.Contains(text, "Opened from unsaved Git repository") || strings.Contains(text, "cannot be added yet") {
+		t.Fatalf("outside-workspace warning was not suppressed:\n%s", text)
 	}
 }
 
@@ -106,13 +105,11 @@ func TestHomepageWarnsForRealInstallerHomeWorkspaceWithoutGit(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 120, 32)
-	for _, want := range []string{
-		"Saved workspace installer at ~ has no Git repository. Ask Swarm to create a Git repository",
-		"in this workspace.",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("installer home workspace guidance missing %q:\n%s", want, text)
-		}
+	if !strings.Contains(text, "installer") {
+		t.Fatalf("installer home workspace missing installer label:\n%s", text)
+	}
+	if strings.Contains(text, "has no Git repository") {
+		t.Fatalf("installer workspace git warning should be suppressed:\n%s", text)
 	}
 	if strings.Contains(text, "/workspace save") {
 		t.Fatalf("saved installer workspace was incorrectly described as unsaved:\n%s", text)
@@ -155,7 +152,7 @@ func TestRequiredOnboardingReplacesHomepageAndAcceptsInput(t *testing.T) {
 	page.Draw(screen)
 
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"SWARM  ·  FIRST LAUNCH", "STEP 1 OF 3", "Your name", "Swarm name"} {
+	for _, want := range []string{"SWARM  ·  FIRST LAUNCH", "STEP 1 OF 4", "Your name", "Swarm name"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("required onboarding missing %q from home page:\n%s", want, text)
 		}
@@ -195,6 +192,145 @@ func TestV3HomepageCompactLayoutOmitsLaunchPanel(t *testing.T) {
 
 	if text := dumpHomeTestScreen(screen, 60, 14); strings.Contains(text, "SWARM HOME") {
 		t.Fatalf("compact homepage unexpectedly rendered full launch panel:\n%s", text)
+	}
+}
+
+func TestV3HomepageRendersProjectTasks(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	home := model.EmptyHome()
+	home.ActiveProjectID = "proj-1"
+	home.ActiveProjectName = "SuperApp"
+	home.ProjectTasks = []client.ProjectTaskRecord{
+		{ID: "task-1", Title: "Implement payment flow", Status: "in_progress", Agent: "coder"},
+		{ID: "task-2", Title: "Audit authentication tokens", Status: "completed", Agent: "finder"},
+		{ID: "task-3", Title: "Design landing page", Status: "queued", Agent: "designer"},
+	}
+
+	page := NewHomePage(home)
+	page.Draw(screen)
+
+	text := dumpHomeTestScreen(screen, 100, 30)
+	for _, want := range []string{"Tasks · SuperApp", "[RUNNING]", "Implement payment flow", "[DONE]", "Audit authentication tokens", "[QUEUED]", "Design landing page"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("homepage missing expected task text %q:\n%s", want, text)
+		}
+	}
+
+	// Test task navigation
+	page.MoveTaskSelection(1)
+	if page.SelectedTaskIndex() != 1 {
+		t.Fatalf("expected selected task index 1, got %d", page.SelectedTaskIndex())
+	}
+	selected, ok := page.SelectedTask()
+	if !ok || selected.ID != "task-2" {
+		t.Fatalf("expected selected task-2, got %+v", selected)
+	}
+}
+
+func TestV3HomepageRendersEmptyProjectTasksBoard(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	home := model.EmptyHome()
+	home.ActiveProjectID = "proj-empty"
+	home.ActiveProjectName = "EmptyProj"
+	home.ProjectTasks = nil
+
+	page := NewHomePage(home)
+	page.Draw(screen)
+
+	text := dumpHomeTestScreen(screen, 100, 30)
+	for _, want := range []string{"Tasks · EmptyProj", "No tasks yet", "Plan with Orchestrator · EmptyProj"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("homepage missing expected text %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestV3HomepageTaskBoxFocusNavigation(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen init: %v", err)
+	}
+	defer screen.Fini()
+	screen.SetSize(100, 30)
+
+	home := model.EmptyHome()
+	home.ActiveProjectID = "proj-1"
+	home.ActiveProjectName = "SuperApp"
+	home.ProjectTasks = []client.ProjectTaskRecord{
+		{ID: "task-1", Title: "Task 1", Status: "queued", Agent: "coder"},
+		{ID: "task-2", Title: "Task 2", Status: "in_progress", Agent: "finder"},
+	}
+
+	page := NewHomePage(home)
+
+	// 1. Focus starts on prompt box
+	if page.TaskBoxFocused() {
+		t.Fatal("expected initial focus to be on prompt box, not task box")
+	}
+
+	// When on prompt box, Up/Down does not change task selection
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if page.SelectedTaskIndex() != 0 {
+		t.Fatalf("expected task index 0 while on prompt, got %d", page.SelectedTaskIndex())
+	}
+
+	// Verify header does NOT contain any branch
+	page.Draw(screen)
+	text := dumpHomeTestScreen(screen, 100, 30)
+	if strings.Contains(text, "git ") || strings.Contains(text, "branch ") {
+		t.Fatalf("header unexpectedly contains git/branch text:\n%s", text)
+	}
+	if !strings.Contains(text, "Ctrl+Up: Navigate Tasks") {
+		t.Fatalf("expected hint to show Ctrl+Up: Navigate Tasks:\n%s", text)
+	}
+
+	// 2. Press Ctrl+Up to navigate up into the task box
+	page.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl))
+	if !page.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Up to focus the task box")
+	}
+
+	// When task box is focused, Up/Down changes task selection
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModNone))
+	if page.SelectedTaskIndex() != 1 {
+		t.Fatalf("expected task index 1 after Down in task box, got %d", page.SelectedTaskIndex())
+	}
+
+	page.Draw(screen)
+	textFocused := dumpHomeTestScreen(screen, 100, 30)
+	if !strings.Contains(textFocused, "Ctrl+Down / Esc: Back to Prompt") {
+		t.Fatalf("expected hint to show Ctrl+Down / Esc when task box is focused:\n%s", textFocused)
+	}
+
+	// 3. Press Ctrl+Down to return to prompt box
+	page.HandleKey(tcell.NewEventKey(tcell.KeyDown, 0, tcell.ModCtrl))
+	if page.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Down to return focus to prompt box")
+	}
+
+	// 4. Pressing Ctrl+Up then typing a printable character immediately refocuses prompt box
+	page.HandleKey(tcell.NewEventKey(tcell.KeyUp, 0, tcell.ModCtrl))
+	if !page.TaskBoxFocused() {
+		t.Fatal("expected Ctrl+Up to focus the task box")
+	}
+	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 'h', tcell.ModNone))
+	if page.TaskBoxFocused() {
+		t.Fatal("expected typing character to return focus to prompt box")
+	}
+	if page.PromptValue() != "h" {
+		t.Fatalf("expected prompt to receive character 'h', got %q", page.PromptValue())
 	}
 }
 

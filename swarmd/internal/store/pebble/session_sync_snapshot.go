@@ -92,12 +92,13 @@ type V3SyncSnapshotOptions struct {
 }
 
 type V3SyncSnapshotHistoryOptions struct {
-	Mode                  string
-	MaxMessagesPerSession int
-	MaxEventsPerSession   int
-	ManifestPolicy        string
-	IncludeMessages       bool
-	IncludeEvents         bool
+	Mode                      string
+	MaxMessagesPerSession     int
+	MaxMessageBytesPerSession int
+	MaxEventsPerSession       int
+	ManifestPolicy            string
+	IncludeMessages           bool
+	IncludeEvents             bool
 }
 
 type V3SyncSnapshotResult struct {
@@ -1015,6 +1016,15 @@ func v3SyncSnapshotSessionVisibleForWorkspaces(session SessionSnapshot, accountS
 	if !v3SyncSnapshotSessionVisible(session, accountScopeID, userID, "") {
 		return false
 	}
+	if projectID := firstNonEmptyString(sessionMetadataString(session.Metadata, "project_id"), sessionMetadataString(session.Metadata, "swarm_v3_project_id")); projectID != "" {
+		return true
+	}
+	if role := sessionMetadataString(session.Metadata, "role"); role == "project_orchestrator" || role == "project_task" {
+		return true
+	}
+	if strings.TrimSpace(session.WorkspacePath) == "" && strings.TrimSpace(session.WorktreeRootPath) == "" {
+		return true
+	}
 	paths := workspacePaths
 	if len(paths) == 0 {
 		paths = normalizeV3SyncSnapshotWorkspacePaths(workspacePath, nil)
@@ -1083,7 +1093,13 @@ func (s *SessionStore) addV3SyncSnapshotMessages(reader pebble.Reader, options V
 	var err error
 	if limit > 0 {
 		if options.History.Mode == V3SyncSnapshotHistoryModeTail {
-			messages, err = listV3SessionMessageTailFromReader(reader, session.ID, limit)
+			if options.History.MaxMessageBytesPerSession > 0 {
+				var byteCapped bool
+				messages, byteCapped, err = listV3SessionMessagesBeforeByteBudget(reader, session.ID, 0, limit, options.History.MaxMessageBytesPerSession)
+				capped = capped || byteCapped
+			} else {
+				messages, err = listV3SessionMessageTailFromReader(reader, session.ID, limit)
+			}
 		} else {
 			messages, err = listV3SessionMessagesFromReader(reader, session.ID, 0, limit)
 		}
@@ -1093,7 +1109,11 @@ func (s *SessionStore) addV3SyncSnapshotMessages(reader pebble.Reader, options V
 	}
 	if capped || len(messages) < session.MessageCount {
 		result.MessagesBySession[session.ID] = messages
-		if err := s.handleV3SyncSnapshotResourceOmission(options, session.ID, "messages", V3SyncSnapshotOmissionRequiresManifest, v3SyncSnapshotMessagesNextCursor(session.ID, messages), &messages, result); err != nil {
+		nextCursor := v3SyncSnapshotMessagesNextCursor(session.ID, messages)
+		if options.History.Mode == V3SyncSnapshotHistoryModeTail && len(messages) > 0 {
+			nextCursor = fmt.Sprintf("%s:messages:before:%d", session.ID, messages[0].GlobalSeq)
+		}
+		if err := s.handleV3SyncSnapshotResourceOmission(options, session.ID, "messages", V3SyncSnapshotOmissionRequiresManifest, nextCursor, &messages, result); err != nil {
 			return err
 		}
 		return nil

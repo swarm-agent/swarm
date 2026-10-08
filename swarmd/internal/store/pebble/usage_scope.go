@@ -295,8 +295,8 @@ func setUsageScopeTotals(batch *pebble.Batch, account string, totals []UsageScop
 
 // Pricing uses cumulative billing components, never current context occupancy.
 func (s *SessionStore) calculateReceiptCost(u SessionTurnUsageSnapshot) (float64, string) {
-	_, input, output, read, _, thinking := billedComponents(u)
-	return s.CalculateCostWithStatus(u.Provider, u.Model, input, output, read, thinking)
+	_, input, output, read, write, thinking := billedComponents(u)
+	return s.CalculateCostWithStatus(u.Provider, u.Model, input, output, read, write, thinking)
 }
 
 func nominalUsageCost(u SessionTurnUsageSnapshot) float64 {

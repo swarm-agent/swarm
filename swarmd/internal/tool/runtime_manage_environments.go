@@ -1,10 +1,13 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/environments"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
+	"swarm/packages/swarmd/internal/environments/provider"
 )
 
 func manageEnvironmentsDefinition() Definition {
@@ -22,22 +26,32 @@ func manageEnvironmentsDefinition() Definition {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
+				"project_result":               projectResultDefinition(),
+				"project_id":                   map[string]any{"type": "string"},
+				"task_id":                      map[string]any{"type": "string"},
+				"attempt_id":                   map[string]any{"type": "string"},
+				"attachment_id":                map[string]any{"type": "string"},
+				"expected_task_revision":       map[string]any{"type": "integer"},
+				"expected_attachment_revision": map[string]any{"type": "integer"},
+				"expires_at":                   map[string]any{"type": "integer"},
 				"action": map[string]any{
 					"type": "string",
 					"enum": []string{
 						"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
-						"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
+						"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 						"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
+						"list_attachments", "attach_task", "detach_task", "acquire_attachment", "release_preparation", "cleanup_review",
 					},
 					"description": "Operation action to perform",
 				},
 				"workspace_path": map[string]any{"type": "string", "description": "Workspace or isolated worktree root path"},
 				"workspace_id":   map[string]any{"type": "string", "description": "Canonical workspace ID"},
 				// Explicit entity identifiers (no ambiguous cross-object aliasing)
-				"environment_id": map[string]any{"type": "string", "description": "Environment definition ID"},
-				"deployment_id":  map[string]any{"type": "string", "description": "Deployment instance ID for runtime actions (exec, stop, start, destroy, release, get_deployment)"},
-				"operation_id":   map[string]any{"type": "string", "description": "Operation ID for get_operation or cancel_operation"},
-				"id":             map[string]any{"type": "string", "description": "Environment ID alias for backward compatibility with definition get/update/delete/export"},
+				"environment_id":     map[string]any{"type": "string", "description": "Environment definition ID"},
+				"deployment_id":      map[string]any{"type": "string", "description": "Deployment instance ID for runtime actions (exec, stop, start, destroy, release, get_deployment)"},
+				"build_operation_id": map[string]any{"type": "string", "description": "Exact successful managed build operation for ensure/deploy; image substitution is forbidden"},
+				"operation_id":       map[string]any{"type": "string", "description": "Operation ID for get_operation or cancel_operation"},
+				"id":                 map[string]any{"type": "string", "description": "Environment ID alias for backward compatibility with definition get/update/delete/export"},
 				// Definition fields
 				"name":                    map[string]any{"type": "string", "description": "Environment display name"},
 				"description":             map[string]any{"type": "string"},
@@ -47,15 +61,20 @@ func manageEnvironmentsDefinition() Definition {
 				"connection_id":           map[string]any{"type": "string", "description": "Connection override for deploy/ensure"},
 				"deployment_name":         map[string]any{"type": "string", "description": "Display name for deployment instance"},
 				"image":                   map[string]any{"type": "string", "description": "Container image name:tag"},
-				"container":               map[string]any{"type": "object"},
-				"provisioning":            map[string]any{"type": "object"},
-				"deployment_policy":       map[string]any{"type": "object"},
-				"health_check":            map[string]any{"type": "object"},
-				"resources":               map[string]any{"type": "object"},
-				"labels":                  map[string]any{"type": "object"},
+				"container":               environmentValueSchema(reflect.TypeOf(environments.ContainerDefinition{})),
+				"build":                   environmentValueSchema(reflect.TypeOf(environments.ImageBuildDefinition{})),
+				"provisioning":            environmentValueSchema(reflect.TypeOf(environments.WorkspaceProvisioning{})),
+				"deployment_policy":       environmentValueSchema(reflect.TypeOf(environments.DeploymentPolicy{})),
+				"health_check":            environmentValueSchema(reflect.TypeOf(environments.HealthCheck{})),
+				"resources":               environmentValueSchema(reflect.TypeOf(environments.ResourceRequirements{})),
+				"labels":                  environmentValueSchema(reflect.TypeOf(map[string]string{})),
+				"ports":                   environmentValueSchema(reflect.TypeOf([]environments.PortMapping{})),
+				"max_instances":           map[string]any{"type": "integer"},
+				"release_behavior":        map[string]any{"type": "string", "enum": []string{"none", "restart", "recreate"}},
+				"reuse":                   map[string]any{"type": "boolean"},
 				"set_default_test":        map[string]any{"type": "boolean"},
 				"json":                    map[string]any{"type": "string", "description": "JSON payload for import"},
-				"environment":             map[string]any{"type": "object", "description": "Environment object for import"},
+				"environment":             environmentValueSchema(reflect.TypeOf(environments.Environment{})),
 				// Runtime execution and supervised operation fields
 				"command":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Command and arguments for exec action"},
 				"working_dir":     map[string]any{"type": "string", "description": "Working directory inside container for exec"},
@@ -72,7 +91,7 @@ func manageEnvironmentsDefinition() Definition {
 				"max_output":      map[string]any{"type": "integer", "description": "Maximum stdout/stderr bytes for exec"},
 				// History query filters
 				"status":        map[string]any{"type": "string", "description": "Filter history by status (queued, running, succeeded, failed, cancelled, timed_out, cleanup_failed, unknown)"},
-				"action_filter": map[string]any{"type": "string", "description": "Filter history by action (ensure, deploy, exec, stop, release, destroy, cancel)"},
+				"action_filter": map[string]any{"type": "string", "description": "Filter history by action (build, ensure, deploy, exec, stop, release, destroy, cancel)"},
 				"actor":         map[string]any{"type": "string", "description": "Filter history by actor user ID"},
 				"session_id":    map[string]any{"type": "string", "description": "Filter history by session ID"},
 				"worker_id":     map[string]any{"type": "string", "description": "Filter history by worker ID"},
@@ -89,6 +108,10 @@ func manageEnvironmentsDefinition() Definition {
 }
 
 func (r *Runtime) executeManageEnvironments(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
+	caller, authErr := r.authorizeEnvironmentAccess(scope, "manage_environments")
+	if err := authErr; err != nil {
+		return "", err
+	}
 	if r == nil || r.environmentsStore == nil {
 		return "", errors.New("manage_environments environment store is not configured")
 	}
@@ -98,9 +121,81 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		actionName = "list"
 	}
 
-	accountScopeID, workspaceID, workspacePath, err := r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
-	if err != nil {
-		return "", err
+	if actionName == "cancel" {
+		actionName = "cancel_operation"
+	}
+	args = cloneTaskEnvironmentArgs(args, actionName)
+	if TaskEnvironmentConsumer(caller.Metadata) {
+		if taskEnvironmentRoutedAction(actionName) {
+			return r.executeTaskEnvironment(ctx, scope, args)
+		}
+		switch actionName {
+		case "help", "list", "get", "create", "update", "import", "export":
+		default:
+			return "", errors.New("task consumer requires explicit attachment and own receipt; use list_attachments")
+		}
+	}
+	if actionName == "cleanup_review" {
+		account, workspace, _, err := r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
+		if err != nil {
+			return "", err
+		}
+		service, ok := r.deploymentManager.(interface {
+			CleanupReviewDeployments(context.Context, string, string) ([]string, error)
+		})
+		if !ok {
+			return "", errors.New("review cleanup unavailable")
+		}
+		stopped, err := service.CleanupReviewDeployments(ctx, account, workspace)
+		if err != nil {
+			return "", err
+		}
+		raw, err := json.Marshal(map[string]any{"stopped_deployments": stopped})
+		return string(raw), err
+	}
+	if asString(args["attachment_id"]) != "" || (asString(args["task_id"]) != "" && taskEnvironmentRoutedAction(actionName)) {
+		return r.executeTaskEnvironment(ctx, scope, args)
+	}
+	switch actionName {
+	case "list_attachments", "attach_task", "detach_task", "acquire_attachment":
+		return r.executeTaskEnvironment(ctx, scope, args)
+	}
+
+	if actionName == "create" || actionName == "update" || actionName == "import" {
+		if err := validateEnvironmentDefinitionArgs(actionName, args); err != nil {
+			return "", err
+		}
+	}
+
+	var accountScopeID, workspaceID, workspacePath string
+	var err error
+	var projectTarget *ProjectInspectionTarget
+	if reference, ok := args["project_result"].(map[string]any); ok {
+		switch actionName {
+		case "help", "list", "get", "build", "ensure", "deploy", "exec", "release", "get_operation", "get_deployment":
+		default:
+			return "", errors.New("project_result supports inspection and leased validation only")
+		}
+		if asString(reference["project_id"]) == "" || asString(reference["task_id"]) == "" || asString(reference["attempt_id"]) == "" || asString(reference["source_session_id"]) == "" || asString(reference["head_commit"]) == "" {
+			return "", errors.New("project_result requires the exact committed task reference returned by inspect_files")
+		}
+		target, resolveErr := r.resolveProjectInspection(ctx, scope, reference)
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		if asString(args["workspace_path"]) != "" || asString(args["workspace_id"]) != "" {
+			return "", errors.New("project_result cannot be combined with workspace overrides")
+		}
+		if target.Reference.TaskID == "" || target.Reference.AttemptID == "" || target.Reference.SessionID == "" || target.Reference.HeadCommit == "" {
+			return "", errors.New("project_result resolver did not return a complete committed result")
+		}
+		projectTarget = &target
+		accountScopeID, workspaceID, workspacePath = scope.Principal.AccountScopeID, target.Reference.WorkspaceID, target.Root
+	} else {
+		accountScopeID, workspaceID, workspacePath, err = r.resolveWorkspaceScopeForEnvironments(scope, args, "manage_environments")
+		if err != nil {
+			return "", err
+		}
 	}
 
 	response := map[string]any{
@@ -117,13 +212,18 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		response["instructions"] = "manage_environments unified reference:\n" +
 			"1. Definition actions: list, get, create, update, delete, set_default_test, export, import.\n" +
 			"2. Runtime instance inspection: list_deployments (reads deployments with active leases; no lazy reap), get_deployment (deployment_id required).\n" +
-			"3. Supervised runtime mutations: ensure (environment_id, deliberate receipt execution), deploy, exec (deployment_id, command), start, stop, destroy, release (deployment_id or lease_id).\n" +
+			"3. Managed build: save environment.build with exact product/recipe catalog workspace_id, workspace_generation and commit; recipe_directory/recipe_file are relative committed paths. Use managed-build image, local_podman with rootless_systemd or SSH Docker without it, reuse=true, release_behavior=none. SSH requires external noninteractive auth, trusted host keys, Docker and GNU timeout; interrupted remote build cleanup is unconfirmed, never replayed. build(environment_id) returns an operation; pass its successful build_operation_id to ensure/deploy. Product context is at root; recipe tree is under .swarm-recipe. No live worktree, credentials, arbitrary build flags or mutable tags are accepted.\n" +
+			"   Supervised runtime mutations: ensure (environment_id, deliberate receipt execution), deploy, exec (deployment_id, command), start, stop, destroy, release (deployment_id or lease_id).\n" +
 			"   Mutations return an immediate bounded operation receipt with operation_id and status within 2 seconds. Do not busy-poll; inspect receipts and use realtime updates.\n" +
-			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id)."
+			"4. Supervision & observability: summary (authoritative deployment and operation counts), history (cursor-paginated daily counts, timezone, date range), get_operation (operation_id), cancel_operation (operation_id).\n" +
+			"5. Task attachments: list_attachments(project_id,task_id); attach_task(project_id,task_id,attachment_id,expected_task_revision,expected_attachment_revision,attempt_id,workspace_id,deployment_id OR operation_id,expires_at). expires_at is an epoch millisecond deadline within 24h. Prepare before assignment with empty attempt_id, then explicitly CAS reassign to the current attempt before acquire_attachment(project_id,task_id,attachment_id,expected_attachment_revision,attempt_id,ttl_millis). Each consumer gets its own receipt. exec/release/get_deployment/get_operation/cancel_operation require project_id,task_id,attachment_id,workspace_id,lease_id (and operation_id for operation inspection/cancellation). No automatic wake or scope expansion. Task build/ensure/deploy require project_id,task_id,workspace_id,environment_id and ensure/deploy require the exact successful build_operation_id. Task actions use workspace_id, not workspace_path/project_result. The originating preparer must call release_preparation(project_id,task_id,workspace_id,operation_id) on the successful ensure/deploy operation and wait for release before shared acquisition; no other consumer can release or borrow that receipt. Then explicitly attach the selected deployment and acquire a bound receipt. Changed source requires rebuild and explicit CAS reassignment, never current-dev substitution. Task completion, detach and release do not stop review deployments; finite review retention is 24h with automatic cleanup."
+		response["definition_schema"] = manageEnvironmentsDefinition().Parameters
+		response["definition_help"] = "Create accepts top-level definition fields or one environment object; import accepts exactly one environment object or json string containing an exported definition. Nested fields are JSON objects, not JSON-encoded strings. Unknown fields, nulls and wrong types are rejected. Exported account_scope_id/workspace_id are rebound to authorized caller scope, never trusted. Update accepts top-level fields only: container and deployment_policy merge supplied fields; build, provisioning, health_check, resources and labels replace the supplied section. image/ports and max_instances/release_behavior/reuse are aliases and cannot accompany their canonical section. Omitted create provisioning defaults to local_mount at /app; explicit provisioning requires a valid strategy. Container keys: image, command, args, env_vars, exposed_ports, privileged, user, working_dir, setup_commands, rootless_systemd. Explicit local_podman connections support rootless_systemd={cgroup_namespace:private,network:slirp4netns,pids_limit:1024}; this requires registry_image provisioning, no host mounts, no privileged/GPU mode, and a pre-existing local image. Capabilities require rootless Linux Podman, crun, slirp4netns, systemd cgroup v2 and delegated cpu/memory/pids controllers. Ports remain 127.0.0.1-only; no host environment expansion, proxy inheritance, remote or privileged fallback. No arbitrary runtime flags are supported. Connection checks diagnose prerequisites without changing host configuration. Strategy availability is provider-dependent; schema describes stored definitions, not a guarantee of provider support."
 		response["available_actions"] = []string{
 			"list", "get", "create", "update", "delete", "set_default_test", "export", "import",
-			"list_deployments", "get_deployment", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
+			"list_deployments", "get_deployment", "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release",
 			"summary", "history", "get_operation", "cancel", "cancel_operation", "help",
+			"list_attachments", "attach_task", "detach_task", "acquire_attachment", "release_preparation", "cleanup_review",
 		}
 
 	case "list":
@@ -270,21 +370,9 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		response["json"] = string(exportedJSON)
 
 	case "import":
-		var importedEnv environments.Environment
-		if rawJSON := strings.TrimSpace(asString(args["json"])); rawJSON != "" {
-			if err := json.Unmarshal([]byte(rawJSON), &importedEnv); err != nil {
-				return "", fmt.Errorf("invalid json in import action: %w", err)
-			}
-		} else if envObj, ok := args["environment"].(map[string]any); ok && envObj != nil {
-			rawBytes, err := json.Marshal(envObj)
-			if err != nil {
-				return "", fmt.Errorf("invalid environment object in import action: %w", err)
-			}
-			if err := json.Unmarshal(rawBytes, &importedEnv); err != nil {
-				return "", fmt.Errorf("unmarshal environment object: %w", err)
-			}
-		} else {
-			return "", errors.New("import requires either 'json' string or 'environment' object")
+		importedEnv, err := decodeEnvironmentImport(args)
+		if err != nil {
+			return "", err
 		}
 		importedEnv.AccountScopeID = accountScopeID
 		importedEnv.WorkspaceID = workspaceID
@@ -322,13 +410,13 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 
 		type depListItem struct {
 			environments.Deployment
-			ActiveLease *environments.DeploymentLease `json:"active_lease,omitempty"`
+			Leased bool `json:"leased"`
 		}
 		items := make([]depListItem, 0, len(deps))
 		for _, dep := range deps {
 			item := depListItem{Deployment: dep}
 			if lease, hasLease, _ := r.deploymentManager.GetActiveLease(accountScopeID, workspaceID, dep.ID); hasLease && lease.Active {
-				item.ActiveLease = &lease
+				item.Leased = true
 			}
 			items = append(items, item)
 		}
@@ -350,10 +438,12 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		if !found {
 			return "", fmt.Errorf("deployment %q not found", depID)
 		}
+		if projectTarget != nil && dep.Build != nil && dep.Build.ProductResult != projectResultBinding(*projectTarget) {
+			return "", errors.New("deployment belongs to another task result")
+		}
 		response["deployment"] = dep
 		if lease, hasLease, _ := r.deploymentManager.GetActiveLease(accountScopeID, workspaceID, depID); hasLease {
-			response["active_lease"] = lease
-			response["lease"] = lease
+			response["leased"] = lease.Active
 		}
 		if dep.IsUsable() {
 			if access, _ := r.deploymentManager.ResolveAccess(ctx, accountScopeID, workspaceID, depID); access != nil {
@@ -417,6 +507,17 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		if !found {
 			return "", fmt.Errorf("operation %q not found", opID)
 		}
+		if projectTarget != nil && op.ProductResult != "" && op.ProductResult != projectResultBinding(*projectTarget) {
+			return "", errors.New("operation belongs to another task result")
+		}
+		// Receipt reads can narrow output, never expand the originally retained
+		// exec cap or mutate the durable record.
+		op = *op.Clone()
+		var truncated bool
+		op.Result.Stdout, truncated = provider.SafeExecOutput(op.Result.Stdout, asInt(args["max_output"], 0), nil)
+		op.Result.Truncated = op.Result.Truncated || truncated
+		op.Result.Stderr, truncated = provider.SafeExecOutput(op.Result.Stderr, asInt(args["max_output"], 0), nil)
+		op.Result.Truncated = op.Result.Truncated || truncated
 		response["operation"] = op
 		response["operation_id"] = op.OperationID
 		response["status"] = op.Status
@@ -447,7 +548,7 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		response["status"] = op.Status
 
 	// Supervised runtime mutations (all wired to supervised admission via Submit)
-	case "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
+	case "build", "ensure", "deploy", "exec", "start", "stop", "destroy", "release":
 		if r.deploymentManager == nil {
 			return "", errors.New("manage_environments deployment manager is not configured")
 		}
@@ -474,11 +575,12 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		}
 
 		subReq := lifecycle.SubmitOperationRequest{
-			AccountScopeID: accountScopeID,
-			WorkspaceID:    workspaceID,
-			Action:         actionName,
-			IdempotencyKey: idempotencyKey,
-			Deadline:       int64(asInt(args["deadline"], 0)),
+			BuildOperationID: strings.TrimSpace(asString(args["build_operation_id"])),
+			AccountScopeID:   accountScopeID,
+			WorkspaceID:      workspaceID,
+			Action:           actionName,
+			IdempotencyKey:   idempotencyKey,
+			Deadline:         int64(asInt(args["deadline"], 0)),
 			Attribution: environments.OperationAttribution{
 				Actor:     callerActor,
 				SessionID: callerSessionID,
@@ -491,6 +593,14 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 		}
 
 		switch actionName {
+		case "build":
+			for _, key := range []string{"deployment_id", "lease_id", "build_operation_id", "command", "env", "env_overrides", "working_dir", "image", "container"} {
+				if _, supplied := args[key]; supplied {
+					return "", fmt.Errorf("build does not accept %s", key)
+				}
+			}
+			subReq.EnvironmentID = strings.TrimSpace(asString(args["environment_id"]))
+			subReq.ConnectionID = strings.TrimSpace(asString(args["connection_id"]))
 		case "ensure":
 			envID := strings.TrimSpace(asString(args["environment_id"]))
 			if envID == "" && r.workspaceSettings != nil {
@@ -562,6 +672,18 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 			subReq.Reason = strings.TrimSpace(asString(args["reason"]))
 		}
 
+		if projectTarget != nil {
+			switch actionName {
+			case "build", "ensure", "deploy":
+				if err := r.validateProjectResultEnvironment(ctx, scope, *projectTarget, &subReq); err != nil {
+					return "", err
+				}
+			case "exec", "release":
+				if err := r.validateProjectResultDeployment(ctx, scope, *projectTarget, &subReq); err != nil {
+					return "", err
+				}
+			}
+		}
 		op, err := r.deploymentManager.Submit(ctx, subReq)
 		if err != nil {
 			return "", fmt.Errorf("%s failed: %w", actionName, err)
@@ -585,175 +707,343 @@ func (r *Runtime) executeManageEnvironments(ctx context.Context, scope Workspace
 }
 
 func parseEnvironmentInput(args map[string]any, accountScopeID, workspaceID string) (environments.Environment, error) {
-	if envObj, ok := args["environment"].(map[string]any); ok && envObj != nil {
-		rawBytes, err := json.Marshal(envObj)
+	var env environments.Environment
+	if value, supplied := args["environment"]; supplied {
+		if err := rejectEnvironmentFieldMix(args); err != nil {
+			return env, err
+		}
+		if err := decodeEnvironmentValue("environment", value, &env); err != nil {
+			return environments.Environment{}, err
+		}
+	} else {
+		env.Mode = environments.EnvironmentModeDeployable
+		env.Role = environments.EnvironmentRoleTesting
+		env.DeploymentPolicy.MaxInstances = 1
+		env.DeploymentPolicy.ReleaseBehavior = environments.ReleaseBehaviorNone
+		if _, supplied := args["provisioning"]; !supplied {
+			env.Provisioning.Strategy = environments.SourceStrategy{
+				Kind:       environments.SourceStrategyKindLocalMount,
+				LocalMount: &environments.LocalMountConfig{ContainerPath: "/app"},
+			}
+		}
+		var err error
+		env, err = applyEnvironmentFields(env, args)
 		if err != nil {
 			return environments.Environment{}, err
 		}
-		var env environments.Environment
-		if err := json.Unmarshal(rawBytes, &env); err != nil {
-			return environments.Environment{}, err
-		}
-		env.AccountScopeID = accountScopeID
-		env.WorkspaceID = workspaceID
-		if strings.TrimSpace(env.ID) == "" {
-			env.ID = "env_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-		}
-		return env, nil
+		env.ID = firstNonEmptyString(asString(args["environment_id"]), asString(args["id"]))
 	}
-
-	name := strings.TrimSpace(asString(args["name"]))
-	if name == "" {
-		return environments.Environment{}, errors.New("name is required for environment creation")
+	env.AccountScopeID = accountScopeID
+	env.WorkspaceID = workspaceID
+	if strings.TrimSpace(env.ID) == "" {
+		env.ID = "env_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	}
-
-	id := strings.TrimSpace(asString(args["environment_id"]))
-	if id == "" {
-		id = strings.TrimSpace(asString(args["id"]))
-	}
-	if id == "" {
-		id = "env_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
-	}
-
-	mode := environments.EnvironmentMode(strings.TrimSpace(asString(args["mode"])))
-	if mode == "" {
-		mode = environments.EnvironmentModeDeployable
-	}
-
-	role := environments.EnvironmentRole(strings.TrimSpace(asString(args["role"])))
-	if role == "" {
-		role = environments.EnvironmentRoleTesting
-	}
-
-	var container environments.ContainerDefinition
-	if cRaw, ok := args["container"].(map[string]any); ok && cRaw != nil {
-		rawBytes, _ := json.Marshal(cRaw)
-		_ = json.Unmarshal(rawBytes, &container)
-	}
-	if img := strings.TrimSpace(asString(args["image"])); img != "" {
-		container.Image = img
-	}
-	if portsRaw, ok := args["ports"].([]any); ok && len(portsRaw) > 0 {
-		rawBytes, _ := json.Marshal(portsRaw)
-		var ports []environments.PortMapping
-		if err := json.Unmarshal(rawBytes, &ports); err == nil {
-			container.ExposedPorts = ports
-		}
-	}
-	if container.Image == "" {
-		return environments.Environment{}, errors.New("container image is required (specify 'image' or 'container.image')")
-	}
-
-	var prov environments.WorkspaceProvisioning
-	if pRaw, ok := args["provisioning"].(map[string]any); ok && pRaw != nil {
-		rawBytes, _ := json.Marshal(pRaw)
-		_ = json.Unmarshal(rawBytes, &prov)
-	}
-	if prov.Strategy.Kind == "" {
-		prov.Strategy.Kind = environments.SourceStrategyKindLocalMount
-		prov.Strategy.LocalMount = &environments.LocalMountConfig{
-			ContainerPath: "/app",
-		}
-	}
-
-	var policy environments.DeploymentPolicy
-	if polRaw, ok := args["deployment_policy"].(map[string]any); ok && polRaw != nil {
-		rawBytes, _ := json.Marshal(polRaw)
-		_ = json.Unmarshal(rawBytes, &policy)
-	}
-	if mi := asInt(args["max_instances"], 0); mi > 0 {
-		policy.MaxInstances = mi
-	}
-	if rb := strings.TrimSpace(asString(args["release_behavior"])); rb != "" {
-		policy.ReleaseBehavior = environments.ReleaseBehavior(rb)
-	}
-	if _, ok := args["reuse"]; ok {
-		policy.Reuse = asBool(args["reuse"])
-	}
-	if policy.MaxInstances <= 0 {
-		policy.MaxInstances = 1
-	}
-	if policy.ReleaseBehavior == "" {
-		policy.ReleaseBehavior = environments.ReleaseBehaviorNone
-	}
-
-	env := environments.Environment{
-		ID:                    id,
-		AccountScopeID:        accountScopeID,
-		WorkspaceID:           workspaceID,
-		Name:                  name,
-		Description:           strings.TrimSpace(asString(args["description"])),
-		Mode:                  mode,
-		Role:                  role,
-		PreferredConnectionID: strings.TrimSpace(asString(args["preferred_connection_id"])),
-		Container:             container,
-		Provisioning:          prov,
-		DeploymentPolicy:      policy,
-		Labels:                asStringMap(args["labels"]),
-	}
-
-	if hcRaw, ok := args["health_check"].(map[string]any); ok && hcRaw != nil {
-		var hc environments.HealthCheck
-		rawBytes, _ := json.Marshal(hcRaw)
-		_ = json.Unmarshal(rawBytes, &hc)
-		env.HealthCheck = &hc
-	}
-
-	if resRaw, ok := args["resources"].(map[string]any); ok && resRaw != nil {
-		var res environments.ResourceRequirements
-		rawBytes, _ := json.Marshal(resRaw)
-		_ = json.Unmarshal(rawBytes, &res)
-		env.Resources = &res
-	}
-
 	return env, nil
 }
 
 func applyEnvironmentUpdates(current environments.Environment, args map[string]any) (environments.Environment, error) {
-	if name := strings.TrimSpace(asString(args["name"])); name != "" {
-		current.Name = name
+	if _, supplied := args["environment"]; supplied {
+		return environments.Environment{}, errors.New("environment: update requires top-level definition fields, not an environment object")
 	}
-	if desc, ok := args["description"].(string); ok {
-		current.Description = strings.TrimSpace(desc)
+	// Decoding and validation must never mutate maps, slices or pointers owned by
+	// the caller/store, even when a later field fails.
+	return applyEnvironmentFields(*current.Clone(), args)
+}
+
+func applyEnvironmentFields(env environments.Environment, args map[string]any) (environments.Environment, error) {
+	for section, aliases := range map[string][]string{
+		"container":         {"image", "ports"},
+		"deployment_policy": {"max_instances", "release_behavior", "reuse"},
+	} {
+		if _, supplied := args[section]; supplied {
+			for _, alias := range aliases {
+				if _, supplied := args[alias]; supplied {
+					return environments.Environment{}, fmt.Errorf("%s: cannot combine with %s; use canonical nested fields", alias, section)
+				}
+			}
+		}
 	}
-	if mode := strings.TrimSpace(asString(args["mode"])); mode != "" {
-		current.Mode = environments.EnvironmentMode(mode)
+	fields := []struct {
+		name string
+		dest any
+	}{
+		{"name", &env.Name}, {"description", &env.Description},
+		{"mode", &env.Mode}, {"role", &env.Role},
+		{"preferred_connection_id", &env.PreferredConnectionID},
+		{"container", &env.Container}, {"image", &env.Container.Image},
+		{"ports", &env.Container.ExposedPorts},
+		{"frontend_endpoints", &env.FrontendEndpoints},
+		{"deployment_policy", &env.DeploymentPolicy},
+		{"max_instances", &env.DeploymentPolicy.MaxInstances},
+		{"release_behavior", &env.DeploymentPolicy.ReleaseBehavior},
+		{"reuse", &env.DeploymentPolicy.Reuse},
 	}
-	if role := strings.TrimSpace(asString(args["role"])); role != "" {
-		current.Role = environments.EnvironmentRole(role)
+	for _, field := range fields {
+		if value, supplied := args[field.name]; supplied {
+			if err := decodeEnvironmentValue(field.name, value, field.dest); err != nil {
+				return environments.Environment{}, err
+			}
+		}
 	}
-	if prefID, ok := args["preferred_connection_id"].(string); ok {
-		current.PreferredConnectionID = strings.TrimSpace(prefID)
+	// These sections replace rather than merge, avoiding stale strategy variants
+	// when switching source kinds. Explicit empty provisioning is not omission.
+	if value, supplied := args["provisioning"]; supplied {
+		var provisioning environments.WorkspaceProvisioning
+		if err := decodeEnvironmentValue("provisioning", value, &provisioning); err != nil {
+			return environments.Environment{}, err
+		}
+		if err := provisioning.Validate(); err != nil {
+			return environments.Environment{}, fmt.Errorf("provisioning.strategy: %w", err)
+		}
+		env.Provisioning = provisioning
 	}
-	if img := strings.TrimSpace(asString(args["image"])); img != "" {
-		current.Container.Image = img
+	if value, supplied := args["build"]; supplied {
+		var build environments.ImageBuildDefinition
+		if err := decodeEnvironmentValue("build", value, &build); err != nil {
+			return environments.Environment{}, err
+		}
+		env.Build = &build
 	}
-	if cRaw, ok := args["container"].(map[string]any); ok && cRaw != nil {
-		rawBytes, _ := json.Marshal(cRaw)
-		_ = json.Unmarshal(rawBytes, &current.Container)
+	if value, supplied := args["health_check"]; supplied {
+		var health environments.HealthCheck
+		if err := decodeEnvironmentValue("health_check", value, &health); err != nil {
+			return environments.Environment{}, err
+		}
+		env.HealthCheck = &health
 	}
-	if pRaw, ok := args["provisioning"].(map[string]any); ok && pRaw != nil {
-		rawBytes, _ := json.Marshal(pRaw)
-		_ = json.Unmarshal(rawBytes, &current.Provisioning)
+	if value, supplied := args["resources"]; supplied {
+		var resources environments.ResourceRequirements
+		if err := decodeEnvironmentValue("resources", value, &resources); err != nil {
+			return environments.Environment{}, err
+		}
+		env.Resources = &resources
 	}
-	if polRaw, ok := args["deployment_policy"].(map[string]any); ok && polRaw != nil {
-		rawBytes, _ := json.Marshal(polRaw)
-		_ = json.Unmarshal(rawBytes, &current.DeploymentPolicy)
+	if value, supplied := args["labels"]; supplied {
+		var labels map[string]string
+		if err := decodeEnvironmentValue("labels", value, &labels); err != nil {
+			return environments.Environment{}, err
+		}
+		env.Labels = labels
 	}
-	if hcRaw, ok := args["health_check"].(map[string]any); ok && hcRaw != nil {
-		var hc environments.HealthCheck
-		rawBytes, _ := json.Marshal(hcRaw)
-		_ = json.Unmarshal(rawBytes, &hc)
-		current.HealthCheck = &hc
+	return env, nil
+}
+
+func rejectEnvironmentFieldMix(args map[string]any) error {
+	for _, field := range []string{"name", "description", "mode", "role", "preferred_connection_id", "container", "image", "ports", "frontend_endpoints", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "id", "environment_id"} {
+		if _, supplied := args[field]; supplied {
+			return fmt.Errorf("%s: cannot combine definition fields with environment or json; supply one definition", field)
+		}
 	}
-	if resRaw, ok := args["resources"].(map[string]any); ok && resRaw != nil {
-		var res environments.ResourceRequirements
-		rawBytes, _ := json.Marshal(resRaw)
-		_ = json.Unmarshal(rawBytes, &res)
-		current.Resources = &res
+	return nil
+}
+
+func decodeEnvironmentImport(args map[string]any) (environments.Environment, error) {
+	var env environments.Environment
+	if err := rejectEnvironmentFieldMix(args); err != nil {
+		return env, err
 	}
-	if labelsRaw, ok := args["labels"].(map[string]any); ok && labelsRaw != nil {
-		current.Labels = asStringMap(labelsRaw)
+	value, objectSupplied := args["environment"]
+	raw, jsonSupplied := args["json"]
+	if objectSupplied == jsonSupplied {
+		return env, errors.New("import requires exactly one of json string or environment object")
 	}
-	return current, nil
+	path := "environment"
+	if jsonSupplied {
+		text, ok := raw.(string)
+		if !ok {
+			return env, errors.New("json: expected a JSON string containing an environment object")
+		}
+		// Unmarshal rejects malformed JSON and trailing values before any writes.
+		var document json.RawMessage
+		if err := json.Unmarshal([]byte(text), &document); err != nil {
+			return env, fmt.Errorf("json: invalid environment JSON: %w", err)
+		}
+		value = document
+		path = "json.environment"
+	}
+	if err := decodeEnvironmentValue(path, value, &env); err != nil {
+		return environments.Environment{}, err
+	}
+	return env, nil
+}
+
+// The schema and strict decoder share the canonical JSON tags, so fields cannot
+// silently disappear when the domain definition grows. This is deliberately
+// scoped to environment definition DTOs (no custom JSON marshalers).
+func environmentValueSchema(typ reflect.Type) map[string]any {
+	if typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	switch typ.Kind() {
+	case reflect.Struct:
+		properties := map[string]any{}
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name != "" && name != "-" {
+				properties[name] = environmentValueSchema(field.Type)
+			}
+		}
+		return map[string]any{"type": "object", "properties": properties, "additionalProperties": false}
+	case reflect.Map:
+		return map[string]any{"type": "object", "additionalProperties": environmentValueSchema(typ.Elem())}
+	case reflect.Slice:
+		return map[string]any{"type": "array", "items": environmentValueSchema(typ.Elem())}
+	case reflect.Bool:
+		return map[string]any{"type": "boolean"}
+	case reflect.Int, reflect.Int64:
+		return map[string]any{"type": "integer"}
+	default:
+		return map[string]any{"type": "string"}
+	}
+}
+
+func decodeEnvironmentValue(path string, value any, dest any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("%s: invalid JSON value: %w", path, err)
+	}
+	return decodeEnvironmentJSON(path, raw, reflect.ValueOf(dest).Elem())
+}
+
+func decodeEnvironmentJSON(path string, raw json.RawMessage, dest reflect.Value) error {
+	if string(raw) == "null" {
+		return fmt.Errorf("%s: null is not supported; omit the field or supply its documented value", path)
+	}
+	if dest.Kind() == reflect.Pointer {
+		if dest.IsNil() {
+			dest.Set(reflect.New(dest.Type().Elem()))
+		}
+		return decodeEnvironmentJSON(path, raw, dest.Elem())
+	}
+	switch dest.Kind() {
+	case reflect.Struct, reflect.Map:
+		object, err := environmentJSONObject(path, raw)
+		if err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		if dest.Kind() == reflect.Map {
+			if dest.IsNil() {
+				dest.Set(reflect.MakeMap(dest.Type()))
+			}
+			for _, key := range keys {
+				item := reflect.New(dest.Type().Elem()).Elem()
+				if err := decodeEnvironmentJSON(path+"."+key, object[key], item); err != nil {
+					return err
+				}
+				dest.SetMapIndex(reflect.ValueOf(key), item)
+			}
+			return nil
+		}
+		fields := map[string]int{}
+		for i := 0; i < dest.NumField(); i++ {
+			name := strings.Split(dest.Type().Field(i).Tag.Get("json"), ",")[0]
+			if name != "" && name != "-" {
+				fields[name] = i
+			}
+		}
+		for _, key := range keys {
+			index, ok := fields[key]
+			if !ok {
+				return fmt.Errorf("%s.%s: unknown field; use the canonical fields from action=help", path, key)
+			}
+			if err := decodeEnvironmentJSON(path+"."+key, object[key], dest.Field(index)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case reflect.Slice:
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return fmt.Errorf("%s: expected array: %w", path, err)
+		}
+		result := reflect.MakeSlice(dest.Type(), len(items), len(items))
+		for i, item := range items {
+			if err := decodeEnvironmentJSON(fmt.Sprintf("%s[%d]", path, i), item, result.Index(i)); err != nil {
+				return err
+			}
+		}
+		dest.Set(result)
+		return nil
+	default:
+		if err := json.Unmarshal(raw, dest.Addr().Interface()); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		return nil
+	}
+}
+
+// Definition actions reject unrelated runtime arguments rather than reporting a
+// successful save after dropping them. Scope arguments still use canonical
+// workspace authorization; full definition scope metadata is never trusted.
+func validateEnvironmentDefinitionArgs(action string, args map[string]any) error {
+	allowed := map[string]bool{"action": true, "workspace_path": true, "workspace_id": true}
+	if action == "import" {
+		allowed["json"], allowed["environment"] = true, true
+	} else {
+		for _, key := range []string{"environment_id", "id", "name", "description", "mode", "role", "preferred_connection_id", "image", "container", "ports", "frontend_endpoints", "provisioning", "deployment_policy", "max_instances", "release_behavior", "reuse", "health_check", "resources", "labels", "build", "set_default_test"} {
+			allowed[key] = true
+		}
+		if action == "create" {
+			allowed["environment"] = true
+		}
+	}
+	for key := range args {
+		if !allowed[key] {
+			return fmt.Errorf("%s: unsupported field for %s; use action=help for definition fields", key, action)
+		}
+	}
+	for _, key := range []string{"workspace_path", "workspace_id", "environment_id", "id"} {
+		if value, supplied := args[key]; supplied {
+			var text string
+			if err := decodeEnvironmentValue(key, value, &text); err != nil {
+				return err
+			}
+		}
+	}
+	if value, supplied := args["set_default_test"]; supplied {
+		var flag bool
+		if err := decodeEnvironmentValue("set_default_test", value, &flag); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Preserve duplicate-key evidence in imported JSON instead of accepting the
+// last value and silently discarding an earlier setting.
+func environmentJSONObject(path string, raw json.RawMessage) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, fmt.Errorf("%s: expected object", path)
+	}
+	object := map[string]json.RawMessage{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid object: %w", path, err)
+		}
+		key, ok := token.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s: expected field name", path)
+		}
+		if _, exists := object[key]; exists {
+			return nil, fmt.Errorf("%s.%s: duplicate field", path, key)
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("%s.%s: invalid JSON: %w", path, key, err)
+		}
+		object[key] = value
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, fmt.Errorf("%s: invalid object: %w", path, err)
+	}
+	return object, nil
 }

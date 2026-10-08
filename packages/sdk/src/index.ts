@@ -2,11 +2,14 @@ export * from './client.js';
 export * from './auth.js';
 export * from './automations.js';
 export * from './workers.js';
+export * from './worker-control.js';
 export * from './deliverables.js';
 export * from './deploy/index.js';
 export * from './notifications.js';
 export * from './sessions.js';
 export * from './projects.js';
+export * from './permissions.js';
+export * from './chat.js';
 export * from './workspaces.js';
 export * from './system.js';
 export * from './transport.js';
@@ -22,5 +25,7 @@ export type { ApplicationAgent, ApplicationAgentWrite, ApplicationConversationPa
 export * from './settings.js';
 export * from './provider-auth.js';
 export * from './realtime.js';
+export * from './websocket.js';
+export * from './browser.js';
 
 export type { ApplicationResults, ApplicationResultsOptions } from './app-results.js';

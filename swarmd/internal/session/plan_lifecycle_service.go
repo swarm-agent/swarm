@@ -114,17 +114,24 @@ type PlanLifecycleProposalInput struct {
 
 // ProjectTaskPlanSubmissionInput encapsulates direct submission of a structured plan document to a project task card.
 type ProjectTaskPlanSubmissionInput struct {
-	AccountScopeID       string
-	UserID               string
-	ProjectID            string
-	TaskID               string
-	SessionID            string
-	Document             *pebblestore.SessionPlanDocument
-	PlanText             string
-	Title                string
-	WorkspacePath        string
-	ParentSessionID      string
-	ApplySessionMutation func(SessionMutationInput) (SessionMutationResult, error)
+	ExpectedRevisionID string
+	// First-plan repair compares the task revision and requires no existing binding.
+	ExpectedTaskRevision int
+	// Nonzero guards revise an existing unapproved task card without a planning run.
+	ExpectedPlanID             string
+	ExpectedDefinitionRevision int
+	Feedback                   string
+	AccountScopeID             string
+	UserID                     string
+	ProjectID                  string
+	TaskID                     string
+	SessionID                  string
+	Document                   *pebblestore.SessionPlanDocument
+	PlanText                   string
+	Title                      string
+	WorkspacePath              string
+	ParentSessionID            string
+	ApplySessionMutation       func(SessionMutationInput) (SessionMutationResult, error)
 }
 
 // ProjectTaskPlanSubmissionResult holds the committed task and plan state after submission.
@@ -352,10 +359,18 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	if input.TaskID == "" {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("task id is required")
 	}
+	if input.ExpectedPlanID != "" || input.ExpectedDefinitionRevision != 0 || (input.Feedback != "" && input.ExpectedTaskRevision == 0) {
+		if input.ExpectedPlanID == "" || input.ExpectedDefinitionRevision <= 0 || input.SessionID == "" || strings.TrimSpace(input.Feedback) == "" {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("structured refinement requires feedback and exact session, plan and definition revision")
+		}
+	}
+	if input.ExpectedTaskRevision < 0 {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("expected task revision must be positive")
+	}
 	if input.Document == nil {
 		return ProjectTaskPlanSubmissionResult{}, errors.New("structured plan document is required")
 	}
-	if err := ValidateExecutablePlanDocument(input.Document); err != nil {
+	if err := ValidateProjectPlanReview(input.Document); err != nil {
 		return ProjectTaskPlanSubmissionResult{}, fmt.Errorf("invalid plan document: %w", err)
 	}
 
@@ -412,6 +427,45 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 
 	unlockSession := s.sessions.lockPlanLifecycleSession(sessionID)
 	defer unlockSession()
+
+	if input.ExpectedTaskRevision > 0 {
+		if len(input.Document.Requirements) == 0 {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("first plan repair requires authored requirements bound to acceptance criteria")
+		}
+		current, found, err := s.sessions.store.GetProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID)
+		if err != nil {
+			return ProjectTaskPlanSubmissionResult{}, err
+		}
+		if !found || current == nil || current.Archived || current.Status != "pending_approval" || current.PlanBinding != nil || current.Revision != input.ExpectedTaskRevision || input.ExpectedDefinitionRevision != 0 || input.ExpectedPlanID != "" {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("first plan requires the exact pending unbound task revision")
+		}
+		task = current
+	}
+
+	if input.ExpectedDefinitionRevision > 0 {
+		// Re-read under the lifecycle lock; stale review input must not replace a
+		// newer definition or reopen an approved execution.
+		current, found, err := s.sessions.store.GetProjectTask(input.AccountScopeID, input.ProjectID, input.TaskID)
+		if err != nil {
+			return ProjectTaskPlanSubmissionResult{}, err
+		}
+		if !found || current == nil || current.Archived || current.Status != "pending_approval" || current.PlanBinding == nil ||
+			input.SessionID == "" || current.SessionID != input.SessionID || current.PlanBinding.SessionID != input.SessionID ||
+			current.PlanBinding.PlanID != input.ExpectedPlanID || current.PlanBinding.DefinitionRevision != input.ExpectedDefinitionRevision {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("exact current unapproved task plan binding required")
+		}
+		if input.Document.ID != "" && input.Document.ID != input.ExpectedPlanID {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("replacement plan must preserve the bound plan id")
+		}
+		currentPlan, found, err := s.sessions.store.GetPlan(input.SessionID, input.ExpectedPlanID)
+		if err != nil {
+			return ProjectTaskPlanSubmissionResult{}, err
+		}
+		if !found || currentPlan.AccountScopeID != input.AccountScopeID || currentPlan.Version != input.ExpectedDefinitionRevision || currentPlan.ApprovalState != "pending" || currentPlan.Status != "pending_approval" {
+			return ProjectTaskPlanSubmissionResult{}, errors.New("bound plan revision is stale or no longer awaiting approval")
+		}
+		task = current
+	}
 
 	// Resolve workspace path (fail closed instead of defaulting to '.')
 	wsPath := strings.TrimSpace(input.WorkspacePath)
@@ -522,6 +576,9 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 		return ProjectTaskPlanSubmissionResult{}, err
 	}
 
+	if input.ExpectedRevisionID != "" && (!planFound || existingPlan.Document == nil || existingPlan.Document.RevisionID != input.ExpectedRevisionID) {
+		return ProjectTaskPlanSubmissionResult{}, errors.New("requirement edit revision conflict: reload the reviewed plan")
+	}
 	version := 1
 	var archived *pebblestore.SessionPlanSnapshot
 	isDuplicate := false
@@ -577,6 +634,9 @@ func (s *PlanLifecycleService) SubmitProjectTaskStructuredPlan(input ProjectTask
 	nextTask.ActionNeeded = "Review plan in task card and click Approve"
 	nextTask.UpdatedAt = now
 	if !isDuplicate {
+		if feedback := strings.TrimSpace(input.Feedback); feedback != "" {
+			nextTask.FeedbackHistory = append(append([]string(nil), task.FeedbackHistory...), feedback)
+		}
 		nextTask.WhatDidDo = append(nextTask.WhatDidDo, fmt.Sprintf("Structured plan submitted for review (Rev %d)", version))
 	}
 

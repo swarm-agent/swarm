@@ -4,7 +4,7 @@ import { desktopUsage } from '../runtime/desktop-usage'
 import { workerReadRecords } from '../state/desktop-workers-state'
 import { desktopWorkers } from '../runtime/desktop-workers'
 import { desktopAutomations } from '../runtime/desktop-automations'
-import { desktopProjects } from '../runtime/desktop-projects'
+import { desktopProjects, setDesktopProjectsRealtimeRetainer } from '../runtime/desktop-projects'
 import {
   getDesktopEnvironments,
   setDesktopEnvironmentsRealtimeRetainer,
@@ -336,7 +336,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     this.transport.setWorksets(normalizeTransportWorksets(initial.worksets), { replace: true })
     this.transport.setSessions(initial.subscriptions, { replace: true })
 
-    this.usageWorksets = new Map(buildDesktopUsageWorksets(this.getSnapshot(), DESKTOP_V3_CLIENT_ID).map(w => [w.workset_id, JSON.stringify(w)]))
+    this.usageWorksets = new Map(buildDesktopResourceWorksets(this.getSnapshot(), DESKTOP_V3_CLIENT_ID).map(w => [w.workset_id, JSON.stringify(w)]))
     this.unsubscribeCache?.()
     this.unsubscribeCache = this.subscribe(() => {
       const state = this.getSnapshot()
@@ -351,7 +351,7 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
   }
 
   private reconcileUsageWorksets(state: DesktopV3CacheState) {
-    const requested = buildDesktopUsageWorksets(state, DESKTOP_V3_CLIENT_ID)
+    const requested = buildDesktopResourceWorksets(state, DESKTOP_V3_CLIENT_ID)
     const next = new Map(requested.map(w => [w.workset_id, JSON.stringify(w)]))
     const previous = this.usageWorksets
     this.usageWorksets = next // transport status dispatch can synchronously reenter
@@ -433,8 +433,8 @@ export class DesktopV3RealtimeControllerRuntime implements DesktopV3RealtimeCont
     }
 
     resume.subscriptions = Array.from(subscriptions.values())
-    const usage = buildDesktopUsageWorksets(state, DESKTOP_V3_CLIENT_ID)
-    resume.worksets = [...(resume.worksets || []).filter(w => !w.workset_id.startsWith('usage:')).map(w => ({ ...w, resources: [...new Set([...(w.resources || []), 'projects'])] })), ...usage]
+    const usage = buildDesktopResourceWorksets(state, DESKTOP_V3_CLIENT_ID)
+    resume.worksets = [...(resume.worksets || []).filter(w => !w.workset_id.startsWith('usage:') && !w.workset_id.startsWith('task-environments:')).map(w => ({ ...w, resources: [...new Set([...(w.resources || []), 'projects'])] })), ...usage]
     this.usageWorksets = new Map(usage.map(w => [w.workset_id, JSON.stringify(w)]))
     return resume
   }
@@ -685,7 +685,7 @@ export function buildDesktopV3InitialRealtimeResume(
     resources: ['membership', 'projections', 'current_run_state', 'permission_summaries', 'notifications', 'notification_summary', 'tasks', 'projects', 'auth', 'sessions', 'tombstones'],
     auto_subscribe_sessions: false,
   }]
-  worksets.push(...buildDesktopUsageWorksets(state, clientId))
+  worksets.push(...buildDesktopResourceWorksets(state, clientId))
   const resume: RealtimeMessage = {
     protocol: 'v3.realtime',
     protocol_version: 1,
@@ -696,6 +696,34 @@ export function buildDesktopV3InitialRealtimeResume(
   }
 
   return { endpointCursor, subscriptions, worksets, resume }
+}
+
+export function buildTaskEnvironmentWorksets(state: DesktopV3CacheState, clientId: string, account = getDesktopSessionIdentitySnapshot()?.accountScopeId): RealtimeWorksetSubscriptionRequest[] {
+  const paths = new Set<string>()
+  for (const project of Object.values(state.projectsState ?? {})) {
+    const catalog = project.environmentWorkspaceCatalog ?? []
+    // Source workspaces also subscribe before the first collection arrives.
+    if (!project.lastObservedAt) for (const workspace of catalog) if (workspace.workspaceId && workspace.path) paths.add(workspace.path)
+    for (const task of project.tasks) {
+      if (task.sourceWorkspaceId && task.sourceWorkspacePath) paths.add(task.sourceWorkspacePath)
+      for (const attachment of task.environmentAttachments ?? []) {
+        if (!account || attachment.account_scope_id !== account || attachment.project_id !== project.projectId || attachment.task_id !== task.id) continue
+        const workspace = catalog.find(w => w.workspaceId === attachment.source.workspace_id)
+        if (workspace?.path) paths.add(workspace.path)
+      }
+    }
+  }
+  const sorted = [...paths].sort()
+  const requests: RealtimeWorksetSubscriptionRequest[] = []
+  for (let i = 0; i < sorted.length; i += 320) {
+    const id = `task-environments:${i / 320}`
+    requests.push({ workset_id: id, subscription_id: `${clientId}:${id}`, surface: 'desktop', selector: { kind: 'workspace', workspace_paths: sorted.slice(i, i + 320) }, resources: ['projects'], auto_subscribe_sessions: false })
+  }
+  return requests
+}
+
+function buildDesktopResourceWorksets(state: DesktopV3CacheState, clientId: string): RealtimeWorksetSubscriptionRequest[] {
+  return [...buildDesktopUsageWorksets(state, clientId), ...buildTaskEnvironmentWorksets(state, clientId)]
 }
 
 /** Resource-only demand uses workspace selectors, never recent-navigation limits.
@@ -1006,6 +1034,7 @@ interface RetainedDesktopV3RealtimeController {
 }
 
 setDesktopEnvironmentsRealtimeRetainer(retainDesktopV3RealtimeController)
+setDesktopProjectsRealtimeRetainer(() => retainDesktopV3RealtimeController())
 
 function retainedDesktopV3RealtimeCount(retained: RetainedDesktopV3RealtimeController): number {
   return retained.ownerTokens.size + retained.anonymousRetainCount

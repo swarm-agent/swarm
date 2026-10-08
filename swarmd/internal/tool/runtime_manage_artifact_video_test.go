@@ -981,3 +981,136 @@ func TestManageArtifactGenerateVideoResponseAndPersistedUsagePricingAgreement(t 
 		t.Fatalf("persisted unknown mismatch: status=%s cost=%f", recService.recorded[0].PriceStatus, recService.recorded[0].CostUSD)
 	}
 }
+
+// Purpose: the shared author_v3 operation object must never silently become a
+// fresh video create request. The registered Runtime dispatch is the narrowest
+// boundary proving malformed/unsupported operations cause zero submissions.
+func TestManageArtifactVideoOperationRejectsWrongTypeBeforeDispatch(t *testing.T) {
+	for _, operation := range []string{`{}`, `"refine"`, `""`, `null`} {
+		runtime := NewRuntime(1)
+		generator := &fakeVideoGenerationService{}
+		runtime.SetArtifactAuthority(&fakeArtifactAuthority{})
+		runtime.SetManagedVideoGenerationService(generator)
+		ctx, scope := artifactToolContext()
+		_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+			CallID: "invalid-operation", Name: "manage_artifact",
+			Arguments: `{"action":"generate_video","prompt":"A landscape","operation":` + operation + `}`,
+		})
+		if err == nil || !strings.Contains(err.Error(), "operation must be") || generator.calls != 0 {
+			t.Fatalf("operation %s: err=%v submissions=%d", operation, err, generator.calls)
+		}
+	}
+}
+
+// Purpose: provider schema must admit the same explicit video operations that
+// Runtime dispatch supports while retaining native author_v3 object operations.
+// Definition inspection is the narrow contract layer for this schema collision;
+// the execution tests above separately prove source and operation forwarding.
+func TestManageArtifactVideoOperationSchema(t *testing.T) {
+	properties := manageArtifactDefinition().Parameters["properties"].(map[string]any)
+	operation := properties["operation"].(map[string]any)
+	alternatives := operation["anyOf"].([]any)
+	if len(alternatives) != 2 || alternatives[0].(map[string]any)["type"] != "object" {
+		t.Fatalf("native authoring operation lost: %+v", operation)
+	}
+	video := alternatives[1].(map[string]any)
+	values := video["enum"].([]string)
+	if video["type"] != "string" || strings.Join(values, ",") != "create,extend,edit" {
+		t.Fatalf("video operations not exposed: %+v", video)
+	}
+}
+
+// Purpose: generateManagedVideoArtifact must forward a user-selected model without
+// changing operation, source provenance, or omitted duration. This adapter-level
+// test catches rejected/ignored model arguments; service capability enforcement is
+// tested separately in videogen.TestVideoContinuationSelection.
+func TestManageArtifactGenerateVideoExplicitContinuationModel(t *testing.T) {
+	for _, model := range []string{"", "gemini-omni-1.1-flash"} {
+		t.Run("model="+model, func(t *testing.T) {
+			runtime := NewRuntime(1)
+			authority := &fakeArtifactAuthority{
+				readBody: []byte("source-video"),
+				variant: pebblestore.SessionArtifactVariant{
+					ID: "source", SessionID: "source-session", CollectionID: "source-collection", EventSeq: 42,
+					Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4",
+					Lineage: pebblestore.SessionArtifactLineage{VideoProvenance: &pebblestore.VideoProvenance{
+						Model: "gemini-omni-1.1-flash", InteractionID: "retained-interaction",
+					}},
+				},
+			}
+			runtime.SetArtifactAuthority(authority)
+			generator := &fakeVideoGenerationService{}
+			runtime.SetManagedVideoGenerationService(generator)
+			ctx, scope := artifactToolContext()
+			args := map[string]any{
+				"action": "generate_video", "operation": "extend", "prompt": "Continue the scene",
+				"source_session_id": "source-session", "source_collection_id": "source-collection",
+				"source_variant_id": "source", "source_event_seq": 42,
+			}
+			if model != "" {
+				args["model"] = model
+			}
+			body, err := json.Marshal(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{CallID: "explicit-continuation", Name: "manage_artifact", Arguments: string(body)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := generator.lastReq
+			if generator.calls != 1 || req.Model != model || req.Operation != "extend" || req.DurationSeconds != 0 || req.Source == nil || req.Source.InteractionID != "retained-interaction" {
+				t.Fatalf("continuation request changed: %+v (calls=%d)", req, generator.calls)
+			}
+		})
+	}
+}
+
+// Purpose: generateManagedVideoArtifact must not publish a ready artifact when
+// GenerateManagedVideo rejects measured extension output. This adapter-boundary
+// test complements videogen.TestOmniExtensionMeasuredDuration: the service owns
+// timing validation, while the tool owns publication. Injected service errors are
+// deterministic failure-path evidence, not evidence of a live provider result.
+func TestManageArtifactVideoRejectedDurationNotPublished(t *testing.T) {
+	for _, rejection := range []string{
+		"extended Omni video output duration delta outside allowed range 3-10s (tolerance 0.050000s): source=10.005000000s output=20.205000000s delta=10.200000000s",
+		"extended Omni video duration exceeds maximum allowed ceiling (40s; tolerance 0.050000s): source=35.000000000s output=41.000000000s delta=6.000000000s",
+		"probed video output has invalid duration",
+	} {
+		t.Run(rejection, func(t *testing.T) {
+			runtime := NewRuntime(1)
+			authority := &fakeArtifactAuthority{
+				readBody: []byte("source-video"),
+				variant: pebblestore.SessionArtifactVariant{
+					ID: "source", SessionID: "source-session", CollectionID: "source-collection", EventSeq: 42,
+					Status: pebblestore.SessionArtifactStatusReady, MediaType: "video/mp4",
+					Lineage: pebblestore.SessionArtifactLineage{VideoProvenance: &pebblestore.VideoProvenance{
+						Model: "gemini-omni-1.1-flash", InteractionID: "retained-interaction",
+					}},
+				},
+			}
+			runtime.SetArtifactAuthority(authority)
+			generator := &fakeVideoGenerationService{err: fmt.Errorf("%s", rejection)}
+			runtime.SetManagedVideoGenerationService(generator)
+			ctx, scope := artifactToolContext()
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			_, err := runtime.ExecuteForWorkspaceScopeWithRuntime(ctx, scope, Call{
+				CallID: "rejected-extension", Name: "manage_artifact",
+				Arguments: `{"action":"generate_video","operation":"extend","model":"gemini-omni-1.1-flash","prompt":"Continue the scene","source_session_id":"source-session","source_collection_id":"source-collection","source_variant_id":"source","source_event_seq":42}`,
+			})
+			if err == nil || !strings.Contains(err.Error(), rejection) {
+				t.Fatalf("expected unmodified duration rejection, got %v", err)
+			}
+			if generator.calls != 1 || generator.lastReq.Operation != "extend" || generator.lastReq.Source == nil || generator.lastReq.Source.InteractionID != "retained-interaction" {
+				t.Fatalf("source-bound extension not dispatched: %+v", generator.lastReq)
+			}
+			if authority.createCalls != 0 || authority.publishCalls != 0 || authority.reserveCalls != 0 || len(authority.inspectionCreates) != 0 {
+				t.Fatalf("invalid output reached artifact publication: create=%d publish=%d reserve=%d inspection=%d", authority.createCalls, authority.publishCalls, authority.reserveCalls, len(authority.inspectionCreates))
+			}
+			if authority.variant.ID != "source" || authority.variant.EventSeq != 42 || authority.variant.Status != pebblestore.SessionArtifactStatusReady {
+				t.Fatalf("retained source was changed: %+v", authority.variant)
+			}
+		})
+	}
+}

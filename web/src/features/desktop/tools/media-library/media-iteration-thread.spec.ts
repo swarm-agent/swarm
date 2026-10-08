@@ -45,3 +45,13 @@ test('lineage cycles terminate and terminal failures are not presented as pendin
   for (const status of ['submitting', 'pending', 'queued', 'in_progress', 'running']) assert.equal(isMediaGenerationPending(status), true)
   for (const status of ['completed', 'failed', 'partial_failure', 'cancelled']) assert.equal(isMediaGenerationPending(status), false)
 })
+
+// Purpose: lineage, not clock skew or duplicate hydration, orders viewer turns.
+// getMediaIterationJobs must retain failed descendants without inventing outputs.
+test('parent output dependencies precede children despite reversed timestamps', () => {
+  const root = job('root', 'a', 100, ['a', 'b'], 'completed')
+  const child = job('child', 'b', 1, ['c'], 'completed')
+  const failed = job('failed', 'c', 0, [], 'failed')
+  assert.deepEqual(getMediaIterationJobs('a', [asset('a'), asset('b'), asset('c', 'b')], [failed, child, root, child]).map(turn => turn.id), ['root', 'child', 'failed'])
+  assert.deepEqual(getMediaIterationOutputs(failed, [asset('c')]), [])
+})

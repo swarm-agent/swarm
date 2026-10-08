@@ -160,6 +160,9 @@ func TestReservationActiveChildLimitAsksForPerCallAndAggregateOverflow(t *testin
 	}
 }
 
+// Purpose: ReserveSubagentWave keeps regular and Swarm pools separate while
+// aggregating Swarm occupancy across parent runs. Real permission persistence is
+// the narrow layer proving denial/approval and release rather than UI counters.
 func TestReservationUsesSeparateRegularAndSwarmLimits(t *testing.T) {
 	reader, writer := openSubagentReservationTestServices(t)
 	const accountScopeID = "account-split-limits"
@@ -183,6 +186,11 @@ func TestReservationUsesSeparateRegularAndSwarmLimits(t *testing.T) {
 		t.Fatalf("oversized swarm wave = %#v, want swarm-limit ask", oversizedSwarm)
 	}
 
+	for _, wave := range []struct{ run, call string }{{"run-swarm", "call-swarm"}, {"run-swarm-oversized", "call-swarm-oversized"}} {
+		if err := reader.FinishSubagentWave("session-split", wave.run, wave.call, "completed"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	activeRegular := reserveSubagentWave(t, reader, accountScopeID, "session-split", "run-independent-pools", "call-active-regular", 10)
 	if activeRegular.Decision != SubagentReservationApprove {
 		t.Fatalf("active regular wave = %#v, want approve", activeRegular)

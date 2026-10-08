@@ -3,7 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"image"
@@ -350,6 +352,17 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 		principal.AccountScopeID = task.AccountID
 	}
 	agent := strings.TrimSpace(task.Agent)
+	if isOrdinaryMediaAgent(agent) {
+		count, err := projectMediaBatchCount(task.VariantCount, 0, len(task.Deliverables))
+		if err != nil {
+			return err
+		}
+		// Project audio execution currently produces one clip. Never silently
+		// accept a larger batch and generate fewer outputs than requested.
+		if (agent == "sound" || agent == "audio") && count != 1 {
+			return errors.New("project audio generation supports exactly one clip per task")
+		}
+	}
 	if agent == "video" || task.OutcomeType == "video_clip" || task.OutcomeType == "video_story" {
 		if task.OutcomeType == "video_story" || len(task.Scenes) > 1 {
 			if err := validateVideoScenes(task.Scenes, task.Operation, task.VariantCount, task.Soundtrack); err != nil {
@@ -374,6 +387,7 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 			return fmt.Errorf("task operation %q is invalid; must be create, edit, or extend", task.Operation)
 		}
 
+		omniSource := false
 		if op == pebblestore.VideoOperationCreate {
 			if len(task.AttachedMedia) > 1 {
 				return errors.New("at most one initial image attachment is supported for video generation")
@@ -426,27 +440,25 @@ func validateProjectMediaTaskSettings(s *Server, task *pebblestore.ProjectTaskRe
 				if err != nil {
 					return fmt.Errorf("invalid video attachment: %w", err)
 				}
+				if srcRec.Provenance != nil {
+					omniSource = videogen.IsOmniModel(srcRec.Provenance.Model) || strings.TrimSpace(srcRec.Provenance.InteractionID) != ""
+				}
 				if len(srcRec.Bytes) == 0 && srcRec.Provenance == nil {
 					return errors.New("video attachment payload is empty")
 				}
 			}
 		}
 
-		model := strings.TrimSpace(task.Model)
-		if model == "" && s != nil && s.uiSettings != nil && principal.AccountScopeID != "" {
+		var defaultModel, iterationModel string
+		if strings.TrimSpace(task.Model) == "" && s != nil && s.uiSettings != nil && principal.AccountScopeID != "" {
 			if uiSet, err := s.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
-				if op == pebblestore.VideoOperationEdit {
-					model = strings.TrimSpace(uiSet.Tools.Video.IterationModel)
-				} else {
-					model = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
-				}
+				defaultModel = uiSet.Tools.Video.DefaultModel
+				iterationModel = uiSet.Tools.Video.IterationModel
 			}
 		}
-		if model == "" {
-			if op == pebblestore.VideoOperationEdit {
-				return errors.New("no default video iteration model configured for account; select a model or configure one in Settings")
-			}
-			return errors.New("no default video model configured for account; select a model or configure one in Settings")
+		model, err := videogen.ResolveOperationModel(op, task.Model, defaultModel, iterationModel, omniSource)
+		if err != nil {
+			return err
 		}
 		if !isSupportedVideoModel(s, model) {
 			return fmt.Errorf("unsupported video model %q", model)
@@ -933,6 +945,12 @@ func (s *Server) resolveSourceMediaBytes(ctx context.Context, p identity.Princip
 		}
 		if targetDeliv.Status != "ready" && targetDeliv.Status != "accepted" {
 			return nil, "", fmt.Errorf("deliverable %q is not ready", dID)
+		}
+		if digest := u.Query().Get("sha256"); digest != "" {
+			sum := sha256.Sum256([]byte(targetDeliv.MediaURL))
+			if u.Query().Get("field") != "media" || digest != hex.EncodeToString(sum[:]) {
+				return nil, "", errors.New("deliverable content reference is stale or not source media")
+			}
 		}
 		if strings.Contains(targetDeliv.MediaURL, "/deliverables/") {
 			return nil, "", errors.New("nested deliverable references are not permitted")

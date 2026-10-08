@@ -51,7 +51,7 @@ test('HTML startup recovery and committed-screen handoff in Chromium', { timeout
   await page.goto('https://startup.invalid/', { waitUntil: 'commit' })
   await page.locator('#swarm-startup-title').waitFor()
   assert.equal(await page.locator('#root').isVisible(), false)
-  assert.equal(await page.locator('#swarm-startup-title').textContent(), 'Starting Swarm…')
+  assert.equal(await page.locator('#swarm-startup-title').textContent(), 'Loading Swarm…')
   await page.clock.fastForward(20000)
   assert.match(await page.locator('#swarm-startup-message').innerText(), /app files/)
   assert.equal(navigations, 1)

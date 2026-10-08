@@ -9,11 +9,17 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
     }
   },
   "files": [
     "dist",
     "examples/headless-session.ts",
+    "examples/headless-worker-control.ts",
+    "WORKER_CONTROL.md",
     "README.md",
     "APPLICATIONS.md",
     "HEADLESS_UI.md",
@@ -32,10 +38,15 @@
     "prepack": "npm run build",
     "test": "tsx --test --test-concurrency=1 ./src/__tests__/*.spec.ts"
   },
-  "engines": { "node": ">=22" },
-  "dependencies": { "ws": "8.18.3" },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ws": "8.18.3"
+  },
   "devDependencies": {
     "@types/node": "22.19.15",
+    "@types/ws": "^8.18.2",
     "tsx": "4.21.0",
     "typescript": "5.9.3"
   },

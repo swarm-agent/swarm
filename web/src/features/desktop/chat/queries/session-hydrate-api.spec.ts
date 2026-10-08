@@ -403,6 +403,9 @@ test('fetchSessionMessages loads V3 message history from Sessions API v3 only an
   })
 })
 
+// Requirement: Desktop older-history queries opt into whole-record byte bounds.
+// This query-layer test prevents silently reverting to count-only multi-MB pages;
+// store tests prove actual byte accounting and lossless continuation.
 test('fetchSessionMessages loads older V3 history pages with before_seq and explicit limit', async () => {
   const { fetchSessionMessages } = await import('./chat-queries')
 
@@ -410,7 +413,7 @@ test('fetchSessionMessages loads older V3 history pages with before_seq and expl
     const result = await fetchSessionMessages('session-v3', undefined, 0, { sessionApi: 'v3', beforeSeq: 3, limit: 200 })
 
     assert.deepEqual(result.messages.map((message) => message.globalSeq), [3, 4])
-    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3/messages?limit=200&before_seq=3'])
+    assert.deepEqual(requestUrls(calls), ['/v3/sessions/session-v3/messages?limit=200&before_seq=3&max_bytes=262144'])
     assertNoV1OrV2SessionDataCalls(calls)
   })
 })

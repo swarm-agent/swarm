@@ -144,7 +144,7 @@ test('design thumbnail preserves equal snapshots and isolates changed identities
     assert.equal(await frame.count(), 0)
     for (let i = 0; i < 3; i++) await render()
     assert.equal(await count(), 10, 'missing preview must not retry on equivalent snapshots')
-    await page.getByRole('button', { name: 'Preview Fixture candidate 1' }).click()
+    await page.getByRole('button', { name: 'Open selected output', exact: true }).click()
     assert.deepEqual(await page.evaluate(() => {
       const item = (window as any).opened[0]
       return { session: item.sessionId, ref: item.design.revision.ref }

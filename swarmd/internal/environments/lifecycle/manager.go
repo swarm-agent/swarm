@@ -86,6 +86,7 @@ type WorkspaceSettingsReader interface {
 
 // EnsureDeploymentRequest specifies parameters for acquiring or provisioning an environment deployment.
 type EnsureDeploymentRequest struct {
+	BuildOperationID string                    `json:"build_operation_id,omitempty"`
 	AccountScopeID   string                    `json:"account_scope_id"`
 	WorkspaceID      string                    `json:"workspace_id"`
 	EnvironmentID    string                    `json:"environment_id"`
@@ -137,10 +138,12 @@ type EnsureDeploymentResult struct {
 
 // ReleaseDeploymentRequest specifies parameters for releasing a held lease.
 type ReleaseDeploymentRequest struct {
-	AccountScopeID string `json:"account_scope_id"`
-	WorkspaceID    string `json:"workspace_id"`
-	LeaseID        string `json:"lease_id"`
-	Reason         string `json:"reason,omitempty"`
+	// Required for shared leases; authenticated by the calling service.
+	Attribution    environments.OperationAttribution `json:"-"`
+	AccountScopeID string                            `json:"account_scope_id"`
+	WorkspaceID    string                            `json:"workspace_id"`
+	LeaseID        string                            `json:"lease_id"`
+	Reason         string                            `json:"reason,omitempty"`
 }
 
 // ReleaseDeploymentResult contains the release outcome and action executed on the container.
@@ -161,6 +164,7 @@ type DestroyDeploymentRequest struct {
 
 // DeployDeploymentRequest specifies parameters for directly provisioning a new deployment.
 type DeployDeploymentRequest struct {
+	BuildOperationID string                    `json:"build_operation_id,omitempty"`
 	AccountScopeID   string                    `json:"account_scope_id"`
 	WorkspaceID      string                    `json:"workspace_id"`
 	EnvironmentID    string                    `json:"environment_id"`
@@ -185,12 +189,13 @@ type DeployDeploymentResult struct {
 // DeploymentManager coordinates deployment lifecycle, connection resolution, leasing, reuse pooling,
 // limit enforcement, cancellation-aware locking, and durable supervised operations.
 type DeploymentManager struct {
-	connections  ConnectionReader
-	environments EnvironmentReader
-	deployments  DeploymentManagerStore
-	workspaces   WorkspaceSettingsReader
-	registry     *provider.Registry
-	operations   OperationStore
+	taskLeaseValidator func(context.Context, environments.DeploymentLease) error
+	connections        ConnectionReader
+	environments       EnvironmentReader
+	deployments        DeploymentManagerStore
+	workspaces         WorkspaceSettingsReader
+	registry           *provider.Registry
+	operations         OperationStore
 
 	mu       sync.Mutex
 	envLocks map[string]*contextMutex
@@ -198,6 +203,7 @@ type DeploymentManager struct {
 
 	activeOps   map[string]*activeOpState
 	activeOpsMu sync.RWMutex
+	closing     bool // guarded by activeOpsMu; prevents launches after Close's snapshot
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -373,6 +379,9 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	// 2. Resolve Connection using 3-tier precedence
+	if _, err := applyBuildProduct(ctx, &env); err != nil {
+		return nil, err
+	}
 	conn, err := m.ResolveConnection(ctx, req.AccountScopeID, req.WorkspaceID, req.ConnectionID, &env)
 	if err != nil {
 		return nil, fmt.Errorf("resolve connection for environment %q: %w", req.EnvironmentID, err)
@@ -388,7 +397,24 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	// Check Docker support capability if container definition specifies an image
-	if env.Container.Image != "" && !conn.Capabilities.SupportsDocker {
+	buildResult, err := m.resolveBuildImage(ctx, req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, &env, conn)
+	if err != nil {
+		return nil, err
+	}
+	env = runtimeBuildEnvironment(env, buildResult)
+	if err := provider.ValidateRuntimeConnection(conn, &env); err != nil {
+		return nil, err
+	}
+	if conn.Kind == environments.ConnectionKindLocalPodman {
+		caps, err := prov.Capabilities(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		if !caps.SupportsPodman || !caps.RootlessSystemd {
+			return nil, errors.New("provider did not verify rootless Podman systemd support")
+		}
+	}
+	if env.Container.Image != "" && conn.Kind != environments.ConnectionKindLocalPodman && !conn.Capabilities.SupportsDocker {
 		return nil, fmt.Errorf("connection %q does not support Docker required by environment %q", conn.ID, env.ID)
 	}
 
@@ -415,16 +441,28 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	// 5. Attempt reuse if enabled by policy
 	if env.DeploymentPolicy.Reuse {
 		for _, dep := range existingDeps {
+			if (buildResult == nil) != (dep.Build == nil) {
+				continue
+			}
+			if buildResult != nil && (dep.Build.OperationID != buildResult.OperationID || dep.Build.ImageID != buildResult.ImageID) {
+				continue
+			}
+			if dep.WorkspacePath != deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)) {
+				continue
+			}
 			if dep.ConnectionID != conn.ID {
 				continue
 			}
-			if !dep.IsUsable() {
+			if !dep.IsUsable() || dep.ReviewExpired(now) {
 				continue
 			}
 
 			// Verify container is actually active in provider before selecting for reuse
 			if prov != nil {
 				insRes, insErr := prov.Inspect(ctx, conn, &dep)
+				if dep.Build != nil && (insErr != nil || insRes == nil) {
+					continue
+				}
 				if insErr == nil && insRes != nil {
 					if insRes.Status == environments.DeploymentStatusStopped {
 						if startErr := prov.Start(ctx, conn, &dep); startErr != nil {
@@ -548,6 +586,9 @@ func (m *DeploymentManager) EnsureDeployment(ctx context.Context, req EnsureDepl
 	}
 
 	newDep := environments.Deployment{
+		Frontend:       environments.SnapshotDeploymentFrontend(&env),
+		Build:          buildResult,
+		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,
 		AccountScopeID: req.AccountScopeID,
 		WorkspaceID:    req.WorkspaceID,
@@ -669,6 +710,9 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 		return nil, fmt.Errorf("environment %q: %w", req.EnvironmentID, ErrEnvironmentNotFound)
 	}
 
+	if _, err := applyBuildProduct(ctx, &env); err != nil {
+		return nil, err
+	}
 	conn, err := m.ResolveConnection(ctx, req.AccountScopeID, req.WorkspaceID, req.ConnectionID, &env)
 	if err != nil {
 		return nil, fmt.Errorf("resolve connection for environment %q: %w", req.EnvironmentID, err)
@@ -682,7 +726,24 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 		return nil, fmt.Errorf("provider for connection kind %q: %w", conn.Kind, ErrProviderNotRegistered)
 	}
 
-	if env.Container.Image != "" && !conn.Capabilities.SupportsDocker {
+	buildResult, err := m.resolveBuildImage(ctx, req.AccountScopeID, req.WorkspaceID, req.BuildOperationID, &env, conn)
+	if err != nil {
+		return nil, err
+	}
+	env = runtimeBuildEnvironment(env, buildResult)
+	if err := provider.ValidateRuntimeConnection(conn, &env); err != nil {
+		return nil, err
+	}
+	if conn.Kind == environments.ConnectionKindLocalPodman {
+		caps, err := prov.Capabilities(ctx, conn)
+		if err != nil {
+			return nil, err
+		}
+		if !caps.SupportsPodman || !caps.RootlessSystemd {
+			return nil, errors.New("provider did not verify rootless Podman systemd support")
+		}
+	}
+	if env.Container.Image != "" && conn.Kind != environments.ConnectionKindLocalPodman && !conn.Capabilities.SupportsDocker {
 		return nil, fmt.Errorf("connection %q does not support Docker required by environment %q", conn.ID, env.ID)
 	}
 
@@ -725,6 +786,9 @@ func (m *DeploymentManager) DeployDeployment(ctx context.Context, req DeployDepl
 	}
 
 	newDep := environments.Deployment{
+		Frontend:       environments.SnapshotDeploymentFrontend(&env),
+		Build:          buildResult,
+		WorkspacePath:  deploymentWorkspacePath(env, req.WorkspacePath, string(conn.Kind)),
 		ID:             depID,
 		AccountScopeID: req.AccountScopeID,
 		WorkspaceID:    req.WorkspaceID,
@@ -853,7 +917,10 @@ func (m *DeploymentManager) ReleaseDeployment(ctx context.Context, req ReleaseDe
 	if !found {
 		return nil, fmt.Errorf("lease %q: %w", req.LeaseID, ErrLeaseNotFound)
 	}
-	if !lease.Active {
+	if lease.Shared && !ownsLease(req.Attribution, lease) {
+		return nil, ErrDeploymentLeaseHeld
+	}
+	if !lease.Active && !lease.Shared {
 		return nil, fmt.Errorf("lease %q: %w", req.LeaseID, ErrLeaseAlreadyReleased)
 	}
 
@@ -885,6 +952,22 @@ func (m *DeploymentManager) ReleaseDeployment(ctx context.Context, req ReleaseDe
 	}
 	defer depLock.Unlock()
 
+	// Shared consumers only release their own receipt. Never mutate provider or
+	// deployment health/status, even when this was the last consumer.
+	if lease.Shared {
+		released, err := m.deployments.ReleaseLease(req.AccountScopeID, req.WorkspaceID, req.LeaseID, req.Reason)
+		if err != nil {
+			return nil, err
+		}
+		return &ReleaseDeploymentResult{Lease: released, Deployment: dep, ReleaseBehavior: environments.ReleaseBehaviorNone, ActionTaken: "retained"}, nil
+	}
+	active, held, leaseErr := m.deployments.GetActiveLease(req.AccountScopeID, req.WorkspaceID, dep.ID)
+	if leaseErr != nil {
+		return nil, leaseErr
+	}
+	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) {
+		return nil, ErrDeploymentLeaseHeld
+	}
 	releaseBehavior := environments.ReleaseBehaviorNone
 	if m.environments != nil {
 		env, foundEnv, _ := m.environments.Get(req.AccountScopeID, req.WorkspaceID, dep.EnvironmentID)
@@ -893,6 +976,10 @@ func (m *DeploymentManager) ReleaseDeployment(ctx context.Context, req ReleaseDe
 		}
 	}
 
+	// Manual onboarding state is retained even if its definition was later edited.
+	if dep.Build != nil {
+		releaseBehavior = environments.ReleaseBehaviorNone
+	}
 	var prov provider.DeploymentProvider
 	var conn environments.Connection
 	if m.connections != nil {
@@ -1015,9 +1102,28 @@ func (m *DeploymentManager) DestroyDeployment(ctx context.Context, req DestroyDe
 	}
 	defer depLock.Unlock()
 
+	dep, found, err = m.deployments.Get(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	if err := m.guardDeploymentIdle(ctx, dep); err != nil {
+		return err
+	}
+	if err := m.requireDeploymentProvider(dep); err != nil {
+		return err
+	}
 	// 1. Release active lease if held
 	activeLease, hasActive, err := m.deployments.GetActiveLease(req.AccountScopeID, req.WorkspaceID, req.DeploymentID)
-	if err == nil && hasActive && activeLease.Active {
+	if err != nil {
+		return err
+	}
+	if hasActive && activeLease.Shared && activeLease.IsHeld(time.Now().UnixMilli()) {
+		return ErrDeploymentLeaseHeld
+	}
+	if hasActive && activeLease.Active {
 		reason := "deployment_destroyed"
 		if req.Reason != "" {
 			reason += ": " + req.Reason
@@ -1056,6 +1162,22 @@ func (m *DeploymentManager) DestroyDeployment(ctx context.Context, req DestroyDe
 
 // StopDeployment stops a running deployment container.
 func (m *DeploymentManager) StopDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error {
+	dep, found, err := m.GetDeployment(accountScopeID, workspaceID, deploymentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	lock := m.getEnvLock(accountScopeID, workspaceID, dep.EnvironmentID)
+	if err := lock.Lock(ctx); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	return m.stopDeploymentLocked(ctx, accountScopeID, workspaceID, deploymentID)
+}
+
+func (m *DeploymentManager) stopDeploymentLocked(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error {
 	if m == nil || m.deployments == nil {
 		return errors.New("deployment store is not configured")
 	}
@@ -1081,6 +1203,26 @@ func (m *DeploymentManager) StopDeployment(ctx context.Context, accountScopeID, 
 	}
 	defer depLock.Unlock()
 
+	dep, found, err = m.deployments.Get(accountScopeID, workspaceID, deploymentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	if err := m.guardDeploymentIdle(ctx, dep); err != nil {
+		return err
+	}
+	active, held, leaseErr := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
+	if leaseErr != nil {
+		return leaseErr
+	}
+	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) {
+		return ErrDeploymentLeaseHeld
+	}
+	if err := m.requireDeploymentProvider(dep); err != nil {
+		return err
+	}
 	if m.connections != nil && m.registry != nil {
 		conn, foundConn, err := m.connections.Get(accountScopeID, workspaceID, dep.ConnectionID)
 		if err != nil {
@@ -1110,6 +1252,22 @@ func (m *DeploymentManager) StopDeployment(ctx context.Context, accountScopeID, 
 
 // StartDeployment starts a stopped deployment container.
 func (m *DeploymentManager) StartDeployment(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error {
+	dep, found, err := m.GetDeployment(accountScopeID, workspaceID, deploymentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	lock := m.getEnvLock(accountScopeID, workspaceID, dep.EnvironmentID)
+	if err := lock.Lock(ctx); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	return m.startDeploymentLocked(ctx, accountScopeID, workspaceID, deploymentID)
+}
+
+func (m *DeploymentManager) startDeploymentLocked(ctx context.Context, accountScopeID, workspaceID, deploymentID string) error {
 	if m == nil || m.deployments == nil {
 		return errors.New("deployment store is not configured")
 	}
@@ -1135,6 +1293,26 @@ func (m *DeploymentManager) StartDeployment(ctx context.Context, accountScopeID,
 	}
 	defer depLock.Unlock()
 
+	dep, found, err = m.deployments.Get(accountScopeID, workspaceID, deploymentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrDeploymentNotFound
+	}
+	if err := m.guardDeploymentIdle(ctx, dep); err != nil {
+		return err
+	}
+	active, held, leaseErr := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
+	if leaseErr != nil {
+		return leaseErr
+	}
+	if held && active.Shared && active.IsHeld(time.Now().UnixMilli()) {
+		return ErrDeploymentLeaseHeld
+	}
+	if err := m.requireDeploymentProvider(dep); err != nil {
+		return err
+	}
 	if m.connections != nil && m.registry != nil {
 		conn, foundConn, err := m.connections.Get(accountScopeID, workspaceID, dep.ConnectionID)
 		if err != nil {
@@ -1142,6 +1320,9 @@ func (m *DeploymentManager) StartDeployment(ctx context.Context, accountScopeID,
 		}
 		if foundConn {
 			if prov, ok := m.registry.Get(conn.Kind); ok {
+				if dep.ReviewExpired(time.Now().UnixMilli()) {
+					return errors.New("review deadline expired; prepare a new deployment")
+				}
 				if err := prov.Start(ctx, &conn, &dep); err != nil {
 					_, _ = m.deployments.UpdateStatus(accountScopeID, workspaceID, deploymentID, environments.DeploymentStatusFailed, environments.HealthStatusUnhealthy, "start failed: "+err.Error())
 					return fmt.Errorf("start deployment container %q: %w", deploymentID, err)
@@ -1279,6 +1460,13 @@ func (m *DeploymentManager) ResolveAccess(ctx context.Context, accountScopeID, w
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
+	lease, held, err := m.deployments.GetActiveLease(accountScopeID, workspaceID, deploymentID)
+	if err != nil {
+		return nil, err
+	}
+	if !held || lease.Shared || lease.TaskBinding != nil || !lease.IsHeld(time.Now().UnixMilli()) || dep.ReviewExpired(time.Now().UnixMilli()) {
+		return nil, errors.New("ordinary active lease required; task consumers must use receipt-bound access")
+	}
 	return prov.ResolveAccess(probeCtx, &conn, &dep)
 }
 
@@ -1297,7 +1485,7 @@ func (m *DeploymentManager) Exec(ctx context.Context, accountScopeID, workspaceI
 		return nil, fmt.Errorf("deployment %q: %w", deploymentID, ErrDeploymentNotFound)
 	}
 
-	if !dep.IsUsable() {
+	if !dep.IsUsable() || dep.ReviewExpired(time.Now().UnixMilli()) {
 		return nil, fmt.Errorf("deployment %q is in status %q (health: %q): %w", deploymentID, dep.Status, dep.Health, ErrDeploymentUnusable)
 	}
 
@@ -1306,7 +1494,7 @@ func (m *DeploymentManager) Exec(ctx context.Context, accountScopeID, workspaceI
 	if err != nil {
 		return nil, fmt.Errorf("get active lease: %w", err)
 	}
-	if !hasActive || !activeLease.IsHeld(time.Now().UnixMilli()) {
+	if !hasActive || activeLease.Shared || activeLease.TaskBinding != nil || !activeLease.IsHeld(time.Now().UnixMilli()) {
 		return nil, fmt.Errorf("active lease required to exec in deployment %q", deploymentID)
 	}
 

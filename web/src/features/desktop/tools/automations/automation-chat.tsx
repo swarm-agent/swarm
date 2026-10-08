@@ -7,7 +7,7 @@ import { selectAndHydrateDesktopV3Session } from '../../state/desktop-v3-session
 export function AutomationChat({ sessionId, automationId }: { sessionId: string; automationId?: string }) {
   const [error, setError] = useState(false)
   const [attempt, setAttempt] = useState(0)
-  const messages = useDesktopV3CacheSelector(useCallback(state => selectRenderedSessionMessages(state, sessionId), [sessionId]), (left, right) => left.committed === right.committed && left.pendingUser === right.pendingUser && left.liveRuns === right.liveRuns && left.runIntents === right.runIntents && left.currentRunIntent === right.currentRunIntent && left.latestRunIntent === right.latestRunIntent)
+  const messages = useDesktopV3CacheSelector(useCallback(state => selectRenderedSessionMessages(state, sessionId), [sessionId]), (left, right) => left.taskActivities === right.taskActivities && left.committed === right.committed && left.pendingUser === right.pendingUser && left.liveRuns === right.liveRuns && left.runIntents === right.runIntents && left.currentRunIntent === right.currentRunIntent && left.latestRunIntent === right.latestRunIntent)
   const ready = useDesktopV3CacheSelector(useCallback(state => isDesktopV3SessionTailReady(state, sessionId), [sessionId]))
   const count = useDesktopV3CacheSelector(useCallback(state => state.messagesBySession[sessionId]?.items.length ?? 0, [sessionId]))
   useEffect(() => {

@@ -876,6 +876,9 @@ func TestCodexWebsocketAllowsLargeCompletedSnapshot(t *testing.T) {
 	}
 }
 
+// Purpose: the WebSocket client must preserve terminal completion, output and
+// usage through oversized snapshot compaction; this local transport test exercises
+// CreateResponseStreamingWithAuth and the actual compactor without provider access.
 func TestCodexWebsocketCompactsCompletedSnapshotBeyondTransportEnvelope(t *testing.T) {
 	largePadding := strings.Repeat("x", int(maxCodexWebsocketMessageBytes/2)+1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -931,7 +934,7 @@ func TestCodexWebsocketCompactsCompletedSnapshotBeyondTransportEnvelope(t *testi
 	if err != nil {
 		t.Fatalf("oversized completed snapshot request: %v", err)
 	}
-	if response.ID != "resp-compacted" || response.Model != "gpt-5.4" || response.StopReason != "" {
+	if response.ID != "resp-compacted" || response.Model != "gpt-5.4" || response.StopReason != "completed" {
 		t.Fatalf("compacted response metadata = %#v", response)
 	}
 	if response.Usage.InputTokens != 11 || response.Usage.OutputTokens != 7 || response.Usage.TotalTokens != 18 || response.Usage.ServiceTier != "priority" {

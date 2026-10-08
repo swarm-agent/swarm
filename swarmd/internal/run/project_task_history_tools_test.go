@@ -16,7 +16,7 @@ import (
 )
 
 // Purpose: a retained Auto Swarm follow-up must expose callable paginated history,
-// not project mutation authority. Threats are forged links, foreign principals,
+// and typed task reporting, not general project mutation authority. Threats are forged links, foreign principals,
 // and mutation calls despite schema restrictions. The temporary durable store,
 // resolved provider inventory and real invoker/runtime are the narrowest joined
 // boundary; no provider or live-daemon success is claimed by this fixture.
@@ -77,7 +77,7 @@ func TestTaskFollowupHistoryProviderAccess(t *testing.T) {
 			found = true
 			properties := d.Parameters["properties"].(map[string]any)
 			enum := properties["action"].(map[string]any)["enum"].([]string)
-			if len(enum) != 1 || enum[0] != "get_task" {
+			if len(enum) != 2 || enum[0] != "get_task" || enum[1] != "report_task" {
 				t.Fatal("mutation schema exposed")
 			}
 		}

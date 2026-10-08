@@ -56,8 +56,8 @@ func TestOnboardingProviderSkipRequiresWorkspaceConfirmation(t *testing.T) {
 	page.ShowOnboardingProvider("Identity saved")
 	page.HandleKey(tcell.NewEventKey(tcell.KeyRune, 's', tcell.ModNone))
 
-	if !page.OnboardingWorkspaceActive() {
-		t.Fatal("provider skip did not advance to workspace confirmation")
+	if !page.OnboardingProjectActive() {
+		t.Fatal("provider skip did not advance to project creation")
 	}
 	page.HideOnboarding()
 	if !page.OnboardingVisible() {
@@ -169,7 +169,7 @@ func TestOnboardingRendersCohesiveThreePhaseSurface(t *testing.T) {
 	page.SetOnboardingWorkspacePath("/repo/project")
 	page.Draw(screen)
 	text := dumpHomeTestScreen(screen, 100, 30)
-	for _, want := range []string{"STEP 3 OF 3", "Create your first workspace.", "managed worktrees", "Select another location", "/repo/project", "Inspect selected folder"} {
+	for _, want := range []string{"STEP 4 OF 4", "Attach a workspace folder", "manage workspaces", "Select another location", "/repo/project", "Inspect selected folder"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("workspace onboarding missing %q:\n%s", want, text)
 		}

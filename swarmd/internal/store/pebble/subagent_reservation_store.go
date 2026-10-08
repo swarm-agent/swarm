@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 // SubagentWaveReservation is the durable, idempotent accounting record for one
@@ -13,6 +15,7 @@ import (
 // ActiveCount records only the currently reserved ready cohort. SwarmMode records
 // which configured child ceiling authorized the call.
 type SubagentWaveReservation struct {
+	AccountScopeID string `json:"account_scope_id,omitempty"`
 	SessionID      string `json:"session_id"`
 	RunID          string `json:"run_id"`
 	CallID         string `json:"call_id"`
@@ -52,7 +55,27 @@ func (s *PermissionStore) PutSubagentWaveReservation(record SubagentWaveReservat
 		record.CreatedAt = now
 	}
 	record.UpdatedAt = now
-	if err := s.store.PutJSON(KeySubagentWaveReservation(record.SessionID, record.RunID, record.CallID), record); err != nil {
+	payload, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	batch := s.store.NewBatch()
+	defer batch.Close()
+	if err := batch.Set([]byte(KeySubagentWaveReservation(record.SessionID, record.RunID, record.CallID)), payload, nil); err != nil {
+		return err
+	}
+	if record.AccountScopeID != "" && record.SwarmMode {
+		key := []byte("subagent_swarm_active/" + keyPart(record.AccountScopeID) + "/" + keyPart(record.SessionID) + "/" + keyPart(record.RunID) + "/" + keyPart(record.CallID))
+		if record.ActiveCount > 0 {
+			err = batch.Set(key, payload, nil)
+		} else {
+			err = batch.Delete(key, nil)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if err := batch.Commit(pebble.Sync); err != nil {
 		return fmt.Errorf("persist subagent wave reservation: %w", err)
 	}
 	return nil
@@ -90,4 +113,57 @@ func (s *PermissionStore) ListSubagentWaveReservations(sessionID, runID string) 
 		return nil
 	})
 	return out, err
+}
+
+// CountAccountSwarmChildren reads only active reservations, never task history.
+func (s *PermissionStore) CountAccountSwarmChildren(accountID string) (int, error) {
+	count := 0
+	err := s.iterateSwarmReservations("subagent_swarm_active/"+keyPart(accountID)+"/", func(_ string, value []byte) error {
+		var record SubagentWaveReservation
+		if err := json.Unmarshal(value, &record); err != nil {
+			return err
+		}
+		count += record.ActiveCount
+		return nil
+	})
+	return count, err
+}
+
+// BackfillAccountSwarmReservations upgrades pre-account reservation records once
+// before the first account admission. Admission must fail closed on errors.
+func (s *PermissionStore) BackfillAccountSwarmReservations() error {
+	return s.iterateSwarmReservations("subagent_reservation/", func(_ string, value []byte) error {
+		var record SubagentWaveReservation
+		if err := json.Unmarshal(value, &record); err != nil {
+			return err
+		}
+		if !record.SwarmMode || record.ActiveCount == 0 || record.AccountScopeID != "" {
+			return nil
+		}
+		session, found, err := NewSessionStore(s.store).GetSession(record.SessionID)
+		if err != nil {
+			return err
+		}
+		if !found || session.AccountScopeID == "" {
+			return errors.New("active legacy Swarm reservation has no account owner")
+		}
+		record.AccountScopeID = session.AccountScopeID
+		return s.PutSubagentWaveReservation(record)
+	})
+}
+
+// Page without truncating accounting at the generic iterator's default limit.
+func (s *PermissionStore) iterateSwarmReservations(prefix string, visit func(string, []byte) error) error {
+	start := ""
+	for {
+		count := 0
+		err := scanRangeFromReader(s.store.db, scanRangeOptions{Prefix: prefix, StartKey: start, Limit: 256}, func(key string, value []byte) (bool, error) {
+			count++
+			start = key + "\x00"
+			return true, visit(key, value)
+		})
+		if err != nil || count < 256 {
+			return err
+		}
+	}
 }

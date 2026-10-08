@@ -117,6 +117,11 @@ func TestMintReporterRejectsUnsafeEndpointBeforeSending(t *testing.T) {
 	}
 }
 
+// Requirement: qualification identities must never report while disabled, even on
+// repeated startup attempts. Threat: a later attempt sends or consumes a pending
+// identity. Owners: MintReporter.ReportPending and Service.PendingMintReport.
+// This service/transport test is the narrowest layer proving zero HTTP calls and
+// unchanged pending identity; it uses a temporary store and no network.
 func TestMintReporterSuppressedWhenDisabled(t *testing.T) {
 	for _, val := range []string{"1", "true", "yes", "True", " 1 "} {
 		t.Run("env="+val, func(t *testing.T) {
@@ -130,9 +135,19 @@ func TestMintReporterSuppressedWhenDisabled(t *testing.T) {
 				called = true
 				return nil, nil
 			})}
-			reporter := newMintReporter(svc, MintReportURL, client)
-			if err := reporter.ReportPending(context.Background()); err != nil {
-				t.Fatalf("ReportPending failed: %v", err)
+			before, pending, err := svc.PendingMintReport()
+			if err != nil || !pending || before == "" {
+				t.Fatalf("expected pending identity before reporting: pending=%t err=%v", pending, err)
+			}
+			for attempt := 0; attempt < 3; attempt++ {
+				// Recreate the reporter, as startup does, without completing identity state.
+				reporter := newMintReporter(svc, MintReportURL, client)
+				if err := reporter.ReportPending(context.Background()); err != nil {
+					t.Fatalf("ReportPending failed: %v", err)
+				}
+				if after, pending, err := svc.PendingMintReport(); err != nil || !pending || after != before {
+					t.Fatalf("pending identity changed on attempt %d: pending=%t err=%v", attempt, pending, err)
+				}
 			}
 			if called {
 				t.Fatalf("expected no HTTP request when %s=%q, but transport was called", DisableMintReportEnv, val)

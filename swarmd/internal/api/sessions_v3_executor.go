@@ -85,6 +85,7 @@ type sessionV3ExecutorJob struct {
 	ResumeContext   bool
 	enqueuedAt      time.Time
 	activity        *sessionV3RunActivity
+	feedbackCursor  *uint64
 }
 
 type sessionV3ExecutorRunState struct {
@@ -173,6 +174,8 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 	}
 	exec.startRefillPump(ctx)
 	exec.recoverDurableRuns(ctx)
+	server.reconcileProjectTaskWaits("", "")
+	exec.refillPendingBacklog()
 	exec.startStaleRecoveryBackstop(ctx)
 	exec.startDailyUsageLimitWatcher(ctx)
 	return exec
@@ -595,6 +598,18 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		return sessionruntime.SessionMutationResult{}, tracked, err
 	}
 	if ok {
+		// Stop may race the atomic wake claim. Follow only its exact continuation,
+		// never a newer unrelated user goal.
+		if intent.Status == pebblestore.V3RunIntentCompleted && intent.TaskWait != nil {
+			state, found, readErr := e.server.sessions.GetSessionRunState(job.SessionID)
+			if readErr != nil {
+				return sessionruntime.SessionMutationResult{}, tracked, readErr
+			}
+			if found && state.RunID == pebblestore.ProjectTaskWaitResumeID(intent.RunID) && state.Active {
+				job.RunID = state.RunID
+				return e.CancelRun(job, reason)
+			}
+		}
 		job = hydrateSessionV3ExecutorJobFromIntent(job, intent)
 		if job.PlanID == "" || job.CheckpointID == "" || job.AttemptID == "" {
 			checkpointJob, checkpointOwned, ownershipErr := e.server.sessionsV3ActiveCheckpointMessageRunJob(job.Principal, job.SessionID, job.RunID, intent.EpochID)
@@ -606,8 +621,17 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 			}
 		}
 		switch intent.Status {
-		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning:
+		case sessionruntime.RunIntentPendingExecutor, sessionruntime.RunIntentRunning, pebblestore.V3RunIntentWaitingTasks:
 			result, err := e.recordCancelledRunAndReconcilePlan(job, reason)
+			if err != nil && intent.Status == pebblestore.V3RunIntentWaitingTasks {
+				// Outcome publication can win after the read above. Retry only the
+				// exact claimed continuation; never cancel a superseding user run.
+				state, found, readErr := e.server.sessions.GetSessionRunState(job.SessionID)
+				if readErr == nil && found && state.Active && state.RunID == pebblestore.ProjectTaskWaitResumeID(job.RunID) {
+					job.RunID = state.RunID
+					return e.CancelRun(job, reason)
+				}
+			}
 			return result, true, err
 		case sessionruntime.RunIntentCancelled:
 			if strings.TrimSpace(intent.BlockedReason) == reason {
@@ -1041,6 +1065,13 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		}
 	}
 	response, err := e.assistantResponse(runCtx, job)
+	if errors.Is(err, errSessionV3TaskWaitYield) || e.taskWaitYielded(job) {
+		// Return through the ordinary lease/worker cleanup. A ready-before-wait
+		// outcome is reconciled here without another provider step.
+		e.publishTaskWaitState(job)
+		e.server.reconcileProjectTaskWaits(job.Principal.AccountScopeID, "")
+		return
+	}
 	if errors.Is(err, errSessionV3StaleProviderAttempt) {
 		response, job, err = e.staleCompactedAssistantResponse(runCtx, job, err)
 	}
@@ -1963,7 +1994,18 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	if conversation == "" {
 		return
 	}
-	title, err := e.generateSessionV3CompactTitle(session, conversation, job.Principal)
+	var title string
+	titleSource := "compact"
+	if pebblestore.ProjectConversationID(session) != "" {
+		ctx, cancel := context.WithTimeout(e.server.runCtx, 60*time.Second)
+		defer cancel()
+		decision, routeErr := e.server.routeSessionOnce(ctx, job.Principal, conversation)
+		err = routeErr
+		title = decision.Result.Title
+		titleSource = routedSessionTitleSourceRouter
+	} else {
+		title, err = e.generateSessionV3CompactTitle(session, conversation, job.Principal)
+	}
 	if err != nil {
 		log.Printf("warning: v3 session title generation failed for session %q: %v", job.SessionID, err)
 		return
@@ -1982,7 +2024,7 @@ func (e *sessionV3Executor) generateAndApplySessionV3Title(job sessionV3Executor
 	now := time.Now().UnixMilli()
 	current.Title = title
 	current.UpdatedAt = now
-	current.Metadata = authoritativeSessionTitleMetadata(current.Metadata, "compact")
+	current.Metadata = authoritativeSessionTitleMetadata(current.Metadata, titleSource)
 	payload, err := json.Marshal(map[string]any{
 		"session_id": job.SessionID,
 		"title":      title,
@@ -2480,10 +2522,27 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
+	// Capture before context assembly so notes arriving during assembly are not
+	// skipped by the live provider loop.
+	feedbackCursor, err := e.sessionV3FeedbackCursor(job.SessionID)
+	if err != nil {
+		return sessionV3AssistantResponse{}, err
+	}
+	job.feedbackCursor = &feedbackCursor
 	messages, err := e.sessionV3ProviderContextMessages(job)
 	if err != nil {
 		return sessionV3AssistantResponse{}, err
 	}
+	// Live notes after the captured boundary are appended by the tool loop,
+	// not by this potentially later context read.
+	filtered := messages[:0]
+	for _, message := range messages {
+		if message.GlobalSeq > feedbackCursor && message.Role == "user" && message.Metadata["feedback_note"] == true {
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	messages = filtered
 	// Canonical checkpoint startup is an authoritative context-selection
 	// boundary, not an ordinary conversational handoff. Build it before generic
 	// transcript/lineage selection so neither a same-model continuation nor a
@@ -3373,6 +3432,14 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	if sink == nil {
 		return sessionV3ProviderLoopResult{}, errors.New("v3 durable progress sink is not configured")
 	}
+	feedbackCursor := job.feedbackCursor
+	if feedbackCursor == nil {
+		cursor, err := e.sessionV3FeedbackCursor(job.SessionID)
+		if err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		feedbackCursor = &cursor
+	}
 	input := append([]map[string]any(nil), baseReq.Input...)
 	identicalCalls := sessionV3ProviderIdenticalToolCallTracker{}
 	toolProgression := &runruntime.ToolProgressionState{}
@@ -3382,7 +3449,12 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 	}
 	planGuardFreshContext := false
 	runtimeContextAt := time.Now()
+	taskUpdateCursor := ""
 	for step := 1; ; step++ {
+		if e.taskWaitYielded(job) {
+			return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
+		}
+
 		stepInstructions := baseReq.Instructions
 		stepTools := baseReq.Tools
 		if strings.EqualFold(strings.TrimSpace(resolved.Session.Mode), sessionruntime.ModePlan) && pebblestore.AgentExitPlanModeEnabled(resolved.AgentProfile) && planContextGuard.BeginDecision() {
@@ -3404,6 +3476,27 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			if invokerErr != nil {
 				return sessionV3ProviderLoopResult{}, invokerErr
 			}
+		}
+		if err := ctx.Err(); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		nextFeedbackCursor := *feedbackCursor
+		notes, err := e.sessionV3FeedbackSince(job.SessionID, &nextFeedbackCursor)
+		if err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		for _, note := range notes {
+			input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
+		}
+		var taskUpdates []pebblestore.ProjectTaskUpdate
+		if pebblestore.ProjectConversationID(resolved.Session) != "" {
+			var next string
+			taskUpdates, next, err = e.server.sessions.Store().PendingProjectTaskUpdates(job.Principal.AccountScopeID, job.Principal.UserID, job.SessionID, job.RunID, taskUpdateCursor)
+			if err != nil {
+				return sessionV3ProviderLoopResult{}, err
+			}
+			taskUpdateCursor = next
+			input = append(input, runruntime.ProjectTaskUpdateInput(taskUpdates)...)
 		}
 		req := baseReq
 		req.Input = append([]map[string]any(nil), input...)
@@ -3509,6 +3602,24 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if err := ctx.Err(); err != nil {
 			return sessionV3ProviderLoopResult{}, err
 		}
+		feedbackOutcome := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{
+			ProviderID: runner.ID(), StopReason: response.StopReason,
+			HasFinalContent:  strings.TrimSpace(stepText) != "",
+			HasFunctionCalls: len(response.FunctionCalls) > 0, RestartTurn: response.RestartTurn,
+		})
+		if feedbackOutcome.Status == sessionruntime.RunIntentFailed || feedbackOutcome.Status == sessionruntime.RunIntentCancelled {
+			return sessionV3ProviderLoopResult{}, errors.New(feedbackOutcome.Reason)
+		}
+		// Only this successful step's input is acknowledged. Notes queued while
+		// it was in flight wait for another eligible step; a final response does
+		// not reopen work merely to drain feedback.
+		if err := runruntime.RecordFeedbackDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, notes); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		if err := runruntime.RecordProjectTaskDelivery(e.server.applySessionV3PrimaryMutation, job.SessionID, job.RunID, taskUpdates); err != nil {
+			return sessionV3ProviderLoopResult{}, err
+		}
+		*feedbackCursor = nextFeedbackCursor
 		if len(response.FunctionCalls) == 0 && !response.RestartTurn {
 			if planGuardArmed {
 				continue
@@ -3544,6 +3655,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 			return sessionV3ProviderLoopResult{}, errors.New(classification.Reason)
 		}
 		if len(response.FunctionCalls) == 0 {
+			if e.taskWaitYielded(job) {
+				return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
+			}
 			if response.RestartTurn {
 				refreshed, err := e.resolveSessionV3Runtime(job)
 				if err != nil {
@@ -3653,6 +3767,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		})
 		if batchErr != nil {
 			return sessionV3ProviderLoopResult{}, batchErr
+		}
+		if e.taskWaitYielded(job) {
+			return sessionV3ProviderLoopResult{}, errSessionV3TaskWaitYield
 		}
 		response.FunctionCalls = response.FunctionCalls[:len(toolResults)]
 		input = append(input, sessionsV3ProviderToolResultInputItems(response.FunctionCalls, toolResults)...)
@@ -4485,6 +4602,9 @@ func (e *sessionV3Executor) sessionV3ProviderContextMessages(job sessionV3Execut
 }
 
 func (e *sessionV3Executor) sessionV3ProviderFinalHandoffContextMessages(sessionID string, epoch pebblestore.ExecutionEpoch, messages []pebblestore.MessageSnapshot) ([]pebblestore.MessageSnapshot, error) {
+	if epoch.Boundary.Reason == pebblestore.ExecutionEpochReasonContextCleared {
+		return messages, nil
+	}
 	parentEpochID := strings.TrimSpace(epoch.ParentEpochID)
 	if parentEpochID == "" {
 		return messages, nil
@@ -4518,7 +4638,7 @@ func (e *sessionV3Executor) sessionV3ProviderResumeContextMessages(sessionID str
 	if parentEpochID == "" {
 		return messages, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") ||
+	if epoch.Boundary.Reason == pebblestore.ExecutionEpochReasonContextCleared || strings.EqualFold(strings.TrimSpace(epoch.Boundary.Reason), "final_plan_handoff") ||
 		strings.HasPrefix(strings.TrimSpace(epoch.Boundary.Reason), "context_compaction_") {
 		// Compaction checkpoints and final handoffs deliberately start fresh
 		// provider-context epochs. Replaying this epoch's parent would cross
@@ -4687,7 +4807,8 @@ func sessionsV3ProviderRequestHasTool(tools []provideriface.ToolDefinition, name
 	return false
 }
 
-func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
+// resolveSessionV3Capabilities resolves current authority without constructing execution.
+func (e *sessionV3Executor) resolveSessionV3Capabilities(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
 	if e == nil || e.server == nil || e.server.sessions == nil {
 		return sessionV3ResolvedRuntime{}, errors.New("v3 executor is not configured")
 	}
@@ -4698,7 +4819,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if !ok {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("session %q not found", job.SessionID)
 	}
-	if strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(job.Principal.AccountScopeID) {
+	if strings.TrimSpace(job.Principal.AccountScopeID) == "" || strings.TrimSpace(session.AccountScopeID) != strings.TrimSpace(job.Principal.AccountScopeID) {
 		return sessionV3ResolvedRuntime{}, errors.New("session principal account mismatch")
 	}
 	agentProfile, err := sessionV3AgentProfileFromMetadata(session.Metadata)
@@ -4715,21 +4836,14 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if strings.TrimSpace(agentProfile.Name) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("stored v3 agent profile is missing name")
 	}
-	if strings.TrimSpace(agentProfile.Mode) == "" {
-		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing mode", strings.TrimSpace(agentProfile.Name))
+	if agentProfile.Mode != "primary" && agentProfile.Mode != "subagent" {
+		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q has invalid mode", strings.TrimSpace(agentProfile.Name))
 	}
-	if strings.TrimSpace(agentProfile.RuntimeMode) == "" {
+	if pebblestore.NormalizeAgentRuntimeMode(agentProfile.RuntimeMode) == "" {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing runtime_mode", strings.TrimSpace(agentProfile.Name))
 	}
 	if agentProfile.ExitPlanModeEnabled == nil {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("stored v3 agent profile %q is missing exit_plan_mode_enabled", strings.TrimSpace(agentProfile.Name))
-	}
-	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
-	if !ok || compiler == nil {
-		return sessionV3ResolvedRuntime{}, errors.New("v3 tool contract compiler is not configured")
-	}
-	if _, _, err := compiler.CompileStoredV3AgentToolContract(session.AccountScopeID, agentProfile); err != nil {
-		return sessionV3ResolvedRuntime{}, err
 	}
 	effectivePreference, err := resolveSessionV3EffectivePreference(session, agentProfile)
 	if err != nil {
@@ -4750,9 +4864,20 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	if strings.TrimSpace(scope.PrimaryPath) == "" {
+	if strings.TrimSpace(scope.PrimaryPath) == "" && pebblestore.ProjectConversationID(session) == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("session workspace path is empty")
 	}
+	resolved := sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, Scope: scope}
+	resolved.MediaContract, err = e.compileSessionV3MediaContract(job.Principal, resolved)
+	return resolved, err
+}
+
+func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (sessionV3ResolvedRuntime, error) {
+	resolved, err := e.resolveSessionV3Capabilities(job)
+	if err != nil {
+		return sessionV3ResolvedRuntime{}, err
+	}
+	session, agentProfile, pref, scope := resolved.Session, resolved.AgentProfile, resolved.Preference, resolved.Scope
 	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
@@ -4774,18 +4899,11 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if instructions == "" {
 		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
 	}
-	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
-	providerRunner, _ := e.server.providers.GetRunner(providerID)
-	var catalog *pebblestore.ModelCatalogRecord
-	if record, ok := catalogRecord.(pebblestore.ModelCatalogRecord); ok {
-		catalog = &record
+	// Task-history overlays may add task tools, but must not change media authority.
+	if runruntime.AgentProfileAuthorizesMedia(agentProfile) != runruntime.AgentProfileAuthorizesMedia(resolved.AgentProfile) {
+		return sessionV3ResolvedRuntime{}, errors.New("task history overlay changed media authorization")
 	}
-	mediaContract := runruntime.CompileSessionMediaContract(runruntime.SessionMediaContractInput{
-		ProviderID: providerID, Model: pref.Model, Catalog: catalog, CatalogMeta: catalogMeta,
-		Adapter:         runruntime.ResolveMediaAdapterDeclaration(identity.ContextWithPrincipal(context.Background(), job.Principal), providerID, providerRunner),
-		AgentAuthorized: runruntime.AgentProfileAuthorizesMedia(agentProfile), ExecutionMode: session.Mode,
-		WorkspaceScope: scope.PrimaryPath, SessionScope: session.ID,
-	})
+	mediaContract := resolved.MediaContract
 	instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
 	tools = runruntime.MaterializeSessionMediaTool(tools, mediaContract)
 	toolChoice := "none"
@@ -4811,7 +4929,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		}
 		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
 	}
-	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: contextWindow, ModelCatalog: catalogRecord, CatalogMeta: catalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
+	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: resolved.ContextWindow, ModelCatalog: resolved.ModelCatalog, CatalogMeta: resolved.CatalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice}, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, metadata map[string]any, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {
@@ -4867,18 +4985,17 @@ func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScop
 	}
 
 	accountScopeID = strings.TrimSpace(accountScopeID)
-	// Built-in tool additions are backfilled per account. Existing accounts are
-	// not covered by the daemon's legacy unscoped startup reconciliation, so do
-	// the account-scoped reconciliation before resolving the mutable contract.
-	if err := e.server.agents.EnsureDefaultsForAccount(accountScopeID); err != nil {
-		return pebblestore.AgentProfile{}, fmt.Errorf("reconcile agent defaults for account: %w", err)
-	}
+	// Resolution is read-only. Default reconciliation belongs to profile setup,
+	// not capability reads or run admission.
 	current, ok, err := e.server.agents.GetProfileForAccount(accountScopeID, name)
 	if err != nil {
 		return pebblestore.AgentProfile{}, err
 	}
 	if !ok {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q not found", name)
+	}
+	if !current.Enabled {
+		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q is disabled", name)
 	}
 	if current.ToolContract == nil {
 		return pebblestore.AgentProfile{}, fmt.Errorf("agent %q tool_contract is not configured", name)
@@ -4913,11 +5030,7 @@ func (e *sessionV3Executor) resolveSessionV3WorkspaceScope(session pebblestore.S
 	}); ok && hydrator != nil {
 		return hydrator.ResolveRuntimeWorkspaceScope(session, principal)
 	}
-	hydrator := runruntime.NewService(e.server.sessions, e.server.model, e.server.providers, nil, nil, e.server.agents, e.server.discovery, e.server.events)
-	if e.server.workspace != nil {
-		hydrator.SetWorkspaceService(e.server.workspace)
-	}
-	return hydrator.ResolveRuntimeWorkspaceScope(session, principal)
+	return tool.WorkspaceScope{}, errors.New("v3 workspace scope resolver is not configured")
 }
 
 func (e *sessionV3Executor) composeSessionV3Instructions(scope tool.WorkspaceScope, mode string, agentProfile pebblestore.AgentProfile) string {
@@ -4978,7 +5091,7 @@ func (e *sessionV3Executor) resolveSessionV3TaskHistoryTools(scope tool.Workspac
 
 func (e *sessionV3Executor) resolveSessionV3ProviderTools(accountScopeID string, agentProfile pebblestore.AgentProfile) ([]provideriface.ToolDefinition, error) {
 	if e == nil || e.server == nil || e.server.runner == nil {
-		return nil, nil
+		return nil, errors.New("v3 tool contract compiler is not configured")
 	}
 	compiler, ok := e.server.runner.(sessionsV3StoredAgentToolContractCompiler)
 	if !ok || compiler == nil {
@@ -5064,13 +5177,10 @@ func (e *sessionV3Executor) resolveSessionV3ProviderPreference(pref pebblestore.
 	}
 	resolved, err := e.server.model.ResolvePreference(pref)
 	if err != nil {
-		pref.ServiceTier = modelruntime.NormalizeServiceTierForProvider(pref.Provider, pref.ServiceTier)
-		if pref.Provider == "codex" {
-			pref.ContextMode = codexruntime.NormalizeContextMode(pref.ContextMode)
-		} else {
-			pref.ContextMode = ""
-		}
-		return pref, 0, nil
+		// ResolvePreference permits unknown models; errors here represent failed
+		// catalog authority reads, not an unsupported model. Propagate them for
+		// both execution and capability reads rather than masking storage failure.
+		return pebblestore.ModelPreference{}, 0, err
 	}
 	resolvedPref := normalizeSessionsV3ModelPreference(resolved.Preference)
 	if resolvedPref.Provider == "" && pref.Provider != "" {
@@ -5735,14 +5845,14 @@ func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapsho
 			continue
 		case "user":
 			userCount++
-			if userCount > 1 {
+			if userCount > 1 && pebblestore.ProjectConversationID(session) == "" {
 				return false
 			}
 		default:
 			return false
 		}
 	}
-	return userCount == 1
+	return userCount == 1 || (userCount > 1 && pebblestore.ProjectConversationID(session) != "")
 }
 
 func sessionV3TitleGenerationLocked(metadata map[string]any) bool {

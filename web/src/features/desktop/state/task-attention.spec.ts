@@ -111,3 +111,18 @@ test('plan current execution wins over old checkpoint attempts', () => {
   } } as DesktopSessionPlanRecord
   assert.deepEqual(taskAttentionSessionIds(state, { sessionId: 'root' }), ['child', 'grandchild', 'root'])
 })
+
+// Purpose: compact board_summary is the current-generation authority even when
+// full detail is retained. Attention selectors must exclude superseded descendants
+// and foreign principals without mutating permissions or requiring full programs.
+test('compact program membership retains current waits and excludes old generations', () => {
+  const state = fixture()
+  const task = { sessionId: 'root', boardSummary: { program: { program_id: 'program', state: 'running',
+    jobs: [{ job_id: 'job', current_session_id: 'child', excluded_session_ids: ['old'] }] } },
+    taskProgramStatus: { jobs: [{ current_session_id: 'old' }] } }
+  const before = JSON.stringify(state.permissionsBySession)
+  const ids = taskAttentionSessionIds(state, task)
+  assert.deepEqual(ids, ['child', 'grandchild', 'root'])
+  assert.deepEqual(taskAttentionPermissions(state, ids).map(p => p.id), ['child', 'grandchild', 'root'])
+  assert.equal(JSON.stringify(state.permissionsBySession), before)
+})

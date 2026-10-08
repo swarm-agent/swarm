@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -511,18 +510,17 @@ func TestProjectTasks_CollectionGet_NoSubprocessStormAndHydration(t *testing.T) 
 		t.Fatalf("expected 5 tasks, got count=%d, len=%d", resp.Count, len(resp.Tasks))
 	}
 
-	// 2. Verify all tasks have valid worktree branch and name formatted in memory,
-	// are authoritatively hydrated to "needs_review" from their session fixtures,
-	// and have explicit "unknown" git_status (not falsely clean)
+	// No owned worktree was supplied: do not fabricate Git metadata from the
+	// concluded session. Execution may require review; delivery remains stale.
 	for i, tk := range resp.Tasks {
-		if tk.WorktreeBranch == "" || !strings.HasPrefix(tk.WorktreeBranch, "agent/") {
-			t.Fatalf("expected worktree branch starting with agent/, got %q", tk.WorktreeBranch)
+		if tk.WorktreeBranch != "" || tk.WorktreeName != "" {
+			t.Fatal("fabricated worktree metadata")
 		}
-		if tk.WorktreeName == "" {
-			t.Fatalf("expected non-empty worktree name")
+		if tk.IsIntegrated || tk.UnintegratedCommits != 0 || tk.DeliveryAssessment == nil || tk.DeliveryAssessment.ReasonCode != "not_assessed" || len(tk.DeliveryAssessment.AllowedActions) != 0 {
+			t.Fatalf("stale delivery actionable: %+v", tk)
 		}
 		if tk.Status != "needs_review" {
-			t.Fatalf("task %d: expected hydrated status 'needs_review', got %q", i, tk.Status)
+			t.Fatalf("task %d: expected concluded-session review, got %q", i, tk.Status)
 		}
 		if tk.GitStatus != "unknown" {
 			t.Fatalf("task %d: expected git_status='unknown', got %q", i, tk.GitStatus)
@@ -544,9 +542,18 @@ func TestProjectTasks_CollectionGet_NoSubprocessStormAndHydration(t *testing.T) 
 		t.Fatalf("write-on-read detected: outbox revision changed from %d to %d", revBefore, revAfter)
 	}
 
-	// 4. Contrast with single task GET: single task GET DOES invoke git inspection, triggering sentinel
-	_ = call(http.MethodGet, "/"+proj.ID+"/tasks/"+taskIDs[0])
-	if _, err := os.Stat(sentinelLog); err != nil {
-		t.Fatalf("expected single task GET to execute git subprocess sentinel, but sentinel was not invoked")
+	// Unauthenticated lane metadata must not authorize Git even on detail GET.
+	w = call(http.MethodGet, "/"+proj.ID+"/tasks/"+taskIDs[0])
+	var detail struct {
+		Task pebblestore.ProjectTaskRecord `json:"task"`
+	}
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &detail) != nil || detail.Task.DeliveryAssessment == nil || detail.Task.DeliveryAssessment.State != "unavailable" {
+		t.Fatalf("detail failed closed incorrectly: %d %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(sentinelLog); !os.IsNotExist(err) {
+		t.Fatal("unauthorized lane invoked Git")
+	}
+	if rev, _ := server.sessions.CurrentRealtimeOutboxRevision(); rev != revBefore {
+		t.Fatal("detail emitted outbox mutation")
 	}
 }

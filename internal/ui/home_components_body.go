@@ -15,6 +15,14 @@ func (p *HomePage) drawMeta(s tcell.Screen, rect Rect, variant layoutVariant) {
 	if rect.H < 1 {
 		return
 	}
+	if strings.TrimSpace(p.model.ActiveProjectID) != "" {
+		hintLine := "Ctrl+Up: Tasks Box  •  Ctrl+X: Sessions  •  Alt+W: Switch Project  •  /new: New Session"
+		if p.taskBoxFocused {
+			hintLine = "Ctrl+Down / Esc: Prompt Box  •  Up/Down: Select Task  •  Enter: Open Task"
+		}
+		DrawText(s, rect.X, rect.Y, rect.W, p.theme.Secondary, clampEllipsis(hintLine, rect.W))
+		return
+	}
 	d := p.primaryDirectory()
 	if variant.ShowWorkspaceList {
 		x := rect.X
@@ -74,7 +82,15 @@ func (p *HomePage) drawInputBar(s tcell.Screen, rect Rect, centered bool) {
 		return
 	}
 
-	DrawOpenBox(s, rect, p.theme.BorderActive)
+	boxBorder := p.theme.BorderActive
+	if p.taskBoxFocused {
+		boxBorder = p.theme.Border
+	}
+	DrawOpenBox(s, rect, boxBorder)
+	if strings.TrimSpace(p.model.ActiveProjectName) != "" {
+		inputTitle := fmt.Sprintf(" Plan with Orchestrator · %s ", p.model.ActiveProjectName)
+		DrawText(s, rect.X+2, rect.Y, rect.W-4, p.theme.Secondary.Bold(true), clampEllipsis(inputTitle, rect.W-4))
+	}
 	prefix := "› "
 	lineStart := rect.X + 1
 	contentY := rect.Y + 1
@@ -97,7 +113,14 @@ func (p *HomePage) drawInputBar(s tcell.Screen, rect Rect, centered bool) {
 	}
 
 	cursorX, cursorY, ok := drawWrappedInputArea(s, lineStart, contentY, innerW, contentH, p.theme.Text, prefix, p.prompt, p.promptCursor)
-	if ok {
+	if len(p.prompt) == 0 && strings.TrimSpace(p.model.ActiveProjectName) != "" && innerW > 4 {
+		placeholder := "Type a prompt to orchestrate tasks... (Enter to send, Ctrl+X for sessions)"
+		availW := innerW - len(prefix)
+		if availW > 0 {
+			DrawText(s, lineStart+len(prefix), contentY, availW, p.theme.TextMuted, clampEllipsis(placeholder, availW))
+		}
+	}
+	if ok && !p.taskBoxFocused {
 		s.SetContent(cursorX, cursorY, inputCursorRune, nil, p.theme.Primary)
 	}
 }
@@ -301,7 +324,7 @@ func (p *HomePage) drawPresetsRow(s tcell.Screen, rect Rect, centered bool) {
 	if len(p.model.QuickActions) == 0 {
 		line := "/auth"
 		if p.model.AuthConfigured {
-			line = "/profiles"
+			line = "/favorites"
 		}
 		DrawText(s, rect.X, rect.Y, rect.W, p.theme.TextMuted, line)
 		return

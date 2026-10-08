@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -46,6 +47,7 @@ func (s *Server) resolveProjectThemeID(accountScopeID, themeID string) (string, 
 }
 
 type taskGitState struct {
+	deliveryAssessment  *pebblestore.TaskDeliveryAssessment
 	worktreeBranch      string
 	worktreeName        string
 	baseBranch          string
@@ -317,8 +319,22 @@ func inspectTaskGitStateLegacy(task pebblestore.ProjectTaskRecord, db *pebblesto
 // syncTaskSessionState checks the live V3 session and plan for a task and transitions
 // in_progress tasks to needs_review when the agent finishes execution, ensuring tasks
 // never just flip to complete without review/integration, and allowing reopening.
-func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) {
+type projectTaskLifecycleReader interface {
+	pebblestore.ProjectTaskExecutionReader
+	CurrentTaskProgram(*pebblestore.ProjectTaskRecord) (pebblestore.TaskProgramRecord, bool)
+	ProjectTaskExecuting(*pebblestore.ProjectTaskRecord) bool
+	ProjectTaskPlanUnfinished(*pebblestore.ProjectTaskRecord) bool
+	ListRunIntents(string, int) ([]pebblestore.V3SessionRunIntent, error)
+	ListPlans(string, int) ([]pebblestore.SessionPlanSnapshot, error)
+}
+
+func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db projectTaskLifecycleReader) {
 	if task == nil || db == nil || task.Archived {
+		return
+	}
+	// Direct video generation intentionally has no chat session. Its persisted
+	// generation lifecycle is authoritative; router warnings are not failures.
+	if task.Agent == "video" && task.SessionID == "" && task.TaskProgramID == "" && task.TaskProgram == nil {
 		return
 	}
 	// Preserve manual task approval and queue ownership. Generated tasks
@@ -337,12 +353,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		return
 	}
 
-	// 1. If task is already integrated, it is completed
-	if task.IsIntegrated {
-		task.Status = "completed"
-		return
-	}
-
+	// Git delivery is an independent observation, never an execution result.
 	// 2. If task was explicitly marked completed and not reopened, preserve completed
 	if task.Status == "completed" {
 		return
@@ -401,7 +412,7 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 		if progID != "" && task.SessionID != "" {
 			if prog, ok := db.CurrentTaskProgram(task); ok {
 				task.TaskProgramStatus = &prog
-				if task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" {
+				if task.Status == "completed" || task.Status == "rejected" {
 					return
 				}
 				switch prog.State {
@@ -519,6 +530,9 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db *pebblestore.S
 			// Run concluded:
 			switch runState.Status {
 			case pebblestore.V3RunIntentCompleted:
+				if projectTaskDeclaredBlocker(task, sess, runState) {
+					return
+				}
 				if task.PlanBinding != nil && task.PlanBinding.PlanID != "" {
 					plan, found, err := db.GetPlan(task.SessionID, task.PlanBinding.PlanID)
 					if err != nil || !found || plan.Document == nil || len(plan.Document.Checkpoints) == 0 {
@@ -656,7 +670,7 @@ func (s *Server) resolveTaskModelPreference(p identity.Principal, task *pebblest
 	if targetAgent == "" {
 		targetAgent = "swarm"
 	}
-	isPlan := targetAgent == "plan" || (targetAgent == "swarm" && strings.ToLower(strings.TrimSpace(task.FeatureSize)) == "big")
+	isPlan := targetAgent == "plan"
 
 	// Resolve default Swarm preference for account
 	var defaultSwarmPref pebblestore.ModelPreference
@@ -787,7 +801,7 @@ func (s *Server) buildTaskModelPreview(p identity.Principal, task *pebblestore.P
 	preview.TaskModelOverride = strings.TrimSpace(task.Model)
 
 	// Resolve default Swarm model (action or plan depending on feature size/agent)
-	isPlan := strings.ToLower(strings.TrimSpace(task.Agent)) == "plan" || (strings.ToLower(strings.TrimSpace(task.Agent)) == "swarm" && strings.ToLower(strings.TrimSpace(task.FeatureSize)) == "big")
+	isPlan := strings.ToLower(strings.TrimSpace(task.Agent)) == "plan"
 	if s.agentModelSettings != nil && p.AccountScopeID != "" {
 		if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
 			swarmAssignment := settings.Swarm.Action
@@ -825,78 +839,6 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
-}
-
-// SynthesizeProjectContext reads AGENTS.md and README.md from the provided workspace paths
-// and synthesizes an authoritative project.md document.
-func SynthesizeProjectContext(projectName string, wsPaths []string) string {
-	projectName = strings.TrimSpace(projectName)
-	if projectName == "" {
-		projectName = "Project"
-	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# %s Architecture & Project Charter\n\n", projectName))
-	sb.WriteString("## Bound Workspaces & Architecture\n")
-
-	for _, p := range wsPaths {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		base := filepath.Base(p)
-		sb.WriteString(fmt.Sprintf("- **`%s`** (`%s`)\n", base, p))
-
-		// Scan for AGENTS.md and README.md
-		var docFound bool
-		for _, docName := range []string{"AGENTS.md", "README.md"} {
-			docPath := filepath.Join(p, docName)
-			if fi, err := os.Stat(docPath); err == nil && !fi.IsDir() {
-				if data, err := os.ReadFile(docPath); err == nil {
-					lines := strings.Split(string(data), "\n")
-					var extracted []string
-					for _, l := range lines {
-						trimmed := strings.TrimSpace(l)
-						if trimmed == "" {
-							continue
-						}
-						// Skip markdown headers
-						if strings.HasPrefix(trimmed, "#") {
-							continue
-						}
-						// Collect relevant instruction / architecture lines
-						if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || len(trimmed) > 20 {
-							extracted = append(extracted, trimmed)
-							if len(extracted) >= 4 {
-								break
-							}
-						}
-					}
-					if len(extracted) > 0 {
-						docFound = true
-						sb.WriteString(fmt.Sprintf("  - *Source (%s)*:\n", docName))
-						for _, ex := range extracted {
-							sb.WriteString(fmt.Sprintf("    > %s\n", ex))
-						}
-						break
-					}
-				}
-			}
-		}
-		if !docFound {
-			sb.WriteString("  - *Role*: General repository module.\n")
-		}
-	}
-
-	sb.WriteString("\n## System Architecture & Integration Boundary\n")
-	sb.WriteString("- Coordinated by Swarm Project Orchestrator (`system-orchestrator`).\n")
-	sb.WriteString("- Delegated execution runs on isolated worktrees via `coder`, `designer`, `finder`, and `swarm` waves.\n")
-	sb.WriteString("- Durable V3 session contracts and Pebble persistence.\n\n")
-	sb.WriteString("## Operational Invariants\n")
-	sb.WriteString("- Local-first operation; zero external credential leaks.\n")
-	sb.WriteString("- Minimal high-craft diffs with automated parent verification.\n")
-	sb.WriteString("- Review-first delivery: finished tasks transition to `needs_review` before completion.\n")
-
-	return sb.String()
 }
 
 // isDirectMediaTask checks whether a task is handled via direct media execution rather than an agent chat session.
@@ -976,7 +918,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 					}
 				}
 				if videoModel == "" {
-					return errors.New("no default video model configured for account; select a model or configure one in Settings")
+					videoModel = "veo-3.1-generate-preview"
 				}
 				vOpts := s.getVideoModelOptions(videoModel)
 				ar := task.AspectRatio
@@ -1105,19 +1047,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	if task.WorkspacePath != wsPath {
 		return errors.New("reserved source differs from execution path without an owned session")
 	}
-	mode := sessionruntime.ModeAuto
-	targetAgent := strings.TrimSpace(task.Agent)
-	if targetAgent == "plan" || task.Status == "planning" || task.TaskProgram != nil || task.OutcomeType == "plan_spec" || (targetAgent == "swarm" && strings.EqualFold(task.FeatureSize, "big")) {
-		mode = sessionruntime.ModePlan
-		targetAgent = "swarm"
-	}
-	if targetAgent == "" {
-		targetAgent = "swarm"
-	}
-
-	if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
-		mode, targetAgent = sessionruntime.ModeAuto, "swarm"
-	}
+	targetAgent, mode := projectTaskExecutionAgent(task)
 
 	// Resolve canonical default Swarm preference for fallback or primary Swarm task
 	var defaultSwarmPref pebblestore.ModelPreference
@@ -1258,6 +1188,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		"tier":                 task.Tier,
 		"revision":             task.Revision,
 	}
+	if task.OriginSessionID != "" {
+		metadata["parent_session_id"] = task.OriginSessionID
+	}
 	if agentProfile.ExitPlanModeEnabled != nil {
 		metadata["exit_plan_mode_enabled"] = *agentProfile.ExitPlanModeEnabled
 	}
@@ -1332,6 +1265,12 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		sessionSnapshot.Metadata = metadata
 	}
 
+	// Validate the complete batch before allocating a worktree or creating a session.
+	attachmentPlan, attachmentBytes, err := s.prepareProjectTaskAttachments(context.Background(), p, sessionSnapshot, task.AttachedMedia)
+	if err != nil {
+		return err
+	}
+
 	var admission *pebblestore.WorktreeAdmissionEvidence
 	if targetAgent == "coder" || mode == sessionruntime.ModePlan || task.OutcomeType == "code_pr" || task.OutcomeType == "bug_patch" || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 		if s.worktrees == nil {
@@ -1346,13 +1285,33 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			if !ok {
 				return errors.New("durable follow-up allocator unavailable")
 			}
+			if source := task.ActiveAttempt().Recovery; source != nil {
+				if err := s.validateProjectTaskRecovery(p, task, source); err != nil {
+					return fmt.Errorf("follow-up source validation: %w", err)
+				}
+			}
 			head := task.ActiveAttempt().AllocationHead
 			if head == "" {
+				// Historical reservations may predate AllocationHead. A retained
+				// source pins allocation independently of the integration delta base.
 				head = task.BaseCommit
+				if source := task.ActiveAttempt().Recovery; source != nil {
+					head = source.HeadCommit
+					if source.PreparedHead != "" {
+						head = source.PreparedHead
+					}
+				}
 			}
 			alloc, err = allocator.AllocateProjectTaskFollowup(p, wsPath, sessionID, worktreeBranch, head, task.BaseBranch)
 			if err == nil && task.ActiveAttempt().Recovery != nil {
-				alloc.BaseCommit = task.ActiveAttempt().Recovery.BaseCommit
+				alloc.BaseCommit = projectTaskRepairBase(task.ActiveAttempt().Recovery)
+			}
+			if err == nil {
+				for _, ref := range task.ActiveAttempt().RepositoryContinuations {
+					if ref.Source.SameIdentity(task.SourceWorkspace) {
+						alloc.BaseCommit = ref.Lane.BaseCommit
+					}
+				}
 			}
 		} else {
 			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
@@ -1394,10 +1353,13 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 			OwnerSessionID:       sessionID,
 			Branch:               alloc.BranchName,
 			DelegatedCoder:       targetAgent == "coder",
-			AllocatedRuntimeRoot: mode == sessionruntime.ModePlan || len(task.CoderAssignments) > 0 || task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial",
+			AllocatedRuntimeRoot: true, // Every allocation above uses its owned runtime path, including Swarm coding tasks.
 		}
 	}
 
+	if err := s.allocateTaskRepositoryContinuations(p, task, &sessionSnapshot); err != nil {
+		return fmt.Errorf("repository continuation allocation: %w", err)
+	}
 	createKey := fmt.Sprintf("project-task:create:%s:%s:%s", task.ProjectID, task.ID, task.SessionID)
 	_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
 		WorktreeAdmission: admission,
@@ -1417,13 +1379,17 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 	task.SessionID = sessionID
 
+	attachmentRefs, err := s.retainProjectTaskAttachments(attachmentPlan, attachmentBytes)
+	if err != nil {
+		return err
+	}
 	var tr taskrouter.Service
 	seedMsg := tr.BuildAgentSeedPrompt(task, proj)
 	if mode == sessionruntime.ModePlan {
 		seedMsg += "\n\n## Planning phase\nInvestigate only as needed, then submit a complete executable structured plan using exit_plan_mode. Include ordered checkpoints, concrete tasks and acceptance criteria. This project task must show the submitted plan for user approval before any implementation. Do not write implementation files or execute the task in this phase. For coding deliverables, include a checkpoint task_program with a Coder job, explicit workspace-relative owned_scope, implementation instructions, deliverable, acceptance_criteria and dependency_evidence. The approved checkpoint must launch that program rather than implementing directly in the planner workspace. Preserve every user requirement, including committing changes. Complete the checkpoint through the plan lifecycle only after verifying the returned deliverable; completing subtasks alone is not checkpoint completion."
 	}
 	msgID := fmt.Sprintf("msg_%s_seed", sessionID)
-	seedMsg += projectTaskFollowupContext(task)
+	seedMsg += projectTaskFollowupContext(task) + projectTaskEnvironmentContext(task)
 	msg := pebblestore.MessageSnapshot{
 		ID:             msgID,
 		SessionID:      sessionID,
@@ -1431,6 +1397,7 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 		AccountScopeID: p.AccountScopeID,
 		Role:           "user",
 		Content:        seedMsg,
+		Media:          attachmentRefs,
 		Metadata: map[string]any{
 			"role":                 "project_context_seed",
 			"task_id":              task.ID,
@@ -1444,9 +1411,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	runID := ""
 	if taskStatus == "in_progress" {
 		runID = task.ExecutionRunID()
-		parentSessionID := ""
-		if proj != nil && len(task.CoderAssignments) == 0 {
-			parentSessionID = proj.PrimarySessionID
+		parentSessionID := task.OriginSessionID
+		if len(task.CoderAssignments) > 0 {
+			parentSessionID = "" // Swarm remains the delegation parent.
 		}
 		runIntent = &pebblestore.V3SessionRunIntent{
 			SessionID:       sessionID,
@@ -1481,9 +1448,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 	}
 
 	if taskStatus == "in_progress" && runIntent != nil {
-		parentSessionID := ""
-		if proj != nil && len(task.CoderAssignments) == 0 {
-			parentSessionID = proj.PrimarySessionID
+		parentSessionID := task.OriginSessionID
+		if len(task.CoderAssignments) > 0 {
+			parentSessionID = "" // Swarm remains the delegation parent.
 		}
 		if task.ActiveAttemptID != "" && task.ActiveAttemptID != "initial" {
 			if err := s.enqueueProjectTaskFollowup(p, sessionID, runID, parentSessionID); err != nil {
@@ -1580,13 +1547,25 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-			if err := db.PutProject(p.AccountScopeID, &rec); err != nil {
-				writeError(w, http.StatusBadRequest, err)
+			var creation struct {
+				ClientRequestID string `json:"client_request_id"`
+			}
+			if err := json.Unmarshal(body, &creation); err != nil {
+				writeError(w, 400, err)
+				return
+			}
+			created, err := s.CreateProject(r.Context(), p, rec, creation.ClientRequestID)
+			if err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, pebblestore.ErrProjectCreationConflict) {
+					status = http.StatusConflict
+				}
+				writeError(w, status, err)
 				return
 			}
 
 			writeJSON(w, http.StatusCreated, map[string]any{
-				"project": rec,
+				"project": created,
 			})
 			return
 		}
@@ -1610,26 +1589,23 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		if !s.requireScopeAny(w, r, "projects:read", "sessions:read", "projects:write", "sessions:write") {
 			return
 		}
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, errors.New("cannot read request body"))
-			return
-		}
-		var req struct {
-			Name       string   `json:"name"`
-			Workspaces []string `json:"workspaces"`
-		}
-		if len(body) > 0 {
-			_ = json.Unmarshal(body, &req)
-		}
-		ctxText := SynthesizeProjectContext(req.Name, req.Workspaces)
-		writeJSON(w, http.StatusOK, map[string]any{
-			"project_context": ctxText,
-		})
+		writeError(w, http.StatusGone, errors.New("create a project to generate durable AI context; retry through /v3/projects/{id}/context:retry"))
 		return
 	}
 
 	projectID := segments[0]
+	if len(segments) == 5 && segments[1] == "tasks" && segments[3] == "deliverables" {
+		s.handleProjectDeliverableContent(w, r, p, projectID, segments[2], segments[4])
+		return
+	}
+	if len(segments) == 2 && segments[1] == "context:retry" {
+		s.handleProjectContextRetry(w, r, p, projectID)
+		return
+	}
+	if len(segments) >= 2 && segments[1] == "sessions" {
+		s.handleProjectConversations(w, r, p, projectID, segments[2:])
+		return
+	}
 
 	// 3. Single project resource: /v3/projects/{id}
 	if len(segments) == 1 {
@@ -1686,7 +1662,27 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
+			var authorizedRefs []pebblestore.ProjectWorkspaceRef
+			if raw, present := patch["workspaces"]; present {
+				data, _ := json.Marshal(raw)
+				if err := json.Unmarshal(data, &authorizedRefs); err != nil {
+					writeError(w, 400, err)
+					return
+				}
+				authorizedRefs, err = s.authorizeProjectWorkspaces(p, authorizedRefs)
+				if err != nil {
+					writeError(w, 400, err)
+					return
+				}
+			}
 			updated, err := db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+				if p.ContextGeneration != nil && p.ContextGeneration.Status != "ready" {
+					for _, key := range []string{"workspaces", "name", "description", "project_context"} {
+						if _, ok := patch[key]; ok {
+							return errors.New("finish or retry project context before editing its inputs")
+						}
+					}
+				}
 				if icon, present := patch["icon_png_data_url"].(string); present {
 					p.IconPNGDataURL = icon
 				}
@@ -1710,7 +1706,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					if err == nil {
 						var ws []pebblestore.ProjectWorkspaceRef
 						if err := json.Unmarshal(rawBytes, &ws); err == nil {
-							p.Workspaces = ws
+							p.Workspaces = authorizedRefs
 						}
 					}
 				}
@@ -1787,201 +1783,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		oldSessionID := strings.TrimSpace(proj.PrimarySessionID)
-		if oldSessionID != "" {
-			_, _ = s.sessions.ArchiveSessionWithEvent(oldSessionID)
-		}
-
-		repoPath := ""
-		if len(proj.Workspaces) > 0 {
-			repoPath = proj.Workspaces[0].Path
-		}
-		if repoPath == "" {
-			repoPath = "."
-		}
-
-		newSessionID := sessionruntime.NewSessionID()
-		now := time.Now().UnixMilli()
-		createKey := fmt.Sprintf("project-orchestrator:reset:%s:%d", newSessionID, now)
-
-		// 1. Resolve canonical Swarm plan agent model preference
-		var planPref pebblestore.ModelPreference
-		if s.agentModelSettings != nil && p.AccountScopeID != "" {
-			if settings, err := s.agentModelSettings.GetForAccount(p.AccountScopeID); err == nil {
-				planAssignment := settings.Swarm.Plan
-				if strings.TrimSpace(planAssignment.Model) == "" {
-					planAssignment = settings.Swarm.Action
-				}
-				planPref = pebblestore.ModelPreference{
-					Provider:    strings.TrimSpace(planAssignment.Provider),
-					Model:       strings.TrimSpace(planAssignment.Model),
-					Thinking:    strings.TrimSpace(planAssignment.Thinking),
-					ServiceTier: strings.TrimSpace(planAssignment.ServiceTier),
-					ContextMode: strings.TrimSpace(planAssignment.ContextMode),
-				}
-			}
-		}
-		if planPref.Provider == "" || planPref.Model == "" {
-			if s.model != nil {
-				if def, err := s.model.ResolvePreference(pebblestore.ModelPreference{}); err == nil {
-					planPref = def.Preference
-				}
-			}
-		}
-
-		// 2. Resolve primary Swarm ID and binding
-		var primarySwarmID string
-		if localNode, localOK, lErr := s.swarmLocalNode(); lErr == nil && localOK {
-			primarySwarmID = strings.TrimSpace(localNode.SwarmID)
-		}
-		binding, bErr := s.resolveSessionsV3PrimaryBinding(p, sessionsV3CreateRequest{
-			WorkspacePath: repoPath,
-		})
-		if bErr != nil {
-			binding = sessionsV3PrimaryBinding{
-				RuntimeSwarmID:       primarySwarmID,
-				SourceWorkspacePath:  repoPath,
-				SourceWorkspaceName:  proj.Name,
-				RuntimeWorkspacePath: repoPath,
-			}
-		}
-		if binding.RuntimeSwarmID == "" {
-			binding.RuntimeSwarmID = primarySwarmID
-		}
-
-		// 3. Resolve system-orchestrator agent profile with plan model
-		baseOrchProfile := agentruntime.SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{
-			Provider:        planPref.Provider,
-			Model:           planPref.Model,
-			Thinking:        planPref.Thinking,
-			AutoServiceTier: planPref.ServiceTier,
-			ContextMode:     planPref.ContextMode,
-		})
-		baseOrchProfile.Provider = planPref.Provider
-		baseOrchProfile.Model = planPref.Model
-		baseOrchProfile.Thinking = planPref.Thinking
-		baseOrchProfile.AutoServiceTier = planPref.ServiceTier
-		baseOrchProfile.ContextMode = planPref.ContextMode
-
-		resolvedAgent := sessionsV3ResolvedAgentIdentity{
-			Name:                baseOrchProfile.Name,
-			ResolvedName:        baseOrchProfile.Name,
-			Mode:                baseOrchProfile.Mode,
-			RuntimeMode:         baseOrchProfile.RuntimeMode,
-			ExitPlanModeEnabled: baseOrchProfile.ExitPlanModeEnabled != nil && *baseOrchProfile.ExitPlanModeEnabled,
-			Profile:             baseOrchProfile,
-		}
-		if compiledAgent, cErr := s.resolveSessionsV3PrimaryCreateAgent(p, agentruntime.SwarmOrchestratorAgentID); cErr == nil {
-			resolvedAgent = compiledAgent
-			resolvedAgent.Profile.Provider = planPref.Provider
-			resolvedAgent.Profile.Model = planPref.Model
-			resolvedAgent.Profile.Thinking = planPref.Thinking
-			resolvedAgent.Profile.AutoServiceTier = planPref.ServiceTier
-			resolvedAgent.Profile.ContextMode = planPref.ContextMode
-		}
-
-		// 4. Resolve account default model profile snapshot
-		var modelProfileSnapshot *pebblestore.SessionModelProfileSnapshot
-		if snap, err := s.sessionModelProfileSnapshotFromAccountDefault(r.Context(), now); err == nil {
-			modelProfileSnapshot = snap
-		}
-
-		// 5. Build full canonical server metadata
-		baseMeta := map[string]any{
-			"project_id": proj.ID,
-			"role":       "project_orchestrator",
-		}
-		serverMeta := sessionsV3CreateServerMetadata(baseMeta, resolvedAgent, binding)
-		metadata := sessionsV3ModelProfileMetadata(serverMeta, modelProfileSnapshot)
-		metadata["agent_profile"] = cloneSessionsV3AgentProfile(resolvedAgent.Profile)
-		if binding.RuntimeSwarmID != "" {
-			metadata["swarm_v3_runtime_swarm_id"] = binding.RuntimeSwarmID
-			metadata["swarm_v3_authority_host_swarm_id"] = binding.RuntimeSwarmID
-		}
-
-		primaryWsID := ""
-		if len(proj.Workspaces) > 0 && strings.TrimSpace(proj.Workspaces[0].WorkspaceID) != "" {
-			primaryWsID = strings.TrimSpace(proj.Workspaces[0].WorkspaceID)
-		}
-		if primaryWsID == "" && strings.TrimSpace(binding.SourceWorkspaceID) != "" {
-			primaryWsID = strings.TrimSpace(binding.SourceWorkspaceID)
-		}
-		if primaryWsID == "" && s.workspace != nil && repoPath != "" && repoPath != "." {
-			if sc, scErr := s.workspace.ScopeForPathForPrincipal(p, repoPath); scErr == nil && strings.TrimSpace(sc.WorkspaceID) != "" {
-				primaryWsID = strings.TrimSpace(sc.WorkspaceID)
-			}
-		}
-
-		avail := true
-		grants := []pebblestore.WorkspaceGrant{
-			{Kind: pebblestore.WorkspaceGrantPrimary, WorkspaceID: primaryWsID, Path: repoPath, Name: proj.Name, Available: &avail},
-		}
-		for _, w := range proj.Workspaces {
-			wPath := strings.TrimSpace(w.Path)
-			wID := strings.TrimSpace(w.WorkspaceID)
-			if (wPath == "" && wID == "") || wPath == repoPath || (primaryWsID != "" && wID == primaryWsID) {
-				continue
-			}
-			grants = append(grants, pebblestore.WorkspaceGrant{
-				Kind:        pebblestore.WorkspaceGrantAdditional,
-				WorkspaceID: wID,
-				Path:        wPath,
-				Name:        w.Label,
-				Available:   &avail,
-			})
-		}
-		if primaryWsID != "" {
-			metadata["swarm_v3_source_workspace_id"] = primaryWsID
-		}
-
-		sessionSnapshot := pebblestore.SessionSnapshot{
-			ID:              newSessionID,
-			UserID:          p.UserID,
-			AccountScopeID:  p.AccountScopeID,
-			Title:           fmt.Sprintf("Project Orchestrator: %s", proj.Name),
-			WorkspacePath:   repoPath,
-			WorkspaceName:   proj.Name,
-			WorkspaceGrants: grants,
-			WorkspaceUsage:  pebblestore.WorkspaceUsageFromGrants(grants),
-			Mode:            sessionruntime.ModeAuto,
-			Preference:      planPref,
-			ModelProfile:    modelProfileSnapshot,
-			Metadata:        metadata,
-			CreatedAt:       now,
-			UpdatedAt:       now,
-		}
-		if profilePref, ok := sessionsV3ProfilePreference(sessionSnapshot); ok {
-			sessionSnapshot.Preference = normalizeSessionsV3ModelPreference(profilePref)
-		}
-		_, createErr := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{
-			SessionID:       newSessionID,
-			UserID:          p.UserID,
-			AccountScopeID:  p.AccountScopeID,
-			ClientRequestID: createKey,
-			IdempotencyKey:  createKey,
-			PayloadHash:     createKey,
-			RequestHash:     createKey,
-			Kind:            sessionruntime.SessionMutationCreateSession,
-			Session:         &sessionSnapshot,
-			NowUnixMs:       now,
-		})
-		if createErr != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Errorf("create orchestrator session: %w", createErr))
-			return
-		}
-
-		proj.PrimarySessionID = newSessionID
-		if err := db.PutProject(p.AccountScopeID, proj); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":                  true,
-			"session_id":          newSessionID,
-			"previous_session_id": oldSessionID,
-			"project":             proj,
-		})
+		// Retained for old clients only. New conversations use /sessions and
+		// must not destroy history or retarget the legacy primary pointer.
+		writeError(w, http.StatusGone, errors.New("context reset is retired; create a project conversation through /sessions"))
 		return
 	}
 
@@ -2174,6 +1978,19 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				updatedList := []pebblestore.ProjectTaskMediaRef{}
 				_, err = db.UpdateProject(p.AccountScopeID, projectID, func(p *pebblestore.ProjectRecord) error {
+					// Retention is content-addressed. A retry after a lost response
+					// must return the existing shelf entry, not append it again.
+					for _, existing := range p.UploadedMedia {
+						if existing.ID != item.ID {
+							continue
+						}
+						if existing.URL != item.URL || existing.Data != item.Data || existing.DigestSHA256 != item.DigestSHA256 || existing.SizeBytes != item.SizeBytes || existing.MediaType != item.MediaType || existing.Kind != item.Kind {
+							return errors.New("project media identity conflicts with an existing attachment")
+						}
+						item = existing
+						updatedList = p.UploadedMedia
+						return nil
+					}
 					p.UploadedMedia = append(p.UploadedMedia, item)
 					updatedList = p.UploadedMedia
 					return nil
@@ -2385,9 +2202,28 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, errors.New("unsupported task view"))
 				return
 			}
-			tasks, err := db.ListProjectTasksByArchive(p.AccountScopeID, projectID, archiveView == "archived")
+			started := time.Now()
+			var reconcileElapsed time.Duration
+			var summaries = make(map[string]projectTaskBoardRelated)
+			tasks, stats, err := db.ReadProjectTaskBoard(p.AccountScopeID, projectID, archiveView == "archived", func(rows []pebblestore.ProjectTaskRecord, reader *pebblestore.ProjectTaskBoardReader) {
+				reconcileStart := time.Now()
+				for i := range rows {
+					// Delivery is deliberately unassessed on collection reads.
+					rows[i].IsIntegrated, rows[i].UnintegratedCommits = false, 0
+					reader.BindTask(&rows[i])
+					syncTaskSessionState(&rows[i], reader)
+					summaries[rows[i].ID] = projectTaskBoardSummary(&rows[i], reader)
+					rows[i].TaskProgramStatus, rows[i].PlanDocument = nil, nil
+				}
+				reconcileElapsed = time.Since(reconcileStart)
+			})
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err)
+				if errors.Is(err, pebblestore.ErrProjectTaskSummariesNotReady) {
+					w.Header().Set("Retry-After", "1")
+					writeError(w, http.StatusServiceUnavailable, err)
+				} else {
+					writeError(w, http.StatusInternalServerError, err)
+				}
 				return
 			}
 			workerOnly := r.URL.Query().Get("worker_only") == "true"
@@ -2410,6 +2246,15 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeBranch, "agent/")
 					tasks[i].WorktreeName = strings.TrimPrefix(tasks[i].WorktreeName, "worktree/")
 				}
+				// A collection response cannot advertise old delivery facts as current.
+				tasks[i].IsIntegrated, tasks[i].UnintegratedCommits = false, 0
+				tasks[i].DeliveryAssessment = &pebblestore.TaskDeliveryAssessment{
+					AccountID: tasks[i].AccountID, TaskID: tasks[i].ID, TaskRevision: tasks[i].Revision,
+					SessionID: tasks[i].SessionID, AttemptID: tasks[i].ActiveAttemptID,
+					WorkspaceID: tasks[i].SourceWorkspace.WorkspaceID, WorkspaceGeneration: tasks[i].SourceWorkspace.WorkspaceGeneration,
+					BaseOID: tasks[i].BaseCommit, SourceBranch: tasks[i].WorktreeBranch, TargetBranch: tasks[i].BaseBranch,
+					State: "unavailable", ReasonCode: "not_assessed", Reason: "Fetch task detail for a current delivery assessment", Freshness: "stale", AllowedActions: []string{},
+				}
 				// Collection GET does not run expensive git subprocesses to avoid CPU churn.
 				// Mark Git status as explicit "unknown" (or "stale" if previously recorded)
 				// so callers know git state has not been freshly verified, without disabling operations.
@@ -2421,18 +2266,20 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 						tasks[i].GitStatus = "stale"
 					}
 				}
-				syncTaskSessionState(&tasks[i], db)
-				hydrateTaskProgramStatus(&tasks[i], db)
-				hydrateTaskPlanDocument(&tasks[i], db)
+				// Lifecycle was reconciled from the same snapshot as these rows.
 			}
 			sanitizedTasks := make([]pebblestore.ProjectTaskRecord, len(tasks))
 			for i := range tasks {
 				sanitizedTasks[i] = *sanitizeProjectTaskForClient(&tasks[i])
 			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"tasks": sanitizedTasks,
-				"count": len(sanitizedTasks),
-			})
+			board := make([]projectTaskBoardRow, len(sanitizedTasks))
+			for i := range sanitizedTasks {
+				if principal, ok := PrincipalFromRequest(r); ok && len(sanitizedTasks[i].EnvironmentAttachments) > 0 {
+					sanitizedTasks[i].EnvironmentAttachments = s.taskEnvironmentProjection(r.Context(), principal, &sanitizedTasks[i])
+				}
+				board[i] = projectTaskBoardRow{ProjectTaskRecord: sanitizedTasks[i], BoardSummary: summaries[sanitizedTasks[i].ID]}
+			}
+			writeProjectTaskBoard(w, board, stats, started, reconcileElapsed)
 			return
 		}
 
@@ -2514,7 +2361,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			isMediaRequest := req.Agent == "image" || req.Agent == "video" || req.Agent == "sound" || req.Agent == "audio" || req.Intent == "image" || req.Intent == "video" || req.Intent == "sound" || req.Intent == "audio" || req.Operation != ""
-			if !isMediaRequest || req.Agent == "image" || req.Intent == "image" {
+			if isMediaRequest {
+				count, err := projectMediaBatchCount(req.VariantCount, req.DeliverableCount, len(req.Deliverables))
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				req.VariantCount = count
+			}
+			isDirectSimpleMedia := (req.Agent == "image" || req.Intent == "image" || req.Agent == "sound" || req.Intent == "sound" || req.Agent == "audio" || req.Intent == "audio" || req.Agent == "video" || req.Intent == "video") &&
+				(req.Operation == "" || req.Operation == pebblestore.VideoOperationCreate) &&
+				req.VideoType != "multipart" && req.VideoType != "story" && req.ScenesCount <= 1 && len(req.Scenes) <= 1
+			if !isMediaRequest || isDirectSimpleMedia {
 				input := tool.ProjectTaskCreateInput{
 					ID:                  req.ID,
 					Title:               req.Title,
@@ -2585,6 +2443,26 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			if !found || proj == nil {
 				writeError(w, http.StatusNotFound, errors.New("project not found"))
+				return
+			}
+
+			// Bind retries to the exact full media request before routing or dispatch.
+			mediaTaskID := strings.TrimSpace(req.ID)
+			if mediaTaskID == "" {
+				mediaTaskID = "task_" + sessionruntime.NewSessionID()
+			}
+			unlockMediaAdmission := s.lockProjectTaskAdmission(p.AccountScopeID, projectID, mediaTaskID)
+			defer unlockMediaAdmission()
+			mediaSubmissionHash := fmt.Sprintf("%x", sha256.Sum256(body))
+			if existing, found, err := db.GetProjectTask(p.AccountScopeID, projectID, mediaTaskID); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			} else if found {
+				if existing.SubmissionHash != mediaSubmissionHash {
+					writeError(w, http.StatusConflict, errors.New("media task submission conflicts with reserved payload"))
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"task": sanitizeProjectTaskForClient(existing), "model_preview": s.buildTaskModelPreview(p, existing)})
 				return
 			}
 
@@ -3057,6 +2935,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			task := pebblestore.ProjectTaskRecord{
+				ID:                  mediaTaskID,
+				SubmissionHash:      mediaSubmissionHash,
 				ProjectID:           projectID,
 				Title:               title,
 				Description:         description,
@@ -3226,8 +3106,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				task = subResult.Task
 				hydrateTaskPlanDocument(&task, db)
-			} else if task.Agent == "plan" || (task.Agent == "swarm" && task.FeatureSize == "big") {
-				// Big feature requiring planning:
+			} else if task.Agent == "plan" {
+				// Explicit Plan request:
 				// Map to Swarm ModePlan. Start read-only planning independently of implementation approval.
 				// Auto-approve must NOT approve unseen plan!
 				task.Status = "planning"
@@ -3259,15 +3139,16 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					task.ActionNeeded = "Review task program and click Approve"
 				}
 			} else if task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
-				if req.AutoApprove {
+				if err := admitProjectMediaTask(&task); err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+				if task.AutoApprove {
 					task.Status = "in_progress"
 					if err := s.deployProjectTaskExecution(p, proj, &task, "in_progress", prompt); err != nil {
 						writeError(w, http.StatusInternalServerError, fmt.Errorf("deploy media execution: %w", err))
 						return
 					}
-				} else {
-					task.Status = "pending_approval"
-					task.ActionNeeded = "Review media task and click Approve"
 				}
 			} else {
 				if req.AutoApprove {
@@ -3282,7 +3163,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			if !isDirectMediaTask(&task) || !req.AutoApprove {
+			if !isDirectMediaTask(&task) || task.Status == "pending_approval" {
 				if err := db.PutProjectTask(p.AccountScopeID, &task); err != nil {
 					writeError(w, http.StatusBadRequest, err)
 					return
@@ -3327,10 +3208,19 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, errors.New("project task not found"))
 				return
 			}
-			if err := reconcileTaskGitState(db, task); err != nil {
+			catalogTask := *task
+			project, exists, catalogErr := db.GetProject(p.AccountScopeID, projectID)
+			if catalogErr != nil || !exists || project == nil {
+				catalogTask.SourceWorkspace.WorkspaceGeneration = 0
+			} else if _, sourceErr := s.resolveProjectTaskSource(p, project, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, true); sourceErr != nil {
+				catalogTask.SourceWorkspace.WorkspaceGeneration = 0
+			}
+			if err := reconcileTaskGitStateContext(r.Context(), db, &catalogTask); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
+			catalogTask.SourceWorkspace = task.SourceWorkspace
+			*task = catalogTask
 			syncTaskSessionState(task, db)
 			hydrateTaskProgramStatus(task, db)
 			hydrateTaskPlanDocument(task, db)
@@ -3556,10 +3446,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 				if v, ok := patch["feature_size"].(string); ok {
 					t.FeatureSize = strings.ToLower(strings.TrimSpace(v))
-					if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "plan" || t.Agent == "") {
-						t.Agent = "plan"
+					if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "swarm" || t.Agent == "") {
+						t.Agent = "swarm"
 						t.Tier = "complex"
-						t.OutcomeType = "plan_spec"
+						t.OutcomeType = "code_pr"
 					} else if t.FeatureSize == "small" && t.Agent == "plan" {
 						t.Agent = "coder"
 						t.Tier = "direct"
@@ -3607,8 +3497,8 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Archive a project task using its exact revision; no execution state is changed.
-	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "archive" {
+	// Change task archive visibility at its exact revision; execution is untouched.
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "archive" || segments[3] == "unarchive") {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 			return
@@ -3624,7 +3514,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, errors.New("positive task revision required"))
 			return
 		}
-		archived, err := db.ArchiveProjectTaskIfRevision(p.AccountScopeID, projectID, segments[2], req.Revision)
+		var archived *pebblestore.ProjectTaskRecord
+		if segments[3] == "unarchive" {
+			archived, err = db.UnarchiveProjectTaskIfRevision(p.AccountScopeID, projectID, segments[2], req.Revision)
+		} else {
+			archived, err = db.ArchiveProjectTaskIfRevision(p.AccountScopeID, projectID, segments[2], req.Revision)
+		}
 		if err != nil {
 			writeError(w, http.StatusConflict, err)
 			return
@@ -3660,7 +3555,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Integrate task commits: POST /v3/projects/{id}/tasks/{taskId}/integrate
-	if len(segments) == 4 && segments[1] == "tasks" && segments[3] == "integrate" {
+	if len(segments) == 4 && segments[1] == "tasks" && (segments[3] == "integrate" || segments[3] == "recover-integrate") {
 		taskID := segments[2]
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
@@ -3684,6 +3579,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			SessionID    string `json:"session_id"`
 			SourceBranch string `json:"source_branch"`
 			TargetBranch string `json:"target_branch"`
+			Revision     int    `json:"revision"`
+			AttemptID    string `json:"attempt_id"`
+			SourceHead   string `json:"source_head"`
+			TargetHead   string `json:"target_head"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&selection); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("select the task session and target branch before integrating: %w", err))
@@ -3704,6 +3603,24 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, errors.New("captured source repository or fork commit is missing or differs from the task; refresh its lineage"))
 			return
 		}
+		proj, projectFound, projectErr := db.GetProject(p.AccountScopeID, projectID)
+		if projectErr != nil || !projectFound || proj == nil {
+			writeError(w, http.StatusConflict, errors.New("project source catalog is unavailable"))
+			return
+		}
+		if _, err := s.resolveProjectTaskSource(p, proj, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, true); err != nil {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
+		gitState := inspectTaskGitStateContext(r.Context(), *task, db)
+		if segments[3] == "recover-integrate" {
+			s.recoverTaskDelta(w, r, p, task, selectedSession, gitState.deliveryAssessment, selection.Revision, selection.AttemptID, selection.SourceHead, selection.TargetHead)
+			return
+		}
+		if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
+			writeError(w, http.StatusConflict, errors.New("delivery is not actionable for direct integration; refresh and review recovery"))
+			return
+		}
 		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath}
 		if err := pebblestore.BeginProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -3721,7 +3638,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		// Inspect git state first
-		gitState := inspectTaskGitState(*task, db)
 		if gitState.isDirty {
 			writeError(w, http.StatusConflict, fmt.Errorf("cannot integrate: worktree has %d uncommitted modification(s); commit or discard them before integrating", gitState.dirtyCount))
 			return
@@ -3732,7 +3648,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				// claiming this task was integrated into the requested target.
 				checkout, checkoutErr := s.worktrees.InspectTaskWorkspace(capturedPath)
 				sourceState, sourceErr := s.worktrees.InspectTaskWorkspace(selectedSession.WorktreeRootPath)
-				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit == "" || sourceState.HeadCommit == "" || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
+				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit != gitState.deliveryAssessment.TargetOID || sourceState.HeadCommit != gitState.deliveryAssessment.SourceOID || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
 					writeError(w, http.StatusConflict, errors.New("captured target or committed source is unavailable; inspect Git before retrying"))
 					return
 				}
@@ -3809,6 +3725,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		childState, err := inspector.InspectTaskWorkspace(targetPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect worktree %q: %w", targetPath, err))
+			return
+		}
+		if childState.HeadCommit != gitState.deliveryAssessment.SourceOID || parentState.HeadCommit != gitState.deliveryAssessment.TargetOID {
+			writeError(w, http.StatusConflict, errors.New("delivery heads moved; refresh before integration"))
 			return
 		}
 		if !childState.Clean {
@@ -4331,10 +4251,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 			if rReq.FeatureSize != "" {
 				t.FeatureSize = strings.ToLower(strings.TrimSpace(rReq.FeatureSize))
-				if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "plan" || t.Agent == "") {
-					t.Agent = "plan"
+				if t.FeatureSize == "big" && (t.Agent == "coder" || t.Agent == "swarm" || t.Agent == "") {
+					t.Agent = "swarm"
 					t.Tier = "complex"
-					t.OutcomeType = "plan_spec"
+					t.OutcomeType = "code_pr"
 				} else if t.FeatureSize == "small" && t.Agent == "plan" {
 					t.Agent = "coder"
 					t.Tier = "direct"
@@ -4556,7 +4476,7 @@ func sanitizeProjectTaskForClient(t *pebblestore.ProjectTaskRecord) *pebblestore
 	if len(cp.Deliverables) > 0 {
 		dels := make([]pebblestore.ProjectTaskDeliverable, len(cp.Deliverables))
 		for i, d := range cp.Deliverables {
-			dels[i] = d
+			dels[i] = projectDeliverableForClient(t, d)
 			if dels[i].VideoProvenance != nil {
 				dels[i].VideoProvenance = dels[i].VideoProvenance.ClientSafeCopy()
 				if dels[i].VideoProvenance.Model != "" {

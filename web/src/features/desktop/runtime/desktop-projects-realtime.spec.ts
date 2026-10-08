@@ -33,6 +33,7 @@ test('task Git refresh reuses scoped session events and coalesces without collec
   await lease.ready
   assert.equal(state.project.loading, false)
   assert.equal(state.project.tasks.length, 1)
+  assert.equal(reads.length, 1, 'entry inspects Git once')
   assert.equal(reads.length, 1)
   reads[0].resolve({ task: { ...task, git_status: 'dirty', is_dirty: true, dirty_count: 2 } })
   await flush()
@@ -93,6 +94,7 @@ test('desktop projects runtime subscribes to cache mutations on demand and unsub
 // from project.updated, even though no event belongs to its retained old session.
 // Rehydrate must repair a missed event. The runtime/reducer layer is the narrow
 // task-card cache authority; no manual reload or alternate session cache is used.
+// mapBackendTask normalizes the wire in_progress status to the UI running status.
 test('completed card refreshes to follow-up and repairs missed reopen on reconnect', async () => {
   let state: DesktopProjectsState = {}
   let task = { id: 'task', session_id: 'old-session', title: 'Work', revision: 1, agent: 'swarm', status: 'completed' }
@@ -111,7 +113,7 @@ test('completed card refreshes to follow-up and repairs missed reopen on reconne
   task = { ...task, revision: 2, status: 'in_progress', session_id: 'follow-up' }
   runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
   await flush()
-  assert.equal(state.project.tasks[0].status, 'in_progress')
+  assert.equal(state.project.tasks[0].status, 'running')
   assert.equal(state.project.tasks[0].sessionId, 'follow-up')
   task = { ...task, revision: 3, status: 'completed' }
   runtime.acceptFrame({ kind: 'project.updated', project_id: 'project' })
@@ -119,7 +121,7 @@ test('completed card refreshes to follow-up and repairs missed reopen on reconne
   task = { ...task, revision: 4, status: 'in_progress', session_id: 'reconnected-follow-up' }
   runtime.acceptFrame({ kind: 'rehydrate.required' })
   await flush()
-  assert.equal(state.project.tasks[0].status, 'in_progress')
+  assert.equal(state.project.tasks[0].status, 'running')
   assert.equal(state.project.tasks[0].sessionId, 'reconnected-follow-up')
   lease.release()
 })
@@ -154,6 +156,7 @@ test('durable task updates are card-scoped, coalesced and safe across session re
   const flush = async () => { for (let i = 0; i < 16; i++) await Promise.resolve() }
   const lease = runtime.acquire('project')
   await lease.ready
+  assert.equal(reads.length, 2, 'entry inspects deployed cards only')
   assert.deepEqual(reads.map(read => read.id), ['first', 'second'])
   reads[0].resolve({ task: tasks[0] })
   reads[1].resolve({ task: tasks[1] })

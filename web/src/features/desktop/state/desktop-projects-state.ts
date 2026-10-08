@@ -2,11 +2,15 @@ import type { RunningTask, ProjectTaskMediaRef, ProjectTaskPlanBinding } from '.
 
 export interface DesktopProjectState {
   projectId: string
+  environmentWorkspaceCatalog?: Array<{ workspaceId?: string; path: string }>
   tasks: RunningTask[]
   archivedRevisions?: Record<string, number>
   // Detail-read provenance, owned by the canonical cache (never the collection).
   gitObservations?: Record<string, string>
   media: ProjectTaskMediaRef[]
+  mediaLoading?: boolean
+  mediaError?: string
+  mediaRequestId?: string
   loading: boolean
   stale: boolean
   error?: string
@@ -18,6 +22,7 @@ export interface DesktopProjectState {
 export type DesktopProjectsState = Record<string, DesktopProjectState>
 
 export type DesktopProjectsAction =
+  | { type: 'projects.environmentCatalog'; projectId: string; workspaces: Array<{ workspaceId?: string; path: string }> }
   | { type: 'projects.beginLoad'; projectId: string; requestId: string }
   | {
       type: 'projects.loadSuccess'
@@ -25,8 +30,9 @@ export type DesktopProjectsAction =
       requestId: string
       generation: number
       tasks: RunningTask[]
-      media: ProjectTaskMediaRef[]
+      media?: ProjectTaskMediaRef[]
     }
+  | { type: 'projects.mediaResult'; projectId: string; requestId: string; generation: number; media?: ProjectTaskMediaRef[]; error?: string }
   | {
       type: 'projects.loadError'
       projectId: string
@@ -46,7 +52,7 @@ export type DesktopProjectsAction =
       projectId: string
       media: ProjectTaskMediaRef[] | ((prev: ProjectTaskMediaRef[]) => ProjectTaskMediaRef[])
     }
-  | { type: 'projects.invalidateGit'; projectId: string; taskId?: string }
+  | { type: 'projects.invalidateGit'; projectId: string; taskId?: string; error?: string }
   | { type: 'projects.invalidate'; projectId?: string }
   | { type: 'projects.evict'; projectId: string }
 
@@ -76,13 +82,14 @@ export function normalizePlanBinding(raw: any): ProjectTaskPlanBinding | undefin
 }
 
 // Revision plus execution/repository identity bounds reuse of a detail observation.
-// Git HEAD changes arrive through durable invalidations, not collection freshness.
+// Git HEAD changes arrive through native watch invalidations, not collection freshness.
 export function taskGitIdentity(task: RunningTask): string {
   return JSON.stringify([task.id, task.revision, task.sessionId, task.activeAttemptId,
     ['completed', 'needs_review'].includes(task.status) ? 'review' : task.status,
     task.workspacePath, task.sourceWorkspacePath, task.sourceWorkspaceId,
     task.sourceWorkspaceGeneration, task.sourceWorkspaceProvenance,
     task.worktreeBranch, task.baseBranch, task.baseCommit, task.integration, task.taskProgramStatus,
+    task.boardSummary?.program,
     task.attempts?.map(attempt => [attempt.id, attempt.session_id, attempt.integration])])
 }
 
@@ -91,13 +98,32 @@ function retainNewerTasks(incoming: RunningTask[], previous: RunningTask[]): Run
   const byId = new Map(previous.map(task => [task.id, task]))
   return incoming.map(task => {
     const prior = byId.get(task.id)
-    return prior && (prior.revision ?? 0) > (task.revision ?? 0) ? prior : task
+    if (prior && (prior.revision ?? 0) > (task.revision ?? 0)) return prior
+    // Only reuse detail for the exact task/plan identity. Summary membership and
+    // lifecycle stay fresh even when the omitted definition is retained.
+    if (!prior?.detailLoaded || !task.boardSummary || prior.revision !== task.revision ||
+      prior.sessionId !== task.sessionId || prior.activeAttemptId !== task.activeAttemptId ||
+      JSON.stringify(prior.planBinding) !== JSON.stringify(task.planBinding) || task.boardSummary.plan_binding_stale ||
+      (task.status === 'pending_approval' && task.boardSummary.plan &&
+        task.boardSummary.plan.version !== task.planBinding?.definitionRevision)) return task
+    return { ...task, detailLoaded: true,
+      fullPlanMarkdown: prior.fullPlanMarkdown, planDocument: prior.planDocument, plan_document: prior.plan_document,
+      taskProgram: prior.taskProgram, task_program: prior.task_program,
+      taskProgramStatus: prior.taskProgramStatus, task_program_status: prior.task_program_status,
+      attempts: prior.attempts, scenes: prior.scenes, soundtrack: prior.soundtrack,
+      attachedMedia: prior.attachedMedia, feedbackHistory: prior.feedbackHistory,
+      deliverables: task.deliverables?.map(deliverable => {
+        const detail = prior.deliverables?.find(item => item.id === deliverable.id)
+        return detail ? { ...deliverable, prompt: detail.prompt } : deliverable
+      }) }
   })
 }
 
 export function mapBackendTask(t: any): RunningTask {
   return {
     id: t.id,
+    boardSummary: t.board_summary,
+    detailLoaded: t.board_summary === undefined,
     title: t.title,
     subtitle: t.description || `Autonomous execution unit for ${t.agent || 'coder'}`,
     agentType: (t.agent === 'designer' || t.agent === 'finder' || t.agent === 'video' || t.agent === 'swarm' || t.agent === 'image' || t.agent === 'plan' || t.agent === 'sound' || t.agent === 'audio' ? t.agent : 'coder') as any,
@@ -113,7 +139,8 @@ export function mapBackendTask(t: any): RunningTask {
     worktreeName: t.worktree_name || (t.worktree_branch ? t.worktree_branch.replace(/^agent\//, '').replace(/^worktree\//, '') : undefined),
     baseBranch: t.base_branch || 'main',
     baseCommit: t.base_commit,
-    unintegratedCommits: t.unintegrated_commits ?? 0,
+    deliveryAssessment: t.delivery_assessment,
+    unintegratedCommits: t.delivery_assessment?.candidate_commits ?? t.unintegrated_commits ?? 0,
     behindCommits: t.behind_commits ?? 0,
     gitStatus: t.git_status,
     isIntegrated: !!t.is_integrated,
@@ -155,6 +182,8 @@ export function mapBackendTask(t: any): RunningTask {
     priority: 'high',
     sessionId: t.session_id,
     activeAttemptId: t.active_attempt_id,
+    environmentAttachments: Array.isArray(t.environment_attachments) ? t.environment_attachments : [],
+    environmentsStale: false,
     attempts: t.attempts,
     integration: t.integration,
     handoffSummary: t.status === 'needs_review' && t.active_attempt_id
@@ -238,14 +267,24 @@ export function reduceDesktopProjectsState(
     return next
   }
   const previous = state[action.projectId]
+  if (action.type === 'projects.environmentCatalog') {
+    if (!previous) return state
+    return { ...state, [action.projectId]: { ...previous, environmentWorkspaceCatalog: action.workspaces } }
+  }
   if (action.type === 'projects.beginLoad') {
     return {
       ...state,
       [action.projectId]: {
         projectId: action.projectId,
+        environmentWorkspaceCatalog: previous?.environmentWorkspaceCatalog,
         tasks: previous?.tasks ?? [],
+        lastObservedAt: previous?.lastObservedAt,
         media: previous?.media ?? [],
         gitObservations: previous?.gitObservations,
+        archivedRevisions: previous?.archivedRevisions,
+        mediaLoading: true,
+        mediaError: undefined,
+        mediaRequestId: action.requestId,
         generation: previous?.generation ?? 0,
         requestId: action.requestId,
         loading: true,
@@ -260,7 +299,8 @@ export function reduceDesktopProjectsState(
     const tasks = previous.tasks.map(task => {
       if (action.taskId && task.id !== action.taskId) return task
       delete gitObservations[task.id]
-      return { ...task, gitStatus: 'stale' as const }
+      return { ...task, gitStatus: 'stale' as const, syncWarning: action.error,
+        deliveryAssessment: task.deliveryAssessment ? { ...task.deliveryAssessment, freshness: 'stale', allowed_actions: [] } : undefined }
     })
     return { ...state, [action.projectId]: { ...previous, tasks, gitObservations } }
   }
@@ -292,8 +332,20 @@ export function reduceDesktopProjectsState(
       [action.projectId]: {
         ...previous,
         media: newMedia,
+        mediaRequestId: undefined,
+        mediaLoading: false,
+        mediaError: undefined,
       },
     }
+  }
+  if (action.type === 'projects.mediaResult') {
+    if (!previous || previous.mediaRequestId !== action.requestId) return state
+    const current = previous.generation === action.generation
+    return { ...state, [action.projectId]: { ...previous,
+      media: current && action.media ? action.media : previous.media,
+      mediaError: current ? action.error : previous.mediaError,
+      mediaLoading: false, mediaRequestId: undefined,
+    } }
   }
   if (!previous || previous.requestId !== action.requestId) return state
   if (previous.generation !== action.generation) {
@@ -320,15 +372,15 @@ export function reduceDesktopProjectsState(
           if (!prior || previous.gitObservations?.[task.id] !== taskGitIdentity(task)) return task
           // Collection GET deliberately does not inspect Git. Preserve only the
           // inspected projection, while accepting all other live task fields.
-          return { ...task, gitStatus: prior.gitStatus, isIntegrated: prior.isIntegrated,
+          return { ...task, status: prior.status, gitStatus: prior.gitStatus, isIntegrated: prior.isIntegrated,
+            deliveryAssessment: prior.deliveryAssessment,
             unintegratedCommits: prior.unintegratedCommits, behindCommits: prior.behindCommits,
             isDirty: prior.isDirty, dirtyCount: prior.dirtyCount, diffSummary: prior.diffSummary,
-            syncWarning: prior.syncWarning, actionNeeded: prior.actionNeeded,
-            status: task.status === 'needs_review' && prior.isIntegrated ? prior.status : task.status }
+            syncWarning: prior.syncWarning, actionNeeded: prior.actionNeeded }
         }),
         gitObservations: Object.fromEntries(Object.entries(previous.gitObservations ?? {}).filter(([id, identity]) =>
           identities.get(id) === identity)),
-        media: action.media,
+        media: action.media ?? previous.media,
         loading: false,
         stale: false,
         error: undefined,

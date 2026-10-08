@@ -7,7 +7,8 @@ import { join } from 'node:path'
 
 // Purpose: exercise MemoryModal against the canonical /v1/memory contract with
 // fake HTTP. Prevent stale-write draft loss, metadata loss, identity changes and
-// unconfirmed deletion at the narrow browser interaction boundary.
+// unconfirmed deletion and recovery consent regressions at the narrow browser
+// interaction boundary; account context remains Orchestrator-owned but user editable.
 test('memory modal organizes context and preserves drafts with safe mutations', { timeout: 30000 }, async () => {
  const scratch=await mkdtemp(join(process.env.TMPDIR!, 'memory-ui-'))
  const output=join(scratch,'page.js')
@@ -23,6 +24,9 @@ test('memory modal organizes context and preserves drafts with safe mutations', 
  let entries=[{id:'saved',kind:'rule',content:'saved content',pinned:true,workspace_id:'workspace'}]
  await page.route('https://memory.test/**',async route=>{
   const req=route.request()
+  if(req.url().includes('/v1/auth/desktop/session')){
+   await route.fulfill({contentType:'application/json',body:JSON.stringify({user_id:'test-user',account_scope_id:'test-account'})});return
+  }
   if(req.url().includes('/v1/memory')){
    if(req.method()==='POST'){
     const mutation=req.postDataJSON();mutations.push(mutation)
@@ -38,11 +42,21 @@ test('memory modal organizes context and preserves drafts with safe mutations', 
   }
   await route.fulfill({contentType:'text/html',body:'<html><body><div id="root"></div></body></html>'})
  })
- await page.goto('https://memory.test/memory');await page.addStyleTag({content:await readFile(join(scratch,'page.css'),'utf8')});await page.addScriptTag({content:await readFile(output,'utf8')})
+ await page.goto('https://memory.test/memory');await page.addStyleTag({content:await readFile('src/features/desktop/memory/memory-page.css','utf8')});await page.addScriptTag({content:await readFile(output,'utf8')})
  await page.getByRole('dialog',{name:'Memory',exact:true}).waitFor()
+ assert.match(await page.getByRole('dialog').innerText(),/Orchestrator only, not Swarm or workers/)
  assert.equal(await page.locator('textarea, input, select').count(),0)
  await page.getByRole('button',{name:'Add memory',exact:true}).click()
  assert.equal(await page.locator('textarea').count(),1)
+ await page.getByLabel('Purpose',{exact:true}).selectOption('project_context')
+ await page.getByRole('textbox',{name:'Memory',exact:true}).fill('keep this draft')
+ await page.getByLabel('Purpose',{exact:true}).selectOption('recovery')
+ assert.equal(await page.getByRole('button',{name:'Save memory'}).isEnabled(),false)
+ assert.equal(mutations.length,0)
+ await page.getByRole('checkbox').check()
+ assert.equal(await page.getByRole('button',{name:'Save memory'}).isEnabled(),true)
+ await page.getByRole('textbox',{name:'Memory',exact:true}).fill('changed recovery draft')
+ assert.equal(await page.getByRole('button',{name:'Save memory'}).isEnabled(),false)
  await page.getByLabel('Purpose',{exact:true}).selectOption('project_context')
  await page.getByRole('textbox',{name:'Memory',exact:true}).fill('keep this draft')
  await page.getByRole('button',{name:'Save memory'}).click()

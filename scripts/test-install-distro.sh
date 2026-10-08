@@ -127,7 +127,7 @@ for attempt in 1 2 3 4; do
 done
 [[ "${build_ok}" == "true" ]] || fail "failed to build distro container image after retries"
 
-run_args=(run --rm --name "${container_name}" --privileged --cpus=2 --memory=3g --pids-limit=512)
+run_args=(run --rm --name "${container_name}" --privileged --cpus=2 --memory=3g --pids-limit=512 -e SWARM_DISABLE_MINT_REPORT=1)
 if [[ "$INSTALL_IDENTITY" == root ]]; then
   # Candidate installer code must never receive the host cgroup tree or host
   # root privileges. This scenario requires rootless Podman and a private cgroup.
@@ -158,6 +158,10 @@ for _ in $(seq 1 60); do
 done
 [[ "${systemd_ready}" == "true" ]] || fail "systemd did not become ready in the ${DISTRO} test container"
 
+# Install the guard as root before either identity can invoke the installer.
+"${RUNTIME}" cp "$(dirname -- "${BASH_SOURCE[0]}")/test-install-mint-guard.sh" "${container_name}:/run/test-install-mint-guard.sh" 2>/dev/null || true; if [[ "${RUNTIME}" == docker ]]; then "${RUNTIME}" exec -i "${container_name}" sh -c 'cat > /run/test-install-mint-guard.sh' < "$(dirname -- "${BASH_SOURCE[0]}")/test-install-mint-guard.sh"; fi
+"${RUNTIME}" exec "${container_name}" bash /run/test-install-mint-guard.sh prepare
+
 if [[ "$INSTALL_IDENTITY" == root ]]; then
   "${RUNTIME}" exec -i "${container_name}" bash -se -- "$archive_name" "$checksum_name" "$expected_digest" < "$(dirname -- "${BASH_SOURCE[0]}")/test-install-root-scenario.sh"
   if [[ -n "$ROOT_PROOF_SCRIPT" ]]; then
@@ -170,6 +174,7 @@ uid=$(id -u swarm) gid=$(id -g swarm)
 [[ $(cat /var/lib/swarm/root-install-workspace/agent-proof) == "$uid:$gid" ]]
 [[ $(stat -c %u:%g /var/lib/swarm/root-install-workspace/agent-proof) == "$uid:$gid" ]]
 systemctl is-active --quiet swarm.service
+bash /run/test-install-mint-guard.sh verify
 VERIFY
     printf 'root_agent_proof=passed\n'
   fi
@@ -232,11 +237,12 @@ install -o swarmtest -g swarmtest -d "\${download_root}/extract"
 sudo -u swarmtest tar -xzf "\${download_root}/${archive_name}" -C "\${download_root}/extract"
 artifact_root="\$(find "\${download_root}/extract" -mindepth 1 -maxdepth 1 -type d -name 'swarm-*-linux-amd64' -print -quit)"
 [[ -n "\${artifact_root}" ]]
-sudo -u swarmtest env -u TMPDIR HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
+sudo -u swarmtest env -u TMPDIR SWARM_DISABLE_MINT_REPORT=1 HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
   "\${artifact_root}/install.sh" --artifact-root "\${artifact_root}" --service --yes
 command -v git >/dev/null
 sudo -u swarmtest git --version >/dev/null
 systemctl is-active --quiet swarm.service
+bash /run/test-install-mint-guard.sh verify
 status_output="\$(sudo -u swarmtest /usr/local/bin/swarm status)"
 grep -Fxq 'active=active' <<<"\${status_output}"
 grep -Fxq 'daemon_status=running' <<<"\${status_output}"
@@ -244,10 +250,13 @@ grep -Fxq 'daemon_health=healthy' <<<"\${status_output}"
 sudo -u swarmtest /usr/local/bin/swarm --help >/dev/null
 test "\$(stat -c %u /usr/local/share/swarm)" = "\$(id -u swarmtest)"
 test "\$(stat -c %g /usr/local/share/swarm)" = "\$(id -g swarmtest)"
-sudo -u swarmtest env -u TMPDIR HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
+sudo -u swarmtest env -u TMPDIR SWARM_DISABLE_MINT_REPORT=1 HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
   "\${artifact_root}/install.sh" --artifact-root "\${artifact_root}" --service --yes --install-user swarmtest
 systemctl is-active --quiet swarm.service
+bash /run/test-install-mint-guard.sh verify
 test "\$(stat -c %u /usr/local/share/swarm)" = "\$(id -u swarmtest)"
+systemctl restart swarm.service
+bash /run/test-install-mint-guard.sh verify
 EOF
 
 printf 'distro=%s\nimage=%s\ncandidate_archive=%s\ncandidate_sha256=%s\ncandidate_download=passed\nmandatory_git_precondition=missing\nmandatory_git_provisioning=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n' "${DISTRO}" "${IMAGE}" "${archive_name}" "${expected_digest}"

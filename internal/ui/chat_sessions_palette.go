@@ -24,7 +24,7 @@ func (p *ChatPage) OpenSessionsPalette(items []ChatSessionPaletteItem, query str
 	p.sessionsPaletteExpanded = make(map[string]bool)
 	p.sessionsPaletteVisible = true
 	p.sessionsPaletteQuery = strings.TrimSpace(query)
-	p.sessionsPaletteFilter = 0
+	p.sessionsPaletteFilter = initialSessionManagerFilter(p.sessionsPaletteItems)
 	p.sessionsPaletteSelection = 0
 	p.sessionsPaletteScroll = 0
 	p.syncSessionsPaletteSelection()
@@ -34,6 +34,17 @@ func (p *ChatPage) OpenSessionsPalette(items []ChatSessionPaletteItem, query str
 		p.statusLine = "sessions palette"
 	}
 	return true
+}
+
+func (p *ChatPage) SessionsPaletteActive() bool {
+	return p != nil && p.sessionsPaletteVisible
+}
+
+func (p *ChatPage) CloseSessionsPalette() {
+	if p == nil {
+		return
+	}
+	p.closeSessionsPalette()
 }
 
 func (p *ChatPage) sessionsPaletteActive() bool {

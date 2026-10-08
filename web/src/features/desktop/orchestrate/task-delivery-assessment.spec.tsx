@@ -1,0 +1,93 @@
+// Purpose: canonical mapBackendTask and task card projections must use the
+// recorded task delta, never divergent-history counts or stale attempt success.
+// Pure mapping/SSR and controller checks are the narrowest boundary proving
+// truthful labels and rejection without invoking integration or mutating status.
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { mapBackendTask } from '../state/desktop-projects-state'
+import { taskCardFacts } from './task-card-summary'
+import { taskDelivery, taskOutcome } from './task-outcome'
+import { createTaskIntegrationController, taskIntegrationPhase } from './task-integration-operation'
+import type { ProjectSummary } from './orchestrate-types'
+
+const backend = {
+  id: 'task', revision: 4, session_id: 'session', active_attempt_id: 'attempt', status: 'needs_review',
+  worktree_branch: 'agent/task', base_branch: 'dev', base_commit: 'base', git_status: 'diverged',
+  source_workspace: { workspace_id: 'workspace', workspace_generation: 1 },
+  unintegrated_commits: 109,
+  delivery_assessment: {
+    task_id: 'task', task_revision: 4, session_id: 'session', attempt_id: 'attempt',
+    workspace_id: 'workspace', workspace_generation: 1, base_oid: 'base', source_oid: 'source', target_oid: 'target',
+    source_branch: 'agent/task', target_branch: 'dev', freshness: 'observed',
+    state: 'history_rewritten', reason_code: 'base_not_on_target', reason: 'Recorded base missing from target',
+    candidate_commits: 1, allowed_actions: [],
+  },
+}
+
+test('rewritten history maps to review, not mass ready or integrated', async () => {
+  const task = mapBackendTask(backend)
+  assert.equal(task.status, 'needs_review')
+  assert.equal(task.unintegratedCommits, 1)
+  assert.equal(taskCardFacts(task).git, 'History rewritten — review task')
+  assert.equal(taskDelivery(task)?.actionable, false)
+  const staleSuccess = { ...task, isIntegrated: true, status: 'completed', gitStatus: 'clean' as const }
+  assert.equal(taskIntegrationPhase(staleSuccess, { phase: 'success' }), 'ready')
+  assert.match(taskOutcome(staleSuccess).delivery!, /not verified/)
+  let calls = 0
+  await createTaskIntegrationController().run({ id: 'project' } as ProjectSummary, task,
+    async () => { calls++; return { status: 'ok' } }, () => { calls++ })
+  assert.equal(calls, 0)
+  assert.equal(task.status, 'needs_review')
+})
+
+test('current candidate delta is actionable, stale attempts and equivalent trees are not', () => {
+  const task = mapBackendTask({ ...backend, delivery_assessment: { ...backend.delivery_assessment,
+    state: 'candidate_work', allowed_actions: ['integrate'] } })
+  assert.equal(taskDelivery(task)?.actionable, true)
+  assert.equal(taskCardFacts(task).git, '1 task commit to integrate')
+  assert.equal(taskDelivery({ ...task, activeAttemptId: 'replacement' })?.actionable, false)
+  assert.equal(taskDelivery({ ...task, gitStatus: 'stale' })?.actionable, false)
+  for (const state of ['history_equivalent', 'unavailable', 'empty']) {
+    const other = { ...task, deliveryAssessment: { ...task.deliveryAssessment!, state }, isIntegrated: true }
+    assert.equal(taskDelivery(other)?.integrated, false)
+    assert.equal(taskDelivery(other)?.actionable, false)
+  }
+  const failed = { ...task, integration: { state: 'failed', error: 'Retained failure' } } as typeof task
+  assert.equal(taskIntegrationPhase(failed), 'error')
+  assert.equal(taskOutcome(failed).blocker?.message, 'Retained failure')
+})
+
+// Purpose: taskDelivery must keep committed integration visible independently of
+// dirty source/target files, but never authorize writes on a dirty or stale lane.
+// Pure canonical mapping and card projections prove both display and action inputs.
+test('dirty lanes retain committed integration and block actions independently', () => {
+  for (const lane of ['source_dirty', 'target_dirty']) {
+    const task = mapBackendTask({ ...backend, git_status: 'dirty', is_dirty: lane === 'source_dirty',
+      delivery_assessment: { ...backend.delivery_assessment, state: 'integrated', [lane]: true } })
+    assert.equal(taskDelivery(task)?.integrated, true)
+    assert.match(taskCardFacts(task).git, /^Integrated · /)
+    assert.equal(taskOutcome(task).delivery, 'Integrated into dev')
+    const candidate = { ...task, deliveryAssessment: { ...task.deliveryAssessment!, state: 'candidate_work', allowed_actions: ['integrate'] } }
+    assert.equal(taskDelivery(candidate)?.actionable, false)
+    assert.equal(taskDelivery({ ...task, gitStatus: 'stale' })?.integrated, false)
+  }
+})
+
+// Requirement: initial summaries are transient, while real assessment failures
+// remain visible and non-actionable. The canonical card selector is the narrowest
+// rendering boundary; native automatic hydration is exercised by the board fixture.
+test('initial checking is replaced by observed Git and genuine errors stay explicit', () => {
+  const initial = mapBackendTask({ ...backend, git_status: 'stale', delivery_assessment: {
+    ...backend.delivery_assessment, state: 'unavailable', reason_code: 'not_assessed', freshness: 'stale',
+  } })
+  assert.equal(taskCardFacts(initial).git, 'Checking Git…')
+  assert.equal(taskDelivery(initial)?.actionable, false)
+  const failed = mapBackendTask({ ...backend, git_status: 'unknown', delivery_assessment: {
+    ...backend.delivery_assessment, state: 'unavailable', reason_code: 'inspection_failed', reason: 'Git inspection failed', freshness: 'unknown',
+  } })
+  assert.equal(taskCardFacts(failed).git, 'Git assessment unavailable — Git inspection failed')
+  const ready = mapBackendTask({ ...backend, git_status: 'clean', delivery_assessment: {
+    ...backend.delivery_assessment, state: 'integrated', reason_code: 'source_ancestor',
+  } })
+  assert.equal(taskCardFacts(ready).git, 'Integrated')
+})

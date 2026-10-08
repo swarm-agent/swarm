@@ -1,4 +1,5 @@
 import { SwarmTimeoutError } from './errors.js';
+import { SwarmPermissionsNamespace, isAskUserPermission } from './permissions.js';
 import type { SwarmTransport } from './transport.js';
 import type {
   CreateSessionParams,
@@ -36,6 +37,7 @@ export class SwarmSessionsNamespace {
           client_request_id: clientRequestId,
           agent_name: agentName,
           title: params.title,
+          project_id: params.project_id,
           workspace_id: params.workspace_id,
           workspace_path: params.workspace_path,
           mode: params.mode ?? 'auto',
@@ -58,6 +60,7 @@ export class SwarmSessionsNamespace {
     const q = new URLSearchParams();
     if (params.limit && params.limit > 0) q.set('limit', params.limit.toString());
     if (params.state) q.set('state', params.state);
+    if (params.project_id) q.set('project_id', params.project_id);
     if (params.workspace_id) q.set('workspace_id', params.workspace_id);
     if (params.category) q.set('category', params.category);
     if (params.cursor) q.set('cursor', params.cursor);
@@ -69,13 +72,22 @@ export class SwarmSessionsNamespace {
     );
 
     const data = res.data;
+    let list: any[] = [];
     if (Array.isArray(data)) {
-      return data;
+      list = data;
+    } else if (data && typeof data === 'object' && 'sessions' in data && Array.isArray(data.sessions)) {
+      list = data.sessions;
     }
-    if (data && typeof data === 'object' && 'sessions' in data && Array.isArray(data.sessions)) {
-      return data.sessions;
-    }
-    return [];
+
+    return list.map((item: any) => {
+      if (item && item.session && typeof item.session === 'object') {
+        return {
+          ...item.session,
+          projection: item.projection,
+        };
+      }
+      return item;
+    });
   }
 
   /**
@@ -210,27 +222,41 @@ export class SwarmSessionsNamespace {
 
   /**
    * Helper that polls a session until its active run completes, or times out.
+   * Explicit autoApprovePermissions applies only to ordinary tools; questions still require user input.
    */
   async waitForRun(
     sessionId: string,
-    options: { timeoutMs?: number; pollIntervalMs?: number } = {}
+    options: { timeoutMs?: number; pollIntervalMs?: number; autoApprovePermissions?: boolean } = {}
   ): Promise<SessionDetail> {
-    const timeoutMs = options.timeoutMs ?? 60_000;
+    const timeoutMs = options.timeoutMs ?? 180_000;
     const pollIntervalMs = options.pollIntervalMs ?? 1_000;
     const deadline = Date.now() + timeoutMs;
+    const permissions = new SwarmPermissionsNamespace(this.transport);
+    let lastPendingPerms: Array<{ id: string; tool_name: string }> = [];
 
     while (Date.now() < deadline) {
+      lastPendingPerms = await permissions.listSessionPending(sessionId, 20);
+      if (options.autoApprovePermissions) {
+        for (const p of lastPendingPerms) {
+          if (!isAskUserPermission(p)) await permissions.resolve(sessionId, p.id, 'allow_once', { reason: 'Approved by explicit application policy' });
+        }
+      }
+
       const detail = await this.get(sessionId);
       const raw = (detail.raw || {}) as Record<string, any>;
       const activeRun = raw.active_run_intent;
       const state = (detail.state || '').toLowerCase();
       const isRunning = state.includes('running') || state.includes('in_progress') || !!activeRun;
-      if (!isRunning) {
+      if (!isRunning && lastPendingPerms.length === 0) {
         return detail;
       }
       await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
 
-    throw new SwarmTimeoutError(`Session run did not complete within ${timeoutMs}ms`, timeoutMs);
+    let msg = `Session run did not complete within ${timeoutMs}ms`;
+    if (lastPendingPerms.length > 0) {
+      msg += `. Session has ${lastPendingPerms.length} pending tool permission(s) requiring approval: ${lastPendingPerms.map((p) => p.tool_name).join(', ')}. Render the requests and explicitly answer or deny via client.permissions.resolve().`;
+    }
+    throw new SwarmTimeoutError(msg, timeoutMs);
   }
 }

@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/model"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -108,11 +110,27 @@ func TestProjectTaskRepairRejectsUnassociatedSource(t *testing.T) {
 }
 
 func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
+	testProjectTaskRetainedSource(t, true)
+}
+
+// Purpose: ReopenProjectTask must preserve unintegrated Git content without a
+// repair receipt; joined Git/Pebble tests prove exact source and retry durability.
+func TestProjectTaskContinuationCommittedSourceProvenance(t *testing.T) {
+	testProjectTaskRetainedSource(t, false)
+}
+
+// Purpose: actual Git ancestry, not stale delivery flags, selects current dev
+// after integration so an ordinary follow-up cannot rewind newer target commits.
+func TestProjectTaskContinuationDeliveredSourceUsesCurrentTarget(t *testing.T) {
+	testProjectTaskRetainedSource(t, false, true)
+}
+
+func testProjectTaskRetainedSource(t *testing.T, repair bool, delivered ...bool) {
 	// Purpose: backend repair admission preserves exact Git head/captured target,
 	// requires real owned session/catalog evidence, and rejects forged source or
 	// project before allocation. Real Git/session mutations are the narrow joined layer.
 	f := setupMatrixTestFixture(t)
-	defer f.db.Close()
+	defer func() { f.db.Close() }()
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
@@ -148,7 +166,11 @@ func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	git(alloc.WorkspacePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "work")
+	if err := os.WriteFile(filepath.Join(alloc.WorkspacePath, "feature.txt"), []byte("retained feature\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	git(alloc.WorkspacePath, "add", "feature.txt")
+	git(alloc.WorkspacePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "work")
 	head := git(alloc.WorkspacePath, "rev-parse", "HEAD")
 	binding := pebblestore.ProjectTaskSource{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: repo, Provenance: "explicit"}
 	if err := f.server.sessions.Store().PutProject(f.accountID, &pebblestore.ProjectRecord{ID: "project", Name: "Project", Workspaces: []pebblestore.ProjectWorkspaceRef{{WorkspaceID: entry.WorkspaceID, Path: repo}}}); err != nil {
@@ -161,6 +183,11 @@ func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := &pebblestore.ProjectTaskRecoverySource{SessionID: "origin", WorkspacePath: alloc.WorkspacePath, Branch: alloc.BranchName, HeadCommit: head, BaseCommit: base, TargetBranch: "dev", TargetHead: base}
+	if !repair {
+		source.Kind = "retained_continuation"
+		git(repo, "merge", "--ff-only", head)
+		git(repo, "reset", "--hard", base)
+	}
 	if err := f.server.validateProjectTaskRecovery(p, task, source); err != nil {
 		t.Fatal(err)
 	}
@@ -189,21 +216,58 @@ func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
 	task.Title = "Repair task"
 	task.Revision = 1
 	task.Status = "needs_review"
-	task.Integration = &pebblestore.ProjectTaskIntegration{State: "failed", SessionID: "origin", SourceHead: head, SourceBranch: alloc.BranchName, TargetBranch: "dev", PreviousTargetHead: base}
+	if repair {
+		task.Integration = &pebblestore.ProjectTaskIntegration{State: "failed", SessionID: "origin", SourceHead: head, SourceBranch: alloc.BranchName, TargetBranch: "dev", PreviousTargetHead: base}
+	}
 	if err := f.server.sessions.Store().PutProjectTask(f.accountID, task); err != nil {
 		t.Fatal(err)
 	}
-	// Purpose: an ordinary AI continuation cannot abandon retained committed work;
-	// shared service admission must reject before reservation/session/run writes.
+	// Dirty source rejection must leave durable task and Git untouched.
+	dirty := filepath.Join(alloc.WorkspacePath, "dirty.txt")
+	if err := os.WriteFile(dirty, []byte("unfinished"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	beforeOrdinary, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
-	if _, err := f.server.ReopenProjectTask(context.Background(), p, "project", "task", tool.ProjectTaskFollowupInput{Feedback: "continue", ClientRequestID: "ordinary", Revision: 1}); err == nil || !strings.Contains(err.Error(), "unintegrated commits") {
+	if _, err := f.server.ReopenProjectTask(context.Background(), p, "project", "task", tool.ProjectTaskFollowupInput{Feedback: "continue", ClientRequestID: "ordinary", Revision: 1}); err == nil {
 		t.Fatalf("ordinary follow-up abandoned source: %v", err)
 	}
 	afterOrdinary, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
 	if !reflect.DeepEqual(beforeOrdinary, afterOrdinary) || git(repo, "rev-parse", "HEAD") != base || git(alloc.WorkspacePath, "rev-parse", "HEAD") != head {
 		t.Fatal("rejected continuation changed task or retained Git")
 	}
-	body := map[string]any{"client_request_id": "repair-binding", "revision": task.Revision, "feedback": "Repair retained source", "repair": true}
+	if err := os.Remove(dirty); err != nil {
+		t.Fatal(err)
+	}
+	foreign := p
+	foreign.UserID = "foreign-user"
+	if _, err := f.server.ReopenProjectTask(context.Background(), foreign, "project", "task", tool.ProjectTaskFollowupInput{Feedback: "continue", ClientRequestID: "foreign", Revision: 1}); err == nil {
+		t.Fatal("foreign retained source accepted")
+	}
+	afterForeign, _, _ := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
+	if !reflect.DeepEqual(beforeOrdinary, afterForeign) || git(repo, "worktree", "list", "--porcelain") != before {
+		t.Fatal("foreign rejection mutated task or allocated worktree")
+	}
+	if len(delivered) != 0 && delivered[0] {
+		git(repo, "merge", "--ff-only", head)
+		git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "newer target")
+		target := git(repo, "rev-parse", "HEAD")
+		seedTaskSessionBinding(t, f, binding)
+		f.server.v3SessionExecutor = nil
+		_, err := f.server.ReopenProjectTask(context.Background(), p, "project", "task", tool.ProjectTaskFollowupInput{Feedback: "continue delivered", ClientRequestID: "delivered", Revision: 1})
+		if err == nil {
+			t.Fatal("missing executor unexpectedly launched")
+		}
+		reserved, _, readErr := f.server.sessions.Store().GetProjectTask(f.accountID, "project", "task")
+		if readErr != nil || reserved.ActiveAttempt().Recovery != nil || reserved.ActiveAttempt().AllocationHead != target {
+			t.Fatalf("integrated source rewound reservation: %+v %v", reserved, readErr)
+		}
+		sess, found, readErr := f.server.sessions.Store().GetSession(reserved.SessionID)
+		if readErr != nil || !found || git(sess.WorkspacePath, "rev-parse", "HEAD") != target || git(repo, "rev-parse", "HEAD") != target || git(alloc.WorkspacePath, "rev-parse", "HEAD") != head {
+			t.Fatal("integrated follow-up changed source or lost newer target")
+		}
+		return
+	}
+	body := map[string]any{"client_request_id": "repair-binding", "revision": task.Revision, "feedback": "Repair retained source", "repair": repair}
 	path := "/project/tasks/task/reopen"
 	response := f.callAPI("POST", path, body, p)
 	if response.Code != 503 {
@@ -216,7 +280,46 @@ func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
 	if _, found, _ := f.server.sessions.Store().GetSession(reserved.SessionID); found {
 		t.Fatal("missing binding created session")
 	}
+	originHead := head
+	if !repair {
+		if reserved.ActiveAttempt().AllocationHead != head || reserved.BaseCommit != base || reserved.BaseBranch != "dev" {
+			t.Fatal("reservation did not atomically pin continuation")
+		}
+		git(alloc.WorkspacePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "later source work")
+		originHead = git(alloc.WorkspacePath, "rev-parse", "HEAD")
+		if err := f.db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		f.db, err = pebblestore.Open(f.dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		el, err := pebblestore.NewEventLog(f.db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.server.sessions = sessionruntime.NewService(pebblestore.NewSessionStore(f.db), el)
+		f.server.planLifecycle = sessionruntime.NewPlanLifecycleService(f.server.sessions)
+		f.server.planLifecycle.SetApplySessionMutation(f.server.applySessionV3PrimaryMutation)
+		f.server.v3SessionExecutor = nil
+		f.server.workspace = workspace.NewService(pebblestore.NewWorkspaceStore(f.db))
+		worktrees = worktreeruntime.NewService(pebblestore.NewWorktreeStore(f.db), f.server.workspace, nil)
+		f.server.worktrees = &failOnceFollowupAllocator{Service: worktrees}
+		f.server.agents = agent.NewService(pebblestore.NewAgentStore(f.db), el)
+		f.server.model = model.NewService(pebblestore.NewModelStore(f.db), el, nil)
+		f.server.agentModelSettings = agentmodelsettings.NewService(pebblestore.NewAgentModelSettingsStore(f.db))
+	}
 	seedTaskSessionBinding(t, f, binding)
+	if !repair {
+		response = f.callAPI("POST", path, body, p)
+		if response.Code != 503 || !strings.Contains(response.Body.String(), "injected allocation failure") {
+			t.Fatalf("allocation failure: %d %s", response.Code, response.Body)
+		}
+		response = f.callAPI("POST", path, body, p)
+		if response.Code != 503 {
+			t.Fatalf("absent executor: %d %s", response.Code, response.Body)
+		}
+	}
 	f.server.v3SessionExecutor = newSessionV3Executor(f.server)
 	f.server.v3SessionExecutor.inFlightRuns[sessionV3ExecutorRunKey(reserved.SessionID, reserved.ExecutionRunID())] = true
 	for i := 0; i < 2; i++ {
@@ -232,6 +335,15 @@ func TestProjectTaskRepairCommittedSourceProvenance(t *testing.T) {
 	}
 	if launched.SessionID != reserved.SessionID || len(launched.Attempts) != 2 || launched.ActiveAttempt().LaunchState != "launched" || launched.ActiveAttempt().Request != "Repair retained source" || !reflect.DeepEqual(launched.ActiveAttempt().Recovery, source) || launched.BaseBranch != "dev" || launched.BaseCommit != base || git(repo, "rev-parse", "HEAD") != base {
 		t.Fatal("retry changed retained request/source/target")
+	}
+	if content, err := os.ReadFile(filepath.Join(sess.WorkspacePath, "feature.txt")); err != nil || string(content) != "retained feature\n" {
+		t.Fatalf("retained feature missing: %q %v", content, err)
+	}
+	if git(alloc.WorkspacePath, "rev-parse", "HEAD") != originHead || git(repo, "status", "--porcelain") != "" {
+		t.Fatal("continuation mutated original source or target")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "feature.txt")); !os.IsNotExist(err) {
+		t.Fatal("continuation leaked feature into target")
 	}
 	intents, err := f.server.sessions.Store().ListRunIntents(sess.ID, 10)
 	if err != nil || len(intents) != 1 || intents[0].RunID != reserved.ExecutionRunID() {
@@ -302,6 +414,33 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	seedTaskSessionBinding(t, f, original.SourceWorkspace)
 	body := map[string]any{"client_request_id": "followup", "revision": 1, "feedback": "Additional request"}
 	path := "/" + project.ID + "/tasks/task/reopen"
+	// Exact task revision failures must reject before reservation/allocation; the
+	// previous review-guard fixture incorrectly used retired definition_revision.
+	before, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	stale := f.callAPI("POST", path, map[string]any{"client_request_id": "stale", "revision": 99, "feedback": "Additional request"}, p)
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), "revision") {
+		t.Fatalf("stale revision: %d %s", stale.Code, stale.Body)
+	}
+	after, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("stale reopen changed attempts")
+	}
+	if _, err := db.UpdateProjectTask(f.accountID, project.ID, "task", func(task *pebblestore.ProjectTaskRecord) error { task.Status = "pending_approval"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	approvalBefore, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	blocked := f.callAPI("POST", path, map[string]any{"client_request_id": "approval-bypass", "revision": approvalBefore.Revision, "feedback": "Skip approval"}, p)
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("approval bypass: %d %s", blocked.Code, blocked.Body)
+	}
+	approvalAfter, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	if !reflect.DeepEqual(approvalBefore, approvalAfter) {
+		t.Fatal("rejected approval bypass mutated attempts")
+	}
+	if err := db.PutProjectTask(f.accountID, before); err != nil {
+		t.Fatal(err)
+	}
+	body["revision"] = before.Revision
 	response := f.callAPI("POST", path, body, p)
 	if response.Code != 503 {
 		t.Fatalf("injected allocation failure: %d %s", response.Code, response.Body)
@@ -366,8 +505,11 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	}
 	// Hermetic executor receipt fixture: an already accepted wake is deduplicated.
 	// No executor goroutine or provider run is started by this deterministic test.
-	f.server.v3SessionExecutor = newSessionV3Executor(f.server)
-	f.server.v3SessionExecutor.inFlightRuns[sessionV3ExecutorRunKey(pending.SessionID, pending.ExecutionRunID())] = true
+	f.server.v3SessionExecutor = &sessionV3Executor{
+		server:       f.server,
+		ctx:          context.Background(),
+		inFlightRuns: map[string]bool{sessionV3ExecutorRunKey(pending.SessionID, pending.ExecutionRunID()): true},
+	}
 	response = f.callAPI("POST", path, body, p)
 	if response.Code != 200 {
 		t.Fatalf("launch: %d %s", response.Code, response.Body)
@@ -429,7 +571,7 @@ func TestProjectTaskFollowupCreatesNewAutoSwarm(t *testing.T) {
 	if response := f.callAPI("POST", path, body, p); response.Code != 409 {
 		t.Fatal("changed retry accepted")
 	}
-	after, _, _ := db.GetProjectTask(f.accountID, project.ID, "task")
+	after, _, _ = db.GetProjectTask(f.accountID, project.ID, "task")
 	if after.SessionID != task.SessionID || len(after.Attempts) != 2 {
 		t.Fatal("changed retry mutated lineage")
 	}

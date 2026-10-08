@@ -1,3 +1,4 @@
+import { orderCreativeTurns } from './creative-thread'
 import type { MediaGenerationJob } from './media-generation'
 import type { MediaLibraryItem } from './types'
 
@@ -26,14 +27,15 @@ export function getMediaIterationJobs(
     }
     for (const job of jobs) {
       if (connected.has(job.sourceId) || job.outputIds?.some((id) => connected.has(id))) {
-        connected.add(job.sourceId)
+        if (job.sourceId) connected.add(job.sourceId)
         for (const id of job.outputIds || []) connected.add(id)
       }
     }
     changed = before !== connected.size
   }
-  return jobs.filter((job) => connected.has(job.sourceId))
+  const related = [...new Map(jobs.filter(job => connected.has(job.sourceId) || job.outputIds?.some(id => connected.has(id))).map(job => [job.id, job])).values()]
     .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || a.id.localeCompare(b.id))
+  return orderCreativeTurns(related.map(job => ({ id: job.id, value: job, outputs: job.outputIds ?? [], parents: job.sourceId ? [job.sourceId] : [] })))
 }
 
 export function getMediaIterationOutputs(

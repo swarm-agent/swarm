@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/workspace"
 	worktree "swarm/packages/swarmd/internal/worktree"
 )
 
@@ -79,32 +81,39 @@ func multiRepoProgramFixture(t *testing.T, dependent bool) (*taskProgramSchedule
 	bases := [2]string{programFixtureGit(t, sources[0], "rev-parse", "HEAD"), programFixtureGit(t, sources[1], "rev-parse", "HEAD")}
 	parent.WorkspacePath = sources[0]
 	parent.TemporaryWorkspaceRoots = sources[:]
-	for i, source := range sources {
-		parent.WorkspaceGrants = append(parent.WorkspaceGrants, pebblestore.WorkspaceGrant{WorkspaceID: []string{"repo-a", "repo-b"}[i], WorkspaceGeneration: 1, Path: source})
+	catalog := pebblestore.NewWorkspaceStore(svc.sessions.Store().Underlying())
+	entries := make([]pebblestore.WorkspaceEntry, 0, 2)
+	for _, source := range sources {
+		entry, err := catalog.AddForAccount(parent.AccountScopeID, source, "Fixture")
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, entry)
+		parent.WorkspaceGrants = append(parent.WorkspaceGrants, pebblestore.WorkspaceGrant{WorkspaceID: entry.WorkspaceID, WorkspaceGeneration: entry.WorkspaceGeneration, Path: source})
 	}
 	svc.SetSessionWorkspaceCanonicalizer(func(input SessionWorkspaceCanonicalizeInput) (SessionWorkspaceCanonicalization, error) {
 		for i, source := range sources {
-			if input.WorkspaceID == []string{"repo-a", "repo-b"}[i] {
+			if input.WorkspaceID == entries[i].WorkspaceID {
 				return SessionWorkspaceCanonicalization{WorkspaceID: input.WorkspaceID, WorkspaceGeneration: 1, WorkspaceState: "active", WorkspaceName: input.WorkspaceID, SourceWorkspacePath: source, RuntimeWorkspacePath: source, WorkspaceBindingID: "binding", RuntimeSwarmID: "swarm", PlacementGeneration: 1, BindingGeneration: 1}, nil
 			}
 		}
 		return SessionWorkspaceCanonicalization{}, errors.New("unknown canonical workspace")
 	})
-	svc.worktrees = &worktree.Service{}
+	svc.worktrees = worktree.NewService(pebblestore.NewWorktreeStore(svc.sessions.Store().Underlying()), workspace.NewService(catalog), nil)
 	// Production accepted-plan parents already own a worktree of repository A.
 	// Exercise source resolution through that authenticated runtime redirect.
 	base, err := svc.worktrees.ResolveTaskBase(sources[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	owned, err := svc.worktrees.AllocateTaskWorkspace(sources[0], base, "accepted-parent", nil)
+	owned, err := svc.worktrees.(*worktree.Service).AllocateProjectTaskFollowup(identity.Principal{Type: "user", UserID: parent.UserID, AccountScopeID: parent.AccountScopeID}, sources[0], parent.ID, "agent/accepted-parent", base.BaseCommit, base.ParentBranch)
 	if err != nil {
 		t.Fatal(err)
 	}
 	parent.WorktreeEnabled = true
 	parent.WorktreeRootPath, parent.WorkspacePath = owned.WorkspacePath, owned.WorkspacePath
 	parent.WorktreeBranch, parent.WorktreeBaseBranch = owned.BranchName, base.ParentBranch
-	parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": sources[0], "swarm_v3_runtime_workspace_path": owned.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit}
+	parent.Metadata = map[string]any{"swarm_v3_source_workspace_path": sources[0], "swarm_v3_source_workspace_id": entries[0].WorkspaceID, "swarm_v3_source_workspace_generation": entries[0].WorkspaceGeneration, "swarm_v3_runtime_workspace_path": owned.WorkspacePath, "swarm_v3_worktree_base_commit": base.BaseCommit, "swarm_v3_worktree_owner_session_id": parent.ID}
 	stages := []pebblestore.TaskProgramStageSpec{{ID: "build", DependencyEvidence: "ready"}}
 	jobs := []pebblestore.TaskProgramJobSpec{{ID: "job-a", StageID: "build", AgentType: "coder", WorkspacePath: sources[0], OwnedScope: []string{"a.txt"}}, {ID: "job-b", StageID: "build", AgentType: "coder", WorkspacePath: sources[1], OwnedScope: []string{"b.txt"}}}
 	if dependent {

@@ -1758,7 +1758,8 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	rawCustomToolDefinitions := convertToolDefinitions(s.customAgentToolDefinitionsForAccount(options.Principal.AccountScopeID))
 	toolDefinitions := filterToolDefinitions(rawToolDefinitions, effectiveDisabledTools)
 	if taskHistoryOnly {
-		toolDefinitions = taskHistoryToolDefinitions(toolDefinitions)
+		_, _, historyErr := s.tools.TaskHistoryBinding(tool.WorkspaceScope{SessionID: sessionID, Principal: options.Principal})
+		toolDefinitions = taskHistoryToolDefinitions(toolDefinitions, historyErr != nil)
 	}
 	runRequestDebugEvent("tool_inventory", map[string]any{
 		"session_id":            sessionID,
@@ -2076,6 +2077,14 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		}
 	}
 
+	var feedbackCursor uint64
+	for _, message := range messages {
+		if message.GlobalSeq > feedbackCursor {
+			feedbackCursor = message.GlobalSeq
+		}
+	}
+	var pendingFeedback []pebblestore.MessageSnapshot
+	taskUpdateCursor := ""
 	runtimeContextAt := time.Now()
 	for step := 1; ; step++ {
 		if err := ctx.Err(); err != nil {
@@ -2345,6 +2354,27 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			nativeContinuationAllowed = false
 			forceFreshProviderContext = true
 		}
+		if options.ApplySessionMutation != nil {
+			fresh, feedbackErr := s.sessions.ListSessionMessages(sessionID, feedbackCursor, 100)
+			if feedbackErr != nil {
+				return RunResult{}, feedbackErr
+			}
+			notes := feedbackMessages(fresh, &feedbackCursor)
+			for _, note := range notes {
+				input = append(input, map[string]any{"role": "user", "content": []map[string]any{{"type": "input_text", "text": note.Content}}})
+			}
+			pendingFeedback = append(pendingFeedback, notes...)
+		}
+		var taskUpdates []pebblestore.ProjectTaskUpdate
+		if options.ApplySessionMutation != nil && pebblestore.ProjectConversationID(sessionSnapshot) != "" {
+			var next string
+			taskUpdates, next, err = s.sessions.Store().PendingProjectTaskUpdates(options.Principal.AccountScopeID, options.Principal.UserID, sessionID, runID, taskUpdateCursor)
+			if err != nil {
+				return RunResult{}, err
+			}
+			taskUpdateCursor = next
+			input = append(input, ProjectTaskUpdateInput(taskUpdates)...)
+		}
 		stepRequest := provideriface.Request{
 			SessionID:                 sessionID,
 			ProviderLineageID:         providerLineageID,
@@ -2435,7 +2465,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			cost := usage.EstimatedCostUSD
 			if cost == 0 && s.sessions.Store() != nil {
-				cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.ThinkingTokens)
+				cost = s.sessions.Store().CalculateCost(receiptProvider, receiptModel, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.ThinkingTokens)
 			}
 			usage.EstimatedCostUSD = priorCost + cost
 			baseTokens, baseInput, baseOutput := priorTokens, priorInput, priorOutput
@@ -2479,7 +2509,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			} else if strings.EqualFold(providerID, "codex") {
 				stepCost = 0.0
 			} else if s.sessions != nil && s.sessions.Store() != nil {
-				stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.ThinkingTokens)
+				stepCost = s.sessions.Store().CalculateCost(providerID, resolvedPreference.Preference.Model, response.Usage.InputTokens, response.Usage.OutputTokens, response.Usage.CacheReadTokens, response.Usage.CacheWriteTokens, response.Usage.ThinkingTokens)
 			}
 			cumulativeTurnCost += stepCost
 			if strings.EqualFold(response.Usage.Source, "copilot_session_usage") {
@@ -2560,6 +2590,15 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			"usage":                   response.Usage,
 			"restart_turn":            response.RestartTurn,
 		})
+		if err == nil && len(pendingFeedback) > 0 {
+			if receiptErr := RecordFeedbackDelivery(options.ApplySessionMutation, sessionID, runID, pendingFeedback); receiptErr != nil {
+				return RunResult{}, receiptErr
+			}
+			pendingFeedback = nil
+		}
+		if err := RecordProjectTaskDelivery(options.ApplySessionMutation, sessionID, runID, taskUpdates); err != nil {
+			return RunResult{}, err
+		}
 		if stepReasoningErr != nil {
 			return RunResult{}, stepReasoningErr
 		}

@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { mapBackendTask } from '../state/desktop-projects-state'
 import { taskOutcome } from './task-outcome'
 import { TaskCardSummary } from './task-card-summary'
-import { TaskOutcomeDetails, ProjectTaskAttention } from './task-outcome-view'
+import { TaskOutcomeDetails } from './task-outcome-view'
 import { aggregateTaskLiveState } from './orchestrate-task-helpers'
 import { integrationFailure, repairUnavailable } from './integration-recovery'
 import { createTaskIntegrationController, taskIntegrationFailureIdentity, taskIntegrationKey, taskIntegrationPhase } from './task-integration-operation'
@@ -20,18 +20,17 @@ const raw = { id: 'task', title: 'Retained work', agent: 'coder', status: 'needs
     source_head: 'source-sha', previous_target_head: 'target-sha', error: 'Preflight conflict in viewer.tsx; token=hidden' } }
 
 // Requirement: task hydration must restore preflight failure after reload. Authority:
-// mapBackendTask -> taskOutcome -> summary/details/project attention. Server rendering
+// mapBackendTask -> taskOutcome -> central summary/details. Server rendering
 // is the narrowest proof of visible text without a provider; it does not prove layout.
-test('hydrated preflight conflict survives reload across all attention surfaces', () => {
+test('hydrated preflight conflict survives reload across central attention surfaces', () => {
   for (const record of [raw, JSON.parse(JSON.stringify(raw))]) {
     const task = mapBackendTask(record)
     const outcome = taskOutcome(task)
     assert.equal(outcome.blocker?.title, 'Integration conflict')
     assert.equal(outcome.needsAttention, true)
     assert.match(outcome.delivery || '', /Delivery to release not verified/)
-    const html = renderToStaticMarkup(<><TaskCardSummary task={task} /><TaskOutcomeDetails task={task} /><ProjectTaskAttention tasks={[task]} onOpen={() => {}} /></>)
+    const html = renderToStaticMarkup(<><TaskCardSummary task={task} /><TaskOutcomeDetails task={task} /></>)
     assert.match(html, /Integration conflict/)
-    assert.match(html, /Project task attention/)
     assert.match(html, /source-sha/)
     assert.match(html, /target-sha/)
     assert.match(html, /Preflight conflict in viewer.tsx/)
@@ -66,7 +65,7 @@ test('assembled jobs and test prose never imply verification or promotion', () =
   assert.equal(taskOutcome(task).execution, 'Program assembled')
   assert.match(taskOutcome(task).verification, /not established/)
   assert.match(taskOutcome(task).delivery || '', /not verified/)
-  assert.equal(taskOutcome(task).needsAttention, true)
+  assert.equal(taskOutcome(task).needsAttention, false, 'missing Git evidence is unknown, not an action request')
   assert.match(taskOutcome({ ...task, isIntegrated: true, gitStatus: 'stale' }).delivery || '', /not verified/)
   assert.match(taskOutcome({ ...task, isIntegrated: true, gitStatus: 'clean', isDirty: true }).delivery || '', /not verified/)
   assert.equal(taskOutcome({ ...task, isIntegrated: true, gitStatus: 'clean' }).delivery, 'Integrated into release')
@@ -124,4 +123,26 @@ test('dismiss hides only diagnostics; reload restores recovery and durable repai
     assert.match(repairedHTML, /Open repair session/)
     assert.doesNotMatch(repairedHTML, /Launch repair session/)
   }
+})
+
+// Requirement: taskOutcome must distinguish absent/background Git evidence from
+// actionable facts. This pure projection test checks every transient state without
+// caching a false zero or upgrading stale evidence into verified delivery.
+test('checking delivery does not manufacture attention; errors and explicit work remain actionable', () => {
+  const task = mapBackendTask({ ...raw, status: 'completed', integration: undefined })
+  for (const gitStatus of [undefined, 'unknown', 'stale', 'clean']) {
+    const outcome = taskOutcome({ ...task, gitStatus, isIntegrated: true })
+    assert.equal(outcome.needsAttention, false)
+    if (gitStatus !== 'clean') assert.match(outcome.delivery || '', /not verified/)
+  }
+  assert.equal(taskOutcome(task).needsAttention, false)
+  assert.equal(taskOutcome({ ...task, gitStatus: 'unknown', syncWarning: 'Inspection failed' }).attentionReason, 'Git inspection failed')
+  assert.equal(taskOutcome({ ...task, gitStatus: 'clean', isIntegrated: false }).needsAttention, false, 'no produced commits is not proof of pending integration')
+  for (const gitStatus of ['diverged', 'stale']) {
+    assert.equal(taskOutcome({ ...task, gitStatus, unintegratedCommits: 2 }).attentionReason, 'Unintegrated commits')
+  }
+  assert.equal(taskOutcome({ ...task, isDirty: true }).attentionReason, 'Changes pending commit')
+  assert.equal(taskOutcome({ ...task, status: 'needs_review' }).attentionReason, 'Review requested')
+  assert.equal(taskOutcome({ ...task, status: 'pending_approval' }).attentionReason, 'Approval requested')
+  assert.equal(taskOutcome(mapBackendTask(raw)).attentionReason, 'Integration conflict')
 })
