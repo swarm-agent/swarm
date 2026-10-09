@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFleet, parseFleet } from '../server.mjs';
+import { createFleet, machinesFromStatus, parseFleet } from '../server.mjs';
 
 const KEY_A = 'swk_aaaaaaaaaaaaaaaaaaaa', KEY_B = 'swk_bbbbbbbbbbbbbbbbbbbb';
 const READ_TOOLS = [{ name: 'swarm_list_sessions', inputSchema: { type: 'object', properties: {} } }, { name: 'swarm_get_session', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } }];
@@ -33,8 +33,11 @@ const machineHandler = (key, tools, calls) => (msg, headers) => {
 test('SWARM_FLEET is validated without echoing keys', () => {
   const good = parseFleet(JSON.stringify([{ name: 'box', url: 'https://box.tail1.ts.net:8444/mcp', token: KEY_A }]));
   assert.equal(good[0].url.port, '8444');
+  assert.deepEqual(parseFleet(''), [], 'empty: machines come from the tailnet');
+  assert.deepEqual(parseFleet('[]'), []);
+  assert.equal(parseFleet(JSON.stringify([{ name: 'box', url: 'https://box.tail1.ts.net:8444/mcp' }]))[0].token, '', 'the key is optional');
   for (const bad of [
-    '', 'nope', '[]',
+    'nope',
     JSON.stringify([{ name: 'Box', url: 'https://b/mcp', token: KEY_A }]),
     JSON.stringify([{ name: 'box', url: 'http://box.tail1.ts.net/mcp', token: KEY_A }]),
     JSON.stringify([{ name: 'box', url: 'https://user:pw@box/mcp', token: KEY_A }]),
@@ -57,11 +60,11 @@ test('one server lists every machine and routes each call with that machine\'s k
     const init = await fleet.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
     assert.equal(init.result.protocolVersion, '2025-06-18');
     const listed = (await fleet.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' })).result.tools;
-    assert.deepEqual(listed.map(t => t.name), ['swarm_list_machines', 'swarm_list_sessions', 'swarm_get_session', 'swarm_start_session']);
-    assert.ok(listed.slice(1).every(t => t.inputSchema.properties.machine), 'every forwarded tool takes `machine`');
+    assert.deepEqual(listed.map(t => t.name), ['swarm_list_machines', 'swarm_fleet_status', 'swarm_list_sessions', 'swarm_get_session', 'swarm_start_session']);
+    assert.ok(listed.slice(2).every(t => t.inputSchema.properties.machine), 'every forwarded tool takes `machine`');
 
     const machines = JSON.parse((await fleet.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'swarm_list_machines' } })).result.content[0].text).machines;
-    assert.deepEqual(machines.map(m => [m.machine, m.reachable, m.access]), [['builder', true, 'read and write'], ['prod', true, 'read only'], ['gone', false, 'unknown']]);
+    assert.deepEqual(machines.map(m => [m.machine, m.reachable, m.access]), [['builder', true, 'read and write'], ['prod', true, 'read only'], ['gone', false, 'none']]);
     assert.ok(!JSON.stringify(machines).includes(KEY_A), 'keys never appear in results');
 
     const call = (args, name = 'swarm_start_session') => fleet.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name, arguments: args } }).then(r => r.result);
@@ -99,7 +102,7 @@ test('stdio server reaches an https machine through a CONNECT proxy', async () =
   await new Promise(r => proxy.listen(0, '127.0.0.1', r));
   writeFileSync(join(dir, 'ca.pem'), readFileSync(join(dir, 'cert.pem')));
   const child = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], {
-    env: { PATH: process.env.PATH, NODE_EXTRA_CA_CERTS: join(dir, 'ca.pem'), FLEET_PROXY: `http://127.0.0.1:${proxy.address().port}`,
+    env: { PATH: process.env.PATH, FLEET_DISCOVER: 'off', NODE_EXTRA_CA_CERTS: join(dir, 'ca.pem'), FLEET_PROXY: `http://127.0.0.1:${proxy.address().port}`,
       SWARM_FLEET: JSON.stringify([{ name: 'box', url: `https://box.tail1.ts.net:${port}/mcp`, token: KEY_A }]) },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -110,9 +113,73 @@ test('stdio server reaches an https machine through a CONNECT proxy', async () =
   try {
     assert.equal((await ask({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })).result.serverInfo.name, 'swarm-fleet');
     const tools = (await ask({ jsonrpc: '2.0', id: 2, method: 'tools/list' })).result.tools.map(t => t.name);
-    assert.deepEqual(tools, ['swarm_list_machines', 'swarm_list_sessions', 'swarm_get_session']);
+    assert.deepEqual(tools, ['swarm_list_machines', 'swarm_fleet_status', 'swarm_list_sessions', 'swarm_get_session']);
     const result = (await ask({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'swarm_list_sessions', arguments: {} } })).result;
     assert.equal(result.content[0].text, 'ok from a');
     assert.ok(tunnels.length >= 2 && tunnels.every(t => t === `box.tail1.ts.net:${port}`), 'every request went through the proxy by name');
   } finally { child.kill(); machine.close(); proxy.close(); }
+});
+
+// The tailnet decides: tagged peers become machines, keyed by nothing; the
+// machine admits this device by its tailnet policy grant.
+const STATUS = {
+  Self: { DNSName: 'claude-web-1.tail1.ts.net.', Tags: ['tag:claude'], Online: true },
+  Peer: {
+    a: { DNSName: 'social.tail1.ts.net.', Tags: ['tag:swarm'], Online: true },
+    b: { DNSName: 'vault.tail1.ts.net.', Tags: ['tag:swarm-protected'], Online: false },
+    c: { DNSName: 'roy-laptop.tail1.ts.net.', Tags: [], Online: true },
+    d: { DNSName: 'Social.tail1.ts.net.', Tags: ['tag:swarm'], Online: true },
+    e: { DNSName: 'evil.example.com.', Tags: ['tag:swarm'], Online: true },
+  },
+};
+
+test('tagged tailnet peers become machines; untagged and non-tailnet names do not', () => {
+  const found = machinesFromStatus(STATUS, { tags: ['tag:swarm', 'tag:swarm-protected'] });
+  assert.deepEqual(found.map(m => [m.name, m.url.href, m.token, m.source, m.online]), [
+    ['social', 'https://social.tail1.ts.net:8444/mcp', '', 'tag:swarm', true],
+    ['vault', 'https://vault.tail1.ts.net:8444/mcp', '', 'tag:swarm-protected', false],
+  ]);
+  assert.deepEqual(machinesFromStatus(STATUS).map(m => m.name), ['social'], 'default tag is tag:swarm');
+});
+
+test('discovered machines get no Authorization header; fleet status is one view', async () => {
+  const seen = [];
+  const handler = (msg, headers) => {
+    seen.push(headers.authorization ?? null);
+    if (msg.method === 'tools/list') return { jsonrpc: '2.0', id: msg.id, result: { tools: [...WRITE_TOOLS, { name: 'swarm_get_usage', inputSchema: { type: 'object', properties: {} } }] } };
+    const text = msg.params.name === 'swarm_list_sessions'
+      ? JSON.stringify({ sessions: [{ id: 's1', title: 'build', running: true, agent: 'swarm' }, { id: 's2', title: 'old' }] })
+      : JSON.stringify({ period: 'today', summary: { total_cost_usd: 1.5 }, limits: { enabled: true, limit_exceeded: false } });
+    return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }] } };
+  };
+  const box = await fakeMachine(handler);
+  let calls = 0;
+  const discover = async () => { calls++; return { machines: [
+    { name: 'social', url: new URL(box.url), token: '', source: 'tag:swarm', online: true },
+    { name: 'vault', url: new URL('http://127.0.0.1:9/mcp'), token: '', source: 'tag:swarm-protected', online: false },
+  ] }; };
+  const fleet = createFleet([], { discover });
+  try {
+    const listed = (await fleet.handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' })).result.tools.map(t => t.name);
+    assert.ok(listed.includes('swarm_start_session') && listed.includes('swarm_fleet_status'));
+    const status = JSON.parse((await fleet.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'swarm_fleet_status' } })).result.content[0].text);
+    assert.deepEqual(status.machines.map(m => [m.machine, m.reachable, m.access]), [['social', true, 'read and write'], ['vault', false, 'none']]);
+    assert.equal(status.machines[0].sessions_recent, 2);
+    assert.deepEqual(status.machines[0].sessions_running, [{ id: 's1', title: 'build', agent: 'swarm' }]);
+    assert.equal(status.machines[0].usage_today.total_cost_usd, 1.5);
+    assert.equal(status.machines[1].error, 'offline on the tailnet');
+    const run = (await fleet.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'swarm_start_session', arguments: { machine: 'social', prompt: 'hi' } } })).result;
+    assert.ok(!run.isError);
+    assert.ok(seen.length >= 4 && seen.every(h => h === null), 'no credential is sent to a discovered machine');
+    assert.ok(calls >= 2, 'status re-discovers the tailnet');
+  } finally { fleet.stop(); box.server.close(); }
+});
+
+test('no machines: the fleet explains how to add them', async () => {
+  const fleet = createFleet([], { discover: async () => ({ machines: [] }) });
+  try {
+    const out = JSON.parse((await fleet.handle({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'swarm_list_machines' } })).result.content[0].text);
+    assert.deepEqual(out.machines, []);
+    assert.match(out.note, /tag:swarm/);
+  } finally { fleet.stop(); }
 });

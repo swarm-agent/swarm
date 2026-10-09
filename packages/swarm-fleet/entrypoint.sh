@@ -15,7 +15,7 @@ if [ -n "${TS_AUTHKEY:-}" ]; then
   fi
   echo "swarm-fleet: joined the tailnet as ${TS_HOSTNAME:-claude-fleet}" >&2
   # Leave the tailnet as soon as the client closes the server.
-  env -u TS_AUTHKEY -u HTTPS_PROXY -u https_proxy FLEET_PROXY=http://127.0.0.1:1055 node /app/server.mjs || true
+  env -u TS_AUTHKEY -u HTTPS_PROXY -u https_proxy FLEET_PROXY=http://127.0.0.1:1055 FLEET_TAILSCALE_SOCKET="$ts/tailscaled.sock" node /app/server.mjs || true
   tailscale --socket="$ts/tailscaled.sock" logout >/dev/null 2>&1 || true
   exit 0
 fi
