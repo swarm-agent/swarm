@@ -10,8 +10,13 @@
 # on your tailnet at https://NAME.TAILNET.ts.net. The app then walks you
 # through the rest: owner, provider sign-in, models, workspace and Connect to
 # Claude. It also serves Swarm's AI gateway (Swarm Control MCP) on your tailnet
-# at https://NAME.TAILNET.ts.net:8444/mcp; it answers only to AI keys you
-# create in the app (none exist at first). Skip it with --no-ai-access.
+# at https://NAME.TAILNET.ts.net:8444/mcp; it answers to AI keys you create in
+# the app (none exist at first) and to tailnet devices your Tailscale policy
+# grants swarmagent.dev/cap/swarm (read or write; see
+# containers/headless/app/TAILNET.md). Skip it with --no-ai-access.
+# To join the tailnet without opening a login link, run with TS_AUTHKEY set in
+# the environment (it is passed to Tailscale through a private file, never on
+# a command line); --tag TAG joins as that tag (for example tag:swarm).
 # Nothing listens on the public internet and no secret is passed to this script.
 #
 # Swarm runs as a system service under its own "swarm" user and keeps its keys,
@@ -64,14 +69,17 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--lock-ssh] [--no-ai-access]
+Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TAG] [--lock-ssh] [--no-ai-access]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
+       install.sh tailnet-identity on|off
 
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   tailnet machine name and Swarm machine name (default: swarm)
   --ref BRANCH  swarm branch to build (default: dev)
+  --tag TAG     join the tailnet as this tag, e.g. tag:swarm (the tailnet
+                policy must list it under tagOwners); first join only
   --lock-ssh    also close public SSH (use after `tailscale ssh` works)
   --no-ai-access  do not serve the AI gateway on the tailnet (port 8444)
 
@@ -85,6 +93,10 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--lock-s
   check-isolation  prove from inside a sandbox that this server, the tailnet,
                    private networks and cloud metadata are unreachable
   check-sandbox    show each running agent sandbox and its hardening
+  tailnet-identity on|off
+                   let the AI gateway admit tailnet devices by the
+                   swarmagent.dev/cap/swarm grant in your Tailscale policy
+                   (needs Tailscale 1.92+; on by default for new installs)
 USAGE
 }
 
@@ -236,6 +248,7 @@ install_units() {
   # the symlink-resolved path, so its unit names the release itself.
   release=$(readlink -f "$OPT/current")
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
+  [[ ${AI_ACCESS:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'
   [[ ${SANDBOX_RUNTIME:-default} == default ]] && runtime_arg='--sandbox-runtime=runc'
   install -d "$UNITS"
   cat > "$UNITS/$FIREWALL_UNIT" <<UNIT
@@ -497,13 +510,54 @@ register_gvisor() {
   runsc install >/dev/null && systemctl restart docker
 }
 
+tailscale_new_enough() {
+  local version major minor
+  version=$(tailscale version 2>/dev/null | head -n1)
+  IFS=. read -r major minor _ <<<"$version"
+  minor=${minor%%-*}
+  [[ $major =~ ^[0-9]+$ && $minor =~ ^[0-9]+$ ]] || return 1
+  ((major > 1 || (major == 1 && minor >= 92)))
+}
+
+# The AI gateway on the tailnet. With tailnet identity, Serve forwards the
+# caller's swarmagent.dev/cap/swarm grant from the tailnet policy.
+serve_ai_gateway() {
+  local args=(serve --bg --https=8444)
+  [[ $1 == on ]] && args+=(--accept-app-caps=swarmagent.dev/cap/swarm)
+  tailscale serve --https=8444 off >/dev/null 2>&1 || true
+  tailscale "${args[@]}" http://127.0.0.1:7783 >/dev/null || die "tailscale serve for the AI gateway failed"
+}
+
+# Turn tailnet identity on or off for an existing install, keeping its state.
+set_tailnet_identity() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  [[ ${AI_ACCESS:-off} == on ]] || die "the AI gateway is off on this machine (installed with --no-ai-access)"
+  case ${1:-} in
+    on)
+      tailscale_new_enough || tailscale update --yes >/dev/null 2>&1 || true
+      tailscale_new_enough || die "Tailscale 1.92 or newer is required (this machine has $(tailscale version | head -n1))"
+      ;;
+    off) ;;
+    *) die "usage: install.sh tailnet-identity on|off" ;;
+  esac
+  sed -i '/^TAILNET_IDENTITY=/d' "$CONF" && echo "TAILNET_IDENTITY=$1" >>"$CONF"
+  serve_ai_gateway "$1"
+  install_units
+  systemctl restart "$DAEMON_UNIT"
+  wait_ready
+  echo "Tailnet identity is $1. Swarm's log says which mode the gateway runs in:"
+  journalctl -u "$DAEMON_UNIT" -n 200 --no-pager 2>/dev/null | grep -E 'tailnet identity (on|off)' | tail -n1 || true
+}
+
 install_all() {
-  local relay='' name=swarm ref=dev lock_ssh=0 ai_access=on
+  local relay='' name=swarm ref=dev lock_ssh=0 ai_access=on tag=''
   while (($#)); do
     case $1 in
       --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
       --name) name=${2:?--name needs a value}; shift 2 ;;
       --ref) ref=${2:?--ref needs a branch}; shift 2 ;;
+      --tag) tag=${2:?--tag needs a tag such as tag:swarm}; shift 2 ;;
       --lock-ssh) lock_ssh=1; shift ;;
       --no-ai-access) ai_access=off; shift ;;
       --ai-access) ai_access=on; shift ;;
@@ -516,6 +570,7 @@ install_all() {
   [[ $name =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--name must be lowercase letters, digits and dashes"
   [[ -z $relay || $relay =~ ^https://[A-Za-z0-9.-]+/?$ ]] || die "--relay must be an https origin such as https://swarm-relay.example.workers.dev"
   [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "--ref must be a branch name"
+  [[ -z $tag || $tag =~ ^tag:[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--tag must look like tag:swarm"
 
   say "Installing Docker, gVisor, Git and a firewall"
   apt-get update -qq
@@ -528,8 +583,32 @@ install_all() {
   say "Joining your tailnet"
   command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
   if ! tailscale status >/dev/null 2>&1; then
-    echo "Open the login link below in your browser and approve this machine."
-    tailscale up --ssh --hostname="$name"
+    local up=(up --ssh --hostname="$name") keyfile=''
+    [[ -n $tag ]] && up+=(--advertise-tags="$tag")
+    if [[ -n ${TS_AUTHKEY:-} ]]; then
+      keyfile=$(mktemp)
+      chmod 600 "$keyfile"
+      printf '%s' "$TS_AUTHKEY" >"$keyfile"
+      up+=(--auth-key="file:$keyfile")
+    else
+      echo "Open the login link below in your browser and approve this machine."
+    fi
+    if ! tailscale "${up[@]}"; then
+      [[ -n $keyfile ]] && rm -f "$keyfile"
+      die "could not join the tailnet"
+    fi
+    [[ -n $keyfile ]] && rm -f "$keyfile"
+  fi
+  # Tailnet identity needs Serve to set (and strip forged copies of) the app
+  # capability header, which Tailscale does from 1.92.
+  local tailnet_identity=off
+  if [[ $ai_access == on ]]; then
+    tailscale_new_enough || tailscale update --yes >/dev/null 2>&1 || true
+    if tailscale_new_enough; then
+      tailnet_identity=on
+    else
+      echo "warning: Tailscale $(tailscale version | head -n1) is older than 1.92; the AI gateway accepts AI keys only" >&2
+    fi
   fi
   local dns
   dns=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
@@ -575,6 +654,7 @@ APP_ORIGIN=https://$dns
 APP_RELAY_URL=${relay:-$previous_relay}
 APP_DEVICE_NAME=$name
 AI_ACCESS=$ai_access
+TAILNET_IDENTITY=$tailnet_identity
 APP_AI_URL=https://$dns:8444/mcp
 APP_AI_IP=$(tailscale ip -4 | head -n1)
 SANDBOX_RUNTIME=default
@@ -588,7 +668,7 @@ CONF
   tailscale serve --bg 8443 >/dev/null ||
     die "tailscale serve failed: turn on HTTPS certificates in the Tailscale admin console (DNS page), then run this again"
   if [[ $ai_access == on ]]; then
-    tailscale serve --bg --https=8444 http://127.0.0.1:7783 >/dev/null || die "tailscale serve for the AI gateway failed"
+    serve_ai_gateway "$tailnet_identity"
   else
     tailscale serve --https=8444 off >/dev/null 2>&1 || true
   fi
@@ -622,6 +702,7 @@ main() {
     firewall) firewall ;;
     check-isolation) check_isolation ;;
     check-sandbox) check_sandbox ;;
+    tailnet-identity) shift; set_tailnet_identity "$@" ;;
     status) systemctl --no-pager status "$DAEMON_UNIT" "$APP_UNIT" | grep -E '●|Active:' || true; check_sandbox; tailscale serve status ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
