@@ -55,6 +55,7 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:.*[ :]/etc/swarmd[/ ]' \
     -e '^(\./)?containers/sealed/test/run\.sh:[0-9]+:.*--tmpfs /home/swarm:' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:OPT=/opt/swarm$' \
+    -e '^(\./)?packages/swarm-fleet/claude-web-setup\.sh:[0-9]+:DIR=/opt/swarm-fleet$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:DATA_DIRS=\(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd\)$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:APP_CONFIG=/etc/swarmd/headless-app$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:GVISOR_LIST=/etc/apt/sources\.list\.d/gvisor\.list$' \

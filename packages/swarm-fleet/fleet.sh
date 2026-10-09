@@ -9,8 +9,8 @@
 # later starts reuse it, and never passes the key to the MCP server.
 #
 # FLEET_USERSPACE=1 forces the throwaway node even where Tailscale is running.
-# `fleet.sh --join-only` joins and exits (for a setup script, so the first
-# session does not wait for the join).
+# `fleet.sh --fetch-only` only downloads Tailscale (for a setup script);
+# `fleet.sh --join-only` joins and exits.
 # Tailscale's own connections use HTTPS_PROXY and SSL_CERT_FILE when set (an
 # inspecting proxy, as in Claude Code on the web); SWARM_FLEET_CA_BUNDLE
 # overrides the CA file for them.
@@ -22,29 +22,38 @@ log() { echo "swarm-fleet: $*" >&2; }
 
 command -v node >/dev/null || { log "node 22 or newer is required"; exit 2; }
 
+runtime=${FLEET_RUNTIME_DIR:-}
+if [[ -z $runtime ]]; then
+  # A setup script installs next to this file; elsewhere use a cache dir.
+  if [[ -d $here/runtime && -w $here/runtime ]]; then runtime=$here/runtime; else runtime=${XDG_RUNTIME_DIR:-$HOME/.cache}/swarm-fleet; fi
+fi
+
+# Tailscale binaries: the installed ones, else a pinned, checksummed release.
+ensure_bin() {
+  if command -v tailscaled >/dev/null && command -v tailscale >/dev/null; then
+    bin=$(dirname "$(command -v tailscaled)")
+    return 0
+  fi
+  mkdir -p "$runtime" && chmod 700 "$runtime"
+  bin=$runtime/tailscale_${TS_VERSION}_amd64
+  [[ -x $bin/tailscaled ]] && return 0
+  [[ $(uname -sm) == "Linux x86_64" ]] || { log "install Tailscale on this device (no pinned build for $(uname -sm))"; exit 2; }
+  local tgz=$runtime/tailscale_${TS_VERSION}_amd64.tgz
+  curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TS_VERSION}_amd64.tgz" -o "$tgz" >&2
+  echo "$TS_SHA256  $tgz" | sha256sum -c --quiet - >&2 || { rm -f "$tgz"; log "Tailscale download failed its checksum"; exit 2; }
+  tar -xzf "$tgz" -C "$runtime" && rm -f "$tgz"
+}
+
+# --fetch-only: download Tailscale and exit (for a setup script; no key needed).
+if [[ ${1:-} == --fetch-only ]]; then ensure_bin; exit 0; fi
+
 if [[ -z ${FLEET_USERSPACE:-} ]] && command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
   [[ ${1:-} == --join-only ]] && exit 0
   exec env -u TS_AUTHKEY node "$here/server.mjs"
 fi
 [[ -n ${TS_AUTHKEY:-} ]] || { log "this device is not on your tailnet: run on a device in it, or set TS_AUTHKEY (an ephemeral, tagged auth key)"; exit 2; }
-
-runtime=${FLEET_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-$HOME/.cache}/swarm-fleet}
+ensure_bin
 mkdir -p "$runtime" && chmod 700 "$runtime"
-
-# Tailscale binaries: the installed ones, else a pinned, checksummed release.
-bin=''
-if command -v tailscaled >/dev/null && command -v tailscale >/dev/null; then
-  bin=$(dirname "$(command -v tailscaled)")
-else
-  bin=$runtime/tailscale_${TS_VERSION}_amd64
-  if [[ ! -x $bin/tailscaled ]]; then
-    [[ $(uname -sm) == "Linux x86_64" ]] || { log "install Tailscale on this device (no pinned build for $(uname -sm))"; exit 2; }
-    tgz=$runtime/tailscale_${TS_VERSION}_amd64.tgz
-    curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TS_VERSION}_amd64.tgz" -o "$tgz" >&2
-    echo "$TS_SHA256  $tgz" | sha256sum -c --quiet - >&2 || { log "Tailscale download failed its checksum"; exit 2; }
-    tar -xzf "$tgz" -C "$runtime" && rm -f "$tgz"
-  fi
-fi
 
 sock=$runtime/tailscaled.sock
 port=${FLEET_PROXY_PORT:-1055}
