@@ -10,6 +10,9 @@ import (
 // deployment choice, never persisted into host startup defaults.
 func validateContainerSDK(cfg Config) error {
 	if cfg.ContainerSDKPort == 0 {
+		if cfg.TailnetIdentity {
+			return errors.New("tailnet-identity requires container-sdk-port")
+		}
 		return nil
 	}
 	if cfg.ContainerSDKPort < 1 || cfg.ContainerSDKPort > 65535 {
@@ -24,6 +27,11 @@ func validateContainerSDK(cfg Config) error {
 	}
 	if ip := net.ParseIP(cfg.ContainerSDKHost); ip == nil || ip.To4() == nil || !(ip.IsLoopback() || ip.IsUnspecified()) {
 		return errors.New("container-sdk-host must be 127.0.0.1 (host service) or 0.0.0.0 (inside a container)")
+	}
+	// The Serve header is trusted only when nothing but Serve on this machine
+	// can reach the listener.
+	if cfg.TailnetIdentity && !net.ParseIP(cfg.ContainerSDKHost).IsLoopback() {
+		return errors.New("tailnet-identity requires container-sdk-host=127.0.0.1 behind Tailscale Serve")
 	}
 	_, port, err := net.SplitHostPort(cfg.ListenAddr)
 	if err != nil {

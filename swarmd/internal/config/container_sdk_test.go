@@ -31,10 +31,18 @@ func TestContainerSDKConfig(t *testing.T) {
 		{"--desktop-port=0", "--container-sdk-port=7781"},
 		{"--desktop-port=0", "--container-sdk-port=7791"},
 		{"--desktop-port=0", "--container-sdk-port=7783", "--listen=0.0.0.0:7781"},
+		// The Serve identity header is trusted only on a loopback listener.
+		{"--tailnet-identity"},
+		{"--desktop-port=0", "--container-sdk-port=7783", "--tailnet-identity"},
+		{"--desktop-port=0", "--container-sdk-port=7783", "--container-sdk-host=0.0.0.0", "--tailnet-identity"},
 	} {
 		if _, err := Parse(args); err == nil {
 			t.Fatalf("accepted unsafe flags %v", args)
 		}
+	}
+	tailnet, err := Parse([]string{"--desktop-port=0", "--container-sdk-port=7783", "--container-sdk-host=127.0.0.1", "--tailnet-identity"})
+	if err != nil || !tailnet.TailnetIdentity {
+		t.Fatalf("tailnet identity refused on a loopback listener: %+v %v", tailnet, err)
 	}
 	owner, err := Parse([]string{"--desktop-port=0", "--container-sdk-port=7783", "--bypass-permissions"})
 	if err != nil || !owner.BypassPermissions {
