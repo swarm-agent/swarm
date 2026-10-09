@@ -4,6 +4,6 @@
   "private": true,
   "type": "module",
   "engines": { "node": ">=22" },
-  "dependencies": { "@swarm-agent/sdk": "file:../../packages/sdk" },
+  "dependencies": { "@swarm-agent/sdk": "file:../../packages/sdk", "qrcode-generator": "1.4.4" },
   "scripts": { "start": "node server.mjs", "test": "node --test --test-concurrency=1 test/*.test.mjs" }
 }

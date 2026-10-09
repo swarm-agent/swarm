@@ -3,17 +3,13 @@ set -euo pipefail
 umask 077
 config=/etc/swarmd/headless-app
 mkdir -p "$config"
-if [[ ! -e "$config/login-secret" ]]; then
-  openssl rand -hex 32 > "$config/login-secret"
-fi
-if [[ "${APP_ORIGIN:-http://127.0.0.1:8443}" == https:* ]]; then
+# The owner creates their login (account.json) in the app on first visit.
+# Tailscale Serve (https://NAME.TAILNET.ts.net) terminates TLS on the host.
+if [[ "${APP_ORIGIN:-http://127.0.0.1:8443}" == https:* && ! "${APP_ORIGIN}" =~ ^https://[a-z0-9.-]+\.ts\.net$ ]]; then
   [[ -s "$config/tls.key" && -s "$config/tls.crt" ]] || {
     echo 'Explicit HTTPS requires a trusted certificate and key in the config volume.' >&2; exit 1;
   }
 fi
-[[ -s "$config/login-secret" ]] || {
-  echo 'Installation files incomplete; restore the config volume.' >&2; exit 1;
-}
 # Custom BFF commands are supplied as argv, never shell-evaluated.
 if (( $# == 0 )); then set -- node /opt/workshop/examples/headless-app/server.mjs; fi
 # Keep daemon/provider and application logs private, not on container stdout.

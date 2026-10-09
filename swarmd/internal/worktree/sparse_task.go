@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 
 	"swarm/packages/swarmd/internal/taskscope"
 )
@@ -68,6 +69,7 @@ func runGitAllocation(path string, stdin []byte, args ...string) (string, error)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
+	sandbox.Prepare(ctx, cmd)
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {

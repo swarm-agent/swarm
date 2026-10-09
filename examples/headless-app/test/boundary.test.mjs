@@ -7,8 +7,18 @@ import { join } from 'node:path';
 import { appHandler } from '../server.mjs';
 import { operations } from '../operations.mjs';
 import { createBoundary } from '../boundary.mjs';
+import { createAccounts } from '../accounts.mjs';
 
-const origin = 'https://127.0.0.1:8443', secret = 'a'.repeat(64);
+const origin = 'https://127.0.0.1:8443';
+const credentials = { username: 'owner', password: 'correct horse battery' };
+// A registered owner account in a temporary file.
+async function ownerAccounts(t) {
+  const dir = await mkdtemp(join(tmpdir(), 'workshop-accounts-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const accounts = createAccounts({ file: join(dir, 'account.json') });
+  await accounts.register(credentials);
+  return accounts;
+}
 // Purpose: appHandler/createBoundary must reject browser-origin, identity and CSRF
 // violations before any privileged SDK invocation. In-process HTTP is the narrowest
 // observable route boundary; SDK spies here are security fixtures, not live-agent proof.
@@ -18,17 +28,19 @@ test('browser boundary rejects unauthenticated, foreign-origin and CSRF requests
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${server.address().port}`;
-  server.on('request', appHandler(sdk, { origin, secret }));
+  server.on('request', appHandler(sdk, { origin, accounts: await ownerAccounts(t) }));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const address = `http://127.0.0.1:${server.address().port}`;
   const post = (path, data, headers = {}) => fetch(address + path, { method: 'POST', headers: {
     Origin: origin, 'Content-Type': 'application/json', ...headers,
   }, body: JSON.stringify(data) });
   assert.equal((await post('/api', { op: 'onboarding' })).status, 401);
-  assert.equal((await post('/login', { secret }, { Origin: 'https://attacker.invalid' })).status, 403);
-  assert.throws(() => createBoundary(origin, secret).check({ headers: { host: 'attacker.invalid', origin } }), /Invalid host/);
+  assert.equal((await post('/auth/login', credentials, { Origin: 'https://attacker.invalid' })).status, 403);
+  assert.equal((await post('/auth/login', { ...credentials, password: 'wrong password!' })).status, 401);
+  assert.equal((await post('/auth/register', credentials)).status, 409);
+  assert.throws(() => createBoundary(origin).check({ headers: { host: 'attacker.invalid', origin } }), /Invalid host/);
   assert.equal(calls, 0);
-  const login = await post('/login', { secret });
+  const login = await post('/auth/login', credentials);
   const cookie = login.headers.get('set-cookie');
   assert.match(cookie, /Secure; HttpOnly; SameSite=Strict/);
   const { csrf } = await login.json();
@@ -40,7 +52,7 @@ test('browser boundary rejects unauthenticated, foreign-origin and CSRF requests
   assert.equal(calls, 1);
   assert.equal((await post('/v1/auth/tokens', {}, auth)).status, 404);
   assert.equal(calls, 1);
-  await post('/logout', {}, auth);
+  await post('/auth/logout', {}, auth);
   assert.equal((await post('/api', { op: 'onboarding' }, auth)).status, 401);
   assert.equal(calls, 1);
 });
@@ -52,11 +64,11 @@ test('errors are redacted and oversized inputs rejected', { timeout: 5000 }, asy
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${server.address().port}`;
-  server.on('request', appHandler({ onboarding: { get: async () => { calls++; throw new Error(privateValue); } } }, { origin, secret }));
+  server.on('request', appHandler({ onboarding: { get: async () => { calls++; throw new Error(privateValue); } } }, { origin, accounts: await ownerAccounts(t) }));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const address = `http://127.0.0.1:${server.address().port}`;
   const headers = { Origin: origin, 'Content-Type': 'application/json' };
-  const login = await fetch(address + '/login', { method: 'POST', headers, body: JSON.stringify({ secret }) });
+  const login = await fetch(address + '/auth/login', { method: 'POST', headers, body: JSON.stringify(credentials) });
   headers.Cookie = login.headers.get('set-cookie').split(';')[0]; headers['X-CSRF-Token'] = (await login.json()).csrf;
   const res = await fetch(address + '/api', { method: 'POST', headers, body: JSON.stringify({ op: 'onboarding' }) });
   assert.equal(res.status, 502); assert.ok(!(await res.text()).includes(privateValue)); assert.equal(calls, 1);
@@ -89,17 +101,14 @@ test('workspace confinement and exact pending permission checks', { timeout: 500
   assert.equal(writes, 1);
 });
 
-// Purpose: generated-secret authentication must be bounded and forbid non-loopback
+// Purpose: the session boundary must forbid non-loopback, non-Tailscale
 // deployments; createBoundary owns this policy and is the narrowest test layer.
-test('installation origin is loopback only and failed logins are bounded', () => {
+test('installation origin is loopback only', () => {
   for (const invalid of ['http://example.com:8443', 'http://localhost:8443', 'http://127.0.0.1:8443/', 'http://user@127.0.0.1:8443', 'ftp://127.0.0.1:8443']) {
-    assert.throws(() => createBoundary(invalid, secret));
+    assert.throws(() => createBoundary(invalid));
   }
-  assert.ok(createBoundary('http://127.0.0.1:8443', secret));
-  assert.throws(() => createBoundary('https://0.0.0.0:8443', secret));
-  const boundary = createBoundary(origin, secret);
-  for (let i = 0; i < 10; i++) assert.throws(() => boundary.login('wrong'), /Invalid installation/);
-  assert.throws(() => boundary.login(secret), /Too many login attempts/);
+  assert.ok(createBoundary('http://127.0.0.1:8443'));
+  assert.throws(() => createBoundary('https://0.0.0.0:8443'));
 });
 
 // Purpose: /watch must forward only SDK watcher snapshots, not construct a second
@@ -123,11 +132,11 @@ test('authenticated stream forwards watcher state and disposes on disconnect', {
   const server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const origin = `https://127.0.0.1:${server.address().port}`;
-  server.on('request', appHandler(sdk, { origin, secret, project: root }));
+  server.on('request', appHandler(sdk, { origin, accounts: await ownerAccounts(t), project: root }));
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await rm(root, { recursive: true, force: true }); });
   const address = `http://127.0.0.1:${server.address().port}`;
   const headers = { Origin: origin, 'Content-Type': 'application/json' };
-  const login = await fetch(address + '/login', { method: 'POST', headers, body: JSON.stringify({ secret }) });
+  const login = await fetch(address + '/auth/login', { method: 'POST', headers, body: JSON.stringify(credentials) });
   headers.Cookie = login.headers.get('set-cookie').split(';')[0]; headers['X-CSRF-Token'] = (await login.json()).csrf;
   const controller = new AbortController();
   const response = await fetch(address + '/watch', { method: 'POST', headers, body: JSON.stringify({ id: 'session' }), signal: controller.signal });
@@ -135,7 +144,7 @@ test('authenticated stream forwards watcher state and disposes on disconnect', {
   assert.deepEqual(JSON.parse(new TextDecoder().decode((await reader.read()).value)), { state });
   assert.equal(observed, 'session');
   // Logout closes existing streams synchronously through the same authority.
-  const logout = await fetch(address + '/logout', { method: 'POST', headers, body: '{}' });
+  const logout = await fetch(address + '/auth/logout', { method: 'POST', headers, body: '{}' });
   assert.equal(logout.status, 200);
   assert.equal(disposed, true);
   controller.abort();
@@ -165,10 +174,10 @@ test('loopback HTTP login, authenticated calls and logout retain browser protect
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const origin = `http://127.0.0.1:${server.address().port}`;
-  server.on('request', appHandler({ onboarding: { get: async () => { calls++; return {}; } } }, { origin, secret }));
+  server.on('request', appHandler({ onboarding: { get: async () => { calls++; return {}; } } }, { origin, accounts: await ownerAccounts(t) }));
   const post = (path, data, headers = {}) => fetch(origin + path, { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(data) });
   assert.equal((await fetch(origin)).status, 200);
-  const login = await post('/login', { secret });
+  const login = await post('/auth/login', credentials);
   assert.equal(login.status, 200);
   const cookie = login.headers.get('set-cookie');
   assert.match(cookie, /^swapp-loopback=[a-f0-9]{64}; Path=\/; HttpOnly; SameSite=Strict;/);
@@ -186,7 +195,7 @@ test('loopback HTTP login, authenticated calls and logout retain browser protect
   assert.equal(calls, 0);
   assert.equal((await post('/api', { op: 'onboarding' }, auth)).status, 200);
   assert.equal(calls, 1);
-  const logout = await post('/logout', {}, auth);
+  const logout = await post('/auth/logout', {}, auth);
   assert.match(logout.headers.get('set-cookie'), /^swapp-loopback=;.*Max-Age=0$/);
   assert.equal((await post('/api', { op: 'onboarding' }, auth)).status, 401);
   assert.equal(calls, 1);
@@ -197,8 +206,8 @@ test('loopback HTTP login, authenticated calls and logout retain browser protect
 // boundary calls exercise real policy without a browser, daemon or network.
 test('external links may navigate to the public shell without authorizing cross-site operations', () => {
   for (const origin of ['http://127.0.0.1:8443', 'https://127.0.0.1:8443']) {
-    const boundary = createBoundary(origin, secret);
-    const { id, session } = boundary.login(secret);
+    const boundary = createBoundary(origin);
+    const { id, session } = boundary.open('owner');
     for (const site of ['cross-site', 'same-site']) {
       const navigation = { method: 'GET', url: '/', headers: {
         host: new URL(origin).host, 'sec-fetch-site': site,
@@ -207,7 +216,7 @@ test('external links may navigate to the public shell without authorizing cross-
       assert.doesNotThrow(() => boundary.check(navigation, false));
       assert.throws(() => boundary.authenticate(navigation), /Sign in/);
       assert.throws(() => boundary.check(navigation, true), /Exact origin/);
-      for (const url of ['/app.js', '/style.css', '/api', '/login', '/watch', '/logout', '/?op=onboarding']) {
+      for (const url of ['/app.js', '/style.css', '/api', '/auth/login', '/watch', '/auth/logout', '/?op=onboarding']) {
         assert.throws(() => boundary.check({ ...navigation, url }, false), /Cross-site/);
       }
       for (const headers of [
@@ -243,7 +252,7 @@ test('external links may navigate to the public shell without authorizing cross-
 test('link navigation serves HTML but cannot reach privileged SDK operations', { timeout: 5000 }, async () => {
   let calls = 0;
   const handler = appHandler({ onboarding: { get: async () => { calls++; return {}; } } }, {
-    origin: 'http://127.0.0.1:8443', secret,
+    origin: 'http://127.0.0.1:8443', accounts: createAccounts({ file: '/nonexistent/account.json' }),
   });
   const invoke = async (url, method = 'GET', extra = {}) => {
     const req = { url, method, headers: { host: '127.0.0.1:8443',
@@ -260,7 +269,7 @@ test('link navigation serves HTML but cannot reach privileged SDK operations', {
   assert.match(page.headers['Content-Security-Policy'], /frame-ancestors 'none'/);
   assert.equal(page.headers['Cache-Control'], 'no-store');
   assert.equal(page.headers['Set-Cookie'], undefined);
-  for (const route of ['/api', '/login', '/logout', '/watch']) {
+  for (const route of ['/api', '/auth/status', '/auth/register', '/auth/login', '/auth/logout', '/watch']) {
     const res = await invoke(route, 'POST', { origin: 'http://127.0.0.1:8443' });
     assert.equal(res.status, 403);
     assert.deepEqual(JSON.parse(res.body), { error: 'Cross-site request rejected.' });
@@ -268,4 +277,42 @@ test('link navigation serves HTML but cannot reach privileged SDK operations', {
   assert.equal((await invoke('/', 'GET', { 'sec-fetch-dest': 'iframe' })).status, 403);
   assert.equal((await invoke('/app.js')).status, 403);
   assert.equal(calls, 0);
+});
+
+// Purpose: behind Tailscale Serve, only a request carrying Serve's tailnet user
+// identity may create the owner account (Serve sets that header and strips any
+// copy a client sends; the app listens on host loopback only), and a password
+// change signs out every other browser. Boundary: appHandler with a temporary
+// account file and an SDK fixture; real Tailscale Serve is not exercised.
+test('first sign-up needs a tailnet identity; password change signs out other browsers', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'workshop-claim-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const origin = 'https://swarm.tail1234.ts.net', owners = [];
+  const sdk = { onboarding: { get: async () => ({ identity: { bootstrapped: owners.length > 0 } }), update: async input => { owners.push(input); } } };
+  const handler = appHandler(sdk, { origin, deviceName: 'social', accounts: createAccounts({ file: join(dir, 'account.json') }) });
+  const invoke = async (url, data, extra = {}) => {
+    const { Readable } = await import('node:stream');
+    const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(data))]), { url, method: 'POST',
+      headers: { host: 'swarm.tail1234.ts.net', origin, 'content-type': 'application/json', ...extra } });
+    const res = { headers: {}, setHeader(k, v) { this.headers[k] = v; }, writeHead(status) { this.status = status; },
+      end(body) { this.body = body ? JSON.parse(String(body)) : null; }, get headersSent() { return false; } };
+    await handler(req, res);
+    return res;
+  };
+  assert.equal((await invoke('/auth/status', {})).body.can_register, false);
+  const blocked = await invoke('/auth/register', credentials);
+  assert.equal(blocked.status, 403);
+  assert.deepEqual(owners, []);
+  const identity = { 'tailscale-user-login': 'roy@example.com' };
+  assert.equal((await invoke('/auth/status', {}, identity)).body.can_register, true);
+  const first = await invoke('/auth/register', credentials, identity);
+  assert.equal(first.status, 200);
+  assert.deepEqual(owners, [{ username: 'owner', swarm_name: 'social' }]);
+  const auth = r => ({ cookie: r.headers['Set-Cookie'].split(';')[0], 'x-csrf-token': r.body.csrf });
+  const second = await invoke('/auth/login', credentials);
+  assert.equal((await invoke('/auth/me', {}, auth(first))).body.claimed_by, 'roy@example.com');
+  const changed = await invoke('/auth/password', { current: credentials.password, next: 'another long password' }, auth(second));
+  assert.equal(changed.status, 200);
+  assert.equal((await invoke('/auth/me', {}, auth(first))).status, 401);
+  assert.equal((await invoke('/auth/me', {}, auth(second))).status, 200);
 });

@@ -481,7 +481,15 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if canonical.SourceWorkspaceID != entry.WorkspaceID || canonical.Metadata == nil {
 			return store.ErrWorkerConflict
 		}
-		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, "HEAD", "agent/worker-"+r.ID[:16])
+		// Fork from the source workspace's current branch (as project tasks do) so
+		// the run's task records a real integration target, not a literal HEAD.
+		// A detached HEAD has no branch to integrate into: fork from the HEAD
+		// commit as before.
+		base := ""
+		if branch, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath); branchErr == nil && branch == "" {
+			base = "HEAD"
+		}
+		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		if err != nil {
 			return err
 		}
@@ -501,7 +509,12 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["swarm_v3_mandatory_worktree"] = true
 		meta["swarm_v3_worktree_owner_session_id"] = r.SessionID
 		meta["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
+		// The same captured lineage project tasks record, so a reviewed run can
+		// be integrated through the project task integrate route.
+		meta["base_commit"] = allocation.BaseCommit
 		meta["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
+		meta["swarm_v3_source_workspace_id"] = canonical.SourceWorkspaceID
+		meta["swarm_v3_source_workspace_generation"] = canonical.SourceWorkspaceGeneration
 		meta["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
 		meta["project_id"] = proj.ID
 		meta["task_id"] = taskID
@@ -518,6 +531,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			t.WorktreeName = allocation.BranchName
 			t.BaseBranch = allocation.BaseBranch
 			t.BaseCommit = allocation.BaseCommit
+			t.SourceWorkspace = store.ProjectTaskSource{WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Provenance: "worker_binding"}
 			return nil
 		})
 		if err != nil {

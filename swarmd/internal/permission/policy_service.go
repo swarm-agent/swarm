@@ -492,6 +492,11 @@ func (s *Service) newPolicyRuleID(now int64) string {
 }
 
 func (s *Service) persistPolicyLocked(accountScopeID string, policy Policy) error {
+	// Every policy write funnels through here, including rules saved by
+	// allow_always/deny_always, so the startup lock is enforced in one place.
+	if s.policyLocked.Load() {
+		return ErrPolicyLocked
+	}
 	if s.store == nil {
 		return errors.New("permission store is not configured")
 	}

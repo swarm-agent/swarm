@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -262,6 +263,7 @@ func runBoundedGitCommand(ctx context.Context, workspacePath string, limit int, 
 	cmd.Env = append(gitenv.FilterIdentityOverrides(os.Environ()), "GIT_OPTIONAL_LOCKS=0")
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	sandbox.Prepare(ctx, cmd)
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, errors.New("Git inspection timed out")

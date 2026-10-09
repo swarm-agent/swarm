@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"syscall"
 	"time"
 
@@ -593,6 +594,7 @@ func runRepositoryGitInput(path string, env []string, input io.Reader, args ...s
 	cmd.WaitDelay = time.Second
 	var output repositoryOutput
 	cmd.Stdout, cmd.Stderr = &output, &output
+	sandbox.Prepare(ctx, cmd)
 	err := cmd.Run()
 	if output.exceeded {
 		return "", errors.New("Git output exceeds repository inspection limit")

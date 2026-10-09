@@ -11,6 +11,22 @@ export class SwarmWorkspacesNamespace {
   async createFolder(parent_path: string, name: string): Promise<WorkspaceFolder> {
     return (await this.transport.request<{ ok: boolean; folder: WorkspaceFolder }>('/v1/workspace/folders/create', { method: 'POST', body: { parent_path, name } })).data.folder;
   }
+  /**
+   * Creates `parent_path/name` as a new, empty Git repository with one initial
+   * commit and registers it as a workspace, in one call. The daemon refuses a
+   * folder that already holds other content. Calling it again for a folder
+   * that is already registered returns that workspace.
+   */
+  async create(body: { parent_path: string; name: string; make_current?: boolean }): Promise<WorkspaceResolution> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(body.name)) {
+      throw new Error('Workspace name must be letters, digits, dashes and underscores (at most 63).');
+    }
+    const parent = body.parent_path.replace(/\/+$/, '');
+    if (!parent.startsWith('/')) throw new Error('parent_path must be absolute.');
+    const path = `${parent}/${body.name}`;
+    await this.setupRepository(path, path);
+    return this.add({ path, name: body.name, make_current: body.make_current ?? false });
+  }
   async add(body: { path: string; name?: string; theme_id?: string; make_current?: boolean; confirm_committed_only?: boolean }): Promise<WorkspaceResolution> {
     return (await this.transport.request<{ ok: boolean; workspace: WorkspaceResolution }>('/v1/workspace/add', { method: 'POST', body })).data.workspace;
   }

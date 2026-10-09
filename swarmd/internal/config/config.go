@@ -12,13 +12,19 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
+	"swarm/packages/swarmd/internal/sandbox"
 )
 
 type Config struct {
-	ConfigPath              string
-	ListenAddr              string
-	DesktopPort             int
-	ContainerSDKPort        int
+	ConfigPath       string
+	ListenAddr       string
+	DesktopPort      int
+	ContainerSDKPort int
+	ContainerSDKHost string
+	// TailnetIdentity admits Swarm Control on the SDK listener by the tailnet
+	// policy's app capability (Tailscale Serve header) instead of an AI key.
+	TailnetIdentity         bool
+	LockPermissionPolicy    bool
 	PeerTransportPort       int
 	BypassPermissions       bool
 	RetainToolOutputHistory bool
@@ -27,6 +33,12 @@ type Config struct {
 	DBPath                  string
 	LockPath                string
 	StartupCWD              string
+	SandboxMode             string
+	SandboxImage            string
+	SandboxNetwork          string
+	SandboxRuntime          string
+	SecretsGateway          string // off (default) | on
+	SecretsGatewayAddr      string // bridge address:port the gateway listens on
 }
 
 func Parse(args []string) (Config, error) {
@@ -77,7 +89,18 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
 	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
+	fs.StringVar(&cfg.ContainerSDKHost, "container-sdk-host", "0.0.0.0", "IPv4 address for the scoped-token SDK listener: 0.0.0.0 inside a container, 127.0.0.1 when Swarm runs as a host service")
+	fs.BoolVar(&cfg.TailnetIdentity, "tailnet-identity", false, "admit Swarm Control (/mcp) on the SDK listener by the tailnet policy's swarmagent.dev/cap/swarm grant, set by Tailscale Serve 1.92+ with --accept-app-caps; needs --container-sdk-host=127.0.0.1")
 	fs.BoolVar(&cfg.BypassPermissions, "bypass-permissions", startupCfg.BypassPermissions, "bypass normal tool permission prompts (exit_plan_mode still requires approval)")
+	// Never persisted: the lock is a property of how this process was started,
+	// so nothing reachable at runtime (API, agents, config edits) can lift it.
+	fs.BoolVar(&cfg.LockPermissionPolicy, "lock-permission-policy", false, "make permission policy (rules, capability policies, bypass) read-only for this process; bypass stays off. Changing it requires a restart without this flag")
+	fs.StringVar(&cfg.SandboxMode, "sandbox", "auto", "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)")
+	fs.StringVar(&cfg.SandboxImage, "sandbox-image", "swarm-sandbox:local", "image for agent sandboxes")
+	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
+	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
+	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
+	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
 	fs.StringVar(&cfg.DBPath, "db-path", defaultDBPath, "Pebble database path")
 	fs.StringVar(&cfg.LockPath, "lock-path", defaultLockPath, "daemon lock file path")
@@ -98,6 +121,21 @@ func Parse(args []string) (Config, error) {
 		return Config{}, err
 	}
 
+	if cfg.LockPermissionPolicy {
+		// A locked policy always runs with permissions enforced, even if the
+		// startup config file was edited to enable bypass.
+		cfg.BypassPermissions = false
+	}
+	if _, err := sandbox.ParseMode(cfg.SandboxMode); err != nil {
+		return Config{}, err
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.SecretsGateway)) {
+	case "", "off":
+		cfg.SecretsGateway = "off"
+	case "on":
+	default:
+		return Config{}, fmt.Errorf("invalid --secrets-gateway %q (expected off or on)", cfg.SecretsGateway)
+	}
 	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err
 	}

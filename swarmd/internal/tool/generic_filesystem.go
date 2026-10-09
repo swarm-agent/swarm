@@ -43,6 +43,9 @@ func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWor
 	if err != nil {
 		return nil, err
 	}
+	if err := refuseProtectedPath(candidate, resolvedCandidate); err != nil {
+		return nil, err
+	}
 	if !workspaceGitAdminAllowed(scope, candidate) || !workspaceGitAdminAllowed(scope, resolvedCandidate) {
 		return nil, fmt.Errorf("path %q escapes workspace scope: unrelated Git administration path", requested)
 	}
@@ -64,6 +67,9 @@ func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWor
 	}
 	if selectedRoot == "" {
 		return nil, fmt.Errorf("path %q escapes workspace scope", requested)
+	}
+	if err := refuseRootContainingStorage(selectedRoot); err != nil {
+		return nil, err
 	}
 	root, err := os.OpenRoot(selectedRoot)
 	if err != nil {

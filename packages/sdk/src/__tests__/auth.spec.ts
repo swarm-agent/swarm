@@ -455,3 +455,26 @@ test('SwarmAuthNamespace: autoConfigure detects env keys, registers credentials 
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+test('SwarmAuthNamespace: createAIKey sends only the name, level and lifetime', async () => {
+  let requestBody: any = null;
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: 'swk_ai', record: { id: 'tok_ai', name: 'claude', scopes: ['swarm:read', 'sessions:read'] } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+  try {
+    const auth = new SwarmAuthNamespace(new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, token: 't', defaultHeaders: {}, timeoutMs: 5000 }));
+    const result = await auth.createAIKey({ name: 'claude', access: 'read', expires_in_seconds: 86400 });
+    assert.equal(result.token, 'swk_ai');
+    assert.deepEqual(requestBody, { name: 'claude', ai_access: 'read', expires_in_seconds: 86400 });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

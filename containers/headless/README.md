@@ -67,11 +67,25 @@ only the selected repository at `/project`, never a broad host home, filesystem
 root or Docker socket. The image does not declare an anonymous project volume.
 No credentials are baked into the image and no privileged mode is needed.
 
-The entrypoint runs `swarmd --desktop-port=0 --cwd=/project` directly for signal
-handling. `SWARM_DISABLE_MINT_REPORT=1` is set. There are no Desktop assets, no
-published/exposed ports, and no permission/authentication bypass. Daemon API
-loopback/auth defaults remain unchanged. Container port publishing alone cannot
-make that loopback listener reachable from a host SDK.
+The entrypoint runs `swarmd --desktop-port=0 --cwd=/project --lock-permission-policy`
+directly for signal handling. `SWARM_DISABLE_MINT_REPORT=1` is set. There are no
+Desktop assets, no published/exposed ports, and no permission/authentication
+bypass. Daemon API loopback/auth defaults remain unchanged. Container port
+publishing alone cannot make that loopback listener reachable from a host SDK.
+
+**Permission policy is locked.** Agents run as the daemon's user and remote
+clients act through it, so the policy is fixed for the life of the process:
+bypass stays off (even if `/etc/swarmd/swarm.conf` says otherwise), and rules,
+capability policies and `allow_always`/`deny_always` decisions are refused for
+everyone, the owner included. One-off approvals and denials still work. To
+change the policy, recreate the container with the same volumes and append
+`--lock-permission-policy=false` after the image name, make the change through
+the private socket, then recreate it without that override. Independently of
+the lock, scoped tokens (SDK, Swarm Control, workers) never reach permission
+policy and may only allow or deny a request once.
+
+`XDG_DATA_HOME=/var/lib/swarmd/user-data` keeps agent worktrees, which hold
+uncommitted work, on the data volume, so replacing the container keeps them.
 
 ## Fresh setup without Desktop
 

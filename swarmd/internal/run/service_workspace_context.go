@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
@@ -291,6 +293,7 @@ func linkedWorktreeGitAdminRoot(worktreePath string) (string, error) {
 		return "", nil
 	}
 	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir")
+	sandbox.Prepare(context.Background(), cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("resolve linked worktree Git admin path: %s", strings.TrimSpace(string(output)))
@@ -457,14 +460,14 @@ func workspaceGitContext(workspacePath string) []string {
 	if workspacePath == "" {
 		workspacePath = "."
 	}
-	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
+	if err := sandbox.Command(context.Background(), "-C", workspacePath, "rev-parse", "--is-inside-work-tree").Run(); err != nil {
 		return []string{
 			"workspace_git_state: not_repository",
 			"This directory is not a valid Swarm workspace. Swarm requires the selected repository root and an initial commit before a session can run.",
 			"Explain repository setup, inspect existing files and ignore rules, and obtain explicit permission before running `git init`, staging files, or creating the first commit.",
 		}
 	}
-	if err := exec.Command("git", "-C", workspacePath, "rev-parse", "--verify", "HEAD").Run(); err != nil {
+	if err := sandbox.Command(context.Background(), "-C", workspacePath, "rev-parse", "--verify", "HEAD").Run(); err != nil {
 		return []string{
 			"workspace_git_state: needs_initial_commit",
 			"This repository is not a valid Swarm workspace until HEAD resolves to an initial commit.",

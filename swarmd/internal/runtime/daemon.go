@@ -56,7 +56,9 @@ import (
 	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
+	"swarm/packages/swarmd/internal/remote"
 	"swarm/packages/swarmd/internal/run"
+	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -166,10 +168,12 @@ type Daemon struct {
 	cleanupOnce               sync.Once
 	cleanupErr                error
 	longSessionDiagnostics    *longsessiondiag.Recorder
+	remoteTransport           *remote.Service
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
 	copilot                   *copilot.Manager
+	secretGatewayStop         func()
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
@@ -371,6 +375,10 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("migrate v3 run-state index: %w", err)
 	}
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), events, hub.Publish)
+	if cfg.LockPermissionPolicy {
+		permissionSvc.LockPolicy()
+		log.Printf("swarmd permission policy locked by --lock-permission-policy; bypass is off and policy changes are refused until restart")
+	}
 	notificationSvc := notification.NewService(pebblestore.NewNotificationStore(store), events, hub.Publish)
 	webPushRepository, err := webpush.NewPebbleRepository(secretStore)
 	if err != nil {
@@ -427,6 +435,29 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("ensure canonical local swarm identity: %w", err)
 	}
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
+	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore)
+	if err != nil {
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("agent sandbox: %w", err)
+	}
+	sandbox.SetDefault(sandboxMgr)
+	provider.BuildSourceGitRouter = sandbox.RoutedArgv
+	permissionSvc.SetBypassGate(func() (bool, string) {
+		status := sandboxMgr.Status()
+		return status.Active, status.Reason
+	})
+	if status := sandboxMgr.Status(); status.Active {
+		runtimeName := status.Runtime
+		if runtimeName == "" {
+			runtimeName = "engine default runtime"
+		}
+		log.Printf("swarmd agent sandbox active (%s); agent commands and Git on projects run inside per-project sandboxes", runtimeName)
+	} else {
+		log.Printf("swarmd agent sandbox inactive (%s); agent commands run on this machine and permission bypass is disabled", status.Reason)
+	}
+	sandboxMgr.Start(context.Background())
 	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
 	identityStore := pebblestore.NewIdentityStore(store)
@@ -673,6 +704,22 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
+	secretSlots := pebblestore.NewSecretSlotStore(store)
+	apiServer.SetSecretServices(secretSlots, authStore)
+	var secretGatewayStop func()
+	if cfg.SecretsGateway == "on" {
+		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore)
+		if err != nil {
+			bgCancel()
+			_ = secretStore.Close()
+			_ = store.Close()
+			_ = lk.Release()
+			return nil, fmt.Errorf("secret gateway: %w", err)
+		}
+		sandboxMgr.SetSecretBroker(broker)
+		secretGatewayStop = stopGateway
+		log.Printf("swarmd secret gateway enabled; granted secrets inject through the egress gateway without the agent seeing them")
+	}
 	if err := deploymentMgr.Recover(bgCtx); err != nil {
 		log.Printf("warning: environment supervisor recovery: %v", err)
 	}
@@ -742,8 +789,13 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetBypassPermissions(cfg.BypassPermissions)
 	apiServer.SetDataDir(cfg.DataDir)
 	apiServer.SetStartupConfigPath(cfg.ConfigPath)
+	apiServer.SetWorkspaceRoot(cfg.StartupCWD)
 	apiServer.SetWorktreeService(worktreeSvc)
 	apiServer.SetMCPService(mcpSvc)
+	// Remote transport is off until the owner initializes and enables a relay.
+	remoteSvc := remote.NewService(secretStore, remoteTokenIssuer{security: securitySvc, identities: identitySessionSvc})
+	remoteSvc.SetControlHandler(apiServer.ContainerSDKHandler())
+	apiServer.SetRemoteTransportService(remoteSvc)
 	apiServer.SetVoiceService(voiceSvc)
 	apiServer.SetUISettingsService(uiSettingsSvc)
 	apiServer.SetPlanLifecycleService(planLifecycleSvc)
@@ -820,7 +872,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		workerExecution:           workerExecution,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
+		remoteTransport:           remoteSvc,
 	}
+	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
 		d.requestStop("api:" + strings.TrimSpace(reason))
 	})
@@ -838,8 +892,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	d.httpServer = httpServer
 	if cfg.ContainerSDKPort > 0 {
 		d.containerSDKServer = &http.Server{
-			Addr:              net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.ContainerSDKPort)),
-			Handler:           apiServer.ContainerSDKHandler(),
+			Addr:              net.JoinHostPort(cfg.ContainerSDKHost, strconv.Itoa(cfg.ContainerSDKPort)),
+			Handler:           sdkListenerHandler(cfg, apiServer),
 			ReadTimeout:       10 * time.Second,
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       60 * time.Second,
@@ -980,6 +1034,10 @@ func (d *Daemon) cleanup() error {
 		if d.bgCancel != nil {
 			d.bgCancel()
 			d.bgCancel = nil
+		}
+		if d.secretGatewayStop != nil {
+			d.secretGatewayStop()
+			d.secretGatewayStop = nil
 		}
 		if d.memoryDone != nil {
 			<-d.memoryDone
@@ -1183,6 +1241,9 @@ func (d *Daemon) Run() error {
 				d.requestStop("container-sdk-serve-error")
 			}
 		}()
+	}
+	if d.remoteTransport != nil && d.bgCtx != nil {
+		go d.remoteTransport.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

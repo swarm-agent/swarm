@@ -73,6 +73,20 @@ export class SwarmAuthNamespace {
   }
 
   /**
+   * Creates an AI key for Swarm Control (`/mcp` on the scoped-token gateway).
+   * `read` keys see and call only read tools; `write` keys may also start and
+   * steer sessions. No AI key may approve tool calls or manage workers, limits
+   * or models. Lifetime defaults to 30 days (at most 365). Owner only.
+   */
+  async createAIKey(params: { name: string; access: 'read' | 'write'; expires_in_seconds?: number }): Promise<CreateScopedTokenResult> {
+    const res = await this.transport.request<CreateScopedTokenResult>('/v3/auth/tokens', {
+      method: 'POST',
+      body: { name: params.name, ai_access: params.access, expires_in_seconds: params.expires_in_seconds },
+    });
+    return res.data;
+  }
+
+  /**
    * Lists all scoped deploy tokens for the active account.
    * Secret hashes are masked; hints (e.g. 'swk_...abcd') are displayed.
    */

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 	"unicode/utf16"
 	"unicode/utf8"
@@ -632,6 +633,7 @@ func manageSessionsRunGit(ctx context.Context, repoRoot string, args ...string) 
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, "git", args...)
 	cmd.Dir = repoRoot
+	sandbox.Prepare(commandCtx, cmd)
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return "", fmt.Errorf("git %s timed out", strings.Join(args, " "))

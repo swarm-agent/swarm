@@ -179,7 +179,7 @@ export class SwarmSessionsNamespace {
    */
   async sendMessage(
     sessionId: string,
-    params: { content: string; role?: 'user' | 'assistant' | 'system'; client_request_id?: string }
+    params: { content: string; role?: 'user'; client_request_id?: string }
   ): Promise<any> {
     const id = encodeURIComponent(sessionId.trim());
     const clientRequestId = params.client_request_id || generateRequestId();

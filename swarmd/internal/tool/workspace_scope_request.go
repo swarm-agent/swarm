@@ -62,6 +62,13 @@ func scopeExpansionForPath(scope WorkspaceScope, toolName, argumentName, request
 	if err != nil {
 		return ScopeExpansionRequest{}, false, err
 	}
+	// Never ask the user to grant Swarm's own storage or credentials.
+	if err := refuseProtectedPath(targetPath, resolvedTarget); err != nil {
+		return ScopeExpansionRequest{}, false, fmt.Errorf("%w: %w", ErrWorkspaceScopeExpansionRejected, err)
+	}
+	if err := refuseRootContainingStorage(resolvedTarget); err != nil {
+		return ScopeExpansionRequest{}, false, fmt.Errorf("%w: %w", ErrWorkspaceScopeExpansionRejected, err)
+	}
 	if !workspaceGitAdminAllowed(scope, resolvedTarget) {
 		return ScopeExpansionRequest{}, false, fmt.Errorf("%w: unrelated Git administration path", ErrWorkspaceScopeExpansionRejected)
 	}

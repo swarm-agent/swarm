@@ -1,0 +1,9 @@
+{
+  "tools": [
+    {"name": "lookup_order", "description": "Look up the current visitor's order by its 6-character code.",
+     "input_schema": {"type": "object", "properties": {"order_id": {"type": "string", "pattern": "^[A-Z0-9]{6}$"}}, "required": ["order_id"], "additionalProperties": false},
+     "effect": "read", "timeout_ms": 5000}
+  ],
+  "agent": {"name": "frontdesk", "description": "Public front desk", "prompt": "You answer visitors' questions about their orders. You can only look up orders.",
+            "provider": "codex", "model": "gpt-5.6-luna", "thinking": "medium", "tools": ["lookup_order"]}
+}

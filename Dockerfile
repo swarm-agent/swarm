@@ -48,8 +48,13 @@ COPY LICENSE THIRD_PARTY_NOTICES.md containers/headless/FFF-LICENSE /usr/local/s
 COPY containers/headless/inspect.sh /usr/local/share/swarm/inspect.sh
 # FFF's source RPATH is not a runtime dependency: resolve it via ld.so.cache.
 RUN ldconfig && sh /usr/local/share/swarm/inspect.sh --libraries-only
-ENV HOME=/home/swarm SWARM_DISABLE_MINT_REPORT=1
+# Agent worktrees (uncommitted work) live under the user data root; keep it on
+# the persistent data volume so replacing the container never loses them.
+ENV HOME=/home/swarm SWARM_DISABLE_MINT_REPORT=1 XDG_DATA_HOME=/var/lib/swarmd/user-data
 USER 10001:10001
 WORKDIR /project
 VOLUME ["/etc/swarmd", "/var/lib/swarmd", "/var/cache/swarmd", "/var/log/swarmd"]
-ENTRYPOINT ["/usr/local/bin/swarmd", "--desktop-port=0", "--cwd=/project"]
+# Permission policy is locked by default: agents and remote clients cannot
+# enable bypass or save rules. The owner opts out explicitly by appending
+# --lock-permission-policy=false to `docker run`; it applies from that start.
+ENTRYPOINT ["/usr/local/bin/swarmd", "--desktop-port=0", "--cwd=/project", "--lock-permission-policy"]

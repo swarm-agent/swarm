@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
@@ -100,11 +100,11 @@ func (s *Server) validateProjectTaskRecovery(p identity.Principal, task *pebbles
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		ref, err := exec.CommandContext(ctx, "git", "-C", binding.Path, "rev-parse", "--verify", source.PreparedRef+"^{commit}").Output()
+		ref, err := sandbox.Command(ctx, "-C", binding.Path, "rev-parse", "--verify", source.PreparedRef+"^{commit}").Output()
 		if err != nil || strings.TrimSpace(string(ref)) != source.PreparedHead {
 			return errors.New("prepared recovery source changed or missing")
 		}
-		parent, err := exec.CommandContext(ctx, "git", "-C", binding.Path, "rev-parse", source.PreparedHead+"^").Output()
+		parent, err := sandbox.Command(ctx, "-C", binding.Path, "rev-parse", source.PreparedHead+"^").Output()
 		if err != nil || strings.TrimSpace(string(parent)) != source.TargetHead {
 			return errors.New("prepared recovery does not descend directly from captured target")
 		}

@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"time"
 	"unicode"
@@ -154,6 +155,17 @@ var (
 		"developer message",
 		"you are now",
 		"jailbreak",
+		"system override",
+		"admin mode",
+		"developer mode",
+		"maintenance mode",
+		"notice to the ai",
+		"to the ai assistant",
+		"to any ai reading",
+		"new instructions:",
+		"do not mention this",
+		"do not tell the user",
+		"call the bash tool",
 	}
 	errListScanLimit = errors.New("list scan limit reached")
 )
@@ -2177,10 +2189,14 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	if !ok {
 		return "", fmt.Errorf("unsupported tool %q", name)
 	}
-	if len(args) > 0 {
+	if len(args) > 0 && definition.Kind != pebblestore.AgentCustomToolKindClient {
 		return "", fmt.Errorf("custom tool %q does not accept arguments", name)
 	}
 	switch definition.Kind {
+	case pebblestore.AgentCustomToolKindClient:
+		// Answered by the session's client through the run service; reaching
+		// the runtime means that path was bypassed.
+		return "", fmt.Errorf("client tool %q is answered by the session's client, not executed", name)
 	case pebblestore.AgentCustomToolKindFixedBash:
 		return executeBashCommand(ctx, scope, map[string]any{}, strings.TrimSpace(definition.Command), func(chunk string) {
 			if onProgress == nil {
@@ -2577,6 +2593,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 	cmd.Stdout = capture
 	cmd.Stderr = capture
 
+	sandbox.Prepare(ctx, cmd)
 	err = cmd.Run()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	wasTruncated := capture.Truncated()
@@ -2663,6 +2680,7 @@ func gitOutputForEvidence(dir string, env []string, argv ...string) (string, err
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = dir
 	cmd.Env = env
+	sandbox.Prepare(ctx, cmd)
 	output, err := cmd.Output()
 	return strings.TrimSpace(string(output)), err
 }
@@ -4993,8 +5011,11 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 		}
 		return path, filepath.ToSlash(path), nil
 	}
-	_, path, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, outputDirArg)
+	requestedPath, path, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, outputDirArg)
 	if err != nil {
+		return "", "", err
+	}
+	if err := refuseProtectedPath(requestedPath, path); err != nil {
 		return "", "", err
 	}
 	if len(scope.MutationScopes) > 0 {
@@ -10182,6 +10203,12 @@ func resolveWorkspacePath(scope WorkspaceScope, requested string) (string, error
 	if err != nil {
 		return "", err
 	}
+	if err := refuseProtectedPath(candidateAbs, resolvedCandidate); err != nil {
+		return "", err
+	}
+	if err := refuseRootContainingStorage(resolvedCandidate); err != nil {
+		return "", err
+	}
 
 	if !workspaceGitAdminAllowed(scope, resolvedCandidate) || !pathWithinAllowedRoots(resolveAllowedRoots(scope), resolvedCandidate) {
 		return "", fmt.Errorf("path %q escapes workspace scope", requested)
@@ -11050,4 +11077,11 @@ func detectPromptInjectionSignals(text string) ([]string, bool) {
 		}
 	}
 	return signals, scanTruncated
+}
+
+// UntrustedSafety labels text that entered the conversation from outside the
+// runtime (for example a client tool's result) the same way as file and web
+// output: untrusted, with any prompt-injection markers found in it.
+func UntrustedSafety(text string) map[string]any {
+	return buildUntrustedSafety(text)
 }

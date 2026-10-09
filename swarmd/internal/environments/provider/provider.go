@@ -942,6 +942,18 @@ func getCleanupLock(key string) chan struct{} {
 }
 
 func executeSupervised(ctx context.Context, transport ContainerExecTransport, target string, req ExecRequest) (*ExecResult, error) {
+	return ExecSupervised(ctx, transport, target, req, MaxOperationTimeout)
+}
+
+// ExecSupervised runs req inside target under the container-side supervisor
+// (own process group, bounded output, cancellation and timeout cleanup) with
+// maxTimeout as the upper bound for req.Timeout. Environment deployments use
+// MaxOperationTimeout; callers with a longer established contract (the agent
+// bash tool) pass their own bound.
+func ExecSupervised(ctx context.Context, transport ContainerExecTransport, target string, req ExecRequest, maxTimeout time.Duration) (*ExecResult, error) {
+	if maxTimeout <= 0 {
+		maxTimeout = MaxOperationTimeout
+	}
 	opID := req.OperationID
 	if opID == "" {
 		opID = generateOperationID()
@@ -962,8 +974,8 @@ func executeSupervised(ctx context.Context, transport ContainerExecTransport, ta
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = DefaultOperationTimeout
-	} else if timeout > MaxOperationTimeout {
-		timeout = MaxOperationTimeout
+	} else if timeout > maxTimeout {
+		timeout = maxTimeout
 	}
 
 	execCtx, execCancel := context.WithTimeout(ctx, timeout)

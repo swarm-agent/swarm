@@ -1777,6 +1777,16 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				accountScopeID = strings.TrimSpace(session.AccountScopeID)
 			}
 		}
+		clientTool, isClientTool := s.clientToolForAccount(accountScopeID, toolCalls[i].Name)
+		if isClientTool {
+			// Reject before anything is recorded or waited on: the client only
+			// ever sees calls that match the tool's declared schema.
+			if _, schemaErr := agentruntime.ValidateClientToolArguments(clientTool.InputSchema, toolCalls[i].Arguments); schemaErr != nil {
+				decisions[i].Result.Output = permissionOutputPayload(false, "error", schemaErr.Error(), toolCalls[i].Name, toolCalls[i].Arguments)
+				decisions[i].Result.Error = schemaErr.Error()
+				continue
+			}
+		}
 		var subagentReservation *permission.SubagentReservationResult
 		var sessionDeployReservation *permission.SessionDeployReservationResult
 		selectedCount := 0
@@ -1894,6 +1904,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			Overlay:                  overlay,
 			SubagentReservation:      subagentReservation,
 			SessionDeployReservation: sessionDeployReservation,
+			InputBoundary:            isClientTool,
 		})
 		if err != nil {
 			decisions[i].Err = err
@@ -1963,10 +1974,28 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 
 			wg.Add(1)
 			call := toolCalls[i]
+			waitTimeout := time.Duration(0)
+			if isClientTool {
+				waitTimeout = clientToolTimeout(clientTool)
+			}
 			go func(index int, call tool.Call, record pebblestore.PermissionRecord) {
 				defer wg.Done()
 				waitStarted := time.Now()
-				resolved, waitErr := s.permissions.WaitForResolution(ctx, sessionID, record.ID)
+				waitCtx, cancelWait := ctx, context.CancelFunc(func() {})
+				if waitTimeout > 0 {
+					waitCtx, cancelWait = context.WithTimeout(ctx, waitTimeout)
+				}
+				resolved, waitErr := s.permissions.WaitForResolution(waitCtx, sessionID, record.ID)
+				cancelWait()
+				if waitErr != nil && waitTimeout > 0 && ctx.Err() == nil {
+					// The client did not answer in time: close the record so a late
+					// answer cannot land, then report the timeout to the model.
+					if expired, resolveErr := s.permissions.Resolve(sessionID, record.ID, "deny", clientToolTimeoutReason); resolveErr == nil {
+						resolved, waitErr = expired, nil
+					} else if settled, settleErr := s.permissions.WaitForResolution(ctx, sessionID, record.ID); settleErr == nil {
+						resolved, waitErr = settled, nil
+					}
+				}
 				if waitErr != nil {
 					decisions[index].Err = waitErr
 					decisions[index].Result.DurationMS = time.Since(waitStarted).Milliseconds()
@@ -2003,6 +2032,14 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				case pebblestore.PermissionStatusDenied:
 					decisions[index].Result.Output = permissionOutputPayload(false, "denied", resolved.Reason, call.Name, call.Arguments)
 					decisions[index].Result.Error = "permission denied"
+					if waitTimeout > 0 {
+						// A client tool's deny carries the client's failure reason.
+						reason := strings.TrimSpace(resolved.Reason)
+						if reason == "" {
+							reason = "client tool failed"
+						}
+						decisions[index].Result.Error = privacy.SanitizeText(reason)
+					}
 				default:
 					decisions[index].Result.Output = permissionOutputPayload(false, "cancelled", resolved.Reason, call.Name, call.Arguments)
 					decisions[index].Result.Error = "permission cancelled"
@@ -2097,6 +2134,11 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		result.Name = name
 	}
 
+	if definition, ok := s.clientToolForSession(sessionID, name); ok {
+		output, err := clientToolOutput(definition, approvedArguments)
+		result.Output = output
+		return true, result, err
+	}
 	switch name {
 	case "manage_memory":
 		if !accountMemoryAgentAllowed(agentProfile) {

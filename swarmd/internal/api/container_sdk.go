@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // ContainerSDKHandler is not a proxy to privileged local transport. It admits
@@ -32,6 +34,26 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("scoped token identity unavailable"))
 			return
 		}
+		if strings.TrimSpace(rec.AgentName) != "" {
+			// Agent-bound tokens get only their own gate: no MCP, no listing.
+			if !s.gateAgentBoundToken(w, r, rec) {
+				return
+			}
+			next.ServeHTTP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec))
+			return
+		}
+		if isAIKey(rec) && r.URL.Path != controlMCPPath {
+			// An AI key's level is enforced per tool in Swarm Control; the raw
+			// routes below would bypass it (a write key could resolve permissions).
+			writeError(w, http.StatusForbidden, errors.New("AI keys work only through Swarm Control (/mcp)"))
+			return
+		}
+		if r.URL.Path == controlMCPPath {
+			// Swarm Control MCP translates each tool into one request against
+			// the allowlisted routes below, under this same verified identity.
+			s.serveControlMCP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec), next)
+			return
+		}
 		if !containerSDKRouteAllowed(r) {
 			writeError(w, http.StatusForbidden, errors.New("route unavailable on container SDK listener"))
 			return
@@ -40,6 +62,19 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 		// per-call permissions. Never send this request through local transport.
 		next.ServeHTTP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec))
 	})
+}
+
+// isAIKey reports a token minted with Swarm Control levels (ai_access).
+func isAIKey(rec *pebblestore.ScopedTokenRecord) bool {
+	if rec == nil {
+		return false
+	}
+	for _, scope := range rec.Scopes {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(scope)), "swarm:") {
+			return true
+		}
+	}
+	return false
 }
 
 func containerSDKRouteAllowed(r *http.Request) bool {
