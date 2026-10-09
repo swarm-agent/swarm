@@ -1681,7 +1681,7 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 		if runStatus == "succeeded" && taskRecord.LastError == "" {
 			return nil
 		}
-		if (runStatus == "failed" || runStatus == "cancelled") && taskRecord.LastError == runError {
+		if (runStatus == "failed" || runStatus == "cancelled") && taskRecord.LastError == workerTaskTerminalError(runStatus, runError, taskRecord.LastError) {
 			return nil
 		}
 	}
@@ -1724,14 +1724,24 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 			}
 		case "cancelled":
 			t.Status = "failed"
-			if runError != "" {
-				t.LastError = runError
-			} else {
-				t.LastError = "worker run cancelled"
-			}
+			t.LastError = workerTaskTerminalError(runStatus, runError, t.LastError)
 			t.ActionNeeded = "Action Needed: Run was cancelled. Retry or reassign task."
 		}
 		return nil
 	})
 	return err
+}
+
+// workerTaskTerminalError is the LastError a terminal run projects onto its
+// task. The no-op check must compare against it: terminal repair revisits
+// recent runs on every reconcile, and a mismatch rewrites the task and emits a
+// project event each pass.
+func workerTaskTerminalError(runStatus, runError, current string) string {
+	if runError != "" {
+		return runError
+	}
+	if runStatus == "cancelled" {
+		return "worker run cancelled"
+	}
+	return current
 }

@@ -537,25 +537,29 @@ export function AgentModelControl({
     }
   }, [findVisibleFavoritesAnchor, open, screen])
 
+  // Reset only when the dialog closes. Re-running these setters on every
+  // parent prop change while closed keeps updates pending during realtime
+  // bursts until React aborts with its nested update limit.
   useEffect(() => {
-    if (!open) {
-      initializedOpenRef.current = false
-      setFavoritesPosition(null)
-      // Opening signals choose their screen. Resetting it here races a setup
-      // signal when parent props change in the same closed render.
-      setSetupSection('agent')
-      setEditingFavoriteId(null)
-      setEditingFavoriteName('')
-      setEditingFavoriteDraft(null)
-      setCreatingNewFavorite(false)
-      setSelectedFavoriteIds((current) => current.length === 0 ? current : [])
-      setConfirmingBatchDelete(false)
-      setDefaultFavoriteName('')
-      setFavoritesHelpOpen(false)
-      setDeleteCandidateId('')
-      return
-    }
-    if (initializedOpenRef.current) return
+    if (open) return
+    initializedOpenRef.current = false
+    setFavoritesPosition(null)
+    // Opening signals choose their screen. Resetting it here races a setup
+    // signal when parent props change in the same closed render.
+    setSetupSection('agent')
+    setEditingFavoriteId(null)
+    setEditingFavoriteName('')
+    setEditingFavoriteDraft(null)
+    setCreatingNewFavorite(false)
+    setSelectedFavoriteIds((current) => current.length === 0 ? current : [])
+    setConfirmingBatchDelete(false)
+    setDefaultFavoriteName('')
+    setFavoritesHelpOpen(false)
+    setDeleteCandidateId('')
+  }, [open])
+
+  useEffect(() => {
+    if (!open || initializedOpenRef.current) return
     const requestedAgentName = initialAgentName.trim()
     const requestedProfile = selectableAgents.find((agent) => agent.name === requestedAgentName) ?? null
     const agentName = requestedAgentName === SWARM_AGENT_NAME || requestedProfile ? requestedAgentName : SWARM_AGENT_NAME

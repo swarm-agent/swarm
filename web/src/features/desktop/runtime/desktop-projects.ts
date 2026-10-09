@@ -189,30 +189,44 @@ export class DesktopProjectsRuntime {
     if (mutation?.action.type === 'hydrate.apply') return
     let retryWatches = false
     for (const { projectId } of this.demand.values()) {
+      const invalidated: RunningTask[] = []
       for (const task of this.deps.getState()[projectId]?.tasks ?? []) {
         if (!task.sessionId) continue
         const owners = mutation ? repositoryOwnerIds(task.sessionId, [], mutation.nextState) : new Set([task.sessionId])
         for (const id of extractTaskSessionIds(task)) owners.add(id)
         if (!mutation || repositoryEventInvalidates(mutation.action, owners) || taskPlanEventInvalidates(mutation.action, owners)) {
           if (this.taskWatchLost(task)) retryWatches = true
-          this.queueTask(projectId, task, false, true)
+          invalidated.push(task)
         }
       }
+      this.queueTasks(projectId, invalidated, false, true)
     }
     if (retryWatches) this.retryLostGitWatches()
   }
 
   private queueTask(projectId: string, task: RunningTask, authoritative = false, invalidateGit = false): void {
-    if ((!task.sessionId && !authoritative) || !this.demand.has(projectId)) return
-    if (!authoritative && this.taskWatchLost(task)) return
-    const key = JSON.stringify([projectId, task.id])
+    this.queueTasks(projectId, [task], authoritative, invalidateGit)
+  }
+
+  // Board-wide repairs must stay one store update: per-card dispatches exceed
+  // React's nested update limit on large boards and fail the realtime commit.
+  private queueTasks(projectId: string, candidates: RunningTask[], authoritative = false, invalidateGit = false): void {
+    if (!this.demand.has(projectId)) return
+    const tasks = candidates.filter(task => (task.sessionId || authoritative) && (authoritative || !this.taskWatchLost(task)))
+    if (tasks.length === 0) return
     if (invalidateGit) {
-      this.taskVersions.set(key, (this.taskVersions.get(key) ?? 0) + 1)
-      this.deps.dispatch({ type: 'projects.invalidateGit', projectId, taskId: task.id })
-      this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: tasks => tasks.map(item => item.id === task.id ? { ...item, environmentsStale: true } : item) })
+      const taskIds = new Set(tasks.map(task => task.id))
+      for (const taskId of taskIds) {
+        const key = JSON.stringify([projectId, taskId])
+        this.taskVersions.set(key, (this.taskVersions.get(key) ?? 0) + 1)
+      }
+      this.deps.dispatch({ type: 'projects.invalidateGit', projectId, taskIds: [...taskIds] })
+      this.deps.dispatch({ type: 'projects.updateTasks', projectId, tasks: items => items.map(item => taskIds.has(item.id) ? { ...item, environmentsStale: true } : item) })
     }
-    authoritative ||= this.taskQueue.get(key)?.authoritative ?? false
-    this.taskQueue.set(key, { projectId, task, epoch: this.taskEpoch, authoritative })
+    for (const task of tasks) {
+      const key = JSON.stringify([projectId, task.id])
+      this.taskQueue.set(key, { projectId, task, epoch: this.taskEpoch, authoritative: authoritative || (this.taskQueue.get(key)?.authoritative ?? false) })
+    }
     this.drainTasks()
   }
 
@@ -361,7 +375,7 @@ export class DesktopProjectsRuntime {
     if (pending) return pending
     if (inspectGit) {
       this.retryLostGitWatches()
-      for (const task of this.deps.getState()[projectId]?.tasks ?? []) this.queueTask(projectId, task, false, true)
+      this.queueTasks(projectId, this.deps.getState()[projectId]?.tasks ?? [], false, true)
     }
 
     this.collectionControllers.get(projectId)?.abort()
@@ -517,7 +531,7 @@ export class DesktopProjectsRuntime {
       this.retryLostGitWatches()
       this.invalidate()
       for (const { projectId: id } of this.demand.values()) {
-        for (const task of this.deps.getState()[id]?.tasks ?? []) this.queueTask(id, task, false, true)
+        this.queueTasks(id, this.deps.getState()[id]?.tasks ?? [], false, true)
       }
       for (const listener of this.projectUpdateListeners) listener()
     }

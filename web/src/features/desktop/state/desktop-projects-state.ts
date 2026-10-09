@@ -52,7 +52,7 @@ export type DesktopProjectsAction =
       projectId: string
       media: ProjectTaskMediaRef[] | ((prev: ProjectTaskMediaRef[]) => ProjectTaskMediaRef[])
     }
-  | { type: 'projects.invalidateGit'; projectId: string; taskId?: string; error?: string }
+  | { type: 'projects.invalidateGit'; projectId: string; taskId?: string; taskIds?: string[]; error?: string }
   | { type: 'projects.invalidate'; projectId?: string }
   | { type: 'projects.evict'; projectId: string }
 
@@ -296,8 +296,10 @@ export function reduceDesktopProjectsState(
   if (action.type === 'projects.invalidateGit') {
     if (!previous) return state
     const gitObservations = { ...previous.gitObservations }
+    const taskIds = action.taskIds && new Set(action.taskIds)
     const tasks = previous.tasks.map(task => {
       if (action.taskId && task.id !== action.taskId) return task
+      if (taskIds && !taskIds.has(task.id)) return task
       delete gitObservations[task.id]
       return { ...task, gitStatus: 'stale' as const, syncWarning: action.error,
         deliveryAssessment: task.deliveryAssessment ? { ...task.deliveryAssessment, freshness: 'stale', allowed_actions: [] } : undefined }
