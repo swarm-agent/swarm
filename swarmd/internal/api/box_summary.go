@@ -91,7 +91,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 
 	attention := map[string]any{"blocked_sessions": 0, "sessions": []boxBlockedSession{}}
 	if s.perm != nil {
-		summaries, err := s.perm.ListPendingSummaries(account, "", 100_000)
+		summaries, err := s.perm.ListPendingSummaries(account, principal.UserID, 100_000)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, errors.New("read pending approvals: "+err.Error()))
 			return
