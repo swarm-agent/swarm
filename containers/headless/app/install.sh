@@ -653,7 +653,13 @@ install_all() {
   ufw default allow outgoing >/dev/null
   ufw allow in on tailscale0 >/dev/null
   ufw allow 41641/udp >/dev/null
-  if ((lock_ssh)); then ufw delete allow OpenSSH >/dev/null 2>&1 || true; else ufw allow OpenSSH >/dev/null; fi
+  # Keep SSH open only where an SSH server is installed (it registers ufw's
+  # OpenSSH profile); a desktop without one has nothing to keep open.
+  if ((lock_ssh)); then
+    ufw delete allow OpenSSH >/dev/null 2>&1 || true
+  elif ufw app info OpenSSH >/dev/null 2>&1; then
+    ufw allow OpenSSH >/dev/null
+  fi
   ufw --force enable >/dev/null
 
   say "Fetching Swarm ($ref)"
