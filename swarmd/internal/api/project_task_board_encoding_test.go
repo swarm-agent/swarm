@@ -109,9 +109,9 @@ func TestProjectTaskBoardEncodingPrivacy(t *testing.T) {
 			t.Fatal("board encoding leaked diagnostic credentials")
 		}
 		var got struct {
-			LastError    string                              `json:"last_error"`
+			LastError    string                               `json:"last_error"`
 			Deliverables []pebblestore.ProjectTaskDeliverable `json:"deliverables"`
-			BoardSummary json.RawMessage                     `json:"board_summary"`
+			BoardSummary json.RawMessage                      `json:"board_summary"`
 		}
 		if err := json.Unmarshal(encoded, &got); err != nil {
 			t.Fatal(err)
