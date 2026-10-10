@@ -1,13 +1,12 @@
 vulnerabilities:
   - id: GO-2026-5932
     purls:
-      - "pkg:golang/golang.org/x/crypto@v0.56.0"
+      - "pkg:golang/golang.org/x/crypto@v0.57.0"
     expired_at: 2026-10-23
     statement: >-
       Trivy reports the unmaintained openpgp package at module inventory level.
-      Swarm imports argon2 and chacha20poly1305 from x/crypto, not openpgp;
-      govulncheck remains the required reachability gate. Reassessed on
-      2026-09-03 for v0.56.0: production dependencies remain argon2,
-      chacha20poly1305, and their primitives, not openpgp. Reassess quarterly
-      or immediately if the selected x/crypto version or imports change. The version
-      update addresses separate fixed SSH advisories; no openpgp import exists.
+      Swarm imports argon2, chacha20poly1305, ssh and ssh/knownhosts from
+      x/crypto, not openpgp; govulncheck remains the required reachability
+      gate. Reassessed on 2026-10-10 for v0.57.0 (pulled in by the x/net
+      v0.60.0 HTTP/2 fixes): no openpgp import exists. Reassess quarterly or
+      immediately if the selected x/crypto version or imports change.

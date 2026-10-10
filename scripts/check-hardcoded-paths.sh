@@ -30,7 +30,7 @@ filter_guest_image_paths() {
       'scripts/testbench-local-tools.sh:  ln -s /opt/go/bin/go "$point/usr/local/bin/go"'|\
       'scripts/testbench-local-tools.sh:  ln -s /opt/go/bin/gofmt "$point/usr/local/bin/gofmt"'|\
       'scripts/testbench-local-tools.sh:  ln -s /opt/pnpm/bin/pnpm.mjs "$point/usr/local/bin/pnpm"'|\
-      "scripts/testbench-local-tools.sh:  [[ \$(chroot \"\$point\" /usr/bin/env GOROOT=/opt/go /opt/go/bin/go version) == 'go version go1.26.7 linux/amd64' ]] || exit 1"|\
+      "scripts/testbench-local-tools.sh:  [[ \$(chroot \"\$point\" /usr/bin/env GOROOT=/opt/go /opt/go/bin/go version) == 'go version go1.26.9 linux/amd64' ]] || exit 1"|\
       'scripts/testbench-local-tools.sh:  cmp -- "$pnpmroot/package.json" "$point/opt/pnpm/package.json" || exit 1'|\
       "scripts/testbench-local-tools.sh:printf 'deb http://archive.ubuntu.com/ubuntu resolute main universe\\n' > \"\$point/etc/apt/sources.list\""|\
       'scripts/testbench-local-tools.sh:    export DEBIAN_FRONTEND=noninteractive GOROOT=/opt/go') ;;

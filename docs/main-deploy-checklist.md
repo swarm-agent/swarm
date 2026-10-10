@@ -85,7 +85,7 @@ bash scripts/build-headless-release.sh "$VERSION" "$SOURCE_SHA" "$BUILT_AT" "$BU
 python3 -B scripts/headless-release.py verify --archive "$OUTPUT_DIR/swarm-headless.oci.tar" --metadata "$OUTPUT_DIR/headless-image.json" --version "$VERSION" --source "$SOURCE_SHA"
 ```
 
-The builder requires `golang:1.26.7-trixie@sha256:…` and
+The builder requires `golang:1.26.9-trixie@sha256:…` and
 `debian:trixie-slim@sha256:…` under `docker.io/library`; it supplies no invented
 pins and emits no qualification receipt. The protected producer must run actual
 container startup, scoped-auth, SDK-session and restart qualification. Extend the

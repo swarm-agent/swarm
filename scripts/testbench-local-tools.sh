@@ -12,7 +12,7 @@ for p in "$image" "$goroot" "$pnpmroot"; do
   [[ $p == /* && $(realpath -e -- "$p") == "$p" ]] || exit 2
 done
 [[ -f $image && ! -L $image && $(stat -c '%u' "$image") == 0 ]] || exit 2
-[[ $("$goroot/bin/go" version) == 'go version go1.26.7 linux/amd64' ]] || exit 2
+[[ $("$goroot/bin/go" version) == 'go version go1.26.9 linux/amd64' ]] || exit 2
 [[ -f $pnpmroot/package.json && -f $pnpmroot/bin/pnpm.mjs ]] || exit 2
 : "${TMPDIR:?}"
 point=$(mktemp -d "$TMPDIR/swarm-local-tools.XXXXXXXX")
@@ -36,7 +36,7 @@ if [[ ! -e $point/opt/go && ! -e $point/opt/pnpm ]]; then
   ln -s /opt/go/bin/gofmt "$point/usr/local/bin/gofmt"
   ln -s /opt/pnpm/bin/pnpm.mjs "$point/usr/local/bin/pnpm"
 else
-  [[ $(chroot "$point" /usr/bin/env GOROOT=/opt/go /opt/go/bin/go version) == 'go version go1.26.7 linux/amd64' ]] || exit 1
+  [[ $(chroot "$point" /usr/bin/env GOROOT=/opt/go /opt/go/bin/go version) == 'go version go1.26.9 linux/amd64' ]] || exit 1
   cmp -- "$pnpmroot/package.json" "$point/opt/pnpm/package.json" || exit 1
 fi
 # Apt verifies Ubuntu's signed Release metadata and package hashes; never use trusted=yes.
@@ -49,7 +49,7 @@ timeout --signal=TERM --kill-after=10s 300s systemd-nspawn --quiet --settings=no
     chmod 755 /usr /usr/sbin
     apt-get -o APT::Update::Error-Mode=any update -qq
     apt-get install -y --no-install-recommends nodejs=22.22.1+dfsg+~cs22.19.15-1ubuntu1 tzdata
-    test "$(go version)" = "go version go1.26.7 linux/amd64"
+    test "$(go version)" = "go version go1.26.9 linux/amd64"
     test "$(node --version)" = v22.22.1
     test "$(pnpm --version)" = 11.13.1
     printf "pinned-tools-ready\n"

@@ -1,6 +1,6 @@
 module swarm-refactor/swarmtui
 
-go 1.26.7
+go 1.26.9
 
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1
@@ -25,5 +25,5 @@ require (
 	go.opentelemetry.io/otel v1.35.0 // indirect
 	go.opentelemetry.io/otel/metric v1.35.0 // indirect
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 )

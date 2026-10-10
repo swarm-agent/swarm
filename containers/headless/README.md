@@ -3,7 +3,7 @@
 This packages the existing daemon, not a workspace container runner. It builds
 `swarmd`, `swarmctl`, and `swarm-fff-search` with CGO using the daemon targets and
 shared buildinfo fields from `scripts/build-main-dist.sh`. Both stages use Debian
-Trixie/glibc; Go is pinned to the modules' 1.26.7 requirement. Build concurrency is
+Trixie/glibc; Go is pinned to the modules' 1.26.9 requirement. Build concurrency is
 bounded to two. Only linux/amd64 is supported by the vendored FFF library.
 
 ## Build and inspect (no daemon startup)

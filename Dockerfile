@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG BUILD_IMAGE=docker.io/library/golang:1.26.7-trixie
+ARG BUILD_IMAGE=docker.io/library/golang:1.26.9-trixie
 ARG RUNTIME_IMAGE=docker.io/library/ubuntu:26.04
 FROM ${BUILD_IMAGE} AS build
 ARG TARGETOS

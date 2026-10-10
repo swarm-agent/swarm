@@ -6,7 +6,7 @@ version=$1 source=$2 built_at=$3 build_image=$4 runtime_image=$5 output=$6
 [[ "$version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
 [[ "$source" =~ ^[0-9a-f]{40}$ && "$(git rev-parse HEAD)" == "$source" ]]
 [[ -z "$(git status --porcelain --untracked-files=all)" ]]
-[[ "$build_image" =~ ^docker.io/library/golang:1.26.7-trixie@sha256:[0-9a-f]{64}$ ]]
+[[ "$build_image" =~ ^docker.io/library/golang:1.26.9-trixie@sha256:[0-9a-f]{64}$ ]]
 [[ "$runtime_image" =~ ^docker.io/library/ubuntu:26.04@sha256:[0-9a-f]{64}$ ]]
 mkdir -p "$output"
 docker buildx build --platform linux/amd64 --provenance=false --sbom=false \

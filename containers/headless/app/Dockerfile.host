@@ -8,7 +8,7 @@
 #
 # The daemon is built against an older glibc than the server's (Debian
 # bookworm, glibc 2.36; Ubuntu 24.04 has 2.39) so the binaries run there.
-ARG BUILD_IMAGE=docker.io/library/golang:1.26.7-bookworm
+ARG BUILD_IMAGE=docker.io/library/golang:1.26.9-bookworm
 ARG NODE_IMAGE=docker.io/library/node:22.22.0-trixie-slim
 
 FROM ${BUILD_IMAGE} AS daemon
