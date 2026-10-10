@@ -434,6 +434,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("ensure canonical local swarm identity: %w", err)
 	}
+	// The machine signal feed: high-level events monitors and forwarders follow.
+	signalStore := pebblestore.NewSignalStore(store)
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore)
 	if err != nil {
@@ -706,6 +708,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
+	apiServer.SetSignalStore(signalStore)
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore)

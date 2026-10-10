@@ -6,6 +6,7 @@ export * from './worker-control.js';
 export * from './deliverables.js';
 export * from './deploy/index.js';
 export * from './notifications.js';
+export * from './signals.js';
 export * from './sessions.js';
 export * from './projects.js';
 export * from './permissions.js';

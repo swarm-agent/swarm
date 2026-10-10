@@ -12,6 +12,7 @@ import { SwarmWorkersNamespace } from './workers.js';
 import { SwarmDeliverablesNamespace } from './deliverables.js';
 import { SwarmDeployNamespace } from './deploy/index.js';
 import { SwarmNotificationsNamespace } from './notifications.js';
+import { SwarmSignalsNamespace } from './signals.js';
 import { SwarmProjectsNamespace } from './projects.js';
 import { SwarmRemoteNamespace } from './remote.js';
 import { SwarmSessionsNamespace } from './sessions.js';
@@ -57,6 +58,8 @@ export class SwarmClient {
   readonly notifications: SwarmNotificationsNamespace;
   /** Convenient alias for notifications namespace: inbox */
   readonly inbox: SwarmNotificationsNamespace;
+  /** Machine signal feed: blocked agents, failures, refused keys, reported events. */
+  readonly signals: SwarmSignalsNamespace;
   readonly storage: SwarmStorageNamespace;
   /** Owner administration of the relay connection (private transport only) */
   readonly remote: SwarmRemoteNamespace;
@@ -110,6 +113,7 @@ export class SwarmClient {
     this.deploy = new SwarmDeployNamespace(this.transport);
     this.notifications = new SwarmNotificationsNamespace(this.transport);
     this.inbox = this.notifications;
+    this.signals = new SwarmSignalsNamespace(this.transport);
     this.agents = new SwarmAgentsNamespace(this.transport);
     this.storage = new SwarmStorageNamespace(this.transport);
     this.cloud = this.storage;

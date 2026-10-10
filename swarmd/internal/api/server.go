@@ -124,6 +124,7 @@ type Server struct {
 	notifications               notificationService
 	storageHub                  *storagehub.Service
 	secretSlots                 *pebblestore.SecretSlotStore
+	signals                     *pebblestore.SignalStore
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
@@ -414,6 +415,13 @@ func (s *Server) SetWebhookDispatcher(dispatcher *webhook.Dispatcher) {
 
 // SetMediaStagingService configures bounded, account-scoped pre-session media
 // staging. The service deliberately has no session or model authority.
+// SetSignalStore wires the machine signal feed (/v3/signals).
+func (s *Server) SetSignalStore(signals *pebblestore.SignalStore) {
+	if s != nil {
+		s.signals = signals
+	}
+}
+
 // SetSecretServices wires the owner's secret slots and sealed value store.
 func (s *Server) SetSecretServices(slots *pebblestore.SecretSlotStore, values secretValueSetter) {
 	if s == nil {
