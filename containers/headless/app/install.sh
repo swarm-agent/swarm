@@ -75,6 +75,7 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
+       install.sh dev-sync /path/to/checkout | off
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
 
@@ -248,9 +249,35 @@ WRAPPER
   echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
 }
 
+# Development: build the committed HEAD of a checkout on this machine instead
+# of the branch on GitHub, so a change can be tried without pushing it. The
+# machine stays on that checkout (the update timer leaves it alone) until
+# `dev-sync off` returns it to the branch.
+dev_sync() {
+  load_conf
+  local repo=${1:?usage: install.sh dev-sync /path/to/checkout | off}
+  if [[ $repo == off ]]; then
+    sed -i '/^DEV_SOURCE=/d' "$CONF"
+    echo "Following $SWARM_REF on GitHub again; the next update brings it back."
+    return 0
+  fi
+  repo=$(realpath "$repo")
+  [[ -d $repo/.git && -f $repo/containers/headless/app/install.sh ]] || die "$repo is not a Swarm checkout"
+  # The checkout belongs to another user; trust it for this one fetch only.
+  git -C "$SRC" -c safe.directory="$repo" fetch -q "$repo" HEAD || die "could not read $repo"
+  sed -i '/^DEV_SOURCE=/d' "$CONF" && echo "DEV_SOURCE=$repo" >>"$CONF"
+  git -C "$SRC" reset -q --hard FETCH_HEAD
+  echo "swarm: building $(git -C "$SRC" rev-parse --short HEAD) from $repo"
+  exec bash "$SRC/containers/headless/app/install.sh" apply
+}
+
 # Pull-based updates: rebuild only when the branch moved.
 update() {
   load_conf
+  if [[ -n ${DEV_SOURCE:-} ]]; then
+    echo "swarm: built from $DEV_SOURCE; not following $SWARM_REF (install.sh dev-sync off to resume)"
+    return 0
+  fi
   git -C "$SRC" fetch -q origin "$SWARM_REF"
   local old new
   old=$(git -C "$SRC" rev-parse HEAD)
@@ -757,6 +784,7 @@ main() {
     reinstall) shift; reinstall_all "$@" ;;
     uninstall) shift; uninstall_all "$@" ;;
     update) update ;;
+    dev-sync) shift; dev_sync "$@" ;;
     up) up ;;
     reset-login) reset_login ;;
     apply) remove_legacy_layout; up ;;
