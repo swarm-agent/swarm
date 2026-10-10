@@ -12,7 +12,8 @@
 # node, finds the machines tagged tag:swarm and serves their tools. The
 # tailnet policy decides what that node may do on each machine.
 #
-# It must exit 0, or the session does not start: every step is best effort.
+# It must exit 0, or the session does not start: a failed step is reported on
+# stderr and retried by the next session instead of stopping the setup.
 REF=${SWARM_FLEET_REF:-dev}
 DIR=/opt/swarm-fleet
 BASE=https://raw.githubusercontent.com/swarm-agent/swarm/$REF/packages/swarm-fleet
