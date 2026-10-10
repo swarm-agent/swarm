@@ -26,6 +26,7 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	messagesPerMinute := fs.Int("messages-per-minute", 0, "with --agent: most messages (model runs) the token may start per minute (default 120)")
 	sessionsPerHour := fs.Int("sessions-per-hour", 0, "with --agent: most new conversations per hour (default 300)")
 	aiAccess := fs.String("ai-access", "", "mint an AI key for Swarm Control (/mcp): read (default level for AI clients), write, or full (the AI runs this box: approvals, models, workers, custom agents, client keys); lifetime up to 365 days")
+	monitor := fs.Bool("monitor", false, "mint a read-only monitoring key: the machine summary and signal feed (signals:read) and nothing else; lifetime up to 365 days")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -47,6 +48,12 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 			return errors.New("--agent tokens take no other authority")
 		}
 		maxSeconds = 30 * 86400
+	}
+	if *monitor {
+		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
+			return errors.New("--monitor keys take no other authority")
+		}
+		maxSeconds = 365 * 86400
 	}
 	if level := strings.TrimSpace(*aiAccess); level != "" {
 		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" {
@@ -108,7 +115,17 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	if *settings {
 		scopes = append(scopes, "settings:write")
 	}
+	if *monitor {
+		// A monitor reads how the machine is doing; it starts and sees nothing.
+		scopes = []string{"signals:read"}
+	}
 	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": scopes, "expires_in_seconds": *seconds}
+	if *monitor {
+		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
+			return errors.New("--monitor keys take no other authority")
+		}
+		maxSeconds = 365 * 86400
+	}
 	if level := strings.TrimSpace(*aiAccess); level != "" {
 		// The daemon derives scopes and Swarm Control levels from the level.
 		payload = map[string]any{"name": strings.TrimSpace(*name), "ai_access": level, "expires_in_seconds": *seconds}

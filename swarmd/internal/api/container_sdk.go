@@ -57,7 +57,7 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			s.serveControlMCP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec), next)
 			return
 		}
-		if !containerSDKRouteAllowed(r) {
+		if !containerSDKRouteAllowed(r) && !containerSDKMonitorRouteAllowed(r) {
 			writeError(w, http.StatusForbidden, errors.New("route unavailable on container SDK listener"))
 			return
 		}
@@ -103,6 +103,22 @@ func isAIKey(rec *pebblestore.ScopedTokenRecord) bool {
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(scope)), "swarm:") {
 			return true
 		}
+	}
+	return false
+}
+
+// containerSDKMonitorRouteAllowed admits watching a headless machine from
+// outside it: the machine summary and the signal feed (their handlers require
+// signals:read), and an outside source on the machine, such as a host security
+// monitor, reporting a signal (signals:write, external kinds only). Signal
+// sinks stay owner-only. Client app keys never get here: gateClientAppKey
+// holds them to the session routes first.
+func containerSDKMonitorRouteAllowed(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/v3/box/summary":
+		return r.Method == http.MethodGet
+	case "/v3/signals":
+		return r.Method == http.MethodGet || r.Method == http.MethodPost
 	}
 	return false
 }

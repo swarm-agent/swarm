@@ -95,6 +95,15 @@ access rule and client settings. `--no-ai-access` skips the gateway. Clients:
 Claude Code on a tailnet device (`claude mcp add --transport http`), or
 `packages/swarm-fleet` for Claude Code on the web and routines.
 
+To watch the machine from a dashboard, mint a **monitor key**:
+`sudo -u swarm swarmctl setup sdk-token --monitor --name dashboard
+--expires-in-seconds 31536000 > monitor.json` (a private file; the key is never
+printed). It reads `GET /v3/box/summary` (is the machine all right, does
+anything need a person) and `GET /v3/signals` (the event feed) on the same
+gateway and nothing else: no sessions, no setup. A key with `signals:write`
+lets a source on the machine, such as a host security monitor, report
+`external.*` signals with `POST /v3/signals`.
+
 This is a source build of an unpublished candidate, not the qualified release
 path below. The sandbox is checked with real Docker by
 `scripts/test-sandbox.sh` (a positive and negative suite, and a red-team run
