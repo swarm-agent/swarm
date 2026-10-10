@@ -598,6 +598,14 @@ install_all() {
   [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "--ref must be a branch name"
   [[ -z $tag || $tag =~ ^tag:[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--tag must look like tag:swarm"
 
+  # Snap's Docker is confined: it cannot bind-mount project folders outside
+  # home or take the gVisor runtime, so agent sandboxes cannot run on it, and
+  # installing the distribution's Docker beside it leaves two daemons fighting
+  # over one socket.
+  if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
+    die "this machine runs Docker from snap, which cannot run Swarm's agent sandboxes (it cannot mount project folders or use gVisor). Remove it first with: sudo snap remove docker (this deletes the containers, images and volumes it holds), then run this again"
+  fi
+
   say "Installing Docker, gVisor, Git and a firewall"
   apt-get update -qq
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \

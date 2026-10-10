@@ -10,7 +10,9 @@ apps, workers, sync, storage or publication APIs.
 ## One-line install on your own server (private, on your tailnet)
 
 For a fresh Ubuntu 24.04 **x86_64** server you control, with Tailscale
-MagicDNS and HTTPS certificates turned on for your tailnet. As root:
+MagicDNS and HTTPS certificates turned on for your tailnet. Docker from snap
+cannot run the agent sandboxes; the installer stops and asks you to remove it.
+As root:
 
 <copy label="Install">
 curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/dev/containers/headless/app/install.sh \
