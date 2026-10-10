@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	"swarm/packages/swarmd/internal/signals"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -44,6 +45,7 @@ type Service struct {
 	sessions                         sessionLookup
 	followupCheckpointPolicyResolver func(accountScopeID string) (string, error)
 	notifications                    *notification.Service
+	signals                          *signals.Emitter
 	localSwarmIDResolver             func() string
 	principalID                      string
 	bypassPermissions                bool
@@ -2223,6 +2225,7 @@ func permissionStoredError(raw string) string {
 }
 
 func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID, originSwarmID, sourceEventType string) {
+	s.emitPermissionSignal(record, sourceEventType)
 	if s == nil || s.notifications == nil {
 		return
 	}

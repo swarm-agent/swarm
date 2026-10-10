@@ -61,6 +61,7 @@ import (
 	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/security"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	"swarm/packages/swarmd/internal/signals"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
@@ -436,6 +437,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	// The machine signal feed: high-level events monitors and forwarders follow.
 	signalStore := pebblestore.NewSignalStore(store)
+	signalEmitter := signals.NewEmitter(signalStore)
+	permissionSvc.SetSignalEmitter(signalEmitter)
+	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore)
 	if err != nil {
@@ -459,6 +463,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	} else {
 		log.Printf("swarmd agent sandbox inactive (%s); agent commands run on this machine and permission bypass is disabled", status.Reason)
 	}
+	emitStartupSignals(signalEmitter, sandboxMgr.Status())
 	sandboxMgr.Start(context.Background())
 	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
@@ -472,6 +477,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	worktreeSvc := worktreeruntime.NewService(pebblestore.NewWorktreeStore(store), workspaceSvc, events)
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStoreWithSecretStore(store, secretStore), events)
+	securitySvc.SetSignalEmitter(signalEmitter)
 	voiceSvc := voice.NewService(
 		pebblestore.NewVoiceStore(store),
 		voice.NewWhisperLocalAdapter(),
@@ -711,7 +717,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSignalStore(signalStore)
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
-		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore)
+		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
 		if err != nil {
 			bgCancel()
 			_ = secretStore.Close()

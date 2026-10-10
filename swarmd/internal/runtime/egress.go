@@ -11,10 +11,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/egress"
 	"swarm/packages/swarmd/internal/sandbox"
+	"swarm/packages/swarmd/internal/signals"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -53,7 +55,7 @@ type brokerState struct {
 // startSecretGateway builds the CA, combined CA bundle, registry and gateway,
 // starts the gateway on the bridge address, and returns a sandbox broker. It is
 // only called when --secrets-gateway=on.
-func startSecretGateway(cfg config.Config, slots *pebblestore.SecretSlotStore, values secretValueReader) (sandbox.SecretBroker, func(), error) {
+func startSecretGateway(cfg config.Config, slots *pebblestore.SecretSlotStore, values secretValueReader, emitter *signals.Emitter) (sandbox.SecretBroker, func(), error) {
 	dir := filepath.Join(cfg.DataDir, "egress")
 	ca, err := egress.LoadOrCreateCA(dir)
 	if err != nil {
@@ -65,7 +67,7 @@ func startSecretGateway(cfg config.Config, slots *pebblestore.SecretSlotStore, v
 		return nil, nil, err
 	}
 	registry := egress.NewRegistry()
-	gateway := egress.NewGateway(ca, registry, useLogger{slots: slots})
+	gateway := egress.NewGateway(ca, registry, useLogger{slots: slots, signals: emitter})
 
 	ln, err := net.Listen("tcp", cfg.SecretsGatewayAddr)
 	if err != nil {
@@ -221,10 +223,53 @@ func grantFingerprint(grants []pebblestore.ActiveGrant) string {
 	return hex.EncodeToString(sum[:12])
 }
 
-type useLogger struct{ slots *pebblestore.SecretSlotStore }
+type useLogger struct {
+	slots   *pebblestore.SecretSlotStore
+	signals *signals.Emitter
+}
 
 func (l useLogger) LogUse(account, name, host, method, path, outcome string) {
+	l.emit(account, name, host, outcome)
 	_ = l.slots.RecordUse(account, pebblestore.SecretUse{
 		Name: name, Host: host, Method: method, Path: path, Outcome: outcome,
 	})
+}
+
+// Gateway signal windows: a secret used through the gateway is reported at
+// most hourly per secret and website; a refused destination (a private
+// network, this server, cloud metadata) at most every ten minutes per host.
+const (
+	secretUsedSignalWindow     = time.Hour
+	egressRefusedSignalWindow  = 10 * time.Minute
+	egressRefusedOutcomePrefix = "refused:"
+)
+
+// emit raises secret.used when the gateway injected a secret and
+// egress.refused when it refused a destination. The secret's value, the
+// request path and headers never go into a signal.
+func (l useLogger) emit(account, name, host, outcome string) {
+	if l.signals == nil {
+		return
+	}
+	switch {
+	case outcome == "injected" && name != "":
+		l.signals.EmitThrottled("secret.used:"+account+"/"+name+"@"+host, secretUsedSignalWindow, pebblestore.Signal{
+			Kind:     "secret.used",
+			Severity: pebblestore.SignalSeverityInfo,
+			Account:  account,
+			Summary:  "Secret " + name + " was used for " + host,
+			DedupKey: "secret.used:" + name + "@" + host,
+			Refs:     map[string]string{"secret": name, "host": host},
+		})
+	case strings.HasPrefix(outcome, egressRefusedOutcomePrefix):
+		l.signals.EmitThrottled("egress.refused:"+account+"@"+host, egressRefusedSignalWindow, pebblestore.Signal{
+			Kind:     "egress.refused",
+			Severity: pebblestore.SignalSeverityWarning,
+			Account:  account,
+			Summary:  "An agent sandbox was refused a connection to " + host,
+			DedupKey: "egress.refused:" + host,
+			Refs:     map[string]string{"host": host},
+			Attrs:    map[string]string{"reason": strings.TrimPrefix(outcome, egressRefusedOutcomePrefix)},
+		})
+	}
 }

@@ -2316,10 +2316,15 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 
 	ws.store.workersMu.Lock()
 	var published *workerRealtimeMutation
+	var finished *WorkerRunRecord
+	var finishedWorker WorkerRecord
 	defer func() {
 		ws.store.workersMu.Unlock()
 		if published != nil {
 			ws.store.publishWorkerRealtime(published)
+		}
+		if finished != nil && ws.store.workerRunObserver != nil {
+			ws.store.workerRunObserver(finishedWorker, *finished)
 		}
 	}()
 
@@ -2478,6 +2483,10 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 		return WorkerRunRecord{}, err
 	}
 	published = m
+	if AutomationV2Terminal(run.Status) && (!existingOk || existingRun.Status != run.Status) {
+		stored := run
+		finished, finishedWorker = &stored, w
+	}
 	return run, nil
 }
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/signals"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -20,6 +21,7 @@ const maxScopedTokenChainDepth = 16
 type Service struct {
 	authStore *pebblestore.ClientAuthStore
 	events    *pebblestore.EventLog
+	signals   *signals.Emitter
 }
 
 type AttachStatus struct {
@@ -234,6 +236,7 @@ func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord,
 	if err := s.authStore.PutScopedToken(record); err != nil {
 		return "", pebblestore.ScopedTokenRecord{}, err
 	}
+	s.emitTokenLifecycle("token.minted", record)
 
 	return token, record, nil
 }
@@ -257,9 +260,11 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 		return nil, nil
 	}
 	if record.Revoked {
+		s.emitTokenDenied(record, "revoked")
 		return nil, errors.New("token has been revoked")
 	}
 	if record.ExpiresAt > 0 && time.Now().UnixMilli() >= record.ExpiresAt {
+		s.emitTokenDenied(record, "expired")
 		return nil, errors.New("token has expired")
 	}
 	// Every ancestor must still be valid: revoking, deleting or expiring a key
@@ -267,6 +272,7 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 	parentID := record.ParentTokenID
 	for depth := 0; parentID != ""; depth++ {
 		if depth >= maxScopedTokenChainDepth {
+			s.emitTokenDenied(record, "issuer chain too deep")
 			return nil, errors.New("the chain of keys that issued this token is too deep")
 		}
 		parent, found, err := s.authStore.GetScopedToken(record.AccountScopeID, parentID)
@@ -274,6 +280,7 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 			return nil, err
 		}
 		if !found || parent.Revoked || (parent.ExpiresAt > 0 && time.Now().UnixMilli() >= parent.ExpiresAt) {
+			s.emitTokenDenied(record, "issuing key no longer valid")
 			return nil, errors.New("the key that issued this token is no longer valid")
 		}
 		parentID = parent.ParentTokenID
@@ -295,14 +302,25 @@ func (s *Service) RevokeScopedToken(accountScopeID, tokenID string) (pebblestore
 	if s == nil || s.authStore == nil {
 		return pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
 	}
-	return s.authStore.RevokeScopedToken(accountScopeID, tokenID)
+	record, err := s.authStore.RevokeScopedToken(accountScopeID, tokenID)
+	if err == nil {
+		s.emitTokenLifecycle("token.revoked", record)
+	}
+	return record, err
 }
 
 func (s *Service) DeleteScopedToken(accountScopeID, tokenID string) error {
 	if s == nil || s.authStore == nil {
 		return errors.New("auth store not configured")
 	}
-	return s.authStore.DeleteScopedToken(accountScopeID, tokenID)
+	record, found, _ := s.authStore.GetScopedToken(accountScopeID, tokenID)
+	if err := s.authStore.DeleteScopedToken(accountScopeID, tokenID); err != nil {
+		return err
+	}
+	if found {
+		s.emitTokenLifecycle("token.deleted", record)
+	}
+	return nil
 }
 
 func statusFromRecord(record pebblestore.AttachAuthRecord) AttachStatus {
