@@ -2429,3 +2429,93 @@ func TestWorkerAcceptedInputImmutable(t *testing.T) {
 		t.Fatalf("run changed: %+v %v", got, err)
 	}
 }
+
+// Requirement: a social_post deliverable requirement carries the operator's
+// action contract, and only the single supported X contract (publish_x_post,
+// env:TWITTER, no target URL, no parameters). Every other kind must not carry
+// a contract. Threat: a worker definition (operator- or import-supplied)
+// smuggling a webhook URL or arbitrary action into a deliverable that a human
+// later approves for external publication. Boundary: ValidateWorkerRecord via
+// CreateWorker, ValidatePortableWorkerDefinition, and export/import copies.
+// The pure validators plus a temp store are the narrowest layer that proves
+// both rejection and that no worker is persisted on rejection.
+func TestWorkerSocialPostActionContractValidation(t *testing.T) {
+	_, ws := openTestStore(t)
+	xContract := func() *DeliverableActionContract {
+		return &DeliverableActionContract{Action: "publish_x_post", TargetSecretRef: "env:TWITTER"}
+	}
+	create := func(name string, req WorkerDeliverableRequirement) (WorkerRecord, error) {
+		return ws.CreateWorker("acct-social", "user-1", CreateWorkerRequest{
+			Name:         name,
+			Instructions: "Draft posts",
+			Automations: []WorkerAutomationDefinition{{
+				Name:                    "post",
+				ActivationMode:          "manual",
+				Enabled:                 true,
+				PlanDocument:            testPlanDoc("Post"),
+				DeliverableRequirements: []WorkerDeliverableRequirement{req},
+			}},
+		}, nil)
+	}
+	rejected := map[string]WorkerDeliverableRequirement{
+		"social without contract":   {Name: "tweet", Kind: "social_post", Required: true},
+		"social with webhook":       {Name: "tweet", Kind: "social_post", ActionContract: &DeliverableActionContract{Action: "execute_webhook", TargetSecretRef: "env:TWITTER"}},
+		"social with target url":    {Name: "tweet", Kind: "social_post", ActionContract: &DeliverableActionContract{Action: "publish_x_post", TargetSecretRef: "env:TWITTER", TargetURL: "https://example.invalid/hook"}},
+		"social with other secret":  {Name: "tweet", Kind: "social_post", ActionContract: &DeliverableActionContract{Action: "publish_x_post", TargetSecretRef: "env:OTHER"}},
+		"social with parameters":    {Name: "tweet", Kind: "social_post", ActionContract: &DeliverableActionContract{Action: "publish_x_post", TargetSecretRef: "env:TWITTER", Parameters: map[string]any{"reply_to": "1"}}},
+		"report with contract":      {Name: "report", Kind: "report", ActionContract: xContract()},
+		"custom with contract":      {Name: "custom", Kind: "custom", ActionContract: &DeliverableActionContract{Action: "execute_webhook", TargetURL: "https://example.invalid/hook"}},
+		"unknown kind social_posts": {Name: "tweet", Kind: "social_posts", ActionContract: xContract()},
+	}
+	for name, req := range rejected {
+		if _, err := create(name, req); err == nil {
+			t.Fatalf("%s: expected rejection", name)
+		}
+	}
+	if res, err := ws.ListWorkers("acct-social", ListWorkersQuery{}); err != nil || len(res.Workers) != 0 {
+		t.Fatalf("rejected definitions persisted: %+v %v", res, err)
+	}
+
+	w, err := create("valid", WorkerDeliverableRequirement{Name: "tweet", Kind: "social_post", Required: true, ActionContract: xContract()})
+	if err != nil {
+		t.Fatalf("valid social_post rejected: %v", err)
+	}
+	got := w.Automations[0].DeliverableRequirements[0].ActionContract
+	if got == nil || got.Action != "publish_x_post" || got.TargetSecretRef != "env:TWITTER" || got.TargetURL != "" || len(got.Parameters) != 0 {
+		t.Fatalf("contract not preserved: %+v", got)
+	}
+
+	// Export carries an unaliased copy and the portable validator accepts it.
+	def, data, err := ws.ExportWorker("acct-social", w.ID)
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	exported := def.Automations[0].DeliverableRequirements[0].ActionContract
+	if exported == nil || exported == got || exported.Action != "publish_x_post" {
+		t.Fatalf("export contract missing or aliased: %+v", exported)
+	}
+	imported, err := ws.ImportWorkerAsNew("acct-social", "user-1", data, nil)
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if c := imported.Automations[0].DeliverableRequirements[0].ActionContract; c == nil || c.Action != "publish_x_post" || c.TargetSecretRef != "env:TWITTER" {
+		t.Fatalf("import lost contract: %+v", c)
+	}
+
+	portable := func(req string) string {
+		return `{"schema_version":1,"name":"P","instructions":"i","automations":[{"name":"a","activation_mode":"manual","enabled":true,"plan":{"title":"t","status":"pending","checkpoints":[{"id":"c1","status":"pending"}]},"deliverable_requirements":[` + req + `]}]}`
+	}
+	if _, err := ValidatePortableWorkerDefinition([]byte(portable(`{"name":"tweet","kind":"social_post","required":true,"action_contract":{"action":"publish_x_post","target_secret_ref":"env:TWITTER"}}`)), nil); err != nil {
+		t.Fatalf("portable valid social_post rejected: %v", err)
+	}
+	for _, bad := range []string{
+		`{"name":"tweet","kind":"social_post","required":true}`,
+		`{"name":"tweet","kind":"social_post","action_contract":{"action":"execute_webhook","target_url":"https://example.invalid/hook"}}`,
+		`{"name":"tweet","kind":"social_post","action_contract":{"action":"publish_x_post","target_secret_ref":"env:TWITTER","target_url":"https://example.invalid/hook"}}`,
+		`{"name":"r","kind":"report","action_contract":{"action":"publish_x_post","target_secret_ref":"env:TWITTER"}}`,
+	} {
+		if _, err := ValidatePortableWorkerDefinition([]byte(portable(bad)), nil); err == nil {
+			t.Fatalf("portable accepted %s", bad)
+		}
+	}
+}

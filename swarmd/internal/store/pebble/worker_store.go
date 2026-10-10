@@ -61,9 +61,12 @@ type WorkerInputRequirement struct {
 
 type WorkerDeliverableRequirement struct {
 	Name        string `json:"name"`
-	Kind        string `json:"kind"` // "artifact", "report", "pull_request", "alert", "custom"
+	Kind        string `json:"kind"` // "artifact", "report", "pull_request", "alert", "custom", "social_post"
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required"`
+	// ActionContract is operator-owned publication policy. It is required for
+	// social_post and forbidden for every other kind; agents never supply it.
+	ActionContract *DeliverableActionContract `json:"action_contract,omitempty"`
 }
 
 type WorkerProvenance struct {
@@ -512,9 +515,12 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 				return errors.New("deliverable requirement name is required")
 			}
 			switch delReq.Kind {
-			case "artifact", "report", "pull_request", "alert", "custom":
+			case "artifact", "report", "pull_request", "alert", "custom", "social_post":
 			default:
 				return fmt.Errorf("invalid deliverable requirement kind: %q", delReq.Kind)
+			}
+			if err := validateWorkerDeliverableActionContract(delReq); err != nil {
+				return err
 			}
 			if _, ok := seenDelivs[delName]; ok {
 				return fmt.Errorf("duplicate deliverable requirement name: %q", delName)
@@ -821,9 +827,12 @@ func ValidatePortableWorkerDefinition(data []byte, validate func(*SessionPlanDoc
 				return PortableWorkerDefinition{}, errors.New("deliverable requirement name is required")
 			}
 			switch delReq.Kind {
-			case "artifact", "report", "pull_request", "alert", "custom":
+			case "artifact", "report", "pull_request", "alert", "custom", "social_post":
 			default:
 				return PortableWorkerDefinition{}, fmt.Errorf("invalid deliverable requirement kind: %q", delReq.Kind)
+			}
+			if err := validateWorkerDeliverableActionContract(delReq); err != nil {
+				return PortableWorkerDefinition{}, err
 			}
 			if _, ok := seenDelivs[delName]; ok {
 				return PortableWorkerDefinition{}, fmt.Errorf("duplicate deliverable requirement name: %q", delName)
@@ -1910,7 +1919,7 @@ func (ws *WorkerStore) ExportWorker(account, workerID string) (PortableWorkerDef
 			Enabled:                 a.Enabled,
 			Plan:                    SanitizePlanForExport(a.PlanDocument),
 			InputRequirements:       a.InputRequirements,
-			DeliverableRequirements: a.DeliverableRequirements,
+			DeliverableRequirements: cloneWorkerDeliverableRequirements(a.DeliverableRequirements),
 		}
 	}
 
@@ -2007,7 +2016,7 @@ func (ws *WorkerStore) ImportWorkerAsNew(account, user string, data []byte, vali
 			Enabled:                 a.Enabled,
 			PlanDocument:            a.Plan,
 			InputRequirements:       a.InputRequirements,
-			DeliverableRequirements: a.DeliverableRequirements,
+			DeliverableRequirements: cloneWorkerDeliverableRequirements(a.DeliverableRequirements),
 			Revision:                1,
 			CreatedAt:               now,
 			UpdatedAt:               now,
@@ -2197,7 +2206,7 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 			Enabled:                 a.Enabled,
 			PlanDocument:            a.Plan,
 			InputRequirements:       a.InputRequirements,
-			DeliverableRequirements: a.DeliverableRequirements,
+			DeliverableRequirements: cloneWorkerDeliverableRequirements(a.DeliverableRequirements),
 			Revision:                rev,
 			CreatedAt:               createdAt,
 			UpdatedAt:               now,

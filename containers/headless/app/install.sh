@@ -2,7 +2,7 @@
 # One-line installer for a private, headless Swarm with its setup app.
 #
 # On a fresh Ubuntu 24.04 x86_64 server, as root:
-#   curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/dev/containers/headless/app/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh \
 #     | bash -s -- --relay https://swarm-relay.YOU.workers.dev
 #
 # It installs Docker, gVisor and Tailscale, joins your tailnet (you open one
@@ -31,8 +31,12 @@
 # The first visit to the app creates your login (username, password and an
 # optional authenticator code) from a device on your tailnet.
 # Later: `install.sh update` (also run by a 5-minute timer) rebuilds when the
-# branch changes; `install.sh reset-login` deletes the login so you can create
-# a new one (Swarm itself and your work are kept).
+# branch moves forward; `install.sh channel BRANCH` switches the branch it
+# follows and keeps everything else; `install.sh reset-login` deletes the login
+# so you can create a new one (Swarm itself and your work are kept).
+# `install.sh daemon-env` keeps settings for Swarm itself (such as the X
+# account its approved posts go out from) in a root-only file; values arrive
+# on stdin and are never shown again.
 # `install.sh reinstall` wipes Swarm's state and installs it fresh with the same
 # settings; `install.sh uninstall` only removes it. Both keep Docker, gVisor,
 # Tailscale, ufw and (unless --delete-projects) the project folder.
@@ -42,6 +46,9 @@ STATE=/var/lib/swarm-headless
 SRC=$STATE/src
 PROJECT=$STATE/project
 CONF=$STATE/install.env
+# Settings for Swarm itself (install.sh daemon-env), root-only; systemd reads it
+# when it starts the daemon.
+DAEMON_ENV=$STATE/daemon.env
 STAGE=$STATE/stage
 OPT=/opt/swarm
 UNITS=/usr/local/lib/systemd/system
@@ -76,12 +83,15 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
        install.sh dev-sync /path/to/checkout | off
+       install.sh channel [BRANCH]
+       install.sh daemon-env list | set NAME... | unset NAME...
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
 
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   tailnet machine name and Swarm machine name (default: swarm)
-  --ref BRANCH  swarm branch to build (default: dev)
+  --ref BRANCH  swarm branch to build (default: main, the released build;
+                dev follows development and changes several times a day)
   --tag TAG     join the tailnet as this tag, e.g. tag:swarm (the tailnet
                 policy must list it under tagOwners); first join only
   --lock-ssh    also close public SSH (use after `tailscale ssh` works)
@@ -97,6 +107,13 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
   --yes              do not ask for confirmation
   --delete-projects  also delete the project folder (your workspaces)
 
+  channel [BRANCH] show the branch this machine follows, or switch to BRANCH
+                   (main or dev) without reinstalling; the next update builds
+                   it once it is ahead of the running build
+  daemon-env       settings for Swarm itself, kept in a root-only file and
+                   applied with one restart: `list` shows names only,
+                   `set NAME...` reads one value per name from stdin,
+                   `unset NAME...` removes them
   check-isolation  prove from inside a sandbox that this server, the tailnet,
                    private networks and cloud metadata are unreachable
   check-sandbox    show each running agent sandbox and its hardening
@@ -283,11 +300,77 @@ update() {
   old=$(git -C "$SRC" rev-parse HEAD)
   new=$(git -C "$SRC" rev-parse FETCH_HEAD)
   [[ $old == "$new" ]] && return 0
+  # Only move forward: a branch that does not contain the running build (after
+  # a channel switch to an older branch, or a rewritten branch) would be a
+  # downgrade, which Swarm's stored state may not survive. Wait until it does.
+  if ! git -C "$SRC" merge-base --is-ancestor "$old" "$new"; then
+    echo "swarm: $SWARM_REF (${new:0:9}) does not contain the running build ${old:0:9}; waiting until it does"
+    return 0
+  fi
   git -C "$SRC" reset -q --hard "$new"
   echo "swarm: ${old:0:9} -> ${new:0:9}"
   # Continue in the installer just fetched, not this already-loaded copy, so
   # changes to the installer itself (units, firewall, run flags) apply now.
   exec bash "$SRC/containers/headless/app/install.sh" apply
+}
+
+# The branch this machine follows. Switching keeps the install, its state and
+# the running build; the next update (within 5 minutes) builds the new branch
+# once it contains the running build, so a switch never downgrades.
+channel() {
+  load_conf
+  local ref=${1:-}
+  if [[ -z $ref ]]; then
+    echo "Following ${SWARM_REF:-main}${DEV_SOURCE:+ (built from $DEV_SOURCE for now; install.sh dev-sync off to resume)}; running $(git -C "$SRC" rev-parse --short HEAD)"
+    return 0
+  fi
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "the branch must be a branch name such as main or dev"
+  git -C "$SRC" ls-remote --exit-code --heads origin "$ref" >/dev/null || die "the Swarm repository has no branch $ref"
+  sed -i '/^SWARM_REF=/d' "$CONF" && echo "SWARM_REF=$ref" >>"$CONF"
+  echo "Following $ref; the next update builds it once it contains the running build $(git -C "$SRC" rev-parse --short HEAD)."
+}
+
+# Settings for Swarm itself, such as TWITTER_* for approved X posts. One
+# NAME=value per line in a root-only file that systemd reads when it starts the
+# daemon. Values come on stdin, one line per name, so they never appear in a
+# process list or shell history, and they are never printed.
+daemon_env() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  local action=${1:-list} name value line keep
+  shift || true
+  if [[ $action == list ]]; then
+    [[ -f $DAEMON_ENV ]] && sed -n 's/^\([A-Z][A-Z0-9_]*\)=.*/\1/p' "$DAEMON_ENV"
+    return 0
+  fi
+  [[ ($action == set || $action == unset) && $# -gt 0 ]] || die "usage: install.sh daemon-env list | set NAME... | unset NAME..."
+  for name; do
+    [[ $name =~ ^[A-Z][A-Z0-9_]{1,63}$ ]] || die "the name must be capital letters, digits and _"
+  done
+  install -m 0600 -o root -g root /dev/null "$DAEMON_ENV.new"
+  if [[ -f $DAEMON_ENV ]]; then
+    while IFS= read -r line; do
+      keep=1
+      for name; do [[ ${line%%=*} == "$name" ]] && keep=0; done
+      ((keep)) && printf '%s\n' "$line" >>"$DAEMON_ENV.new"
+    done <"$DAEMON_ENV"
+  fi
+  if [[ $action == set ]]; then
+    for name; do
+      IFS= read -r value || true
+      # systemd reads the file without shell quoting; keep values to characters
+      # that need none (API keys and tokens fit).
+      [[ $value =~ ^[A-Za-z0-9._~+/=:@-]{1,2048}$ ]] || { rm -f "$DAEMON_ENV.new"; die "the value for $name must be one line of letters, digits and ._~+/=:@-"; }
+      printf '%s=%s\n' "$name" "$value" >>"$DAEMON_ENV.new"
+    done
+  fi
+  mv -f "$DAEMON_ENV.new" "$DAEMON_ENV"
+  # Older installs have no EnvironmentFile line in the unit yet.
+  grep -q '^EnvironmentFile=-' "$UNITS/$DAEMON_UNIT" || install_units
+  systemctl daemon-reload
+  systemctl restart "$DAEMON_UNIT"
+  wait_ready
+  if [[ $action == set ]]; then echo "Saved $*; Swarm restarted."; else echo "Removed $*; Swarm restarted."; fi
 }
 
 install_units() {
@@ -334,6 +417,7 @@ UMask=0077
 Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
 Environment=LD_LIBRARY_PATH=$OPT/current/lib
 Environment=PATH=$OPT/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=-$DAEMON_ENV
 StateDirectory=swarmd
 StateDirectoryMode=0700
 CacheDirectory=swarmd
@@ -602,7 +686,7 @@ set_tailnet_identity() {
 }
 
 install_all() {
-  local relay='' name=swarm ref=dev lock_ssh=0 ai_access=on tag='' secrets_gateway=off
+  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=off
   while (($#)); do
     case $1 in
       --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
@@ -785,6 +869,8 @@ main() {
     uninstall) shift; uninstall_all "$@" ;;
     update) update ;;
     dev-sync) shift; dev_sync "$@" ;;
+    channel) shift; channel "$@" ;;
+    daemon-env) shift; daemon_env "$@" ;;
     up) up ;;
     reset-login) reset_login ;;
     apply) remove_legacy_layout; up ;;

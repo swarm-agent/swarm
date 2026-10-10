@@ -649,6 +649,14 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			}
 		}
 		copyDoc.Info.Context = strings.TrimSpace(w.Instructions + "\n\n" + copyDoc.Info.Context)
+		if r.AutomationID != "" {
+			for _, a := range w.Automations {
+				if a.ID == r.AutomationID && a.Revision == r.AutomationRevision && automationHasSocialPost(a) {
+					copyDoc.Info.Context += "\n\n" + workerSocialPostInstruction
+					break
+				}
+			}
+		}
 		if len(r.Input) != 0 {
 			payload, err := json.Marshal(r.Input)
 			if err != nil {
@@ -938,6 +946,13 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			}
 		}
 		current.Status = "succeeded"
+		// Deliverables persist before the terminal receipt so a crash retries.
+		if invalid, err := s.recordWorkerRunDeliverables(current, plan.Document.Checkpoints); err != nil {
+			return err
+		} else if invalid != "" {
+			current.Status = "failed"
+			current.Error = invalid
+		}
 	case sessions.RunIntentFailed, sessions.RunIntentExpired, sessions.RunIntentInterrupted, sessions.RunIntentDispatchBlocked:
 		current.Status = "failed"
 		current.Error = "execution did not complete"
@@ -969,6 +984,100 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		}
 	}
 	return err
+}
+
+// pinnedWorkerAutomation resolves the immutable worker revision and automation
+// revision a run was admitted with, matching startLocked. ok is false for
+// direct (non-automation) requests.
+func (s *WorkerExecutionService) pinnedWorkerAutomation(r store.WorkerRunRecord) (store.WorkerRecord, store.WorkerAutomationDefinition, bool, error) {
+	if r.AutomationID == "" {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, nil
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, err
+	}
+	history, found, err := ws.GetWorkerRevision(r.AccountScopeID, r.WorkerID, r.WorkerRevision)
+	if err != nil {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, err
+	}
+	if !found {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, store.ErrWorkerConflict
+	}
+	for _, a := range history.Worker.Automations {
+		if a.ID == r.AutomationID && a.Revision == r.AutomationRevision {
+			return history.Worker, a, true, nil
+		}
+	}
+	return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, store.ErrWorkerConflict
+}
+
+// workerSocialPostInstruction is server-written plan context for automations
+// that declare a social_post deliverable. The agent supplies only the text.
+var workerSocialPostInstruction = fmt.Sprintf(`Social post deliverable: finish the final checkpoint with plan_manage complete_checkpoint whose result is exactly a JSON object {"tweet_text":"..."} with no other fields, and at most %d characters of post text. Nothing is posted by this run; the post is published only after a person reviews and approves it.`, store.WorkerSocialPostMaxRunes)
+
+func automationHasSocialPost(a store.WorkerAutomationDefinition) bool {
+	for _, req := range a.DeliverableRequirements {
+		if req.Kind == store.WorkerDeliverableKindSocialPost {
+			return true
+		}
+	}
+	return false
+}
+
+// recordWorkerRunDeliverables creates pending_review deliverables declared by
+// the pinned automation from the last completed checkpoint result. Records use
+// deterministic IDs, so repeated observation never duplicates them. A required
+// requirement whose agent result is invalid returns a run failure message and
+// persists nothing; an optional invalid one is skipped. The returned error is
+// reserved for storage/authority failures that must leave the run open.
+func (s *WorkerExecutionService) recordWorkerRunDeliverables(r store.WorkerRunRecord, checkpoints []store.SessionPlanCheckpoint) (string, error) {
+	w, auto, ok, err := s.pinnedWorkerAutomation(r)
+	if err != nil || !ok || !automationHasSocialPost(auto) {
+		return "", err
+	}
+	var source *store.SessionPlanCheckpoint
+	for i := len(checkpoints) - 1; i >= 0; i-- {
+		if checkpoints[i].Status == "completed" && strings.TrimSpace(checkpoints[i].Result) != "" {
+			source = &checkpoints[i]
+			break
+		}
+	}
+	var records []store.DeliverableRecord
+	for _, req := range auto.DeliverableRequirements {
+		if req.Kind != store.WorkerDeliverableKindSocialPost {
+			continue
+		}
+		var rec store.DeliverableRecord
+		buildErr := errors.New("no completed checkpoint result")
+		if source != nil {
+			rec, buildErr = store.BuildWorkerSocialPostDeliverable(w, auto, r, req, *source)
+		}
+		if buildErr != nil {
+			if req.Required {
+				return fmt.Sprintf("social_post deliverable invalid: %s: %v", strings.TrimSpace(req.Name), buildErr), nil
+			}
+			continue
+		}
+		records = append(records, rec)
+	}
+	for i := range records {
+		rec := &records[i]
+		existing, found, err := s.host.repository.GetDeliverable(r.AccountScopeID, rec.ID)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			if existing.WorkerID != rec.WorkerID || existing.OccurrenceID != rec.OccurrenceID || existing.Kind != rec.Kind {
+				return "", fmt.Errorf("%w: deliverable %s belongs to another run", store.ErrWorkerConflict, rec.ID)
+			}
+			continue
+		}
+		if err = s.host.repository.PutDeliverable(r.AccountScopeID, rec); err != nil {
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 // SetWorkerExecutionService wires the same execution authority used by the API

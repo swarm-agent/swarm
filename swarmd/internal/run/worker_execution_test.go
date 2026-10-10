@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
@@ -502,5 +503,107 @@ func TestWorkerRunStartsFromDetachedHead(t *testing.T) {
 	snapshot, ok, err := ss.GetSession(r.SessionID)
 	if err != nil || !ok || snapshot.WorktreeRootPath == "" {
 		t.Fatalf("run has no worktree lane: %+v %v", snapshot, err)
+	}
+}
+
+// Requirement: an operator-defined worker whose pinned automation declares a
+// social_post deliverable creates exactly one pending_review deliverable per
+// completed run, with post text from the final checkpoint result and the
+// action contract copied from the operator definition; a required deliverable
+// with an invalid agent result fails the run and persists nothing. Threat: the
+// agent choosing the publication action/target, duplicate deliverables on
+// repeated observation or crash retry, and a malformed result being reported
+// as a successful run. Boundary: WorkerExecutionService.observeRun via
+// ReconcileWorker, startPlan plan context, and SessionStore deliverables. Real
+// plan mutations and V3 intents are the narrowest deterministic layer that
+// exercises the completion path; no provider is contacted.
+func TestWorkerSocialPostDeliverableOnCompletion(t *testing.T) {
+	runs, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	repo := execution.host.repository
+	contract := func() *store.DeliverableActionContract {
+		return &store.DeliverableActionContract{Action: "publish_x_post", TargetSecretRef: "env:TWITTER"}
+	}
+	complete := func(name, result string) (store.WorkerRecord, store.WorkerRunRecord) {
+		t.Helper()
+		doc := store.SessionPlanDocument{Title: "Post", Info: store.SessionPlanInfo{Goal: "Draft a post"}, Checkpoints: []store.SessionPlanCheckpoint{{ID: "cp-1", Order: 1, Title: "Draft", Tasks: []string{"Draft"}, AcceptanceCriteria: []string{"Drafted"}, Status: "pending"}}}
+		w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: name, WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}, Automations: []store.WorkerAutomationDefinition{{Name: "post", ActivationMode: "manual", Enabled: true, PlanDocument: doc, DeliverableRequirements: []store.WorkerDeliverableRequirement{{Name: "tweet", Kind: "social_post", Required: true, ActionContract: contract()}}}}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := execution.Dispatch(context.Background(), "account", "owner", store.WorkerRunAdmission{WorkerID: w.ID, AutomationID: w.Automations[0].ID, RequestSource: "test_run", IdempotencyKey: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, _, err := ss.GetActivePlan(r.SessionID)
+		if err != nil || plan.Document == nil || len(plan.Document.Checkpoints) != 1 {
+			t.Fatalf("plan: %+v %v", plan, err)
+		}
+		if !strings.Contains(plan.Document.Info.Context, `{"tweet_text":"..."}`) || !strings.Contains(plan.Document.Info.Context, "approves") {
+			t.Fatalf("social_post instruction missing from plan context: %q", plan.Document.Info.Context)
+		}
+		if _, err = runs.executePlanManageToolWithMutation(r.SessionID, fmt.Sprintf(`{"action":"complete_checkpoint","checkpoint_id":"cp-1","run_id":%q,"attempt_id":%q,"run_session_id":%q,"parent_session_id":%q,"report":"Drafted","result":%q}`, r.ID, plan.Document.Checkpoints[0].AttemptID, r.SessionID, r.SessionID, result), "", ss.ApplySessionMutation); err != nil {
+			t.Fatal(err)
+		}
+		intent, _, err := ss.GetSessionRunIntent(r.SessionID, r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		intent.Status = sessions.RunIntentCompleted
+		key := "completed-" + name
+		if _, err = ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, EventType: "session.run_intent.updated", RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+			t.Fatal(err)
+		}
+		if err = execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
+			t.Fatal(err)
+		}
+		return w, r
+	}
+
+	w, r := complete("poster", `{"tweet_text":"hi"}`)
+	receipt, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
+	if err != nil || receipt.Status != "succeeded" {
+		t.Fatalf("receipt: %+v %v", receipt, err)
+	}
+	list, err := repo.ListDeliverables("account", store.DeliverableFilter{WorkerID: w.ID})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("deliverables: %+v %v", list, err)
+	}
+	d := list[0]
+	if d.ID != "deliv_"+r.ID+"_tweet" || d.Kind != "social_post" || d.Status != "pending_review" || d.OccurrenceID != r.ID || d.SessionID != r.SessionID || d.WorkspaceID != workspaceID || d.Payload["tweet_text"] != "hi" || len(d.Payload) != 1 {
+		t.Fatalf("deliverable: %+v", d)
+	}
+	if d.ActionContract == nil || d.ActionContract.Action != "publish_x_post" || d.ActionContract.TargetSecretRef != "env:TWITTER" || d.ActionContract.TargetURL != "" || len(d.ActionContract.Parameters) != 0 {
+		t.Fatalf("contract not the operator's: %+v", d.ActionContract)
+	}
+
+	// Repeated observation and a crash-retry of the deliverable step are no-ops.
+	if err = execution.observeRun(r); err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := ss.GetActivePlan(r.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invalid, err := execution.recordWorkerRunDeliverables(receipt, plan.Document.Checkpoints); err != nil || invalid != "" {
+		t.Fatalf("retry: %q %v", invalid, err)
+	}
+	again, err := repo.ListDeliverables("account", store.DeliverableFilter{WorkerID: w.ID})
+	if err != nil || len(again) != 1 || again[0].CreatedAt != d.CreatedAt || again[0].UpdatedAt != d.UpdatedAt {
+		t.Fatalf("not idempotent: %+v %v", again, err)
+	}
+
+	// An agent result that tries to choose the action fails the required run.
+	bad, badRun := complete("injector", `{"tweet_text":"hi","action":"execute_webhook","target_url":"https://example.invalid/hook"}`)
+	failed, _, err := ws.GetWorkerRun("account", bad.ID, badRun.ID)
+	if err != nil || failed.Status != "failed" || !strings.HasPrefix(failed.Error, "social_post deliverable invalid") {
+		t.Fatalf("invalid result not a failed run: %+v %v", failed, err)
+	}
+	if none, err := repo.ListDeliverables("account", store.DeliverableFilter{WorkerID: bad.ID}); err != nil || len(none) != 0 {
+		t.Fatalf("invalid result persisted a deliverable: %+v %v", none, err)
 	}
 }

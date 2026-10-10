@@ -15,7 +15,7 @@ cannot run the agent sandboxes; the installer stops and asks you to remove it.
 As root:
 
 <copy label="Install">
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/dev/containers/headless/app/install.sh \
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh \
   | bash -s -- --relay https://swarm-relay.YOU.workers.dev
 </copy>
 
@@ -38,7 +38,21 @@ and `swarm-headless-app` (this app on 127.0.0.1:8443). Binaries live in
 directories); agent worktrees under `/var/lib/swarm`; projects in
 `/var/lib/swarm-headless/project`. `swarmctl` (in `/usr/local/bin`) runs as
 the `swarm` user, e.g. `sudo swarmctl remote approve CODE`. A 5-minute timer
-runs `install.sh update`, which rebuilds only when the branch moves.
+runs `install.sh update`, which rebuilds only when the branch moves forward:
+a branch that does not contain the running build would be a downgrade, so it
+waits until it does.
+**Channels.** The installer follows `main`, the released build; `--ref dev`
+follows development, which changes several times a day.
+`install.sh channel` shows the branch and `install.sh channel dev` (or `main`)
+switches it without reinstalling; the switch takes effect at the next update
+once that branch contains the running build.
+**Daemon settings.** `install.sh daemon-env set NAME` reads a value from stdin
+into a root-only file the daemon's unit loads, then restarts Swarm;
+`daemon-env list` shows names only and `daemon-env unset NAME` removes one.
+Approved X posts (deliverables with the `publish_x_post` action) use
+`TWITTER_API_KEY`, `TWITTER_API_SECRET`, `TWITTER_ACCESS_TOKEN`,
+`TWITTER_ACCESS_TOKEN_SECRET`, `TWITTER_ACCOUNT` and
+`TWITTER_ACCOUNT_SCOPE_ID` from there; agents never see them.
 `install.sh dev-sync /path/to/checkout` builds the committed HEAD of a Swarm
 checkout on the machine instead (for testing before a push); the timer then
 leaves it alone until `install.sh dev-sync off`.
