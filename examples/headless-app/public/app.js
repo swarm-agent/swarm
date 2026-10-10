@@ -119,20 +119,29 @@ function nextStep() {
   if (showSecurity) return 'security';
   return STEPS.slice(1).map(([key]) => key).find(key => !setupState.steps[key]) || 'done';
 }
+// A finished step stays reachable from the progress bar, to change it later.
+let revisit = null;
 async function openSetup(fromSignIn = false) {
   setupState = await api('setup');
   const next = nextStep();
   // Returning owners with a finished setup go straight to their work.
   if (fromSignIn && next === 'done') { await openHome(); return; }
   show('setup');
+  const current = revisit || next;
+  revisit = null;
   $('progress').replaceChildren(...STEPS.map(([key, label]) => {
     const done = key === 'security' ? account?.two_factor || !showSecurity : setupState.steps[key];
-    return el('li', { className: key === next ? 'current' : done ? 'done' : '', textContent: label });
+    const item = el('li', { className: key === current ? 'current' : done ? 'done' : '' });
+    if (done && key !== 'security' && key !== current) {
+      item.append(el('button', { type: 'button', className: 'link', textContent: label,
+        onclick: () => { revisit = key; $('error').hidden = true; openSetup().catch(fail); } }));
+    } else item.textContent = label;
+    return item;
   }));
-  for (const key of [...STEPS.map(([k]) => k), 'done']) $(`step-${key}`).hidden = key !== next;
-  $('setup-later').hidden = next === 'done';
-  if (next === 'provider') await loadProviders();
-  if (next === 'claude') renderRemote(setupState.remote, setupState.defaults);
+  for (const key of [...STEPS.map(([k]) => k), 'done']) $(`step-${key}`).hidden = key !== current;
+  $('setup-later').hidden = current === 'done';
+  if (current === 'provider') await loadProviders();
+  if (current === 'claude') renderRemote(setupState.remote, setupState.defaults);
 }
 act('nav-setup', () => openSetup());
 act('setup-later', openHome);

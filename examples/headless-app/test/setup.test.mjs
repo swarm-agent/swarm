@@ -4,14 +4,15 @@ import { SwarmApiError } from '@swarm-agent/sdk';
 import { operations } from '../operations.mjs';
 
 const assignment = { provider: 'codex', model: 'm', thinking: 'low' };
-function fakeSdk({ owner = true, credentials = 1, models = true, workspaces = ['/project/bot'], remote = {}, bypass = false } = {}) {
+function fakeSdk({ owner = true, credentials = 1, providerReady = credentials > 0, models = true, workspaces = ['/project/bot'], remote = {}, bypass = false } = {}) {
   const calls = [];
   let status = { configured: false, enabled: false, connected: false, allow_write: false, allow_approve: false, allow_manage: false, pending_consents: [], ...remote };
   const sdk = {
     calls,
     onboarding: { get: async () => ({ identity: { bootstrapped: owner }, heuristics: { credential_count: credentials } }),
       update: async input => { calls.push(['owner', input]); } },
-    settings: { agentModels: async () => ({ agent_model_settings: models ? { swarm: { action: assignment, plan: assignment },
+    settings: { providers: async () => [{ id: 'codex', ready: providerReady, runnable: providerReady }],
+      agentModels: async () => ({ agent_model_settings: models ? { swarm: { action: assignment, plan: assignment },
       system_agents: { compact: assignment, finder: assignment, coder: assignment, designer: assignment, router: assignment } } :
       { swarm: { action: assignment, plan: {} }, system_agents: {} } }) },
     workspaces: { list: async () => workspaces.map(path => ({ path })) },
@@ -31,7 +32,8 @@ function fakeSdk({ owner = true, credentials = 1, models = true, workspaces = ['
 
 // Purpose: the signed-in owner's account becomes the Swarm owner on first use
 // (named after the installer's machine name), the guide reports the next
-// unfinished step from canonical state, and relay administration (owner-only)
+// unfinished step from canonical state (the provider step only once a provider
+// works, not merely once a key is saved), and relay administration (owner-only)
 // is never touched before an owner exists. Boundary: operations().run('setup')
 // with an SDK fixture; real daemon onboarding and relay behaviour are covered
 // by the container/relay checks.
@@ -48,6 +50,10 @@ test('setup creates the Swarm owner and reports step completion and installer de
   const existing = fakeSdk();
   await operations(existing).run('setup', {}, 'roy');
   assert.equal(existing.calls.some(c => c[0] === 'owner'), false);
+  // A key that was saved but whose provider does not work leaves setup on the
+  // provider step, so the owner can fix it instead of being stuck on models.
+  const unverified = await operations(fakeSdk({ credentials: 1, providerReady: false, models: false })).run('setup', {}, 'roy');
+  assert.equal(unverified.steps.provider, false);
   const partial = await operations(fakeSdk({ models: false, workspaces: ['/elsewhere/repo'] })).run('setup', {}, 'roy');
   assert.deepEqual(partial.steps, { provider: true, models: false, workspace: false, agents: false, claude: false });
   const done = await operations(fakeSdk({ bypass: true, remote: { configured: true, enabled: true, connected: true } })).run('setup', {}, 'roy');

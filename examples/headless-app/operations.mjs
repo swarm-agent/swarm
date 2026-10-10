@@ -85,7 +85,9 @@ export function operations(sdk, project = '/project', defaults = {}) {
     const steps = { provider: false, models: false, workspace: false, agents: false, claude: false };
     let relay = null, mode = 'ask';
     if (status.identity?.bootstrapped === true) {
-      steps.provider = (status.heuristics?.credential_count ?? 0) > 0;
+      // A saved key counts only once its provider works: a rejected or
+      // unverifiable key must not move setup past the provider step.
+      steps.provider = (await sdk.settings.providers()).some(p => p.ready && p.runnable);
       let settings = null;
       try { settings = (await sdk.settings.agentModels()).agent_model_settings; }
       catch (error) { if (!(error instanceof SwarmNotFoundError)) throw error; }
