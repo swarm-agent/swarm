@@ -39,6 +39,9 @@ directories); agent worktrees under `/var/lib/swarm`; projects in
 `/var/lib/swarm-headless/project`. `swarmctl` (in `/usr/local/bin`) runs as
 the `swarm` user, e.g. `sudo swarmctl remote approve CODE`. A 5-minute timer
 runs `install.sh update`, which rebuilds only when the branch moves.
+`install.sh dev-sync /path/to/checkout` builds the committed HEAD of a Swarm
+checkout on the machine instead (for testing before a push); the timer then
+leaves it alone until `install.sh dev-sync off`.
 `install.sh reset-login` deletes the login (not Swarm or your work).
 `install.sh reinstall` wipes Swarm (services, binaries, sandboxes, state:
 owner, provider sign-in, AI keys, relay pairing, agent worktrees) and installs
