@@ -100,12 +100,24 @@ func (g *Gateway) serveOne(client *tls.Conn, upstream *http.Transport, req *http
 	}
 	g.logEach(sandbox, used, host, req, outcome)
 
-	resp.Body = newScrubReader(resp.Body, scrub)
-	// Scrubbing can change the body length, so the original length is wrong;
-	// send with unknown length (chunked) instead.
-	resp.Header.Del("Content-Length")
-	resp.ContentLength = -1
-	resp.TransferEncoding = nil
+	// A site may echo the value back in a header as well as in the body.
+	for key, values := range resp.Header {
+		for i, v := range values {
+			resp.Header[key][i] = string(replaceAll([]byte(v), scrub))
+		}
+	}
+	if req.Method == http.MethodHead || !responseHasBody(resp.StatusCode) {
+		_ = resp.Body.Close()
+		resp.Body = http.NoBody
+	} else {
+		// Scrubbing can change the body length, so the original length is
+		// wrong: send it chunked, which also ends the response without closing
+		// the connection (an unframed body would end only when it closes).
+		resp.Body = newScrubReader(resp.Body, scrub)
+		resp.Header.Del("Content-Length")
+		resp.ContentLength = -1
+		resp.TransferEncoding = []string{"chunked"}
+	}
 	keepAlive := !req.Close && resp.ProtoAtLeast(1, 1)
 	if err := resp.Write(client); err != nil {
 		return false
@@ -153,6 +165,12 @@ func copyHeaders(dst, src http.Header) {
 			dst.Add(key, v)
 		}
 	}
+}
+
+// responseHasBody reports whether a response with this status carries a body
+// (RFC 9110: 1xx, 204 and 304 never do).
+func responseHasBody(status int) bool {
+	return status >= 200 && status != http.StatusNoContent && status != http.StatusNotModified
 }
 
 func writeHTTPError(client *tls.Conn, status int) {

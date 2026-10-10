@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"strings"
@@ -127,11 +128,25 @@ func proxyClient(t *testing.T, g *Gateway, proxyAddr, token string) *http.Client
 	}
 }
 
+// The response must also end where it ends: a body sent without framing on a
+// kept-alive connection never ends for the client, so every call through the
+// gateway hung until the client gave up. Each request here must complete
+// within the client's timeout, a second request must reuse the connection,
+// and bodyless responses (HEAD, 204) must come back well-formed. A value
+// echoed in a response header is scrubbed too.
 func TestGatewaySwapsSecretForAllowedHostAndScrubsResponse(t *testing.T) {
 	const host = "api.secret.example"
-	var gotAuth string
+	var mu sync.Mutex
+	var gotAuth []string
 	srv, roots := testUpstream(t, host, func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
+		mu.Lock()
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("X-Echo", r.Header.Get("Authorization"))
+		if r.URL.Path == "/empty" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		fmt.Fprintf(w, "you sent %s", r.Header.Get("Authorization")) // echo, to prove scrub
 	})
 	resolver := staticResolver{token: "tok-1", sandbox: Sandbox{
@@ -142,26 +157,58 @@ func TestGatewaySwapsSecretForAllowedHostAndScrubsResponse(t *testing.T) {
 	g, proxyAddr := startGateway(t, resolver, logger, srv.Listener.Addr().String(), roots)
 
 	client := proxyClient(t, g, proxyAddr, "tok-1")
-	req, _ := http.NewRequest("GET", "https://"+host+"/v1/charge", nil)
-	req.Header.Set("Authorization", "Bearer swarm-secret://STRIPE_KEY")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	client.Timeout = 3 * time.Second
+	conns := map[string]struct{}{}
+	call := func(method, path string) (*http.Response, string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, "https://"+host+path, nil)
+		req.Header.Set("Authorization", "Bearer swarm-secret://STRIPE_KEY")
+		trace := &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) {
+			conns[info.Conn.LocalAddr().String()] = struct{}{}
+		}}
+		resp, err := client.Do(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("%s %s: reading the response did not finish: %v", method, path, err)
+		}
+		if echo := resp.Header.Get("X-Echo"); echo != "Bearer swarm-secret://STRIPE_KEY" {
+			t.Fatalf("%s %s: response header not scrubbed to the stand-in: %q", method, path, echo)
+		}
+		return resp, string(body)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
 
-	if gotAuth != "Bearer sk_live_REAL" {
-		t.Fatalf("upstream did not receive the real secret: %q", gotAuth)
+	for i := 0; i < 2; i++ {
+		_, body := call("GET", "/v1/charge")
+		if strings.Contains(body, "sk_live_REAL") {
+			t.Fatalf("real secret leaked back to the sandbox: %q", body)
+		}
+		if body != "you sent Bearer swarm-secret://STRIPE_KEY" {
+			t.Fatalf("response not scrubbed to the stand-in: %q", body)
+		}
 	}
-	if strings.Contains(string(body), "sk_live_REAL") {
-		t.Fatalf("real secret leaked back to the sandbox: %q", body)
+	if len(conns) != 1 {
+		t.Fatalf("second request did not reuse the connection: %d connections", len(conns))
 	}
-	if !strings.Contains(string(body), "swarm-secret://STRIPE_KEY") {
-		t.Fatalf("response not scrubbed to the stand-in: %q", body)
+	if resp, body := call("HEAD", "/v1/charge"); resp.StatusCode != http.StatusOK || body != "" {
+		t.Fatalf("HEAD = %d %q", resp.StatusCode, body)
 	}
-	if uses := logger.all(); len(uses) != 1 || !strings.Contains(uses[0], "STRIPE_KEY|"+host+"|GET|/v1/charge|injected") {
-		t.Fatalf("use not logged as injected: %v", uses)
+	if resp, body := call("GET", "/empty"); resp.StatusCode != http.StatusNoContent || body != "" {
+		t.Fatalf("204 = %d %q", resp.StatusCode, body)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, auth := range gotAuth {
+		if auth != "Bearer sk_live_REAL" {
+			t.Fatalf("upstream did not receive the real secret: %q", auth)
+		}
+	}
+	if uses := logger.all(); len(uses) != 4 || !strings.Contains(uses[0], "STRIPE_KEY|"+host+"|GET|/v1/charge|injected") {
+		t.Fatalf("uses not logged as injected: %v", uses)
 	}
 }
 
