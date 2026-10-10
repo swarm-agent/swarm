@@ -61,3 +61,27 @@ test('SwarmSignalsNamespace: list with cursor and filters, report', async () => 
     server.close();
   }
 });
+
+// Purpose: client.box.summary() is the per-machine call a monitor makes; it
+// must hit /v3/box/summary and return the summary fields without the
+// transport's ok flag. Layer: SDK against a local HTTP stand-in.
+test('SwarmBoxNamespace: summary', async () => {
+  let path = '';
+  const server = http.createServer((req, res) => {
+    path = req.url || '';
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ ok: true, status: 'attention', reasons: ['agents are waiting on a person'], attention: { blocked_sessions: 1, sessions: [] } }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const { port } = server.address() as { port: number };
+  try {
+    const client = new SwarmClient({ baseUrl: `http://127.0.0.1:${port}`, token: 'test_tok' });
+    const summary = await client.box.summary();
+    assert.equal(path, '/v3/box/summary');
+    assert.equal(summary.status, 'attention');
+    assert.equal(summary.attention.blocked_sessions, 1);
+    assert.equal((summary as any).ok, undefined);
+  } finally {
+    server.close();
+  }
+});

@@ -715,6 +715,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
 	apiServer.SetSignalStore(signalStore)
+	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
