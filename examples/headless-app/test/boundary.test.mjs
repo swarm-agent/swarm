@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appHandler } from '../server.mjs';
 import { operations } from '../operations.mjs';
-import { createBoundary } from '../boundary.mjs';
+import { createBoundary, safeError } from '../boundary.mjs';
+import { SwarmApiError } from '@swarm-agent/sdk';
 import { createAccounts } from '../accounts.mjs';
 
 const origin = 'https://127.0.0.1:8443';
@@ -315,4 +316,21 @@ test('first sign-up needs a tailnet identity; password change signs out other br
   assert.equal(changed.status, 200);
   assert.equal((await invoke('/auth/me', {}, auth(first))).status, 401);
   assert.equal((await invoke('/auth/me', {}, auth(second))).status, 200);
+});
+
+// Purpose: safeError (boundary.mjs) decides what the browser sees when an
+// operation fails. A daemon refusal (SDK SwarmApiError 4xx) must reach the
+// owner verbatim, bounded to 300 characters, so setup failures name their cause
+// (regression: the bypass 409 "only inside a sandbox" surfaced as a generic
+// 502). Daemon 5xx and non-SDK errors must stay generic so internal details do
+// not leak. A pure-function test is the narrowest layer; server.mjs only maps
+// its result to the HTTP response.
+test('safeError shows daemon 4xx messages and keeps other failures generic', () => {
+  const generic = safeError(new Error('internal path /var/lib/swarmd')).error;
+  assert.match(generic, /^Daemon operation failed/);
+  assert.deepEqual(safeError(new SwarmApiError('agents can run on their own only inside a sandbox', { status: 409 })),
+    { status: 409, error: 'agents can run on their own only inside a sandbox' });
+  assert.equal(safeError(new SwarmApiError('x'.repeat(400), { status: 400 })).error.length, 300);
+  assert.deepEqual(safeError(new SwarmApiError('store exploded at /var/lib/swarmd', { status: 500 })), { status: 502, error: generic });
+  assert.deepEqual(safeError(new SwarmApiError('', { status: 409 })), { status: 502, error: generic });
 });

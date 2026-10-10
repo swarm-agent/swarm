@@ -4246,7 +4246,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					}
 					reqWithAuth := requestWithActorContext(r, actor)
 					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) {
+					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) {
 						return
 					}
 					next.ServeHTTP(w, reqWithAuth)
@@ -4289,7 +4289,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			reqWithAuth := requestWithActorContext(r, actor)
 			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) {
+			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) {
 				return
 			}
 			next.ServeHTTP(w, reqWithAuth)

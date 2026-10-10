@@ -269,7 +269,7 @@ function renderAI(state) {
       if (!window.confirm(`Revoke "${k.name}"? Clients using it lose access immediately.`)) return;
       button.disabled = true; try { $('ai-new').hidden = true; renderAI(await api('ai-key-revoke', { id: k.id })); } catch (e) { fail(e); button.disabled = false; }
     };
-    return el('div', { className: 'item' }, el('div', {}, el('b', { textContent: `${k.name} · ${k.access === 'write' ? 'read and write' : 'read only'}` }),
+    return el('div', { className: 'item' }, el('div', {}, el('b', { textContent: `${k.name} · ${k.access === 'full' ? 'full control' : k.access === 'write' ? 'read and write' : 'read only'}` }),
       el('p', { textContent: `${k.hint} · expires ${new Date(k.expires_at).toLocaleDateString()} · ${k.last_used_at ? 'last used ' + new Date(k.last_used_at).toLocaleString() : 'never used'}` })), button);
   }));
 }

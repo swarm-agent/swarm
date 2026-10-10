@@ -71,6 +71,19 @@ var toolScopes = map[string]string{
 	"swarm_manage_worker":      ScopeManage,
 	"swarm_set_usage_limits":   ScopeManage,
 	"swarm_set_agent_model":    ScopeManage,
+	"swarm_list_agents":        ScopeRead,
+	"swarm_define_agent":       ScopeManage,
+	"swarm_create_client_key":  ScopeManage,
+	"swarm_connect_chatgpt":    ScopeManage,
+}
+
+// localOnlyTools need the owner's admin authority, which the device token
+// never carries: they are neither listed nor forwarded for relay clients. A
+// full AI key on the machine itself uses them.
+var localOnlyTools = map[string]bool{
+	"swarm_define_agent":      true,
+	"swarm_create_client_key": true,
+	"swarm_connect_chatgpt":   true,
 }
 
 func toolScope(name string) string {
@@ -278,7 +291,7 @@ func (s *Service) Init(in InitInput) (Status, error) {
 	}
 	// API scopes the device token needs for its ceiling. Remote clients are
 	// still limited per tool by the ceiling (toolScopes) on every call.
-	scopes := []string{"sessions:read", "automations:read"}
+	scopes := []string{"sessions:read", "automations:read", "agents:read"}
 	if in.AllowWrite || in.AllowApprove {
 		scopes = append(scopes, "sessions:write")
 	}
@@ -654,7 +667,7 @@ func (s *Service) handle(cfg Config, msg frame) json.RawMessage {
 	default:
 		return rpcError(rpc.ID, -32601, "method not available through the relay")
 	}
-	if rpc.Method == "tools/call" && !contains(effective, toolScope(rpc.Params.Name)) {
+	if rpc.Method == "tools/call" && (!contains(effective, toolScope(rpc.Params.Name)) || localOnlyTools[rpc.Params.Name]) {
 		result, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": rpc.ID, "result": map[string]any{
 			"content": []map[string]any{{"type": "text", "text": "This machine does not allow " + rpc.Params.Name + " for remote clients."}},
 			"isError": true,
@@ -696,7 +709,7 @@ func filterTools(raw []byte, effective []string) json.RawMessage {
 	for _, item := range tools {
 		tool, _ := item.(map[string]any)
 		name, _ := tool["name"].(string)
-		if contains(effective, toolScope(name)) {
+		if contains(effective, toolScope(name)) && !localOnlyTools[name] {
 			kept = append(kept, tool)
 		}
 	}

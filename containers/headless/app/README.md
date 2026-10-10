@@ -60,6 +60,16 @@ metadata. File tools refuse Swarm's storage and credential paths outright.
 (the installer runs it at the end); `install.sh check-sandbox` shows each
 running sandbox's runtime, user, capabilities, limits and mounts.
 
+**Secrets agents can use but never see** (off by default).
+`sudo bash install.sh secrets-gateway on` starts Swarm's secret gateway on the
+sandbox bridge and opens only its port to sandboxes. The owner then creates a
+secret with the exact websites it may go to, sets its value from stdin and
+grants it to a project for a limited time (`swarmctl secret create|set-value|grant`,
+run as the `swarm` user over its local socket). A granted project's sandbox
+sees only a stand-in (`NAME=swarm-secret://NAME`); the gateway swaps in the
+real value on requests to the allowed websites, scrubs it from responses and
+logs each use (`swarmctl secret uses`). `secrets-gateway off` turns it back off.
+
 **Agent permissions.** Setup asks how agents work: **Ask me first**
 (default; agents pause before commands and file changes) or **On their own**
 (the owner-only bypass setting: no ordinary prompts; plans to accept, agent
@@ -72,8 +82,12 @@ listener, bound to 127.0.0.1:7783) on the tailnet at
 `https://NAME.TAILNET.ts.net:8444/mcp`; `tailscale serve` is its only way in.
 It answers only to **AI keys** created in the app under **AI access over
 Tailscale** (none exist at first): read only, or read and write (start
-sessions, send messages, stop runs); never approve tool calls or manage
-workers, limits or models, and never any route but `/mcp`. The page shows the
+sessions, send messages, stop runs); keys made there never approve tool
+calls or manage workers, limits or models. A **full** key, minted only by
+the owner with `swarmctl setup sdk-token --ai-access full` or the SDK, also
+approves tool calls and manages the box (models, workers, limits, custom
+agents, client app keys, ChatGPT sign-in). No AI key reaches any route but
+`/mcp`. The page shows the
 key once, lists keys with last use, revokes them, and shows the Tailscale
 access rule and client settings. `--no-ai-access` skips the gateway. Clients:
 Claude Code on a tailnet device (`claude mcp add --transport http`), or

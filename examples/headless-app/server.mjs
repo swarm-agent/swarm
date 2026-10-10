@@ -1,10 +1,10 @@
 import { createServer as createHTTPS } from 'node:https';
 import { createServer as createHTTP } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { SwarmClient } from '@swarm-agent/sdk';
 import { createAccounts } from './accounts.mjs';
-import { body, createBoundary, isTailscaleServeOrigin, reject, safeError, text } from './boundary.mjs';
+import { AppError, body, createBoundary, isTailscaleServeOrigin, reject, safeError, text } from './boundary.mjs';
 import { operations } from './operations.mjs';
 
 const headers = {
@@ -108,6 +108,8 @@ export function appHandler(sdk, { origin, accounts, project = '/project', relayU
       json(res, 200, await ops.run(text(b.op), b, auth.username));
     } catch (error) {
       const safe = safeError(error);
+      // The browser gets the safe message; the private app log keeps the cause.
+      if (!(error instanceof AppError)) console.error(`${req.method} ${req.url}: ${error?.name || 'Error'} ${error?.status ?? ''} ${error?.message || ''}`.slice(0, 600));
       if (!res.headersSent) json(res, safe.status, { error: safe.error }); else res.end();
     } finally { if (counted) active--; }
   };
@@ -115,8 +117,19 @@ export function appHandler(sdk, { origin, accounts, project = '/project', relayU
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    const config = '/etc/swarmd/headless-app';
-    const sdk = new SwarmClient({ socketPath: '/var/lib/swarmd/local-transport/api.sock', timeoutMs: 30_000 });
+    // Installed paths unless set; a native dev run (scripts/headless-dev.sh)
+    // points both at its own root. A set but invalid path stops startup
+    // rather than falling back to the installed daemon.
+    const pathFrom = (name, installed) => {
+      const value = process.env[name];
+      if (!value) return installed;
+      if (!/^\/[A-Za-z0-9._\/-]+$/.test(value)) { console.error(`${name} must be an absolute path of letters, digits, '.', '_', '-' and '/'.`); process.exit(1); }
+      return value.replace(/\/+$/, '');
+    };
+    const config = pathFrom('APP_CONFIG_DIR', '/etc/swarmd/headless-app');
+    await mkdir(config, { recursive: true, mode: 0o700 });
+    const socketPath = pathFrom('SWARM_SOCKET_PATH', '/var/lib/swarmd/local-transport/api.sock');
+    const sdk = new SwarmClient({ socketPath, timeoutMs: 30_000 });
     // Only private local-transport identity; never inherit an injected SDK token.
     sdk.setToken('');
     const origin = process.env.APP_ORIGIN || 'http://127.0.0.1:8443';

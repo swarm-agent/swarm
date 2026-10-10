@@ -8,7 +8,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFleet, machinesFromStatus, parseFleet } from '../server.mjs';
+import { accessLevel, createFleet, machinesFromStatus, parseFleet } from '../server.mjs';
 
 const KEY_A = 'swk_aaaaaaaaaaaaaaaaaaaa', KEY_B = 'swk_bbbbbbbbbbbbbbbbbbbb';
 const READ_TOOLS = [{ name: 'swarm_list_sessions', inputSchema: { type: 'object', properties: {} } }, { name: 'swarm_get_session', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } }];
@@ -182,4 +182,16 @@ test('no machines: the fleet explains how to add them', async () => {
     assert.deepEqual(out.machines, []);
     assert.match(out.note, /tag:swarm/);
   } finally { fleet.stop(); }
+});
+
+// The access label follows the tools a machine lists for this key's level:
+// read keys list read tools, write keys add session tools, full keys add
+// approval and management tools. Regression: full keys were labelled 'read
+// and write'.
+test('access labels follow the listed tools', () => {
+  assert.equal(accessLevel(null), 'none');
+  assert.equal(accessLevel(['swarm_list_sessions', 'swarm_get_session']), 'read only');
+  assert.equal(accessLevel(['swarm_list_sessions', 'swarm_start_session']), 'read and write');
+  assert.equal(accessLevel(['swarm_list_sessions', 'swarm_start_session', 'swarm_resolve_permission']), 'read, write and approve');
+  assert.equal(accessLevel(['swarm_list_sessions', 'swarm_start_session', 'swarm_resolve_permission', 'swarm_set_agent_model', 'swarm_create_worker']), 'full control');
 });

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
@@ -939,6 +942,28 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	if err == nil && req.ModelProfile == nil && (strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) || strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID)) {
 		modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
 	}
+	// A top-level Coder, Finder or Designer session with no model chosen runs
+	// on that role's account-configured model. If the role has none, it runs on
+	// the account's default Swarm model and the session says so.
+	modelAlert := ""
+	var rolePreference *pebblestore.ModelPreference
+	requestedAgentProfile := resolvedAgent.Profile
+	if err == nil && req.ModelProfile == nil && strings.TrimSpace(req.Preference.Model) == "" {
+		if canonicalID, ok := agentruntime.CanonicalSystemAgentID(resolvedAgent.Profile.Name); ok && canonicalID != agentruntime.SwarmAgentID && canonicalID != agentruntime.SwarmOrchestratorAgentID {
+			resolvedModel, profile, resolveErr := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, principal.AccountScopeID, canonicalID, "")
+			if resolveErr == nil && strings.TrimSpace(resolvedModel.Preference.Model) != "" {
+				rolePreference = &resolvedModel.Preference
+				resolvedAgent.Profile = profile
+			} else {
+				modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
+				modelAlert = fmt.Sprintf("No model is assigned to %s; this session uses the account's default Swarm model.", canonicalID)
+				if resolveErr != nil {
+					modelAlert = fmt.Sprintf("%s model unavailable (%v); this session uses the account's default Swarm model.", canonicalID, resolveErr)
+				}
+				log.Printf("swarmd v3 session create: %s", modelAlert)
+			}
+		}
+	}
 	if err == nil && req.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID) {
 		if modelProfileSnapshot != nil && modelProfileSnapshot.Plan == nil {
 			modelProfileSnapshot.Plan = pebblestore.CloneModelProfileSelection(&modelProfileSnapshot.Action)
@@ -991,13 +1016,26 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		session.Metadata[pebblestore.SessionPurposeWorkspaceMetadataKey] = binding.SourceWorkspaceID
 		session.Metadata["navigation_hidden"] = true
 	}
+	// The role model is resolved by the server, so it stays out of the
+	// request hash: a retry replays even if the role model changed since.
+	if rolePreference != nil {
+		session.Preference = normalizeSessionsV3ModelPreference(*rolePreference)
+	}
 	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
 		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
 	}
-	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspacePath, workspaceName, title, session.Metadata)
+	hashMetadata := session.Metadata
+	if rolePreference != nil {
+		hashMetadata = maps.Clone(session.Metadata)
+		hashMetadata["agent_profile"] = cloneSessionsV3AgentProfile(requestedAgentProfile)
+	}
+	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspacePath, workspaceName, title, hashMetadata)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if modelAlert != "" {
+		session.Metadata["model_alert"] = modelAlert
 	}
 	if s.handleSessionsV3CreateReplay(w, principal, sessionID, clientRequestID, payloadHash, session) {
 		return

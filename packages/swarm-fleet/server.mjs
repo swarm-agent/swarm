@@ -140,6 +140,18 @@ const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, me
 const toolText = (value, isError = false) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }], ...(isError ? { isError: true } : {}) });
 const short = error => String(error?.message || error).slice(0, 200);
 
+/**
+ * What a machine lets this device do, from the tool names it lists (null when
+ * unreached). Exact for AI keys and tailnet grants, whose level decides the
+ * list; a plain scoped token lists every tool, so for it this is an upper bound.
+ */
+export function accessLevel(names) {
+  if (!names) return 'none';
+  if (names.includes('swarm_set_agent_model') || names.includes('swarm_create_worker')) return 'full control';
+  if (names.includes('swarm_resolve_permission')) return 'read, write and approve';
+  return names.includes('swarm_start_session') ? 'read and write' : 'read only';
+}
+
 /** The JSON a Swarm tool returned as text, or null. */
 function toolJSON(result) {
   if (!result || result.isError) return null;
@@ -192,7 +204,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     }
   }
   const refreshAll = async (force = false) => { await rediscover(force); await Promise.all(machines.map(refresh)); };
-  const access = name => { const list = tools.get(name); return !list ? 'none' : list.some(t => t.name === 'swarm_start_session') ? 'read and write' : 'read only'; };
+  const access = name => accessLevel(tools.get(name)?.map(t => t.name) ?? null);
   function union() {
     const byName = new Map();
     for (const machine of machines) for (const tool of tools.get(machine.name) || []) if (tool?.name && !byName.has(tool.name)) byName.set(tool.name, tool);

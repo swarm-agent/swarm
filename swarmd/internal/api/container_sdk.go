@@ -48,6 +48,9 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusForbidden, errors.New("AI keys work only through Swarm Control (/mcp)"))
 			return
 		}
+		if !gateClientAppKey(w, r, rec) {
+			return
+		}
 		if r.URL.Path == controlMCPPath {
 			// Swarm Control MCP translates each tool into one request against
 			// the allowlisted routes below, under this same verified identity.
@@ -62,6 +65,33 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 		// per-call permissions. Never send this request through local transport.
 		next.ServeHTTP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec))
 	})
+}
+
+// clientAppScope marks a key minted for a client app (swarm_create_client_key).
+// Its sessions scopes alone would reach every handler that checks only for a
+// principal, so the marker holds it to the session routes on every listener.
+const clientAppScope = "client:app"
+
+func isClientAppKey(rec *pebblestore.ScopedTokenRecord) bool {
+	if rec == nil {
+		return false
+	}
+	for _, scope := range rec.Scopes {
+		if strings.EqualFold(strings.TrimSpace(scope), clientAppScope) {
+			return true
+		}
+	}
+	return false
+}
+
+// gateClientAppKey limits a client-app key to start, read, message, stop and
+// resolve permissions in sessions (containerSDKRouteAllowed); never /mcp.
+func gateClientAppKey(w http.ResponseWriter, r *http.Request, rec *pebblestore.ScopedTokenRecord) bool {
+	if isClientAppKey(rec) && !containerSDKRouteAllowed(r) {
+		writeError(w, http.StatusForbidden, errors.New("client app keys reach only session routes"))
+		return false
+	}
+	return true
 }
 
 // isAIKey reports a token minted with Swarm Control levels (ai_access).

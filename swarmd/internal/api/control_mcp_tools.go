@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,9 @@ var controlMCPAgentModelRoles = map[string][2]string{
 	"system-router":       {"system_agents", "router"},
 }
 
+// The roles in a fixed order (set_agent_model role all applies them in turn).
+var controlMCPAgentModelRoleOrder = []string{"swarm", "system-orchestrator", "system-coder", "system-finder", "system-designer", "system-compact", "system-router"}
+
 var controlMCPSessionAgents = []string{"swarm", "system-orchestrator", "system-coder", "system-designer", "system-finder"}
 
 var controlMCPSafeID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,200}$`)
@@ -49,9 +53,11 @@ var controlMCPSafeID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,200}$`)
 var controlMCPWorkspaceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 
 // Literal segments must match exactly; "*" matches one id segment. Worker
-// acceptance, token minting, import/migrate, capability grants, credentials,
+// acceptance, import/migrate, capability grants, credential reads and saves,
 // permission policy (rules, bypass) and the account default model are absent
-// on purpose: they are owner approval, credential and policy surfaces.
+// on purpose: they are owner approval, credential and policy surfaces. Token
+// minting and ChatGPT sign-in appear only for the box-setup tools, which fix
+// the scopes and the sign-in method themselves.
 var controlMCPRoutes = []string{
 	"GET v1/workspace/list",
 	"POST v1/workspace/repository/setup",
@@ -94,6 +100,15 @@ var controlMCPRoutes = []string{
 	"GET v3/usage",
 	"GET v3/usage/limits",
 	"POST v3/usage/limits",
+	// Box setup (control_mcp_builders.go). Each tool fixes its body: custom
+	// sub-agents only, client keys with sessions scopes only, ChatGPT device
+	// sign-in only (no callback completion, no credential reads).
+	"GET v2/agents",
+	"GET v2/agents/*",
+	"PUT v2/agents/*",
+	"POST v3/auth/tokens",
+	"POST v1/auth/codex/oauth/start",
+	"GET v1/auth/codex/oauth/status",
 }
 
 var controlMCPReservedIDs = map[string]bool{
@@ -353,7 +368,7 @@ func controlMCPPlanSchema() map[string]any {
 func controlMCPTools() []controlMCPTool {
 	sessionID := controlMCPStringProp("From list_sessions or start_session.", 1, 200)
 	workerID := controlMCPStringProp("From list_workers.", 1, 200)
-	agentProp := map[string]any{"type": "string", "enum": controlMCPSessionAgents, "description": "swarm (default) works in one workspace and delegates to sub-agents; system-orchestrator runs a project (needs project_id), turning work into tasks for agents and workers; system-coder, system-designer and system-finder work alone."}
+	agentProp := controlMCPStringProp("swarm (default) works in one workspace and delegates to sub-agents; system-orchestrator runs a project (needs project_id), turning work into tasks for agents and workers; system-coder, system-designer and system-finder work alone; or a custom agent from list_agents, which runs on the account default model unless model is given.", 1, 64)
 	providerProp := controlMCPStringProp("Provider id from list_models.", 0, 100)
 	modelProp := controlMCPStringProp("Model from list_models (needs provider).", 0, 200)
 	thinkingProp := controlMCPStringProp("One of the model's thinking options from list_models.", 0, 50)
@@ -462,9 +477,9 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_set_agent_model", Title: "Change an agent role's default model",
-			Description: "Set the account default model for one agent role (new sessions and delegated work use it).",
+			Description: "Set the account default model for one agent role, or for every role with role all (new sessions, custom agents and delegated work use it).",
 			InputSchema: controlMCPObject([]string{"role", "provider", "model"}, map[string]any{
-				"role":     map[string]any{"type": "string", "enum": []string{"swarm", "system-orchestrator", "system-coder", "system-finder", "system-designer", "system-compact", "system-router"}},
+				"role":     map[string]any{"type": "string", "enum": append(slices.Clone(controlMCPAgentModelRoleOrder), "all")},
 				"provider": providerProp,
 				"model":    modelProp,
 				"thinking": thinkingProp,
@@ -581,6 +596,41 @@ func controlMCPTools() []controlMCPTool {
 				"enabled":              map[string]any{"type": "boolean"},
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPSetUsageLimits,
+		},
+		{
+			Name: "swarm_list_agents", Title: "List agents",
+			Description: "Agents a session can run: the built-in ones and custom agents made with define_agent.",
+			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListAgents,
+		},
+		{
+			Name: "swarm_define_agent", Title: "Define a custom agent",
+			Description: "Create or replace a custom agent: its instructions and which tools it may use. It runs on the account default model (set_agent_model); start it with start_session agent=<name>. Commands still need approval under the permission policy.",
+			InputSchema: controlMCPObject([]string{"name", "instructions", "tools"}, map[string]any{
+				"name":         controlMCPStringProp("Lowercase letters, digits and dashes, starting with a letter, e.g. reviewer.", 1, 63),
+				"description":  controlMCPStringProp("One line shown by list_agents.", 0, 200),
+				"instructions": controlMCPStringProp("The agent's instructions (its system prompt).", 1, 20000),
+				"tools": map[string]any{"type": "string", "enum": controlMCPAgentToolSets,
+					"description": "read_only: read and search files and the web. read_write: also write and edit files, no commands. build: read, write and edit files, run commands and commit with git."},
+			}),
+			Annotations: controlMCPWrites, call: controlMCPDefineAgent,
+		},
+		{
+			Name: "swarm_create_client_key", Title: "Create a key for a client app",
+			Description: "Mint a key that a client app (for example a UI you build) uses over this box's HTTP API to start sessions, read them, send messages, stop runs and answer permission requests. It reaches those session routes only (never /mcp, settings, agents or keys). Shown once; keep it in a server process, never in browser code.",
+			InputSchema: controlMCPObject([]string{"name"}, map[string]any{
+				"name": controlMCPStringProp("What the key is for, e.g. my-chat-ui.", 1, 64),
+				"days": map[string]any{"type": "integer", "enum": controlMCPClientKeyDays, "description": "Lifetime in days. Default 30."},
+			}),
+			Annotations: controlMCPWrites, call: controlMCPCreateClientKey,
+		},
+		{
+			Name: "swarm_connect_chatgpt", Title: "Connect a ChatGPT account",
+			Description: "Connect a ChatGPT account as this box's model provider. action start returns a link and a code: give both to the person, who finishes sign-in in their own browser. Then call action status with login_id until status is success.",
+			InputSchema: controlMCPObject([]string{"action"}, map[string]any{
+				"action":   map[string]any{"type": "string", "enum": []string{"start", "status"}},
+				"login_id": controlMCPStringProp("From action start; required for status.", 0, 200),
+			}),
+			Annotations: controlMCPWrites, call: controlMCPConnectChatGPT,
 		},
 	}
 }
@@ -917,6 +967,12 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 	if agent == "" {
 		agent = "swarm"
 	}
+	custom := !slices.Contains(controlMCPSessionAgents, agent)
+	if custom {
+		if err := c.customAgent(agent); err != nil {
+			return nil, err
+		}
+	}
 	preference, err := c.modelPreference(args)
 	if err != nil {
 		return nil, err
@@ -936,6 +992,11 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 	}
 	if preference != nil {
 		body["model_profile"] = controlMCPModelChoice(preference)
+	} else if custom {
+		// Only swarm and the orchestrator capture the account defaults on
+		// their own; a custom agent with no model of its own needs them asked
+		// for, resolved through the account's agent-model settings.
+		body["model_profile"] = map[string]any{"use_account_default": true}
 	}
 	// Orchestrators run a project (server-stamped project identity, no
 	// workspace fields); every other agent runs in one workspace.
@@ -1281,19 +1342,33 @@ func controlMCPSetAgentModel(c *controlMCPCall, args map[string]any) (any, error
 		return nil, err
 	}
 	role := controlMCPString(args, "role")
-	slot, ok := controlMCPAgentModelRoles[role]
-	if !ok {
+	roles := []string{role}
+	if role == "all" {
+		roles = controlMCPAgentModelRoleOrder
+	} else if _, ok := controlMCPAgentModelRoles[role]; !ok {
 		return nil, controlMCPToolFailure("unknown role %q", role)
 	}
 	preference, err := c.modelPreference(args)
 	if err != nil {
 		return nil, err
 	}
-	response, err := c.dispatch(http.MethodPatch, "/v1/agent-model-settings", nil, map[string]any{slot[0]: map[string]any{slot[1]: preference}})
-	if err != nil {
-		return nil, err
+	if preference == nil {
+		return nil, controlMCPToolFailure("give provider and model (see list_models)")
 	}
-	applied := controlMCPPick(controlMCPMap(controlMCPMap(controlMCPMap(response["agent_model_settings"])[slot[0]])[slot[1]]), "provider", "model", "thinking")
+	// One canonical PATCH per role; on a failure, report which roles already
+	// changed so the caller can retry or restore them.
+	var applied map[string]any
+	for i, name := range roles {
+		slot := controlMCPAgentModelRoles[name]
+		response, err := c.dispatch(http.MethodPatch, "/v1/agent-model-settings", nil, map[string]any{slot[0]: map[string]any{slot[1]: preference}})
+		if err != nil {
+			if i == 0 {
+				return nil, err
+			}
+			return nil, controlMCPToolFailure("roles %v changed, then %s failed: %s", roles[:i], name, err.Error())
+		}
+		applied = controlMCPPick(controlMCPMap(controlMCPMap(controlMCPMap(response["agent_model_settings"])[slot[0]])[slot[1]]), "provider", "model", "thinking")
+	}
 	return map[string]any{"role": role, "model": applied}, nil
 }
 

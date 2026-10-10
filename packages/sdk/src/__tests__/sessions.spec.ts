@@ -267,3 +267,19 @@ test('stopRun refuses missing runtime identity without mutation', async () => {
  const transport={request:async(_url:string,options:any)=>{assert.equal(options.method,'GET');return {data:{session:{id:'s'}}}}} as unknown as SwarmTransport;
  await assert.rejects(()=>new SwarmSessionsNamespace(transport).stopRun('s',{run_id:'r'}),/authoritative runtime/);
 });
+
+test('get reports the V3 primary workspace grant as workspace_id', async () => {
+  // Purpose: SwarmSessionsNamespace.get must expose a V3 session's source
+  // workspace id. The daemon (GET /v3/sessions/{id}) carries it only as the
+  // primary entry of workspace_grants; apps such as examples/headless-app
+  // authorize a session by matching that id to a registered workspace.
+  // Regression: get returned undefined, so every new conversation was refused
+  // ("Session source workspace is not available to this app"). Only the primary
+  // grant counts; a secondary grant must never be reported as the source, and an
+  // explicit top-level id still wins. A transport stub is the narrowest layer.
+  const respond = (session: any) => ({request: async () => ({data: {session}})}) as unknown as SwarmTransport;
+  const grants = [{kind: 'linked', workspace_id: 'ws_linked'}, {kind: 'primary', workspace_id: 'ws_primary'}];
+  assert.equal((await new SwarmSessionsNamespace(respond({id: 's', workspace_grants: grants})).get('s')).workspace_id, 'ws_primary');
+  assert.equal((await new SwarmSessionsNamespace(respond({id: 's', workspace_grants: [grants[0]]})).get('s')).workspace_id, undefined);
+  assert.equal((await new SwarmSessionsNamespace(respond({id: 's', workspace_id: 'ws_top', workspace_grants: grants})).get('s')).workspace_id, 'ws_top');
+});

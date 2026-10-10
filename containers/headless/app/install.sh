@@ -54,6 +54,8 @@ SANDBOX_IMAGE=swarm-sandbox:local
 SANDBOX_NETWORK=swarm-sandbox
 SANDBOX_SUBNET=172.31.251.0/24
 SANDBOX_BRIDGE=br-swarm-sbx
+# The secret gateway (when on) listens on the sandbox bridge address, this port.
+SECRETS_GATEWAY_PORT=8080
 DATA_DIRS=(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd)
 APP_CONFIG=/etc/swarmd/headless-app
 GVISOR_LIST=/etc/apt/sources.list.d/gvisor.list
@@ -69,11 +71,12 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TAG] [--lock-ssh] [--no-ai-access]
+Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TAG] [--lock-ssh] [--no-ai-access] [--secrets-gateway on|off]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
        install.sh tailnet-identity on|off
+       install.sh secrets-gateway on|off
 
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   tailnet machine name and Swarm machine name (default: swarm)
@@ -82,6 +85,9 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
                 policy must list it under tagOwners); first join only
   --lock-ssh    also close public SSH (use after `tailscale ssh` works)
   --no-ai-access  do not serve the AI gateway on the tailnet (port 8444)
+  --secrets-gateway on|off
+                inject granted secrets through the egress gateway (default off;
+                see secrets-gateway below)
 
   reinstall / uninstall remove Swarm's services, binaries, sandboxes and state
   (owner, provider sign-in, AI keys, relay pairing, agent worktrees), its
@@ -97,6 +103,10 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
                    let the AI gateway admit tailnet devices by the
                    swarmagent.dev/cap/swarm grant in your Tailscale policy
                    (needs Tailscale 1.92+; on by default for new installs)
+  secrets-gateway on|off
+                   inject secrets granted to a project (swarmctl secret) on
+                   the way out to their allowed websites; agents only see
+                   stand-ins (off by default)
 USAGE
 }
 
@@ -105,9 +115,19 @@ load_conf() {
   . "$CONF"
 }
 
+# The port the sandbox firewall opens to the secret gateway, or nothing when the
+# gateway is off.
+gateway_port() {
+  local on=${SECRETS_GATEWAY:-}
+  [[ -z $on && -f $CONF ]] && on=$(. "$CONF" && printf "%s" "${SECRETS_GATEWAY:-off}")
+  [[ $on == on ]] && printf "%s" "$SECRETS_GATEWAY_PORT"
+  return 0
+}
+
 # Sandbox network isolation (idempotent; also run at boot by
 # swarm-sandbox-firewall.service, since iptables rules do not survive reboot).
 firewall() {
+  SWARM_SANDBOX_GATEWAY_PORT=$(gateway_port) \
   SWARM_SANDBOX_NETWORK=$SANDBOX_NETWORK SWARM_SANDBOX_BRIDGE=$SANDBOX_BRIDGE SWARM_SANDBOX_SUBNET=$SANDBOX_SUBNET \
     bash "$SRC/containers/sandbox/firewall.sh"
 }
@@ -243,13 +263,14 @@ update() {
 
 install_units() {
   load_conf
-  local sdk_args='' runtime_arg='' release
+  local sdk_args='' runtime_arg='' secrets_arg='' release
   # The app starts only when run as the main module, which Node decides on
   # the symlink-resolved path, so its unit names the release itself.
   release=$(readlink -f "$OPT/current")
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
   [[ ${AI_ACCESS:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'
   [[ ${SANDBOX_RUNTIME:-default} == default ]] && runtime_arg='--sandbox-runtime=runc'
+  [[ ${SECRETS_GATEWAY:-off} == on ]] && secrets_arg=--secrets-gateway=on
   install -d "$UNITS"
   cat > "$UNITS/$FIREWALL_UNIT" <<UNIT
 [Unit]
@@ -261,7 +282,7 @@ PartOf=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=SWARM_SANDBOX_NETWORK=$SANDBOX_NETWORK SWARM_SANDBOX_BRIDGE=$SANDBOX_BRIDGE SWARM_SANDBOX_SUBNET=$SANDBOX_SUBNET
+Environment=SWARM_SANDBOX_NETWORK=$SANDBOX_NETWORK SWARM_SANDBOX_BRIDGE=$SANDBOX_BRIDGE SWARM_SANDBOX_SUBNET=$SANDBOX_SUBNET SWARM_SANDBOX_GATEWAY_PORT=$(gateway_port)
 ExecStart=/bin/bash $SRC/containers/sandbox/firewall.sh
 
 [Install]
@@ -296,7 +317,7 @@ ConfigurationDirectoryMode=0700
 LogsDirectory=swarmd
 LogsDirectoryMode=0700
 WorkingDirectory=$PROJECT
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $runtime_arg $sdk_args
+ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -479,13 +500,14 @@ reinstall_all() {
   done
   if [[ -f $CONF ]]; then
     # shellcheck disable=SC1090
-    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}")
+    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}")
   fi
   [[ -n ${saved[0]:-} ]] && args+=(--relay "${saved[0]}")
   [[ -n ${saved[1]:-} ]] && args+=(--name "${saved[1]}")
   # The retired container layout's branch: everything it carried is on dev.
   [[ -n ${saved[2]:-} && ${saved[2]} != swarm-control ]] && args+=(--ref "${saved[2]}")
   [[ ${saved[3]:-} == off ]] && args+=(--no-ai-access)
+  [[ ${saved[4]:-} == on ]] && args+=(--secrets-gateway on)
   # Later options win, so anything passed now overrides the saved settings.
   uninstall_all "${uninstall[@]}"
   install_all "${args[@]}" "${install[@]}"
@@ -551,7 +573,7 @@ set_tailnet_identity() {
 }
 
 install_all() {
-  local relay='' name=swarm ref=dev lock_ssh=0 ai_access=on tag=''
+  local relay='' name=swarm ref=dev lock_ssh=0 ai_access=on tag='' secrets_gateway=off
   while (($#)); do
     case $1 in
       --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
@@ -561,6 +583,7 @@ install_all() {
       --lock-ssh) lock_ssh=1; shift ;;
       --no-ai-access) ai_access=off; shift ;;
       --ai-access) ai_access=on; shift ;;
+      --secrets-gateway) secrets_gateway=${2:?--secrets-gateway needs on or off}; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "unknown option $1" ;;
     esac
@@ -568,6 +591,7 @@ install_all() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
   [[ $(uname -m) == x86_64 ]] || die "Swarm's headless build is x86_64 only (this machine is $(uname -m))"
   [[ $name =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--name must be lowercase letters, digits and dashes"
+  [[ $secrets_gateway == on || $secrets_gateway == off ]] || die "--secrets-gateway must be on or off"
   [[ -z $relay || $relay =~ ^https://[A-Za-z0-9.-]+/?$ ]] || die "--relay must be an https origin such as https://swarm-relay.example.workers.dev"
   [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "--ref must be a branch name"
   [[ -z $tag || $tag =~ ^tag:[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--tag must look like tag:swarm"
@@ -655,6 +679,7 @@ APP_RELAY_URL=${relay:-$previous_relay}
 APP_DEVICE_NAME=$name
 AI_ACCESS=$ai_access
 TAILNET_IDENTITY=$tailnet_identity
+SECRETS_GATEWAY=$secrets_gateway
 APP_AI_URL=https://$dns:8444/mcp
 APP_AI_IP=$(tailscale ip -4 | head -n1)
 SANDBOX_RUNTIME=default
@@ -689,6 +714,26 @@ CONF
 DONE
 }
 
+# Turn the agent secret gateway on or off for an existing install. When on,
+# secrets the owner grants to a project are injected on the way out to their
+# allowed websites; agents only ever hold stand-ins.
+set_secrets_gateway() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  case ${1:-} in
+    on|off) ;;
+    *) die "usage: install.sh secrets-gateway on|off" ;;
+  esac
+  sed -i "/^SECRETS_GATEWAY=/d" "$CONF" && echo "SECRETS_GATEWAY=$1" >>"$CONF"
+  SECRETS_GATEWAY=$1
+  install_units
+  systemctl daemon-reload
+  systemctl restart "$FIREWALL_UNIT"
+  systemctl restart "$DAEMON_UNIT"
+  wait_ready
+  echo "Secret gateway is $1."
+}
+
 main() {
   case ${1:-install} in
     install) shift || true; install_all "$@" ;;
@@ -703,6 +748,7 @@ main() {
     check-isolation) check_isolation ;;
     check-sandbox) check_sandbox ;;
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
+    secrets-gateway) shift; set_secrets_gateway "$@" ;;
     status) systemctl --no-pager status "$DAEMON_UNIT" "$APP_UNIT" | grep -E '●|Active:' || true; check_sandbox; tailscale serve status ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;

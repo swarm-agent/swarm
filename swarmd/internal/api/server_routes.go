@@ -13,24 +13,43 @@ func (s *Server) registerCoreRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/remote/", s.handleRemoteTransport)
 }
 
+// ownerOnlyScope keeps scoped tokens below admin away from owner surfaces whose
+// handlers check only for a principal:
+//   - provider credentials and ChatGPT sign-in, which decide which provider
+//     account (and so whose history) every agent on the box runs on;
+//   - the credential vault (export hands out every key and token, import can
+//     swap the active credential) and the attach token;
+//   - Workspace Actions, which define and run programs on the host outside the
+//     agent sandbox and permission approval.
+//
+// Owner and local callers carry no scoped token and are unaffected.
+func (s *Server) ownerOnlyScope(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.requireScope(w, r, "admin") {
+			return
+		}
+		next(w, r)
+	}
+}
+
 func (s *Server) registerAuthVaultRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/v1/auth/codex", s.handleCodexAuth)
-	mux.HandleFunc("/v1/auth/codex/oauth/start", s.handleCodexOAuthStart)
-	mux.HandleFunc("/v1/auth/codex/oauth/status", s.handleCodexOAuthStatus)
-	mux.HandleFunc("/v1/auth/codex/oauth/complete", s.handleCodexOAuthComplete)
-	mux.HandleFunc("/v1/auth/credentials", s.handleAuthCredentials)
-	mux.HandleFunc("/v1/auth/credentials/verify", s.handleAuthCredentialVerify)
-	mux.HandleFunc("/v1/auth/credentials/active", s.handleAuthCredentialActive)
-	mux.HandleFunc("/v1/auth/credentials/delete", s.handleAuthCredentialDelete)
+	mux.HandleFunc("/v1/auth/codex", s.ownerOnlyScope(s.handleCodexAuth))
+	mux.HandleFunc("/v1/auth/codex/oauth/start", s.ownerOnlyScope(s.handleCodexOAuthStart))
+	mux.HandleFunc("/v1/auth/codex/oauth/status", s.ownerOnlyScope(s.handleCodexOAuthStatus))
+	mux.HandleFunc("/v1/auth/codex/oauth/complete", s.ownerOnlyScope(s.handleCodexOAuthComplete))
+	mux.HandleFunc("/v1/auth/credentials", s.ownerOnlyScope(s.handleAuthCredentials))
+	mux.HandleFunc("/v1/auth/credentials/verify", s.ownerOnlyScope(s.handleAuthCredentialVerify))
+	mux.HandleFunc("/v1/auth/credentials/active", s.ownerOnlyScope(s.handleAuthCredentialActive))
+	mux.HandleFunc("/v1/auth/credentials/delete", s.ownerOnlyScope(s.handleAuthCredentialDelete))
 	mux.HandleFunc("/v1/auth/desktop/session", s.handleDesktopLocalSessionBootstrap)
-	mux.HandleFunc("/v1/auth/attach/rotate", s.handleAttachRotate)
-	mux.HandleFunc("/v1/vault", s.handleVaultStatus)
-	mux.HandleFunc("/v1/vault/enable", s.handleVaultEnable)
-	mux.HandleFunc("/v1/vault/unlock", s.handleVaultUnlock)
-	mux.HandleFunc("/v1/vault/lock", s.handleVaultLock)
-	mux.HandleFunc("/v1/vault/disable", s.handleVaultDisable)
-	mux.HandleFunc("/v1/vault/export", s.handleVaultExport)
-	mux.HandleFunc("/v1/vault/import", s.handleVaultImport)
+	mux.HandleFunc("/v1/auth/attach/rotate", s.ownerOnlyScope(s.handleAttachRotate))
+	mux.HandleFunc("/v1/vault", s.ownerOnlyScope(s.handleVaultStatus))
+	mux.HandleFunc("/v1/vault/enable", s.ownerOnlyScope(s.handleVaultEnable))
+	mux.HandleFunc("/v1/vault/unlock", s.ownerOnlyScope(s.handleVaultUnlock))
+	mux.HandleFunc("/v1/vault/lock", s.ownerOnlyScope(s.handleVaultLock))
+	mux.HandleFunc("/v1/vault/disable", s.ownerOnlyScope(s.handleVaultDisable))
+	mux.HandleFunc("/v1/vault/export", s.ownerOnlyScope(s.handleVaultExport))
+	mux.HandleFunc("/v1/vault/import", s.ownerOnlyScope(s.handleVaultImport))
 }
 
 func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
@@ -38,7 +57,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/me", s.handleMe)
 	mux.HandleFunc("/v1/onboarding", s.handleOnboarding)
 	mux.HandleFunc(TailscaleOnboardingApprovalPath, s.handleTailscaleOnboardingApproval)
-	mux.HandleFunc("/v1/onboarding/provider/credential", s.handleOnboardingProviderCredential)
+	mux.HandleFunc("/v1/onboarding/provider/credential", s.ownerOnlyScope(s.handleOnboardingProviderCredential))
 	mux.HandleFunc("/v1/secrets", s.handleSecrets)
 	mux.HandleFunc("/v1/secrets/", s.handleSecrets)
 	mux.HandleFunc("/v1/account/username", s.handleAccountUsername)
@@ -76,7 +95,10 @@ func (s *Server) registerAgentRoutes(mux *http.ServeMux) {
 func (s *Server) agentConfigScope(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead {
-			if !s.requireScope(w, r, "agents:read") {
+			// swarm:read: AI keys (reaching this only through /mcp) list agents
+			// and start custom-agent sessions, including keys minted before
+			// they carried agents:read.
+			if !s.requireScopeAny(w, r, "agents:read", "swarm:read") {
 				return
 			}
 		} else if !s.requireScope(w, r, "admin") {
@@ -162,11 +184,11 @@ func (s *Server) registerWorkspaceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/workspace/rename", s.handleWorkspaceRename)
 	mux.HandleFunc("/v1/workspace/move", s.handleWorkspaceMove)
 	mux.HandleFunc("/v1/workspace/todos", s.handleWorkspaceTodos)
-	mux.HandleFunc("/v1/workspace/actions", s.handleWorkspaceActions)
+	mux.HandleFunc("/v1/workspace/actions", s.ownerOnlyScope(s.handleWorkspaceActions))
 	mux.HandleFunc("/v1/workspace/skills/delete", s.handleWorkspaceSkillDelete)
-	mux.HandleFunc("/v1/workspace/actions/run", s.handleWorkspaceActionRunStart)
-	mux.HandleFunc("/v1/workspace/actions/runs", s.handleWorkspaceActionRuns)
-	mux.HandleFunc("/v1/workspace/actions/runs/cancel", s.handleWorkspaceActionRunCancel)
+	mux.HandleFunc("/v1/workspace/actions/run", s.ownerOnlyScope(s.handleWorkspaceActionRunStart))
+	mux.HandleFunc("/v1/workspace/actions/runs", s.ownerOnlyScope(s.handleWorkspaceActionRuns))
+	mux.HandleFunc("/v1/workspace/actions/runs/cancel", s.ownerOnlyScope(s.handleWorkspaceActionRunCancel))
 	mux.HandleFunc("/v1/workspace/git/status", s.handleGitStatus)
 	mux.HandleFunc("/v1/workspace/git/commit", s.handleGitCommit)
 	mux.HandleFunc("/v1/workspace/git/commit/suggestion", s.handleGitCommitSuggestion)

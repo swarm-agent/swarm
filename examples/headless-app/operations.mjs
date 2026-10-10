@@ -46,7 +46,7 @@ export function operations(sdk, project = '/project', defaults = {}) {
   }
   // AI keys: scoped tokens carrying Swarm Control levels. The browser sees
   // each key's hint and dates; the full key only once, when it is created.
-  const aiLevel = scopes => (scopes || []).includes('swarm:write') ? 'write' : 'read';
+  const aiLevel = scopes => { const s = scopes || []; return s.includes('swarm:manage') || s.includes('swarm:approve') || s.includes('admin') ? 'full' : s.includes('swarm:write') ? 'write' : 'read'; };
   const aiKey = t => ({ id: t.id, name: t.name, access: aiLevel(t.scopes), hint: t.token_hint,
     created_at: t.created_at, expires_at: t.expires_at, last_used_at: t.last_used_at || 0 });
   async function aiKeys() {

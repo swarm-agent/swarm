@@ -108,7 +108,7 @@ func TestInitStatusAndReset(t *testing.T) {
 	if err != nil || !st.Configured || st.Enabled || st.PublicKey == "" || !strings.HasPrefix(st.DeviceID, "dev_") {
 		t.Fatalf("init: %+v %v", st, err)
 	}
-	if len(tokens.minted) != 1 || strings.Join(tokens.minted[0], ",") != "sessions:read,automations:read" {
+	if len(tokens.minted) != 1 || strings.Join(tokens.minted[0], ",") != "sessions:read,automations:read,agents:read" {
 		t.Fatalf("read-only device minted %v", tokens.minted)
 	}
 	encoded, _ := json.Marshal(st)
@@ -129,7 +129,7 @@ func TestInitStatusAndReset(t *testing.T) {
 	if _, err := svc.Init(InitInput{RelayURL: "https://relay.example.com", DeviceName: "box", AllowManage: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(tokens.minted[1], ","); got != "sessions:read,automations:read,automations:write,usage:write,settings:write" {
+	if got := strings.Join(tokens.minted[1], ","); got != "sessions:read,automations:read,agents:read,automations:write,usage:write,settings:write" {
 		t.Fatalf("manage device minted %s", got)
 	}
 }
@@ -412,5 +412,65 @@ func TestRelayPairingThenReady(t *testing.T) {
 	ready := wait("connected", func(s Status) bool { return s.Connected })
 	if ready.PairingCode != "" || ready.LastError != "" {
 		t.Fatalf("pairing state not cleared on ready: %+v", ready)
+	}
+}
+
+// Requirement: relay clients get only tools the device token can actually
+// run. Owner box-setup tools (define agents, mint client app keys, ChatGPT
+// sign-in) need admin authority, which the device token never carries, so
+// they are neither listed nor forwarded, even for a manage client; read tools
+// that need agents:read (list_agents) are listed and forwarded. Threat: a
+// relay client offered tools that always fail, or a future token change
+// letting a relay client mint keys. Owners: localOnlyTools, filterTools and
+// the tools/call ceiling in Service.handle. Calling handle with a fake Swarm
+// Control handler is the narrowest layer that runs both checks.
+func TestRelayOmitsOwnerOnlyTools(t *testing.T) {
+	svc := NewService(&memoryStore{data: map[string][]byte{}}, &fakeTokens{})
+	var forwarded []string
+	svc.SetControlHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		forwarded = append(forwarded, body.Method+" "+body.Params.Name)
+		w.Header().Set("Content-Type", "application/json")
+		if body.Method == "tools/list" {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"swarm_list_agents"},{"name":"swarm_set_agent_model"},{"name":"swarm_define_agent"},{"name":"swarm_create_client_key"},{"name":"swarm_connect_chatgpt"}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}],"isError":false}}`))
+	}))
+	cfg := Config{Token: "swk_device", AllowWrite: true, AllowApprove: true, AllowManage: true}
+	client := &frameClient{ClientID: "c", Scopes: []string{ScopeRead, ScopeWrite, ScopeApprove, ScopeManage}}
+	call := func(body string) map[string]any {
+		t.Helper()
+		var out map[string]any
+		if err := json.Unmarshal(svc.handle(cfg, frame{Client: client, Body: json.RawMessage(body)}), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	listed := []string{}
+	for _, tool := range call(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)["result"].(map[string]any)["tools"].([]any) {
+		listed = append(listed, tool.(map[string]any)["name"].(string))
+	}
+	if strings.Join(listed, ",") != "swarm_list_agents,swarm_set_agent_model" {
+		t.Fatalf("relay listed %v", listed)
+	}
+	for name := range localOnlyTools {
+		out := call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"` + name + `","arguments":{}}}`)
+		if result, _ := out["result"].(map[string]any); result == nil || result["isError"] != true {
+			t.Fatalf("%s was not refused: %v", name, out)
+		}
+	}
+	if strings.Join(forwarded, ",") != "tools/list " {
+		t.Fatalf("refused calls reached Swarm Control: %v", forwarded)
+	}
+	call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"swarm_list_agents","arguments":{}}}`)
+	if strings.Join(forwarded, ",") != "tools/list ,tools/call swarm_list_agents" {
+		t.Fatalf("list_agents not forwarded: %v", forwarded)
 	}
 }

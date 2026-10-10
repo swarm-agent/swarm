@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { SwarmApiError } from '@swarm-agent/sdk';
 
 export class AppError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -12,8 +13,13 @@ export function equal(a, b) {
   return typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 export function safeError(error) {
-  return error instanceof AppError ? { status: error.status, error: error.message } :
-    { status: 502, error: 'Daemon operation failed. Check setup, provider readiness and selected model; then refresh. No automatic retry was made.' };
+  if (error instanceof AppError) return { status: error.status, error: error.message };
+  // Daemon client errors (4xx) carry key-free messages that say what to fix
+  // (for example why a setting was refused); show them instead of a guess.
+  if (error instanceof SwarmApiError && error.status >= 400 && error.status < 500 && error.message) {
+    return { status: error.status, error: error.message.slice(0, 300) };
+  }
+  return { status: 502, error: 'Daemon operation failed. Check setup, provider readiness and selected model; then refresh. No automatic retry was made.' };
 }
 // A Tailscale Serve origin: HTTPS on a tailnet MagicDNS name, default port.
 // Tailscale terminates TLS on the host and proxies to the loopback-published

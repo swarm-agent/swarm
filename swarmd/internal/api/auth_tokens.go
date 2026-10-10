@@ -21,7 +21,7 @@ type createScopedTokenRequest struct {
 	AgentName         string `json:"agent_name,omitempty"`
 	MessagesPerMinute int    `json:"messages_per_minute,omitempty"`
 	SessionsPerHour   int    `json:"sessions_per_hour,omitempty"`
-	// AIAccess mints an AI key for Swarm Control (/mcp): "read" or "write".
+	// AIAccess mints an AI key for Swarm Control (/mcp): "read", "write" or "full".
 	// Scopes are derived from the level; scopes, worker and agent stay empty.
 	AIAccess string `json:"ai_access,omitempty"`
 }
@@ -33,16 +33,21 @@ const (
 
 // aiKeyScopes are the API scopes plus Swarm Control levels for an AI key.
 // Read keys see and call only read tools; write keys may also start sessions,
-// send messages and stop runs. Approving tool calls and managing workers,
-// limits or models are never granted to an AI key.
+// send messages and stop runs. Full keys are for the AI that runs this box:
+// every Swarm Control tool, including approving tool calls, models, workers,
+// limits, custom agents, client keys and ChatGPT sign-in. Any key with a
+// Swarm Control level reaches only /mcp (gateAIKey), so admin here widens
+// what the allowlisted tools may do, never the rest of the API.
 func aiKeyScopes(level string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "read":
-		return []string{"swarm:read", "sessions:read", "automations:read"}, nil
+		return []string{"swarm:read", "sessions:read", "automations:read", "agents:read"}, nil
 	case "write":
-		return []string{"swarm:read", "swarm:write", "sessions:read", "sessions:write", "automations:read", "automations:write"}, nil
+		return []string{"swarm:read", "swarm:write", "sessions:read", "sessions:write", "automations:read", "automations:write", "agents:read"}, nil
+	case "full":
+		return []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "admin"}, nil
 	default:
-		return nil, errors.New(`ai_access must be "read" or "write"`)
+		return nil, errors.New(`ai_access must be "read", "write" or "full"`)
 	}
 }
 
@@ -107,6 +112,9 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			expiresIn = time.Duration(req.ExpiresInSeconds) * time.Second
 		}
 
+		// A key minted with a scoped token (an admin key, or a full AI key's
+		// create_client_key) never outlives that token.
+		parent, _ := ScopedTokenFromRequest(r)
 		var (
 			rawToken string
 			record   pebblestore.ScopedTokenRecord
@@ -129,7 +137,7 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, errors.New("an AI key lasts at most 365 days"))
 				return
 			}
-			rawToken, record, err = s.security.CreateScopedToken(req.Name, scopes, accountScopeID, principal.UserID, expiresIn, "", "")
+			rawToken, record, err = s.security.CreateScopedTokenUnder(parent, req.Name, scopes, accountScopeID, principal.UserID, expiresIn, "", "")
 		} else if agentName := strings.TrimSpace(req.AgentName); agentName != "" {
 			if len(req.Scopes) > 0 || req.WorkerID != "" || req.WorkerName != "" {
 				writeError(w, http.StatusBadRequest, errors.New("an agent-bound token takes no scopes or worker"))
@@ -139,13 +147,13 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, sealedErr)
 				return
 			}
-			rawToken, record, err = s.security.CreateAgentBoundToken(req.Name, accountScopeID, principal.UserID, expiresIn, agentName, req.MessagesPerMinute, req.SessionsPerHour)
+			rawToken, record, err = s.security.CreateAgentBoundTokenUnder(parent, req.Name, accountScopeID, principal.UserID, expiresIn, agentName, req.MessagesPerMinute, req.SessionsPerHour)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 		} else {
-			rawToken, record, err = s.security.CreateScopedToken(req.Name, req.Scopes, accountScopeID, principal.UserID, expiresIn, req.WorkerID, req.WorkerName)
+			rawToken, record, err = s.security.CreateScopedTokenUnder(parent, req.Name, req.Scopes, accountScopeID, principal.UserID, expiresIn, req.WorkerID, req.WorkerName)
 		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)

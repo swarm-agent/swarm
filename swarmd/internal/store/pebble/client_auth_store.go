@@ -123,6 +123,9 @@ type ScopedTokenRecord struct {
 	ExpiresAt         int64 `json:"expires_at"` // 0 = never
 	Revoked           bool  `json:"revoked"`
 	LastUsedAt        int64 `json:"last_used_at,omitempty"`
+	// ParentTokenID is the scoped token that minted this one; this token is
+	// valid only while that parent is (security.Service.ValidateScopedToken).
+	ParentTokenID string `json:"parent_token_id,omitempty"`
 }
 
 func (r *ScopedTokenRecord) HasScope(required string) bool {

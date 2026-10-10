@@ -101,10 +101,14 @@ export class SwarmSessionsNamespace {
     const data = res.data;
     if (data && typeof data === 'object') {
       const sessionObj = data.session || data;
+      // V3 sessions carry their source workspace as the primary grant.
+      const primaryGrant = Array.isArray(sessionObj.workspace_grants)
+        ? sessionObj.workspace_grants.find((grant: any) => grant?.kind === 'primary')
+        : undefined;
       return {
         id: sessionObj.id || sessionObj.session_id || sessionId,
         title: sessionObj.title || '',
-        workspace_id: sessionObj.workspace_id,
+        workspace_id: sessionObj.workspace_id || primaryGrant?.workspace_id,
         workspace_path: sessionObj.workspace_path,
         state: sessionObj.state || data.projection?.state || 'idle',
         mode: sessionObj.mode,

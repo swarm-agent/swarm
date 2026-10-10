@@ -12,8 +12,11 @@ import (
 // Purpose: an AI key reached over a tunnel is the only credential between an
 // AI client and this machine, so its level must hold on the gateway itself.
 // A read key sees and calls only read tools; a write key may also start and
-// steer sessions; neither may approve tool calls or manage workers, limits or
-// models. Ordinary scoped tokens are unchanged.
+// steer sessions; neither may approve tool calls or manage workers, limits,
+// models, custom agents, client keys or ChatGPT sign-in. A full key (the owner
+// chose to let an AI run the box) sees every tool but, like every AI key,
+// reaches nothing outside /mcp even though it carries admin. Ordinary scoped
+// tokens are unchanged.
 func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 	s, _, sec, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
@@ -99,9 +102,21 @@ func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 			t.Fatalf("write key misses %s", name)
 		}
 	}
-	for _, name := range []string{"swarm_resolve_permission", "swarm_integrate_task", "swarm_create_worker", "swarm_set_usage_limits", "swarm_set_agent_model"} {
+	for _, name := range []string{"swarm_resolve_permission", "swarm_integrate_task", "swarm_create_worker", "swarm_set_usage_limits", "swarm_set_agent_model",
+		"swarm_define_agent", "swarm_create_client_key", "swarm_connect_chatgpt"} {
 		if readTools[name] || writeTools[name] {
 			t.Fatalf("AI key lists %s", name)
+		}
+	}
+	if !readTools["swarm_list_agents"] || !writeTools["swarm_list_agents"] {
+		t.Fatal("read and write keys must list agents")
+	}
+	// A full key (the AI that runs this box) sees every tool.
+	fullKey := key("full")
+	fullTools := listTools(fullKey)
+	for _, tool := range controlMCPTools() {
+		if !fullTools[tool.Name] {
+			t.Fatalf("full key misses %s", tool.Name)
 		}
 	}
 	if !plainTools["swarm_start_session"] || !plainTools["swarm_resolve_permission"] {
@@ -128,20 +143,25 @@ func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 
 	// The raw routes would bypass the per-tool level: AI keys get /mcp only,
 	// on the gateway and on the daemon's own API.
+	// A full key carries admin, so it must be held to /mcp just the same.
 	for _, h := range []http.Handler{s.ContainerSDKHandler(), s.Handler()} {
-		for _, route := range []struct{ method, path, body string }{
-			{"GET", "/v3/sessions", ""},
-			{"POST", "/v3/sessions/s/permissions/p/resolve", `{"action":"allow_once"}`},
-			{"POST", "/v3/sessions/s/messages", `{"content":"x"}`},
-		} {
-			r := httptest.NewRequest(route.method, "http://127.0.0.1:7783"+route.path, strings.NewReader(route.body))
-			r.RemoteAddr = "192.0.2.1:40000"
-			r.Header.Set("Content-Type", "application/json")
-			r.Header.Set("Authorization", "Bearer "+writeKey)
-			w := httptest.NewRecorder()
-			h.ServeHTTP(w, r)
-			if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "only through Swarm Control") {
-				t.Fatalf("AI key reached %s %s: %d %s", route.method, route.path, w.Code, w.Body.String())
+		for _, token := range []string{writeKey, fullKey} {
+			for _, route := range []struct{ method, path, body string }{
+				{"GET", "/v3/sessions", ""},
+				{"POST", "/v3/sessions/s/permissions/p/resolve", `{"action":"allow_once"}`},
+				{"POST", "/v3/sessions/s/messages", `{"content":"x"}`},
+				{"GET", "/v1/auth/credentials", ""},
+				{"POST", "/v3/auth/tokens", `{"name":"x","scopes":["admin"]}`},
+			} {
+				r := httptest.NewRequest(route.method, "http://127.0.0.1:7783"+route.path, strings.NewReader(route.body))
+				r.RemoteAddr = "192.0.2.1:40000"
+				r.Header.Set("Content-Type", "application/json")
+				r.Header.Set("Authorization", "Bearer "+token)
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, r)
+				if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "only through Swarm Control") {
+					t.Fatalf("AI key reached %s %s: %d %s", route.method, route.path, w.Code, w.Body.String())
+				}
 			}
 		}
 	}
