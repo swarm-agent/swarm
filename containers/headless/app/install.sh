@@ -165,12 +165,14 @@ choose_runtime() {
 check_isolation() {
   load_conf
   docker image inspect "$SANDBOX_IMAGE" >/dev/null 2>&1 || die "the sandbox image is not built"
-  local host_ts host_ip gateway target name want got failed=0
+  local host_ts host_ip gateway secrets target name want got failed=0
   host_ts=$(tailscale ip -4 2>/dev/null | head -n1 || true)
   host_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' || true)
   gateway=${SANDBOX_SUBNET%.*}.1
+  secrets=$(gateway_port)
   printf '%-40s %-10s %s\n' "From inside an agent sandbox to" "expected" "result"
   for target in \
+    ${secrets:+"$gateway:$secrets|the secret gateway|reachable"} \
     "${host_ts:-100.100.100.100}:443|this server's tailnet address|blocked" \
     "100.100.100.100:53|Tailscale DNS|blocked" \
     "169.254.169.254:80|cloud metadata|blocked" \
