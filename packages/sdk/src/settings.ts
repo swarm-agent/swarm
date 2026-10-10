@@ -1,4 +1,5 @@
 import type { SwarmTransport } from './transport.js';
+import { SwarmNotFoundError } from './errors.js';
 
 export interface ProviderStatus {
   id: string;
@@ -108,12 +109,20 @@ export class SwarmSettingsNamespace {
   /**
    * Restores verified recommended defaults across all system agent and swarm core roles.
    * If expectedUpdatedAt is omitted, automatically reads the current setting's revision first.
+   * An account with no model settings yet (a provider is connected but its
+   * models were never set up) restores from revision 0: the daemon then sets
+   * up the recommended models from a ready provider.
    */
   async restoreDefaults(expectedUpdatedAt?: number): Promise<AgentModelSettingsResponse> {
     let updatedAt = expectedUpdatedAt;
     if (typeof updatedAt !== 'number') {
-      const current = await this.agentModels();
-      updatedAt = current.agent_model_settings.updated_at;
+      try {
+        const current = await this.agentModels();
+        updatedAt = current.agent_model_settings.updated_at;
+      } catch (error) {
+        if (!(error instanceof SwarmNotFoundError)) throw error;
+        updatedAt = 0;
+      }
     }
     return (
       await this.transport.request<AgentModelSettingsResponse>(

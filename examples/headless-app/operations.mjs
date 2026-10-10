@@ -83,11 +83,12 @@ export function operations(sdk, project = '/project', defaults = {}) {
   async function setup() {
     const status = await sdk.onboarding.get();
     const steps = { provider: false, models: false, workspace: false, agents: false, claude: false };
-    let relay = null, mode = 'ask';
+    let relay = null, mode = 'ask', connected = [];
     if (status.identity?.bootstrapped === true) {
       // A saved key counts only once its provider works: a rejected or
       // unverifiable key must not move setup past the provider step.
-      steps.provider = (await sdk.settings.providers()).some(p => p.ready && p.runnable);
+      connected = (await sdk.settings.providers()).filter(p => p.ready && p.runnable).map(p => p.id);
+      steps.provider = connected.length > 0;
       let settings = null;
       try { settings = (await sdk.settings.agentModels()).agent_model_settings; }
       catch (error) { if (!(error instanceof SwarmNotFoundError)) throw error; }
@@ -99,7 +100,7 @@ export function operations(sdk, project = '/project', defaults = {}) {
       mode = await agentsMode();
       steps.agents = mode === 'auto' || (await appSettings()).agents_chosen === true;
     }
-    return { steps, agents: mode, remote: relay, defaults: { relay_url: defaults.relayUrl || '', device_name: defaults.deviceName || '' } };
+    return { steps, connected, agents: mode, remote: relay, defaults: { relay_url: defaults.relayUrl || '', device_name: defaults.deviceName || '' } };
   }
   return {
     session,

@@ -138,6 +138,10 @@ async function openSetup(fromSignIn = false) {
     } else item.textContent = label;
     return item;
   }));
+  const names = { codex: 'ChatGPT', openai: 'OpenAI', anthropic: 'Anthropic', google: 'Google', openrouter: 'OpenRouter', fireworks: 'Fireworks' };
+  $('connected').textContent = setupState.connected?.length
+    ? `Connected: ${setupState.connected.map(id => names[id] || id).join(', ')}`
+    : 'No AI provider connected yet.';
   for (const key of [...STEPS.map(([k]) => k), 'done']) $(`step-${key}`).hidden = key !== current;
   $('setup-later').hidden = current === 'done';
   if (current === 'provider') await loadProviders();

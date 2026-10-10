@@ -54,11 +54,13 @@ test('setup creates the Swarm owner and reports step completion and installer de
   // provider step, so the owner can fix it instead of being stuck on models.
   const unverified = await operations(fakeSdk({ credentials: 1, providerReady: false, models: false })).run('setup', {}, 'roy');
   assert.equal(unverified.steps.provider, false);
+  assert.deepEqual(unverified.connected, []);
   const partial = await operations(fakeSdk({ models: false, workspaces: ['/elsewhere/repo'] })).run('setup', {}, 'roy');
   assert.deepEqual(partial.steps, { provider: true, models: false, workspace: false, agents: false, claude: false });
   const done = await operations(fakeSdk({ bypass: true, remote: { configured: true, enabled: true, connected: true } })).run('setup', {}, 'roy');
   assert.deepEqual(done.steps, { provider: true, models: true, workspace: true, agents: true, claude: true });
   assert.equal(done.agents, 'auto');
+  assert.deepEqual(done.connected, ['codex']);
 });
 
 // Purpose: the owner chooses once how agents work; "ask first" keeps prompts

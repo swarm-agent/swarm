@@ -164,3 +164,47 @@ test('SwarmSettingsNamespace: restoreDefaults fetches current updated_at and res
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
+
+// Purpose: on an account whose provider is connected but whose model settings
+// were never created, the daemon answers the settings read with 404. Before,
+// restoreDefaults threw that 404 and never asked the daemon to set the models
+// up, so the headless setup app stayed stuck on "agent model settings not
+// found". It must restore from revision 0 instead, and still surface any other
+// read failure. Boundary: SwarmSettingsNamespace over a real HTTP transport.
+test('SwarmSettingsNamespace: restoreDefaults sets up models on a fresh account', async () => {
+  let expectedUpdatedAtSent: number | null = null;
+  let readStatus = 404;
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || '', 'http://127.0.0.1');
+    if (req.method === 'GET' && url.pathname === '/v1/agent-model-settings') {
+      res.writeHead(readStatus, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: readStatus === 404 ? 'agent model settings not found' : 'boom' }));
+    } else if (req.method === 'POST' && url.pathname === '/v1/agent-model-settings/restore-defaults') {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        expectedUpdatedAtSent = JSON.parse(Buffer.concat(chunks).toString('utf8')).expected_updated_at;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, agent_model_settings: { account_scope_id: 'acct_1', updated_at: 1, swarm: {}, system_agents: {} }, roles: [] }));
+      });
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+  try {
+    const settings = new SwarmSettingsNamespace(new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, defaultHeaders: {}, timeoutMs: 5000 }));
+    const restored = await settings.restoreDefaults();
+    assert.equal(restored.ok, true);
+    assert.equal(expectedUpdatedAtSent, 0);
+
+    expectedUpdatedAtSent = null;
+    readStatus = 500;
+    await assert.rejects(settings.restoreDefaults());
+    assert.equal(expectedUpdatedAtSent, null, 'a failed read must not restore');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
