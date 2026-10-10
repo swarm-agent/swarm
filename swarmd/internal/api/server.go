@@ -126,6 +126,7 @@ type Server struct {
 	secretSlots                 *pebblestore.SecretSlotStore
 	signals                     *pebblestore.SignalStore
 	secretsGatewayEnabled       bool
+	signalSinks                 *pebblestore.SignalSinkStore
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub

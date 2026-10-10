@@ -48,9 +48,10 @@ const (
 )
 
 var (
-	signalKindPattern   = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){1,3}$`)
-	signalFieldPattern  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
-	signalSourcePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+	signalKindPattern       = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){1,3}$`)
+	signalFieldPattern      = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	signalSourcePattern     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
+	signalKindPrefixPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*){0,3}$`)
 
 	signalSeverityRank = map[string]int{SignalSeverityInfo: 0, SignalSeverityWarning: 1, SignalSeverityCritical: 2}
 )
@@ -90,10 +91,11 @@ type SignalStore struct {
 	now   func() time.Time
 	keep  uint64
 	mu    sync.Mutex
+	wake  chan struct{}
 }
 
 func NewSignalStore(store *Store) *SignalStore {
-	return &SignalStore{store: store, now: time.Now, keep: MaxSignals}
+	return &SignalStore{store: store, now: time.Now, keep: MaxSignals, wake: make(chan struct{}, 1)}
 }
 
 func signalKey(seq uint64) string {
@@ -233,6 +235,10 @@ func (s *SignalStore) Append(sig Signal) (Signal, error) {
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return Signal{}, fmt.Errorf("commit signal: %w", err)
 	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
 	return sig, nil
 }
 
@@ -328,4 +334,14 @@ func signalVisible(sig Signal, filter SignalFilter, minRank int) bool {
 		}
 	}
 	return false
+}
+
+// Appended returns a channel that receives (coalesced) after new signals are
+// stored, so a forwarder can deliver promptly without scanning on a timer.
+// There is one channel per store; use it from one reader.
+func (s *SignalStore) Appended() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.wake
 }

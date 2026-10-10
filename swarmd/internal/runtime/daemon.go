@@ -170,6 +170,7 @@ type Daemon struct {
 	cleanupErr                error
 	longSessionDiagnostics    *longsessiondiag.Recorder
 	remoteTransport           *remote.Service
+	signalForwarder           *signals.Forwarder
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -716,6 +717,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSecretServices(secretSlots, authStore)
 	apiServer.SetSignalStore(signalStore)
 	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
+	signalSinks := pebblestore.NewSignalSinkStore(store)
+	apiServer.SetSignalSinkStore(signalSinks)
+	// Forwards the signal feed to owner-configured sinks; idle until one exists.
+	signalForwarder := signals.NewForwarder(signalStore, signalSinks, func() string { return startupSwarmName(cfg.ConfigPath) })
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
@@ -883,6 +888,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
 		remoteTransport:           remoteSvc,
+		signalForwarder:           signalForwarder,
 	}
 	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -1254,6 +1260,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.remoteTransport != nil && d.bgCtx != nil {
 		go d.remoteTransport.Run(d.bgCtx)
+	}
+	if d.signalForwarder != nil && d.bgCtx != nil {
+		go d.signalForwarder.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

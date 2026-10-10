@@ -73,7 +73,12 @@ export interface ReportSignalParams {
  * signals and machine-wide ones.
  */
 export class SwarmSignalsNamespace {
-  constructor(private readonly transport: SwarmTransport) {}
+  /** Where this machine forwards its feed (owner only). */
+  readonly sinks: SwarmSignalSinksNamespace;
+
+  constructor(private readonly transport: SwarmTransport) {
+    this.sinks = new SwarmSignalSinksNamespace(transport);
+  }
 
   /** Lists signals after a cursor, oldest first. */
   async list(params: ListSignalsParams = {}): Promise<SignalPage> {
@@ -100,4 +105,107 @@ export class SwarmSignalsNamespace {
     });
     return res.data.signal;
   }
+}
+
+/** Where a machine forwards its signal feed (owner only). */
+export interface SignalSink {
+  id: string;
+  account: string;
+  name: string;
+  url: string;
+  kinds?: string[];
+  min_severity?: SignalSeverity;
+  heartbeat_seconds: number;
+  /** Last signal position the sink accepted. */
+  cursor: number;
+  created_at: number;
+  last_delivered_at?: number;
+  last_attempt_at?: number;
+  last_error?: string;
+  failures?: number;
+}
+
+export interface CreateSignalSinkParams {
+  name: string;
+  /** https URL (http only to this machine's loopback). */
+  url: string;
+  /** Kind prefixes to forward, e.g. `['agent', 'worker.run.failed']`; empty forwards all. */
+  kinds?: string[];
+  minSeverity?: SignalSeverity;
+  /** Idle heartbeat interval, 30 to 3600 seconds (default 60). */
+  heartbeatSeconds?: number;
+}
+
+/**
+ * Signal sinks: the machine POSTs batches of its feed to each sink, signed
+ * with the sink's secret (see `verifySignalDelivery`). Owner only: scoped
+ * keys, including admin keys, are refused.
+ */
+export class SwarmSignalSinksNamespace {
+  constructor(private readonly transport: SwarmTransport) {}
+
+  async list(): Promise<SignalSink[]> {
+    const res = await this.transport.request<{ ok: boolean; sinks: SignalSink[] }>('/v3/signals/sinks', { method: 'GET' });
+    return res.data.sinks ?? [];
+  }
+
+  /** Creates a sink. The signing secret is returned only here; store it in the receiver. */
+  async create(params: CreateSignalSinkParams): Promise<{ sink: SignalSink; secret: string }> {
+    const res = await this.transport.request<{ ok: boolean; sink: SignalSink; secret: string }>('/v3/signals/sinks', {
+      method: 'POST',
+      body: {
+        name: params.name,
+        url: params.url,
+        kinds: params.kinds,
+        min_severity: params.minSeverity,
+        heartbeat_seconds: params.heartbeatSeconds,
+      },
+    });
+    return { sink: res.data.sink, secret: res.data.secret };
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.transport.request(`/v3/signals/sinks/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+}
+
+/** Body of one signal delivery (version 1). */
+export interface SignalDelivery {
+  version: 1;
+  sink_id: string;
+  machine?: string;
+  sent_at: number;
+  /** True for an idle heartbeat with no signals. */
+  heartbeat: boolean;
+  signals: Signal[];
+  next_after: number;
+  latest_seq: number;
+  gap: boolean;
+}
+
+/**
+ * Checks a delivery's `X-Swarm-Signature` for a receiver: HMAC-SHA256 of
+ * `${X-Swarm-Timestamp}.${rawBody}` with the sink secret, and a timestamp
+ * within `maxSkewMs` of now (rejects replays). Pass the raw request body,
+ * not re-serialized JSON. Works with WebCrypto (Node 18+, Workers, browsers).
+ */
+export async function verifySignalDelivery(
+  secret: string,
+  timestamp: string | number,
+  rawBody: string | Uint8Array,
+  signature: string,
+  { now = Date.now(), maxSkewMs = 5 * 60 * 1000 }: { now?: number; maxSkewMs?: number } = {},
+): Promise<boolean> {
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts) || Math.abs(now - ts) > maxSkewMs || !signature.startsWith('v1=')) return false;
+  const enc = new TextEncoder();
+  const body = typeof rawBody === 'string' ? enc.encode(rawBody) : rawBody;
+  const message = new Uint8Array([...enc.encode(`${ts}.`), ...body]);
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, message));
+  const expected = 'v1=' + Array.from(mac, (b) => b.toString(16).padStart(2, '0')).join('');
+  if (expected.length !== signature.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  return diff === 0;
 }

@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"strings"
+
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/signals"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -69,4 +72,22 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 			Attrs:    map[string]string{"source": run.RequestSource},
 		})
 	}
+}
+
+// startupSwarmName is this machine's configured name ("" when unset or
+// unreadable), labelling forwarded signals.
+func startupSwarmName(configPath string) string {
+	path := strings.TrimSpace(configPath)
+	if path == "" {
+		resolved, err := startupconfig.ResolvePath()
+		if err != nil {
+			return ""
+		}
+		path = resolved
+	}
+	cfg, err := startupconfig.Load(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.SwarmName)
 }

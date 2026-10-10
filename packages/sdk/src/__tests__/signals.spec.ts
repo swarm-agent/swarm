@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { test } from 'node:test';
 import { SwarmClient } from '../client.js';
+import { verifySignalDelivery } from '../signals.js';
 
 // Purpose: monitors and reporters use client.signals to follow a machine's
 // feed with a cursor and to report outside events. The SDK must send the
@@ -84,4 +85,18 @@ test('SwarmBoxNamespace: summary', async () => {
   } finally {
     server.close();
   }
+});
+
+// Purpose: receivers check deliveries with verifySignalDelivery; it must accept
+// the daemon's signature for a fixed vector (openssl HMAC-SHA256 of
+// '1700000000000.{"a":1}' with key 'sss_test', pinned in the Go Sign test
+// too) and reject a wrong secret, an altered body and a stale timestamp.
+test('verifySignalDelivery: matches the daemon signature, rejects tampering and replay', async () => {
+  const sig = 'v1=48eb242e09848b0b11d3819e976edb5a2055d3a890167a5417a9cc697ae6bc6a';
+  const body = '{"a":1}';
+  const opts = { now: 1700000000000 };
+  assert.equal(await verifySignalDelivery('sss_test', '1700000000000', body, sig, opts), true);
+  assert.equal(await verifySignalDelivery('wrong', '1700000000000', body, sig, opts), false);
+  assert.equal(await verifySignalDelivery('sss_test', '1700000000000', '{"a":2}', sig, opts), false);
+  assert.equal(await verifySignalDelivery('sss_test', '1700000000000', body, sig, { now: 1700000000000 + 10 * 60 * 1000 }), false);
 });
