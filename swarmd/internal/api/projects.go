@@ -3631,7 +3631,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if gitState.deliveryAssessment == nil || gitState.deliveryAssessment.Freshness != "observed" || (gitState.deliveryAssessment.State != "candidate_work" && gitState.deliveryAssessment.State != "integrated") {
-			writeError(w, http.StatusConflict, errors.New("delivery is not actionable for direct integration; refresh and review recovery"))
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"ok":       false,
+				"error":    taskDeliveryNotActionableMessage(projectID, taskID, gitState.deliveryAssessment),
+				"code":     strconv.Itoa(http.StatusConflict),
+				"delivery": gitState.deliveryAssessment,
+			})
 			return
 		}
 		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath}

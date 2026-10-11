@@ -100,6 +100,27 @@ func (s *Server) sessionModelProfileSnapshotFromAccountDefault(ctx context.Conte
 	}, nil
 }
 
+// accountDefaultSwarmPreference is the account's Swarm Action assignment as a
+// session preference, or nil when no model was ever set up for the account.
+// Storage failures are returned, never treated as "no model".
+func (s *Server) accountDefaultSwarmPreference(accountScopeID string) (*pebblestore.ModelPreference, error) {
+	if s.agentModelSettings == nil {
+		return nil, nil
+	}
+	settings, err := s.agentModelSettings.GetForAccount(accountScopeID)
+	if errors.Is(err, agentmodelsettings.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	action := pebblestore.NormalizeAgentModelAssignment(settings.Swarm.Action)
+	if action.Provider == "" || action.Model == "" {
+		return nil, nil
+	}
+	return &pebblestore.ModelPreference{Provider: action.Provider, Model: action.Model, Thinking: action.Thinking, ServiceTier: action.ServiceTier, ContextMode: action.ContextMode}, nil
+}
+
 func agentModelAssignmentSelection(assignment pebblestore.AgentModelAssignment) pebblestore.ModelProfileSelection {
 	return sessionModelSelectionFromFlatProfile(assignment.Provider, assignment.Model, assignment.Thinking, assignment.ServiceTier, assignment.ContextMode)
 }

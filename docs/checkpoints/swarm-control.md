@@ -25,35 +25,43 @@ unsupported protocol versions are rejected.
 | --- | --- | --- |
 | `swarm_list_machines` (relay only) | `swarm:read` | — |
 | `swarm_list_workspaces` | `swarm:read` | `GET /v1/workspace/list` (tool requires `sessions:read`) |
-| `swarm_list_sessions`, `swarm_get_session` (+ `wait_seconds`) | `swarm:read` | `GET /v3/sessions[/{id}]`, `GET …/plans/active`; children: `GET /v3/projects/{pid}/tasks` (orchestrator) or sessions whose `parent_session_id` is this one |
-| `swarm_start_session` (prompt **or** plan; optional model, `wait_seconds`) | `swarm:write` | `POST /v3/sessions` (workspace agents) or `POST /v3/projects/{pid}/sessions` (`system-orchestrator`), always `auto`, then `…/messages` or the plan routes |
-| `swarm_send_message` (+ `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages` |
+| `swarm_list_sessions`, `swarm_get_session` (+ `wait_seconds`, `detail_chars` up to 20,000 per message or tool field) | `swarm:read` | `GET /v3/sessions[/{id}]`, `GET …/plans/active`; children: `GET /v3/projects/{pid}/tasks` (orchestrator) or sessions whose `parent_session_id` is this one; pending requests carry decoded `tool_arguments` and `kind` (`approval` or `question`, tool `ask_user`) |
+| `swarm_start_session` (prompt **or** plan; optional model, `wait_seconds`) | `swarm:write` | `POST /v3/sessions` (workspace agents) or `POST /v3/projects/{pid}/sessions` (`system-orchestrator`), always `auto`, then `…/messages` or the plan routes; returns `started` (ids only) plus one session read made afterwards; an unregistered `workspace_path` is reported as such |
+| `swarm_send_message` (+ `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages`; returns `started` plus the current session state |
 | `swarm_list_models` | `swarm:read` | `GET /v1/providers`, `GET /v1/model/catalog`, `GET /v1/agent-model-settings` (tool requires `sessions:read`) |
 | `swarm_set_session_model` | `swarm:write` | `PUT /v3/sessions/{id}/model-profile` (session-owned selection, validated against the catalog) |
 | `swarm_set_agent_model` | `swarm:manage` | `PATCH /v1/agent-model-settings`, one role (tool requires `settings:write`) |
 | `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
-| `swarm_stop_run` | `swarm:write` | `POST …/run/stop` |
-| `swarm_resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` |
+| `swarm_stop_run` | `swarm:write` | `POST …/run/stop`, then waits up to 10 s and reports the run's final status (`finished`, `failed`, `stopped` or `stopping`), the plan's state (a stopped plan is `paused`: it keeps progress and resumes only with a new message) and a summary |
+| `swarm_resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` (one decision; Swarm has no session-scoped allowance, and persistent rules stay owner-only) |
 | `swarm_list_projects` | `swarm:read` | `GET /v3/projects` |
 | `swarm_create_project` | `swarm:manage` | `POST /v3/projects` (workspaces must be registered) |
 | `swarm_list_tasks` | `swarm:read` | `GET /v3/projects/{pid}/tasks` (orchestrator tasks and worker runs, with branches and review state) |
 | `swarm_integrate_task` | `swarm:approve` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict; nothing is pushed) |
+| `swarm_approve_task` (`approve`/`reject`) | `swarm:manage` | `POST /v3/projects/{pid}/tasks/{tid}/approve` or `…/reject` (the Desktop's buttons) for a `pending_approval` task only, with the task's own session, plan and plan revision as guards; the media `…/accept` alias that publishes deliverables is not reachable |
+| `swarm_accept_review` | `swarm:approve` | `GET …/plans/active`, then `POST /v3/sessions/{id}/plan-mode/checkpoints/{cid}/accept` on the checkpoint waiting for review (tool requires `sessions:write`); a last checkpoint completes the plan |
+| `swarm_read_file` | `swarm:read` | session detail (worktree root, else workspace) or the registered-workspace list; the file is opened with `os.Root` beneath that folder (no `..`, absolute paths or symlink escape), `.git`, `.env*`, binary files and protected storage refused, 256 KiB cap; directories list up to 200 entries (tool requires `sessions:read`) |
+| `swarm_get_changes` (+ `path`, `diff_chars` up to 200,000) | `swarm:read` | session detail, then read-only Git through the sandbox router in the session's worktree against its base commit (or uncommitted changes against `HEAD` without a worktree): commits, changed and untracked files, bounded diff without external diff or textconv helpers (tool requires `sessions:read`) |
 | `swarm_list_workers`, `swarm_get_worker` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
 | `swarm_assign_worker_task` | `swarm:write` | `POST /v3/workers/{id}/direct` |
 | `swarm_create_worker` (optional `schedule` + `scheduled_plan`) | `swarm:manage` | `POST /v3/workers` (schedule included), `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`), `POST …/automations/{aid}/enable` |
 | `swarm_update_worker` | `swarm:manage` | `PUT /v3/workers/{id}` (revision-guarded) |
 | `swarm_manage_worker` (pause/resume/archive/delete/cancel_run/enable_schedule/disable_schedule) | `swarm:manage` | `POST /v3/workers/{id}/{action}`, `…/runs/{rid}/cancel`, `…/automations/{aid}/enable\|disable` |
-| `swarm_get_usage` | `swarm:read` | `GET /v3/usage` (tool requires `sessions:read`) |
+| `swarm_get_usage` | `swarm:read` | `GET /v3/usage` (tool requires `sessions:read`); each top model carries `billing` (`subscription`, `metered` or `unpriced`) and `nominal_cost_usd` when known, the summary a `cost_note` explaining zero cost, and unset limits read `none` |
 | `swarm_set_usage_limits` | `swarm:manage` | `POST /v3/usage/limits` (tool requires `usage:write`) |
-| `swarm_list_providers` | `swarm:read` | `GET /v1/providers` plus credential metadata from the auth service (count, active auth type, verification, latest key link outcome; never key material, last four or labels; tool requires `sessions:read`) |
+| `swarm_list_providers` (+ `wait_seconds` with `provider`) | `swarm:read` | `GET /v1/providers` plus credential metadata from the auth service (count, active `auth_type` and `status`: `signed in` for a sign-in, `verified`/`failed`/`saved, not verified yet` for an API key; latest key link outcome; never key material, last four or labels; tool requires `sessions:read`); `wait_seconds` waits, woken by the key registry, while that provider's link is waiting |
 | `swarm_request_provider_key` (local only, not offered over the relay) | `swarm:manage` | none: returns a one-time link to the key page on the loopback API listener (tool requires `admin`); the page saves through `POST /v1/auth/credentials` |
 
 **Sessions.** `swarm` (default) works in one workspace and delegates to
 sub-agents; `system-orchestrator` runs a project and turns work into tasks for
 agents and workers; `system-coder`, `system-designer` and `system-finder` work
-alone. `get_session` lists delegated children. `wait_seconds` (at most 45)
-waits for the run to finish or ask for approval, woken by committed V3 outbox
-records for that session (no timer polling), then returns the latest state.
+alone. `get_session` lists delegated children. `wait_seconds` (at most 110:
+relay devices give up after 120 seconds; clients with a 60-second tool timeout
+should pass at most 50) waits until the run settles: it ended (`waited.outcome`
+`finished`, `failed` or `stopped`, from the session lifecycle) or it waits on a
+decision (`waited.reason` `waiting_on_decision`); `timed_out` means it is still
+working. The wait is woken by committed V3 outbox records for that session (no
+timer polling), then returns the latest state.
 
 **Models.** `list_models` shows runnable providers, their catalog models and
 thinking options, and each role's default. A session's model can be chosen at
@@ -79,7 +87,11 @@ stored and the link stays usable for up to five attempts. `list_providers`
 then shows `saved`, `failed` with a redacted reason, or `expired`. Codes live
 in memory only.
 
-**Review.** Finished orchestrator tasks and worker runs wait in
+**Review.** Orchestrator tasks that need launch approval wait in
+`pending_approval` until `approve_task` (manage level). A plan whose last
+checkpoint needs review waits in `waiting_review` until `accept_review`.
+`get_changes` and `read_file` show what the agents produced first.
+Finished orchestrator tasks and worker runs wait in
 `needs_review`. A worker run forks from the workspace's current branch (its
 integration target); work reaches that branch only through `integrate_task`.
 Disabling a schedule cancels its runs still in flight.
@@ -106,8 +118,10 @@ workers that request capabilities. Routes whose handlers check no scope
 **Token budget.** Results are compact JSON sent once (no `structuredContent`
 copy). Sessions, runs, plans and workers are reduced to ids, names and
 status; text is truncated (messages 1,500, tool arguments 800, tool output
-300 characters) and plans show only per-checkpoint status. The full tool list
-is 23 tools.
+300 characters, raised per call with `get_session` `detail_chars`) and plans
+show only per-checkpoint status. Server instructions name only tools the
+caller's level allows. The full tool list
+is 34 tools.
 
 **Local tokens.** `swarmctl setup sdk-token` mints session scopes by default;
 add `--workers` (automations read/write), `--usage-limits` (`usage:write`) and
@@ -259,6 +273,17 @@ device→relay `auth`, `mcp.response`, `consent.decision`.
   restart it reconnected without a new code; `swarm_remove_machine` refused a
   `SWARM_DEVICE_KEYS` machine and returned a removed one to waiting with a new
   code. Not yet run against the deployed Cloudflare relay.
+
+- Review and inspection tools (this revision): `TestControlMCPApprovesPendingTask`
+  (approve and reject through the task routes, read grant and non-pending
+  tasks refused unchanged), `TestControlMCPAcceptsPlanReview`,
+  `TestControlMCPReadsWhatAgentsProduced` (real Git worktree: commits, changed,
+  untracked files and bounded diff; traversal, absolute, symlink, `.git`,
+  `.env`, binary, protected storage, foreign session and missing scope refused),
+  `TestControlMCPSendMessageReturnsCurrentState`, `TestControlMCPWaitsForProviderKey`,
+  `TestControlMCPInstructionsFollowLevel` and pure-function tests for settled
+  outcomes, stop reports, decoded arguments, billing and provider status. No
+  provider or live agent was run.
 
 A deployed Cloudflare relay with a claude.ai custom connector and one headless
 container has been exercised for listing machines and workspaces. Not yet

@@ -86,6 +86,9 @@ type sessionV3ExecutorJob struct {
 	enqueuedAt      time.Time
 	activity        *sessionV3RunActivity
 	feedbackCursor  *uint64
+	// StopCause is sessionruntime.PlanStoppedByUser for an explicit user run
+	// stop; it is recorded on the paused plan attempt.
+	StopCause string
 }
 
 type sessionV3ExecutorRunState struct {
@@ -617,6 +620,7 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 				return sessionruntime.SessionMutationResult{}, tracked, ownershipErr
 			}
 			if checkpointOwned {
+				checkpointJob.StopCause = job.StopCause
 				job = checkpointJob
 			}
 		}
@@ -808,6 +812,7 @@ func (e *sessionV3Executor) reconcileCancelledPlanRun(job sessionV3ExecutorJob, 
 		RunSessionID:    firstNonEmptyString(job.RunSessionID, job.SessionID),
 		ParentSessionID: job.ParentSessionID,
 		Notes:           strings.TrimSpace(reason),
+		StoppedBy:       job.StopCause,
 		ReviewedAt:      cancelledAt,
 	})
 	if err != nil || !changed {
@@ -1668,6 +1673,10 @@ type sessionV3ResolvedRuntime struct {
 }
 
 // Sealed agents face the public: a message may never run unbounded.
+// errSessionV3NoModel is the run failure when neither the session, its agent
+// nor the account default names a model: nothing was set up yet.
+var errSessionV3NoModel = errors.New("no model is set up yet: set a default model for this Swarm or give the agent its own model")
+
 var sealedAgentDefaultLimits = pebblestore.AgentRunLimits{MaxSteps: 4, MaxOutputTokens: 1024, MaxHistoryMessages: 40, RunTimeoutMS: 60000}
 
 func effectiveAgentRunLimits(configured *pebblestore.AgentRunLimits, sealed bool) pebblestore.AgentRunLimits {
@@ -2557,7 +2566,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	providerID := strings.ToLower(strings.TrimSpace(pref.Provider))
 	modelName := strings.TrimSpace(pref.Model)
 	if providerID == "" || modelName == "" {
-		return sessionV3AssistantResponse{}, errors.New("resolved v3 provider/model is empty")
+		return sessionV3AssistantResponse{}, errSessionV3NoModel
 	}
 	runner, err := e.sessionV3ProviderRunner(resolved)
 	if err != nil {
@@ -2774,7 +2783,7 @@ func (e *sessionV3Executor) sessionV3ProviderRunner(resolved sessionV3ResolvedRu
 	}
 	providerID := strings.ToLower(strings.TrimSpace(resolved.Preference.Provider))
 	if providerID == "" {
-		return nil, errors.New("resolved v3 provider/model is empty")
+		return nil, errSessionV3NoModel
 	}
 	runner, ok := e.server.providers.GetRunner(providerID)
 	if !ok {
@@ -2923,7 +2932,7 @@ func (e *sessionV3Executor) sessionV3ProviderBaseRequestWithCheckpointScope(job 
 		WorkspacePath:                 strings.TrimSpace(resolved.Scope.PrimaryPath),
 	}
 	if baseReq.Model == "" {
-		return provideriface.Request{}, errors.New("resolved v3 provider/model is empty")
+		return provideriface.Request{}, errSessionV3NoModel
 	}
 	if baseReq.Thinking == "" {
 		baseReq.Thinking = "medium"
@@ -4922,7 +4931,7 @@ func (e *sessionV3Executor) resolveSessionV3Capabilities(job sessionV3ExecutorJo
 		return sessionV3ResolvedRuntime{}, err
 	}
 	if strings.TrimSpace(pref.Provider) == "" || strings.TrimSpace(pref.Model) == "" {
-		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 provider/model is empty")
+		return sessionV3ResolvedRuntime{}, errSessionV3NoModel
 	}
 	catalogRecord, catalogMeta, err := e.sessionV3ModelCatalogRecord(pref)
 	if err != nil {

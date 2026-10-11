@@ -74,7 +74,7 @@ func (a *Adapter) Status(ctx context.Context) (provideriface.Status, error) {
 	return provideriface.Status{
 		ID:          "exa",
 		Ready:       false,
-		Reason:      "missing active Exa API key; add one in Settings > Providers or run /auth key exa <api_key>",
+		Reason:      "no Exa API key yet",
 		RunReason:   "search-only provider (no model runner)",
 		AuthMethods: exaAuthMethods(),
 	}, nil

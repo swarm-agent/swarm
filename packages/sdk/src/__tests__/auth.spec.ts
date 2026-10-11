@@ -385,7 +385,7 @@ test('SwarmOnboardingNamespace: ensureBootstrapped automatically initializes unc
 
 test('SwarmAuthNamespace: autoConfigure detects env keys, registers credentials and applies fleet recommendations', async () => {
   let savedCredential: any = null;
-  let patchedFleet: any = null;
+  const patchedFleet: any = { swarm: null, system_agents: {} };
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '', 'http://127.0.0.1');
@@ -422,7 +422,9 @@ test('SwarmAuthNamespace: autoConfigure detects env keys, registers credentials 
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
-        patchedFleet = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const p = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (p.swarm) patchedFleet.swarm = p.swarm;
+        Object.assign(patchedFleet.system_agents, p.system_agents || {});
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, agent_model_settings: {} }));
       });

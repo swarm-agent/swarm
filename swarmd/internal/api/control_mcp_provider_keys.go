@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"swarm/packages/swarmd/internal/auth"
@@ -54,6 +55,36 @@ func controlMCPVerification(connection *auth.ConnectionStatus) (string, string) 
 	}
 }
 
+// controlMCPCredentialStatus is the active credential's status as a person
+// would describe it. A sign-in (any auth type but an API key, e.g. ChatGPT)
+// is not key-verified; it reads signed in, and needs attention only when the
+// provider cannot run. An API key reads verified, failed or saved but not
+// verified yet.
+func controlMCPCredentialStatus(authType string, connection *auth.ConnectionStatus, ready bool) map[string]any {
+	active := map[string]any{"auth_type": authType}
+	if strings.TrimSpace(authType) != "api" {
+		active["auth_type"] = "sign_in"
+		if ready {
+			active["status"] = "signed in"
+		} else {
+			active["status"] = "signed in, but the provider is not ready; sign in again"
+		}
+		if connection != nil && !connection.Connected && strings.TrimSpace(connection.Message) != "" {
+			active["status_message"] = providerKeyRedact(connection.Message, "")
+		}
+		return active
+	}
+	status, message := controlMCPVerification(connection)
+	if status == "not verified" {
+		status = "saved, not verified yet"
+	}
+	active["status"] = status
+	if message != "" {
+		active["status_message"] = message
+	}
+	return active
+}
+
 func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error) {
 	// The providers handler checks no scope and credential routes are
 	// owner-only; this summary carries no key material, as list_models.
@@ -63,6 +94,13 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok || c.server == nil || c.server.auth == nil {
 		return nil, controlMCPToolFailure("provider credentials are unavailable")
+	}
+	only := controlMCPString(args, "provider")
+	if seconds := controlMCPInt(args, "wait_seconds", 0); seconds > 0 {
+		if only == "" {
+			return nil, controlMCPToolFailure("wait_seconds needs provider")
+		}
+		c.waitForKeyRequest(principal.AccountScopeID, only, seconds)
 	}
 	providers, err := c.controlMCPKeyProviders()
 	if err != nil {
@@ -81,15 +119,10 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 		count, _ := entry["stored_credentials"].(int)
 		entry["stored_credentials"] = count + 1
 		if record.Active {
-			status, message := controlMCPVerification(record.Connection)
-			active := map[string]any{"auth_type": record.AuthType, "verification": status}
-			if message != "" {
-				active["verification_message"] = message
-			}
-			entry["active"] = active
+			ready, _ := entry["ready"].(bool)
+			entry["active"] = controlMCPCredentialStatus(record.AuthType, record.Connection, ready)
 		}
 	}
-	only := controlMCPString(args, "provider")
 	ids := make([]string, 0, len(providers))
 	for id := range providers {
 		if only == "" || id == only {
@@ -109,6 +142,36 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 		out = append(out, entry)
 	}
 	return map[string]any{"providers": out}, nil
+}
+
+// waitForKeyRequest blocks up to seconds while the latest key link for this
+// account and provider is waiting for (or processing) the person's key. It
+// wakes on registry changes and at the link's expiry; there is no polling.
+func (c *controlMCPCall) waitForKeyRequest(accountScopeID, provider string, seconds int) {
+	seconds = min(seconds, controlMCPMaxWaitSeconds)
+	deadline := time.NewTimer(time.Duration(seconds) * time.Second)
+	defer deadline.Stop()
+	registry := &c.server.providerKeys
+	for {
+		changed := registry.changes()
+		outcome := registry.outcome(accountScopeID, provider)
+		if outcome == nil || (outcome.Status != "waiting" && outcome.Status != "submitting") {
+			return
+		}
+		// Expiry is passive in the registry; wake just after it to report it.
+		expiry := time.NewTimer(time.Duration(outcome.ExpiresInSeconds+1) * time.Second)
+		select {
+		case <-changed:
+		case <-expiry.C:
+		case <-deadline.C:
+			expiry.Stop()
+			return
+		case <-c.request.Context().Done():
+			expiry.Stop()
+			return
+		}
+		expiry.Stop()
+	}
 }
 
 func controlMCPKeyLabel(label string) (string, error) {
@@ -170,6 +233,6 @@ func controlMCPRequestProviderKey(c *controlMCPCall, args map[string]any) (any, 
 		"expires_in_seconds": int(providerKeyCodeTTL.Seconds()),
 		"tell_the_person": fmt.Sprintf("Open %s in a browser on this machine and paste your %s API key there. Do not paste the key into this chat. The link works once and expires in %d minutes.",
 			link, provider, minutes),
-		"next": "Call swarm_list_providers to see whether the key was saved and verified.",
+		"next": "Call swarm_list_providers with provider and wait_seconds to wait until the person saves the key (or it fails or the link expires).",
 	}, nil
 }

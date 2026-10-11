@@ -374,6 +374,19 @@ func (r *Runtime) manageSessionsDurableLogSearch(scope WorkspaceScope, args map[
 	if err != nil {
 		return "", err
 	}
+	boundary, err := r.selfReadContextBoundary(scope, id)
+	if err != nil {
+		return "", err
+	}
+	if boundary > 0 {
+		kept := events[:0:0]
+		for _, event := range events {
+			if event.Seq >= boundary {
+				kept = append(kept, event)
+			}
+		}
+		events = kept
+	}
 	matches := make([]pebblestore.V3SessionEvent, 0, resultLimit)
 	characters := 0
 	characterTruncated := false
@@ -902,9 +915,75 @@ func manageSessionVideoContext(metadata map[string]any) map[string]any {
 	return context
 }
 
+// manageSessionsMaxEpochWalk bounds the walk back through execution epochs
+// when looking for the latest context clear.
+const manageSessionsMaxEpochWalk = 512
+
+// selfReadContextBoundary is the first root sequence an agent may read back
+// from its own session through its tools. After the person cleared the
+// session's context, the agent must not recover the cleared history by
+// reading its own transcript; the person and the UI still see all of it.
+// Other sessions and sessions never cleared return 0 (no boundary).
+func (r *Runtime) selfReadContextBoundary(scope WorkspaceScope, sessionID string) (uint64, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if r == nil || r.sessions == nil || sessionID == "" || sessionID != strings.TrimSpace(scope.SessionID) {
+		return 0, nil
+	}
+	epochs, ok := r.sessions.(interface {
+		GetActiveExecutionEpoch(sessionID string) (pebblestore.ExecutionEpoch, bool, error)
+		GetExecutionEpoch(sessionID, epochID string) (pebblestore.ExecutionEpoch, bool, error)
+	})
+	if !ok {
+		return 0, nil
+	}
+	active, found, err := epochs.GetActiveExecutionEpoch(sessionID)
+	if err != nil || !found {
+		return 0, err
+	}
+	epoch := active
+	for range manageSessionsMaxEpochWalk {
+		if epoch.Boundary.Reason == pebblestore.ExecutionEpochReasonContextCleared {
+			return epoch.FirstRootSeq, nil
+		}
+		if strings.TrimSpace(epoch.ParentEpochID) == "" {
+			return 0, nil
+		}
+		parent, found, err := epochs.GetExecutionEpoch(sessionID, epoch.ParentEpochID)
+		if err != nil {
+			return 0, err
+		}
+		if !found {
+			return 0, fmt.Errorf("execution epoch %q not found", epoch.ParentEpochID)
+		}
+		epoch = parent
+	}
+	// Too many epochs to tell: fail closed to the current epoch.
+	return active.FirstRootSeq, nil
+}
+
+// messagesFromBoundary drops messages before boundary (0 keeps all).
+func messagesFromBoundary(msgs []pebblestore.MessageSnapshot, boundary uint64) []pebblestore.MessageSnapshot {
+	if boundary == 0 {
+		return msgs
+	}
+	kept := msgs[:0:0]
+	for _, m := range msgs {
+		if m.GlobalSeq >= boundary {
+			kept = append(kept, m)
+		}
+	}
+	return kept
+}
+
+const manageSessionsContextClearedNote = "Context was cleared in this session; earlier messages are not available to you."
+
 func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) (string, error) {
 	id := stringValue(args["session_id"])
 	session, _, err := r.ownedManageSession(scope, id)
+	if err != nil {
+		return "", err
+	}
+	boundary, err := r.selfReadContextBoundary(scope, id)
 	if err != nil {
 		return "", err
 	}
@@ -916,7 +995,11 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	case "before":
 		msgs, err = r.listSessionMessagesBefore(id, uint64Value(args["before_seq"]), limit)
 	case "after":
-		msgs, err = r.listSessionMessages(id, uint64Value(args["after_seq"]), limit)
+		afterSeq := uint64Value(args["after_seq"])
+		if boundary > 0 && afterSeq < boundary-1 {
+			afterSeq = boundary - 1
+		}
+		msgs, err = r.listSessionMessages(id, afterSeq, limit)
 	case "around":
 		anchor := uint64Value(args["around_seq"])
 		before := limit / 2
@@ -931,6 +1014,7 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 	if err != nil {
 		return "", err
 	}
+	msgs = messagesFromBoundary(msgs, boundary)
 	budget := boundedInt(args["max_chars"], 12000, manageSessionsMaxChars)
 	out := make([]any, 0, len(msgs))
 	used := 0
@@ -953,7 +1037,11 @@ func (r *Runtime) manageSessionsRead(scope WorkspaceScope, args map[string]any) 
 		}
 		out = append(out, item)
 	}
-	return marshalManageSessions(map[string]any{"action": "read_messages", "session_id": id, "title": session.Title, "mode": mode, "messages": out, "characters": used, "content_trust": "untrusted", "next_before_seq": firstMessageSeq(msgs), "next_after_seq": lastMessageSeq(msgs)})
+	response := map[string]any{"action": "read_messages", "session_id": id, "title": session.Title, "mode": mode, "messages": out, "characters": used, "content_trust": "untrusted", "next_before_seq": firstMessageSeq(msgs), "next_after_seq": lastMessageSeq(msgs)}
+	if boundary > 0 {
+		response["note"] = manageSessionsContextClearedNote
+	}
+	return marshalManageSessions(response)
 }
 
 func (r *Runtime) manageSessionsGit(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
@@ -1736,6 +1824,11 @@ func (r *Runtime) manageSessionScopedSearch(scope WorkspaceScope, sessionID stri
 	if err != nil {
 		return "", err
 	}
+	boundary, err := r.selfReadContextBoundary(scope, session.ID)
+	if err != nil {
+		return "", err
+	}
+	msgs = messagesFromBoundary(msgs, boundary)
 
 	type matchRecord struct {
 		ID        string `json:"id"`

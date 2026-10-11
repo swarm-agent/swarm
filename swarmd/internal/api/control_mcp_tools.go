@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -24,10 +25,19 @@ import (
 const (
 	controlMCPMaxCheckpoints = 30
 	controlMCPMaxListItems   = 50
-	controlMCPMaxWaitSeconds = 45
-	controlMCPMaxModels      = 40
-	controlMCPMaxChildren    = 20
-	controlMCPMaxTasks       = 30
+	// The longest wait one tool call may hold. Relay devices give up on a call
+	// after 120 seconds (packages/swarm-relay DEVICE_TIMEOUT_MS), so 110 keeps
+	// a margin over the relay; Claude Code's MCP tool timeout is far longer.
+	// Clients with a 60-second default (MCP TypeScript SDK, Codex CLI) should
+	// pass at most 50.
+	controlMCPMaxWaitSeconds = 110
+	// Per-message text and per tool output/argument limits get_session can be
+	// asked to raise to (detail_chars).
+	controlMCPMaxDetailChars  = 20000
+	controlMCPToolOutputLimit = 300
+	controlMCPMaxModels       = 40
+	controlMCPMaxChildren     = 20
+	controlMCPMaxTasks        = 30
 )
 
 // Roles whose default model an AI client may change, mapped to the canonical
@@ -81,6 +91,13 @@ var controlMCPRoutes = []string{
 	"POST v3/projects/*/sessions",
 	"GET v3/projects/*/tasks",
 	"POST v3/projects/*/tasks/*/integrate",
+	// Task launch approval (control_mcp_review.go): the Desktop's Approve and
+	// Reject buttons on a pending_approval task. The media acceptance alias
+	// (/accept), which publishes deliverables, stays unreachable.
+	"POST v3/projects/*/tasks/*/approve",
+	"POST v3/projects/*/tasks/*/reject",
+	// Closing a plan review: the Desktop's accept on a needs_review checkpoint.
+	"POST v3/sessions/*/plan-mode/checkpoints/*/accept",
 	"GET v3/workers",
 	"POST v3/workers",
 	"GET v3/workers/*",
@@ -186,15 +203,80 @@ func controlMCPSessionSummary(session map[string]any) map[string]any {
 	return summary
 }
 
+// controlMCPToolName is the canonical (underscore) spelling of a tool name, so
+// a pending ask-user request reads tool_name ask_user like its requirement.
+func controlMCPToolName(name string) string {
+	return strings.ReplaceAll(strings.TrimSpace(name), "-", "_")
+}
+
+// controlMCPArguments decodes JSON-encoded tool arguments into an object for
+// the caller, truncating long strings and lists so the result stays bounded.
+// Text that is not a JSON object or array is returned truncated, as text.
+func controlMCPArguments(raw string, limit int) any {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var parsed any
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+			return controlMCPBoundJSON(parsed, limit, 0)
+		}
+	}
+	return controlMCPTruncate(raw, limit)
+}
+
+func controlMCPBoundJSON(value any, limit, depth int) any {
+	switch v := value.(type) {
+	case string:
+		return controlMCPTruncate(v, limit)
+	case []any:
+		if depth >= 6 {
+			return "[nested list omitted]"
+		}
+		out := make([]any, 0, min(len(v), controlMCPMaxListItems))
+		for i, item := range v {
+			if i >= controlMCPMaxListItems {
+				out = append(out, fmt.Sprintf("[%d more items omitted]", len(v)-i))
+				break
+			}
+			out = append(out, controlMCPBoundJSON(item, limit, depth+1))
+		}
+		return out
+	case map[string]any:
+		if depth >= 6 {
+			return "[nested object omitted]"
+		}
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = controlMCPBoundJSON(item, limit, depth+1)
+		}
+		return out
+	default:
+		return v
+	}
+}
+
 func controlMCPPermissionSummary(record map[string]any) map[string]any {
 	summary := controlMCPPick(record, "id", "tool_name", "requirement")
-	if args, ok := record["tool_arguments"].(string); ok {
-		summary["tool_arguments"] = controlMCPTruncate(args, controlMCPArgumentLimit)
+	if name, ok := summary["tool_name"].(string); ok {
+		summary["tool_name"] = controlMCPToolName(name)
+	}
+	if summary["tool_name"] == "ask_user" || summary["requirement"] == "ask_user" {
+		summary["kind"] = "question"
+	} else {
+		summary["kind"] = "approval"
+	}
+	if args, ok := record["tool_arguments"].(string); ok && strings.TrimSpace(args) != "" {
+		summary["tool_arguments"] = controlMCPArguments(args, controlMCPArgumentLimit)
 	}
 	return summary
 }
 
 func controlMCPToolMessageSummary(message map[string]any, content string) (map[string]any, bool) {
+	return controlMCPToolMessageDetail(message, content, controlMCPToolOutputLimit)
+}
+
+// controlMCPToolMessageDetail is controlMCPToolMessageSummary with an explicit
+// per-field limit (get_session detail_chars).
+func controlMCPToolMessageDetail(message map[string]any, content string, limit int) (map[string]any, bool) {
 	if role, _ := message["role"].(string); role != "tool" {
 		return nil, false
 	}
@@ -203,14 +285,17 @@ func controlMCPToolMessageSummary(message map[string]any, content string) (map[s
 		return nil, false
 	}
 	summary := controlMCPPick(record, "tool_name", "status")
+	if name, ok := summary["tool_name"].(string); ok {
+		summary["tool_name"] = controlMCPToolName(name)
+	}
 	if args, ok := record["arguments"].(string); ok {
-		summary["arguments"] = controlMCPTruncate(args, 300)
+		summary["arguments"] = controlMCPArguments(args, limit)
 	}
 	if errText, ok := record["error"].(string); ok && strings.TrimSpace(errText) != "" {
-		summary["error"] = controlMCPTruncate(errText, 300)
+		summary["error"] = controlMCPTruncate(errText, limit)
 	}
 	if output, ok := record["output"].(string); ok && strings.TrimSpace(output) != "" {
-		summary["output"] = controlMCPTruncate(output, 300)
+		summary["output"] = controlMCPTruncate(output, limit)
 	}
 	if len(summary) == 0 {
 		return nil, false
@@ -318,7 +403,7 @@ var (
 )
 
 func controlMCPWaitProp() map[string]any {
-	return map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds for the run to finish or ask for approval, then return the session's latest state. Default 0 (return at once)."}
+	return map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the run settles, then return the session's latest state. Settled means the run ended (waited.outcome finished, failed or stopped) or it waits on a decision in pending_permissions (waited.reason waiting_on_decision). waited.timed_out means it is still working: call get_session again. Default 0 (return at once)."}
 }
 
 func controlMCPScheduleSchema() map[string]any {
@@ -372,7 +457,7 @@ func controlMCPTools() []controlMCPTool {
 	providerProp := controlMCPStringProp("Provider id from list_models.", 0, 100)
 	modelProp := controlMCPStringProp("Model from list_models (needs provider).", 0, 200)
 	thinkingProp := controlMCPStringProp("One of the model's thinking options from list_models.", 0, 50)
-	return []controlMCPTool{
+	return append([]controlMCPTool{
 		{
 			Name: "swarm_list_workspaces", Title: "List workspaces",
 			Description: "Registered workspaces (repositories) that sessions and workers can use.",
@@ -396,17 +481,18 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_get_session", Title: "Read a session",
-			Description: "Session state, model, active run, plan progress, pending permission requests and questions, delegated child sessions or project tasks, and the last messages (truncated; tool results summarized).",
+			Description: "Session state, model, active run, plan progress, pending permission requests and questions, delegated child sessions or project tasks, and the last messages (truncated; tool results summarized). To read one tool call's full output, ask for a few messages with a larger detail_chars. Files the agents changed: get_changes.",
 			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{
 				"session_id":   sessionID,
 				"messages":     map[string]any{"type": "integer", "minimum": 0, "maximum": 30, "description": "Recent messages to include. Default 5."},
+				"detail_chars": map[string]any{"type": "integer", "minimum": 100, "maximum": controlMCPMaxDetailChars, "description": "Characters kept per message text and per tool output, arguments or error. Default 1500 for message text and 300 for tool fields."},
 				"wait_seconds": controlMCPWaitProp(),
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPGetSession,
 		},
 		{
 			Name: "swarm_start_session", Title: "Start work in a new session",
-			Description: "Create a session and start it with either a prompt or a plan (not both). Regular sessions need workspace_path; orchestrator sessions (agent system-orchestrator) need project_id instead. With a plan, Swarm executes every checkpoint automatically. Optionally pick the model; otherwise the role default from list_models applies.",
+			Description: "Create a session and start it with either a prompt or a plan (not both). Regular sessions need workspace_path (a registered workspace from list_workspaces); orchestrator sessions (agent system-orchestrator) need project_id instead. With a plan, Swarm runs every checkpoint in turn; agent tool calls still follow the permission policy. Optionally pick the model; otherwise the role default from list_models applies. Returns started (the new run or plan) and the session's current state, read after the work was started.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"workspace_path": controlMCPStringProp("Absolute path from list_workspaces (regular sessions).", 0, 4096),
 				"project_id":     controlMCPStringProp("From list_projects (orchestrator sessions).", 0, 200),
@@ -423,7 +509,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_send_message", Title: "Message a session",
-			Description: "Send a follow-up instruction to an existing session; it continues working asynchronously.",
+			Description: "Send a follow-up instruction to an existing session; it continues working asynchronously (a plan paused by stop_run resumes its checkpoint with this message). Returns started (the run) and the session's current state.",
 			InputSchema: controlMCPObject([]string{"session_id", "content"}, map[string]any{
 				"session_id":        sessionID,
 				"content":           controlMCPStringProp("", 1, 100000),
@@ -440,13 +526,13 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_stop_run", Title: "Stop a session's run",
-			Description: "Stop the session's active run.",
+			Description: "Stop the session's active run. Waits briefly for it to end and returns its final status, the plan's state and a short summary. A stopped plan is paused, not cancelled: it keeps its progress, never resumes on its own, and continues its checkpoint when you send_message.",
 			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{"session_id": sessionID, "reason": controlMCPStringProp("", 0, 500)}),
 			Annotations: controlMCPDestructive, call: controlMCPStopRun,
 		},
 		{
 			Name: "swarm_resolve_permission", Title: "Approve, deny or answer one pending request",
-			Description: "Resolve one pending permission from get_session, once. Read its tool_arguments first. For an agent question (tool ask_user) use allow_once with answer. No persistent rules.",
+			Description: "Resolve one pending request from get_session's pending_permissions, once. Read its tool_arguments first. For an agent question (kind question, tool ask_user) use allow_once with answer. Each decision covers that one call: Swarm keeps no session-wide allowance, and lasting allow rules are the machine owner's permission policy in Swarm's settings, never set here. Commands Swarm's policy refuses outright (for example recursive deletes of broad targets) never appear here; they fail in the agent's tool result.",
 			InputSchema: controlMCPObject([]string{"session_id", "permission_id", "action"}, map[string]any{
 				"session_id":    sessionID,
 				"permission_id": controlMCPStringProp("", 1, 200),
@@ -503,7 +589,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_tasks", Title: "List project tasks",
-			Description: "Work in a project: orchestrator tasks and worker runs, with status, agent branch, target branch and what needs doing. Finished work waits in status needs_review until integrate_task merges it.",
+			Description: "Work in a project: orchestrator tasks and worker runs, with status, agent branch, target branch and what needs doing. Tasks in pending_approval wait for approve_task; finished work waits in status needs_review until integrate_task merges it. Read a task's work with get_changes and read_file on its session_id.",
 			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
 				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
 				"status":     controlMCPStringProp("Only this status, e.g. needs_review.", 0, 50),
@@ -581,7 +667,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_get_usage", Title: "Read usage and limits",
-			Description: "Model spend and tokens for a period, top models, and the account's daily limits.",
+			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"period": map[string]any{"type": "string", "enum": []string{"today", "7d", "30d"}, "description": "Default today."},
 			}),
@@ -589,7 +675,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_set_usage_limits", Title: "Set daily usage limits",
-			Description: "Set the account's daily spend/token limits (UTC day). Omitted fields keep their value. A limit already exceeded stops all running work immediately.",
+			Description: "Set the account's daily spend/token limits (UTC day). Omitted fields keep their value; 0 removes that limit. A limit already exceeded stops all running work immediately.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"daily_cost_limit_usd": map[string]any{"type": "number", "minimum": 0},
 				"daily_tokens_limit":   map[string]any{"type": "integer", "minimum": 0},
@@ -634,22 +720,24 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_providers", Title: "List model providers and their keys",
-			Description: "Each provider: whether it takes an API key, how many credentials are stored, the active one's verification (verified, failed with a reason, or not verified) and the latest key link from request_provider_key (waiting, saved, failed or expired). Never key material.",
+			Description: "Each provider: ready (it can run models now), whether it takes an API key, how many credentials are stored, the active credential's auth_type and status (signed in for a sign-in such as ChatGPT; verified, failed with a reason, or saved but not yet verified for an API key) and the latest key link from request_provider_key (waiting, saved, failed or expired). With provider and wait_seconds, waits while that link is still waiting for the person. Never key material.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"provider": controlMCPStringProp("Only this provider.", 0, 100),
+				"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds,
+					"description": "With provider: wait up to this many seconds (at most 110; keep it under your client's tool timeout) while its key link is waiting, returning as soon as the person saves a key, a key fails verification or the link expires."},
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPListProviders,
 		},
 		{
 			Name: "swarm_request_provider_key", Title: "Ask the person for a provider API key",
-			Description: "Set or replace a provider's API key without seeing it: returns a one-time link to a Swarm page on this machine (expires in 10 minutes). Give the person tell_the_person; they paste the key on that page, never in the chat. Swarm verifies the key, saves it and makes it active. Check the outcome with list_providers.",
+			Description: "Set or replace a provider's API key without seeing it: returns a one-time link to a Swarm page on this machine (expires in 10 minutes). Give the person tell_the_person; they paste the key on that page, never in the chat. Swarm verifies the key, saves it and makes it active. Then call list_providers with provider and wait_seconds to wait for the outcome.",
 			InputSchema: controlMCPObject([]string{"provider"}, map[string]any{
 				"provider": controlMCPStringProp("A provider that takes an API key (see list_providers).", 1, 100),
 				"label":    controlMCPStringProp("Optional name for the stored key.", 0, providerKeyMaxLabel),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
-	}
+	}, controlMCPReviewTools(sessionID)...)
 }
 
 // ---- sessions ------------------------------------------------------------
@@ -770,11 +858,11 @@ func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	settled, err := c.waitForSession(sessionID, controlMCPInt(args, "wait_seconds", 0))
 	if err != nil {
-		return nil, err
+		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
 	}
-	out, err := c.sessionState(sessionID, controlMCPInt(args, "messages", 5))
+	out, err := c.sessionState(sessionID, controlMCPInt(args, "messages", 5), controlMCPInt(args, "detail_chars", 0))
 	if err != nil {
-		return nil, err
+		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
 	}
 	if settled != nil {
 		out["waited"] = settled
@@ -783,8 +871,13 @@ func controlMCPGetSession(c *controlMCPCall, args map[string]any) (any, error) {
 }
 
 // sessionState is the get_session view: summary, model, run, pending
-// requests, plan, delegated children and the latest messages.
-func (c *controlMCPCall) sessionState(sessionID string, limit int) (map[string]any, error) {
+// requests, plan, delegated children and the latest messages. detail (0 for
+// the defaults) raises the per-message and per tool-field character limits.
+func (c *controlMCPCall) sessionState(sessionID string, limit, detail int) (map[string]any, error) {
+	textLimit, toolLimit := controlMCPTextLimit, controlMCPToolOutputLimit
+	if detail > 0 {
+		textLimit, toolLimit = min(detail, controlMCPMaxDetailChars), min(detail, controlMCPMaxDetailChars)
+	}
 	response, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {strconv.Itoa(limit)}, "event_limit": {"0"}}, nil)
 	if err != nil {
 		return nil, err
@@ -826,10 +919,10 @@ func (c *controlMCPCall) sessionState(sessionID string, limit int) (map[string]a
 		}
 		summary := controlMCPPick(message, "role")
 		content, _ := message["content"].(string)
-		if tool, ok := controlMCPToolMessageSummary(message, content); ok {
+		if tool, ok := controlMCPToolMessageDetail(message, content, toolLimit); ok {
 			summary["tool"] = tool
 		} else {
-			summary["content"] = controlMCPTruncate(content, controlMCPTextLimit)
+			summary["content"] = controlMCPTruncate(content, textLimit)
 		}
 		messages = append(messages, summary)
 	}
@@ -877,8 +970,52 @@ func (c *controlMCPCall) sessionChildren(sessionID string, metadata map[string]a
 	return children
 }
 
-// waitForSession blocks up to seconds until the session has no active run or
-// has a pending request. It wakes on committed V3 outbox records (no timer
+// controlMCPRunOutcome names how a session's last run ended: failed, stopped
+// (cancelled or interrupted) or finished. The run's own recorded status
+// decides when there is one (V3 session details carry no lifecycle, and a run
+// stopped before it started has nothing else); the lifecycle is the fallback.
+func controlMCPRunOutcome(runStatus string, lifecycle map[string]any) string {
+	switch strings.ToLower(strings.TrimSpace(runStatus)) {
+	case "cancelled", "canceled", "interrupted", "stopped":
+		return "stopped"
+	case "failed", "errored", "error", "blocked":
+		return "failed"
+	case "completed", "succeeded", "finished", "done":
+		return "finished"
+	}
+	if errText, _ := lifecycle["error"].(string); strings.TrimSpace(errText) != "" {
+		return "failed"
+	}
+	phase, _ := lifecycle["phase"].(string)
+	stopReason, _ := lifecycle["stop_reason"].(string)
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "failed", "errored", "error":
+		return "failed"
+	case "cancelled", "canceled", "interrupted", "stopped":
+		return "stopped"
+	}
+	reason := strings.ToLower(stopReason)
+	if strings.Contains(reason, "cancel") || strings.Contains(reason, "interrupt") || strings.Contains(reason, "user") {
+		return "stopped"
+	}
+	return "finished"
+}
+
+// controlMCPSettledState reports whether a session detail is settled: its
+// run ended (no active run intent) or it waits on a decision (a pending
+// permission or question). The map is the waited value tools return.
+func controlMCPSettledState(detail map[string]any, runStatus string) map[string]any {
+	if len(controlMCPList(detail["pending_permissions"])) > 0 {
+		return map[string]any{"settled": true, "reason": "waiting_on_decision"}
+	}
+	if controlMCPMap(detail["active_run_intent"]) == nil {
+		return map[string]any{"settled": true, "reason": "run_ended", "outcome": controlMCPRunOutcome(runStatus, controlMCPMap(controlMCPMap(detail["session"])["lifecycle"]))}
+	}
+	return map[string]any{"settled": false}
+}
+
+// waitForSession blocks up to seconds until the session settles (see
+// controlMCPSettledState). It wakes on committed V3 outbox records (no timer
 // polling) and re-reads state through dispatch, so ownership checks decide.
 // It returns nil when no wait was requested.
 func (c *controlMCPCall) waitForSession(sessionID string, seconds int) (map[string]any, error) {
@@ -894,16 +1031,19 @@ func (c *controlMCPCall) waitForSession(sessionID string, seconds int) (map[stri
 	}
 	sub := hub.subscribe()
 	defer hub.unsubscribe(sub)
-	settled := func() (bool, error) {
+	settled := func() (map[string]any, error) {
 		detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		return controlMCPMap(detail["active_run_intent"]) == nil || len(controlMCPList(detail["pending_permissions"])) > 0, nil
+		return controlMCPSettledState(detail, c.lastRunStatus(sessionID, detail)), nil
 	}
-	done, err := settled()
-	if err != nil || done || sub == nil {
-		return map[string]any{"settled": done}, err
+	state, err := settled()
+	if err != nil {
+		return nil, err
+	}
+	if state["settled"] == true || sub == nil {
+		return state, nil
 	}
 	timer := time.NewTimer(time.Duration(seconds) * time.Second)
 	defer timer.Stop()
@@ -913,14 +1053,13 @@ func (c *controlMCPCall) waitForSession(sessionID string, seconds int) (map[stri
 			if record.SessionID != sessionID {
 				continue
 			}
-			if done, err = settled(); err != nil || done {
-				return map[string]any{"settled": done}, err
+			if state, err = settled(); err != nil || state["settled"] == true {
+				return state, err
 			}
 		case <-sub.slow:
-			done, err = settled()
-			return map[string]any{"settled": done}, err
+			return settled()
 		case <-timer.C:
-			return map[string]any{"settled": false, "timed_out": true}, nil
+			return map[string]any{"settled": false, "timed_out": true, "waited_seconds": seconds}, nil
 		case <-c.request.Context().Done():
 			return map[string]any{"settled": false}, nil
 		}
@@ -1039,40 +1178,62 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 	}
 	created, err := c.dispatch(http.MethodPost, createPath, nil, body)
 	if err != nil {
-		return nil, err
+		if workspacePath, ok := body["workspace_path"].(string); ok {
+			return nil, c.unregisteredWorkspace(err, workspacePath)
+		}
+		return nil, controlMCPNotFound(err, "project", controlMCPString(args, "project_id"), "swarm_list_projects")
 	}
 	session := controlMCPMap(created["session"])
 	sessionID, _ := session["id"].(string)
-	out := map[string]any{"session": controlMCPSessionSummary(session)}
 	if document != nil {
 		started, err := c.runPlan(sessionID, document)
 		if err != nil {
 			return nil, controlMCPToolFailure("session %s created but the plan did not start: %s", sessionID, err.Error())
 		}
-		out["plan"] = started
-		return c.withWait(out, sessionID, args)
+		return c.currentState(map[string]any{"started": started}, sessionID, args)
 	}
 	run, err := c.sendMessage(sessionID, prompt, controlMCPRequestID())
 	if err != nil {
 		return nil, controlMCPToolFailure("session %s created but the prompt was not accepted: %s", sessionID, err.Error())
 	}
-	out["run"] = run
-	return c.withWait(out, sessionID, args)
+	return c.currentState(map[string]any{"started": run}, sessionID, args)
 }
 
-// withWait honours wait_seconds after work was started: it waits, then
-// attaches the session's latest state (including the reply).
-func (c *controlMCPCall) withWait(out map[string]any, sessionID string, args map[string]any) (any, error) {
+// unregisteredWorkspace explains a session refused because its workspace path
+// is not a registered workspace (Swarm reports the missing canonical binding).
+func (c *controlMCPCall) unregisteredWorkspace(err error, path string) error {
+	var toolErr controlMCPToolError
+	if !errors.As(err, &toolErr) || toolErr.status != http.StatusBadRequest || !strings.Contains(toolErr.message, "workspace") {
+		return err
+	}
+	if entry, lookupErr := c.registeredWorkspace(path); lookupErr != nil || entry != nil {
+		return err
+	}
+	return controlMCPToolFailure("workspace_path %q is not a registered workspace on this machine; use a path from swarm_list_workspaces, or make one with swarm_create_workspace", path)
+}
+
+// currentState returns one coherent view after work was started: the start
+// receipt (run or plan ids) plus the session state read afterwards, never the
+// creation-time snapshot. It honours wait_seconds first.
+func (c *controlMCPCall) currentState(out map[string]any, sessionID string, args map[string]any) (any, error) {
 	settled, err := c.waitForSession(sessionID, controlMCPInt(args, "wait_seconds", 0))
-	if err != nil || settled == nil {
-		return out, nil
-	}
-	state, err := c.sessionState(sessionID, 3)
 	if err != nil {
+		out["session_id"] = sessionID
+		out["state_error"] = "work started, but its state could not be read; call swarm_get_session"
 		return out, nil
 	}
-	state["waited"] = settled
-	out["latest"] = state
+	state, err := c.sessionState(sessionID, 3, 0)
+	if err != nil {
+		out["session_id"] = sessionID
+		out["state_error"] = "work started, but its state could not be read; call swarm_get_session"
+		return out, nil
+	}
+	for key, value := range state {
+		out[key] = value
+	}
+	if settled != nil {
+		out["waited"] = settled
+	}
 	return out, nil
 }
 
@@ -1085,10 +1246,10 @@ func (c *controlMCPCall) sendMessage(sessionID, content, requestID string) (map[
 	if err != nil {
 		return nil, err
 	}
-	run := controlMCPRunIntentSummary(controlMCPMap(response["run_intent"]))
-	if run == nil {
-		run = map[string]any{"accepted": true}
-	}
+	// Only the identity: the intent's status at acceptance (pending_executor)
+	// is stale by the time the caller reads it; active_run carries the current one.
+	run := controlMCPPick(controlMCPMap(response["run_intent"]), "run_id")
+	run["accepted"] = true
 	return run, nil
 }
 
@@ -1103,9 +1264,9 @@ func controlMCPSendMessage(c *controlMCPCall, args map[string]any) (any, error) 
 	}
 	run, err := c.sendMessage(sessionID, controlMCPString(args, "content"), requestID)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
 	}
-	return c.withWait(map[string]any{"session_id": sessionID, "client_request_id": requestID, "run": run}, sessionID, args)
+	return c.currentState(map[string]any{"client_request_id": requestID, "started": run}, sessionID, args)
 }
 
 // controlMCPModelChoice is the session model-profile choice for a validated
@@ -1210,11 +1371,8 @@ func (c *controlMCPCall) runPlan(sessionID string, document *pebblestore.Session
 	if queued, ok := started["run_queued"].(bool); ok {
 		out["run_queued"] = queued
 	}
-	if run := controlMCPRunIntentSummary(controlMCPMap(started["run_intent"])); run != nil {
-		out["run"] = run
-	}
-	if summary := controlMCPMap(started["execution_summary"]); summary != nil {
-		out["execution"] = controlMCPScalars(summary)
+	if runID, ok := controlMCPMap(started["run_intent"])["run_id"].(string); ok && runID != "" {
+		out["run_id"] = runID
 	}
 	return out, nil
 }
@@ -1231,11 +1389,14 @@ func controlMCPRunPlanTool(c *controlMCPCall, args map[string]any) (any, error) 
 	}
 	started, err := c.runPlan(sessionID, document)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
 	}
-	started["session_id"] = sessionID
-	return started, nil
+	return c.currentState(map[string]any{"started": started}, sessionID, map[string]any{})
 }
+
+// controlMCPStopWaitSeconds bounds how long stop_run waits for the stopped
+// run to end before reporting.
+const controlMCPStopWaitSeconds = 10
 
 func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 	sessionID, err := controlMCPID(args, "session_id")
@@ -1244,7 +1405,7 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
 	}
 	session := controlMCPMap(detail["session"])
 	targetSwarmID, _ := controlMCPMap(session["metadata"])["swarm_v3_runtime_swarm_id"].(string)
@@ -1256,7 +1417,7 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 		runID, _ = controlMCPMap(session["lifecycle"])["run_id"].(string)
 	}
 	if strings.TrimSpace(runID) == "" {
-		return nil, controlMCPToolFailure("session has no active run")
+		return nil, controlMCPToolFailure("session %s has no active run to stop (its last run already ended; see swarm_get_session)", sessionID)
 	}
 	body := map[string]any{"run_id": runID, "target_swarm_id": targetSwarmID}
 	if reason := controlMCPString(args, "reason"); reason != "" {
@@ -1265,7 +1426,58 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 	if _, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "run", "stop"), nil, body); err != nil {
 		return nil, err
 	}
-	return map[string]any{"session_id": sessionID, "stopped": runID}, nil
+	waited, waitErr := c.waitForSession(sessionID, controlMCPStopWaitSeconds)
+	state, stateErr := c.sessionState(sessionID, 1, 0)
+	if waitErr != nil || stateErr != nil {
+		return map[string]any{"session_id": sessionID, "run_id": runID, "run_status": "stop_requested", "summary": "Stop was requested; the final state could not be read. Check with swarm_get_session."}, nil
+	}
+	return controlMCPStopReport(sessionID, runID, waited, state), nil
+}
+
+// controlMCPStopReport is stop_run's answer: the run's final status, the
+// plan's state (a stopped plan is paused, never cancelled) and one summary.
+func controlMCPStopReport(sessionID, runID string, waited, state map[string]any) map[string]any {
+	out := map[string]any{"session_id": sessionID, "run_id": runID}
+	parts := []string{}
+	switch {
+	case waited["reason"] == "run_ended":
+		// The lifecycle decides: a run that completed just before the stop
+		// landed reports finished, not stopped.
+		out["run_status"] = waited["outcome"]
+		parts = append(parts, fmt.Sprintf("Run %s has ended (%s).", runID, out["run_status"]))
+	case waited["reason"] == "waiting_on_decision":
+		out["run_status"] = "stopping"
+		parts = append(parts, fmt.Sprintf("Stop was requested for run %s; it still has a pending request, which is no longer acted on.", runID))
+	default:
+		out["run_status"] = "stopping"
+		parts = append(parts, fmt.Sprintf("Stop was requested for run %s and it is still winding down; check with swarm_get_session.", runID))
+	}
+	if session := controlMCPMap(state["session"]); session != nil {
+		out["session"] = session
+	}
+	if plan := controlMCPMap(state["plan"]); plan != nil {
+		out["plan"] = plan
+		status, _ := plan["status"].(string)
+		checkpoints, _ := plan["checkpoints"].([]map[string]any)
+		done, total := 0, len(checkpoints)
+		for _, checkpoint := range checkpoints {
+			if checkpoint["status"] == "completed" {
+				done++
+			}
+		}
+		switch status {
+		case "paused":
+			parts = append(parts, fmt.Sprintf("The plan is paused, not cancelled (%d of %d checkpoints completed): it keeps its progress, does not resume on its own, and continues its checkpoint when you send_message.", done, total))
+		case "":
+		default:
+			parts = append(parts, fmt.Sprintf("The plan is %s (%d of %d checkpoints completed).", status, done, total))
+		}
+	}
+	if messages, _ := state["messages"].([]map[string]any); len(messages) > 0 {
+		out["last_message"] = messages[len(messages)-1]
+	}
+	out["summary"] = strings.Join(parts, " ")
+	return out
 }
 
 func controlMCPResolvePermission(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1291,6 +1503,10 @@ func controlMCPResolvePermission(c *controlMCPCall, args map[string]any) (any, e
 	}
 	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "permissions", permissionID, "resolve"), nil, body)
 	if err != nil {
+		var toolErr controlMCPToolError
+		if errors.As(err, &toolErr) && toolErr.status == http.StatusNotFound {
+			return nil, controlMCPToolFailure("permission %q is not pending in session %q (HTTP 404); swarm_get_session lists its pending_permissions", permissionID, sessionID)
+		}
 		return nil, err
 	}
 	out := map[string]any{"permission_id": permissionID}
@@ -1478,7 +1694,7 @@ func controlMCPListTasks(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID+"/tasks", nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")
 	}
 	only := controlMCPString(args, "status")
 	tasks := []map[string]any{}
@@ -1558,7 +1774,7 @@ func controlMCPListWorkers(c *controlMCPCall, args map[string]any) (any, error) 
 func (c *controlMCPCall) worker(workerID string) (map[string]any, error) {
 	response, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID, nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPNotFound(err, "worker", workerID, "swarm_list_workers")
 	}
 	worker := controlMCPMap(response["worker"])
 	if worker == nil {
@@ -1579,7 +1795,7 @@ func controlMCPGetWorker(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 		response, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID+"/runs/"+runID, nil, nil)
 		if err != nil {
-			return nil, err
+			return nil, controlMCPNotFound(err, "worker run", runID, "swarm_get_worker without run_id")
 		}
 		return map[string]any{"run": controlMCPWorkerRunSummary(controlMCPMap(response["run"]))}, nil
 	}
@@ -1855,21 +2071,91 @@ func controlMCPGetUsage(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"period": period, "summary": controlMCPPick(controlMCPMap(response["summary"]), "total_cost_usd", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "total_turns", "active_sessions")}
+	rawSummary := controlMCPMap(response["summary"])
+	summary := controlMCPPick(rawSummary, "total_cost_usd", "total_tokens", "input_tokens", "output_tokens", "cached_tokens", "total_turns", "active_sessions")
+	out := map[string]any{"period": period, "summary": summary}
 	if limits := controlMCPMap(response["limits"]); limits != nil {
-		out["limits"] = controlMCPPick(limits, "enabled", "daily_cost_limit_usd", "daily_tokens_limit", "today_cost_usd", "today_tokens", "limit_exceeded")
+		out["limits"] = controlMCPLimits(limits)
+	}
+	subscription := map[string]bool{}
+	for _, raw := range controlMCPList(response["by_provider"]) {
+		if provider := controlMCPMap(raw); provider != nil {
+			if id, _ := provider["provider"].(string); id != "" {
+				subscription[id], _ = provider["is_subscription"].(bool)
+			}
+		}
 	}
 	models := []map[string]any{}
+	billing := map[string]bool{}
 	for i, raw := range controlMCPList(response["by_model"]) {
 		if i >= 5 {
 			break
 		}
 		if model := controlMCPMap(raw); model != nil {
-			models = append(models, controlMCPPick(model, "provider", "model", "cost_usd", "total_tokens", "turns"))
+			entry := controlMCPPick(model, "provider", "model", "cost_usd", "total_tokens", "turns")
+			entry["billing"] = controlMCPBilling(model, subscription)
+			if nominal, _ := model["codex_nominal_cost_usd"].(float64); nominal > 0 {
+				entry["nominal_cost_usd"] = nominal
+			}
+			billing[entry["billing"].(string)] = true
+			models = append(models, entry)
 		}
 	}
 	out["top_models"] = models
+	if note := controlMCPCostNote(rawSummary, billing); note != "" {
+		summary["cost_note"] = note
+	}
 	return out, nil
+}
+
+// controlMCPBilling explains a model's reported cost: subscription (a sign-in
+// provider, no per-token cost), unpriced (tokens with no known price, so 0)
+// or metered (priced per token).
+func controlMCPBilling(model map[string]any, subscription map[string]bool) string {
+	provider, _ := model["provider"].(string)
+	if subscription[provider] {
+		return "subscription"
+	}
+	cost, _ := model["cost_usd"].(float64)
+	tokens, _ := model["total_tokens"].(float64)
+	inputPrice, _ := model["input_price_per_million"].(float64)
+	outputPrice, _ := model["output_price_per_million"].(float64)
+	if cost == 0 && tokens > 0 && inputPrice == 0 && outputPrice == 0 {
+		return "unpriced"
+	}
+	return "metered"
+}
+
+func controlMCPCostNote(summary map[string]any, billing map[string]bool) string {
+	notes := []string{}
+	if billing["subscription"] {
+		notes = append(notes, "subscription (sign-in) providers report no per-token cost, so their use adds 0 to total_cost_usd")
+	}
+	if billing["unpriced"] {
+		notes = append(notes, "unpriced models have no known price and count as 0")
+	}
+	if unknown, _ := summary["has_unknown_pricing"].(bool); unknown && !billing["unpriced"] {
+		notes = append(notes, "some usage has no known price and counts as 0")
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	return strings.Join(notes, "; ") + "."
+}
+
+// controlMCPLimits reports daily limits with "none" for an unset (0) limit,
+// so no caller reads 0 as a zero-dollar cap.
+func controlMCPLimits(limits map[string]any) map[string]any {
+	out := controlMCPPick(limits, "enabled", "daily_cost_limit_usd", "daily_tokens_limit", "today_cost_usd", "today_tokens", "limit_exceeded")
+	for _, key := range []string{"daily_cost_limit_usd", "daily_tokens_limit"} {
+		if value, _ := limits[key].(float64); value <= 0 {
+			out[key] = "none"
+		}
+	}
+	if enabled, ok := limits["enabled"].(bool); ok && !enabled {
+		out["note"] = "limits are off: nothing is capped until enabled"
+	}
+	return out
 }
 
 func controlMCPSetUsageLimits(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1891,5 +2177,19 @@ func controlMCPSetUsageLimits(c *controlMCPCall, args map[string]any) (any, erro
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"limits": controlMCPPick(controlMCPMap(response["limits"]), "enabled", "daily_cost_limit_usd", "daily_tokens_limit", "today_cost_usd", "today_tokens", "limit_exceeded")}, nil
+	return map[string]any{"limits": controlMCPLimits(controlMCPMap(response["limits"]))}, nil
+}
+
+// lastRunStatus is the recorded status of the session's last run once no run
+// is active, read only after the session detail itself was dispatched (and so
+// ownership-checked) for this caller. Empty when unknown.
+func (c *controlMCPCall) lastRunStatus(sessionID string, detail map[string]any) string {
+	if controlMCPMap(detail["active_run_intent"]) != nil || c.server == nil || c.server.sessions == nil {
+		return ""
+	}
+	state, ok, err := c.server.sessions.GetSessionRunState(sessionID)
+	if err != nil || !ok || state.Active {
+		return ""
+	}
+	return state.Status
 }

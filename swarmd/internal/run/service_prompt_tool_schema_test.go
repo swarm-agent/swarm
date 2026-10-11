@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	"swarm/packages/swarmd/internal/tool"
 )
 
@@ -183,5 +184,36 @@ func TestNormalizeProviderToolParametersPreservesNestedEmptySchemaArrays(t *test
 	nested := properties["nested"].(map[string]any)
 	if _, ok := nested["required"].([]any); !ok {
 		t.Fatalf("nested required = %#v, want array", nested["required"])
+	}
+}
+
+// TestPlanManageRecommendationSchemaAdvertisesAcceptedValues guards the
+// plan_manage tool boundary: the recommendation object must advertise the exact
+// decision/action_state enums enforced by session validation, so a model's
+// first complete_checkpoint/mark_blocked call does not guess unsupported
+// values. The run package sees both the tool registry and session validation.
+func TestPlanManageRecommendationSchemaAdvertisesAcceptedValues(t *testing.T) {
+	var properties map[string]any
+	for _, definition := range tool.NewRuntime(1).Definitions() {
+		if definition.Name == "plan_manage" {
+			properties, _ = definition.Parameters["properties"].(map[string]any)
+			break
+		}
+	}
+	recommendation, _ := properties["recommendation"].(map[string]any)
+	fields, _ := recommendation["properties"].(map[string]any)
+	if fields == nil {
+		t.Fatalf("plan_manage recommendation schema has no properties: %#v", recommendation)
+	}
+	actionState, _ := fields["action_state"].(map[string]any)
+	if !reflect.DeepEqual(actionState["enum"], sessionruntime.PlanRecommendationActionStates()) {
+		t.Fatalf("action_state enum = %#v, want %#v", actionState["enum"], sessionruntime.PlanRecommendationActionStates())
+	}
+	decision, _ := fields["decision"].(map[string]any)
+	if !reflect.DeepEqual(decision["enum"], sessionruntime.PlanRecommendationDecisions()) {
+		t.Fatalf("decision enum = %#v, want %#v", decision["enum"], sessionruntime.PlanRecommendationDecisions())
+	}
+	if !reflect.DeepEqual(recommendation["required"], []string{"decision", "action", "reason", "action_state"}) {
+		t.Fatalf("recommendation required = %#v", recommendation["required"])
 	}
 }

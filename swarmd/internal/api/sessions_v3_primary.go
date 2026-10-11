@@ -964,6 +964,15 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 			}
 		}
 	}
+	// A custom agent without a model of its own (for example a sealed agent
+	// defined with only a prompt and client tools) runs on the account's
+	// default Swarm model, the same one a plain session gets. A model set on
+	// the agent profile still wins at run time.
+	if err == nil && rolePreference == nil && req.ModelProfile == nil && strings.TrimSpace(req.Preference.Model) == "" && strings.TrimSpace(resolvedAgent.Profile.Model) == "" {
+		if _, system := agentruntime.CanonicalSystemAgentID(resolvedAgent.Profile.Name); !system {
+			rolePreference, err = s.accountDefaultSwarmPreference(principal.AccountScopeID)
+		}
+	}
 	if err == nil && req.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID) {
 		if modelProfileSnapshot != nil && modelProfileSnapshot.Plan == nil {
 			modelProfileSnapshot.Plan = pebblestore.CloneModelProfileSelection(&modelProfileSnapshot.Action)
@@ -2790,7 +2799,7 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 	if reason == "" {
 		reason = sessionV3RunStopDefaultReason
 	}
-	result, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID}, reason)
+	result, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, StopCause: sessionruntime.PlanStoppedByUser}, reason)
 	if err != nil {
 		status := http.StatusBadRequest
 		if !cancelled {
@@ -3623,6 +3632,11 @@ type sessionsV3PrimaryBinding struct {
 	BindingGeneration         int
 }
 
+// errSessionsV3NoWorkspace is returned when a session is created without a
+// workspace and the account has no current workspace to default to. Every
+// non-project session, including a sealed agent's, is bound to a workspace.
+var errSessionsV3NoWorkspace = errors.New("this session needs a workspace: pass workspace_path of a registered workspace (this Swarm has no current workspace)")
+
 func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, req sessionsV3CreateRequest) (sessionsV3PrimaryBinding, error) {
 	if s == nil || s.topology == nil {
 		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary topology is not configured")
@@ -3683,7 +3697,7 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 		}
 		if workspacePath == "" {
 			if defaultWorkspacePath == "" {
-				return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary account has no default workspace")
+				return sessionsV3PrimaryBinding{}, errSessionsV3NoWorkspace
 			}
 			workspacePath = defaultWorkspacePath
 		}

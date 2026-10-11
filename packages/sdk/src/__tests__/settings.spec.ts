@@ -6,6 +6,8 @@ import { SwarmTransport } from '../transport.js';
 
 test('SwarmSettingsNamespace: getRecommendationsForProvider and applyProviderFleet', async () => {
   let patchBody: any = null;
+  const patches: any[] = [];
+  const applied: any = { swarm: null, system_agents: {} };
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '', 'http://127.0.0.1');
@@ -53,6 +55,9 @@ test('SwarmSettingsNamespace: getRecommendationsForProvider and applyProviderFle
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
         patchBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        patches.push(patchBody);
+        if (patchBody.swarm) applied.swarm = patchBody.swarm;
+        Object.assign(applied.system_agents, patchBody.system_agents || {});
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
           JSON.stringify({
@@ -60,8 +65,8 @@ test('SwarmSettingsNamespace: getRecommendationsForProvider and applyProviderFle
             agent_model_settings: {
               account_scope_id: 'acct_1',
               updated_at: 5000,
-              swarm: patchBody.swarm,
-              system_agents: patchBody.system_agents,
+              swarm: applied.swarm,
+              system_agents: applied.system_agents,
             },
             roles: [],
           })
@@ -96,8 +101,15 @@ test('SwarmSettingsNamespace: getRecommendationsForProvider and applyProviderFle
 
     const result = await settings.applyProviderFleet('codex');
     assert.equal(result.ok, true);
-    assert.equal(patchBody.swarm.action.model, 'gpt-6.1-sol');
-    assert.equal(patchBody.system_agents.router.model, 'gpt-6-luna');
+    // The daemon accepts exactly one of swarm or one system agent per PATCH.
+    for (const p of patches) {
+      const targets = (p.swarm ? 1 : 0) + Object.keys(p.system_agents || {}).length;
+      assert.equal(targets, 1, JSON.stringify(p));
+    }
+    assert.equal(patches.length, 6);
+    assert.equal(applied.swarm.action.model, 'gpt-6.1-sol');
+    assert.equal(applied.system_agents.router.model, 'gpt-6-luna');
+    assert.equal(result.agent_model_settings.system_agents.compact.model, 'gpt-6-luna');
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

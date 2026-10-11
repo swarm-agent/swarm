@@ -143,3 +143,53 @@ func TestProjectInspectionExposedContracts(t *testing.T) {
 		t.Fatal("validation selector not exposed")
 	}
 }
+
+// Purpose: models sometimes encode inspection.arguments (or the whole
+// inspection object) as a JSON string (dogfooding: "inspection.arguments must
+// be an object" on the first inspect_files call). The tool boundary must
+// decode a JSON-encoded object string into the same rooted read, while still
+// rejecting non-object strings, malformed JSON, and mutation tools, and never
+// silently dropping a present-but-unusable inspection.
+func TestProjectInspectionAcceptsJSONEncodedObjectStrings(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "feature"), []byte("selected tree"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("outside"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRuntime(1)
+	r.projectTaskLifecycle = &inspectionLifecycle{target: ProjectInspectionTarget{Root: root}}
+	scope := WorkspaceScope{SessionID: "parent", RejectScopeExpansion: true}
+	accepted := []any{
+		map[string]any{"tool": "list", "arguments": `{"path":".","max_entries":40}`},
+		`{"tool":"list","arguments":{"path":"."}}`,
+		`{"tool":"list","arguments":"{\"path\":\".\"}"}`,
+	}
+	for _, inspection := range accepted {
+		out, err := r.inspectProjectFiles(context.Background(), scope, map[string]any{"inspection": inspection})
+		if err != nil || !strings.Contains(out, "feature") || !strings.Contains(out, `"inspection":`) {
+			t.Fatalf("inspection %#v: %s %v", inspection, out, err)
+		}
+	}
+	rejected := map[string]any{
+		"array arguments":     map[string]any{"tool": "list", "arguments": `["."]`},
+		"scalar arguments":    map[string]any{"tool": "list", "arguments": `"."`},
+		"malformed arguments": map[string]any{"tool": "list", "arguments": `{"path":`},
+		"number arguments":    map[string]any{"tool": "list", "arguments": 7},
+		"malformed object":    `{"tool":"list"`,
+		"array inspection":    `[{"tool":"list"}]`,
+		"number inspection":   42,
+		"string mutation":     `{"tool":"write","arguments":{"path":"feature","content":"changed"}}`,
+		"string escape":       map[string]any{"tool": "read", "arguments": `{"path":"` + filepath.Join(outside, "secret") + `"}`},
+	}
+	for name, inspection := range rejected {
+		if out, err := r.inspectProjectFiles(context.Background(), scope, map[string]any{"inspection": inspection}); err == nil {
+			t.Fatalf("%s accepted: %s", name, out)
+		}
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "feature"))
+	if string(data) != "selected tree" || scope.PrimaryPath != "" {
+		t.Fatal("inspection mutated content or ambient scope")
+	}
+}

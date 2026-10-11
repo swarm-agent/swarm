@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -874,5 +875,149 @@ func TestWorkerProjectTask_ProjectAssociationHardening(t *testing.T) {
 	}
 	if resPinned.ID != "proj_pinned" {
 		t.Fatalf("expected pinned project proj_pinned, got %q", resPinned.ID)
+	}
+}
+
+// Requirement: a worker that cannot resolve a project must be refused before
+// it becomes active or admits a run, with an error that names the fix.
+// Threat (dogfooding s10): create_worker accepted a workspace with no project
+// and returned an active worker; the first assign returned HTTP 400 but left an
+// admitted receipt behind, so a retry with the same idempotency key (after the
+// project was created) replayed a stale "failed" run instead of starting work.
+// Boundary: WorkerExecutionService.ConfigureBindings/Dispatch, the single
+// activation and admission authority used by the API and orchestrator tools.
+func TestWorkerProjectAssociationValidatedAtActivationAndAdmission(t *testing.T) {
+	_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	db := ss.Store()
+	ws := db.WorkerStore()
+	orphanRepo := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "dev"}, {"-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"}} {
+		if out, err := exec.Command("git", append([]string{"-C", orphanRepo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git: %v %s", err, out)
+		}
+	}
+	p := identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "owner"}
+	orphan, err := execution.host.runs.workspace.AddForPrincipal(p, orphanRepo, "orphan", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Orphan Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": orphan.WorkspaceID}); err == nil ||
+		!errors.Is(err, errWorkerProjectNotAssociated) || !strings.Contains(err.Error(), "/v3/projects") || !strings.Contains(err.Error(), orphan.WorkspaceID) {
+		t.Fatalf("activation without project error = %v", err)
+	}
+	unchanged, _, err := ws.GetWorker("account", w.ID)
+	if err != nil || unchanged.Revision != w.Revision || unchanged.LifecycleState == store.WorkerLifecycleStateActive || len(unchanged.LocalBindings) != 0 {
+		t.Fatalf("rejected activation mutated worker: %+v %v", unchanged, err)
+	}
+
+	// Activation in a project workspace succeeds; then the project loses the
+	// workspace. Admission must refuse without persisting a receipt.
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatalf("activation with project: %v", err)
+	}
+	proj, _, err := db.GetProject("account", "proj_fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := proj.Workspaces
+	proj.Workspaces = nil
+	if err := db.PutProject("account", proj); err != nil {
+		t.Fatal(err)
+	}
+	req := store.WorkerRunAdmission{WorkerID: w.ID, RequestSource: "direct", Input: map[string]any{"prompt": "Greet"}, IdempotencyKey: "same-key"}
+	if _, err := execution.Dispatch(context.Background(), "account", "owner", req); err == nil || !errors.Is(err, errWorkerProjectNotAssociated) {
+		t.Fatalf("dispatch without project error = %v", err)
+	}
+	if runs, _, err := ws.ListWorkerRuns("account", w.ID, 10, ""); err != nil || len(runs) != 0 {
+		t.Fatalf("rejected dispatch persisted runs: %+v %v", runs, err)
+	}
+	// Same key again without a fix: the same outcome type (an error), not a run.
+	if rec, err := execution.Dispatch(context.Background(), "account", "owner", req); err == nil || rec.ID != "" {
+		t.Fatalf("retry without project = %+v %v", rec, err)
+	}
+	proj.Workspaces = saved
+	if err := db.PutProject("account", proj); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := execution.Dispatch(context.Background(), "account", "owner", req)
+	if err != nil || rec.ID == "" || rec.Status == "failed" {
+		t.Fatalf("retry after fixing project = %+v %v", rec, err)
+	}
+	replay, err := execution.Dispatch(context.Background(), "account", "owner", req)
+	if err != nil || replay.ID != rec.ID {
+		t.Fatalf("idempotent replay = %+v %v, want run %s", replay, err, rec.ID)
+	}
+}
+
+// Requirement: a succeeded worker run must state that its project task still
+// awaits review instead of reading as fully done (dogfooding s10: get_worker
+// said "succeeded" while the task was needs_review). Run status semantics stay
+// unchanged; RunReview adds a read-time projection. Threats: a review shown for
+// a running/cancelled run, or for a task that belongs to another run.
+// Boundary: WorkerExecutionService.RunReview over the real store fixture.
+func TestWorkerRunReviewProjectsPendingReview(t *testing.T) {
+	runs, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{
+		Name:                  "Review Worker",
+		WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", store.WorkerRunAdmission{WorkerID: w.ID, RequestSource: "direct", Input: map[string]any{"prompt": "Greet"}, IdempotencyKey: "review-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review, err := execution.RunReview(r); err != nil || review != nil {
+		t.Fatalf("running run review = %+v %v, want none", review, err)
+	}
+	plan, _, err := ss.GetActivePlan(r.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runs.executePlanManageToolWithMutation(r.SessionID, `{"action":"complete_checkpoint","checkpoint_id":"cp-1","run_id":"`+r.ID+`","attempt_id":"`+plan.Document.Checkpoints[0].AttemptID+`","run_session_id":"`+r.SessionID+`","parent_session_id":"`+r.SessionID+`","report":"Done","result":"done"}`, "", ss.ApplySessionMutation); err != nil {
+		t.Fatal(err)
+	}
+	intent, _, err := ss.GetSessionRunIntent(r.SessionID, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.Status = sessions.RunIntentCompleted
+	if _, err = ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: "review-complete", IdempotencyKey: "review-complete", PayloadHash: "review-complete", RequestHash: "review-complete", EventType: "session.run_intent.updated", RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = execution.observeRun(r); err != nil {
+		t.Fatal(err)
+	}
+	done, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
+	if err != nil || done.Status != "succeeded" {
+		t.Fatalf("run status = %+v %v, want succeeded (semantics unchanged)", done, err)
+	}
+	review, err := execution.RunReview(done)
+	if err != nil || review == nil || review.State != WorkerRunReviewStateAwaiting || review.TaskStatus != "needs_review" || review.ProjectID != "proj_fixture" || review.TaskID != "task_"+r.ID || !strings.Contains(review.NextAction, "/integrate") {
+		t.Fatalf("succeeded run review = %+v %v", review, err)
+	}
+	// A task rebound to another run must not be reported for this run.
+	if _, err := ss.Store().UpdateProjectTask("account", "proj_fixture", "task_"+r.ID, func(task *store.ProjectTaskRecord) error {
+		task.WorkerRunID = "wrun_other"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if review, err := execution.RunReview(done); err != nil || review != nil {
+		t.Fatalf("foreign task review = %+v %v, want none", review, err)
 	}
 }

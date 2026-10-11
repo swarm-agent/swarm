@@ -210,7 +210,7 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 		{"agent without admin", write, "swarm_define_agent", map[string]any{"name": "helper", "instructions": "x", "tools": "build"}, "HTTP 403"},
 		{"client key without admin", write, "swarm_create_client_key", map[string]any{"name": "ui"}, "HTTP 403"},
 		{"answer with deny", write, "swarm_resolve_permission", map[string]any{"session_id": own.ID, "permission_id": ownPending.ID, "action": "deny_once", "answer": "yes"}, "answer needs action allow_once"},
-		{"unbounded wait", read, "swarm_get_session", map[string]any{"session_id": own.ID, "wait_seconds": 999}, "at most 45"},
+		{"unbounded wait", read, "swarm_get_session", map[string]any{"session_id": own.ID, "wait_seconds": 999}, "at most 110"},
 		{"foreign wait", write, "swarm_get_session", map[string]any{"session_id": foreign.ID, "wait_seconds": 5}, "HTTP 404"},
 		{"schedule without plan", write, "swarm_create_worker", map[string]any{"name": "w", "instructions": "i", "workspace_path": "/project", "schedule": map[string]any{"kind": "interval", "interval_seconds": 60}}, "go together"},
 		{"sub-minute schedule", write, "swarm_create_worker", map[string]any{"name": "w", "instructions": "i", "workspace_path": "/project", "schedule": map[string]any{"kind": "interval", "interval_seconds": 30}, "scheduled_plan": map[string]any{"goal": "g", "checkpoints": []any{map[string]any{"title": "t", "objective": "o", "acceptance_criteria": []any{"done"}}}}}, "at least 60"},
@@ -348,6 +348,13 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"GET", "/v3/projects/prj_1/tasks/task_1", false},
 		{"POST", "/v3/projects/prj_1/tasks/task_1/integrate", true},
 		{"POST", "/v3/projects/prj_1/tasks/task_1/recover-integrate", false},
+		{"POST", "/v3/projects/prj_1/tasks/task_1/approve", true},
+		{"POST", "/v3/projects/prj_1/tasks/task_1/reject", true},
+		{"POST", "/v3/projects/prj_1/tasks/task_1/accept", false},
+		{"POST", "/v3/deliverables/del_1/approve", false},
+		{"POST", "/v3/sessions/abc/plan-mode/checkpoints/cp1/accept", true},
+		{"POST", "/v3/sessions/abc/plan-mode/checkpoints/cp1/continue", false},
+		{"POST", "/v3/sessions/abc/plan-mode/checkpoints/cp1/resolve-block", false},
 		{"POST", "/v3/projects/prj_1/tasks/task_1/reopen", false},
 		{"POST", "/v3/sessions/abc/plan-mode/enter", false},
 		{"POST", "/v3/sessions/abc/plan-mode/plans/plan_1/submit", false},
@@ -529,7 +536,7 @@ func TestControlMCPWaitForSession(t *testing.T) {
 
 	// Idle session: returns at once, settled.
 	start := time.Now()
-	if text, isError := call("swarm_get_session", map[string]any{"session_id": session.ID, "wait_seconds": 30}); isError || !strings.Contains(text, `"waited":{"settled":true}`) || time.Since(start) > 5*time.Second {
+	if text, isError := call("swarm_get_session", map[string]any{"session_id": session.ID, "wait_seconds": 30}); isError || !strings.Contains(text, `"waited":{"outcome":"finished","reason":"run_ended","settled":true}`) || time.Since(start) > 5*time.Second {
 		t.Fatalf("idle wait: %s after %s", text, time.Since(start))
 	}
 
@@ -564,7 +571,7 @@ func TestControlMCPWaitForSession(t *testing.T) {
 	s.v3RealtimeOutbox.publish(pebblestore.V3RealtimeOutboxRecord{EndpointSeq: 2, SessionID: session.ID})
 	select {
 	case got := <-done:
-		if !strings.Contains(got.text, `"waited":{"settled":true}`) || got.elapsed > 10*time.Second {
+		if !strings.Contains(got.text, `"waited":{"outcome":"finished","reason":"run_ended","settled":true}`) || got.elapsed > 10*time.Second {
 			t.Fatalf("completion wait: %s after %s", got.text, got.elapsed)
 		}
 	case <-time.After(15 * time.Second):

@@ -98,7 +98,22 @@ func (s *WorkerExecutionService) ConfigureBindings(account, user, id string, rev
 	if !found || !strings.EqualFold(entry.State, "active") {
 		return store.WorkerRecord{}, store.ErrWorkerConflict
 	}
+	if activate {
+		// Every worker run executes as a project task. Refuse activation now
+		// rather than returning an active worker whose every run fails.
+		candidate := w
+		candidate.LocalBindings = map[string]string{"primary": strings.TrimSpace(bindings["primary"])}
+		if _, err := s.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID}, candidate); errors.Is(err, errWorkerProjectNotAssociated) {
+			return store.WorkerRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
+		}
+	}
 	return ws.ConfigureWorkerBindings(account, user, id, revision, bindings, activate)
+}
+
+// workerProjectRequiredError names the fix for a worker whose primary
+// workspace belongs to no project.
+func workerProjectRequiredError(workerID, workspaceID, workspacePath string) error {
+	return fmt.Errorf("%w: worker %q is bound to workspace %q (%s), which belongs to no project; create a project that includes this workspace (POST /v3/projects) or set the worker's metadata.project_id, then retry", errWorkerProjectNotAssociated, workerID, workspaceID, workspacePath)
 }
 
 // Accept validates exact revision, proposed bindings and workspace authorization,
@@ -224,6 +239,18 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	req.ResolvedModelProfile.PlanUseAccountDefault = false
 	req.ExpectedWorkerRevision = w.Revision
 	req.UserID = user
+	// A new admission needs a resolvable project, or its receipt would only
+	// fail during preparation and every same-key retry would replay that
+	// failure. Existing receipts still replay unchanged.
+	replay, err := ws.WorkerRunAdmissionExists(account, req)
+	if err != nil {
+		return store.WorkerRunRecord{}, err
+	}
+	if !replay {
+		if _, err := s.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, Input: req.Input}, w); errors.Is(err, errWorkerProjectNotAssociated) {
+			return store.WorkerRunRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
+		}
+	}
 	rec, err := ws.AdmitWorkerRun(account, req)
 	if err != nil {
 		return store.WorkerRunRecord{}, err

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Starts Swarm's local MCP bridge for this machine's Swarm. Speaks MCP on
+# stdio; no key to make or paste. SWARM_MCP_SOCKET points at a different
+# Swarm's owner socket (for example a test Swarm); SWARM_MCP_BIN at a
+# different swarmctl build.
+if [ -n "${SWARM_MCP_SOCKET:-}" ]; then
+  exec "${SWARM_MCP_BIN:-swarmctl}" mcp --socket "$SWARM_MCP_SOCKET"
+fi
+if [ -n "${SWARM_MCP_BIN:-}" ]; then exec "$SWARM_MCP_BIN" mcp; fi
+if command -v swarm >/dev/null 2>&1; then exec swarm mcp; fi
+echo "swarm-mcp: Swarm is not installed on this machine (no 'swarm' command). See https://swarmagent.dev" >&2
+exit 1

@@ -964,8 +964,25 @@ func explainBuiltinAllow(mode string, ctx policyEvalContext) (PolicyExplain, boo
 	if ctx.ToolName != "bash" {
 		return PolicyExplain{}, false
 	}
+	// Built-in allows apply only to one simple command: a chained, piped,
+	// redirected or substituted command is never covered by its first word.
+	words, simple := bashSimpleCommandWords(ctx.ToolArguments)
+	if !simple {
+		return PolicyExplain{}, false
+	}
+	effect := ctx.BashEffect
+	if effect.Valid && effect.DeclaredCategory == BashEffectRead && effect.Category == BashEffectRead && !effect.Critical && !effect.Promoted && bashClearlyReadOnlyCommand(words) {
+		return PolicyExplain{
+			Decision:    PolicyDecisionAllow,
+			Source:      "builtin",
+			Reason:      fmt.Sprintf("built-in allow for read-only bash command: %s", words[0]),
+			ToolName:    ctx.ToolName,
+			Command:     ctx.BashCommand,
+			RulePreview: fmt.Sprintf("allow read-only bash command: %s", words[0]),
+		}, true
+	}
 	for _, prefix := range []string{"cd", "ls"} {
-		if !hasCommandPrefix(ctx.BashCommand, prefix) {
+		if words[0] != prefix {
 			continue
 		}
 		return PolicyExplain{
@@ -1462,10 +1479,53 @@ func policyModeWithBypass(mode string, bypass bool) string {
 	return mode + "+bypass_permissions"
 }
 
+// manageProjectsReadOnlyActions are the manage_projects actions that only read
+// the caller's own project records or source catalog. They write nothing,
+// spend nothing, run no commands and reach no network, so they need no
+// approval. Every other action (including inspect_files, which runs file
+// tools against task results, and wait_tasks, which pends the run) keeps the
+// default approval.
+var manageProjectsReadOnlyActions = map[string]bool{
+	"list": true, "get": true, "list_sources": true, "inspect_source": true,
+	"list_media": true, "get_media": true, "list_tasks": true, "get_task": true,
+}
+
+// IsManageProjectsReadOnlyAction reports whether the manage_projects call only
+// reads. Malformed arguments are never read-only. An omitted action runs as
+// list in the tool runtime.
+func IsManageProjectsReadOnlyAction(toolArguments string) bool {
+	var args struct {
+		Action *string `json:"action"`
+	}
+	trimmed := strings.TrimSpace(toolArguments)
+	if trimmed == "" {
+		trimmed = "{}"
+	}
+	if json.Unmarshal([]byte(trimmed), &args) != nil {
+		return false
+	}
+	action := "list"
+	if args.Action != nil {
+		action = strings.ToLower(strings.TrimSpace(*args.Action))
+		if action == "" {
+			action = "list"
+		}
+	}
+	return manageProjectsReadOnlyActions[action]
+}
+
 func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision {
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
+	case "manage_projects":
+		if IsManageProjectsReadOnlyAction(toolArguments) {
+			return PolicyDecisionAllow
+		}
+		if bypass {
+			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
 	case "manage_memory":
 		var args struct {
 			Action string `json:"action"`

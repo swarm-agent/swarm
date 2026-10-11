@@ -15,7 +15,31 @@ import (
 	"swarm/packages/swarmd/internal/sandbox"
 
 	"swarm/packages/swarmd/internal/gitenv"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+// errProjectWithoutWorkspace is the plain error when a project chat tries to run
+// a command before its project has any workspace to run it in.
+var errProjectWithoutWorkspace = errors.New("this project has no workspace yet: add a workspace to the project to run commands")
+
+// projectConversationWithoutWorkspace reports whether the calling session is a
+// project conversation whose project has no workspace. Lookup failures report
+// false so the caller keeps its original, more specific error.
+func (r *Runtime) projectConversationWithoutWorkspace(scope WorkspaceScope) bool {
+	if r == nil || r.sessions == nil || r.projects == nil || strings.TrimSpace(scope.SessionID) == "" {
+		return false
+	}
+	session, ok, err := r.sessions.GetSession(strings.TrimSpace(scope.SessionID))
+	if err != nil || !ok || session.AccountScopeID != scope.Principal.AccountScopeID || session.UserID != scope.Principal.UserID {
+		return false
+	}
+	projectID := pebblestore.ProjectConversationID(session)
+	if projectID == "" {
+		return false
+	}
+	project, found, err := r.projects.GetProject(session.AccountScopeID, projectID)
+	return err == nil && found && project != nil && len(project.Workspaces) == 0
+}
 
 // recoveryRepository deliberately requires catalog authority, not session metadata
 // or caller-provided roots. Delegated mutation restrictions cannot be expanded.
@@ -41,6 +65,9 @@ func (r *Runtime) recoveryRepository(scope WorkspaceScope, path string) (string,
 		return "", err
 	}
 	if !owned.Matched {
+		if r.projectConversationWithoutWorkspace(scope) {
+			return "", errProjectWithoutWorkspace
+		}
 		return "", errors.New("recovery repository is not in the account workspace catalog; register the selected worktree first")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), defaultGitTimeout)

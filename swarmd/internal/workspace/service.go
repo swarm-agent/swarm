@@ -29,6 +29,9 @@ type Service struct {
 	store         *pebblestore.WorkspaceStore
 	events        *pebblestore.EventLog
 	publish       func(pebblestore.EventEnvelope)
+	// protectedRoots are configured daemon storage roots repository setup
+	// must never initialise a workspace in (see SetProtectedRoots).
+	protectedRoots []string
 }
 
 // SetLocalBindingService wires the canonical topology authority before serving requests.

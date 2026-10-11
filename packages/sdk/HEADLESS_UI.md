@@ -1,7 +1,5 @@
 # Build a real headless UI with the SDK
 
-For planned SDK completeness, safe tool control and non-production qualification, see the [five-step headless application plan](HEADLESS_PLAN.md). That roadmap is not a claim of implemented capabilities.
-
 ## Trust boundary
 
 Run the administrative Node SDK in your backend-for-frontend **inside the same container as swarmd**, using its configured private Unix socket. Do not mount/export that socket, put daemon credentials in browser code, or forward arbitrary browser-selected daemon paths. Authenticate your app's users, check Origin/CSRF, and allowlist app operations. Never log credential request bodies. The separate `--container-sdk-port` listener remains session-only: it cannot onboard providers, change settings, or create workspaces.
@@ -18,7 +16,7 @@ const providers = await swarm.settings.providers(); // readiness and supported a
 const credentials = await swarm.auth.credentials.list(); // redacted status only
 </copy>
 
-Your app must supply its configured socket path and authenticated local identity. This is not a recipe to import host credentials. Complete the daemon's identity/onboarding requirements using `onboarding.update({ username, swarm_name })` when needed.
+Your app must supply its configured socket path and authenticated local identity. This is not a recipe to import host credentials. Complete the daemon's identity/onboarding requirements using `onboarding.ensureBootstrapped({ username, swarm_name })` when needed.
 
 For an API key collected through your app UI, pass the user-selected provider and its advertised credential type. The first-provider endpoint requires zero existing credentials/agents; use the ordinary save endpoint afterward. Errors are not silently retried on a different route.
 

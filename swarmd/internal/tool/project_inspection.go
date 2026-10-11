@@ -55,16 +55,22 @@ func (r *Runtime) inspectProjectFiles(ctx context.Context, scope WorkspaceScope,
 		return "", err
 	}
 	response := map[string]any{"target": target, "inspection_only": true, "guidance": "Inspection is not testing, acceptance or integration. For validation use manage_environments with project_result equal to target.reference, then ensure/exec/release with the returned receipts. Never run against the source checkout instead."}
-	if operation, ok := args["inspection"].(map[string]any); ok {
+	if rawOperation, present := args["inspection"]; present && rawOperation != nil {
+		// Models sometimes JSON-encode nested objects. Decode an encoded object
+		// here instead of failing, or silently skipping, the requested read.
+		operation, err := parseJSONObjectInput(rawOperation, "inspection")
+		if err != nil {
+			return "", err
+		}
 		name := strings.TrimSpace(asString(operation["tool"]))
 		switch name {
 		case "read", "list", "search", "find":
 		default:
 			return "", errors.New("inspection.tool must be read, list, search or find; mutations and commands are not inspection")
 		}
-		parameters, ok := operation["arguments"].(map[string]any)
-		if !ok {
-			return "", errors.New("inspection.arguments must be an object")
+		parameters, err := parseJSONObjectInput(operation["arguments"], "inspection.arguments")
+		if err != nil {
+			return "", err
 		}
 		raw, err := json.Marshal(parameters)
 		if err != nil {

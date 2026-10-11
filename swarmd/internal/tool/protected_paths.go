@@ -65,6 +65,11 @@ func refuseProtectedPath(paths ...string) error {
 	return nil
 }
 
+// RefuseProtectedPath applies the file tools' protected-path refusal to other
+// read surfaces (Swarm Control read_file and get_changes), so they never
+// reach what an agent's own file tools may not.
+func RefuseProtectedPath(paths ...string) error { return refuseProtectedPath(paths...) }
+
 // refuseRootContainingStorage fails when root contains a daemon storage root,
 // so a broad workspace grant (for example "/" or "/var") cannot be used to
 // list, search or open files below it through an in-root symlink swap.

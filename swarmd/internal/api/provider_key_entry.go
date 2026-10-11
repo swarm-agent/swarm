@@ -56,6 +56,27 @@ type providerKeyRegistry struct {
 	byCode map[string]*providerKeyRequest
 	latest map[string]*providerKeyRequest
 	now    func() time.Time
+	// changed is closed (and replaced) whenever a request's outcome changes,
+	// so swarm_list_providers wait_seconds wakes without polling.
+	changed chan struct{}
+}
+
+// changes returns a channel closed at the next outcome change.
+func (reg *providerKeyRegistry) changes() <-chan struct{} {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if reg.changed == nil {
+		reg.changed = make(chan struct{})
+	}
+	return reg.changed
+}
+
+// notifyLocked wakes waiters on changes. Callers hold mu.
+func (reg *providerKeyRegistry) notifyLocked() {
+	if reg.changed != nil {
+		close(reg.changed)
+		reg.changed = nil
+	}
 }
 
 type providerKeyRequest struct {
@@ -160,6 +181,7 @@ func (reg *providerKeyRegistry) issue(request providerKeyRequest) (string, strin
 	entry := request
 	reg.byCode[entry.codeHash] = &entry
 	reg.latest[slot] = &entry
+	reg.notifyLocked()
 	return code, "http://" + reg.addr + providerKeyPagePrefix + code, nil
 }
 
@@ -193,6 +215,7 @@ func (reg *providerKeyRegistry) begin(code string) (*providerKeyRequest, provide
 func (reg *providerKeyRegistry) finish(request *providerKeyRequest, saved bool, reason string) (retry bool) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
+	defer reg.notifyLocked()
 	request.reason = reason
 	if saved {
 		request.status = "saved"

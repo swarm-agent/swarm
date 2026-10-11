@@ -192,7 +192,12 @@ export class SwarmSettingsNamespace {
    */
   async applyProviderFleet(provider: string): Promise<AgentModelSettingsResponse> {
     const fleet = await this.getRecommendationsForProvider(provider);
-    return this.patch(fleet);
+    // The daemon takes one target per PATCH: the swarm pair, then each system agent.
+    let result = await this.patch({ swarm: fleet.swarm });
+    for (const [slot, assignment] of Object.entries(fleet.system_agents)) {
+      result = await this.patch({ system_agents: { [slot]: assignment } });
+    }
+    return result;
   }
 
   async patch(body: object): Promise<AgentModelSettingsResponse> {

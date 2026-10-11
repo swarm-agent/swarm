@@ -77,6 +77,10 @@ var toolScopes = map[string]string{
 	"swarm_connect_chatgpt":      ScopeManage,
 	"swarm_list_providers":       ScopeRead,
 	"swarm_request_provider_key": ScopeManage,
+	"swarm_read_file":            ScopeRead,
+	"swarm_get_changes":          ScopeRead,
+	"swarm_accept_review":        ScopeApprove,
+	"swarm_approve_task":         ScopeManage,
 }
 
 // localOnlyTools need the owner's admin authority, which the device token

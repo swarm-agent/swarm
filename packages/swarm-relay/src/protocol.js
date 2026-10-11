@@ -53,6 +53,10 @@ export const TOOL_SCOPES = {
   swarm_connect_chatgpt: SCOPE_MANAGE,
   swarm_list_providers: SCOPE_READ,
   swarm_request_provider_key: SCOPE_MANAGE,
+  swarm_read_file: SCOPE_READ,
+  swarm_get_changes: SCOPE_READ,
+  swarm_accept_review: SCOPE_APPROVE,
+  swarm_approve_task: SCOPE_MANAGE,
   // Relay tools: trust a machine waiting to pair, or remove a paired one.
   swarm_pair_machine: SCOPE_MANAGE,
   swarm_remove_machine: SCOPE_MANAGE,

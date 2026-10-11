@@ -385,7 +385,7 @@ func TestProviderKeyPageFlow(t *testing.T) {
 	}
 	entry := f.providers(t)["fakeai"]
 	active, _ := entry["active"].(map[string]any)
-	if entry["stored_credentials"] != float64(1) || active["verification"] != "verified" || entry["key_request"].(map[string]any)["status"] != "saved" {
+	if entry["stored_credentials"] != float64(1) || active["status"] != "verified" || entry["key_request"].(map[string]any)["status"] != "saved" {
 		t.Fatalf("after save: %v", entry)
 	}
 

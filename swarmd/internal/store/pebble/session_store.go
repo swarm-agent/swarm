@@ -352,6 +352,9 @@ type SessionPlanCheckpointAttempt struct {
 	Result          string   `json:"result,omitempty"`
 	ChangedFiles    []string `json:"changed_files,omitempty"`
 	Validation      []string `json:"validation,omitempty"`
+	// StoppedBy is "user" when an explicit user stop paused this attempt;
+	// other cancellations (start failures, automation stops) leave it empty.
+	StoppedBy string `json:"stopped_by,omitempty"`
 }
 
 type SessionPlanCheckpointReview struct {

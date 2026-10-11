@@ -468,6 +468,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	sandboxMgr.Start(context.Background())
 	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)
+	workspaceSvc.SetProtectedRoots(cfg.DataDir, cacheRoot)
 	identityStore := pebblestore.NewIdentityStore(store)
 	identitySvc := identityruntime.NewService(identityStore)
 	identitySessionSvc := identityruntime.NewSessionService(identityStore, pebblestore.NewIdentitySessionStore(secretStore))

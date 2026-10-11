@@ -61,7 +61,19 @@ func TestAgentModelSettingsHTTPMissingRecordRequiresPrincipalAndSupportedMethod(
 	t.Cleanup(func() { _ = emptyStore.Close() })
 	emptyServer := &Server{}
 	emptyServer.SetAgentModelSettingsService(agentmodelsettings.NewService(pebblestore.NewAgentModelSettingsStore(emptyStore)))
-	agentModelSettingsHTTP(t, emptyServer, principal, http.MethodGet, "", http.StatusNotFound)
+	// No model ever set up is an onboarding state, not an error: 200 with every
+	// role unset, revision 0 and the role list, and nothing is written.
+	empty := agentModelSettingsHTTP(t, emptyServer, principal, http.MethodGet, "", http.StatusOK)
+	assertAgentModelSettingsHTTPResponse(t, empty, "", "", "")
+	if settings := empty["agent_model_settings"].(map[string]any); settings["updated_at"] != float64(0) || settings["account_scope_id"] != pebblestore.NormalizeAgentModelAccountScopeID(principal.AccountScopeID) {
+		t.Fatalf("unset agent_model_settings = %#v", settings)
+	}
+	if roles, _ := empty["roles"].([]any); len(roles) == 0 {
+		t.Fatalf("unset response has no roles: %#v", empty)
+	}
+	if _, found, err := pebblestore.NewAgentModelSettingsStore(emptyStore).GetForAccount(principal.AccountScopeID); err != nil || found {
+		t.Fatalf("GET wrote settings: found=%v err=%v", found, err)
+	}
 	agentModelSettingsHTTP(t, server, identity.Principal{}, http.MethodGet, "", http.StatusUnauthorized)
 	agentModelSettingsHTTP(t, server, principal, http.MethodPut, `{}`, http.StatusMethodNotAllowed)
 
