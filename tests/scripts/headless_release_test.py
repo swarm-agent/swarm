@@ -37,7 +37,7 @@ def fixture(arch='amd64', extra=None):
         files['blobs/sha256/' + digest] = raw
         return dict(mediaType=media, size=len(raw), digest='sha256:' + digest)
 
-    config = blob(dict(os='linux', architecture=arch, config=dict(User='10001:10001', Entrypoint=['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project'], Labels={
+    config = blob(dict(os='linux', architecture=arch, config=dict(User='10001:10001', Entrypoint=['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project', '--lock-permission-policy'], Labels={
         'org.opencontainers.image.source': 'https://github.com/swarm-agent/swarm',
         'org.opencontainers.image.revision': SOURCE,
         'org.opencontainers.image.version': 'v1.2.3'})), 'application/vnd.oci.image.config.v1+json')
@@ -115,6 +115,16 @@ class HeadlessReleaseTests(unittest.TestCase):
                 r.consume_image(Store(), m, e, p, policy, 'v1.2.3', SOURCE)
             self.assertEqual((m, e, p), before)
 
+
+    def test_inspector_matches_the_dockerfile_entrypoint(self):
+        # The release inspector must expect exactly what the Dockerfile builds; a
+        # flag added to one and not the other failed release a1d61afa.
+        dockerfile = (ROOT / 'Dockerfile').read_text()
+        lines = [line for line in dockerfile.splitlines() if line.startswith('ENTRYPOINT ')]
+        self.assertEqual(len(lines), 1)
+        entrypoint = json.loads(lines[0][len('ENTRYPOINT '):])
+        inspector = (ROOT / 'scripts/headless-release.py').read_text()
+        self.assertIn("get('Entrypoint') == " + repr(entrypoint), inspector)
 
 if __name__ == '__main__':
     unittest.main()
