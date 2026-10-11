@@ -93,3 +93,41 @@ test('reasoning, tool lifecycle including cancellation, and run outcome reach ca
   h.push({});
   assert.deepEqual(completed, [[1, 'failed']]);
 });
+
+// Requirement: apps merge durable history tool cards (keyed by session.tool.* payload.call_id)
+// with live chat tool cards, so every live tool object exposes `callId` equal to that durable
+// call_id while `id` keeps its old value. Daemon payloads carry call_id plus
+// tool_instance_id = `step-<n>:<call_id>` (sessionV3ProviderToolInstanceID in
+// swarmd/internal/api/sessions_v3_executor.go); a payload with only the instance id must still
+// resolve to the bare call id. Threat: live and history ids differ, so every tool rendered twice,
+// and lifecycle events keyed by different id fields lost the running tool's arguments/output.
+// Boundary: chat.stream reducer (the source for SwarmBrowserChat tool_* messages).
+test('live tool objects expose the durable call_id as callId', async () => {
+  const h = harness();
+  const live: ToolStreamItem[] = [];
+  const done: ToolStreamItem[] = [];
+  h.run('r', true);
+  await h.chat.stream('s', {
+    onToolStarted: t => live.push({ ...t }),
+    onToolDelta: t => live.push({ ...t }),
+    onToolCompleted: t => done.push({ ...t }),
+  });
+  h.push({});
+  h.snapshot.events_by_session.s = [
+    // Exact daemon shape: both ids present.
+    event(1, 'session.tool.started', { call_id: 'call_a', tool_instance_id: 'step-1:call_a', tool_name: 'read', arguments: '{"path":"a"}' }),
+    event(2, 'session.tool.completed', { call_id: 'call_a', tool_instance_id: 'step-1:call_a', tool_name: 'read', output: 'A', status: 'completed' }),
+    // Instance id only on start/delta, call_id on completion: one card, durable callId throughout.
+    event(3, 'session.tool.started', { tool_instance_id: 'step-2:call_b', tool_name: 'bash', arguments: '{"command":"ls"}' }),
+    event(4, 'session.tool.delta', { tool_instance_id: 'step-2:call_b', output: 'x' }),
+    event(5, 'session.tool.completed', { call_id: 'call_b', tool_instance_id: 'step-2:call_b', tool_name: 'bash', status: 'completed' }),
+  ];
+  h.push({});
+  assert.deepEqual(live.map(t => [t.id, t.callId]), [['call_a', 'call_a'], ['step-2:call_b', 'call_b'], ['step-2:call_b', 'call_b']]);
+  assert.deepEqual(done.map(t => [t.id, t.callId, t.arguments, t.output]), [
+    ['call_a', 'call_a', '{"path":"a"}', 'A'],
+    ['step-2:call_b', 'call_b', '{"command":"ls"}', 'x'],
+  ]);
+  const historyIds = h.snapshot.events_by_session.s.filter((e: V3Event) => e.payload.call_id).map((e: V3Event) => e.payload.call_id);
+  for (const t of done) assert.ok(historyIds.includes(t.callId), `${t.callId} matches a durable call_id`);
+});

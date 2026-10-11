@@ -24,7 +24,11 @@ const client = new SwarmClient({ socketPath: process.env.SWARM_SOCKET_PATH });
 Serve `node_modules/@swarm-agent/sdk/dist/` at `/sdk/` and import the browser
 client as a plain ES module: `import { SwarmBrowserChat, describePermission,
 answerPermission } from '/sdk/browser.js'`. Bind your server to `127.0.0.1`
-unless you add your own authentication.
+unless you add your own authentication. Loopback alone does not stop other web
+pages in the person's browser from calling your server: on every request that
+changes something (POST/PUT/DELETE, and the WebSocket upgrade), refuse an
+`Origin` that is not your own page, and accept only `Content-Type:
+application/json` bodies.
 
 ## 2. Onboarding
 
@@ -36,7 +40,7 @@ Decide what is missing from Swarm's state, not from
 | Name | `(await client.onboarding.get()).identity.bootstrapped` | ask name + Swarm name, `client.onboarding.ensureBootstrapped({ username, swarm_name })` |
 | Model access | `heuristics.credential_count > 0` | API key or ChatGPT sign-in (below) |
 | Models | `(await client.settings.agentModels())` has a swarm action model | usually already done: Swarm sets recommended models when the first key or sign-in is saved; otherwise `client.settings.applyProviderFleet(provider)` |
-| Workspace | your app's workspace is registered (`client.workspaces.list()`) | ask where work should live (suggest a folder), make sure the parent folder exists, then `client.workspaces.create({ parent_path, name })`; store its `path` and find it again by that path or its name |
+| Workspace | your app's workspace is registered (`client.workspaces.list()`) | ask where work should live (suggest a folder), make sure the parent folder exists, then `client.workspaces.create({ parent_path, name })` (`name`: letters, digits, `-` and `_`, at most 63); store its `path` and find it again by that path or its name |
 | Finish | all above | `client.onboarding.update({ desktop_onboarding_complete: true })` |
 
 Re-check `onboarding.get()` every few seconds while onboarding is open: a key
@@ -114,7 +118,7 @@ chat.sendMessage(text);
 - Tool cards in history come from the events in
   `state.snapshot.events_by_session[id]` (newest 1000) whose `event_type` is
   `session.tool.started`, `session.tool.completed` or `session.tool.failed`.
-  Their `payload` has `call_id` (match the live callbacks' `id` on it),
+  Their `payload` has `call_id` (match the live callbacks' `callId` on it),
   `tool_name`, `arguments` (a JSON string), `status`, and on completion
   `output` or `error`; ignore `payload.metadata`. Merge with the live
   callbacks; hide `tool` role messages.
@@ -125,6 +129,12 @@ chat.sendMessage(text);
   `status` (`completed`, `failed` or `cancelled` once it ended). Decide busy
   from `active`, not from status names.
 - Switch conversations with `await chat.subscribe(otherId)`.
+- If a conversation is too large to load whole, `state.historyOmitted` is
+  true and only the newest part is in `state.messages`: say older history is
+  not shown.
+- Offer Stop while a run is active: `client.sessions.stopRun(id, { run_id })`
+  with the `run_id` from `current_run_state_by_session[id]`. A stopped plan
+  pauses; the next message continues it.
 
 ## 5. Permissions
 
@@ -193,10 +203,11 @@ Throw `ClientToolError('message')` to send that message to the model.
   (`client.permissions.listSessionPending(sessionId)`, resolve with
   `client.permissions.resolve(sessionId, id, action, …)` on the person's
   click), or the task waits forever.
-- Finished work waits in `needs_review`. Its result is in `getTask`:
+- Finished work waits in `needs_review`. Its result is in `getTask(…).task`:
   `attempts[].summary` and `delivery_assessment` (changed files, commits),
   plus the last assistant message of the task's session. Then, on the
-  person's click: `integrateTask(projectId, taskId)` merges the work into the
+  person's click: `integrateTask(projectId, taskId)` (it reads the task and fills in the
+  session and branches) merges the work into the
   workspace's branch, `completeTask` accepts it without merging,
   `rejectTask` sends it back.
 - Application agents with their own instructions: `client.apps.put`,
@@ -220,4 +231,5 @@ Throw `ClientToolError('message')` to send that message to the model.
 Onboarding that only asks for what is missing · streaming chat with tool cards ·
 permission approve, deny and questions · new, list, switch conversations ·
 clear context · model and provider status · errors shown, never hidden · keys
-never logged or returned · loopback by default.
+never logged or returned · loopback by default · own-origin checks on every
+write.

@@ -29,7 +29,13 @@ export interface CreateChatSessionOptions {
 }
 
 export interface ToolStreamItem {
+  /** Live stream id (kept for compatibility; may be the `step-<n>:<call_id>` instance id). */
   id: string;
+  /**
+   * Durable tool-call id: equals `payload.call_id` on the session's `session.tool.*` history
+   * events. Match live tool cards to history cards on this field, not on `id`.
+   */
+  callId: string;
   name: string;
   identity?: string;
   display?: string;
@@ -279,30 +285,34 @@ export class SwarmChatNamespace {
       const payload = evt.payload || {};
       const eventType = evt.event_type;
       const toolId = String(payload.call_id || payload.tool_instance_id || '');
+      // Durable history keys tool calls by payload.call_id; tool_instance_id is `step-N:<call_id>`.
+      const callId = toolCallIdFromPayload(payload);
+      const toolKey = callId || toolId;
       if (eventType === 'session.tool.started') {
         const toolItem: ToolStreamItem = {
           id: toolId || evt.id,
+          callId: callId || toolId || evt.id,
           name: String(payload.tool_name || 'tool'),
           identity: payload.tool_identity ? String(payload.tool_identity) : undefined,
           display: payload.tool_display ? String(payload.tool_display) : undefined,
           arguments: payload.arguments ? String(payload.arguments) : undefined,
           status: 'running',
         };
-        activeTools.set(toolItem.id, toolItem);
+        activeTools.set(toolKey || toolItem.id, toolItem);
         if (notify) options.onToolStarted?.(toolItem);
       } else if (eventType === 'session.tool.delta') {
-        const toolItem = activeTools.get(toolId);
+        const toolItem = activeTools.get(toolKey);
         const delta = String(payload.output || '');
         if (toolItem && delta) {
           toolItem.output = (toolItem.output || '') + delta;
           if (notify) options.onToolDelta?.(toolItem, delta);
         }
       } else if (TERMINAL_TOOL_STATUS[eventType]) {
-        let toolItem = activeTools.get(toolId);
+        let toolItem = activeTools.get(toolKey);
         if (!toolItem) {
-          toolItem = { id: toolId, name: String(payload.tool_name || 'tool'), status: TERMINAL_TOOL_STATUS[eventType] };
+          toolItem = { id: toolId, callId: callId || toolId, name: String(payload.tool_name || 'tool'), status: TERMINAL_TOOL_STATUS[eventType] };
         }
-        activeTools.delete(toolId);
+        activeTools.delete(toolKey);
         toolItem.status = TERMINAL_TOOL_STATUS[eventType];
         if (payload.output) toolItem.output = String(payload.output);
         if (toolItem.status === 'failed') toolItem.error = String(payload.error || 'Tool execution failed');
@@ -425,3 +435,14 @@ const TERMINAL_TOOL_STATUS: Record<string, ToolStreamItem['status']> = {
   'session.tool.cancelled': 'cancelled',
   'session.tool.canceled': 'cancelled',
 };
+
+/**
+ * The durable tool-call id (`payload.call_id` on `session.tool.*` events). When an event
+ * carries only `tool_instance_id` (`step-<n>:<call_id>`), the step prefix is removed.
+ */
+export function toolCallIdFromPayload(payload: Record<string, unknown> | undefined): string {
+  const callId = typeof payload?.call_id === 'string' ? payload.call_id.trim() : '';
+  if (callId) return callId;
+  const instance = typeof payload?.tool_instance_id === 'string' ? payload.tool_instance_id.trim() : '';
+  return instance.replace(/^step-\d+:/, '');
+}

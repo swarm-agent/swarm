@@ -133,7 +133,9 @@ await client.settings.restoreDefaults();
 
 Use `describePermission(record)` to render tool details, conservative per-request `actions`,
 question IDs, options and custom-response fields. Treat all text/arguments as untrusted text,
-not HTML. `parseError` leaves malformed questions deny-only. These helpers do not grant authority:
+not HTML. `title` is always a plain-text heading: the request's own title, else the bash
+command, the first ask-user question, or the humanized tool name and action (for example
+`Manage projects: propose task (Add login)`). `parseError` leaves malformed questions deny-only. These helpers do not grant authority:
 the backend enforces policy, project scope and specialized plan/proposal acceptance.
 
 ```typescript
@@ -182,9 +184,9 @@ let answer = '';
 const stream = await client.chat.stream(session.id, {
   onText: (delta) => { answer += delta; render(answer); },  // deltas join to exactly the reply
   onReasoning: (_delta, full) => renderThinking(full),
-  onToolStarted: (tool) => showTool(tool.id, tool.name, tool.arguments),
-  onToolDelta: (tool, chunk) => appendToolOutput(tool.id, chunk),
-  onToolCompleted: (tool) => finishTool(tool.id, tool.status), // completed | failed | cancelled
+  onToolStarted: (tool) => showTool(tool.callId, tool.name, tool.arguments),
+  onToolDelta: (tool, chunk) => appendToolOutput(tool.callId, chunk),
+  onToolCompleted: (tool) => finishTool(tool.callId, tool.status), // completed | failed | cancelled
   onPermissionRequested: (perm, resolve) => askUser(perm, resolve), // see section 3; never auto-answer
   onState: (state) => setStatus(state.status),               // syncing | live | reconnecting
   onComplete: (messages, run) => {                            // once per run, success or not
@@ -209,6 +211,14 @@ Guarantees, verified end to end against the API server (see "Streaming verificat
 - `onComplete(messages, run)` fires once per finished run, whatever its outcome.
   A failed provider turn has `run.status === 'failed'` and a system message in `messages`.
 - Durable events (newest 1000) are in `state.snapshot.events_by_session[id]` once, in sequence order.
+- Live tool objects carry `callId`, equal to `payload.call_id` on the durable `session.tool.*`
+  events. When you merge history cards with live cards, match on `callId`: `tool.id` is kept
+  for compatibility and can be the step-scoped instance id (`step-2:call_…`).
+- A conversation whose history no longer fits the hydrate window (for example after a very
+  large tool result) still opens: the watch retries with `history.manifest_policy: 'manifest'`,
+  keeps the newest window, and sets `state.historyOmitted = true` with
+  `state.historyOmissions` (resource and `next_cursor`) so you can show "older history not
+  loaded" instead of presenting the window as complete.
 
 `state.messages` (a 200-message tail) and `state.live` are the rendering authority;
 callbacks are conveniences. Clearing context: `client.sessions.clearContext(id, { expectedLastEventSeq })`
@@ -266,9 +276,9 @@ chat.on('disconnected', disableComposer);
 // 1. Hook into live tool execution and token streams
 chat.on('text', (delta, fullText) => renderLiveMarkdown(fullText));
 chat.on('reasoning', (delta, fullText) => renderModelThinking(fullText));
-chat.on('tool_start', (tool) => renderToolStartedCard(tool.id, tool.name, tool.arguments));
-chat.on('tool_delta', (tool, delta) => appendToolOutput(tool.id, delta));
-chat.on('tool_done', (tool) => markToolCompleted(tool.id, tool.durationMs));
+chat.on('tool_start', (tool) => renderToolStartedCard(tool.callId, tool.name, tool.arguments));
+chat.on('tool_delta', (tool, delta) => appendToolOutput(tool.callId, delta));
+chat.on('tool_done', (tool) => markToolCompleted(tool.callId, tool.durationMs));
 // Replace pending cards on hydration/live updates/reconnect, keyed by permission.id.
 // Preserve unsent input for unchanged requests; do not submit during render.
 chat.on('permissions', pending => renderPendingForms(pending.map(describePermission)));
@@ -453,7 +463,21 @@ await client.projects.refineTask(project.id, task.id, {
 
 // Stream or replay outbox events starting after an opaque cursor
 const streamResult = await client.projects.replayEvents('opaque_cursor_token');
+
+// Integrate a finished task's commits into its captured target branch
+const integration = await client.projects.integrateTask(project.id, task.id);
 ```
+
+`integrateTask` reads the task first (`getTask`, which observes Git) and sends the exact
+selection the daemon checks: `session_id` (the task's current session) and the captured
+`source_branch`/`target_branch` (from `task.delivery_assessment`, else the task's
+`worktree_branch`/`base_branch`, else its active attempt), plus `revision`, `attempt_id` and the
+observed `source_head`/`target_head`. Override any field with
+`integrateTask(projectId, taskId, { selection: { target_branch: 'main' } })`; supplying
+`session_id`, `source_branch` and `target_branch` skips the read. A task with no captured
+worktree lane throws `SwarmValidationError` without calling the daemon; a stale selection, dirty
+checkout or non-actionable delivery state comes back as `SwarmConflictError` and nothing is
+integrated.
 
 ### 7. Programmable Push Alert Webhooks
 

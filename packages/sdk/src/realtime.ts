@@ -1,3 +1,4 @@
+import { SwarmApiError } from './errors.js';
 import type { SwarmTransport } from './transport.js';
 
 export interface V3Message {
@@ -53,6 +54,15 @@ export interface V3SessionView {
   pending_permissions?: V3Permission[]; current_run_state?: V3RunState;
   active_plan?: Record<string, unknown>; [key: string]: unknown;
 }
+/**
+ * A resource the daemon left out of (or truncated in) a sync snapshot. With
+ * `history.manifest_policy` 'manifest' or 'omit' the recent window is still returned and
+ * `next_cursor` points at the older history that was left out.
+ */
+export interface V3SyncOmission {
+  session_id?: string; resource?: 'messages' | 'events' | string; reason?: 'requires_manifest' | string;
+  next_cursor?: string; manifest_ref?: string; [key: string]: unknown;
+}
 export interface V3SyncSnapshot {
   ok: boolean; rev: number; snapshot_endpoint_cursor: string;
   sessions_by_id: Record<string, Record<string, unknown>>;
@@ -62,7 +72,7 @@ export interface V3SyncSnapshot {
   current_run_state_by_session?: Record<string, V3RunState>;
   session_views_by_id?: Record<string, V3SessionView>;
   realtime?: { stream_path: string; resume: V3Resume };
-  omissions: { session_id?: string; reason?: string; [key: string]: unknown }[];
+  omissions: V3SyncOmission[];
   pagination: Record<string, unknown>; [key: string]: unknown;
 }
 /** Minimal WebSocket contract, also usable by authenticated same-origin browser proxies. */
@@ -77,6 +87,13 @@ export interface SessionWatchState {
   /** Transient full text by run/stream. Replace on every update, never append to durable messages. */
   live: ReadonlyArray<{ runId: string; streamId: string; text: string }>;
   status: 'syncing' | 'live' | 'reconnecting';
+  /**
+   * True when older history did not fit the hydrate window (for example after a very large
+   * tool result) and was left out. `messages`/events still hold the most recent window; the
+   * conversation stays usable. `historyOmissions` names each resource and its `next_cursor`.
+   */
+  historyOmitted?: boolean;
+  historyOmissions?: V3SyncOmission[];
 }
 export interface SessionWatchOptions {
   signal?: AbortSignal; surface?: string; socketFactory?: RealtimeSocketFactory;
@@ -193,6 +210,22 @@ export class SwarmRealtimeNamespace {
   async hydrate(body: V3SyncRequest, signal?: AbortSignal): Promise<V3SyncSnapshot> {
     return (await this.transport.request<V3SyncSnapshot>('/v3/sync/hydrate', { method: 'POST', body, signal })).data;
   }
+  /**
+   * Hydrates a watch window. The daemon's default manifest policy ('error') refuses the whole
+   * snapshot when the recent window cannot hold all history (e.g. one ~280 KB tool result
+   * exhausts the 256 KB message budget). Both 'omit' and 'manifest' still return the same
+   * newest window plus an omission with `next_cursor`; 'manifest' also returns a descriptor
+   * of what was included, so it loses the least. The policy then sticks for this watch.
+   */
+  private async hydrateWindow(body: V3SyncRequest, signal?: AbortSignal): Promise<V3SyncSnapshot> {
+    try {
+      return await this.hydrate(body, signal);
+    } catch (error) {
+      if (body.history?.manifest_policy || !isRequiresManifestError(error)) throw error;
+      body.history = { ...body.history, manifest_policy: 'manifest' };
+      return this.hydrate(body, signal);
+    }
+  }
   /** Bounded durable replay. Keep the identical selector/resources/surface for every cursor. */
   async replay(body: V3SyncRequest & { endpoint_cursor: string; limit?: number }, signal?: AbortSignal): Promise<V3ReplayResponse> {
     return (await this.transport.request<V3ReplayResponse>('/v3/sync/stream', { method: 'POST', body, signal })).data;
@@ -247,7 +280,7 @@ export class SwarmRealtimeNamespace {
     const onChange = (state: SessionWatchState) => { latest = state; options.onChange(state); };
     while (!signal.aborted) {
       // Every reconnect hydrates fresh durable authority before replay; no timer polling.
-      const snapshot = await this.hydrate(body, signal);
+      const snapshot = await this.hydrateWindow(body, signal);
       if (signal.aborted) return;
       if (!snapshot.sessions_by_id[id] || !snapshot.realtime?.resume.endpoint_cursor) throw new Error('Session omitted or realtime bootstrap unavailable');
       try {
@@ -257,7 +290,7 @@ export class SwarmRealtimeNamespace {
         if (signal.aborted) return;
         if (error instanceof FatalRealtimeError || attempts >= (options.maxReconnects ?? 6)) throw error;
         // Keep the last rendered conversation (including partial text) while reconnecting.
-        onChange({ ...(latest ?? { sessionId: id, snapshot, messages: snapshot.messages_by_session[id] ?? [], live: [] }), status: 'reconnecting' });
+        onChange({ ...(latest ?? { sessionId: id, snapshot, messages: snapshot.messages_by_session[id] ?? [], live: [], ...historyOmissionState(snapshot, id) }), status: 'reconnecting' });
         await delay(Math.min(250 * 2 ** attempts++, 8000), signal);
       }
     }
@@ -279,7 +312,7 @@ export class SwarmRealtimeNamespace {
       const emit = () => {
         if (ended) return;
         const view = { ...snapshot, events_by_session: { ...snapshot.events_by_session, [id]: events } };
-        options.onChange({ sessionId: id, snapshot: view, messages: snapshot.messages_by_session[id] ?? [], live: live.values(), status: replayed ? 'live' : 'syncing' });
+        options.onChange({ sessionId: id, snapshot: view, messages: snapshot.messages_by_session[id] ?? [], live: live.values(), status: replayed ? 'live' : 'syncing', ...historyOmissionState(snapshot, id) });
       };
       const finish = (error?: Error) => {
         if (ended) return; ended = true; requests.abort(); clearTimeout(timer); signal.removeEventListener('abort', cancel); socket.close();
@@ -293,7 +326,7 @@ export class SwarmRealtimeNamespace {
         try {
           while (dirty && !ended) {
             dirty = false;
-            const next = await this.hydrate(body, requests.signal);
+            const next = await this.hydrateWindow(body, requests.signal);
             if (ended) return;
             if (!next.sessions_by_id[id]) throw new FatalRealtimeError('Session no longer available');
             snapshot = next;
@@ -368,4 +401,12 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
     signal.addEventListener('abort', finish, { once: true });
     if (signal.aborted) finish();
   });
+}
+function isRequiresManifestError(error: unknown): boolean {
+  return error instanceof SwarmApiError && error.status === 400 && /\brequires_manifest\b/.test(error.message);
+}
+function historyOmissionState(snapshot: V3SyncSnapshot, id: string): Pick<SessionWatchState, 'historyOmitted' | 'historyOmissions'> {
+  const historyOmissions = (Array.isArray(snapshot.omissions) ? snapshot.omissions : [])
+    .filter((o) => o && o.session_id === id && (o.resource === 'messages' || o.resource === 'events'));
+  return { historyOmitted: historyOmissions.length > 0, historyOmissions };
 }

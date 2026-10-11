@@ -17,6 +17,7 @@ export interface PermissionRequestView {
   arguments: Record<string, unknown> | null;
   rawArguments: string;
   parseError?: string;
+  /** Plain-text heading: the request's own title, else a fallback (bash command, first ask-user question, tool + action). Never HTML. */
   title?: string;
   context?: string;
   structured: boolean;
@@ -41,6 +42,12 @@ export function isAskUserPermission(permission: Pick<PendingPermissionRecord, 't
 
 /** Parse untrusted request arguments for text rendering. Never render these fields as HTML. */
 export function describePermission(permission: PendingPermissionRecord): PermissionRequestView {
+  const view = describePermissionRequest(permission);
+  view.title = view.title || permissionFallbackTitle(view);
+  return view;
+}
+
+function describePermissionRequest(permission: PendingPermissionRecord): PermissionRequestView {
   const id = permissionId(permission?.id);
   const sessionId = permissionId(permission?.session_id, 'sessionId');
   const raw = permission.tool_arguments ?? permission.tool_call_arguments ?? '';
@@ -159,4 +166,35 @@ export function confirmPermissionResolution(result: ResolvePermissionResult, ses
     throw new PermissionResolutionError('Permission decision was not confirmed (stale, cancelled or resolved differently); refresh before retrying', result);
   }
   return result;
+}
+
+const TITLE_MAX = 160;
+/** One plain-text line: control characters and runs of whitespace collapse, long text is cut. */
+function titleLine(value: string): string {
+  const line = value.replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim();
+  return line.length > TITLE_MAX ? `${line.slice(0, TITLE_MAX - 1).trimEnd()}…` : line;
+}
+function humanize(value: string): string {
+  const words = value.trim().split('.').at(-1)!.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim().toLowerCase();
+  return words ? words[0].toUpperCase() + words.slice(1) : '';
+}
+/**
+ * Plain-text fallback title when the request carries none: bash shows its command,
+ * ask-user its first question, any other tool its humanized name plus action/subject.
+ * Built only from untrusted strings; render it as text, never as HTML.
+ */
+function permissionFallbackTitle(view: PermissionRequestView): string {
+  const args = view.arguments ?? {};
+  const tool = text(view.toolName).toLowerCase().split('.').at(-1) ?? '';
+  if ((tool === 'bash' || tool === 'shell') && text(args.command)) return titleLine(text(args.command));
+  if (view.kind === 'ask-user') {
+    const first = view.questions[0]?.question
+      || (Array.isArray(args.questions) && object(args.questions[0]) ? text(args.questions[0].question) : '')
+      || text(args.question);
+    if (first) return titleLine(first);
+  }
+  const name = humanize(text(view.toolName)) || 'Tool request';
+  const action = text(args.action) ? humanize(text(args.action)).toLowerCase() : '';
+  const subject = [args.title, args.name, args.path, args.file_path, args.url, args.query].map(text).find(Boolean) ?? '';
+  return titleLine(`${name}${action ? `: ${action}` : ''}${subject ? ` (${subject})` : ''}`);
 }

@@ -1,6 +1,7 @@
 import {
   SwarmApiError,
   SwarmTimeoutError,
+  SwarmValidationError,
 } from './errors.js';
 import type { SwarmTransport } from './transport.js';
 import type {
@@ -16,7 +17,9 @@ import type {
   DeployProjectTaskProgramResult,
   GetProjectTaskProgramResult,
   GetProjectTaskResult,
+  IntegrateProjectTaskOptions,
   IntegrateProjectTaskResult,
+  IntegrateProjectTaskSelection,
   ListProjectsParams,
   PreviewProjectTaskParams,
   ProjectRecord,
@@ -682,17 +685,47 @@ export class SwarmProjectsNamespace {
 
   /**
    * Integrates task commits into the parent workspace repository.
+   *
+   * The daemon only integrates an exact selection: the task's current session and its
+   * captured source/target branches. With no options the SDK fetches the task
+   * (`getTask`, which runs a fresh delivery assessment) and builds that selection from
+   * it; pass `options.selection` to override individual fields. A stale selection is
+   * refused by the daemon with a conflict error rather than integrating the wrong lane.
    */
   async integrateTask(
     projectId: string,
     taskId: string,
-    options?: RequestOptions
+    options: IntegrateProjectTaskOptions = {}
   ): Promise<IntegrateProjectTaskResult> {
+    const { selection: overrides, body, ...requestOptions } = options;
     const pId = encodeURIComponent(projectId.trim());
     const tId = encodeURIComponent(taskId.trim());
+    // A caller-supplied raw body is treated as overrides too (older workaround shape).
+    const given: Partial<IntegrateProjectTaskSelection> = {
+      ...(body && typeof body === 'object' ? (body as Partial<IntegrateProjectTaskSelection>) : {}),
+      ...(overrides ?? {}),
+    };
+    let selection: Partial<IntegrateProjectTaskSelection> = given;
+    if (!given.session_id || !given.source_branch || !given.target_branch) {
+      const { task } = await this.getTask(projectId, taskId, {
+        signal: requestOptions.signal,
+        timeoutMs: requestOptions.timeoutMs,
+        headers: requestOptions.headers,
+      });
+      selection = { ...integrationSelectionFromTask(task), ...stripUndefined(given) };
+    }
+    const missing = (['session_id', 'source_branch', 'target_branch'] as const).filter(
+      (key) => typeof selection[key] !== 'string' || !(selection[key] as string).trim()
+    );
+    if (missing.length > 0) {
+      throw new SwarmValidationError(
+        `Task ${taskId} cannot be integrated: no ${missing.join(', ')} on the task record (it has no captured worktree lane yet). Pass options.selection to supply them.`,
+        { missing, selection }
+      );
+    }
     const res = await this.transport.request<IntegrateProjectTaskResult>(
       `/v3/projects/${pId}/tasks/${tId}/integrate`,
-      { method: 'POST', ...options }
+      { ...requestOptions, method: 'POST', body: stripUndefined(selection) }
     );
     return res.data;
   }
@@ -870,4 +903,38 @@ export class SwarmProjectsNamespace {
       }
     }
   }
+}
+
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function stripUndefined<T extends object>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T;
+}
+
+/**
+ * Builds the integrate selection the daemon checks from a fresh task record.
+ * Branch precedence: the detail GET's delivery assessment (the daemon's own view of
+ * the captured lane), then the task's recorded worktree/base branch, then the active
+ * attempt's. The daemon still verifies every field against the owned session.
+ */
+export function integrationSelectionFromTask(task: ProjectTaskRecord): Partial<IntegrateProjectTaskSelection> {
+  const assessment = task.delivery_assessment;
+  const attempts = Array.isArray(task.attempts) ? task.attempts : [];
+  const activeAttempt =
+    attempts.find((a) => a && a.id && a.id === task.active_attempt_id) ??
+    attempts.find((a) => a && nonEmpty(a.session_id) && a.session_id === task.session_id);
+  const observed = assessment?.freshness === 'observed';
+  return stripUndefined({
+    session_id: nonEmpty(task.session_id) ?? nonEmpty(assessment?.session_id),
+    source_branch:
+      nonEmpty(assessment?.source_branch) ?? nonEmpty(task.worktree_branch) ?? nonEmpty(activeAttempt?.worktree_branch),
+    target_branch:
+      nonEmpty(assessment?.target_branch) ?? nonEmpty(task.base_branch) ?? nonEmpty(activeAttempt?.base_branch),
+    revision: typeof task.revision === 'number' ? task.revision : undefined,
+    attempt_id: nonEmpty(task.active_attempt_id) ?? nonEmpty(assessment?.attempt_id),
+    source_head: observed ? nonEmpty(assessment?.source_oid) : undefined,
+    target_head: observed ? nonEmpty(assessment?.target_oid) : undefined,
+  });
 }

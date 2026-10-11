@@ -263,3 +263,53 @@ test('socket events merge into state and streaming checkpoints do not re-hydrate
     assert.deepEqual(events.at(-1), [6, 7, 8]);
   } finally { f.watcher.dispose(); await f.watcher.done; }
 });
+
+// Purpose: a conversation with one very large tool result (~280 KB) must stay openable.
+// Requirement: the daemon's /v3/sync/hydrate defaults history.manifest_policy to 'error' and
+// answers 400 "sync snapshot requires_manifest for session ... resource \"messages\"" when the
+// newest window cannot hold all history (V3RecentMessageByteBudget = 256 KB,
+// handleV3SyncSnapshotResourceOmission in swarmd/internal/store/pebble/session_sync_snapshot.go).
+// With 'manifest' it returns the same newest window plus an omission (next_cursor, manifest_ref).
+// Threat: watchSession (and chat.stream / browser chat on top of it) failed permanently, or
+// silently presented truncated history as complete. Boundary: SwarmRealtimeNamespace hydrate
+// path with an injected transport that enforces the daemon's policy contract; other 400s
+// must still fail and must not be retried.
+test('watch retries requires_manifest with the manifest policy and flags omitted history', { timeout: 3000 }, async () => {
+  const { SwarmApiError } = await import('../errors.js');
+  const transport = new SwarmTransport({ baseUrl: 'http://127.0.0.1', defaultHeaders: {}, timeoutMs: 500 });
+  const api = new SwarmRealtimeNamespace(transport);
+  const policies: (string | undefined)[] = [];
+  const window = [{ id: 'm7', session_id: 's', global_seq: 7, role: 'tool', content: 'x'.repeat(280 * 1024), created_at: 1 }];
+  transport.request = async (_path, options) => {
+    const policy = (options?.body as { history: { manifest_policy?: string } }).history.manifest_policy;
+    policies.push(policy);
+    if (!policy || policy === 'error') {
+      throw new SwarmApiError('sync snapshot requires_manifest for session "s" resource "messages"', { status: 400 });
+    }
+    const snap = snapshot(`opaque-${policies.length}`);
+    snap.messages_by_session.s = window as never;
+    snap.omissions = [{ session_id: 's', resource: 'messages', reason: 'requires_manifest', next_cursor: 's:messages:before:7', manifest_ref: 's:messages' }];
+    return { status: 200, headers: {}, rawText: '', data: snap } as never;
+  };
+  const sockets: Socket[] = [];
+  let last: SessionWatchState | undefined;
+  const watcher = api.watchSession('s', { onChange: (s) => { last = s; }, socketFactory: async () => { const socket = new Socket(); sockets.push(socket); return socket; } });
+  try {
+    await new Promise(setImmediate);
+    sockets[0].frame({ kind: 'hello', endpoint_cursor: 'head' });
+    sockets[0].frame({ kind: 'replay.complete', session_id: 's', subscription_id: 'sdk:session:s' });
+    await watcher.ready;
+    assert.deepEqual(policies, [undefined, 'manifest', 'manifest'], 'one refused hydrate, then the policy sticks for refreshes');
+    assert.equal(last?.messages.length, 1, 'the recent window (including the large result) is kept');
+    assert.equal(last?.historyOmitted, true);
+    assert.deepEqual(last?.historyOmissions?.map((o) => [o.resource, o.next_cursor]), [['messages', 's:messages:before:7']]);
+  } finally { watcher.dispose(); await watcher.done; }
+
+  // Any other hydrate failure is not reinterpreted: no retry, the watch fails.
+  const other = new SwarmRealtimeNamespace(transport);
+  let calls = 0;
+  transport.request = async () => { calls++; throw new SwarmApiError('sync snapshot max_messages_per_session cannot exceed 200', { status: 400 }); };
+  const failing = other.watchSession('s', { onChange: () => {}, socketFactory: async () => new Socket() });
+  await assert.rejects(failing.done, /cannot exceed 200/);
+  assert.equal(calls, 1);
+});
