@@ -2,26 +2,46 @@
 
 Official TypeScript SDK for [Swarm](https://github.com/swarm-agent/swarm), the local-first AI coding workspace.
 
-`@swarm-agent/sdk` provides a typed, zero-dependency client to interact programmatically with the Swarm daemon (`swarmd`) over HTTP and local Unix domain sockets.
+`@swarm-agent/sdk` provides a typed client to interact programmatically with the Swarm daemon (`swarmd`) over HTTP and its local owner socket.
 
 ## Features
 
-- **Zero Runtime Dependencies**: Works out-of-the-box in Node.js, Bun, Deno, and modern browser/edge environments.
-- **Zero-Conf Unix Sockets**: Native support for daemon Unix domain sockets (`/run/swarmd/swarmd.sock`) for automatic peer identity.
+- **Finds your local Swarm**: In Node, `new SwarmClient()` connects to the owner socket of a system install (`/var/lib/swarmd/local-transport/api.sock`) when the process may use it, otherwise to `http://127.0.0.1:7781`.
+- **Owner Socket**: The owner socket is trusted daemon-owner IPC: run as the user that runs Swarm and no token is needed.
 - **Granular Scoped Tokens**: Create, list, revoke, and purge scoped deploy tokens (`swk_...`) with fine-grained permissions (`automations:trigger`, `sessions:read`, `sessions:write`, `admin`).
 - **Worker / Automation V2 Triggers**: Trigger workers on-demand with dynamic caller context (e.g. GitHub Webhooks, CI/CD events, alert payloads).
 - **Session & Workspace Lifecycle**: Create durable V3 sessions, manage runs, send messages, poll for completion, and inspect workspaces.
 - **Typed Error Hierarchy**: `SwarmAuthError` (401), `SwarmForbiddenError` (403), `SwarmNotFoundError` (404), `SwarmConflictError` (409), `SwarmTimeoutError`.
 
-## Unpublished npm candidate
+## Install
 
-Node 22+ and ESM imports are the validated packaging target. The prerelease name
-is not a claim of registry ownership or publication. Install the local candidate
-from a clean consumer directory (no Swarm checkout or Desktop required):
+Requires Node 22 or newer (ESM). The package is public on npm:
 
 <copy>
-npm install "$SDK_TARBALL"
-node --input-type=module -e "import { SwarmClient } from '@swarm-agent/sdk'; console.log(typeof SwarmClient)"
+npm install @swarm-agent/sdk
+</copy>
+
+You need a running Swarm on Linux x86_64. Install one with
+`curl -fsSL https://swarmagent.dev/install | sh -s -- --yes`.
+
+## Connect to your Swarm
+
+`new SwarmClient()` with no options picks the first of:
+
+1. `socketPath` or `baseUrl` passed to the constructor;
+2. `SWARM_SOCKET_PATH` (a Unix socket);
+3. `SWARM_API_URL` (or `SWARM_DESKTOP_URL`);
+4. Node only: the owner socket `/var/lib/swarmd/local-transport/api.sock`, if it
+   exists, is a socket and this process can read and write it;
+5. `http://127.0.0.1:7781`, the daemon's default API address.
+
+The owner socket's directory is private to the user that runs Swarm, so other
+users fall through to HTTP, which needs a token (`token` or `SWARM_AUTH_TOKEN`).
+Browser code never touches the filesystem; use `@swarm-agent/sdk/browser` there.
+`resolveSwarmConnection()` returns the choice without connecting.
+
+<copy>
+node --input-type=module -e "import { SwarmClient } from '@swarm-agent/sdk'; const c = new SwarmClient(); console.log(c.config.socketPath ?? c.config.baseUrl)"
 </copy>
 
 For maintainers, the SDK builds independently with its own locked dev dependencies:
@@ -38,7 +58,7 @@ example, not source tests or node_modules. `prepack` builds locally; there are n
 install/prepare hooks. TypeScript/tsx are build/test tools, not runtime dependencies.
 CommonJS `require` and non-Node runtimes are not validated by this packaging step.
 
-For the headless container, use the matching `@swarm-agent/cli` candidate and explicitly
+For the headless container, use the matching `@swarm-agent/cli` package and explicitly
 export a scoped token through `swarm-headless setup -- sdk-token`. Connect to
 `http://127.0.0.1:7783`; **do not** use Desktop bootstrap or a privileged socket.
 The headless listener allows session operations only, not the complete API below.
@@ -76,10 +96,9 @@ The SDK can automatically discover credentials from your environment or Codex OA
 ```typescript
 import { SwarmClient } from '@swarm-agent/sdk';
 
-const client = new SwarmClient({
-  baseUrl: process.env.SWARM_API_URL || 'http://127.0.0.1:5555',
-  socketPath: process.env.SWARM_SOCKET_PATH, // e.g. /var/lib/swarmd/local-transport/api.sock
-});
+// Owner socket when this process may use it, else http://127.0.0.1:7781
+// (see "Connect to your Swarm"; pass socketPath/baseUrl/token to choose).
+const client = new SwarmClient();
 
 // 1. Ensure headless identity is bootstrapped
 await client.onboarding.ensureBootstrapped({ username: 'developer', swarm_name: 'My Swarm' });

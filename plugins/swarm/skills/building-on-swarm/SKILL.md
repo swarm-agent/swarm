@@ -18,7 +18,9 @@ npm install @swarm-agent/sdk   # or a local tarball; it depends on `ws` from npm
 ```js
 import { SwarmClient } from '@swarm-agent/sdk';
 // The owner socket: no token; the server runs as the same OS user as Swarm.
-const client = new SwarmClient({ socketPath: process.env.SWARM_SOCKET_PATH });
+const client = new SwarmClient({
+  socketPath: process.env.SWARM_SOCKET_PATH || '/var/lib/swarmd/local-transport/api.sock',
+});
 ```
 
 Serve `node_modules/@swarm-agent/sdk/dist/` at `/sdk/` and import the browser

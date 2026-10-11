@@ -23,22 +23,24 @@ This repository is under active development. The README below is intentionally c
 
 ## Install
 
-Fast lane for Linux x86_64:
+Linux x86_64 only. One line, no confirmation prompt:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh
+curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
 ```
 
-For automation, choose the service behavior explicitly:
+It installs Swarm and, on a systemd host, starts the `swarm` service. Without a terminal (an AI agent, CI) a non-root run needs passwordless sudo; otherwise run it as root with `| sudo sh -s -- --yes`. Then [connect your AI](#connect-your-ai).
+
+To choose the service behavior explicitly:
 
 ```bash
-sh install.sh --yes --service
-sh install.sh --yes --no-service
+curl -fsSL https://swarmagent.dev/install | sh -s -- --yes --service
+curl -fsSL https://swarmagent.dev/install | sh -s -- --yes --no-service
 ```
 
-That command fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm. The release archive contains Swarm itself; Git is supplied as a mandatory system package rather than a private bundled executable. The installer provisions the mandatory Git and Bash system packages when they are missing through the detected supported Linux package manager, verifies them before changing Swarm files, and leaves existing installations unchanged. Git is required because every saved or selected workspace must be a repository root with an initial commit and Swarm isolates agent sessions in managed worktrees; direct-session worktree opt-out is not supported. If a selected folder is not ready, Desktop explains the requirement: an empty folder can be initialized with an explicit setup action. For a non-empty folder, a provider-connected user can open the dedicated Onboarding Swarm without first admitting another workspace; it is bound to that exact unsaved folder, keeps dedicated shell-free Git initialization, ignore-file edits, staging, and the first commit permission-gated, uses existing Git identity or a user-supplied one-time identity without persisting it, and returns to onboarding for a readiness recheck before the workspace is saved. The alternative is to fix the repository manually and retry. Deterministic video analysis requires `ffmpeg` and `ffprobe` on `PATH`; those remain feature-local prerequisites rather than startup requirements.
+The installer fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm. The release archive contains Swarm itself; Git is supplied as a mandatory system package rather than a private bundled executable. The installer provisions the mandatory Git and Bash system packages when they are missing through the detected supported Linux package manager, verifies them before changing Swarm files, and leaves existing installations unchanged. Git is required because every saved or selected workspace must be a repository root with an initial commit and Swarm isolates agent sessions in managed worktrees; direct-session worktree opt-out is not supported. If a selected folder is not ready, Desktop explains the requirement: an empty folder can be initialized with an explicit setup action. For a non-empty folder, a provider-connected user can open the dedicated Onboarding Swarm without first admitting another workspace; it is bound to that exact unsaved folder, keeps dedicated shell-free Git initialization, ignore-file edits, staging, and the first commit permission-gated, uses existing Git identity or a user-supplied one-time identity without persisting it, and returns to onboarding for a readiness recheck before the workspace is saved. The alternative is to fix the repository manually and retry. Deterministic video analysis requires `ffmpeg` and `ffprobe` on `PATH`; those remain feature-local prerequisites rather than startup requirements.
 
-The installer prints an install plan, including any runtime-package provisioning, places launchers in `/usr/local/bin`, and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. It then offers three explicit choices: install/start the systemd service, install files only with no service, or cancel. Because these are system locations, `install.sh` may prompt for sudo during initial provisioning. Swarm-owned runtime directories are created for the service user, so a healthy installed system can verify, activate, restart, health-check, and if necessary roll back routine stable release updates without prompting for sudo. If launcher links, service topology, or install-root ownership are later changed or damaged, the update refuses before activation and directs you to perform a one-time privileged repair or reinstall; it does not silently fall back to sudo.
+The installer prints an install plan, including any runtime-package provisioning, places launchers in `/usr/local/bin`, and installs Swarm runtime artifacts under `/usr/local/share/swarm/{bin,libexec,lib,share}`. Run in a terminal without `--yes`, it offers three explicit choices: install/start the systemd service, install files only with no service, or cancel. Because these are system locations, `install.sh` may prompt for sudo during initial provisioning. Swarm-owned runtime directories are created for the service user, so a healthy installed system can verify, activate, restart, health-check, and if necessary roll back routine stable release updates without prompting for sudo. If launcher links, service topology, or install-root ownership are later changed or damaged, the update refuses before activation and directs you to perform a one-time privileged repair or reinstall; it does not silently fall back to sudo.
 
 If your shell does not already include the launcher directory on `PATH`, run Swarm with:
 
@@ -64,6 +66,63 @@ From a source checkout, the setup helper can build and install local development
 ```bash
 ./setup
 ```
+
+## Connect your AI
+
+Your AI talks to Swarm through `swarm mcp`: MCP over stdio, no key to make or
+paste. Run as the user that runs Swarm, it gets a short-lived AI key over
+Swarm's private owner socket, keeps it only in memory and deletes it on exit.
+If `swarm help` does not list `swarm mcp`, your Swarm is too old: update it
+with the install line above.
+
+**Claude Code**: install the `swarm` plugin (Swarm's tools plus skills for
+setting it up, running agents and building apps on it):
+
+```bash
+claude plugin marketplace add swarm-agent/swarm
+claude plugin install swarm@swarm
+```
+
+or add only the tools:
+
+```bash
+claude mcp add swarm -- swarm mcp
+```
+
+**Codex CLI** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.swarm]
+command = "swarm"
+args = ["mcp"]
+```
+
+To add the Swarm skills to Codex too, package the plugin from a checkout of
+this repository (Node 22+) and install it as a local marketplace:
+
+```bash
+node scripts/package-swarm-codex.mjs /absolute/new/output-folder
+codex plugin marketplace add /absolute/new/output-folder
+codex plugin add swarm@swarm-local
+```
+
+ChatGPT in the cloud cannot reach a Swarm on your computer; it needs a private
+tunnel, see `plugins/swarm/skills/setup/references/chatgpt-tunnel.md`.
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{"mcpServers": {"swarm": {"command": "swarm", "args": ["mcp"]}}}
+```
+
+**Then set up:** ask your AI to "set up Swarm". It finds what is missing
+(owner, model provider, workspace) and gives you a link to Swarm's local key
+page, where you type your model provider key. The key never goes through chat.
+
+The default is full access (sessions, approvals, models, workers, provider
+key requests); add `--access write` or `--access read` to limit it. If a
+desktop app cannot find `swarm`, use its full path (`command -v swarm`).
+Details and the trust boundary: `docs/checkpoints/swarm-control.md`.
 
 ## Development session dumps
 
@@ -121,45 +180,6 @@ Default local ports:
 | --- | --- | --- |
 | `swarm` | `http://127.0.0.1:7781` | `http://127.0.0.1:5555` |
 | `swarm dev` / `swarmdev` | `http://127.0.0.1:7782` | `http://127.0.0.1:5556` |
-
-## Connect your AI
-
-With Claude Code, install the `swarm` plugin (Swarm's tools plus skills for
-setting it up, running agents and building apps on it), then ask Claude to
-"help me set up Swarm":
-
-```bash
-claude plugin marketplace add swarm-agent/swarm
-claude plugin install swarm@swarm
-```
-
-Any other MCP client on the same machine drives Swarm through Swarm Control (MCP)
-with one line and no key to make. `swarm mcp` speaks MCP over stdio; run as
-the user that runs Swarm, it gets a short-lived AI key over Swarm's private
-owner socket, keeps it only in memory and deletes it on exit.
-
-```bash
-claude mcp add swarm -- swarm mcp
-```
-
-Claude Desktop (`claude_desktop_config.json`):
-
-```json
-{"mcpServers": {"swarm": {"command": "swarm", "args": ["mcp"]}}}
-```
-
-Codex CLI (`~/.codex/config.toml`):
-
-```toml
-[mcp_servers.swarm]
-command = "swarm"
-args = ["mcp"]
-```
-
-The default is full access (sessions, approvals, models, workers, provider
-key requests); add `--access write` or `--access read` to limit it. If a
-desktop app cannot find `swarm`, use its full path (`command -v swarm`).
-Details and the trust boundary: `docs/checkpoints/swarm-control.md`.
 
 ## Terminal UI commands
 

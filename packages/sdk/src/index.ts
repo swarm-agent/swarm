@@ -1,4 +1,5 @@
 export * from './client.js';
+export * from './local-connection.js';
 export * from './auth.js';
 export * from './automations.js';
 export * from './workers.js';

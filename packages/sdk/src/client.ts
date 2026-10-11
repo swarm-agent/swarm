@@ -19,6 +19,7 @@ import { SwarmRemoteNamespace } from './remote.js';
 import { SwarmSessionsNamespace } from './sessions.js';
 import { SwarmSystemNamespace } from './system.js';
 import { SwarmStorageNamespace } from './storage/index.js';
+import { resolveSwarmConnection } from './local-connection.js';
 import { SwarmTransport } from './transport.js';
 import type { ResolvedSwarmClientConfig, SwarmClientConfig } from './types.js';
 import { SwarmWorkspacesNamespace } from './workspaces.js';
@@ -75,17 +76,11 @@ export class SwarmClient {
     const env: Record<string, string | undefined> =
       typeof process !== 'undefined' && process?.env ? process.env : {};
 
-    const baseUrl =
-      config.baseUrl ||
-      env.SWARM_API_URL ||
-      env.SWARM_DESKTOP_URL ||
-      'http://127.0.0.1:18080';
-
-    const socketPath = config.socketPath || env.SWARM_SOCKET_PATH;
+    const { baseUrl, socketPath } = resolveSwarmConnection(config, { env });
     const token = config.token || env.SWARM_AUTH_TOKEN || env.SWARM_DEPLOY_TOKEN;
 
     const resolved: ResolvedSwarmClientConfig = {
-      baseUrl: baseUrl.replace(/\/+$/, ''),
+      baseUrl,
       token,
       socketPath,
       defaultHeaders: config.defaultHeaders ?? {},

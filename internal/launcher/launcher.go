@@ -1632,16 +1632,7 @@ func RunCtl(profile Profile, rawArgs []string, auth bool) error {
 		extraEnv[localTransportSocketEnv] = LocalTransportSocketPath(profile)
 		extraEnv["DATA_DIR"] = profile.DataDir
 	}
-	hasAddr := false
-	for _, arg := range args {
-		if arg == "--addr" {
-			hasAddr = true
-			break
-		}
-	}
-	if !hasAddr {
-		args = append(args, "--addr", profile.URL)
-	}
+	args = withCtlAddr(args, profile.URL)
 	return RunForeground(ctlPath, args, profile.EnvList(extraEnv))
 }
 
@@ -2599,4 +2590,19 @@ func httpRequest(ctx context.Context, profile Profile, rawMethod, rawURL string,
 		return nil, resp.StatusCode, err
 	}
 	return data, resp.StatusCode, nil
+}
+
+// withCtlAddr points a forwarded swarmctl command at this profile's API URL.
+// `swarmctl setup` talks only to the owner socket (it rejects --addr), so it
+// gets the socket through the environment instead; an explicit --addr wins.
+func withCtlAddr(args []string, url string) []string {
+	if len(args) > 0 && args[0] == "setup" {
+		return args
+	}
+	for _, arg := range args {
+		if arg == "--addr" {
+			return args
+		}
+	}
+	return append(args, "--addr", url)
 }

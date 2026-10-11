@@ -72,9 +72,7 @@ while [ "$#" -gt 0 ]; do
 done
 exec "$@"
 `)
-			writeExecutable(t, filepath.Join(bin, "sudo"), `#!/bin/sh
-exec "$@"
-`)
+			writeExecutable(t, filepath.Join(bin, "sudo"), fakeSudo)
 			writeExecutable(t, filepath.Join(bin, "curl"), `#!/bin/sh
 case "$*" in
   *releases/latest*) printf '%s\n' '  "tag_name": "v1.2.3"' ;;
@@ -160,7 +158,7 @@ while [ "$#" -gt 0 ]; do
 done
 exec "$@"
 `)
-			writeExecutable(t, filepath.Join(bin, "sudo"), "#!/bin/sh\nexec \"$@\"\n")
+			writeExecutable(t, filepath.Join(bin, "sudo"), fakeSudo)
 			writeExecutable(t, filepath.Join(bin, "curl"), `#!/bin/sh
 case "$*" in
   *releases/latest*) printf '%s\n' '  "tag_name": "v1.2.3"' ;;
@@ -201,6 +199,7 @@ func TestInstallerFailsClosedWithoutSupportedPrerequisiteProvisioner(t *testing.
 	for _, name := range []string{"sh", "bash", "cat", "uname", "tar", "sed", "grep", "awk", "head", "dirname", "pwd", "readlink", "mkdir", "chmod", "sleep", "mktemp", "id", "install", "sha256sum", "ln", "rm"} {
 		linkHostCommand(t, bin, name)
 	}
+	writeExecutable(t, filepath.Join(bin, "sudo"), fakeSudo)
 	writeExecutable(t, filepath.Join(bin, "env"), `#!/bin/sh
 while [ "$#" -gt 0 ]; do
   case "$1" in *=*) export "$1"; shift ;; *) break ;; esac
@@ -257,4 +256,17 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// fakeSudo runs the command as the caller. The installer's unattended
+// preflight is `sudo -n true`, and later calls pass -n too.
+const fakeSudo = "#!/bin/sh\n[ \"${1:-}\" = -n ] && shift\n[ \"$*\" = true ] && exit 0\nexec \"$@\"\n"
+
+// pathWithFakeSudo puts fakeSudo first on the host PATH, so tests that run
+// the installer with the host's tools never reach the real sudo.
+func pathWithFakeSudo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeExecutable(t, filepath.Join(dir, "sudo"), fakeSudo)
+	return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
 }

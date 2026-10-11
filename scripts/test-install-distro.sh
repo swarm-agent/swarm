@@ -11,8 +11,12 @@ environment. The runner installs only the downloader, certificate, sudo, and
 systemd bootstrap needed to invoke the public installer, creates a non-root
 service owner with passwordless sudo, proves the mandatory Git prerequisite is
 initially missing, curls the exact candidate into that user's fresh home,
-unsets TMPDIR, runs the archive's install.sh in systemd service mode, and
-verifies prerequisite provisioning plus full readiness. --identity root instead
+unsets TMPDIR and first runs the archive's install.sh the way an AI agent does:
+piped into sh with --yes, no service flag and no terminal. It verifies that the
+installer chose the systemd service, provisioned Git, started Swarm healthy as
+that user and printed the connect lines, and that `swarm mcp` run as that user
+answers initialize and tools/list. It then reinstalls in explicit systemd
+service mode and verifies full readiness again. --identity root instead
 runs the exact mounted candidate as a fresh root shell with no pre-created owner,
 checks the running service identity and workspace access, then reinstalls it.
 
@@ -208,7 +212,7 @@ kill -0 "${server_pid}" 2>/dev/null || fail "candidate download server exited be
 candidate_port="$(cat "${port_file}")"
 [[ "${candidate_port}" =~ ^[0-9]+$ ]] || fail "candidate download server selected an invalid port"
 
-"${RUNTIME}" exec "${container_name}" bash -se <<'EOF'
+"${RUNTIME}" exec -i "${container_name}" bash -se <<'EOF'
 set -euo pipefail
 if command -v git >/dev/null 2>&1; then
   echo "test image unexpectedly satisfies the Git provisioning precondition" >&2
@@ -216,7 +220,7 @@ if command -v git >/dev/null 2>&1; then
 fi
 EOF
 
-"${RUNTIME}" exec "${container_name}" bash -se <<EOF
+"${RUNTIME}" exec -i "${container_name}" bash -se <<EOF
 set -euo pipefail
 command -v curl >/dev/null
 useradd -m -s /bin/bash swarmtest
@@ -237,6 +241,72 @@ install -o swarmtest -g swarmtest -d "\${download_root}/extract"
 sudo -u swarmtest tar -xzf "\${download_root}/${archive_name}" -C "\${download_root}/extract"
 artifact_root="\$(find "\${download_root}/extract" -mindepth 1 -maxdepth 1 -type d -name 'swarm-*-linux-amd64' -print -quit)"
 [[ -n "\${artifact_root}" ]]
+
+# Unattended AI install (fresh): non-root with passwordless sudo, no controlling
+# terminal (setsid, stdin /dev/null), the installer piped into sh as with
+# 'curl | sh -s -- --yes', and no service flag. It must choose the systemd
+# service itself, provision Git through non-interactive sudo, start Swarm as
+# this user and print the connect lines.
+unattended_log="\${download_root}/unattended-install.log"
+if ! sudo -u swarmtest env -u TMPDIR SWARM_DISABLE_MINT_REPORT=1 HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
+  setsid -w sh -c 'cat "\$1/install.sh" | sh -s -- --artifact-root "\$1" --yes' sh "\${artifact_root}" \
+  </dev/null >"\${unattended_log}" 2>&1; then
+  cat "\${unattended_log}" >&2
+  echo 'unattended install failed' >&2
+  exit 1
+fi
+cat "\${unattended_log}"
+grep -Fq 'No terminal and --yes: chose --service because systemd is running' "\${unattended_log}"
+grep -Fq 'claude plugin marketplace add swarm-agent/swarm && claude plugin install swarm@swarm' "\${unattended_log}"
+grep -Fq 'claude mcp add swarm -- swarm mcp' "\${unattended_log}"
+grep -Fq 'swarm mcp must run as swarmtest' "\${unattended_log}"
+command -v git >/dev/null
+systemctl is-active --quiet swarm.service
+bash /run/test-install-mint-guard.sh verify
+status_output="\$(sudo -u swarmtest /usr/local/bin/swarm status)"
+grep -Fxq 'active=active' <<<"\${status_output}"
+grep -Fxq 'daemon_health=healthy' <<<"\${status_output}"
+owner_uid="\$(id -u swarmtest)"
+owner_gid="\$(id -g swarmtest)"
+test "\$(stat -c %u:%g /usr/local/share/swarm)" = "\${owner_uid}:\${owner_gid}"
+unit_user="\$(systemctl show -p User --value swarm.service)"
+[[ "\${unit_user}" == swarmtest || "\${unit_user}" == "\${owner_uid}" ]]
+main_pid="\$(systemctl show -p MainPID --value swarm.service)"
+[[ "\${main_pid}" =~ ^[1-9][0-9]*\$ ]]
+test "\$(awk '/^Uid:/ { print \$2 }' "/proc/\${main_pid}/status")" = "\${owner_uid}"
+if getent passwd swarm >/dev/null; then
+  echo 'unattended non-root install created the swarm service account' >&2
+  exit 1
+fi
+# A fresh Swarm has no owner identity, and the owner socket refuses to mint the
+# bridge's AI key until one exists. Create it the way the setup skill does (no
+# provider key, no browser), as the install owner, with the documented command.
+sudo -u swarmtest env -i HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
+  swarm ctl setup identity --username swarmtest --name install-test >/dev/null
+# swarm mcp as the owner, empty environment (no key loaded): newline-delimited
+# JSON-RPC over stdio; stdin EOF ends the bridge once replies are written.
+mcp_err="\${download_root}/mcp.stderr"
+if ! mcp_out="\$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"install-distro-test","version":"1"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | timeout --signal=TERM --kill-after=5s 60s sudo -u swarmtest env -i HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin swarm mcp 2>"\${mcp_err}")"; then
+  echo 'swarm mcp failed' >&2
+  cat "\${mcp_err}" >&2
+  exit 1
+fi
+init_reply="\$(grep -E '"id":1[,}]' <<<"\${mcp_out}" || true)"
+list_reply="\$(grep -E '"id":2[,}]' <<<"\${mcp_out}" || true)"
+if ! grep -Fq '"result":' <<<"\${init_reply}" || ! grep -Fq '"protocolVersion"' <<<"\${init_reply}" \
+  || ! grep -Fq '"result":' <<<"\${list_reply}" || ! grep -Fq '"name":"swarm_list_providers"' <<<"\${list_reply}"; then
+  echo 'swarm mcp did not answer initialize and tools/list with swarm_list_providers' >&2
+  printf '%s\n' "\${mcp_out}" | cut -c1-400 >&2
+  cat "\${mcp_err}" >&2
+  exit 1
+fi
+echo 'unattended_mcp=initialize,tools/list'
+
+# Explicit service mode with --yes (now a reinstall over the unattended install).
 sudo -u swarmtest env -u TMPDIR SWARM_DISABLE_MINT_REPORT=1 HOME="\${user_home}" PATH=/usr/local/bin:/usr/bin:/bin \
   "\${artifact_root}/install.sh" --artifact-root "\${artifact_root}" --service --yes
 command -v git >/dev/null
@@ -259,4 +329,4 @@ systemctl restart swarm.service
 bash /run/test-install-mint-guard.sh verify
 EOF
 
-printf 'distro=%s\nimage=%s\ncandidate_archive=%s\ncandidate_sha256=%s\ncandidate_download=passed\nmandatory_git_precondition=missing\nmandatory_git_provisioning=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n' "${DISTRO}" "${IMAGE}" "${archive_name}" "${expected_digest}"
+printf 'distro=%s\nimage=%s\ncandidate_archive=%s\ncandidate_sha256=%s\ncandidate_download=passed\nmandatory_git_precondition=missing\nmandatory_git_provisioning=passed\nunattended_install=passed\nunattended_service_owner=install_user\nmcp_tools_list=passed\ninstall=passed\nservice=active\ndaemon_readiness=healthy\ncli=invoked\ntmpdir=unset\n' "${DISTRO}" "${IMAGE}" "${archive_name}" "${expected_digest}"

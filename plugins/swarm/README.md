@@ -16,6 +16,19 @@ short-lived write key after approval using `bin/authorize.mjs`. The person does
 not copy a key. Service-account installations may require one OS password prompt
 in their terminal. See `skills/setup/references/authorization.md`.
 
+## Quick start (Claude Code, Linux x86_64)
+
+```sh
+curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+claude plugin marketplace add swarm-agent/swarm
+claude plugin install swarm@swarm
+```
+
+Then ask Claude to set up Swarm; you type your model key on Swarm's local key
+page, never in chat. The plugin's `bin/swarm-mcp` uses `swarm mcp`, or
+`swarmctl mcp` from the install, and reports a Swarm too old for AI
+connections instead of starting it.
+
 ## Choose the package and client
 
 | Client/use | Package and connection |

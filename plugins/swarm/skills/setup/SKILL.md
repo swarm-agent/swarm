@@ -58,6 +58,20 @@ into an unrelated cloud execution sandbox and call it the person's computer.
 If local execution is unavailable, explain that setup needs their connected
 computer or give them the exact commands to run there.
 
+To install Swarm natively (Linux x86_64 only), use the maintained one-line
+installer after the person authorizes its system changes:
+
+```sh
+curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+```
+
+It installs under `/usr/local` and starts the systemd service on systemd hosts.
+Without a terminal, a non-root run needs passwordless sudo; otherwise the
+person runs it in their own terminal with `| sudo sh -s -- --yes`. If Swarm is
+installed but `swarm help` does not list `swarm mcp`, or the MCP server says
+this Swarm is too old for AI connections, run the same line to update it; it
+keeps the existing install's owner. Then reconnect the MCP server.
+
 For missing installation or connection failures, read
 [local deployment](references/local-deployment.md). Perform authorized setup
 steps yourself when tools permit; pause only for missing choices, required
@@ -65,8 +79,10 @@ system permissions, sign-in or secret entry. Do not reset existing state.
 
 ## Onboard only what is missing
 
-- If owner identity is absent, use Swarm's setup UI or `swarmctl setup identity`
-  on the daemon's host. Inspect `setup status` first; identity is one-time.
+- If owner identity is absent (MCP tools answer "Swarm has no owner yet"), ask the
+  person for their name and a name for this Swarm, then run on the daemon's host
+  `swarm ctl setup identity --username <name> --name <swarm name>` (or use the
+  setup UI). Inspect `swarm ctl setup status` first; identity is one-time.
 - For a provider API key, use `swarm_request_provider_key` when its returned
   page is reachable by the person. In Docker, loopback links from the container
   may not be reachable: use the documented headless credential input instead.

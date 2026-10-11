@@ -10,7 +10,12 @@ run the whole AI application as root, or put interactive sudo inside MCP startup
 ## Existing native Linux installation
 
 Use `swarm mcp` through the packaged launcher. It should produce MCP protocol on
-stdout and diagnostics on stderr. `SWARM_MCP_BIN` selects an explicit swarmctl
+stdout and diagnostics on stderr. The launcher uses `swarm mcp` only when
+`swarm help` lists it, otherwise `swarmctl mcp` from PATH or the release
+install's `/usr/local/share/swarm/bin`. If neither has the bridge it exits with
+"too old for AI connections": update with
+`curl -fsSL https://swarmagent.dev/install | sh -s -- --yes`, then reconnect.
+`SWARM_MCP_BIN` selects an explicit swarmctl
 binary and `SWARM_MCP_SOCKET` selects an explicit private socket. These are paths,
 not credentials. A service-user mismatch needs the installation's supported
 launcher/identity setup; repeatedly reinstalling is not a remedy.
@@ -21,13 +26,21 @@ binary are different failures. Preserve existing configuration and work.
 
 ## New native installation: Linux x86_64
 
-Use the maintained installer from
-https://github.com/swarm-agent/swarm/blob/main/install.sh and its README.
-Download it to a selected temporary directory, inspect it and its install plan,
-then run `sh install.sh` after authorization for its system changes. It installs
-under `/usr/local` and offers service or files-only installation. Do not silently
-accept sudo or reinstall an existing deployment. Do not run the headless server
-installer on someone's desktop: that changes firewall, Tailscale and services.
+Run the maintained installer after authorization for its system changes:
+
+```sh
+curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+```
+
+It installs under `/usr/local` and, on a systemd host, installs and starts the
+service (`--no-service` installs files only). To inspect it first, download
+https://swarmagent.dev/install (the repository's `install.sh`) to a selected
+temporary directory and read it. Without a terminal a non-root run needs
+passwordless sudo; otherwise the person runs it with `| sudo sh -s -- --yes` in
+their own terminal. Do not silently accept sudo or reinstall an existing
+deployment except to update one that lacks `swarm mcp`. Do not run the headless
+server installer on someone's desktop: that changes firewall, Tailscale and
+services.
 
 Complete owner/provider/workspace setup in Swarm. Refresh this plugin's MCP and
 call `swarm_list_providers` to verify connection. Never confuse having installed

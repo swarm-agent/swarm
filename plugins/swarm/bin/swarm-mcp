@@ -3,6 +3,14 @@
 # stdio; no key to make or paste. SWARM_MCP_SOCKET points at a different
 # Swarm's owner socket (for example a test Swarm); SWARM_MCP_BIN at a
 # different swarmctl build.
+#
+# stdout carries only MCP. Every probe below reads /dev/null, writes nothing
+# to stdout and is time-bounded. An installed `swarm` too old to know `mcp`
+# would treat the word as a terminal UI launch, so it is only run with `help`
+# (pure usage output on every release) until it is known to support `mcp`.
+UPDATE_HINT='update: curl -fsSL https://swarmagent.dev/install | sh -s -- --yes'
+SYSTEM_BINARY_DIR=${SWARM_SYSTEM_BINARY_DIR:-/usr/local/share/swarm/bin}
+
 if [ -n "${SWARM_MCP_CONTAINER:-}" ]; then
   if [ -n "${SWARM_MCP_SOCKET:-}${SWARM_MCP_BIN:-}" ]; then
     echo "swarm-mcp: choose container mode OR native binary/socket overrides" >&2
@@ -10,11 +18,63 @@ if [ -n "${SWARM_MCP_CONTAINER:-}" ]; then
   fi
   exec docker exec -i "$SWARM_MCP_CONTAINER" swarmctl mcp
 fi
-if [ -n "${SWARM_MCP_SOCKET:-}" ]; then
-  exec "${SWARM_MCP_BIN:-swarmctl}" mcp --socket "$SWARM_MCP_SOCKET"
+
+bounded() {
+  if command -v timeout >/dev/null 2>&1; then timeout 10 "$@"; else "$@"; fi
+}
+
+# The launcher's usage lists `swarm mcp` exactly when it hands off to swarmctl.
+swarm_has_mcp() {
+  out=$(bounded "$1" help </dev/null 2>/dev/null) || return 1
+  case $out in *"swarm mcp"*) return 0 ;; esac
+  return 1
+}
+
+# swarmctl with the bridge prints its help and exits 0; older ones print the
+# general usage and exit 2.
+swarmctl_has_mcp() {
+  out=$(bounded "$1" mcp --help </dev/null 2>/dev/null) || return 1
+  case $out in *"swarmctl mcp"*) return 0 ;; esac
+  return 1
+}
+
+too_old() {
+  echo "swarm-mcp: this Swarm is too old for AI connections; $UPDATE_HINT" >&2
+  exit 1
+}
+
+# Prints the first swarmctl (PATH, then the release install's private bin
+# directory) that has the MCP bridge.
+find_swarmctl() {
+  for candidate in "$(command -v swarmctl 2>/dev/null)" "$SYSTEM_BINARY_DIR/swarmctl"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    if swarmctl_has_mcp "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ -n "${SWARM_MCP_BIN:-}" ]; then
+  swarmctl_has_mcp "$SWARM_MCP_BIN" || too_old
+  if [ -n "${SWARM_MCP_SOCKET:-}" ]; then
+    exec "$SWARM_MCP_BIN" mcp --socket "$SWARM_MCP_SOCKET"
+  fi
+  exec "$SWARM_MCP_BIN" mcp
 fi
-if [ -n "${SWARM_MCP_BIN:-}" ]; then exec "$SWARM_MCP_BIN" mcp; fi
-if command -v swarm >/dev/null 2>&1; then exec swarm mcp; fi
-if command -v swarmctl >/dev/null 2>&1; then exec swarmctl mcp; fi
-echo "swarm-mcp: no Swarm launcher on PATH. Run this plugin's setup skill to install or connect Swarm locally." >&2
+
+if [ -z "${SWARM_MCP_SOCKET:-}" ]; then
+  swarm=$(command -v swarm 2>/dev/null)
+  if [ -n "$swarm" ] && swarm_has_mcp "$swarm"; then exec "$swarm" mcp; fi
+fi
+
+if ctl=$(find_swarmctl); then
+  if [ -n "${SWARM_MCP_SOCKET:-}" ]; then exec "$ctl" mcp --socket "$SWARM_MCP_SOCKET"; fi
+  exec "$ctl" mcp
+fi
+if [ -n "$(command -v swarm 2>/dev/null)$(command -v swarmctl 2>/dev/null)" ] || [ -x "$SYSTEM_BINARY_DIR/swarmctl" ]; then
+  too_old
+fi
+echo "swarm-mcp: no Swarm found on PATH or in $SYSTEM_BINARY_DIR. Install it (Linux x86_64): curl -fsSL https://swarmagent.dev/install | sh -s -- --yes, or run this plugin's setup skill." >&2
 exit 1

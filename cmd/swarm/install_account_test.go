@@ -39,7 +39,7 @@ func TestInstallerForwardsAccountChoice(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "sh", args...)
-			cmd.Env = append(os.Environ(), "TMPDIR="+root, "ACCOUNT_TEST_ARGS="+calls)
+			cmd.Env = append(os.Environ(), "TMPDIR="+root, "ACCOUNT_TEST_ARGS="+calls, pathWithFakeSudo(t))
 			if out, err := cmd.CombinedOutput(); err == nil || ctx.Err() != nil {
 				t.Fatalf("expected bounded stop: %v %s", err, out)
 			}

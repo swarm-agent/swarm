@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { loadConnection, readToken } from './lib/connection.mjs';
 
-function run(command,args) {
-  const child=spawn(command,args,{stdio:'inherit',shell:false});
+function run(command,args,env=process.env) {
+  const child=spawn(command,args,{stdio:'inherit',shell:false,env});
   child.on('error',()=>{ console.error('Swarm MCP could not start. Check the selected binary/container and run plugin setup.'); process.exitCode=1; });
   child.on('exit',(code)=>{process.exitCode=code ?? 1;});
   for(const signal of ['SIGTERM','SIGINT']) process.on(signal,()=>child.kill(signal));
@@ -52,7 +52,7 @@ try {
   const connection=await loadConnection();
   if(connection.mode==='http') await http(connection);
   else if(connection.mode==='docker') run('docker',['exec','-i',connection.container,'swarmctl','mcp']);
-  else if(connection.binary || connection.socket) run(connection.binary || 'swarmctl',['mcp',...(connection.socket ? ['--socket',connection.socket] : [])]);
+  else if(connection.binary) run(connection.binary,['mcp',...(connection.socket ? ['--socket',connection.socket] : [])]);
   else if(process.platform==='win32') { throw Error('Configure Docker mode with the setup skill; native Windows Swarm is not supported.'); }
-  else run('sh',[fileURLToPath(new URL('./swarm-mcp',import.meta.url))]);
+  else run('sh',[fileURLToPath(new URL('./swarm-mcp',import.meta.url))],connection.socket ? {...process.env,SWARM_MCP_SOCKET:connection.socket} : process.env);
 } catch {console.error('Swarm MCP configuration/key file is missing or invalid. Run plugin setup; keep keys in private files, never chat.');process.exitCode=1;}

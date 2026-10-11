@@ -64,6 +64,10 @@ const (
 
 var errMCPBridgeRefused = errors.New("Swarm refused this bridge's AI key (revoked or expired); restart your AI client to reconnect")
 
+// errMCPBridgeNoOwner is what a brand-new Swarm answers before its owner is
+// set up: the AI has to create the owner first, with the person's name.
+var errMCPBridgeNoOwner = errors.New("Swarm has no owner yet. Ask the person for their name and a name for this Swarm, then run on this machine: swarm ctl setup identity --username <their name> --name <Swarm name>. Then call the tool again")
+
 const mcpBridgeHelp = `swarmctl mcp: connect a local AI client to this machine's Swarm over stdio.
 
 No key to make or paste. Run as the user that runs Swarm, the bridge gets a
@@ -451,6 +455,9 @@ func (b *mcpBridge) mint(ctx context.Context) (*mcpBridgeKey, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		if strings.Contains(mcpBridgeDaemonMessage(body), "trusted principal required") {
+			return nil, errMCPBridgeNoOwner
+		}
 		return nil, fmt.Errorf("Swarm refused to give this user an AI key (HTTP %d): %s", resp.StatusCode, mcpBridgeDaemonMessage(body))
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
 		return nil, fmt.Errorf("Swarm could not issue an AI key (HTTP %d): %s", resp.StatusCode, mcpBridgeDaemonMessage(body))

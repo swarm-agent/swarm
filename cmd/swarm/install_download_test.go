@@ -25,7 +25,7 @@ func TestInstallerDownloadContract(t *testing.T) {
 			for _, name := range []string{"sh", "bash", "git", "cat", "uname", "sed", "grep", "awk", "head", "dirname", "pwd", "readlink", "mkdir", "chmod", "sleep", "mktemp", "id", "install", "sha256sum", "env", "rm"} {
 				linkHostCommand(t, bin, name)
 			}
-			writeExecutable(t, filepath.Join(bin, "sudo"), "#!/bin/sh\necho unexpected-provisioning >&2\nexit 99\n")
+			writeExecutable(t, filepath.Join(bin, "sudo"), "#!/bin/sh\n[ \"$*\" = \"-n true\" ] && exit 0\necho unexpected-provisioning >&2\nexit 99\n")
 			writeExecutable(t, filepath.Join(bin, "tar"), "#!/bin/sh\necho extraction-reached >&2\nexit 90\n")
 			writeExecutable(t, filepath.Join(bin, "curl"), `#!/bin/sh
 set -eu

@@ -96,6 +96,7 @@ runtime_hits="$(
     --glob 'bin/swarmdev' \
     --glob 'bin/swarmsetup' \
     --glob '!**/*_test.go' \
+    --glob '!tests/**/*_test.sh' \
     --glob '!scripts/check-hardcoded-paths.sh' \
     --glob '!scripts/check-precommit.sh' \
     "${DISALLOWED_ABS_PATH_PATTERN}" \

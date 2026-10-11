@@ -38,6 +38,7 @@ type mcpTestDaemon struct {
 	mintBody  map[string]any
 	mcpCalls  []string
 	mintCode  int
+	mintError string
 	mcpCode   int
 	requests  int
 	authOnKey []string
@@ -60,7 +61,11 @@ func (d *mcpTestDaemon) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if d.mintCode != 0 {
 			w.WriteHeader(d.mintCode)
-			_, _ = w.Write([]byte(`{"error":"trusted principal required"}`))
+			message := d.mintError
+			if message == "" {
+				message = "trusted principal required"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 			return
 		}
 		d.mintBody = map[string]any{}
@@ -301,9 +306,17 @@ func TestMCPBridgeRefusesNonOwner(t *testing.T) {
 // surfacing as a hang. Owner: mint, forward (401 → errMCPBridgeRefused),
 // handle/serve, unreachable.
 func TestMCPBridgeReportsRefusalAndStoppedSwarm(t *testing.T) {
+	noOwner := newMCPTestDaemon(t)
+	noOwner.mintCode = http.StatusUnauthorized
+	stdout, _, err := runBridgeForTest(t, noOwner, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`+"\n")
+	if !errors.Is(err, errMCPBridgeNoOwner) || !strings.Contains(err.Error(), "swarm ctl setup identity") || stdout != "" {
+		t.Fatalf("a Swarm without an owner must say how to create one: %v %q", err, stdout)
+	}
+
 	refused := newMCPTestDaemon(t)
 	refused.mintCode = http.StatusUnauthorized
-	stdout, _, err := runBridgeForTest(t, refused, `{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n")
+	refused.mintError = "account disabled"
+	stdout, _, err = runBridgeForTest(t, refused, `{"jsonrpc":"2.0","id":1,"method":"ping"}`+"\n")
 	if err == nil || !strings.Contains(err.Error(), "refused to give this user an AI key") || stdout != "" || len(refused.mcpCalls) != 0 {
 		t.Fatalf("issuance refusal: %v %q", err, stdout)
 	}

@@ -10,11 +10,15 @@ export type TokenScope =
   | string;
 
 export interface SwarmClientConfig {
-  /** Base URL for the Swarm API/Desktop daemon (e.g. http://127.0.0.1:18080 or http://127.0.0.1:7781) */
+  /**
+   * Base URL of the Swarm daemon API (default http://127.0.0.1:7781). With no
+   * `baseUrl`, `socketPath` or environment override, Node clients use the
+   * owner socket of a system install when this process may connect to it.
+   */
   baseUrl?: string;
   /** Bearer authentication token (attach token or scoped token starting with 'swk_') */
   token?: string;
-  /** Unix domain socket path for zero-conf local IPC (e.g. /run/swarmd/swarmd.sock) */
+  /** Unix socket for local IPC (owner socket: /var/lib/swarmd/local-transport/api.sock) */
   socketPath?: string;
   /** Custom default HTTP headers */
   defaultHeaders?: Record<string, string>;
