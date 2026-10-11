@@ -16,7 +16,7 @@ const providers = await swarm.settings.providers(); // readiness and supported a
 const credentials = await swarm.auth.credentials.list(); // redacted status only
 </copy>
 
-Your app must supply its configured socket path and authenticated local identity. This is not a recipe to import host credentials. Complete the daemon's identity/onboarding requirements using `onboarding.ensureBootstrapped({ username, swarm_name })` when needed.
+Your app must supply its configured socket path and authenticated local identity. This is not a recipe to import host credentials. Create the daemon identity with `onboarding.ensureBootstrapped({ username, swarm_name })` when needed (the name is kept as typed; repeating it is a no-op). It does not mark onboarding finished: once your setup (provider key, models, workspace) is done, call `onboarding.update({ desktop_onboarding_complete: true })`.
 
 For an API key collected through your app UI, pass the user-selected provider and its advertised credential type. The first-provider endpoint requires zero existing credentials/agents; use the ordinary save endpoint afterward. Errors are not silently retried on a different route.
 

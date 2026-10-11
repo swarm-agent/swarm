@@ -43,3 +43,25 @@ func taskDeliveryNotActionableMessage(projectID, taskID string, a *pebblestore.T
 	}
 	return prefix + "; " + remedy
 }
+
+// taskDeliveryDirtyMessage names the exact uncommitted changes that block
+// integration, in the task worktree and in the target checkout.
+func taskDeliveryDirtyMessage(a *pebblestore.TaskDeliveryAssessment) string {
+	if a == nil || (!a.SourceDirty && !a.TargetDirty) {
+		return ""
+	}
+	describe := func(files []string) string {
+		if len(files) == 0 {
+			return "uncommitted changes"
+		}
+		return "uncommitted changes: " + strings.Join(files, ", ")
+	}
+	var parts []string
+	if a.SourceDirty {
+		parts = append(parts, fmt.Sprintf("Task branch %q has %s. Commit them on the task branch (or remove them) before integrating.", a.SourceBranch, describe(a.SourceDirtyFiles)))
+	}
+	if a.TargetDirty {
+		parts = append(parts, fmt.Sprintf("Target checkout on %q has %s. Commit, stash or move them before integrating.", a.TargetBranch, describe(a.TargetDirtyFiles)))
+	}
+	return strings.Join(parts, " ")
+}

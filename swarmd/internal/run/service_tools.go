@@ -2030,16 +2030,20 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 					decisions[index].Feedback = normalizePermissionFeedback(resolved.Reason)
 					decisions[index].ApprovedArguments = strings.TrimSpace(resolved.ApprovedArguments)
 				case pebblestore.PermissionStatusDenied:
-					decisions[index].Result.Output = permissionOutputPayload(false, "denied", resolved.Reason, call.Name, call.Arguments)
-					decisions[index].Result.Error = "permission denied"
-					if waitTimeout > 0 {
-						// A client tool's deny carries the client's failure reason.
-						reason := strings.TrimSpace(resolved.Reason)
+					if isClientTool {
+						// A client tool's deny is the client reporting that the tool
+						// failed, not a person refusing permission: it is a tool error
+						// carrying the client's message.
+						reason := privacy.SanitizeText(strings.TrimSpace(resolved.Reason))
 						if reason == "" {
 							reason = "client tool failed"
 						}
-						decisions[index].Result.Error = privacy.SanitizeText(reason)
+						decisions[index].Result.Output = clientToolErrorOutput(clientTool, reason)
+						decisions[index].Result.Error = reason
+						return
 					}
+					decisions[index].Result.Output = permissionOutputPayload(false, "denied", resolved.Reason, call.Name, call.Arguments)
+					decisions[index].Result.Error = "permission denied"
 				default:
 					decisions[index].Result.Output = permissionOutputPayload(false, "cancelled", resolved.Reason, call.Name, call.Arguments)
 					decisions[index].Result.Error = "permission cancelled"

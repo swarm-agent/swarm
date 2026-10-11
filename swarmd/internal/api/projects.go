@@ -3639,6 +3639,12 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		// Uncommitted changes are a precondition, not an integration attempt:
+		// refuse before recording a receipt and name exactly what blocks.
+		if a := gitState.deliveryAssessment; gitState.isDirty || a.SourceDirty || a.TargetDirty {
+			writeError(w, http.StatusConflict, errors.New("cannot integrate: "+taskDeliveryDirtyMessage(a)))
+			return
+		}
 		receipt := &pebblestore.ProjectTaskIntegration{State: "in_progress", SessionID: selection.SessionID, SourceBranch: selection.SourceBranch, TargetBranch: selection.TargetBranch, TargetWorkspacePath: capturedPath}
 		if err := pebblestore.BeginProjectTaskIntegration(db, p.AccountScopeID, task, receipt); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
@@ -3655,18 +3661,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}()
-		// Inspect git state first
-		if gitState.isDirty {
-			writeError(w, http.StatusConflict, fmt.Errorf("cannot integrate: worktree has %d uncommitted modification(s); commit or discard them before integrating", gitState.dirtyCount))
-			return
-		}
 		if gitState.unintegratedCommits == 0 {
 			if gitState.isIntegrated {
 				// Inspect the captured checkout, not a remote-tracking ref, before
 				// claiming this task was integrated into the requested target.
 				checkout, checkoutErr := s.worktrees.InspectTaskWorkspace(capturedPath)
 				sourceState, sourceErr := s.worktrees.InspectTaskWorkspace(selectedSession.WorktreeRootPath)
-				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit != gitState.deliveryAssessment.TargetOID || sourceState.HeadCommit != gitState.deliveryAssessment.SourceOID || !checkout.Clean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
+				if checkoutErr != nil || sourceErr != nil || checkout.BranchName != selection.TargetBranch || sourceState.BranchName != selection.SourceBranch || checkout.HeadCommit != gitState.deliveryAssessment.TargetOID || sourceState.HeadCommit != gitState.deliveryAssessment.SourceOID || !checkout.TrackedClean || !sourceState.Clean || sourceState.HeadCommit == capturedBase {
 					writeError(w, http.StatusConflict, errors.New("captured target or committed source is unavailable; inspect Git before retrying"))
 					return
 				}
@@ -3731,8 +3732,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("inspect parent repository %q: %w", parentWs, err))
 			return
 		}
-		if !parentState.Clean {
-			writeError(w, http.StatusConflict, fmt.Errorf("captured repository is dirty on %s; finish those changes before integrating", parentState.BranchName))
+		// Untracked files the task does not write may stay; PrepareTaskIntegration
+		// refuses any it would overwrite.
+		if !parentState.TrackedClean {
+			writeError(w, http.StatusConflict, fmt.Errorf("captured repository on %s has uncommitted changes to tracked files:\n%s\ncommit or stash them before integrating", parentState.BranchName, parentState.Status))
 			return
 		}
 		if parentState.BranchName != selection.TargetBranch {

@@ -248,7 +248,7 @@ test('bridge closes a failed watch instead of leaving a usable-looking subscript
     fail(new Error('upstream unavailable'));
     await closed;
     assert.equal(client.isSubscribed, false);
-    assert.throws(() => client.sendMessage('must not disappear'), /subscribe/);
+    assert.throws(() => client.sendMessage('must not disappear'), { code: 'chat_disconnected' });
     assert.equal(disposed, 1);
   } finally {
     client.dispose(); await bridge.close();

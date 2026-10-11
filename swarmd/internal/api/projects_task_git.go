@@ -65,7 +65,7 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 	res.isDirty = assessment.SourceDirty
 	if assessment.SourceDirty || assessment.TargetDirty {
 		res.gitStatus = "dirty"
-		res.actionNeeded = "Source or target has uncommitted changes"
+		res.actionNeeded = taskDeliveryDirtyMessage(&assessment)
 	}
 	if res.isIntegrated && (task.TaskProgramID != "" || task.TaskProgram != nil) {
 		programID := task.TaskProgramID

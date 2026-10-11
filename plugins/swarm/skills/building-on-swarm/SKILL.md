@@ -36,8 +36,12 @@ Decide what is missing from Swarm's state, not from
 | Name | `(await client.onboarding.get()).identity.bootstrapped` | ask name + Swarm name, `client.onboarding.ensureBootstrapped({ username, swarm_name })` |
 | Model access | `heuristics.credential_count > 0` | API key or ChatGPT sign-in (below) |
 | Models | `(await client.settings.agentModels())` has a swarm action model | usually already done: Swarm sets recommended models when the first key or sign-in is saved; otherwise `client.settings.applyProviderFleet(provider)` |
-| Workspace | your app's workspace is registered (`client.workspaces.list()`) | ask where work should live (suggest a folder), `client.workspaces.create({ parent_path, name })`; store its `path` |
+| Workspace | your app's workspace is registered (`client.workspaces.list()`) | ask where work should live (suggest a folder), make sure the parent folder exists, then `client.workspaces.create({ parent_path, name })`; store its `path` and find it again by that path or its name |
 | Finish | all above | `client.onboarding.update({ desktop_onboarding_complete: true })` |
+
+Re-check `onboarding.get()` every few seconds while onboarding is open: a key
+or sign-in can be added elsewhere (another app, Claude, the CLI), and the page
+must move on without a reload.
 
 Before the name step, almost every other call fails ("product identity has not
 been bootstrapped"): call only `onboarding.get` until then. Before any model is
@@ -47,7 +51,9 @@ Swarms answer a 404 "agent model settings not found" instead; treat it the same.
 
 - **Providers:** `client.settings.providers()` (after the name step) returns
   `{ id, ready, reason, auth_methods: [{ id, label, credential_type }] }` per
-  provider. `credential_type: 'api'` takes an API key; the `codex` provider
+  provider. Model providers have a `default_model` (others, such as `exa` for
+  web search, do not: leave them out of model onboarding).
+  `credential_type: 'api'` takes an API key; the `codex` provider
   (`credential_type: 'oauth'`) is the ChatGPT sign-in. `ready` is true once a
   working credential exists. Show `reason` only as a short status, and never
   tell people to use Swarm's own settings screens or commands.
@@ -112,7 +118,7 @@ chat.sendMessage(text);
   `tool_name`, `arguments` (a JSON string), `status`, and on completion
   `output` or `error`; ignore `payload.metadata`. Merge with the live
   callbacks; hide `tool` role messages.
-- Timestamps (`created_at` on messages, `recorded_at` on events) are
+- Timestamps (`created_at` on messages, `ts_unix_ms` on events) are
   milliseconds since the epoch.
 - Busy or idle: `state.snapshot.current_run_state_by_session[id]` has `active`
   (true while a run is going, including while it waits for a permission) and
@@ -132,7 +138,12 @@ await chat.resolvePermission(p.id, 'allow_once',
 await chat.resolvePermission(p.id, 'deny');
 ```
 
-Keep unsent answers across re-renders; remove a card only on
+`input` for `answerPermission`: a string when `describePermission(p).structured`
+is false (one free question), else a map `{ [question.id]: answer }`. An
+option with `custom: true` is not an answer itself: show a text box for it.
+
+The `permissions` event repeats the same requests often: key cards by `id`,
+keep unsent answers across re-renders, remove a card only on
 `permission_removed`. Some destructive commands are refused by Swarm policy and
 never become requests.
 
@@ -176,7 +187,18 @@ Throw `ClientToolError('message')` to send that message to the model.
   `client.projects.approveTask(projectId, taskId, guards)`, with `guards` from
   the task you showed (`plan_binding.session_id`, `plan_id`,
   `definition_revision`, else `session_id`), so a task that changed since is
-  not approved. Finished work waits in `needs_review`.
+  not approved.
+- A running task has its own session (`task.session_id`), and its agent can
+  ask for permissions or questions there: show them on the task
+  (`client.permissions.listSessionPending(sessionId)`, resolve with
+  `client.permissions.resolve(sessionId, id, action, …)` on the person's
+  click), or the task waits forever.
+- Finished work waits in `needs_review`. Its result is in `getTask`:
+  `attempts[].summary` and `delivery_assessment` (changed files, commits),
+  plus the last assistant message of the task's session. Then, on the
+  person's click: `integrateTask(projectId, taskId)` merges the work into the
+  workspace's branch, `completeTask` accepts it without merging,
+  `rejectTask` sends it back.
 - Application agents with their own instructions: `client.apps.put`,
   `createConversation`, `send`, `watchResults({ onChange })` for live task and
   worker results.

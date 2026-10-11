@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SwarmChatNamespace } from '../chat.js';
-import { SwarmBrowserChat } from '../browser.js';
+import { SwarmBrowserChat, SwarmChatNotReadyError } from '../browser.js';
 import { SwarmProjectsNamespace } from '../projects.js';
 import { SwarmTransport } from '../transport.js';
 import type { SessionWatchState } from '../realtime.js';
@@ -92,14 +92,18 @@ test('browser filters stale sessions and bounds subscription failures', { timeou
   assert.equal(id, 'retry');
   assert.equal(socket.sent.at(-1).requestId, 'retry');
   await assert.rejects(chat.subscribe('unavailable'), /timed out/);
-  assert.throws(() => chat.sendMessage('must not disappear'), /subscribe/);
+  assert.throws(() => chat.sendMessage('must not disappear'), { name: 'SwarmChatNotReadyError', code: 'chat_reconnecting' });
+  assert.throws(() => chat.sendMessage('other conversation', 'new'), { code: 'chat_not_subscribed', message: 'Not sent: this conversation is not open yet, open it and try again' });
   socket.close();
-  assert.throws(() => chat.sendMessage('offline'), /subscribe/);
+  assert.throws(() => chat.sendMessage('offline'), { code: 'chat_disconnected', retryable: false, message: 'Not sent: disconnected from Swarm, reconnect and try again' });
+  assert.equal(socket.sent.filter(m => m.type === 'chat_message').length, 1);
   chat.dispose();
 });
 
-// Requirement: reconnect reselects the same durable conversation without resending input.
-// Threat: a dropped connection creates a new session, duplicates a turn, or accepts stale frames.
+// Requirement: reconnect reselects the same durable conversation without resending input, and a
+// send during the reconnect window fails with a plain, people-facing message plus a stable
+// `code` apps can branch on. Threat: a dropped connection creates a new session, duplicates a
+// turn, accepts stale frames, or shows developer text ("Await subscribe(...)") to people.
 // Boundary: SwarmBrowserChat transport lifecycle; controlled sockets keep this hermetic.
 test('browser reconnect reselects identity without replaying messages', { timeout: 2000 }, async () => {
   const chat = new SwarmBrowserChat({ webSocketClass: BrowserSocket, autoConnect: false, subscribeTimeoutMs: 100 });
@@ -114,6 +118,13 @@ test('browser reconnect reselects identity without replaying messages', { timeou
     const reconnected = new Promise<void>(resolve => chat.on('subscribed', () => resolve()));
     first.close();
     assert.equal(chat.isSubscribed, false);
+    assert.throws(() => chat.sendMessage('during reconnect'), (error: unknown) => {
+      assert.ok(error instanceof SwarmChatNotReadyError);
+      assert.equal(error.code, 'chat_reconnecting');
+      assert.equal(error.retryable, true);
+      assert.equal(error.message, 'Not sent: reconnecting to Swarm, try again in a moment');
+      return true;
+    });
     await new Promise(resolve => setTimeout(resolve, 650));
     const second = BrowserSocket.instances.at(-1)!;
     assert.notEqual(first, second);

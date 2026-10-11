@@ -378,6 +378,7 @@ type ProjectTaskCoderAssignment struct {
 
 // TaskDeliveryAssessment is an ephemeral observation, not an integration receipt
 // or execution outcome. Only state=integrated proves original source ancestry.
+// SourceDirtyFiles/TargetDirtyFiles name the bounded changes that block delivery.
 type TaskDeliveryAssessment struct {
 	AccountID           string   `json:"account_id"`
 	TaskID              string   `json:"task_id"`
@@ -397,7 +398,9 @@ type TaskDeliveryAssessment struct {
 	Freshness           string   `json:"freshness"`
 	ObservedAt          int64    `json:"observed_at,omitempty"`
 	SourceDirty         bool     `json:"source_dirty"`
+	SourceDirtyFiles    []string `json:"source_dirty_files,omitempty"`
 	TargetDirty         bool     `json:"target_dirty"`
+	TargetDirtyFiles    []string `json:"target_dirty_files,omitempty"`
 	CandidateCommits    int      `json:"candidate_commits"`
 	Files               []string `json:"files,omitempty"`
 	AllowedActions      []string `json:"allowed_actions"`
@@ -817,12 +820,14 @@ func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, t
 	if captureAttempt && task.CreatedAt == 0 {
 		task.CreatedAt = now
 	}
+	priorStatus := ""
 	if task.ID != "" {
 		prior, found, err := s.getProjectTask(accountScopeID, task.ProjectID, task.ID, captureAttempt)
 		if err != nil {
 			return nil, err
 		}
 		if found {
+			priorStatus = prior.Status
 			if err := validateTaskEnvironmentWrite(prior, task); err != nil {
 				return nil, err
 			}
@@ -910,6 +915,10 @@ func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, t
 	mutation.putBytes(key, raw)
 	if err := s.store.commitProjectRealtime(mutation); err != nil {
 		return nil, err
+	}
+	// Archive and visibility writes (validate=false) never change task status.
+	if validate && task.Status != priorStatus {
+		mutation.taskTransition = &ProjectTaskStatusTransition{AccountScopeID: accountScopeID, PriorStatus: priorStatus, Task: toStore}
 	}
 	return mutation, nil
 }

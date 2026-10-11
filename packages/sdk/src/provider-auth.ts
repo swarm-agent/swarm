@@ -155,22 +155,20 @@ export class SwarmOnboardingNamespace {
     return (await this.transport.request<OnboardingStatus>('/v1/onboarding', { method: 'POST', body })).data;
   }
   /**
-   * Ensures the headless daemon identity is bootstrapped.
-   * If the daemon requires onboarding, it automatically sets default identity parameters
-   * so provider authentication and sessions can immediately proceed without manual wizard steps.
+   * Ensures the daemon identity (owner name and Swarm name) is bootstrapped, so
+   * provider authentication and sessions can proceed. The owner name is kept as typed.
+   * This only creates identity: it does not mark onboarding finished, so
+   * `config.desktop_onboarding_complete` stays false until your app (or the desktop)
+   * finishes its own setup and calls `update({ desktop_onboarding_complete: true })`.
    */
   async ensureBootstrapped(options: { username?: string; swarm_name?: string } = {}): Promise<OnboardingStatus> {
     const status = await this.get();
-    if (!status.needs_onboarding && status.identity?.bootstrapped) {
-      return status;
-    }
     if (status.identity?.bootstrapped) {
-      return this.update({ desktop_onboarding_complete: true });
+      return status;
     }
     return this.update({
       username: options.username ?? 'owner',
       swarm_name: options.swarm_name ?? 'Headless Swarm',
-      desktop_onboarding_complete: true,
     });
   }
   /** First credential only. Use auth.credentials.save for subsequent credentials. */

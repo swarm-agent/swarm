@@ -419,6 +419,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		return strings.TrimSpace(localNode.SwarmID)
 	})
 	permissionSvc.SetNotificationService(notificationSvc)
+	// Task status transitions (orchestrated tasks and worker-run tasks) notify the person.
+	store.SetProjectTaskStatusObserver(notificationSvc.ObserveProjectTaskStatus)
 	discoverySvc := discovery.NewService()
 	swarmSvc := swarmruntime.NewService(swarmStore, events, hub.Publish)
 	swarmSvc.SetSecretStore(secretStore)

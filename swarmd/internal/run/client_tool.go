@@ -54,6 +54,22 @@ func clientToolTimeout(definition pebblestore.AgentCustomToolDefinition) time.Du
 	return time.Duration(ms) * time.Millisecond
 }
 
+// clientToolErrorOutput is the tool output for a client that reported failure
+// (or did not answer in time). The message came from outside Swarm.
+func clientToolErrorOutput(definition pebblestore.AgentCustomToolDefinition, message string) string {
+	encoded, err := json.Marshal(map[string]any{
+		"tool":    canonicalToolName(definition.Name),
+		"status":  "error",
+		"error":   message,
+		"safety":  tool.UntrustedSafety(message),
+		"path_id": "tool.client.v1",
+	})
+	if err != nil {
+		return `{"status":"error","error":"client tool failed","path_id":"tool.client.v1"}`
+	}
+	return string(encoded)
+}
+
 // clientToolOutput turns the client's resolution into the tool output the
 // model sees. The result is labelled untrusted: it came from outside Swarm.
 func clientToolOutput(definition pebblestore.AgentCustomToolDefinition, approvedArguments string) (string, error) {

@@ -26,14 +26,14 @@ func TestAccountUsernameRenamePreservesUserID(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode rename response: %v", err)
 	}
-	if response.UserID != "user_onboarding_test" || response.Username != "renamed user" {
+	if response.UserID != "user_onboarding_test" || response.Username != "Renamed User" {
 		t.Fatalf("rename response=%+v", response)
 	}
 	user, ok, err := identityStore.GetUser("user_onboarding_test")
 	if err != nil || !ok {
 		t.Fatalf("get renamed user ok=%v err=%v", ok, err)
 	}
-	if user.ID != "user_onboarding_test" || user.Username != "renamed user" || user.DisplayName != "renamed user" {
+	if user.ID != "user_onboarding_test" || user.Username != "renamed user" || user.DisplayName != "Renamed User" {
 		t.Fatalf("renamed user=%+v", user)
 	}
 	if _, ok, err := identityStore.GetUserByUsername("alice"); err != nil || ok {

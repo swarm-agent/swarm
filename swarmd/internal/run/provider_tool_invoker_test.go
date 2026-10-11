@@ -148,6 +148,87 @@ func TestProviderManagedV3ToolEventPayloadCarriesTypedClientEffects(t *testing.T
 	}
 }
 
+// Purpose: clients (SDK chat, Desktop, TUI) rebuild tool cards from durable
+// terminal tool events after a reload; the live session.tool.delta stream is not
+// replayed into a finished card. Invariant: session.tool.completed/failed carry
+// the tool's real output in "output" (bounded to maxToolInputBytes, the same limit
+// as the tool result replayed to the model), with the completion label kept in
+// "summary". Regression: "output" held only a label such as "bash date +%s", so a
+// reloaded app could not show what a command printed. providerManagedV3ToolEventPayload
+// is the single builder of these durable payloads, so it is the narrowest layer.
+func TestProviderManagedV3ToolTerminalEventCarriesRealOutput(t *testing.T) {
+	config := providerToolInvokerConfig{runID: "run-output", step: 1}
+	decode := func(t *testing.T, eventType string, call tool.Call, result tool.Result) map[string]any {
+		t.Helper()
+		raw, err := providerManagedV3ToolEventPayload(eventType, config, call, nil, result, 1234)
+		if err != nil {
+			t.Fatalf("build event payload: %v", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("decode event payload: %v", err)
+		}
+		return payload
+	}
+
+	t.Run("bash completed", func(t *testing.T) {
+		call := tool.Call{CallID: "call-bash", Name: "bash", Arguments: `{"command":"date +%s"}`}
+		result := tool.Result{CallID: call.CallID, Name: "bash", Output: `{"command":"date +%s","exit_code":0,"output":"1760000000\n","path_id":"tool.bash.v1","summary":"bash date +%s"}`}
+		payload := decode(t, "session.tool.completed", call, result)
+		if got := payload["output"]; got != "1760000000" {
+			t.Fatalf("output = %#v, want the command's stdout", got)
+		}
+		if got := payload["summary"]; got != "bash date +%s" {
+			t.Fatalf("summary = %#v, want the completion label", got)
+		}
+		if _, ok := payload["output_truncated"]; ok {
+			t.Fatalf("small output marked truncated: %#v", payload)
+		}
+	})
+
+	t.Run("bash failed keeps output and error", func(t *testing.T) {
+		call := tool.Call{CallID: "call-fail", Name: "bash", Arguments: `{"command":"ls missing"}`}
+		result := tool.Result{CallID: call.CallID, Name: "bash", Output: `{"command":"ls missing","exit_code":2,"output":"ls: cannot access 'missing'","summary":"bash ls missing (failed)"}`, Error: "exit status 2"}
+		payload := decode(t, "session.tool.failed", call, result)
+		if got := payload["output"]; got != "ls: cannot access 'missing'" {
+			t.Fatalf("failed output = %#v", got)
+		}
+		if payload["error"] != "exit status 2" || payload["status"] != "failed" {
+			t.Fatalf("failed identity lost: %#v", payload)
+		}
+	})
+
+	t.Run("gated tool result", func(t *testing.T) {
+		call := tool.Call{CallID: "call-projects", Name: "manage_projects", Arguments: `{"action":"create"}`}
+		toolOutput := `{"status":"ok","action":"create","project_id":"proj-1","summary":"manage_projects approved: approved by user"}`
+		result := tool.Result{CallID: call.CallID, Name: call.Name, Output: toolOutput}
+		payload := decode(t, "session.tool.completed", call, result)
+		if got, _ := payload["output"].(string); !strings.Contains(got, `"project_id":"proj-1"`) {
+			t.Fatalf("output = %q, want the tool's result", got)
+		}
+		if got := payload["summary"]; got != "manage_projects approved: approved by user" {
+			t.Fatalf("summary = %#v", got)
+		}
+	})
+
+	t.Run("large output is bounded", func(t *testing.T) {
+		big := strings.Repeat("x", maxToolInputBytes+500)
+		encoded, err := json.Marshal(map[string]any{"command": "yes", "output": big, "summary": "bash yes"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := tool.Call{CallID: "call-big", Name: "bash"}
+		payload := decode(t, "session.tool.completed", call, tool.Result{CallID: call.CallID, Name: "bash", Output: string(encoded)})
+		got, _ := payload["output"].(string)
+		if len(got) != maxToolInputBytes || !strings.HasSuffix(got, providerManagedV3ToolEventOutputMarker) {
+			t.Fatalf("bounded output len = %d suffix ok = %v", len(got), strings.HasSuffix(got, providerManagedV3ToolEventOutputMarker))
+		}
+		if payload["output_truncated"] != true || payload["output_bytes"] != float64(len(big)) {
+			t.Fatalf("truncation not reported: truncated=%#v bytes=%#v", payload["output_truncated"], payload["output_bytes"])
+		}
+	})
+}
+
 func TestStoreProviderManagedWebResultV3BoundsSessionSearchIndexContent(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)
@@ -192,9 +273,12 @@ func TestStoreProviderManagedWebResultV3BoundsSessionSearchIndexContent(t *testi
 			if !strings.Contains(rawOutput, "unique-index-token") {
 				t.Fatal("realtime event lost the full web result")
 			}
-			completedOutput, _ := eventPayload["output"].(string)
-			if strings.Contains(completedOutput, "unique-index-token") || !strings.Contains(completedOutput, `"result_details_omitted":true`) {
-				t.Fatalf("realtime completion payload was not compacted: %q", completedOutput)
+			completedSummary, _ := eventPayload["summary"].(string)
+			if strings.Contains(completedSummary, "unique-index-token") || !strings.Contains(completedSummary, `"result_details_omitted":true`) {
+				t.Fatalf("realtime completion summary was not compacted: %q", completedSummary)
+			}
+			if output, _ := eventPayload["output"].(string); !strings.Contains(output, "unique-index-token") {
+				t.Fatalf("realtime completion output lost the tool result: %q", output)
 			}
 		})
 	}

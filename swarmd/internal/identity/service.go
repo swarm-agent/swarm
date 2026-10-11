@@ -82,6 +82,9 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 	if err := s.configured(); err != nil {
 		return BootstrapResult{}, err
 	}
+	// The owner's name is kept as typed for display; only the unique lookup
+	// handle is normalized.
+	displayName := strings.TrimSpace(username)
 	username = pebblestore.NormalizeIdentityUsername(username)
 	if username == "" {
 		return BootstrapResult{}, errors.New("username is required")
@@ -106,7 +109,7 @@ func (s *Service) BootstrapFirstIdentity(username string) (BootstrapResult, erro
 			ID:             userID,
 			AuthProvider:   LocalProductSessionIssuer,
 			AuthSubject:    userID,
-			DisplayName:    username,
+			DisplayName:    displayName,
 			AccountScopeID: accountScopeID,
 			Username:       username,
 		},
@@ -240,6 +243,7 @@ func (s *Service) RenameCurrentUser(actor ActorContext, username string) (pebble
 	if err := s.configured(); err != nil {
 		return pebblestore.UserRecord{}, err
 	}
+	displayName := strings.TrimSpace(username)
 	username = pebblestore.NormalizeIdentityUsername(username)
 	if username == "" {
 		return pebblestore.UserRecord{}, errors.New("username is required")
@@ -256,7 +260,7 @@ func (s *Service) RenameCurrentUser(actor ActorContext, username string) (pebble
 		return pebblestore.UserRecord{}, ErrUserRenameUnauthorized
 	}
 	current.Username = username
-	current.DisplayName = username
+	current.DisplayName = displayName
 	updated, err := s.store.PutUser(current)
 	if err != nil {
 		if errors.Is(err, pebblestore.ErrIdentityRecordExists) {
@@ -332,6 +336,16 @@ func (s *Service) UpgradeAccountToTeam(actor ActorContext, teamDisplayName strin
 		CurrentSelection: created.CurrentSelection,
 		Counts:           counts,
 	}, nil
+}
+
+// UserDisplayName is the name a person typed for themselves. Username is only
+// the normalized unique handle; records created before display names were kept
+// as typed fall back to it.
+func UserDisplayName(user pebblestore.UserRecord) string {
+	if name := strings.TrimSpace(user.DisplayName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(user.Username)
 }
 
 func (s *Service) StateSummary() (StateSummary, error) {

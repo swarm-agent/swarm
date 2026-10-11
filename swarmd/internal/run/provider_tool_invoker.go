@@ -1532,10 +1532,22 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 	if args := strings.TrimSpace(call.Arguments); args != "" {
 		payload["arguments"] = args
 	}
-	if output := formatProviderManagedToolCompletedOutput(call, result); output != "" {
+	// Clients rebuild tool cards from durable terminal events after a reload, so
+	// "output" carries what the tool actually produced (bounded like the tool
+	// result replayed to the model). The completion label stays in "summary".
+	rawOutput := liveStreamRawOutput(call, result)
+	output, truncated := providerManagedV3ToolEventOutput(rawOutput)
+	if output != "" {
 		payload["output"] = output
+		if truncated {
+			payload["output_truncated"] = true
+			payload["output_bytes"] = len(rawOutput)
+		}
 	}
-	if rawOutput := liveStreamRawOutput(call, result); rawOutput != "" {
+	if summary := formatProviderManagedToolCompletedOutput(call, result); summary != "" && summary != output {
+		payload["summary"] = summary
+	}
+	if rawOutput != "" {
 		payload["raw_output"] = rawOutput
 	}
 	if errText := strings.TrimSpace(result.Error); errText != "" {
@@ -1551,6 +1563,14 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 		payload["client_effects"] = effects
 	}
 	return json.Marshal(payload)
+}
+
+const providerManagedV3ToolEventOutputMarker = "\n[tool output truncated]"
+
+// providerManagedV3ToolEventOutput bounds a terminal event's output to the same
+// byte limit used for tool results replayed to the model.
+func providerManagedV3ToolEventOutput(rawOutput string) (string, bool) {
+	return truncatePromptBytes(rawOutput, maxToolInputBytes, providerManagedV3ToolEventOutputMarker), len(rawOutput) > maxToolInputBytes
 }
 
 func providerManagedV3ClientEffects(eventType string, call tool.Call, result tool.Result) []providerManagedV3ClientEffect {

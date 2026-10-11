@@ -235,7 +235,7 @@ func (s *Server) handleDesktopLocalSessionBootstrap(w http.ResponseWriter, r *ht
 		"token":            desktopLocalSessionTokenFromRequest(r),
 		"user_id":          actor.UserID,
 		"account_scope_id": actor.AccountScopeID,
-		"username":         actor.User.Username,
+		"username":         identity.UserDisplayName(actor.User),
 		"expires_at":       actor.TokenExpires,
 	})
 }

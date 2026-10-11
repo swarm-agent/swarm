@@ -17,7 +17,7 @@ func TestBootstrapFirstIdentityUsernameOnlyCreatesCanonicalRecords(t *testing.T)
 	if err != nil {
 		t.Fatalf("bootstrap first identity: %v", err)
 	}
-	if result.User.ID != "user_generated" || result.User.Username != "alice" {
+	if result.User.ID != "user_generated" || result.User.Username != "alice" || result.User.DisplayName != "Alice" || UserDisplayName(result.User) != "Alice" {
 		t.Fatalf("user = %+v", result.User)
 	}
 	if result.AccountScope.ID != "acct_generated" || result.AccountScope.Type != pebblestore.AccountScopeTypePersonal || result.AccountScope.CreatedByUserID != result.User.ID {
@@ -57,7 +57,7 @@ func TestRenameCurrentUserUpdatesExistingRecordWithoutGeneratingID(t *testing.T)
 	if err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	if updated.ID != created.User.ID || updated.Username != "bob" || updated.DisplayName != "bob" {
+	if updated.ID != created.User.ID || updated.Username != "bob" || updated.DisplayName != "Bob" {
 		t.Fatalf("updated user = %+v", updated)
 	}
 	if byID, ok, err := store.GetUser(created.User.ID); err != nil || !ok || byID.ID != created.User.ID || byID.Username != "bob" {

@@ -294,7 +294,9 @@ const requestId = chat.sendMessage('Inspect the git repository and list modified
 // `accepted` acknowledges durable dispatch. Never blindly resend an uncertain message.
 // Retain requestId if your UI offers an explicit retry, and pass it as argument 4.
 // Switching: await chat.subscribe(otherSession.id). Reconnect rehydrates selected history.
-// Unmount: chat.dispose(). Disconnected sends throw instead of silently disappearing.
+// Unmount: chat.dispose(). Sends that cannot go out throw SwarmChatNotReadyError (nothing was
+// sent): its message is fit to show people, and `code` is chat_reconnecting (retry shortly),
+// chat_disconnected (call connect()) or chat_not_subscribed (subscribe first).
 ```
 
 Backend conversation routes should use the same project identity for listing and creation:

@@ -127,6 +127,10 @@ type CreateInput struct {
 	Mode              string
 }
 
+// RequirementClientTool marks a pending record that a session's client answers
+// with a client tool's result (or failure). It waits on an app, not a person.
+const RequirementClientTool = "client_tool"
+
 type AuthorizationDecision string
 
 const (
@@ -568,7 +572,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		return s.createPendingAuthorization(input, sessionID, requirement, "ask_user requires an explicit user response", "user_input_policy", "ask user input")
 	}
 	if input.InputBoundary && explain.Decision != PolicyDecisionDeny {
-		return s.createPendingAuthorization(input, sessionID, requirement, "client tool result required", "client_tool", "client tool call")
+		return s.createPendingAuthorization(input, sessionID, RequirementClientTool, "client tool result required", "client_tool", "client tool call")
 	}
 	if state.BypassPermissions {
 		// Bypass suppresses ordinary approval prompts only. Hard denials and the
@@ -2225,6 +2229,12 @@ func permissionStoredError(raw string) string {
 }
 
 func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID, originSwarmID, sourceEventType string) {
+	if strings.EqualFold(strings.TrimSpace(record.Requirement), RequirementClientTool) {
+		// A client tool call is answered by the session's app, not a person: it is
+		// neither a permission request nor, when the app reports an error, a denial.
+		// Its outcome is the tool's own result or failure in the session.
+		return
+	}
 	s.emitPermissionSignal(record, sourceEventType)
 	if s == nil || s.notifications == nil {
 		return

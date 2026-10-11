@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/notification"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	"swarm/packages/swarmd/internal/provider/registry"
 	runruntime "swarm/packages/swarmd/internal/run"
@@ -32,12 +33,20 @@ var lookupOrderSchema = map[string]any{
 // answers. Even with approvals bypassed, Swarm must (a) refuse arguments that
 // break the tool's schema before the gateway sees them, (b) wait for the
 // gateway instead of executing anything, (c) hand the gateway's result, its
-// failure reason, or a timeout back to the model.
+// failure reason, or a timeout back to the model. (d) A gateway failure or
+// timeout is a tool failure carrying the gateway's message, never a permission
+// denial: the model sees a tool error, the durable session.tool.failed event
+// carries the message, and no permission notification ("Permission denied: …")
+// is raised, because the call waited on the app, not on a person.
 func TestSessionsV3ClientToolIsAnsweredByTheClient(t *testing.T) {
 	for _, outcome := range []string{"result", "failure", "timeout"} {
 		t.Run(outcome, func(t *testing.T) {
 			server, sessions, permissions, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 			permissions.SetBypassPermissions(true)
+			notes := notification.NewService(pebblestore.NewNotificationStore(sessions.Store().Underlying()), nil, nil)
+			notes.SetLocalSwarmIDResolver(func() string { return "swarm-local" })
+			permissions.SetLocalSwarmIDResolver(func() string { return "swarm-local" })
+			permissions.SetNotificationService(notes)
 			runner := &sessionsV3RecordingProviderRunner{handler: func(_ context.Context, req provideriface.Request, _ func(provideriface.StreamEvent)) (provideriface.Response, error) {
 				if hasFunctionCallOutput(req.Input) {
 					return provideriface.Response{Text: "done", StopReason: "stop"}, nil
@@ -123,6 +132,43 @@ func TestSessionsV3ClientToolIsAnsweredByTheClient(t *testing.T) {
 			}
 			if len(records) != 1 {
 				t.Fatalf("only the schema-valid call may reach the gateway; records=%d", len(records))
+			}
+			notifications, err := notes.ListNotificationsForAccount(account, "swarm-local", 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(notifications) != 0 {
+				t.Fatalf("client tool call raised person-facing notifications: %+v", notifications)
+			}
+			if outcome == "result" {
+				return
+			}
+			if strings.Contains(outputs["good"], "permission") || strings.Contains(outputs["good"], "denied") || !strings.Contains(outputs["good"], "tool.client.v1") {
+				t.Fatalf("client failure reached the model as a permission denial: %q", outputs["good"])
+			}
+			replay, err := sessions.ReplaySessionEvents(created.ID, 0, 500)
+			if err != nil {
+				t.Fatal(err)
+			}
+			failed := false
+			for _, event := range replay.Events {
+				var payload map[string]any
+				if json.Unmarshal(event.Payload, &payload) != nil || payload["call_id"] != "good" || event.EventType == "session.tool.started" {
+					continue
+				}
+				if event.EventType != "session.tool.failed" {
+					continue
+				}
+				failed = true
+				if payload["error"] != want {
+					t.Fatalf("tool failure error = %#v, want %q", payload["error"], want)
+				}
+				if output, _ := payload["output"].(string); !strings.Contains(output, want) || strings.Contains(output, `"permission"`) {
+					t.Fatalf("tool failure output = %q", output)
+				}
+			}
+			if !failed {
+				t.Fatal("client tool failure was not recorded as session.tool.failed")
 			}
 		})
 	}
