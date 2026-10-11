@@ -1,0 +1,28 @@
+{
+  "name": "swarm",
+  "version": "0.2.1",
+  "description": "Set up Swarm locally and delegate work to your own agents through MCP. Remote access is optional.",
+  "author": {
+    "name": "Swarm"
+  },
+  "homepage": "https://swarmagent.dev",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp-codex.json",
+  "interface": {
+    "displayName": "Swarm",
+    "shortDescription": "Your local agent team",
+    "longDescription": "Get your own Swarm running, connect a model provider and workspace, and delegate tasks to its agents. Requires a desktop execution environment that supports local MCP processes. Setup can help install Swarm; installing this plugin alone does not install the daemon. Remote access through a relay is optional.",
+    "developerName": "Swarm",
+    "category": "Developer Tools",
+    "websiteURL": "https://swarmagent.dev",
+    "defaultPrompt": [
+      "Set up Swarm on this computer and connect it locally.",
+      "Delegate a task to my Swarm."
+    ]
+  },
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md"
+    }
+  }
+}

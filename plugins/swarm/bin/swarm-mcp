@@ -3,10 +3,18 @@
 # stdio; no key to make or paste. SWARM_MCP_SOCKET points at a different
 # Swarm's owner socket (for example a test Swarm); SWARM_MCP_BIN at a
 # different swarmctl build.
+if [ -n "${SWARM_MCP_CONTAINER:-}" ]; then
+  if [ -n "${SWARM_MCP_SOCKET:-}${SWARM_MCP_BIN:-}" ]; then
+    echo "swarm-mcp: choose container mode OR native binary/socket overrides" >&2
+    exit 2
+  fi
+  exec docker exec -i "$SWARM_MCP_CONTAINER" swarmctl mcp
+fi
 if [ -n "${SWARM_MCP_SOCKET:-}" ]; then
   exec "${SWARM_MCP_BIN:-swarmctl}" mcp --socket "$SWARM_MCP_SOCKET"
 fi
 if [ -n "${SWARM_MCP_BIN:-}" ]; then exec "$SWARM_MCP_BIN" mcp; fi
 if command -v swarm >/dev/null 2>&1; then exec swarm mcp; fi
-echo "swarm-mcp: Swarm is not installed on this machine (no 'swarm' command). See https://swarmagent.dev" >&2
+if command -v swarmctl >/dev/null 2>&1; then exec swarmctl mcp; fi
+echo "swarm-mcp: no Swarm launcher on PATH. Run this plugin's setup skill to install or connect Swarm locally." >&2
 exit 1
