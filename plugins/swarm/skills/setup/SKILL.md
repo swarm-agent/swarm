@@ -5,18 +5,41 @@ description: Install or connect Swarm locally, onboard a model provider and work
 
 # Set up Swarm
 
-Default to local operation. This plugin supplies instructions and a local MCP
-bridge; it does not contain the Swarm daemon. Installing the plugin does not
-install Swarm. A relay, public URL and cloud account are not prerequisites.
+Default to local operation. The skills package supplies instructions; the local
+Codex package also supplies an MCP bridge. Neither contains the Swarm daemon.
+Installing a custom MCP connection does not install these skills, and installing
+these skills does not deploy Swarm or authorize a connection.
+A relay, public URL and cloud account are not local prerequisites.
+
+## Select the client before connecting
+
+Identify where the requesting AI runs and where Swarm runs. Reuse a working
+connection. Do not apply one client's transport setup to another:
+
+| Client | Connection instructions |
+| --- | --- |
+| Codex/local MCP runtime on the person's computer | [Local stdio, Docker or tailnet](references/connection.md) |
+| ChatGPT Work or dot using private remote Swarm | [OpenAI private tunnel](references/chatgpt-tunnel.md) |
+| Claude Code or Claude Desktop local MCP | [Claude local connection](references/remote.md#claude-clients); no OpenAI tunnel |
+| Claude.ai or an explicitly requested public relay | [Remote client options](references/remote.md) |
+
+A cloud client cannot reach a desktop's localhost or tailnet just because that
+desktop can. ChatGPT setup needs authorized execution on the actual Swarm host
+(a connected computer or selected remote host); the skill alone cannot supply
+that access. Keep the person's role to missing choices, consent, sign-in and
+hidden secret entry. Perform authorized deployment and connection mechanics.
 
 ## Connect first
 
-Read [connection modes](references/connection.md). Reuse existing Swarm over
-local stdio, Docker or Tailscale before installing another daemon. The OpenAI
-package needs Node 22+; configure exactly one mode with the bundled helper.
+Reuse existing Swarm before installing another daemon. For the local Codex
+bridge, read [connection modes](references/connection.md): it needs Node 22+ and
+exactly one native, Docker or tailnet mode configured with the bundled helper.
+For a ChatGPT private tunnel, follow its dedicated guide instead: it goes
+directly to Swarm HTTP and does not use the Node adapter or connection.json.
 A 401 is an authentication failure, not a missing installation.
-If authorization is missing, follow [AI-assisted authorization](references/authorization.md)
-to create and connect a scoped key when owner execution is available. Handle
+For local bridge authorization, follow [AI-assisted authorization](references/authorization.md);
+the tunnel guide has its own service credential handoff. Create and connect a
+scoped key when owner execution is available. Handle
 the mechanics yourself; the person's role is to authorize access or complete
 an OS password prompt, not learn key management.
 
@@ -74,3 +97,7 @@ For requested remote access later, read [optional remote access](references/remo
 Do not enable it as a workaround for a local setup error. Do not promise dots
 or cloud access merely because the desktop connection works; verify that
 client's tool access separately.
+
+For protocol checks, response parsing, scope filtering or MCP errors, read
+[Swarm's MCP contract](references/mcp-protocol.md). Use the live schema; do not
+assume all installations expose the same tools.

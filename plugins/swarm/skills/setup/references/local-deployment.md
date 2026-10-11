@@ -81,7 +81,10 @@ through a secret manager or an existing private file outside the project; do not
 read it into the conversation. Do not hardcode role models. Check status again.
 
 For this plugin run `node bin/connect.mjs docker swarm-headless` from its
-folder. For a client without this plugin, the equivalent direct MCP command is:
+folder when using the local Codex bridge. ChatGPT cloud/dots instead use the
+[private tunnel HTTP connection](chatgpt-tunnel.md); do not configure a local
+stdio process in the cloud. For a client without this plugin, the equivalent
+direct MCP command is:
 
 ```json
 {"command":"docker","args":["exec","-i","swarm-headless","swarmctl","mcp"]}
@@ -96,3 +99,23 @@ servers. Refresh/reconnect, then verify an actual MCP call.
 Docker startup does not publish any network ports. Stop/start the same container
 to preserve state; deleting volumes deletes Swarm's account and work. Upgrades
 need a backup and a stopped old writer before another daemon uses those volumes.
+
+## ChatGPT/Codex provider sign-in on a headless host
+
+When the person chooses their ChatGPT/Codex sign-in, use the daemon's supported
+device login instead of demanding an inference API key. After `setup status`
+and any missing identity creation, run on the actual container host:
+
+```sh
+docker exec swarm-headless swarmctl setup codex-login --timeout 15m
+```
+
+Show only the fresh verification URL and one-time code returned by that command.
+The person approves in their browser; keep the command running until it confirms
+connection. Do not reuse a code from a prior session. Tokens remain in Swarm's
+credential store. Inspect hydrated account role defaults instead of overwriting
+them with fixed models. Register the chosen workspace if missing, then run
+`setup complete` and `setup status`. A real delegated task verifies inference.
+
+This signs Swarm into a model provider. It does not grant an MCP client access,
+create an OpenAI tunnel, or substitute for the tunnel's runtime API key.

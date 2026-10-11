@@ -3,46 +3,31 @@
 Use only when requested, after local operation works. Ask which client should
 connect and which machine should remain available. Local operation remains valid.
 
-## OpenAI private tunnel
+## ChatGPT and dots
 
-For private ChatGPT access, follow [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).
-It connects outbound from the Swarm host; a public listener is unnecessary.
-This is a custom plugin connection, not public plugin directory distribution.
+Use the dedicated [OpenAI private tunnel guide](chatgpt-tunnel.md) for the
+qualified private route. It includes deployment, three separate credentials,
+MCP discovery, service startup, renewal and a real dot acceptance test.
+This route is OpenAI-specific; it is not Claude.ai connector configuration.
 
-Associate the tunnel with the intended ChatGPT workspace and Platform
-organization. The person creates a runtime API key with Tunnels Read + Use;
-facilitate hidden local entry and private storage rather than asking for it in
-chat. This key authenticates the tunnel, not Swarm's model provider.
+## Claude clients
 
-Run the official `tunnel-client` beside Swarm's loopback HTTP `/mcp` listener.
-Give its dedicated service account a scoped Swarm AI key appropriate to the
-requested work (`write` permits delegation; it does not approve tool permissions).
-Keep the owner socket and daemon storage inaccessible to the tunnel service.
-Use the selected client's `--help` to confirm file-backed credential options:
+Claude Code's `.mcp.json` launches this plugin's `bin/swarm-mcp` shell wrapper.
+It accepts `SWARM_MCP_BIN` and `SWARM_MCP_SOCKET` for native mode, or
+`SWARM_MCP_CONTAINER` for `docker exec -i ... swarmctl mcp`. It does not consume
+the OpenAI Node adapter's connection.json. Claude Desktop local MCP can use
+the direct Docker command in [local-deployment.md](local-deployment.md).
+Local MCP access does not make a server reachable from Claude.ai.
 
-- `--control-plane.api-key file:<private-runtime-key-file>`
-- `--mcp.server-url http://127.0.0.1:<published-port>/mcp`
-- `--mcp.extra-headers "Authorization: file:<private-header-value-file>"`
-- `--mcp.discovery-extra-headers "Authorization: file:<private-header-value-file>"`
-
-The header-value file contains `Bearer ` followed by the scoped Swarm key.
-Set an explicit grant lifetime and report expiry; restarting the tunnel does
-not renew it. Use a Swarm build whose container listener returns authenticated
-404 for absent `/.well-known/oauth-protected-resource` metadata (including
-the `/mcp` suffix). Do not disable authentication to repair discovery errors.
-
-Check the client's local `/readyz` and `/health?details=true` using a loopback
-health listener. Then in ChatGPT Plugins, add a custom MCP server with Connection
-set to Tunnel and select its ID. For this service-held upstream-key setup,
-select Authentication None; the tunnel and scoped upstream credential still
-enforce access. Restrict workspace access to the intended users: callers share
-that Swarm grant. Use OAuth with separate user identity when that is required.
-
-Enable the plugin and request a workspace listing, followed by a small real
-delegated task. For a dot, repeat the call from that dot and inspect the actual
-Swarm session. A healthy tunnel, desktop test, or plugin discovery alone does
-not prove dot access or automatic completion wakeups. Do not promise those
-until separately observed.
+For Claude.ai, use its remote custom connector with a reachable authenticated
+HTTPS `/mcp` endpoint, such as an explicitly selected relay. Do not enter an
+OpenAI tunnel ID or assume a localhost/tailnet URL is reachable from Anthropic.
+Anthropic's [MCP tunnels documentation](https://platform.claude.com/docs/en/agents-and-tools/mcp-tunnels/overview)
+currently limits its Console tunnels to Managed Agents and the Messages API;
+it explicitly excludes Claude.ai connectors. That separate research-preview
+transport has not been qualified with this Swarm setup. Recheck official docs
+if the person's Claude surface changes; don't generalize that Claude has no
+tunnel product at all.
 
 ## Swarm reference relay
 

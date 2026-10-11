@@ -1,6 +1,6 @@
 {
   "name": "swarm",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Set up Swarm locally and delegate work to your own agents through MCP. Remote access is optional.",
   "author": {
     "name": "Swarm"
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "Swarm",
     "shortDescription": "Your local agent team",
-    "longDescription": "Get your own Swarm running, connect a model provider and workspace, and delegate tasks to its agents. Requires a desktop execution environment that supports local MCP processes. Setup can help install Swarm; installing this plugin alone does not install the daemon. Remote access through a relay is optional.",
+    "longDescription": "Get your own Swarm running, connect a model provider and workspace, and delegate tasks to its agents. This local package requires a desktop execution environment that supports local MCP processes. Setup can help install Swarm; installing this plugin alone does not install the daemon. ChatGPT private tunnels and authenticated relays are optional, separately configured connections.",
     "developerName": "Swarm",
     "category": "Developer Tools",
     "websiteURL": "https://swarmagent.dev",
