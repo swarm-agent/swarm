@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install or connect Swarm locally, onboard a model provider and workspace, and verify a first delegated task. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help configure a relay only if they request remote access.
+description: Install or connect Swarm locally, onboard a model provider and workspace, and verify a first delegated task. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help configure a private tunnel or relay only if they request remote access.
 ---
 
 # Set up Swarm
@@ -70,7 +70,7 @@ seconds within the live tool schema's limit. A timeout
 means work may still be running; resume the same session instead of duplicating
 it. Report failures honestly. End with what runs where and what was verified.
 
-For requested remote access later, read [optional relay](references/remote.md).
+For requested remote access later, read [optional remote access](references/remote.md).
 Do not enable it as a workaround for a local setup error. Do not promise dots
 or cloud access merely because the desktop connection works; verify that
 client's tool access separately.
