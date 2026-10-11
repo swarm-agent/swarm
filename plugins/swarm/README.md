@@ -88,6 +88,14 @@ health, optional discovery warnings and automatic completion notifications.
 The MCP endpoint fix and required fast gate were tested; the documentation and
 packager do not themselves establish further runtime qualifications.
 
+A separate agent with no conversation history followed packaged skill 0.2.2 at
+revision `5a4d3d996`, deployed fresh Swarm state, completed a new human-approved
+Codex sign-in, issued a scoped key and verified a real Finder task through the
+ChatGPT connector. It received source and SSH access to an existing Docker VM,
+a tunnel ID and private runtime-key file, and reused an existing ChatGPT MCP
+registration. This tested fresh Swarm onboarding, not cloud-account creation,
+plugin upload or a separate dot UI flow. The task left the workspace unchanged.
+
 Mac/Windows Docker Desktop and Claude.ai relay use remain unqualified by this
 test. Anthropic's Console tunnels currently exclude Claude.ai connectors; see
 its [official tunnel docs](https://platform.claude.com/docs/en/agents-and-tools/mcp-tunnels/overview).

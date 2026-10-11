@@ -80,6 +80,10 @@ catalog, workspace `/project`, and `setup complete`. The user supplies secrets
 through a secret manager or an existing private file outside the project; do not
 read it into the conversation. Do not hardcode role models. Check status again.
 
+Inspect operation-specific help, for example `swarmctl setup codex-login --help`
+or `swarmctl setup sdk-token --help`. The qualified version rejects top-level
+`swarmctl setup --help` as an unknown operation; that does not mean setup is absent.
+
 For this plugin run `node bin/connect.mjs docker swarm-headless` from its
 folder when using the local Codex bridge. ChatGPT cloud/dots instead use the
 [private tunnel HTTP connection](chatgpt-tunnel.md); do not configure a local

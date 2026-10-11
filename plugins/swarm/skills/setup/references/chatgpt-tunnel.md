@@ -112,6 +112,14 @@ OAuth or a multi-tenant public service.
 
 ## 3. Start and persist the tunnel
 
+If reusing an occupied tunnel ID, prepare the replacement while it is stopped.
+Coordinate the switch with the existing service's operator: stop and verify the
+old client is inactive before starting the replacement. Use one active client
+for this workflow. Preserve the original service and state for rollback. After
+a test, stop the trial client before restoring the original, and verify the
+expected workspace through the ChatGPT connection. Leave the trial service
+boot-disabled so it cannot reclaim the shared ID after a restart.
+
 Set the following nonsecret variables to the actual ID, binary and private file
 paths on the tunnel host. The authorization file contains the entire `Bearer ...`
 value. The runtime-key file contains only the OpenAI key.
@@ -187,6 +195,10 @@ macOS/Windows, automatic wakeups, multi-user isolation, or large-agent scale.
   connection works; don't print either secret.
 - Tunnel invisible: check target ChatGPT workspace association and Tunnels Use
   permission. Platform organization access alone isn't workspace association.
+- Connection timeout just after a service switch: verify the intended client is
+  the only active one and that control-plane polling has succeeded, then retry
+  a read-only workspace listing. Verify its identity before delegation. Do not
+  blindly retry a session-start request; inspect whether it already created work.
 - OAuth discovery degraded or “missing resource”: with the same upstream key,
   probe both protected-resource metadata paths in [mcp-protocol.md](mcp-protocol.md).
   They must report absent metadata as 404. Older Swarm's 403 caused readiness

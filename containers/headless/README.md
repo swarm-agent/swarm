@@ -2,9 +2,10 @@
 
 This packages the existing daemon, not a workspace container runner. It builds
 `swarmd`, `swarmctl`, and `swarm-fff-search` with CGO using the daemon targets and
-shared buildinfo fields from `scripts/build-main-dist.sh`. Both stages use Debian
-Trixie/glibc; Go is pinned to the modules' 1.26.9 requirement. Build concurrency is
-bounded to two. Only linux/amd64 is supported by the vendored FFF library.
+shared buildinfo fields from `scripts/build-main-dist.sh`. The build stage uses
+Debian Trixie and the runtime uses Ubuntu 26.04, both with glibc; Go is pinned to
+the modules' 1.26.9 requirement. Build concurrency is bounded to two. Only
+linux/amd64 is supported by the vendored FFF library.
 
 ## Build and inspect (no daemon startup)
 
@@ -31,8 +32,8 @@ The inspector checks loader resolution, UID/GID, writable storage, required tool
 CA certificates and notices, and absence of source/compiler assets. It never
 starts Swarm. The build also rejects missing dynamic libraries. FFF is installed
 in `/usr/local/lib` and registered with `ldconfig`, independent of its source
-RPATH. Debian supplies libc, libgcc and libstdc++; its copyright files remain in
-the image. Swarm's license/notices and FFF's MIT license are under
+RPATH. Ubuntu supplies runtime libc, libgcc and libstdc++; its copyright files
+remain in the image. Swarm's license/notices and FFF's MIT license are under
 `/usr/local/share/doc/swarm`. The FFF license is copied from upstream commit
 `c6013ba6a5918221b6c482486aca01acc0830825` (`dmtrKovalenko/fff`, `LICENSE`).
 
