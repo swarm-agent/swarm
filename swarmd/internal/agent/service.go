@@ -24,7 +24,21 @@ type Service struct {
 	publish           func(pebblestore.EventEnvelope)
 	systemAgents      *SystemAgentRegistry
 	systemAgentsError error
-	mu                sync.Mutex
+	// reservedToolName reports built-in tool names, which a custom tool may
+	// not take: the runtime dispatches built-ins first, so a custom tool
+	// named "bash" would run real bash with the model's arguments.
+	reservedToolName func(string) bool
+	mu               sync.Mutex
+}
+
+// SetReservedToolNames installs the built-in tool name check.
+func (s *Service) SetReservedToolNames(reserved func(string) bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.reservedToolName = reserved
+	s.mu.Unlock()
 }
 
 type State struct {
@@ -52,6 +66,7 @@ type UpsertInput struct {
 	ExitPlanModeEnabled *bool                          `json:"exit_plan_mode_enabled"`
 	ToolScope           *pebblestore.AgentToolScope    `json:"tool_scope"`
 	ToolContract        *pebblestore.AgentToolContract `json:"tool_contract"`
+	Limits              *pebblestore.AgentRunLimits    `json:"limits"`
 	Enabled             *bool                          `json:"enabled"`
 }
 
@@ -874,8 +889,21 @@ func (s *Service) putCustomToolForAccount(accountScopeID string, definition pebb
 	if definition.Kind == "" {
 		return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool kind is required")
 	}
-	if definition.Command == "" {
-		return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool command is required")
+	switch definition.Kind {
+	case pebblestore.AgentCustomToolKindFixedBash:
+		if definition.Command == "" {
+			return pebblestore.AgentCustomToolDefinition{}, errors.New("custom tool command is required")
+		}
+	case pebblestore.AgentCustomToolKindClient:
+		if definition.Command != "" {
+			return pebblestore.AgentCustomToolDefinition{}, errors.New("client tools take no command: the session's client answers them")
+		}
+		if _, err := CompileClientToolSchema(definition.InputSchema); err != nil {
+			return pebblestore.AgentCustomToolDefinition{}, err
+		}
+	}
+	if s.reservedToolName != nil && s.reservedToolName(definition.Name) {
+		return pebblestore.AgentCustomToolDefinition{}, fmt.Errorf("custom tool name %q is a built-in tool", definition.Name)
 	}
 	eventType := "agent.custom_tool.created"
 	var exists bool
@@ -1264,6 +1292,9 @@ func (s *Service) upsertForAccount(accountScopeID string, input UpsertInput) (pe
 		}
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(existing.ToolContract)
+		}
+		if input.Limits == nil {
+			profile.Limits = pebblestore.NormalizeAgentRunLimits(existing.Limits)
 		}
 	}
 	profile, err = finalizeRuntimeProfile(profile, input, ok)
@@ -1661,6 +1692,9 @@ func (s *Service) previewUpsertForAccount(accountScopeID string, input UpsertInp
 		}
 		if input.ToolContract == nil {
 			profile.ToolContract = pebblestore.CloneAgentToolContract(before.ToolContract)
+		}
+		if input.Limits == nil {
+			profile.Limits = pebblestore.NormalizeAgentRunLimits(before.Limits)
 		}
 		if input.Enabled == nil {
 			profile.Enabled = before.Enabled
@@ -2116,6 +2150,7 @@ func normalizeUpsertInput(input UpsertInput) (pebblestore.AgentProfile, error) {
 		ExitPlanModeEnabled: pebblestore.CloneBoolPtr(input.ExitPlanModeEnabled),
 		ToolScope:           toolScope,
 		ToolContract:        toolContract,
+		Limits:              pebblestore.NormalizeAgentRunLimits(input.Limits),
 		Enabled:             enabled,
 	}), nil
 }

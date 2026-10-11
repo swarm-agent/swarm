@@ -83,3 +83,34 @@ export class SwarmValidationError extends SwarmError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
+
+/**
+ * `chat_reconnecting`: the connection to this conversation is being restored; retry shortly.
+ * `chat_disconnected`: the connection is down and will not come back on its own; call `connect()`.
+ * `chat_not_subscribed`: the conversation is not open in this client; `subscribe()` to it first.
+ */
+export type SwarmChatNotReadyCode = 'chat_reconnecting' | 'chat_disconnected' | 'chat_not_subscribed';
+
+const chatNotReadyMessages: Record<SwarmChatNotReadyCode, string> = {
+  chat_reconnecting: 'Not sent: reconnecting to Swarm, try again in a moment',
+  chat_disconnected: 'Not sent: disconnected from Swarm, reconnect and try again',
+  chat_not_subscribed: 'Not sent: this conversation is not open yet, open it and try again',
+};
+
+/**
+ * A browser chat send refused before anything reached Swarm. The message is plain enough
+ * to show people; apps branch on `code` (or `retryable`) instead of matching text.
+ */
+export class SwarmChatNotReadyError extends SwarmError {
+  readonly code: SwarmChatNotReadyCode;
+  /** True when retrying the same send shortly is expected to work without app action. */
+  readonly retryable: boolean;
+
+  constructor(code: SwarmChatNotReadyCode) {
+    super(chatNotReadyMessages[code]);
+    this.name = 'SwarmChatNotReadyError';
+    this.code = code;
+    this.retryable = code === 'chat_reconnecting';
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}

@@ -112,6 +112,8 @@ func run(argv0 string, args []string) error {
 			return errors.New("missing swarmctl arguments")
 		}
 		return launcher.RunCtl(profile, args[1:], false)
+	case "mcp":
+		return launcher.RunMCPBridge(profile, args[1:])
 	case "auth":
 		if len(args) < 2 {
 			return errors.New("missing swarmctl auth arguments")
@@ -625,6 +627,8 @@ Usage:
   swarm start|stop|restart|status
   swarm open
   swarm session [tui|open|create|list|get|messages|send|run] [session-args...]
+  swarm mcp [--access full|write|read]   connect a local AI client over stdio (swarm mcp --help)
+                                         Claude Code: claude mcp add swarm -- swarm mcp
   swarm [main|dev] [run] [--swarm-name NAME] [--child] [--advertise-host HOST] [--advertise-port PORT] [--tailscale-url URL] [tui-args...]
   swarm [main|dev] --desktop [--port N]
   swarm [main|dev] server <run|status>

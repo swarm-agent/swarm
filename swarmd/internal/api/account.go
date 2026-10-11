@@ -68,7 +68,7 @@ func (s *Server) handleAccountUsername(w http.ResponseWriter, r *http.Request) {
 		"ok":       true,
 		"userID":   updated.ID,
 		"user_id":  updated.ID,
-		"username": updated.Username,
+		"username": identity.UserDisplayName(updated),
 	})
 }
 

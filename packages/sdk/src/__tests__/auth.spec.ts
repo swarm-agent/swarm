@@ -321,39 +321,37 @@ test('SwarmCodexAuthNamespace: isAuthenticated and getCredential check provider 
   }
 });
 
-test('SwarmOnboardingNamespace: ensureBootstrapped automatically initializes unconfigured daemon', async () => {
-  let updateBody: any = null;
-  let getCalls = 0;
+// Requirement: ensureBootstrapped creates identity only. It must never mark onboarding
+// finished (desktop_onboarding_complete) before a key, model or workspace exists, and a
+// repeated call on a bootstrapped daemon sends nothing. Threat: the desktop and apps treat a
+// name-only daemon as fully set up. Boundary: SwarmOnboardingNamespace against a stateful
+// fake /v1/onboarding that, like the daemon, only completes onboarding when asked.
+test('SwarmOnboardingNamespace: ensureBootstrapped bootstraps identity without completing onboarding', async () => {
+  const posts: any[] = [];
+  const state = { bootstrapped: false, username: '', swarm_name: '', complete: false };
+  const status = () => ({
+    ok: true,
+    needs_onboarding: !state.complete,
+    identity: state.bootstrapped ? { bootstrapped: true, user_id: 'user_1', username: state.username } : { bootstrapped: false },
+    heuristics: { missing_swarm_name: !state.swarm_name, credential_count: 0, agent_count: 0, saved_workspace_count: 0, vault_configured: false },
+    config: { swarm_name: state.swarm_name, desktop_onboarding_complete: state.complete, mode: 'local', port: 5555, desktop_port: 0, advertise_port: 0, peer_transport_port: 0 },
+    tailscale: {},
+  });
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/v1/onboarding') {
-      getCalls++;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          needs_onboarding: true,
-          identity: { bootstrapped: false },
-          heuristics: { missing_swarm_name: true, credential_count: 0, agent_count: 0, saved_workspace_count: 0, vault_configured: false },
-          config: { swarm_name: '', desktop_onboarding_complete: false, mode: 'local', port: 5555, desktop_port: 0, advertise_port: 0, peer_transport_port: 0 },
-          tailscale: {},
-        })
-      );
+      res.end(JSON.stringify(status()));
     } else if (req.method === 'POST' && req.url === '/v1/onboarding') {
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
-        updateBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        posts.push(body);
+        if (body.username) { state.bootstrapped = true; state.username = body.username; }
+        if (body.swarm_name) state.swarm_name = body.swarm_name;
+        if (body.desktop_onboarding_complete !== undefined) state.complete = body.desktop_onboarding_complete;
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            ok: true,
-            needs_onboarding: false,
-            identity: { bootstrapped: true, user_id: 'user_1', username: updateBody.username },
-            heuristics: { missing_swarm_name: false, credential_count: 0, agent_count: 0, saved_workspace_count: 0, vault_configured: true },
-            config: { swarm_name: updateBody.swarm_name, desktop_onboarding_complete: true, mode: 'local', port: 5555, desktop_port: 0, advertise_port: 0, peer_transport_port: 0 },
-            tailscale: {},
-          })
-        );
+        res.end(JSON.stringify(status()));
       });
     } else {
       res.writeHead(404);
@@ -372,12 +370,16 @@ test('SwarmOnboardingNamespace: ensureBootstrapped automatically initializes unc
     });
     const onboarding = new SwarmOnboardingNamespace(transport);
 
-    const result = await onboarding.ensureBootstrapped({ username: 'testuser', swarm_name: 'Custom Swarm' });
-    assert.equal(result.needs_onboarding, false);
+    const result = await onboarding.ensureBootstrapped({ username: 'Grader', swarm_name: 'Custom Swarm' });
     assert.equal(result.identity.bootstrapped, true);
-    assert.equal(updateBody?.username, 'testuser');
-    assert.equal(updateBody?.swarm_name, 'Custom Swarm');
-    assert.equal(updateBody?.desktop_onboarding_complete, true);
+    assert.equal(result.identity.username, 'Grader');
+    assert.deepEqual(posts, [{ username: 'Grader', swarm_name: 'Custom Swarm' }]);
+    assert.equal((await onboarding.get()).config.desktop_onboarding_complete, false);
+
+    const again = await onboarding.ensureBootstrapped({ username: 'Grader', swarm_name: 'Custom Swarm' });
+    assert.equal(again.identity.username, 'Grader');
+    assert.equal(again.config.desktop_onboarding_complete, false);
+    assert.equal(posts.length, 1);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -385,7 +387,7 @@ test('SwarmOnboardingNamespace: ensureBootstrapped automatically initializes unc
 
 test('SwarmAuthNamespace: autoConfigure detects env keys, registers credentials and applies fleet recommendations', async () => {
   let savedCredential: any = null;
-  let patchedFleet: any = null;
+  const patchedFleet: any = { swarm: null, system_agents: {} };
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || '', 'http://127.0.0.1');
@@ -422,7 +424,9 @@ test('SwarmAuthNamespace: autoConfigure detects env keys, registers credentials 
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
-        patchedFleet = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        const p = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (p.swarm) patchedFleet.swarm = p.swarm;
+        Object.assign(patchedFleet.system_agents, p.system_agents || {});
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, agent_model_settings: {} }));
       });
@@ -451,6 +455,29 @@ test('SwarmAuthNamespace: autoConfigure detects env keys, registers credentials 
     assert.equal(savedCredential.api_key, 'sk-test-secret-12345');
     assert.equal(patchedFleet.swarm.action.model, 'gpt-4o');
     assert.equal(patchedFleet.system_agents.router.model, 'gpt-4o');
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('SwarmAuthNamespace: createAIKey sends only the name, level and lifetime', async () => {
+  let requestBody: any = null;
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      requestBody = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: 'swk_ai', record: { id: 'tok_ai', name: 'claude', scopes: ['swarm:read', 'sessions:read'] } }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const port = (server.address() as any).port;
+  try {
+    const auth = new SwarmAuthNamespace(new SwarmTransport({ baseUrl: `http://127.0.0.1:${port}`, token: 't', defaultHeaders: {}, timeoutMs: 5000 }));
+    const result = await auth.createAIKey({ name: 'claude', access: 'read', expires_in_seconds: 86400 });
+    assert.equal(result.token, 'swk_ai');
+    assert.deepEqual(requestBody, { name: 'claude', ai_access: 'read', expires_in_seconds: 86400 });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

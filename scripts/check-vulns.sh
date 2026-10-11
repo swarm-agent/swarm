@@ -194,7 +194,9 @@ run_pnpm_audit() {
 
     for attempt in 1 2 3; do
       audit_status=0
-      audit_output="$(swarm_pnpm --fetch-retries=0 --fetch-timeout=30000 audit --audit-level=low --json)" || audit_status=$?
+      # pnpm 11 rejects --fetch-retries/--fetch-timeout and ignores npm_config_*;
+      # it honours pnpm_config_* (numeric parsing included).
+      audit_output="$(pnpm_config_fetch_retries=0 pnpm_config_fetch_timeout=30000 swarm_pnpm audit --audit-level=low --json)" || audit_status=$?
       if [[ "${audit_status}" == "0" ]]; then
         printf '%s\n' "${audit_output}"
         return 0

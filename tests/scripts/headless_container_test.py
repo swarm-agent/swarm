@@ -76,11 +76,15 @@ class HeadlessPackagingTests(unittest.TestCase):
                 self.assertFalse((output / name).exists(), name)
 
     def test_declared_runtime_contract(self):
-        """Requirement: packaging retains non-root/headless/local-only defaults.
+        """Requirement: packaging retains non-root/headless/local-only defaults,
+        starts with permission policy locked, and keeps agent worktrees on a
+        persistent volume.
 
-        Threat: recipe edits accidentally expose ports or lose persistent roots.
-        Authority: Dockerfile USER/ENTRYPOINT/VOLUME declarations and config.Parse
-        --desktop-port flag. This recipe-level check catches declaration drift;
+        Threat: recipe edits accidentally expose ports, lose persistent roots
+        (including uncommitted agent work), or let agents/remote clients change
+        permission policy. Authority: Dockerfile USER/ENTRYPOINT/VOLUME/ENV
+        declarations, config.Parse --desktop-port/--lock-permission-policy flags
+        and appstorage.WorktreeDataDir (XDG_DATA_HOME). This recipe-level check catches declaration drift;
         only a built-image inspection can establish installed binaries/libraries.
         """
         text = (ROOT / 'Dockerfile').read_text()
@@ -88,10 +92,10 @@ class HeadlessPackagingTests(unittest.TestCase):
         self.assertIn('USER 10001:10001', instructions)
         self.assertFalse(any(line.startswith('EXPOSE ') for line in instructions))
         entrypoint = next(line.removeprefix('ENTRYPOINT ') for line in instructions if line.startswith('ENTRYPOINT '))
-        self.assertEqual(json.loads(entrypoint), ['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project'])
+        self.assertEqual(json.loads(entrypoint), ['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project', '--lock-permission-policy'])
         volumes = next(line.removeprefix('VOLUME ') for line in instructions if line.startswith('VOLUME '))
         self.assertEqual(set(json.loads(volumes)), {'/etc/swarmd', '/var/lib/swarmd', '/var/cache/swarmd', '/var/log/swarmd'})
-        self.assertIn('ENV HOME=/home/swarm SWARM_DISABLE_MINT_REPORT=1', instructions)
+        self.assertIn('ENV HOME=/home/swarm SWARM_DISABLE_MINT_REPORT=1 XDG_DATA_HOME=/var/lib/swarmd/user-data', instructions)
         self.assertNotIn('bypass-permissions', text)
 
 

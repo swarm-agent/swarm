@@ -15,6 +15,7 @@ const (
 	NotificationCategorySystem      = "system"
 	NotificationCategoryDeliverable = "deliverable"
 	NotificationCategoryInbox       = "inbox"
+	NotificationCategoryTask        = "task"
 
 	NotificationKindSystem        = "system"
 	NotificationKindAIRequest     = "ai_request"

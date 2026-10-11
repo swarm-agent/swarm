@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 )
 
 type WatchPaths struct {
@@ -129,6 +130,7 @@ func RunGitPathQuery(ctx context.Context, path string, args ...string) (string, 
 	commandArgs = append(commandArgs, "--no-optional-locks", "-C", path)
 	commandArgs = append(commandArgs, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
+	sandbox.Prepare(ctx, cmd)
 	raw, err := cmd.Output()
 	if err != nil {
 		return "", err

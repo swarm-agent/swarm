@@ -6,7 +6,7 @@ options:
   logging: CLOUD_LOGGING_ONLY
 steps:
   - id: go-toolchain
-    name: golang:1.26.7-bookworm
+    name: golang:1.26.9-bookworm
     entrypoint: bash
     waitFor: ['-']
     args: ['-ceu', 'mkdir -p /workspace/toolchain; cp -a /usr/local/go /workspace/toolchain/go']

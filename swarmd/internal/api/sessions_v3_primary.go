@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
@@ -939,6 +942,37 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	if err == nil && req.ModelProfile == nil && (strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmAgentID) || strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID)) {
 		modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
 	}
+	// A top-level Coder, Finder or Designer session with no model chosen runs
+	// on that role's account-configured model. If the role has none, it runs on
+	// the account's default Swarm model and the session says so.
+	modelAlert := ""
+	var rolePreference *pebblestore.ModelPreference
+	requestedAgentProfile := resolvedAgent.Profile
+	if err == nil && req.ModelProfile == nil && strings.TrimSpace(req.Preference.Model) == "" {
+		if canonicalID, ok := agentruntime.CanonicalSystemAgentID(resolvedAgent.Profile.Name); ok && canonicalID != agentruntime.SwarmAgentID && canonicalID != agentruntime.SwarmOrchestratorAgentID {
+			resolvedModel, profile, resolveErr := agentmodel.ResolveSystemAgent(s.model, s.agents, s.agentModelSettings, principal.AccountScopeID, canonicalID, "")
+			if resolveErr == nil && strings.TrimSpace(resolvedModel.Preference.Model) != "" {
+				rolePreference = &resolvedModel.Preference
+				resolvedAgent.Profile = profile
+			} else {
+				modelProfileSnapshot, err = s.sessionModelProfileSnapshotFromAccountDefault(identity.ContextWithPrincipal(r.Context(), principal), now)
+				modelAlert = fmt.Sprintf("No model is assigned to %s; this session uses the account's default Swarm model.", canonicalID)
+				if resolveErr != nil {
+					modelAlert = fmt.Sprintf("%s model unavailable (%v); this session uses the account's default Swarm model.", canonicalID, resolveErr)
+				}
+				log.Printf("swarmd v3 session create: %s", modelAlert)
+			}
+		}
+	}
+	// A custom agent without a model of its own (for example a sealed agent
+	// defined with only a prompt and client tools) runs on the account's
+	// default Swarm model, the same one a plain session gets. A model set on
+	// the agent profile still wins at run time.
+	if err == nil && rolePreference == nil && req.ModelProfile == nil && strings.TrimSpace(req.Preference.Model) == "" && strings.TrimSpace(resolvedAgent.Profile.Model) == "" {
+		if _, system := agentruntime.CanonicalSystemAgentID(resolvedAgent.Profile.Name); !system {
+			rolePreference, err = s.accountDefaultSwarmPreference(principal.AccountScopeID)
+		}
+	}
 	if err == nil && req.ModelProfile != nil && strings.EqualFold(strings.TrimSpace(resolvedAgent.Profile.Name), agentruntime.SwarmOrchestratorAgentID) {
 		if modelProfileSnapshot != nil && modelProfileSnapshot.Plan == nil {
 			modelProfileSnapshot.Plan = pebblestore.CloneModelProfileSelection(&modelProfileSnapshot.Action)
@@ -991,13 +1025,26 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 		session.Metadata[pebblestore.SessionPurposeWorkspaceMetadataKey] = binding.SourceWorkspaceID
 		session.Metadata["navigation_hidden"] = true
 	}
+	// The role model is resolved by the server, so it stays out of the
+	// request hash: a retry replays even if the role model changed since.
+	if rolePreference != nil {
+		session.Preference = normalizeSessionsV3ModelPreference(*rolePreference)
+	}
 	if profilePreference, ok := sessionsV3ProfilePreference(session); ok {
 		session.Preference = normalizeSessionsV3ModelPreference(profilePreference)
 	}
-	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspacePath, workspaceName, title, session.Metadata)
+	hashMetadata := session.Metadata
+	if rolePreference != nil {
+		hashMetadata = maps.Clone(session.Metadata)
+		hashMetadata["agent_profile"] = cloneSessionsV3AgentProfile(requestedAgentProfile)
+	}
+	payloadHash, err := sessionsV3CreatePayloadHash(sessionID, req, workspacePath, workspaceName, title, hashMetadata)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	if modelAlert != "" {
+		session.Metadata["model_alert"] = modelAlert
 	}
 	if s.handleSessionsV3CreateReplay(w, principal, sessionID, clientRequestID, payloadHash, session) {
 		return
@@ -1740,6 +1787,13 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	if message.Role == "" {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("message role is required")
 	}
+	// Assistant and system turns are written only by the runtime. Accepting
+	// them from a caller would let anyone with session access forge what the
+	// model believes it said or was instructed.
+	if !strings.EqualFold(message.Role, "user") {
+		return sessionruntime.SessionMutationResult{}, nil, errors.New(`message role must be "user"; assistant and system turns are written by the runtime`)
+	}
+	message.Role = "user"
 	if len(message.ArtifactSelections) > 0 && !strings.EqualFold(message.Role, "user") {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("artifact selections are allowed only on user messages")
 	}
@@ -2745,7 +2799,7 @@ func (s *Server) handleSessionV3PrimaryRunStop(w http.ResponseWriter, r *http.Re
 	if reason == "" {
 		reason = sessionV3RunStopDefaultReason
 	}
-	result, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID}, reason)
+	result, cancelled, err := s.v3SessionExecutor.CancelRun(sessionV3ExecutorJob{Principal: principal, SessionID: sessionID, RunID: runID, StopCause: sessionruntime.PlanStoppedByUser}, reason)
 	if err != nil {
 		status := http.StatusBadRequest
 		if !cancelled {
@@ -2847,13 +2901,16 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if rejectScopedPersistentResolve(w, r, req.Action) {
+		return
+	}
 	if err := s.validateProjectPermissionReply(principal, sessionID, req.Action); err != nil {
 		writeError(w, http.StatusConflict, err)
 		return
 	}
 	record, savedRule, err := s.perm.ResolveWithPolicyAndArguments(sessionID, permissionID, req.Action, req.Reason, string(req.ApprovedArguments))
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
+		writePermissionPolicyError(w, err)
 		return
 	}
 	mutation, published, err := s.publishSessionV3PermissionUpdatedFromRecord(principal, sessionID, record)
@@ -3575,6 +3632,11 @@ type sessionsV3PrimaryBinding struct {
 	BindingGeneration         int
 }
 
+// errSessionsV3NoWorkspace is returned when a session is created without a
+// workspace and the account has no current workspace to default to. Every
+// non-project session, including a sealed agent's, is bound to a workspace.
+var errSessionsV3NoWorkspace = errors.New("this session needs a workspace: pass workspace_path of a registered workspace (this Swarm has no current workspace)")
+
 func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, req sessionsV3CreateRequest) (sessionsV3PrimaryBinding, error) {
 	if s == nil || s.topology == nil {
 		return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary topology is not configured")
@@ -3635,7 +3697,7 @@ func (s *Server) resolveSessionsV3PrimaryBinding(principal identity.Principal, r
 		}
 		if workspacePath == "" {
 			if defaultWorkspacePath == "" {
-				return sessionsV3PrimaryBinding{}, errors.New("sessions v3 primary account has no default workspace")
+				return sessionsV3PrimaryBinding{}, errSessionsV3NoWorkspace
 			}
 			workspacePath = defaultWorkspacePath
 		}

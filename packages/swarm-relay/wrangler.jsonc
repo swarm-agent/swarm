@@ -1,0 +1,21 @@
+{
+  // Swarm Control relay: reference swarm-remote-1 transport for Cloudflare.
+  // Deploy into your own account; SwarmAgent does not operate it.
+  "name": "swarm-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "durable_objects": {
+    "bindings": [{ "name": "FLEET", "class_name": "Fleet" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Fleet"] }],
+  // Create with `wrangler kv namespace create OAUTH_KV` and put its id here.
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }],
+  "vars": {
+    // Public origin of this Worker, e.g. https://swarm-relay.<subdomain>.workers.dev
+    "RELAY_ORIGIN": "",
+    "ALLOWED_REDIRECT_HOSTS": "claude.ai,claude.com"
+  }
+  // Secret (wrangler secret put SWARM_DEVICE_KEYS):
+  //   {"<device-id>": "<base64 ed25519 public key from `swarmctl remote init`>"}
+}

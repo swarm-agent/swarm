@@ -88,6 +88,14 @@ export class SwarmPermissionsNamespace {
   }
 
   /**
+   * Whether permissionless mode (bypass permissions) is on.
+   */
+  async bypass(): Promise<boolean> {
+    const res = await this.transport.request<{ ok: boolean; bypass_permissions?: boolean }>('/v1/permissions');
+    return res.data.bypass_permissions === true;
+  }
+
+  /**
    * Toggles permissionless mode (bypass permissions).
    * When enabled, tool executions run autonomously without pausing for manual approvals.
    */

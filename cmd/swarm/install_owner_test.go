@@ -34,7 +34,7 @@ func TestInstallerPropagatesProvisioningFailure(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "sh", "../../install.sh", "--yes", mode, "--artifact-root", artifact)
-			cmd.Env = append(os.Environ(), "TMPDIR="+root)
+			cmd.Env = append(os.Environ(), "TMPDIR="+root, pathWithFakeSudo(t))
 			out, err := cmd.CombinedOutput()
 			if err == nil || ctx.Err() != nil {
 				t.Fatalf("expected bounded failure: %v %s", err, out)

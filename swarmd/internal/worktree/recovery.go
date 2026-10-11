@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 )
 
@@ -82,6 +83,7 @@ func recoveryGit(path string, input []byte, args ...string) ([]byte, error) {
 	cmd.Stdin = bytes.NewReader(input)
 	var out, stderr recoveryOutput
 	cmd.Stdout, cmd.Stderr = &out, &stderr
+	sandbox.Prepare(ctx, cmd)
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("recovery git %s: %w: %s", args[0], err, stderr.String())
 	}

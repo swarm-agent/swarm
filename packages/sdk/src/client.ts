@@ -1,3 +1,4 @@
+import { SwarmAgentsNamespace } from './agents.js';
 import { SwarmAppsNamespace } from './apps.js';
 import { SwarmChatNamespace } from './chat.js';
 import { SwarmPermissionsNamespace } from './permissions.js';
@@ -11,10 +12,14 @@ import { SwarmWorkersNamespace } from './workers.js';
 import { SwarmDeliverablesNamespace } from './deliverables.js';
 import { SwarmDeployNamespace } from './deploy/index.js';
 import { SwarmNotificationsNamespace } from './notifications.js';
+import { SwarmSignalsNamespace } from './signals.js';
+import { SwarmBoxNamespace } from './box.js';
 import { SwarmProjectsNamespace } from './projects.js';
+import { SwarmRemoteNamespace } from './remote.js';
 import { SwarmSessionsNamespace } from './sessions.js';
 import { SwarmSystemNamespace } from './system.js';
 import { SwarmStorageNamespace } from './storage/index.js';
+import { resolveSwarmConnection } from './local-connection.js';
 import { SwarmTransport } from './transport.js';
 import type { ResolvedSwarmClientConfig, SwarmClientConfig } from './types.js';
 import { SwarmWorkspacesNamespace } from './workspaces.js';
@@ -55,7 +60,15 @@ export class SwarmClient {
   readonly notifications: SwarmNotificationsNamespace;
   /** Convenient alias for notifications namespace: inbox */
   readonly inbox: SwarmNotificationsNamespace;
+  /** Machine signal feed: blocked agents, failures, refused keys, reported events. */
+  readonly signals: SwarmSignalsNamespace;
+  /** Machine state for monitors: sandbox, blocked sessions, failing workers, usage. */
+  readonly box: SwarmBoxNamespace;
   readonly storage: SwarmStorageNamespace;
+  /** Owner administration of the relay connection (private transport only) */
+  readonly remote: SwarmRemoteNamespace;
+  /** Sealed agents and the client tools your application answers */
+  readonly agents: SwarmAgentsNamespace;
   /** Convenient alias for cloud storage connections: cloud */
   readonly cloud: SwarmStorageNamespace;
 
@@ -63,17 +76,11 @@ export class SwarmClient {
     const env: Record<string, string | undefined> =
       typeof process !== 'undefined' && process?.env ? process.env : {};
 
-    const baseUrl =
-      config.baseUrl ||
-      env.SWARM_API_URL ||
-      env.SWARM_DESKTOP_URL ||
-      'http://127.0.0.1:18080';
-
-    const socketPath = config.socketPath || env.SWARM_SOCKET_PATH;
+    const { baseUrl, socketPath } = resolveSwarmConnection(config, { env });
     const token = config.token || env.SWARM_AUTH_TOKEN || env.SWARM_DEPLOY_TOKEN;
 
     const resolved: ResolvedSwarmClientConfig = {
-      baseUrl: baseUrl.replace(/\/+$/, ''),
+      baseUrl,
       token,
       socketPath,
       defaultHeaders: config.defaultHeaders ?? {},
@@ -104,8 +111,12 @@ export class SwarmClient {
     this.deploy = new SwarmDeployNamespace(this.transport);
     this.notifications = new SwarmNotificationsNamespace(this.transport);
     this.inbox = this.notifications;
+    this.signals = new SwarmSignalsNamespace(this.transport);
+    this.box = new SwarmBoxNamespace(this.transport);
+    this.agents = new SwarmAgentsNamespace(this.transport);
     this.storage = new SwarmStorageNamespace(this.transport);
     this.cloud = this.storage;
+    this.remote = new SwarmRemoteNamespace(this.transport);
   }
 
   /**

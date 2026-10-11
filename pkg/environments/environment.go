@@ -198,6 +198,19 @@ func (e *Environment) Validate() error {
 	if e.Container.Image == "" {
 		return errors.New("container image cannot be empty")
 	}
+	if strings.HasPrefix(e.Container.Image, "-") {
+		return errors.New("container image cannot start with '-'")
+	}
+	// Privileged containers own the host kernel; no permission decision can make
+	// that safe for agent-authored definitions, so it is refused outright.
+	if e.Container.Privileged {
+		return errors.New("privileged containers are not supported")
+	}
+	for key := range e.Labels {
+		if strings.HasPrefix(strings.TrimSpace(key), "swarm.") {
+			return errors.New("labels cannot use the reserved swarm. prefix")
+		}
+	}
 
 	if s := e.Container.RootlessSystemd; s != nil {
 		if s.CgroupNamespace != "private" || s.Network != "slirp4netns" || s.PidsLimit < 1 || s.PidsLimit > 65536 {
@@ -206,9 +219,6 @@ func (e *Environment) Validate() error {
 		registry := e.Provisioning.Strategy.RegistryImage
 		if registry == nil || registry.Image != e.Container.Image || registry.PullPolicy != "never" || strings.HasPrefix(e.Container.Image, "-") {
 			return errors.New("rootless_systemd requires matching container/registry image and pull_policy=never")
-		}
-		if e.Container.Privileged {
-			return errors.New("rootless_systemd forbids privileged containers")
 		}
 		if e.Provisioning.Strategy.Kind != SourceStrategyKindRegistryImage || len(e.Provisioning.Mounts) != 0 {
 			return errors.New("rootless_systemd requires registry_image provisioning without host mounts")

@@ -7,6 +7,7 @@ import {
   SwarmForbiddenError,
   SwarmNotFoundError,
   SwarmTimeoutError,
+  SwarmValidationError,
 } from '../errors.js';
 import { SwarmProjectsNamespace } from '../projects.js';
 import { SwarmTransport } from '../transport.js';
@@ -648,6 +649,15 @@ test('SwarmProjectsNamespace: Task integration, program deploy/redeploy, and med
     const url = req.url || '';
     const method = req.method || '';
 
+    // Task detail (integrateTask derives its selection from it)
+    if (method === 'GET' && url === '/v3/projects/proj_1/tasks/task_1') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        task: { id: 'task_1', project_id: 'proj_1', session_id: 'ses_1', worktree_branch: 'agent/t1', base_branch: 'main' },
+      }));
+      return;
+    }
+
     // Task integrate
     if (method === 'POST' && url === '/v3/projects/proj_1/tasks/task_1/integrate') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1167,4 +1177,105 @@ test('project creation identity and context retry receipts', { timeout: 10000 },
     await assert.rejects(() => ctx.projects.retryContext('project', 2), /identity mismatch/);
     assert.equal(ctx.receivedRequests.filter(r => r.url === '/v3/projects').length, 3);
   } finally { await closeTestServer(ctx); }
+});
+
+test('integrateTask derives the exact daemon selection from a fresh task record', async () => {
+  // Written Purpose:
+  // - Product Requirement: client.projects.integrateTask(projectId, taskId) must work with no
+  //   extra arguments. The daemon (Server.handleProjects integrate branch in
+  //   swarmd/internal/api/projects.go) decodes a JSON selection and refuses an empty body with
+  //   400 "select the task session and target branch before integrating: EOF", and refuses with
+  //   409 unless session_id equals the task's session and source/target branch are present.
+  // - Threat/regression: the SDK posted no body, so every real integrate failed; or it guessed
+  //   branches instead of using the daemon's own fresh delivery assessment.
+  // - Boundary: SwarmProjectsNamespace.integrateTask + integrationSelectionFromTask.
+  // - Narrowest test layer: hermetic HTTP fake that enforces the daemon's decode/selection guards.
+  const tasks: Record<string, any> = {
+    // Detail GET shape: attempts + delivery_assessment under .task; task-level branches empty.
+    task_a: {
+      id: 'task_a', project_id: 'proj_1', session_id: 'ses_a', revision: 7, active_attempt_id: 'att_2',
+      attempts: [{ id: 'att_1', session_id: 'ses_old' }, { id: 'att_2', session_id: 'ses_a' }],
+      delivery_assessment: {
+        session_id: 'ses_a', attempt_id: 'att_2', source_branch: 'agent/task-a', target_branch: 'main',
+        source_oid: 'src_oid', target_oid: 'tgt_oid', base_oid: 'base_oid', freshness: 'observed', state: 'candidate_work',
+      },
+    },
+    // No assessment, no task branches: falls back to the active attempt's lane.
+    task_b: {
+      id: 'task_b', project_id: 'proj_1', session_id: 'ses_b', active_attempt_id: 'att_b',
+      attempts: [{ id: 'att_b', session_id: 'ses_b', worktree_branch: 'agent/task-b', base_branch: 'dev' }],
+    },
+    // Media-style task with no captured lane.
+    task_c: { id: 'task_c', project_id: 'proj_1' },
+  };
+  const ctx = await createTestServer((req, res, body) => {
+    const url = req.url || '';
+    const get = url.match(/^\/v3\/projects\/proj_1\/tasks\/([^/]+)$/);
+    if (req.method === 'GET' && get) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ task: tasks[get[1]], model_preview: null }));
+      return;
+    }
+    const post = url.match(/^\/v3\/projects\/proj_1\/tasks\/([^/]+)\/integrate$/);
+    if (req.method === 'POST' && post) {
+      if (!body || typeof body !== 'object') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'select the task session and target branch before integrating: EOF' }));
+        return;
+      }
+      const task = tasks[post[1]];
+      if (!body.session_id || body.session_id !== task.session_id || !body.source_branch || !body.target_branch) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'task selection changed or captured source/target branch is missing; refresh the task' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'integrated', resulting_target_head: 'new_head' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  const posts = () => ctx.receivedRequests.filter((r) => r.method === 'POST');
+  const gets = () => ctx.receivedRequests.filter((r) => r.method === 'GET');
+  try {
+    const result = await ctx.projects.integrateTask('proj_1', 'task_a');
+    assert.equal(result.status, 'integrated');
+    assert.deepEqual(posts()[0].body, {
+      session_id: 'ses_a', source_branch: 'agent/task-a', target_branch: 'main',
+      revision: 7, attempt_id: 'att_2', source_head: 'src_oid', target_head: 'tgt_oid',
+    });
+    assert.equal(gets().length, 1, 'selection comes from one fresh task read');
+
+    await ctx.projects.integrateTask('proj_1', 'task_b');
+    assert.deepEqual(posts()[1].body, {
+      session_id: 'ses_b', source_branch: 'agent/task-b', target_branch: 'dev', attempt_id: 'att_b',
+    });
+
+    // Overrides win over derived fields; a stale override is surfaced as the daemon's conflict.
+    await assert.rejects(
+      () => ctx.projects.integrateTask('proj_1', 'task_a', { selection: { session_id: 'ses_old' } }),
+      (err: any) => err instanceof SwarmConflictError && /refresh the task/.test(err.message)
+    );
+    assert.equal(posts()[2].body.session_id, 'ses_old');
+    assert.equal(posts()[2].body.source_branch, 'agent/task-a');
+
+    // A complete caller selection skips the fetch and is sent as given.
+    const getsBefore = gets().length;
+    await ctx.projects.integrateTask('proj_1', 'task_a', {
+      selection: { session_id: 'ses_a', source_branch: 'agent/task-a', target_branch: 'main' },
+    });
+    assert.equal(gets().length, getsBefore);
+    assert.deepEqual(posts()[3].body, { session_id: 'ses_a', source_branch: 'agent/task-a', target_branch: 'main' });
+
+    // No captured lane: fail locally with the missing fields, and never POST an incomplete selection.
+    const postsBefore = posts().length;
+    await assert.rejects(
+      () => ctx.projects.integrateTask('proj_1', 'task_c'),
+      (err: any) => err instanceof SwarmValidationError && /session_id, source_branch, target_branch/.test(err.message)
+    );
+    assert.equal(posts().length, postsBefore);
+  } finally {
+    await closeTestServer(ctx);
+  }
 });

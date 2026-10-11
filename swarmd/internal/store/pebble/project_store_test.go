@@ -353,3 +353,48 @@ func TestReserveProjectTaskIfAbsentConcurrentDoesNotOverwrite(t *testing.T) {
 		t.Fatalf("cross-account reservation visible: %v", err)
 	}
 }
+
+func TestListRecentProjectTasksReturnsNewestFirstWithinProject(t *testing.T) {
+	// Purpose:
+	// - Invariant: ListRecentProjectTasks returns the newest `limit` tasks of one
+	//   account-scoped project, newest first; other projects/accounts never appear.
+	// - Boundary/authority: SessionStore.ListRecentProjectTasks in project_store.go, which feeds
+	//   the orchestrator's "Recent Project Tasks & Deliverables" context every turn.
+	// - Threat/regression: that block used ListProjectTasks (oldest first, first 10), so once a
+	//   project had more than 10 tasks the orchestrator saw the oldest ones as "recent".
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	store := NewSessionStore(db)
+	const account, project = "acct_recent", "proj_recent"
+	for i := 1; i <= 12; i++ {
+		task := &ProjectTaskRecord{ProjectID: project, Title: "task", Status: "queued", Agent: "coder", CreatedAt: int64(1000 + i)}
+		task.ID = "task_" + string(rune('a'+i-1))
+		if err := store.PutProjectTask(account, task); err != nil {
+			t.Fatalf("put task %d: %v", i, err)
+		}
+	}
+	for _, other := range []struct{ account, project string }{{account, "proj_other"}, {"acct_other", project}} {
+		if err := store.PutProjectTask(other.account, &ProjectTaskRecord{ID: "task_zzz", ProjectID: other.project, Title: "other", Status: "queued", Agent: "coder", CreatedAt: 99999}); err != nil {
+			t.Fatalf("put foreign task: %v", err)
+		}
+	}
+
+	recent, err := store.ListRecentProjectTasks(account, project, 10)
+	if err != nil {
+		t.Fatalf("ListRecentProjectTasks: %v", err)
+	}
+	if len(recent) != 10 {
+		t.Fatalf("recent tasks = %d, want 10", len(recent))
+	}
+	for i, task := range recent {
+		if want := int64(1012 - i); task.CreatedAt != want || task.ProjectID != project || task.AccountID != account {
+			t.Fatalf("recent[%d] = %s created=%d project=%s account=%s, want created=%d in %s/%s", i, task.ID, task.CreatedAt, task.ProjectID, task.AccountID, want, account, project)
+		}
+	}
+	if _, err := store.ListRecentProjectTasks(account, "", 10); err == nil {
+		t.Fatal("missing project id accepted")
+	}
+}

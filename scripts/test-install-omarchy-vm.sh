@@ -14,7 +14,7 @@ exact checksum-bound candidate over SSH, unsets TMPDIR for install.sh, and
 verifies Git provisioning plus full readiness.
 
 The repository does not download or embed the multi-gigabyte Omarchy ISO in
-GitHub Actions. On testbench, create a reusable clean base once with Omarchy's
+GitHub Actions. Create a reusable clean base VM once with Omarchy's
 official cidata unattended flow, then boot a throwaway overlay for this runner.
 EOF
 }

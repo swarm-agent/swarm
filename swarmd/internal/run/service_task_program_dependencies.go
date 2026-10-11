@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"time"
 	"unicode/utf8"
@@ -164,6 +165,7 @@ func (p *taskProgramScheduler) boundedLanePatch(lane pebblestore.TaskProgramRepo
 	cmd := exec.CommandContext(ctx, "git", "-C", lane.WorkspacePath, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--binary", lane.BaseCommit, head, "--")
 	output := &taskDependencyBuffer{limit: 128 * 1024}
 	cmd.Stdout, cmd.Stderr = output, output
+	sandbox.Prepare(ctx, cmd)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("read bounded dependency source: %w", err)
 	}
@@ -215,6 +217,7 @@ func (p *taskProgramScheduler) integratedCoderSourceEvidence(inline bool) (strin
 	cmd := exec.CommandContext(ctx, "git", "-C", path, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--binary", lane.BaseCommit, p.record.ParentHead, "--")
 	output := &taskDependencyBuffer{limit: 128 * 1024}
 	cmd.Stdout, cmd.Stderr = output, output
+	sandbox.Prepare(ctx, cmd)
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("read bounded integrated Coder source: %w", err)
 	}

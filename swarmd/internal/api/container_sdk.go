@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // ContainerSDKHandler is not a proxy to privileged local transport. It admits
@@ -32,7 +34,40 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("scoped token identity unavailable"))
 			return
 		}
-		if !containerSDKRouteAllowed(r) {
+		if strings.TrimSpace(rec.AgentName) != "" {
+			// Agent-bound tokens get only their own gate: no MCP, no listing.
+			if !s.gateAgentBoundToken(w, r, rec) {
+				return
+			}
+			next.ServeHTTP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec))
+			return
+		}
+		// This listener authenticates scoped keys, not OAuth. Private MCP
+		// tunnels probe both RFC 9728 discovery locations using their configured
+		// upstream credential. Report absent metadata as 404 so an auth error
+		// document is not mistaken for malformed OAuth metadata. Keep credential
+		// validation above this response; no product route is made public.
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+			(r.URL.Path == "/.well-known/oauth-protected-resource" || r.URL.Path == "/.well-known/oauth-protected-resource/mcp") {
+			http.NotFound(w, r)
+			return
+		}
+		if isAIKey(rec) && r.URL.Path != controlMCPPath {
+			// An AI key's level is enforced per tool in Swarm Control; the raw
+			// routes below would bypass it (a write key could resolve permissions).
+			writeError(w, http.StatusForbidden, errors.New("AI keys work only through Swarm Control (/mcp)"))
+			return
+		}
+		if !gateClientAppKey(w, r, rec) {
+			return
+		}
+		if r.URL.Path == controlMCPPath {
+			// Swarm Control MCP translates each tool into one request against
+			// the allowlisted routes below, under this same verified identity.
+			s.serveControlMCP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec), next)
+			return
+		}
+		if !containerSDKRouteAllowed(r) && !containerSDKMonitorRouteAllowed(r) {
 			writeError(w, http.StatusForbidden, errors.New("route unavailable on container SDK listener"))
 			return
 		}
@@ -40,6 +75,62 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 		// per-call permissions. Never send this request through local transport.
 		next.ServeHTTP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec))
 	})
+}
+
+// clientAppScope marks a key minted for a client app (swarm_create_client_key).
+// Its sessions scopes alone would reach every handler that checks only for a
+// principal, so the marker holds it to the session routes on every listener.
+const clientAppScope = "client:app"
+
+func isClientAppKey(rec *pebblestore.ScopedTokenRecord) bool {
+	if rec == nil {
+		return false
+	}
+	for _, scope := range rec.Scopes {
+		if strings.EqualFold(strings.TrimSpace(scope), clientAppScope) {
+			return true
+		}
+	}
+	return false
+}
+
+// gateClientAppKey limits a client-app key to start, read, message, stop and
+// resolve permissions in sessions (containerSDKRouteAllowed); never /mcp.
+func gateClientAppKey(w http.ResponseWriter, r *http.Request, rec *pebblestore.ScopedTokenRecord) bool {
+	if isClientAppKey(rec) && !containerSDKRouteAllowed(r) {
+		writeError(w, http.StatusForbidden, errors.New("client app keys reach only session routes"))
+		return false
+	}
+	return true
+}
+
+// isAIKey reports a token minted with Swarm Control levels (ai_access).
+func isAIKey(rec *pebblestore.ScopedTokenRecord) bool {
+	if rec == nil {
+		return false
+	}
+	for _, scope := range rec.Scopes {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(scope)), "swarm:") {
+			return true
+		}
+	}
+	return false
+}
+
+// containerSDKMonitorRouteAllowed admits watching a headless machine from
+// outside it: the machine summary and the signal feed (their handlers require
+// signals:read), and an outside source on the machine, such as a host security
+// monitor, reporting a signal (signals:write, external kinds only). Signal
+// sinks stay owner-only. Client app keys never get here: gateClientAppKey
+// holds them to the session routes first.
+func containerSDKMonitorRouteAllowed(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/v3/box/summary":
+		return r.Method == http.MethodGet
+	case "/v3/signals":
+		return r.Method == http.MethodGet || r.Method == http.MethodPost
+	}
+	return false
 }
 
 func containerSDKRouteAllowed(r *http.Request) bool {

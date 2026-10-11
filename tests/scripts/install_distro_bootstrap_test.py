@@ -74,7 +74,7 @@ exec "$REAL_TIMEOUT" --verbose --kill-after=0.1s "$budget" "$@"
         result = self.run_helper()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.text("apt.calls").splitlines(), [
-            "update", "install -y --no-install-recommends ca-certificates curl sudo systemd",
+            "update", "install -y --no-install-recommends ca-certificates curl dbus sudo systemd",
         ])
         self.assertEqual(self.text("apt.conf"),
                          'Acquire::Retries "0";\nAcquire::http::Timeout "30";\n'
@@ -83,7 +83,7 @@ exec "$REAL_TIMEOUT" --verbose --kill-after=0.1s "$budget" "$@"
                          f"-m 0644 /dev/stdin {self.root}/99swarm-install-test")
         calls = self.text("timeout.calls").splitlines()
         self.assertEqual(calls[0], "--verbose --kill-after=5s 180s apt-get update")
-        self.assertEqual(calls[1], "--verbose --kill-after=5s 240s env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl sudo systemd")
+        self.assertEqual(calls[1], "--verbose --kill-after=5s 240s env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl dbus sudo systemd")
         self.assertIn("stage=apt-install passed", result.stdout)
 
     def test_missing_configuration_stops_before_writes(self):

@@ -19,7 +19,7 @@ const suppliedToken = String(process.env.SWARM_RUNNER_TOKEN || '').trim()
 if (!apiURL || !/^https?:\/\//.test(apiURL)) throw new Error('--api-url must be an http or https URL')
 if (!provider || !/^[a-z0-9._-]+$/.test(provider)) throw new Error('--provider is invalid')
 if (!Number.isFinite(timeoutMs) || timeoutMs < 30000 || timeoutMs > 600000) throw new Error('--timeout-ms must be between 30000 and 600000')
-if (!suppliedModel) throw new Error('--coder-model is required; use scripts/run-testbench-runner.sh so the ignored .env supplies the explicit Fireworks Coder model')
+if (!suppliedModel) throw new Error('--coder-model is required; pass the exact Coder model explicitly with --coder-model')
 if (!['off', 'low', 'medium', 'high', 'xhigh'].includes(suppliedThinking)) throw new Error('--thinking must be off, low, medium, high, or xhigh')
 
 const testID = `runner-task-program-worktrees-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`

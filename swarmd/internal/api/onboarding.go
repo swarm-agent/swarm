@@ -68,11 +68,14 @@ type onboardingTailscaleServePayload struct {
 	Error                      string `json:"error,omitempty"`
 }
 
+// onboardingIdentityPayload.Username is the owner name as typed; handle is the
+// normalized unique key used for comparisons.
 type onboardingIdentityPayload struct {
 	Bootstrapped    bool   `json:"bootstrapped"`
 	UserID          string `json:"user_id,omitempty"`
 	AccountScopeID  string `json:"account_scope_id,omitempty"`
 	Username        string `json:"username,omitempty"`
+	handle          string
 	TeamID          string `json:"team_id,omitempty"`
 	TeamDisplayName string `json:"team_display_name,omitempty"`
 	TeamDefault     bool   `json:"team_default,omitempty"`
@@ -310,7 +313,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		return onboardingResponse{}, err
 	}
 	if !cfg.Exists {
-		cfg = startupconfig.Default(cfg.Path)
+		cfg = startupconfig.NewInstall(cfg.Path)
 	}
 	vaultStatus, err := s.readVaultStatus()
 	if err != nil {
@@ -422,7 +425,8 @@ func (s *Server) onboardingIdentityPayload() (onboardingIdentityPayload, bool, e
 		Bootstrapped:   true,
 		UserID:         summary.CurrentUser.ID,
 		AccountScopeID: summary.CurrentUser.AccountScopeID,
-		Username:       summary.CurrentUser.Username,
+		Username:       identity.UserDisplayName(*summary.CurrentUser),
+		handle:         summary.CurrentUser.Username,
 	}
 	if summary.CurrentTeam != nil {
 		payload.TeamID = summary.CurrentTeam.ID
@@ -440,12 +444,25 @@ func actorOnboardingIdentityPayload(actor identity.ActorContext) onboardingIdent
 		Bootstrapped:    strings.TrimSpace(actor.UserID) != "",
 		UserID:          actor.UserID,
 		AccountScopeID:  actor.AccountScopeID,
-		Username:        actor.User.Username,
+		Username:        identity.UserDisplayName(actor.User),
+		handle:          actor.User.Username,
 		TeamID:          actor.TeamID,
 		TeamDisplayName: actor.Team.Name,
 		TeamDefault:     actor.Team.Default,
 		MembershipRole:  actor.Membership.Role,
 	}
+}
+
+// onboardingOwnerNameSetError refuses a different owner name after bootstrap
+// with a message people can act on; it still matches ErrBootstrapExists (409).
+type onboardingOwnerNameSetError struct{ name string }
+
+func (e onboardingOwnerNameSetError) Error() string {
+	return fmt.Sprintf("the owner name is already set to %q; change it in account settings instead", e.name)
+}
+
+func (e onboardingOwnerNameSetError) Is(target error) bool {
+	return target == identity.ErrBootstrapExists
 }
 
 func onboardingErrorStatus(err error) int {
@@ -465,7 +482,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		return onboardingResponse{}, nil, err
 	}
 	if !cfg.Exists {
-		cfg = startupconfig.Default(cfg.Path)
+		cfg = startupconfig.NewInstall(cfg.Path)
 	}
 
 	identityPayload, identityBootstrapped, err := s.onboardingIdentityPayload()
@@ -482,8 +499,17 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 	if !identityBootstrapped && (req.SwarmName == nil || strings.TrimSpace(*req.SwarmName) == "") {
 		return onboardingResponse{}, nil, errors.New("swarm name is required for daemon identity")
 	}
+	// Repeating the owner name already set (compared like the unique handle,
+	// case-insensitively) is a no-op so clients can safely retry bootstrap.
+	// A different name is refused: renaming belongs to the authenticated
+	// account route, not to first-run bootstrap.
+	usernameUnchanged := false
 	if identityBootstrapped && bootstrapUsername != "" {
-		return onboardingResponse{}, nil, identity.ErrBootstrapExists
+		if pebblestore.NormalizeIdentityUsername(bootstrapUsername) != identityPayload.handle {
+			return onboardingResponse{}, nil, onboardingOwnerNameSetError{name: identityPayload.Username}
+		}
+		bootstrapUsername = ""
+		usernameUnchanged = true
 	}
 
 	updated := cfg
@@ -557,6 +583,10 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		changed = true
 	}
 	if !changed && bootstrapUsername == "" {
+		if usernameUnchanged {
+			response, err := s.onboardingResponseWithServeDetection(includeSensitive, true)
+			return response, nil, err
+		}
 		return onboardingResponse{}, nil, errors.New("no onboarding fields were provided")
 	}
 	if !identityBootstrapped && strings.TrimSpace(updated.SwarmName) == "" {

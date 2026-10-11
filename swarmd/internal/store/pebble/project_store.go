@@ -378,6 +378,7 @@ type ProjectTaskCoderAssignment struct {
 
 // TaskDeliveryAssessment is an ephemeral observation, not an integration receipt
 // or execution outcome. Only state=integrated proves original source ancestry.
+// SourceDirtyFiles/TargetDirtyFiles name the bounded changes that block delivery.
 type TaskDeliveryAssessment struct {
 	AccountID           string   `json:"account_id"`
 	TaskID              string   `json:"task_id"`
@@ -397,7 +398,9 @@ type TaskDeliveryAssessment struct {
 	Freshness           string   `json:"freshness"`
 	ObservedAt          int64    `json:"observed_at,omitempty"`
 	SourceDirty         bool     `json:"source_dirty"`
+	SourceDirtyFiles    []string `json:"source_dirty_files,omitempty"`
 	TargetDirty         bool     `json:"target_dirty"`
+	TargetDirtyFiles    []string `json:"target_dirty_files,omitempty"`
 	CandidateCommits    int      `json:"candidate_commits"`
 	Files               []string `json:"files,omitempty"`
 	AllowedActions      []string `json:"allowed_actions"`
@@ -817,12 +820,14 @@ func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, t
 	if captureAttempt && task.CreatedAt == 0 {
 		task.CreatedAt = now
 	}
+	priorStatus := ""
 	if task.ID != "" {
 		prior, found, err := s.getProjectTask(accountScopeID, task.ProjectID, task.ID, captureAttempt)
 		if err != nil {
 			return nil, err
 		}
 		if found {
+			priorStatus = prior.Status
 			if err := validateTaskEnvironmentWrite(prior, task); err != nil {
 				return nil, err
 			}
@@ -910,6 +915,10 @@ func (s *SessionStore) persistProjectTaskMetadataLocked(accountScopeID string, t
 	mutation.putBytes(key, raw)
 	if err := s.store.commitProjectRealtime(mutation); err != nil {
 		return nil, err
+	}
+	// Archive and visibility writes (validate=false) never change task status.
+	if validate && task.Status != priorStatus {
+		mutation.taskTransition = &ProjectTaskStatusTransition{AccountScopeID: accountScopeID, PriorStatus: priorStatus, Task: toStore}
 	}
 	return mutation, nil
 }
@@ -1018,6 +1027,52 @@ func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit 
 	})
 	if len(tasks) > limit {
 		tasks = tasks[:limit]
+	}
+	return tasks, nil
+}
+
+// ListRecentProjectTasks returns the newest `limit` tasks of a project, newest
+// first. Only the returned tasks are hydrated with attempt outcome and plan
+// document, so per-call work stays bounded by limit rather than project size.
+func (s *SessionStore) ListRecentProjectTasks(accountScopeID, projectID string, limit int) ([]ProjectTaskRecord, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, errors.New("database not available")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	projectID = strings.TrimSpace(projectID)
+	if accountScopeID == "" || projectID == "" {
+		return nil, errors.New("account scope id and project id are required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	var tasks []ProjectTaskRecord
+	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), 10000, func(_ string, value []byte) error {
+		var rec ProjectTaskRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return nil
+		}
+		if rec.AccountID == accountScopeID && rec.ProjectID == projectID {
+			tasks = append(tasks, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(tasks, func(i, j int) bool {
+		if tasks[i].CreatedAt != tasks[j].CreatedAt {
+			return tasks[i].CreatedAt > tasks[j].CreatedAt
+		}
+		return tasks[i].ID > tasks[j].ID
+	})
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
+	}
+	for i := range tasks {
+		tasks[i].EnsureTaskAttempts()
+		s.hydrateTaskAttemptOutcome(&tasks[i])
+		s.hydrateProjectTaskPlanDocument(&tasks[i])
 	}
 	return tasks, nil
 }

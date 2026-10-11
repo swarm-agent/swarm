@@ -738,3 +738,24 @@ func (ws *WorkerStore) EnableWorkerAutomation(account, user, id, autoID string, 
 	published = m
 	return w, nil
 }
+
+// WorkerRunAdmissionExists reports whether an idempotency key or occurrence
+// already admitted a run for this account, so callers can let a replay return
+// its original receipt while still validating genuinely new admissions.
+func (ws *WorkerStore) WorkerRunAdmissionExists(account string, req WorkerRunAdmission) (bool, error) {
+	if ws == nil || ws.store == nil || ws.store.db == nil {
+		return false, errors.New("store is not open")
+	}
+	account = strings.TrimSpace(account)
+	for _, key := range []string{req.IdempotencyKey, req.OccurrenceID} {
+		if key == "" {
+			continue
+		}
+		var prior workerRunIdempotency
+		found, err := ws.store.GetJSON(KeyWorkerRunIdempotency(account, key), &prior)
+		if err != nil || found {
+			return found, err
+		}
+	}
+	return false, nil
+}

@@ -17,6 +17,7 @@ import (
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/privacy"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	"swarm/packages/swarmd/internal/signals"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
 )
@@ -44,6 +45,7 @@ type Service struct {
 	sessions                         sessionLookup
 	followupCheckpointPolicyResolver func(accountScopeID string) (string, error)
 	notifications                    *notification.Service
+	signals                          *signals.Emitter
 	localSwarmIDResolver             func() string
 	principalID                      string
 	bypassPermissions                bool
@@ -58,7 +60,51 @@ type Service struct {
 	permissionStateCache map[string]permissionStateCacheEntry
 	counter              atomic.Uint64
 	reconciled           bool
+	policyLocked         atomic.Bool
+	bypassGate           atomic.Pointer[BypassGate]
 }
+
+// BypassGate reports whether permission bypass may take effect right now and,
+// when it may not, why. The agent sandbox installs it: agents may run without
+// prompts only while their commands are confined to a sandbox.
+type BypassGate func() (allowed bool, reason string)
+
+// SetBypassGate installs gate. While it returns false, the stored bypass
+// setting is kept but has no effect: every authorization path reads bypass as
+// off.
+func (s *Service) SetBypassGate(gate BypassGate) {
+	if s == nil {
+		return
+	}
+	if gate == nil {
+		s.bypassGate.Store(nil)
+		return
+	}
+	s.bypassGate.Store(&gate)
+}
+
+// BypassBlocked reports why bypass cannot take effect now, or "" when it can.
+func (s *Service) BypassBlocked() string {
+	if s == nil {
+		return ""
+	}
+	gate := s.bypassGate.Load()
+	if gate == nil {
+		return ""
+	}
+	if allowed, reason := (*gate)(); !allowed {
+		if strings.TrimSpace(reason) == "" {
+			reason = "the agent sandbox is not active"
+		}
+		return reason
+	}
+	return ""
+}
+
+// ErrPolicyLocked reports that the daemon was started with its permission
+// policy locked: rules, capability policies and bypass cannot change until the
+// daemon restarts without the lock.
+var ErrPolicyLocked = errors.New("permission policy is locked: restart swarmd without --lock-permission-policy to change it")
 
 type permissionStateCacheEntry struct {
 	AccountScopeID    string
@@ -81,6 +127,10 @@ type CreateInput struct {
 	Mode              string
 }
 
+// RequirementClientTool marks a pending record that a session's client answers
+// with a client tool's result (or failure). It waits on an app, not a person.
+const RequirementClientTool = "client_tool"
+
 type AuthorizationDecision string
 
 const (
@@ -102,6 +152,16 @@ type AuthorizationInput struct {
 	Overlay                  *Policy
 	SubagentReservation      *SubagentReservationResult
 	SessionDeployReservation *SessionDeployReservationResult
+	// InputBoundary marks a call whose result must come from the session's
+	// client (a client tool). Like ask_user it always waits for an explicit
+	// resolution, even when approvals are bypassed or a broad allow rule
+	// exists; only an explicit deny skips the wait.
+	InputBoundary bool
+	// ExecutionScope is the trusted workspace scope in which the call would
+	// execute, resolved by the runtime (never from tool arguments). nil when
+	// the caller cannot bind the exact scope; path-reading bash commands then
+	// keep asking.
+	ExecutionScope *tool.WorkspaceScope
 }
 
 type AuthorizationResult struct {
@@ -257,9 +317,29 @@ func (s *Service) SetNotificationService(notifications *notification.Service) {
 	s.notifications = notifications
 }
 
+// LockPolicy makes the permission policy read-only for the life of this
+// process: every policy write (rules, capability and subagent policies, the
+// bash profile and rules saved by allow_always/deny_always) fails with
+// ErrPolicyLocked, and bypass is turned off and cannot be turned on. There is
+// deliberately no unlock; the lock comes from the daemon's startup flags.
+func (s *Service) LockPolicy() {
+	if s == nil {
+		return
+	}
+	s.policyLocked.Store(true)
+	s.SetBypassPermissions(false)
+}
+
+func (s *Service) PolicyLocked() bool {
+	return s != nil && s.policyLocked.Load()
+}
+
 func (s *Service) SetBypassPermissions(enabled bool) {
 	if s == nil {
 		return
+	}
+	if enabled && s.policyLocked.Load() {
+		enabled = false
 	}
 	now := time.Now().UnixMilli()
 	s.mu.Lock()
@@ -281,10 +361,11 @@ func (s *Service) BypassPermissions() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	state, err := s.loadPermissionStateLocked("")
+	bypass := state.BypassPermissions
 	if err != nil {
-		return s.bypassPermissions
+		bypass = s.bypassPermissions
 	}
-	return state.BypassPermissions
+	return bypass && s.BypassBlocked() == ""
 }
 
 func (s *Service) SetRetainToolOutputHistory(enabled bool) {
@@ -484,7 +565,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		}
 	}
 	input.Mode = effectiveMode
-	explain, err := s.ExplainToolForAccount(input.AccountScopeID, effectiveMode, input.ToolName, input.ToolArguments, input.Overlay)
+	explain, err := s.explainToolForAccountInScope(input.AccountScopeID, effectiveMode, input.ToolName, input.ToolArguments, input.Overlay, input.ExecutionScope)
 	if err != nil {
 		return AuthorizationResult{}, err
 	}
@@ -494,6 +575,9 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		// a broad allow rule exists; otherwise the tool executes with an empty
 		// response and silently loses the product decision.
 		return s.createPendingAuthorization(input, sessionID, requirement, "ask_user requires an explicit user response", "user_input_policy", "ask user input")
+	}
+	if input.InputBoundary && explain.Decision != PolicyDecisionDeny {
+		return s.createPendingAuthorization(input, sessionID, RequirementClientTool, "client tool result required", "client_tool", "client tool call")
 	}
 	if state.BypassPermissions {
 		// Bypass suppresses ordinary approval prompts only. Hard denials and the
@@ -1905,6 +1989,13 @@ func actionIsDeny(action string) bool {
 	}
 }
 
+// IsPersistentAction reports whether a resolve action saves a policy rule
+// (allow_always, deny_always or an alias of either).
+func IsPersistentAction(action string) bool {
+	normalized, err := normalizeResolveAction(action)
+	return err == nil && actionIsPersistent(normalized)
+}
+
 func actionIsPersistent(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case ActionAllowAlways, ActionDenyAlways:
@@ -2143,6 +2234,13 @@ func permissionStoredError(raw string) string {
 }
 
 func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID, originSwarmID, sourceEventType string) {
+	if strings.EqualFold(strings.TrimSpace(record.Requirement), RequirementClientTool) {
+		// A client tool call is answered by the session's app, not a person: it is
+		// neither a permission request nor, when the app reports an error, a denial.
+		// Its outcome is the tool's own result or failure in the session.
+		return
+	}
+	s.emitPermissionSignal(record, sourceEventType)
 	if s == nil || s.notifications == nil {
 		return
 	}

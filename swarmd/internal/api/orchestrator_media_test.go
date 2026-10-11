@@ -273,7 +273,7 @@ func TestProjectOrchestratorRuntimeMediaWithoutWorkspace(t *testing.T) {
 						t.Fatalf("provider request: %+v %v", request, err)
 					}
 					if allowed {
-						invoker, err := executor.newSessionV3ProviderToolInvoker(resolved, job, 1, nil, nil)
+						invoker, err := executor.newSessionV3ProviderToolInvoker(resolved, job, 1, nil, nil, resolved.Tools)
 						if err != nil {
 							t.Fatal(err)
 						}
@@ -289,7 +289,7 @@ func TestProjectOrchestratorRuntimeMediaWithoutWorkspace(t *testing.T) {
 						}
 						stale := resolved
 						stale.MediaContract.Hash = "forged"
-						staleInvoker, err := executor.newSessionV3ProviderToolInvoker(stale, job, 1, nil, nil)
+						staleInvoker, err := executor.newSessionV3ProviderToolInvoker(stale, job, 1, nil, nil, stale.Tools)
 						if err != nil {
 							t.Fatal(err)
 						}

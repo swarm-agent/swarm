@@ -139,16 +139,25 @@ func readMigratedTaskBoard(t *testing.T, s *pebblestore.SessionStore, consume fu
 
 // Purpose: handleProjects must succeed on its first read after backend preparation,
 // never depending on client retries. Active reads must exclude archives
-// and carry exact review identity and numeric attribution. This real handler and
-// temporary store prove HTTP postconditions, not live latency performance.
+// and carry exact review identity, serialized board_summary and numeric
+// attribution. Promoted task marshaling must not hide the plan needed for review
+// hydration. This real handler and temporary store prove HTTP postconditions,
+// not live latency performance.
 func TestProjectTaskBoardHTTPMigration(t *testing.T) {
 	server, store, p := setupDirectMediaTestServer(t)
 	project := &pebblestore.ProjectRecord{ID: "board-project", Name: "Board", AccountID: p.AccountScopeID}
 	if err := store.PutProject(p.AccountScopeID, project); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.PutPlan(pebblestore.SessionPlanSnapshot{
+		ID: "review", SessionID: "owner", AccountScopeID: p.AccountScopeID, Version: 3,
+		Status: "pending_approval", ApprovalState: "pending",
+		Document: &pebblestore.SessionPlanDocument{ID: "review", Title: "detail-only plan title"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 35; i++ {
-		task := &pebblestore.ProjectTaskRecord{ID: fmt.Sprintf("task-%02d", i), ProjectID: project.ID, AccountID: p.AccountScopeID, Title: "Task", Agent: "swarm", Status: "pending_approval", Archived: i == 34, Revision: 7, PlanBinding: &pebblestore.ProjectTaskPlanBinding{PlanID: "review", DefinitionRevision: 3, Receipt: "exact"}, FullPlanMarkdown: strings.Repeat("detail", 1000)}
+		task := &pebblestore.ProjectTaskRecord{ID: fmt.Sprintf("task-%02d", i), ProjectID: project.ID, AccountID: p.AccountScopeID, SessionID: "owner", Title: "Task", Agent: "swarm", Status: "pending_approval", Archived: i == 34, Revision: 7, PlanBinding: &pebblestore.ProjectTaskPlanBinding{PlanID: "review", DefinitionRevision: 3, Receipt: "exact"}, FullPlanMarkdown: strings.Repeat("detail", 1000)}
 		if err := store.PutProjectTask(p.AccountScopeID, task); err != nil {
 			t.Fatal(err)
 		}
@@ -183,9 +192,16 @@ func TestProjectTaskBoardHTTPMigration(t *testing.T) {
 		t.Fatalf("archive/index count=%d", body.Count)
 	}
 	for _, task := range body.Tasks {
-		if task.Archived || task.FullPlanMarkdown != "" || task.Revision != 7 || task.Status != "pending_approval" || task.PlanBinding.Receipt != "exact" {
+		if task.Archived || task.FullPlanMarkdown != "" || task.Revision != 7 || task.Status != "pending_approval" || task.PlanBinding == nil || task.PlanBinding.Receipt != "exact" {
 			t.Fatalf("lost review identity: %+v", task)
 		}
+		plan := task.BoardSummary.Plan
+		if task.BoardSummary.PlanBindingStale || plan == nil || plan.ID != "review" || plan.SessionID != "owner" || plan.AccountScopeID != p.AccountScopeID || plan.Version != 3 || plan.Status != "pending_approval" || plan.ApprovalState != "pending" {
+			t.Fatalf("lost serialized plan summary: %+v", task.BoardSummary)
+		}
+	}
+	if strings.Contains(ready.Body.String(), "detail-only plan title") {
+		t.Fatal("board included detail-only plan prose")
 	}
 	warm := request("projects:read")
 	if warm.Code != 200 || warm.Header().Get("X-Task-Backfill-Bytes") != "0" || warm.Header().Get("X-Task-Response-Bytes") != strconv.Itoa(warm.Body.Len()) {

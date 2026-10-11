@@ -8,9 +8,56 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
+
+// setUpRecommendedAgentModels answers "use recommended models" on an account
+// that has none yet. Settings are normally created when a provider credential
+// is verified on save; a credential saved without that (an unverified key, or
+// a failed first attempt) left the account with a connected provider and no
+// way to pick models. Set them up from the first ready provider whose catalog
+// has recommendations, the same way a verified first credential does; with
+// none, say a provider must be connected first.
+func (s *Server) setUpRecommendedAgentModels(w http.ResponseWriter, ctx context.Context) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok || strings.TrimSpace(principal.AccountScopeID) == "" {
+		writeError(w, http.StatusUnauthorized, identity.ErrProductIdentityRequired)
+		return
+	}
+	if s.providers == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("model defaults are not configured"))
+		return
+	}
+	statuses, err := s.providers.ListStatuses(ctx)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	var failures []string
+	for _, status := range statuses {
+		if !status.Ready {
+			continue
+		}
+		if _, err := s.hydrateOnboardingProviderDefaultsAfterVerifiedCredentialActivationForAccount(principal.AccountScopeID, principal.UserID, status.ID); err != nil {
+			failures = append(failures, status.ID+": "+err.Error())
+			continue
+		}
+		settings, err := s.agentModelSettings.Get(ctx)
+		if err != nil {
+			writeAgentModelSettingsError(w, err)
+			return
+		}
+		writeAgentModelSettingsResponse(w, settings)
+		return
+	}
+	if len(failures) == 0 {
+		writeError(w, http.StatusConflict, errors.New("connect a model provider first: none is ready for this account"))
+		return
+	}
+	writeError(w, http.StatusConflict, fmt.Errorf("no connected provider has recommended models: %s", strings.Join(failures, "; ")))
+}
 
 // Restore is explicit and separate from both catalog refresh and legacy profile defaults.
 func (s *Server) handleRestoreAgentModelDefaults(w http.ResponseWriter, r *http.Request) {
@@ -30,6 +77,10 @@ func (s *Server) handleRestoreAgentModelDefaults(w http.ResponseWriter, r *http.
 		return
 	}
 	current, err := s.agentModelSettings.Get(ctx)
+	if errors.Is(err, agentmodelsettings.ErrNotFound) || errors.Is(err, pebblestore.ErrAgentModelSettingsNotFound) {
+		s.setUpRecommendedAgentModels(w, ctx)
+		return
+	}
 	if err != nil {
 		writeAgentModelSettingsError(w, err)
 		return

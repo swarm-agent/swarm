@@ -94,6 +94,11 @@ type ProviderManagedToolInvokerConfig struct {
 	PlanContextGuard        *PlanContextGuard
 	ArtifactRunContext      *tool.ArtifactRunContext
 	ArtifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
+	// OfferedTools names the tools the provider was offered for this step. When
+	// set (even empty), any other tool call is refused before it can reach
+	// permission gating or execution: hiding a tool from the model is not
+	// enforcement, because a model can name a tool it was never shown.
+	OfferedTools []string
 }
 
 type terminalPlanToolState struct {
@@ -156,6 +161,7 @@ type providerToolInvokerConfig struct {
 	planContextGuard        *PlanContextGuard
 	artifactRunContext      *tool.ArtifactRunContext
 	artifactV3AuthorContext *tool.ArtifactV3AuthorRunContext
+	offeredTools            map[string]struct{}
 }
 
 func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerConfig {
@@ -185,7 +191,41 @@ func (config ProviderManagedToolInvokerConfig) internal() providerToolInvokerCon
 		planContextGuard:        config.PlanContextGuard,
 		artifactRunContext:      cloneArtifactRunContext(config.ArtifactRunContext),
 		artifactV3AuthorContext: tool.BindArtifactV3AuthorRunContext(config.ArtifactV3AuthorContext, strings.TrimSpace(config.RunID)),
+		offeredTools:            offeredToolSet(config.OfferedTools),
 	}
+}
+
+func offeredToolSet(names []string) map[string]struct{} {
+	if names == nil {
+		return nil
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if name = canonicalToolName(name); name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	return set
+}
+
+func offeredToolSetFromDefinitions(definitions []provideriface.ToolDefinition) map[string]struct{} {
+	names := make([]string, 0, len(definitions))
+	for _, definition := range definitions {
+		names = append(names, definition.Name)
+	}
+	return offeredToolSet(names)
+}
+
+// ToolNotOfferedRefusal marks a stored tool result the runtime refused because
+// the agent was not offered that tool. Monitors key on it.
+const ToolNotOfferedRefusal = "tool_not_offered"
+
+func providerManagedToolOffered(config providerToolInvokerConfig, name string) bool {
+	if config.offeredTools == nil {
+		return true
+	}
+	_, ok := config.offeredTools[canonicalToolName(name)]
+	return ok
 }
 
 type providerToolInvoker struct {
@@ -625,6 +665,16 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 	}
 	call.Name = name
 	call.CallID = callID
+	if strings.TrimSpace(call.Arguments) == "" {
+		call.Arguments = "{}"
+	}
+	if !providerManagedToolOffered(config, call.Name) {
+		// Recorded through the normal completion path so the refusal is durable
+		// and visible, but nothing is gated, launched or executed.
+		metadata["refusal"] = ToolNotOfferedRefusal
+		refused := tool.Result{CallID: call.CallID, Name: call.Name, Error: fmt.Sprintf("tool %q is not available to this agent", call.Name)}
+		return s.completeProviderManagedToolCall(config, call, metadata, refused, 0)
+	}
 	if canonicalToolName(call.Name) == "compact" {
 		if config.planContextGuard == nil || !config.planContextGuard.DecisionActive() || config.planContextGuard.FinalizationOnly() {
 			return tool.Result{}, 0, errors.New("compact rejected: no armed plan context guard compaction decision is active")
@@ -907,6 +957,11 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		}
 	}
 
+	return s.completeProviderManagedToolCall(config, call, metadata, result, permissionWaitMS)
+}
+
+// completeProviderManagedToolCall emits, stores and returns a finished call.
+func (s *Service) completeProviderManagedToolCall(config providerToolInvokerConfig, call tool.Call, metadata map[string]any, result tool.Result, permissionWaitMS int64) (tool.Result, int64, error) {
 	if strings.TrimSpace(result.CallID) == "" {
 		result.CallID = call.CallID
 	}
@@ -1477,10 +1532,30 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 	if args := strings.TrimSpace(call.Arguments); args != "" {
 		payload["arguments"] = args
 	}
-	if output := formatProviderManagedToolCompletedOutput(call, result); output != "" {
+	// Clients rebuild tool cards from durable terminal events after a reload, so
+	// "output" carries what the tool actually produced (bounded like the tool
+	// result replayed to the model). The completion label stays in "summary".
+	rawOutput := liveStreamRawOutput(call, result)
+	output, truncated := providerManagedV3ToolEventOutput(rawOutput)
+	terminal := providerManagedV3ToolTerminalStatusForEventType(eventType) != ""
+	// A terminal event always carries "output", even when the tool printed
+	// nothing, so clients read "" rather than a missing/null value.
+	if output != "" || terminal {
 		payload["output"] = output
+		if truncated {
+			payload["output_truncated"] = true
+			payload["output_bytes"] = len(rawOutput)
+		}
 	}
-	if rawOutput := liveStreamRawOutput(call, result); rawOutput != "" {
+	if terminal {
+		if exitCode, ok := providerManagedV3ToolExitCode(result.Output); ok {
+			payload["exit_code"] = exitCode
+		}
+	}
+	if summary := formatProviderManagedToolCompletedOutput(call, result); summary != "" && summary != output {
+		payload["summary"] = summary
+	}
+	if rawOutput != "" {
 		payload["raw_output"] = rawOutput
 	}
 	if errText := strings.TrimSpace(result.Error); errText != "" {
@@ -1496,6 +1571,29 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 		payload["client_effects"] = effects
 	}
 	return json.Marshal(payload)
+}
+
+// providerManagedV3ToolExitCode returns the process exit code a command tool
+// (bash, git) reported in its own structured result. Tools that report no
+// integral exit_code yield false, so no exit code is invented.
+func providerManagedV3ToolExitCode(toolOutput string) (int, bool) {
+	payload := decodeToolPayload(strings.TrimSpace(toolOutput))
+	if payload == nil {
+		return 0, false
+	}
+	value, ok := payload["exit_code"].(float64)
+	if !ok || value != float64(int(value)) {
+		return 0, false
+	}
+	return int(value), true
+}
+
+const providerManagedV3ToolEventOutputMarker = "\n[tool output truncated]"
+
+// providerManagedV3ToolEventOutput bounds a terminal event's output to the same
+// byte limit used for tool results replayed to the model.
+func providerManagedV3ToolEventOutput(rawOutput string) (string, bool) {
+	return truncatePromptBytes(rawOutput, maxToolInputBytes, providerManagedV3ToolEventOutputMarker), len(rawOutput) > maxToolInputBytes
 }
 
 func providerManagedV3ClientEffects(eventType string, call tool.Call, result tool.Result) []providerManagedV3ClientEffect {

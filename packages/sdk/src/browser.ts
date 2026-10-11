@@ -3,7 +3,11 @@ import type { PendingPermissionRecord, ResolvePermissionResult } from './permiss
 import { confirmPermissionResolution, permissionId as validatePermissionId, permissionResolutionBody, PermissionResolutionError } from './permission-ui.js';
 import type { PermissionAction, ResolvePermissionOptions } from './permission-ui.js';
 export * from './permission-ui.js';
-import type { SessionWatchState, V3Message } from './realtime.js';
+export { copyTagsToMarkdown, hasCopyTags } from './copy-tags.js';
+import { SwarmChatNotReadyError } from './errors.js';
+export { SwarmChatNotReadyError } from './errors.js';
+export type { SwarmChatNotReadyCode } from './errors.js';
+import type { SessionWatchState, V3Message, V3RunState } from './realtime.js';
 import type { SwarmWebSocketClientMessage, SwarmWebSocketServerMessage } from './websocket.js';
 
 export interface SwarmBrowserChatOptions {
@@ -40,7 +44,8 @@ type EventMap = {
   permission_removed: (permissionId: string) => void;
   permission_error: (permissionId: string, error: Error) => void;
   permissions: (pending: PendingPermissionRecord[]) => void;
-  done: (messages: V3Message[]) => void;
+  /** Once per finished run; `run.status` distinguishes completed from failed or cancelled. */
+  done: (messages: V3Message[], run?: V3RunState) => void;
   error: (error: string) => void;
 };
 
@@ -276,7 +281,7 @@ export class SwarmBrowserChat {
         break;
       }
       case 'done':
-        this.emit('done', msg.messages || []);
+        this.emit('done', msg.messages || [], msg.run);
         break;
       case 'error':
         this.emit('error', msg.error || 'Unknown error');
@@ -336,7 +341,12 @@ export class SwarmBrowserChat {
     if (!targetSession) {
       throw new Error('No active session. Call subscribe(sessionId) or provide sessionId');
     }
-    if (!this.isSubscribed || targetSession !== this.currentSessionId) throw new Error('Await subscribe(sessionId) before sending');
+    if (targetSession !== this.currentSessionId) throw new SwarmChatNotReadyError('chat_not_subscribed');
+    if (!this.isSubscribed) {
+      // Connected or about to reconnect: the subscription is restored automatically.
+      const recovering = this.isConnected || !!this.connectPromise || !!this.reconnectTimer;
+      throw new SwarmChatNotReadyError(recovering && !this.isDisposed ? 'chat_reconnecting' : 'chat_disconnected');
+    }
     const id = requestId ?? globalThis.crypto.randomUUID();
     this.send({
       type: 'chat_message',

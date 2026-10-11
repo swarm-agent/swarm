@@ -204,6 +204,8 @@ type PlanLifecycleExecutionInput struct {
 	ReplacementArtifacts    []pebblestore.SessionPlanArtifactReference
 	ReplacementNotes        string
 	ReplacementSourceID     string
+	// StoppedBy marks a cancellation reconciled for an explicit user stop.
+	StoppedBy string
 }
 
 type PlanLifecycleResult struct {
@@ -1412,6 +1414,7 @@ func (s *PlanLifecycleService) ReconcileCancelledRun(input PlanLifecycleExecutio
 		ParentSessionID: input.ParentSessionID,
 		Reason:          input.Notes,
 		CancelledAt:     cancelledAt,
+		StoppedBy:       input.StoppedBy,
 	})
 	if err != nil {
 		return PlanLifecycleResult{}, false, err

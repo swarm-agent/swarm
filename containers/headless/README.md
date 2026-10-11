@@ -2,9 +2,10 @@
 
 This packages the existing daemon, not a workspace container runner. It builds
 `swarmd`, `swarmctl`, and `swarm-fff-search` with CGO using the daemon targets and
-shared buildinfo fields from `scripts/build-main-dist.sh`. Both stages use Debian
-Trixie/glibc; Go is pinned to the modules' 1.26.7 requirement. Build concurrency is
-bounded to two. Only linux/amd64 is supported by the vendored FFF library.
+shared buildinfo fields from `scripts/build-main-dist.sh`. The build stage uses
+Debian Trixie and the runtime uses Ubuntu 26.04, both with glibc; Go is pinned to
+the modules' 1.26.9 requirement. Build concurrency is bounded to two. Only
+linux/amd64 is supported by the vendored FFF library.
 
 ## Build and inspect (no daemon startup)
 
@@ -31,8 +32,8 @@ The inspector checks loader resolution, UID/GID, writable storage, required tool
 CA certificates and notices, and absence of source/compiler assets. It never
 starts Swarm. The build also rejects missing dynamic libraries. FFF is installed
 in `/usr/local/lib` and registered with `ldconfig`, independent of its source
-RPATH. Debian supplies libc, libgcc and libstdc++; its copyright files remain in
-the image. Swarm's license/notices and FFF's MIT license are under
+RPATH. Ubuntu supplies runtime libc, libgcc and libstdc++; its copyright files
+remain in the image. Swarm's license/notices and FFF's MIT license are under
 `/usr/local/share/doc/swarm`. The FFF license is copied from upstream commit
 `c6013ba6a5918221b6c482486aca01acc0830825` (`dmtrKovalenko/fff`, `LICENSE`).
 
@@ -67,11 +68,25 @@ only the selected repository at `/project`, never a broad host home, filesystem
 root or Docker socket. The image does not declare an anonymous project volume.
 No credentials are baked into the image and no privileged mode is needed.
 
-The entrypoint runs `swarmd --desktop-port=0 --cwd=/project` directly for signal
-handling. `SWARM_DISABLE_MINT_REPORT=1` is set. There are no Desktop assets, no
-published/exposed ports, and no permission/authentication bypass. Daemon API
-loopback/auth defaults remain unchanged. Container port publishing alone cannot
-make that loopback listener reachable from a host SDK.
+The entrypoint runs `swarmd --desktop-port=0 --cwd=/project --lock-permission-policy`
+directly for signal handling. `SWARM_DISABLE_MINT_REPORT=1` is set. There are no
+Desktop assets, no published/exposed ports, and no permission/authentication
+bypass. Daemon API loopback/auth defaults remain unchanged. Container port
+publishing alone cannot make that loopback listener reachable from a host SDK.
+
+**Permission policy is locked.** Agents run as the daemon's user and remote
+clients act through it, so the policy is fixed for the life of the process:
+bypass stays off (even if `/etc/swarmd/swarm.conf` says otherwise), and rules,
+capability policies and `allow_always`/`deny_always` decisions are refused for
+everyone, the owner included. One-off approvals and denials still work. To
+change the policy, recreate the container with the same volumes and append
+`--lock-permission-policy=false` after the image name, make the change through
+the private socket, then recreate it without that override. Independently of
+the lock, scoped tokens (SDK, Swarm Control, workers) never reach permission
+policy and may only allow or deny a request once.
+
+`XDG_DATA_HOME=/var/lib/swarmd/user-data` keeps agent worktrees, which hold
+uncommitted work, on the data volume, so replacing the container keeps them.
 
 ## Fresh setup without Desktop
 

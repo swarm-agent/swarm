@@ -65,9 +65,6 @@ func TestRetiredSessionHostingResidueRemoved(t *testing.T) {
 	}
 
 	checks := map[string][]string{
-		"docs/swarm-harness-vm.md": {
-			"remote_deploy_e2e.sh",
-		},
 		"scripts/check-daemon-storage-paths.sh": {
 			"swarmd/internal/remotedeploy",
 		},

@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strings"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/sandbox"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -1599,6 +1600,7 @@ func workspacePathIgnored(ctx context.Context, workspaceRoot, absolutePath strin
 		return true, nil
 	}
 	cmd := exec.CommandContext(ctx, "git", "-C", workspaceRoot, "check-ignore", "--no-index", "--quiet", "--", filepath.ToSlash(relative))
+	sandbox.Prepare(ctx, cmd)
 	err = cmd.Run()
 	if err == nil {
 		return true, nil

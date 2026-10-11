@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 func (s *Service) CurrentPolicy() (Policy, error) {
@@ -33,6 +34,12 @@ func (s *Service) ExplainTool(mode, toolName, toolArguments string, overlay *Pol
 }
 
 func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArguments string, overlay *Policy) (PolicyExplain, error) {
+	return s.explainToolForAccountInScope(accountScopeID, mode, toolName, toolArguments, overlay, nil)
+}
+
+// explainToolForAccountInScope evaluates with the trusted execution scope of
+// the call (nil when unknown); see explainPolicyInScope.
+func (s *Service) explainToolForAccountInScope(accountScopeID, mode, toolName, toolArguments string, overlay *Policy, scope *tool.WorkspaceScope) (PolicyExplain, error) {
 	state, err := s.CurrentPermissionStateForAccount(accountScopeID)
 	if err != nil {
 		return PolicyExplain{}, err
@@ -52,7 +59,7 @@ func (s *Service) ExplainToolForAccount(accountScopeID, mode, toolName, toolArgu
 	if state.BypassPermissions {
 		mode = policyModeWithBypass(strings.TrimSpace(mode), true)
 	}
-	return ExplainPolicy(mode, toolName, toolArguments, policy), nil
+	return explainPolicyInScope(mode, toolName, toolArguments, policy, scope), nil
 }
 
 func (s *Service) UpdateActiveExecutionLimitForAccount(accountScopeID string, limit int) (Policy, error) {
@@ -492,6 +499,11 @@ func (s *Service) newPolicyRuleID(now int64) string {
 }
 
 func (s *Service) persistPolicyLocked(accountScopeID string, policy Policy) error {
+	// Every policy write funnels through here, including rules saved by
+	// allow_always/deny_always, so the startup lock is enforced in one place.
+	if s.policyLocked.Load() {
+		return ErrPolicyLocked
+	}
 	if s.store == nil {
 		return errors.New("permission store is not configured")
 	}

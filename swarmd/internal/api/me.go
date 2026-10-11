@@ -33,7 +33,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"user_id":              actor.UserID,
 		"accountScopeID":       actor.AccountScopeID,
 		"account_scope_id":     actor.AccountScopeID,
-		"username":             actor.User.Username,
+		"username":             identity.UserDisplayName(actor.User),
 		"teamID":               teamID,
 		"team_id":              teamID,
 		"teamDisplayName":      actor.Team.Name,

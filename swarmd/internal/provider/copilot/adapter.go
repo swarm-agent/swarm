@@ -286,9 +286,9 @@ func configuredCredentialMessage(record pebblestore.AuthCredentialRecord) string
 	credential := activeCredentialName(record)
 	switch strings.ToLower(strings.TrimSpace(record.Type)) {
 	case pebblestore.AuthTypeOAuth:
-		return fmt.Sprintf("active Copilot OAuth credential %q is configured in the auth manager. New Copilot runs use this Swarm credential until changed in /auth.", credential)
+		return fmt.Sprintf("active Copilot OAuth credential %q is set up. New Copilot runs use it until it is changed.", credential)
 	default:
-		return fmt.Sprintf("active Copilot token credential %q is configured in the auth manager. New Copilot runs use this Swarm credential until changed in /auth.", credential)
+		return fmt.Sprintf("active Copilot token credential %q is set up. New Copilot runs use it until it is changed.", credential)
 	}
 }
 

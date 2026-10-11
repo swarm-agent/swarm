@@ -466,8 +466,9 @@ func TestSSHDockerProvider_Deploy_RemoteExistingPath(t *testing.T) {
 	if !strings.Contains(joinedRun, "-w /app") {
 		t.Fatalf("expected -w /app in run args, got: %s", joinedRun)
 	}
-	if !strings.Contains(joinedRun, "-p 13000:3000/tcp") {
-		t.Fatalf("expected -p 13000:3000/tcp in run args, got: %s", joinedRun)
+	// Remote ports must bind to the remote loopback, never all interfaces.
+	if !strings.Contains(joinedRun, "-p 127.0.0.1:13000:3000/tcp") {
+		t.Fatalf("expected -p 127.0.0.1:13000:3000/tcp in run args, got: %s", joinedRun)
 	}
 }
 
@@ -663,11 +664,15 @@ func TestSSHDockerProvider_Deploy_SetupCommands(t *testing.T) {
 	}
 }
 
-func TestSSHDockerProvider_Deploy_HealthCheckHTTP(t *testing.T) {
+// Purpose: SSH deployments publish ports on the remote loopback only, so a
+// direct HTTP health probe from this machine would need a public remote port.
+// The provider must refuse such a definition before starting anything rather
+// than silently publishing on all interfaces. Unit level: the refusal lives in
+// SSHDockerProvider.Deploy and needs no remote host.
+func TestSSHDockerProvider_Deploy_RejectsHTTPHealthCheck(t *testing.T) {
 	runner := newMockSSHRunner()
 	p := NewSSHDockerProvider(runner)
 
-	// Mock httpGet to simulate healthy endpoint
 	var probedURL string
 	p.httpGet = func(ctx context.Context, url string) (int, error) {
 		probedURL = url
@@ -712,20 +717,21 @@ func TestSSHDockerProvider_Deploy_HealthCheckHTTP(t *testing.T) {
 		Status:         environments.DeploymentStatusPending,
 	}
 
-	res, err := p.Deploy(context.Background(), DeployRequest{
+	_, err := p.Deploy(context.Background(), DeployRequest{
 		Connection:  conn,
 		Environment: env,
 		Deployment:  dep,
 	})
-	if err != nil {
-		t.Fatalf("deploy failed: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "do not support direct remote HTTP endpoints") {
+		t.Fatalf("expected remote HTTP endpoint refusal, got: %v", err)
 	}
-
-	if res.Health != environments.HealthStatusHealthy {
-		t.Fatalf("expected health status healthy, got: %s", res.Health)
+	if probedURL != "" {
+		t.Fatalf("no probe may run, got: %s", probedURL)
 	}
-	if probedURL != "http://remote.example.com:49151/healthz" {
-		t.Fatalf("expected probe URL on remote.example.com, got: %s", probedURL)
+	for _, call := range runner.calls {
+		if strings.Contains(strings.Join(call.Args, " "), "docker run") {
+			t.Fatalf("no container may be started: %v", call)
+		}
 	}
 }
 
@@ -769,8 +775,9 @@ func TestSSHDockerProvider_Inspect(t *testing.T) {
 	if ins.Health != environments.HealthStatusHealthy {
 		t.Fatalf("expected health healthy, got: %s", ins.Health)
 	}
-	if ins.Runtime.Endpoint != "http://remote.example.com:32100" {
-		t.Fatalf("expected endpoint http://remote.example.com:32100, got: %s", ins.Runtime.Endpoint)
+	// Loopback-only remote ports have no direct URL from this machine.
+	if ins.Runtime.Endpoint != "" {
+		t.Fatalf("expected no direct endpoint, got: %s", ins.Runtime.Endpoint)
 	}
 }
 
@@ -855,11 +862,8 @@ func TestSSHDockerProvider_ResolveAccess(t *testing.T) {
 	if !access.ExecSupported {
 		t.Fatal("expected ExecSupported to be true")
 	}
-	if access.PrimaryEndpoint != "http://remote.example.com:32100" {
-		t.Fatalf("expected primary endpoint http://remote.example.com:32100, got: %s", access.PrimaryEndpoint)
-	}
-	if access.Endpoints["8080"] != "http://remote.example.com:32100" {
-		t.Fatalf("expected endpoint for port 8080, got: %v", access.Endpoints)
+	if access.PrimaryEndpoint != "" || len(access.Endpoints) != 0 {
+		t.Fatalf("expected no direct endpoints for loopback-only remote ports, got: %q %v", access.PrimaryEndpoint, access.Endpoints)
 	}
 	if access.RemoteWorkspacePath != "/workspace" {
 		t.Fatalf("expected remote workspace path /workspace, got: %s", access.RemoteWorkspacePath)

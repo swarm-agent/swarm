@@ -17,6 +17,19 @@ import (
 
 const maxBuildContext = int64(512 << 20)
 
+// BuildSourceGitRouter routes the export's Git commands into the agent
+// sandbox of an agent-writable repository (sandbox.RoutedArgv). The daemon
+// installs it at startup; the provider cannot import the sandbox package,
+// which builds on this one.
+var BuildSourceGitRouter func(ctx context.Context, env []string, args ...string) (name string, argv []string, routed bool, err error)
+
+func routeBuildSourceGit(ctx context.Context, env []string, args ...string) (string, []string, bool, error) {
+	if BuildSourceGitRouter == nil {
+		return "", nil, false, nil
+	}
+	return BuildSourceGitRouter(ctx, env, args...)
+}
+
 // ExportCommittedBuild creates no worktree and never copies live filesystem content.
 // The caller supplies catalog-authorized roots. Git replacements, ambient config,
 // attributes from the working tree and network access are disabled.
@@ -31,20 +44,42 @@ func ExportCommittedBuild(ctx context.Context, runner CommandRunner, productRoot
 		{productRoot, b.Product.Commit, "", ""},
 		{recipeRoot, b.Recipe.Commit, ".swarm-recipe/", b.RecipeDirectory},
 	} {
-		args := []string{"-i", "PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_ATTR_NOSYSTEM=1", "git", "--no-replace-objects", "--literal-pathspecs", "-C", source.root}
-		out, err := runner.Run(ctx, "env", append(append([]string{}, args...), "rev-parse", "--verify", source.commit+"^{commit}")...)
+		gitEnv := []string{"PATH=" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_ATTR_NOSYSTEM=1"}
+		gitArgs := []string{"--no-replace-objects", "--literal-pathspecs", "-C", source.root}
+		// Repository configuration can define filters that git archive runs;
+		// on an agent-writable repository those run inside its sandbox.
+		gitCommand := func(extra ...string) (string, []string, error) {
+			all := append(append([]string{}, gitArgs...), extra...)
+			name, argv, routed, err := routeBuildSourceGit(ctx, gitEnv, all...)
+			if err != nil {
+				return "", nil, err
+			}
+			if routed {
+				return name, argv, nil
+			}
+			return "env", append(append(append([]string{"-i"}, gitEnv...), "git"), all...), nil
+		}
+		name, revArgs, err := gitCommand("rev-parse", "--verify", source.commit+"^{commit}")
+		if err != nil {
+			return "", err
+		}
+		out, err := runner.Run(ctx, name, revArgs...)
 		if err != nil || strings.TrimSpace(string(out)) != source.commit {
 			return "", errors.New("exact committed build source is unavailable")
 		}
-		archiveArgs := append(append([]string{}, args...), "-c", "core.attributesFile=/dev/null", "archive", "--format=tar", source.commit+"^{tree}")
+		archive := []string{"-c", "core.attributesFile=/dev/null", "archive", "--format=tar", source.commit + "^{tree}"}
 		if source.subtree != "" {
-			archiveArgs = append(archiveArgs, "--", source.subtree)
+			archive = append(archive, "--", source.subtree)
+		}
+		archiveName, archiveArgs, err := gitCommand(archive...)
+		if err != nil {
+			return "", err
 		}
 		reader, writer := io.Pipe()
 		done := make(chan error, 1)
 		archiveCtx, cancel := context.WithCancel(ctx)
 		go func() {
-			err := runner.RunWithIO(archiveCtx, nil, writer, io.Discard, "env", archiveArgs...)
+			err := runner.RunWithIO(archiveCtx, nil, writer, io.Discard, archiveName, archiveArgs...)
 			_ = writer.CloseWithError(err)
 			done <- err
 		}()

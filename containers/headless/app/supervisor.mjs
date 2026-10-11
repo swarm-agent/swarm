@@ -55,5 +55,5 @@ export async function supervise({ daemon, app, probe = ready, startupMs = 30000,
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const app = process.argv.slice(2);
   if (!app.length) { console.error('Application command required.'); process.exitCode = 1; }
-  else process.exitCode = await supervise({ daemon: ['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project'], app });
+  else process.exitCode = await supervise({ daemon: ['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project', '--container-sdk-port=7783'], app });
 }

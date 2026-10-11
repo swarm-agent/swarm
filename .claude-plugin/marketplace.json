@@ -1,0 +1,12 @@
+{
+  "name": "swarm",
+  "owner": { "name": "Swarm" },
+  "metadata": { "description": "Self-hosted cloud agents for AI: let Claude set up and run your Swarm." },
+  "plugins": [
+    {
+      "name": "swarm",
+      "source": "./plugins/swarm",
+      "description": "Set up, onboard and drive your local Swarm from Claude Code: hand work to Swarm agents, handle approvals, follow runs, read results, run projects and workers, and build apps on Swarm."
+    }
+  ]
+}

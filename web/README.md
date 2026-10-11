@@ -123,10 +123,8 @@ Routing/refinement fixtures now supply their authorized source explicitly.
 
 The seven old `/new`, `/task`, `/task plan` and Plan-to-Auto browser/provider cases
 (and their two-case first-message branch) are retired. The old browser filename
-now throws an explicit retirement error; `scripts/run-desktop-launch-test.sh`
-retains its caller entrypoint but exits nonzero before network/provider work.
-`scripts/run-testbench-desktop-e2e.sh` therefore also fails clearly rather than
-reporting an empty passing suite. The separate opt-in New Task browser smoke now
+now throws an explicit retirement error, and the old Desktop launch shell
+entrypoints were removed with the retired testbench. The separate opt-in New Task browser smoke now
 covers current creation/persistence, not those retired journeys.
 Durability/permission/isolation assertions remain in deterministic owning suites;
 the removed end-to-end evidence is a gap, not migrated browser coverage.

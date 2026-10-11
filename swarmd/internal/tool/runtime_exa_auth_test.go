@@ -23,8 +23,10 @@ func TestWebFetchRequiresActiveExaAPIKeyBeforeRequest(t *testing.T) {
 	if err == nil {
 		t.Fatalf("webfetch succeeded without an Exa API key: %s", output)
 	}
-	if !strings.Contains(err.Error(), "active API key") || !strings.Contains(err.Error(), "/auth key exa <api_key>") {
-		t.Fatalf("error = %q, want actionable Exa API-key setup guidance", err)
+	// The same error reaches the desktop, the terminal UI, SDK apps and MCP
+	// clients, so it must name no client-specific settings page or command.
+	if !strings.Contains(err.Error(), "no Exa API key is set up yet") || strings.Contains(err.Error(), "Settings") || strings.Contains(err.Error(), "/auth") {
+		t.Fatalf("error = %q, want a plain, client-neutral missing-key error", err)
 	}
 }
 

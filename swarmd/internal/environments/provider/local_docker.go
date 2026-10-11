@@ -204,6 +204,9 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		"--label", "swarm.account_scope_id="+req.Deployment.AccountScopeID,
 	)
 	for k, v := range req.Environment.Labels {
+		if strings.HasPrefix(k, "swarm.") {
+			return nil, errors.New("reserved Swarm ownership label")
+		}
 		runArgs = append(runArgs, "--label", fmt.Sprintf("%s=%s", k, v))
 	}
 
@@ -267,7 +270,7 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		runArgs = append(runArgs, "-u", req.Environment.Container.User)
 	}
 	if req.Environment.Container.Privileged {
-		runArgs = append(runArgs, "--privileged")
+		return nil, errors.New("privileged containers are not supported")
 	}
 
 	// Workspace provisioning (local_mount)
@@ -285,7 +288,11 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 		if !filepath.IsAbs(hostPath) {
 			return nil, fmt.Errorf("local_mount host_path must be an absolute path: %q", hostPath)
 		}
-		spec := fmt.Sprintf("%s:%s", hostPath, mount.ContainerPath)
+		confined, err := confineLocalHostMount(hostPath, req.WorkspacePath)
+		if err != nil {
+			return nil, fmt.Errorf("local_mount: %w", err)
+		}
+		spec := fmt.Sprintf("%s:%s", confined, mount.ContainerPath)
 		if mount.ReadOnly {
 			spec += ":ro"
 		}
@@ -294,8 +301,12 @@ func (p *LocalDockerProvider) Deploy(ctx context.Context, req DeployRequest) (*D
 	}
 
 	// Additional mounts
-	for _, m := range req.Environment.Provisioning.Mounts {
-		spec := fmt.Sprintf("%s:%s", m.HostPath, m.ContainerPath)
+	for i, m := range req.Environment.Provisioning.Mounts {
+		confined, err := confineLocalHostMount(m.HostPath, req.WorkspacePath)
+		if err != nil {
+			return nil, fmt.Errorf("mount[%d]: %w", i, err)
+		}
+		spec := fmt.Sprintf("%s:%s", confined, m.ContainerPath)
 		if m.ReadOnly {
 			spec += ":ro"
 		}
@@ -763,15 +774,51 @@ func dockerHostArgs(conn *environments.Connection) []string {
 	return nil
 }
 
+// resolveEnvValue expands $VAR references only from the caller's explicit
+// overrides. The daemon's own environment is never consulted: it can hold
+// credentials and service paths that a definition must not be able to read.
+// Unknown references are kept literally.
 func resolveEnvValue(val string, overrides map[string]string) string {
 	return os.Expand(val, func(key string) string {
-		if overrides != nil {
-			if v, ok := overrides[key]; ok {
-				return v
-			}
+		if v, ok := overrides[key]; ok {
+			return v
 		}
-		return os.Getenv(key)
+		return "${" + key + "}"
 	})
+}
+
+// confineLocalHostMount admits a host bind mount only inside the deployment's
+// own workspace. Arbitrary host paths (the Docker socket, daemon storage, home
+// directories) are refused whatever the permission decision was. Both paths are
+// resolved through symlinks and the resolved path is what gets mounted.
+func confineLocalHostMount(hostPath, workspacePath string) (string, error) {
+	hostPath = strings.TrimSpace(hostPath)
+	workspacePath = strings.TrimSpace(workspacePath)
+	if workspacePath == "" || !filepath.IsAbs(workspacePath) {
+		return "", errors.New("host mounts require the deployment's workspace path")
+	}
+	if hostPath == "" || !filepath.IsAbs(hostPath) {
+		return "", fmt.Errorf("host_path must be an absolute path: %q", hostPath)
+	}
+	if strings.ContainsAny(hostPath, ":,\x00") {
+		return "", fmt.Errorf("host_path contains unsupported characters: %q", hostPath)
+	}
+	resolvedWorkspace, err := filepath.EvalSymlinks(filepath.Clean(workspacePath))
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace path: %w", err)
+	}
+	resolvedHost, err := filepath.EvalSymlinks(filepath.Clean(hostPath))
+	if err != nil {
+		return "", fmt.Errorf("host_path must exist inside the workspace: %w", err)
+	}
+	if strings.ContainsAny(resolvedHost, ":,\x00") {
+		return "", fmt.Errorf("host_path resolves to unsupported characters: %q", resolvedHost)
+	}
+	rel, err := filepath.Rel(resolvedWorkspace, resolvedHost)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("host_path %q is outside the workspace", hostPath)
+	}
+	return resolvedHost, nil
 }
 
 type dockerInspectJSON struct {

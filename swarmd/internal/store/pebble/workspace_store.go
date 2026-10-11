@@ -617,6 +617,33 @@ func (s *WorkspaceStore) ListForAccount(accountScopeID string, limit int) ([]Wor
 	return out, nil
 }
 
+// ListAllPaths returns the primary path of every workspace entry in every
+// account. It exists for daemon-wide authorities (the agent sandbox) that must
+// recognise any agent-writable workspace, whichever account owns it.
+func (s *WorkspaceStore) ListAllPaths() ([]string, error) {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 32)
+	err := s.store.IteratePrefix(KeyWorkspaceEntryAccountPrefix, 1000000, func(_ string, value []byte) error {
+		var entry WorkspaceEntry
+		if err := json.Unmarshal(value, &entry); err != nil {
+			return err
+		}
+		path := strings.TrimSpace(entry.Path)
+		if path == "" {
+			return nil
+		}
+		if _, ok := seen[path]; !ok {
+			seen[path] = struct{}{}
+			out = append(out, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *WorkspaceStore) MoveForAccount(accountScopeID, path string, delta int) (WorkspaceEntry, error) {
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	if accountScopeID == "" {

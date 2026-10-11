@@ -1,8 +1,9 @@
 package session
 
 import (
-	"os/exec"
+	"context"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -18,7 +19,7 @@ func DetectCurrentBranch(workspacePath string) string {
 	if workspacePath == "" {
 		return ""
 	}
-	output, err := exec.Command("git", "-C", workspacePath, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	output, err := sandbox.Command(context.Background(), "-C", workspacePath, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
 	if err != nil {
 		return ""
 	}

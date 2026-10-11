@@ -152,14 +152,14 @@ func runProjectGitSubscriptionsBoard(t *testing.T, isolation bool) {
 			case "dirty-source":
 				write(candidate, "dirty-source", "preserve\n")
 			case "dirty-target":
-				write(repo, "dirty-target", "preserve\n")
+				// A tracked change: untracked target files the task does not
+				// write no longer block delivery.
+				write(repo, "base", "preserve\n")
 			case "clean":
 				if err := os.Remove(filepath.Join(candidate, "dirty-source")); err != nil {
 					t.Error(err)
 				}
-				if err := os.Remove(filepath.Join(repo, "dirty-target")); err != nil {
-					t.Error(err)
-				}
+				git(repo, "checkout", "--", "base")
 			case "burst":
 				for i := 0; i < 30; i++ {
 					write(candidate, "burst", strings.Repeat("x", i+1))

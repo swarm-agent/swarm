@@ -1,0 +1,10 @@
+{
+  "name": "@swarm-agent/swarm-fleet",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Swarm Control for every Swarm machine on your tailnet, as one stdio MCP server.",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "license": "MIT"
+}

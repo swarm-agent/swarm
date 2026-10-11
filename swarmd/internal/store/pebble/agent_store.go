@@ -20,6 +20,17 @@ const (
 	AgentExecutionSettingReadWrite = AgentRuntimeModeReadWrite
 
 	AgentCustomToolKindFixedBash = "fixed_bash"
+	// AgentCustomToolKindClient is a typed tool the session's client answers.
+	// Swarm validates the arguments against InputSchema, records a pending
+	// call, waits for the client's result and returns it to the model. Swarm
+	// itself executes nothing for it.
+	AgentCustomToolKindClient = "client"
+
+	AgentCustomToolEffectRead  = "read"
+	AgentCustomToolEffectWrite = "write"
+
+	AgentClientToolDefaultTimeoutMS = 30_000
+	AgentClientToolMaxTimeoutMS     = 300_000
 )
 
 type AgentToolScope struct {
@@ -57,9 +68,52 @@ type AgentProfile struct {
 	ExitPlanModeEnabled *bool              `json:"exit_plan_mode_enabled,omitempty"`
 	ToolScope           *AgentToolScope    `json:"tool_scope,omitempty"`
 	ToolContract        *AgentToolContract `json:"tool_contract,omitempty"`
+	Limits              *AgentRunLimits    `json:"limits,omitempty"`
 	Enabled             bool               `json:"enabled"`
 	Protected           bool               `json:"protected,omitempty"`
 	UpdatedAt           int64              `json:"updated_at"`
+}
+
+// AgentRunLimits bounds what one message can cost. Zero means unset; sealed
+// agents get conservative defaults for unset fields.
+type AgentRunLimits struct {
+	// MaxSteps is the most model calls per message. On the last step the model
+	// is offered no tools, so it must answer.
+	MaxSteps int `json:"max_steps,omitempty"`
+	// MaxOutputTokens caps each model call's output, reasoning included.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
+	// MaxHistoryMessages sends only the most recent messages, starting at a
+	// user turn, and always as a fresh provider context.
+	MaxHistoryMessages int `json:"max_history_messages,omitempty"`
+	// RunTimeoutMS ends a run that takes longer.
+	RunTimeoutMS int `json:"run_timeout_ms,omitempty"`
+}
+
+func clampLimit(value, max int) int {
+	if value < 0 {
+		return 0
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
+// NormalizeAgentRunLimits bounds each field and drops an all-zero block.
+func NormalizeAgentRunLimits(limits *AgentRunLimits) *AgentRunLimits {
+	if limits == nil {
+		return nil
+	}
+	out := AgentRunLimits{
+		MaxSteps:           clampLimit(limits.MaxSteps, 50),
+		MaxOutputTokens:    clampLimit(limits.MaxOutputTokens, 128000),
+		MaxHistoryMessages: clampLimit(limits.MaxHistoryMessages, 2000),
+		RunTimeoutMS:       clampLimit(limits.RunTimeoutMS, 30*60*1000),
+	}
+	if out == (AgentRunLimits{}) {
+		return nil
+	}
+	return &out
 }
 
 type AgentCustomToolDefinition struct {
@@ -67,7 +121,11 @@ type AgentCustomToolDefinition struct {
 	Kind        string `json:"kind"`
 	Description string `json:"description,omitempty"`
 	Command     string `json:"command"`
-	UpdatedAt   int64  `json:"updated_at"`
+	// Client tools only.
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+	Effect      string         `json:"effect,omitempty"`
+	TimeoutMS   int            `json:"timeout_ms,omitempty"`
+	UpdatedAt   int64          `json:"updated_at"`
 }
 
 func BoolPtr(value bool) *bool {
@@ -240,6 +298,8 @@ func NormalizeAgentCustomToolKind(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case AgentCustomToolKindFixedBash:
 		return AgentCustomToolKindFixedBash
+	case AgentCustomToolKindClient:
+		return AgentCustomToolKindClient
 	default:
 		return ""
 	}
@@ -251,8 +311,27 @@ func CloneAgentCustomToolDefinition(definition AgentCustomToolDefinition) AgentC
 		Kind:        strings.TrimSpace(definition.Kind),
 		Description: strings.TrimSpace(definition.Description),
 		Command:     strings.TrimSpace(definition.Command),
+		InputSchema: cloneJSONObject(definition.InputSchema),
+		Effect:      strings.TrimSpace(definition.Effect),
+		TimeoutMS:   definition.TimeoutMS,
 		UpdatedAt:   definition.UpdatedAt,
 	}
+}
+
+// cloneJSONObject deep-copies a decoded JSON object.
+func cloneJSONObject(value map[string]any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func NormalizeAgentCustomToolDefinition(definition AgentCustomToolDefinition) AgentCustomToolDefinition {
@@ -261,6 +340,24 @@ func NormalizeAgentCustomToolDefinition(definition AgentCustomToolDefinition) Ag
 	definition.Kind = NormalizeAgentCustomToolKind(definition.Kind)
 	definition.Description = strings.TrimSpace(definition.Description)
 	definition.Command = strings.TrimSpace(definition.Command)
+	if definition.Kind == AgentCustomToolKindClient {
+		switch strings.ToLower(definition.Effect) {
+		case AgentCustomToolEffectWrite:
+			definition.Effect = AgentCustomToolEffectWrite
+		default:
+			definition.Effect = AgentCustomToolEffectRead
+		}
+		if definition.TimeoutMS <= 0 {
+			definition.TimeoutMS = AgentClientToolDefaultTimeoutMS
+		}
+		if definition.TimeoutMS > AgentClientToolMaxTimeoutMS {
+			definition.TimeoutMS = AgentClientToolMaxTimeoutMS
+		}
+	} else {
+		definition.InputSchema = nil
+		definition.Effect = ""
+		definition.TimeoutMS = 0
+	}
 	if definition.UpdatedAt < 0 {
 		definition.UpdatedAt = 0
 	}
@@ -367,6 +464,7 @@ func agentToolContractEnablesMutatingTools(contract *AgentToolContract) bool {
 }
 
 func NormalizeAgentProfile(profile AgentProfile) AgentProfile {
+	profile.Limits = NormalizeAgentRunLimits(profile.Limits)
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Mode = strings.ToLower(strings.TrimSpace(profile.Mode))
 	profile.Description = strings.TrimSpace(profile.Description)

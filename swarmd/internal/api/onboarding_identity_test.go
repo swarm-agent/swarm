@@ -130,7 +130,7 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
 		t.Fatalf("decode bootstrap response: %v", err)
 	}
-	if !status.NeedsOnboarding || !status.Identity.Bootstrapped || status.Identity.UserID != "user_onboarding_test" || status.Identity.Username != "alice" {
+	if !status.NeedsOnboarding || !status.Identity.Bootstrapped || status.Identity.UserID != "user_onboarding_test" || status.Identity.Username != "Alice" {
 		t.Fatalf("bootstrap response identity=%+v needs=%v", status.Identity, status.NeedsOnboarding)
 	}
 	if status.Session == nil || strings.TrimSpace(status.Session.ExpiresAt) == "" {
@@ -151,7 +151,7 @@ func TestOnboardingPostBootstrapsIdentityAndIssuesSession(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("get bootstrapped user ok=%v err=%v", ok, err)
 	}
-	if user.Username != "alice" || status.Config.SwarmName != "Alice Laptop" {
+	if user.Username != "alice" || user.DisplayName != "Alice" || status.Config.SwarmName != "Alice Laptop" {
 		t.Fatalf("username/swarmName not separate: user=%+v config=%+v", user, status.Config)
 	}
 }
@@ -253,7 +253,7 @@ func TestOnboardingPostRejectsRebootstrapAndSwarmNameUpdateDoesNotMutateUsername
 
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, newAuthenticatedJSONSameOriginDesktopRequest(t, server, map[string]any{"username": "bob", "swarm_name": "New Device"}))
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), identity.ErrBootstrapExists.Error()) {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `owner name is already set to \"alice\"`) {
 		t.Fatalf("rebootstrap status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
@@ -283,6 +283,65 @@ func TestOnboardingPostRejectsRebootstrapAndSwarmNameUpdateDoesNotMutateUsername
 	want := pebblestore.IdentityCounts{Users: 1, AccountScopes: 1, AccountUsers: 1, CurrentSelections: 1}
 	if counts != want {
 		t.Fatalf("identity counts=%+v want %+v", counts, want)
+	}
+}
+
+// Requirement: the owner name is kept exactly as typed, and repeating
+// bootstrap with the name already set (any letter case) succeeds without
+// changing identity, so an app that re-sends the typed name after bootstrap
+// never shows a false error. A different name is refused with a plain 409 and
+// leaves the stored record unchanged. Owner: updateOnboarding with
+// identity.Service over a real temporary identity store; the HTTP handler is
+// the narrowest layer that proves the status codes, body and persistence.
+func TestOnboardingRepeatedBootstrapWithSameOwnerNameIsNoop(t *testing.T) {
+	server, identityStore := newOnboardingIdentityTestServer(t, false)
+	post := func(payload map[string]any, authenticated bool) (*httptest.ResponseRecorder, onboardingResponse) {
+		t.Helper()
+		req := newJSONSameOriginDesktopRequest(t, payload)
+		if authenticated {
+			req = newAuthenticatedJSONSameOriginDesktopRequest(t, server, payload)
+		}
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		var status onboardingResponse
+		if rec.Code == http.StatusOK {
+			if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+				t.Fatalf("decode onboarding response: %v", err)
+			}
+		}
+		return rec, status
+	}
+	rec, status := post(map[string]any{"username": "Grader", "swarm_name": "Grader Box"}, false)
+	if rec.Code != http.StatusOK || status.Identity.Username != "Grader" {
+		t.Fatalf("bootstrap status=%d identity=%+v body=%s", rec.Code, status.Identity, rec.Body.String())
+	}
+	for _, payload := range []map[string]any{
+		{"username": "Grader", "swarm_name": "Grader Box"},
+		{"username": " grader ", "swarm_name": "Grader Box"},
+		{"username": "GRADER"},
+	} {
+		rec, status = post(payload, true)
+		if rec.Code != http.StatusOK || status.Identity.Username != "Grader" || status.Config.SwarmName != "Grader Box" {
+			t.Fatalf("repeat %v status=%d identity=%+v config=%+v body=%s", payload, rec.Code, status.Identity, status.Config, rec.Body.String())
+		}
+	}
+
+	rec, _ = post(map[string]any{"username": "Someone Else", "swarm_name": "Other Box"}, true)
+	body := rec.Body.String()
+	if rec.Code != http.StatusConflict || !strings.Contains(body, `owner name is already set to \"Grader\"`) || strings.Contains(body, identity.ErrBootstrapExists.Error()) {
+		t.Fatalf("different name status=%d body=%s", rec.Code, body)
+	}
+	user, ok, err := identityStore.GetUser("user_onboarding_test")
+	if err != nil || !ok || user.Username != "grader" || user.DisplayName != "Grader" {
+		t.Fatalf("stored user=%+v ok=%v err=%v", user, ok, err)
+	}
+	cfg, err := server.loadStartupConfig()
+	if err != nil || cfg.SwarmName != "Grader Box" {
+		t.Fatalf("refused rename changed swarm name: %q err=%v", cfg.SwarmName, err)
+	}
+	counts, err := identityStore.IdentityCounts()
+	if err != nil || counts != (pebblestore.IdentityCounts{Users: 1, AccountScopes: 1, AccountUsers: 1, CurrentSelections: 1}) {
+		t.Fatalf("identity counts=%+v err=%v", counts, err)
 	}
 }
 

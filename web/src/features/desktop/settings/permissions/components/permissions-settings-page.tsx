@@ -51,6 +51,7 @@ interface PermissionPolicyResponse {
   ok?: boolean
   policy?: PermissionPolicy
   bypass_permissions?: boolean
+  bypass_blocked_reason?: string
 }
 
 interface PermissionBypassResponse {
@@ -129,10 +130,14 @@ function formatTimestamp(timestamp?: number): string {
   }
 }
 
-async function fetchPermissionPolicy(): Promise<{ policy: PermissionPolicy; bypassPermissions: boolean }> {
+async function fetchPermissionPolicy(): Promise<{ policy: PermissionPolicy; bypassPermissions: boolean; bypassBlockedReason: string }> {
   const response = await requestJson<PermissionPolicyResponse>('/v1/permissions')
   const policy = response.policy ?? { version: 0, bash_profile: 'current_rules', rules: [] }
-  return { policy: { ...policy, bash_profile: normalizeBashApprovalProfile(policy.bash_profile) }, bypassPermissions: Boolean(response.bypass_permissions) }
+  return {
+    policy: { ...policy, bash_profile: normalizeBashApprovalProfile(policy.bash_profile) },
+    bypassPermissions: Boolean(response.bypass_permissions),
+    bypassBlockedReason: response.bypass_blocked_reason?.trim() ?? '',
+  }
 }
 
 async function saveBashApprovalProfile(profile: BashApprovalProfile): Promise<BashApprovalProfile> {
@@ -201,6 +206,7 @@ export function PermissionsSettingsPage({ orchestrate = false }: { orchestrate?:
   const [saving, setSaving] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [bypassPermissions, setBypassPermissionsState] = useState(false)
+  const [bypassBlockedReason, setBypassBlockedReason] = useState('')
   const [subagentPolicy, setSubagentPolicy] = useState<SubagentPolicy>({ mode: 'bounded', automatic_launches_per_parent_run: 5, active_child_limit: 5, swarm_active_child_limit: 5, over_budget_action: 'ask', require_write_isolation: true })
   const [subagentBusy, setSubagentBusy] = useState(false)
   const [sessionDeployPolicy, setSessionDeployPolicy] = useState<SessionDeployPolicy>(DEFAULT_SESSION_DEPLOY_POLICY)
@@ -230,6 +236,7 @@ export function PermissionsSettingsPage({ orchestrate = false }: { orchestrate?:
       setActiveExecutionLimit(capabilities.active_execution_limit)
       setCapabilitiesLoaded(true)
       setBypassPermissionsState(result.bypassPermissions)
+      setBypassBlockedReason(result.bypassBlockedReason)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load permission policy')
     } finally {
@@ -434,7 +441,7 @@ export function PermissionsSettingsPage({ orchestrate = false }: { orchestrate?:
             <Button
               variant="outline"
               onClick={handleBypassButton}
-              disabled={loading || bypassBusy}
+              disabled={loading || bypassBusy || (!bypassPermissions && bypassBlockedReason !== '')}
               className={cn(
                 !bypassPermissions &&
                   'border-[var(--app-primary)] text-[var(--app-primary)] hover:bg-[color-mix(in_oklab,var(--app-primary)_10%,transparent)] hover:text-[var(--app-primary-hover)]',
@@ -443,6 +450,11 @@ export function PermissionsSettingsPage({ orchestrate = false }: { orchestrate?:
               {bypassBusy ? 'Saving…' : bypassPermissions ? 'Turn permissions ON' : 'Turn permissions OFF'}
             </Button>
           </div>
+          {!bypassPermissions && bypassBlockedReason ? (
+            <div className="mt-3 rounded-xl border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-xs text-[var(--app-danger)]">
+              Permissions cannot be turned off: agents run without prompts only inside the agent sandbox, and it is not active ({bypassBlockedReason}).
+            </div>
+          ) : null}
         </section>
 
         <section className={cn('rounded-2xl border border-[var(--app-border-strong)] bg-[var(--app-surface-subtle)] p-5 shadow-sm transition-opacity', bypassPermissions && 'opacity-50')} aria-disabled={bypassPermissions}>

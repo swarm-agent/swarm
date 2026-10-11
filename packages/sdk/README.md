@@ -2,26 +2,46 @@
 
 Official TypeScript SDK for [Swarm](https://github.com/swarm-agent/swarm), the local-first AI coding workspace.
 
-`@swarm-agent/sdk` provides a typed, zero-dependency client to interact programmatically with the Swarm daemon (`swarmd`) over HTTP and local Unix domain sockets.
+`@swarm-agent/sdk` provides a typed client to interact programmatically with the Swarm daemon (`swarmd`) over HTTP and its local owner socket.
 
 ## Features
 
-- **Zero Runtime Dependencies**: Works out-of-the-box in Node.js, Bun, Deno, and modern browser/edge environments.
-- **Zero-Conf Unix Sockets**: Native support for daemon Unix domain sockets (`/run/swarmd/swarmd.sock`) for automatic peer identity.
+- **Finds your local Swarm**: In Node, `new SwarmClient()` connects to the owner socket of a system install (`/var/lib/swarmd/local-transport/api.sock`) when the process may use it, otherwise to `http://127.0.0.1:7781`.
+- **Owner Socket**: The owner socket is trusted daemon-owner IPC: run as the user that runs Swarm and no token is needed.
 - **Granular Scoped Tokens**: Create, list, revoke, and purge scoped deploy tokens (`swk_...`) with fine-grained permissions (`automations:trigger`, `sessions:read`, `sessions:write`, `admin`).
 - **Worker / Automation V2 Triggers**: Trigger workers on-demand with dynamic caller context (e.g. GitHub Webhooks, CI/CD events, alert payloads).
 - **Session & Workspace Lifecycle**: Create durable V3 sessions, manage runs, send messages, poll for completion, and inspect workspaces.
 - **Typed Error Hierarchy**: `SwarmAuthError` (401), `SwarmForbiddenError` (403), `SwarmNotFoundError` (404), `SwarmConflictError` (409), `SwarmTimeoutError`.
 
-## Unpublished npm candidate
+## Install
 
-Node 22+ and ESM imports are the validated packaging target. The prerelease name
-is not a claim of registry ownership or publication. Install the local candidate
-from a clean consumer directory (no Swarm checkout or Desktop required):
+Requires Node 22 or newer (ESM). The package is public on npm:
 
 <copy>
-npm install "$SDK_TARBALL"
-node --input-type=module -e "import { SwarmClient } from '@swarm-agent/sdk'; console.log(typeof SwarmClient)"
+npm install @swarm-agent/sdk
+</copy>
+
+You need a running Swarm on Linux x86_64. Install one with
+`curl -fsSL https://swarmagent.dev/install | sh -s -- --yes`.
+
+## Connect to your Swarm
+
+`new SwarmClient()` with no options picks the first of:
+
+1. `socketPath` or `baseUrl` passed to the constructor;
+2. `SWARM_SOCKET_PATH` (a Unix socket);
+3. `SWARM_API_URL` (or `SWARM_DESKTOP_URL`);
+4. Node only: the owner socket `/var/lib/swarmd/local-transport/api.sock`, if it
+   exists, is a socket and this process can read and write it;
+5. `http://127.0.0.1:7781`, the daemon's default API address.
+
+The owner socket's directory is private to the user that runs Swarm, so other
+users fall through to HTTP, which needs a token (`token` or `SWARM_AUTH_TOKEN`).
+Browser code never touches the filesystem; use `@swarm-agent/sdk/browser` there.
+`resolveSwarmConnection()` returns the choice without connecting.
+
+<copy>
+node --input-type=module -e "import { SwarmClient } from '@swarm-agent/sdk'; const c = new SwarmClient(); console.log(c.config.socketPath ?? c.config.baseUrl)"
 </copy>
 
 For maintainers, the SDK builds independently with its own locked dev dependencies:
@@ -38,7 +58,7 @@ example, not source tests or node_modules. `prepack` builds locally; there are n
 install/prepare hooks. TypeScript/tsx are build/test tools, not runtime dependencies.
 CommonJS `require` and non-Node runtimes are not validated by this packaging step.
 
-For the headless container, use the matching `@swarm-agent/cli` candidate and explicitly
+For the headless container, use the matching `@swarm-agent/cli` package and explicitly
 export a scoped token through `swarm-headless setup -- sdk-token`. Connect to
 `http://127.0.0.1:7783`; **do not** use Desktop bootstrap or a privileged socket.
 The headless listener allows session operations only, not the complete API below.
@@ -76,10 +96,9 @@ The SDK can automatically discover credentials from your environment or Codex OA
 ```typescript
 import { SwarmClient } from '@swarm-agent/sdk';
 
-const client = new SwarmClient({
-  baseUrl: process.env.SWARM_API_URL || 'http://127.0.0.1:5555',
-  socketPath: process.env.SWARM_SOCKET_PATH, // e.g. /var/lib/swarmd/local-transport/api.sock
-});
+// Owner socket when this process may use it, else http://127.0.0.1:7781
+// (see "Connect to your Swarm"; pass socketPath/baseUrl/token to choose).
+const client = new SwarmClient();
 
 // 1. Ensure headless identity is bootstrapped
 await client.onboarding.ensureBootstrapped({ username: 'developer', swarm_name: 'My Swarm' });
@@ -133,7 +152,9 @@ await client.settings.restoreDefaults();
 
 Use `describePermission(record)` to render tool details, conservative per-request `actions`,
 question IDs, options and custom-response fields. Treat all text/arguments as untrusted text,
-not HTML. `parseError` leaves malformed questions deny-only. These helpers do not grant authority:
+not HTML. `title` is always a plain-text heading: the request's own title, else the bash
+command, the first ask-user question, or the humanized tool name and action (for example
+`Manage projects: propose task (Add login)`). `parseError` leaves malformed questions deny-only. These helpers do not grant authority:
 the backend enforces policy, project scope and specialized plan/proposal acceptance.
 
 ```typescript
@@ -172,50 +193,67 @@ always requires actual user input.
 
 ### 4. Interactive Chat & Live Tool Stream
 
-Build responsive chat UIs that stream model text, reasoning, and live tool execution cards like Swarm Desktop:
+One `chat.stream()` watch per selected conversation serves every turn. It hydrates the
+session, resumes `/v3/realtime/stream` from the snapshot cursor, and reconnects on its own.
 
 ```typescript
-// 1. Create a chat session
-const session = await client.chat.createSession({
-  title: 'Repository Exploration',
-  workspace_path: '/path/to/project',
-});
+const session = await client.chat.createSession({ title: 'Repo tour', workspace_path: '/path/to/repo' });
 
-// 2. Stream live text, reasoning, and tool calls
+let answer = '';
 const stream = await client.chat.stream(session.id, {
-  onText: (delta, fullText) => process.stdout.write(delta),
-  onReasoning: (delta) => console.log('[Thinking]', delta),
-  onToolStarted: (tool) => console.log(`[Tool Started] ${tool.name}`),
-  onToolDelta: (tool, delta) => console.log(`[Tool Output] ${delta}`),
-  onToolCompleted: (tool) => console.log(`[Tool Done] ${tool.name} in ${tool.durationMs}ms`),
-  onPermissionRequested: async (perm, resolve) => {
-    // Your UI must wait for a real user gesture. Keep errors visible and retain the form.
-    renderPermissionForm(describePermission(perm), async (action, userInput) => {
-      try {
-        const result = await resolve(action, action === 'allow_once' && describePermission(perm).kind === 'ask-user'
-          ? answerPermission(perm, userInput) : {});
-        showConfirmedDecision(result.permission);
-      } catch (error) { showPermissionError(perm.id, error); }
-    });
+  onText: (delta) => { answer += delta; render(answer); },  // deltas join to exactly the reply
+  onReasoning: (_delta, full) => renderThinking(full),
+  onToolStarted: (tool) => showTool(tool.callId, tool.name, tool.arguments),
+  onToolDelta: (tool, chunk) => appendToolOutput(tool.callId, chunk),
+  onToolCompleted: (tool) => finishTool(tool.callId, tool.status), // completed | failed | cancelled
+  onPermissionRequested: (perm, resolve) => askUser(perm, resolve), // see section 3; never auto-answer
+  onState: (state) => setStatus(state.status),               // syncing | live | reconnecting
+  onComplete: (messages, run) => {                            // once per run, success or not
+    if (run.status !== 'completed') showFailure(run.status, run.blocked_reason, messages);
+    answer = '';
   },
-  onPermissionRemoved: id => removePermissionForm(id), // No longer pending; not necessarily approved.
-  onPermissionError: (error, perm) => showPermissionError(perm.id, error),
-  onState: (state) => renderConversation(state.messages, state.live, state.snapshot),
-  onComplete: () => console.log('Turn finished; stream remains open'),
+  onError: (error) => showDisconnected(error),               // terminal: auth/protocol/retries exhausted
 });
-
-await stream.ready; // Hydration and replay MUST finish before dispatch.
-await client.chat.sendMessage(session.id, 'Find all configuration files and summarize them.');
-// Keep this watch for subsequent messages. Dispose only on switch/unmount/shutdown.
-// stream.done means the watch ended, not that a single assistant turn finished.
-
-// 3. Or use chat.run while the watch above serves the explicit permission UI
-const response = await client.chat.run(session.id, {
-  message: 'What is the git status of this repository?',
-  timeoutMs: 120_000,
-});
-console.log(response.reply);
+await stream.ready;                                           // hydrated and replayed: safe to send
+await client.chat.sendMessage(session.id, 'Summarize the build setup.');
+// Send further turns on the same watch. Switching conversations: stream.dispose(), then
+// chat.stream(otherId). client.sessions.list() lists conversations.
 ```
+
+Guarantees, verified end to end against the API server (see "Streaming verification" below):
+
+- `onText` deltas concatenate to exactly the assistant text, including when the socket drops
+  mid-turn: nothing is repeated and nothing is skipped; the last call carries any committed
+  text beyond what streamed. Use `fullText` (2nd argument) to replace instead of append.
+- A dropped socket reconnects (exponential backoff, 6 consecutive attempts per outage) and
+  resumes from durable state; `state.status` is `reconnecting` meanwhile and keeps the last view.
+- `onComplete(messages, run)` fires once per finished run, whatever its outcome.
+  A failed provider turn has `run.status === 'failed'` and a system message in `messages`.
+- Durable events (newest 1000) are in `state.snapshot.events_by_session[id]` once, in sequence order.
+- Live tool objects carry `callId`, equal to `payload.call_id` on the durable `session.tool.*`
+  events. When you merge history cards with live cards, match on `callId`: `tool.id` is kept
+  for compatibility and can be the step-scoped instance id (`step-2:call_…`).
+- A conversation whose history no longer fits the hydrate window (for example after a very
+  large tool result) still opens: the watch retries with `history.manifest_policy: 'manifest'`,
+  keeps the newest window, and sets `state.historyOmitted = true` with
+  `state.historyOmissions` (resource and `next_cursor`) so you can show "older history not
+  loaded" instead of presenting the window as complete.
+
+`state.messages` (a 200-message tail) and `state.live` are the rendering authority;
+callbacks are conveniences. Clearing context: `client.sessions.clearContext(id, { expectedLastEventSeq })`
+starts a fresh model context in the same conversation, but the daemon allows it only for an
+idle project conversation (`SwarmConflictError` otherwise, nothing changes); for a standalone
+chat, create a new session.
+
+**Streaming verification.** `swarmd/internal/api` `TestSDKChatStreamE2E` (opt-in:
+`npm run build`, then `SWARM_SDK_E2E=1 go test ./internal/api -run TestSDKChatStreamE2E`)
+drives the built package (`e2e/chat-stream.e2e.mjs`) against the real API server, store,
+executor and realtime socket with a scripted provider: incremental text, a socket drop mid-turn
+while durable checkpoints lag, completion, failure, session switching and context clear. It does
+not exercise a real model, tool calls or permission prompts, or token authentication.
+
+`chat.run()` (polling, returns the final reply) remains available for scripts; keep a
+`chat.stream()` watch open when tool permissions need an explicit answer.
 
 ---
 
@@ -257,9 +295,9 @@ chat.on('disconnected', disableComposer);
 // 1. Hook into live tool execution and token streams
 chat.on('text', (delta, fullText) => renderLiveMarkdown(fullText));
 chat.on('reasoning', (delta, fullText) => renderModelThinking(fullText));
-chat.on('tool_start', (tool) => renderToolStartedCard(tool.id, tool.name, tool.arguments));
-chat.on('tool_delta', (tool, delta) => appendToolOutput(tool.id, delta));
-chat.on('tool_done', (tool) => markToolCompleted(tool.id, tool.durationMs));
+chat.on('tool_start', (tool) => renderToolStartedCard(tool.callId, tool.name, tool.arguments));
+chat.on('tool_delta', (tool, delta) => appendToolOutput(tool.callId, delta));
+chat.on('tool_done', (tool) => markToolCompleted(tool.callId, tool.durationMs));
 // Replace pending cards on hydration/live updates/reconnect, keyed by permission.id.
 // Preserve unsent input for unchanged requests; do not submit during render.
 chat.on('permissions', pending => renderPendingForms(pending.map(describePermission)));
@@ -285,7 +323,9 @@ const requestId = chat.sendMessage('Inspect the git repository and list modified
 // `accepted` acknowledges durable dispatch. Never blindly resend an uncertain message.
 // Retain requestId if your UI offers an explicit retry, and pass it as argument 4.
 // Switching: await chat.subscribe(otherSession.id). Reconnect rehydrates selected history.
-// Unmount: chat.dispose(). Disconnected sends throw instead of silently disappearing.
+// Unmount: chat.dispose(). Sends that cannot go out throw SwarmChatNotReadyError (nothing was
+// sent): its message is fit to show people, and `code` is chat_reconnecting (retry shortly),
+// chat_disconnected (call connect()) or chat_not_subscribed (subscribe first).
 ```
 
 Backend conversation routes should use the same project identity for listing and creation:
@@ -297,6 +337,17 @@ const created = await client.projects.createConversation(project.id, {
 });
 // Return created.id to the browser; await chat.subscribe(created.id) before sending.
 ```
+
+Conversation titles come from Swarm: a conversation created without a `title` is named from
+its first message (refined later when a title model is available), and `listConversations`
+returns it. Rename with `client.sessions.rename(id, title)` (or
+`client.projects.renameConversation(id, title)`); a renamed title is kept.
+
+Assistant text can contain `<copy label="…">…</copy>` snippet tags, which Swarm's own apps
+render as copy buttons. `chat.run`, `chat.listMessages` and `chat.stream` (and the browser
+bridge built on it) turn them into Markdown code blocks by default; pass `rawCopyTags: true`
+to keep them. For text read elsewhere (`sessions.get`, `realtime.watchSession`), use the
+exported `copyTagsToMarkdown(text)`.
 
 Use `state` as the conversation rendering authority, including initial history, failed/empty
 turns and durable reconnect recovery. `text`/tool callbacks are convenience notifications.
@@ -442,7 +493,21 @@ await client.projects.refineTask(project.id, task.id, {
 
 // Stream or replay outbox events starting after an opaque cursor
 const streamResult = await client.projects.replayEvents('opaque_cursor_token');
+
+// Integrate a finished task's commits into its captured target branch
+const integration = await client.projects.integrateTask(project.id, task.id);
 ```
+
+`integrateTask` reads the task first (`getTask`, which observes Git) and sends the exact
+selection the daemon checks: `session_id` (the task's current session) and the captured
+`source_branch`/`target_branch` (from `task.delivery_assessment`, else the task's
+`worktree_branch`/`base_branch`, else its active attempt), plus `revision`, `attempt_id` and the
+observed `source_head`/`target_head`. Override any field with
+`integrateTask(projectId, taskId, { selection: { target_branch: 'main' } })`; supplying
+`session_id`, `source_branch` and `target_branch` skips the read. A task with no captured
+worktree lane throws `SwarmValidationError` without calling the daemon; a stale selection, dirty
+checkout or non-actionable delivery state comes back as `SwarmConflictError` and nothing is
+integrated.
 
 ### 7. Programmable Push Alert Webhooks
 

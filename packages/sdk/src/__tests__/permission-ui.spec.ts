@@ -99,3 +99,26 @@ test('resolution validates inputs, conflicts and concurrent requests without swa
   await assert.rejects(api.resolve('s', 'p', 'deny'), /backend unavailable/);
   await assert.rejects(api.resolve('s', 'p', 'deny'), /backend unavailable/);
 });
+
+// Requirement: every permission card has a readable plain-text heading. Daemon requests for bash,
+// manage_projects and ask_user carry no `title` argument, so describePermission(p).title was
+// empty and apps rendered blank cards. Threat: an empty heading, or a heading built as markup from
+// untrusted arguments (multi-line commands, tags). Authority: describePermission title fallback;
+// a pure test over the parsed record is the narrowest boundary. An explicit title still wins.
+test('describePermission falls back to a plain-text title from tool name and arguments', () => {
+  assert.equal(describePermission(permission({ command: 'npm test\n  -- --watch' }, 'bash')).title, 'npm test -- --watch');
+  assert.equal(describePermission(permission({ action: 'propose_task', title: 'Add login' }, 'manage_projects')).title,
+    'Manage projects: propose task (Add login)');
+  assert.equal(describePermission(permission({ question: 'Ship it?', options: choices }, 'ask_user')).title, 'Ship it?');
+  assert.equal(describePermission(permission({ questions: [{ id: 'a', question: 'Which DB?', options: choices }] }, 'ask_user')).title, 'Which DB?');
+  assert.equal(describePermission(permission({ title: 'Release plan', question: 'Go?', options: choices }, 'ask_user')).title, 'Release plan');
+  assert.equal(describePermission(permission({ path: 'src/a.ts' }, 'write_file')).title, 'Write file (src/a.ts)');
+  assert.equal(describePermission({ ...permission({}, 'web.fetch'), tool_arguments: '{broken' }).title, 'Fetch');
+  const markup = describePermission(permission({ command: '<img src=x onerror=alert(1)>' }, 'bash')).title!;
+  assert.equal(markup, '<img src=x onerror=alert(1)>', 'returned verbatim as text for text rendering, never converted to HTML');
+  const long = describePermission(permission({ command: 'x'.repeat(500) }, 'bash')).title!;
+  assert.ok(long.length <= 160 && long.endsWith('…'));
+  for (const tool of ['bash', 'manage_projects', 'ask_user']) {
+    assert.ok(describePermission(permission({}, tool)).title, `${tool} always has a title`);
+  }
+});

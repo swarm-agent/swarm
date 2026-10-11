@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 
 	"swarm/packages/swarmd/internal/gitenv"
@@ -603,6 +604,7 @@ func runManageSessionsGitInput(ctx context.Context, repository string, input []b
 	if input != nil {
 		cmd.Stdin = strings.NewReader(string(input))
 	}
+	sandbox.Prepare(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("git %s: %w: %s", first, err, strings.TrimSpace(string(output)))

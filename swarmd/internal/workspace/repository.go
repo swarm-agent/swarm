@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"syscall"
 	"time"
 
@@ -413,6 +414,9 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	if err != nil {
 		return RepositoryState{}, err
 	}
+	if err := s.validateRepositorySetupPath(path, requested); err != nil {
+		return RepositoryState{}, err
+	}
 	unlock := lockRepositoryPreparation(requested)
 	defer unlock()
 	resolved, err := resolvePath(path)
@@ -429,6 +433,12 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 			}
 		}
 		return RepositoryState{}, fmt.Errorf("workspace %q is already saved with id %q; repository repair cannot rewrite its history", resolved, existing.WorkspaceID)
+	}
+	if err := s.validateRepositorySetupPath(path, resolved); err != nil {
+		return RepositoryState{}, err
+	}
+	if err := s.validateRepositorySetupNesting(principal, resolved); err != nil {
+		return RepositoryState{}, err
 	}
 	if requested != resolved {
 		return RepositoryState{}, fmt.Errorf("repository setup rejects symlinked paths; select the canonical directory %q", resolved)
@@ -549,6 +559,9 @@ func (s *Service) setupRepositoryForPrincipal(principal identity.Principal, path
 	if _, err := runRepositoryGit(resolved, "--git-dir=.git", "--work-tree=.", "init", "--initial-branch=main", "--template="); err != nil {
 		return RepositoryState{}, cleanup(fmt.Errorf("initialize Git repository: %w", err))
 	}
+	if err := ensureRepositoryCommitIdentity(resolved); err != nil {
+		return RepositoryState{}, cleanup(err)
+	}
 	// Never commit from the index, even if another process stages home files.
 	tree, err := runRepositoryGit(resolved, "hash-object", "-w", "-t", "tree", "--stdin")
 	if err != nil {
@@ -593,6 +606,7 @@ func runRepositoryGitInput(path string, env []string, input io.Reader, args ...s
 	cmd.WaitDelay = time.Second
 	var output repositoryOutput
 	cmd.Stdout, cmd.Stderr = &output, &output
+	sandbox.Prepare(ctx, cmd)
 	err := cmd.Run()
 	if output.exceeded {
 		return "", errors.New("Git output exceeds repository inspection limit")

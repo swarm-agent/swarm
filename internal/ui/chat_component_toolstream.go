@@ -91,6 +91,11 @@ func parseToolHistoryStreamEntry(raw string, createdAt int64) (chatToolStreamEnt
 		toolName = "tool"
 	}
 	output := strings.TrimSpace(jsonString(payload, "completed_output"))
+	if output == "" && isV3ToolLifecycleEventType(eventType) {
+		// Terminal lifecycle events carry the completion label in "summary" and
+		// the tool's real output in "output".
+		output = strings.TrimSpace(jsonString(payload, "summary"))
+	}
 	rawOutput := strings.TrimSpace(jsonString(payload, "raw_output"))
 	if rawOutput == "" {
 		rawOutput = strings.TrimSpace(jsonString(payload, "output"))

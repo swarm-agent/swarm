@@ -1,7 +1,5 @@
 # Build a real headless UI with the SDK
 
-For planned SDK completeness, safe tool control and non-production qualification, see the [five-step headless application plan](HEADLESS_PLAN.md). That roadmap is not a claim of implemented capabilities.
-
 ## Trust boundary
 
 Run the administrative Node SDK in your backend-for-frontend **inside the same container as swarmd**, using its configured private Unix socket. Do not mount/export that socket, put daemon credentials in browser code, or forward arbitrary browser-selected daemon paths. Authenticate your app's users, check Origin/CSRF, and allowlist app operations. Never log credential request bodies. The separate `--container-sdk-port` listener remains session-only: it cannot onboard providers, change settings, or create workspaces.
@@ -18,7 +16,7 @@ const providers = await swarm.settings.providers(); // readiness and supported a
 const credentials = await swarm.auth.credentials.list(); // redacted status only
 </copy>
 
-Your app must supply its configured socket path and authenticated local identity. This is not a recipe to import host credentials. Complete the daemon's identity/onboarding requirements using `onboarding.update({ username, swarm_name })` when needed.
+Your app must supply its configured socket path and authenticated local identity. This is not a recipe to import host credentials. Create the daemon identity with `onboarding.ensureBootstrapped({ username, swarm_name })` when needed (the name is kept as typed; repeating it is a no-op). It does not mark onboarding finished: once your setup (provider key, models, workspace) is done, call `onboarding.update({ desktop_onboarding_complete: true })`.
 
 For an API key collected through your app UI, pass the user-selected provider and its advertised credential type. The first-provider endpoint requires zero existing credentials/agents; use the ordinary save endpoint afterward. Errors are not silently retried on a different route.
 
@@ -86,13 +84,13 @@ await watch.done; // rejects on terminal transport/protocol/auth errors
 // On app disconnect: watch.dispose() or abort.abort().
 </copy>
 
-The watcher hydrates one session (including its session view), waits for `hello` (`v3.realtime`, version 1), and resumes from the **snapshot handoff cursor**, not the newer hello head. The server replays to the subscription before delivering live updates. It advertises `live_patch_v1` only when the server offers it. UTF-8 byte offsets and sequence ranges deduplicate live text; durable checkpoints and committed messages remain authoritative. Foreign-session frames never update the view.
+The watcher hydrates one session (including its session view), waits for `hello` (`v3.realtime`, version 1), and resumes from the **snapshot handoff cursor**, not the newer hello head. The server replays to the subscription before delivering live updates. It advertises `live_patch_v1` only when the server offers it. UTF-8 byte offsets place live text: duplicates and overlaps are trimmed, and output that starts beyond the durable prefix (normal when joining or reconnecting mid-turn, since durable checkpoints trail live text by up to 250ms) is held until a durable checkpoint fills the gap, never shown with a hole. Committed messages remain authoritative. Foreign-session frames never update the view.
 
-Durable events trigger coalesced `/v3/sync/hydrate` reads, not interval polling. Disconnects, cursor errors and slow consumers start fresh scoped hydration/replay with bounded exponential backoff (six retries, 250ms to 8s). Authentication/protocol errors terminate. No cursor is parsed, numerically compared, or persisted across watches/principals. `dispose` cancels HTTP, closes WebSocket, and ends `done`; a disposed-before-ready watcher rejects `ready`.
+Durable events delivered on the socket are merged into `state.snapshot.events_by_session` immediately (deduplicated by sequence, newest 1000 kept); other than streaming `*.delta` checkpoints they also trigger coalesced `/v3/sync/hydrate` reads, not interval polling. Disconnects, cursor errors and slow consumers start fresh scoped hydration/replay with bounded exponential backoff (six consecutive retries per outage, 250ms to 8s; a replayed connection restores the budget). While reconnecting, `state` keeps the last rendered conversation with `status: 'reconnecting'`. Authentication/protocol errors terminate. No cursor is parsed, numerically compared, or persisted across watches/principals. `dispose` cancels HTTP, closes WebSocket, and ends `done`; a disposed-before-ready watcher rejects `ready`.
 
 ### Bounded view and raw access
 
-The high-level view is a **200-message / 200-event tail**, not the complete transcript. Inspect `snapshot.pagination`, `omissions`, history manifests and session views before claiming complete history. A mid-stream reconnect whose retained event tail lacks the stream prefix may show no partial draft until a durable complete message arrives; it never guesses missing text. A live offset gap pauses that stream's speculative patches and relies on durable repair. Live overlays are bounded to 64 streams / 4 MiB per stream. Tool, plan, permission and other resources stay in the canonical raw snapshot; the SDK does not invent a second plan authority.
+The high-level view is a **200-message / 200-event tail**, not the complete transcript. Inspect `snapshot.pagination`, `omissions`, history manifests and session views before claiming complete history. A mid-stream reconnect whose retained event tail lacks the stream prefix may show no partial draft until a durable complete message arrives; it never guesses missing text. Live overlays are bounded to 64 streams / 4 MiB per stream. Tool, plan, permission and other resources stay in the canonical raw snapshot; the SDK does not invent a second plan authority.
 
 `realtime.bootstrap(request)`, `hydrate(request)` and `replay({...request, endpoint_cursor, limit})` expose typed canonical V3 envelopes for advanced consumers. Keep surface, selector and resources identical when using `/v3/sync/stream` cursors. `realtime.socket(path)` exposes transport only; raw consumers own reducer/replay correctness. The convenience watcher uses fresh durable repair on reconnect rather than retaining a possibly stale speculative cache.
 

@@ -26,6 +26,7 @@ type projectRealtimeMutation struct {
 	deletes        []string
 	eventPayload   json.RawMessage
 	outbox         *V3RealtimeOutboxRecord
+	taskTransition *ProjectTaskStatusTransition
 }
 
 func (m *projectRealtimeMutation) put(key string, value any) error {
@@ -196,13 +197,34 @@ func (s *Store) commitProjectRealtime(m *projectRealtimeMutation) error {
 }
 
 func (s *Store) publishProjectRealtime(m *projectRealtimeMutation) {
-	if m == nil || m.outbox == nil {
+	if m == nil {
 		return
 	}
 	s.projectPublisherMu.RLock()
 	publish := s.projectPublisher
+	observe := s.projectTaskStatusObserver
 	s.projectPublisherMu.RUnlock()
-	if publish != nil {
+	if publish != nil && m.outbox != nil {
 		publish(*m.outbox)
 	}
+	if observe != nil && m.taskTransition != nil {
+		observe(*m.taskTransition)
+	}
+}
+
+// ProjectTaskStatusTransition is one committed change of a project task's status.
+type ProjectTaskStatusTransition struct {
+	AccountScopeID string
+	PriorStatus    string
+	Task           ProjectTaskRecord
+}
+
+// SetProjectTaskStatusObserver installs fn, called once for each committed
+// project task write that moves the task into a new status. It runs after the
+// write commits and outside the project and session mutation locks; a write that
+// repeats the current status (a retry or replay) is not a transition.
+func (s *Store) SetProjectTaskStatusObserver(fn func(ProjectTaskStatusTransition)) {
+	s.projectPublisherMu.Lock()
+	defer s.projectPublisherMu.Unlock()
+	s.projectTaskStatusObserver = fn
 }

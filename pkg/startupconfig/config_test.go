@@ -141,3 +141,33 @@ func containsLine(text, want string) bool {
 	}
 	return false
 }
+
+// Purpose: only a Swarm with no config file starts with onboarding incomplete;
+// an existing file that predates desktop_onboarding_complete keeps its legacy
+// "complete, unset" meaning so upgraded installs are not pushed back into
+// onboarding. Load owns both branches, so it is the narrowest layer.
+func TestLoadMissingConfigIsNewInstallButLegacyFileStaysComplete(t *testing.T) {
+	dir := t.TempDir()
+	missing, err := Load(filepath.Join(dir, "absent.conf"))
+	if err != nil {
+		t.Fatalf("Load missing: %v", err)
+	}
+	if missing.Exists || missing.DesktopOnboardingComplete || !missing.DesktopOnboardingCompleteSet {
+		t.Fatalf("missing config exists=%v complete=%v set=%v, want false/false/true", missing.Exists, missing.DesktopOnboardingComplete, missing.DesktopOnboardingCompleteSet)
+	}
+	if !containsLine(Format(NewInstall(filepath.Join(dir, "new.conf"))), "desktop_onboarding_complete = false") {
+		t.Fatal("NewInstall does not format incomplete onboarding")
+	}
+
+	legacyPath := filepath.Join(dir, "legacy.conf")
+	if err := os.WriteFile(legacyPath, []byte("swarm_name = legacy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := Load(legacyPath)
+	if err != nil {
+		t.Fatalf("Load legacy: %v", err)
+	}
+	if !legacy.Exists || !legacy.DesktopOnboardingComplete || legacy.DesktopOnboardingCompleteSet {
+		t.Fatalf("legacy config exists=%v complete=%v set=%v, want true/true/false", legacy.Exists, legacy.DesktopOnboardingComplete, legacy.DesktopOnboardingCompleteSet)
+	}
+}

@@ -1597,6 +1597,21 @@ func RunForeground(path string, args []string, env []string) error {
 	return cmd.Run()
 }
 
+// RunMCPBridge replaces this process with `swarmctl mcp`, the stdio MCP
+// bridge for a local AI client, pointed at this profile's owner socket. Exec
+// (not a child) lets the client's stdin EOF and signals reach the bridge so it
+// deletes its in-memory AI key. It never starts the daemon and never writes to
+// stdout, which carries only MCP; the bridge reports a stopped Swarm or a
+// non-owner user on stderr.
+func RunMCPBridge(profile Profile, args []string) error {
+	ctlPath := filepath.Join(profile.BinDir, "swarmctl")
+	if !isExecutable(ctlPath) {
+		return missingInstalledBinaryError("swarmctl", ctlPath)
+	}
+	env := profile.EnvList(map[string]string{localTransportSocketEnv: LocalTransportSocketPath(profile)})
+	return syscall.Exec(ctlPath, append([]string{"swarmctl", "mcp"}, args...), env)
+}
+
 func RunCtl(profile Profile, rawArgs []string, auth bool) error {
 	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return err
@@ -1617,16 +1632,7 @@ func RunCtl(profile Profile, rawArgs []string, auth bool) error {
 		extraEnv[localTransportSocketEnv] = LocalTransportSocketPath(profile)
 		extraEnv["DATA_DIR"] = profile.DataDir
 	}
-	hasAddr := false
-	for _, arg := range args {
-		if arg == "--addr" {
-			hasAddr = true
-			break
-		}
-	}
-	if !hasAddr {
-		args = append(args, "--addr", profile.URL)
-	}
+	args = withCtlAddr(args, profile.URL)
 	return RunForeground(ctlPath, args, profile.EnvList(extraEnv))
 }
 
@@ -2584,4 +2590,19 @@ func httpRequest(ctx context.Context, profile Profile, rawMethod, rawURL string,
 		return nil, resp.StatusCode, err
 	}
 	return data, resp.StatusCode, nil
+}
+
+// withCtlAddr points a forwarded swarmctl command at this profile's API URL.
+// `swarmctl setup` talks only to the owner socket (it rejects --addr), so it
+// gets the socket through the environment instead; an explicit --addr wins.
+func withCtlAddr(args []string, url string) []string {
+	if len(args) > 0 && args[0] == "setup" {
+		return args
+	}
+	for _, arg := range args {
+		if arg == "--addr" {
+			return args
+		}
+	}
+	return append(args, "--addr", url)
 }

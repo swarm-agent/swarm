@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -1070,5 +1073,73 @@ func TestSessionV3AutomationConcurrencyCap(t *testing.T) {
 	job6 := sessionV3ExecutorJob{SessionID: "av2-execution-occ-6", RunID: "run-6"}
 	if enqueued := exec.EnqueueRun(job6); enqueued {
 		t.Fatal("expected 6th concurrent automation execution to be rejected by concurrency cap")
+	}
+}
+
+// Purpose: POST /v3/sessions/{id}/run/stop pauses the run's plan checkpoint so
+// it can be resumed; dogfooding (s07) found "paused" ambiguous. The user stop
+// must be recorded as stopped_by="user" on the paused attempt and plan
+// summary, while a non-user cancellation of an identical plan must not claim
+// it. The HTTP handler plus executor is the narrowest layer proving the cause
+// is set by the user stop route and survives CancelRun's job hydration.
+func TestSessionsV3RunStopRecordsUserStopOnPausedPlan(t *testing.T) {
+	server, sessionSvc, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	exec := &sessionV3Executor{server: server, runStates: make(map[string]*sessionV3ExecutorRunState)}
+	server.v3SessionExecutor = exec
+	setup := func(name string) string {
+		created := createSessionsV3PrimaryTestSession(t, server, name+"-create", name)
+		runID, planID, checkpointID, attemptID := "run-"+name, "plan-"+name, "cp-1", "cp-1:attempt-1"
+		if _, _, err := sessionSvc.SavePlanWithMetadata(created.ID, planID, "Plan: "+name, "## Plan: "+name, "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+			ID: planID, Title: "Plan: " + name,
+			ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
+			ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateInProgress, ActiveAttemptID: attemptID, ParentSessionID: created.ID, CurrentSessionID: created.ID, CurrentRunID: runID},
+			ActiveCheckpointID: checkpointID,
+			Checkpoints:        []pebblestore.SessionPlanCheckpoint{{ID: checkpointID, Title: "Stop me", Status: sessionruntime.PlanCheckpointStatusInProgress, AttemptID: attemptID, RunID: runID, SessionID: created.ID, Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: attemptID, CheckpointID: checkpointID, Status: sessionruntime.PlanCheckpointStatusInProgress, RunID: runID, SessionID: created.ID, ParentSessionID: created.ID}}}},
+		}}); err != nil {
+			t.Fatalf("save plan: %v", err)
+		}
+		now := time.Now().UnixMilli()
+		pending := pebblestore.V3SessionRunIntent{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, RunID: runID, Status: sessionruntime.RunIntentPendingExecutor, PlanID: planID, CheckpointID: checkpointID, AttemptID: attemptID, RunSessionID: created.ID, ParentSessionID: created.ID, UpdatedAt: now}
+		payloadHash, err := sessionV3ExecutorPayloadHash(created.ID, runID, pending.Status, "", "session.assistant.queued", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := server.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: created.ID, UserID: testPrincipal().UserID, AccountScopeID: testPrincipal().AccountScopeID, ClientRequestID: name + "-queued", IdempotencyKey: name + "-queued", PayloadHash: payloadHash, RequestHash: payloadHash, Kind: sessionruntime.SessionMutationRecordRunIntent, EventType: "session.assistant.queued", RunIntent: &pending, NowUnixMs: now}); err != nil {
+			t.Fatalf("record pending intent: %v", err)
+		}
+		return created.ID
+	}
+	pausedAttempt := func(sessionID string) (pebblestore.SessionPlanCheckpointAttempt, sessionruntime.PlanExecutionSummary) {
+		active, ok, err := sessionSvc.GetActivePlan(sessionID)
+		if err != nil || !ok || active.Document == nil {
+			t.Fatalf("get plan: ok=%t err=%v", ok, err)
+		}
+		checkpoint := active.Document.Checkpoints[0]
+		if checkpoint.Status != sessionruntime.PlanCheckpointStatusPaused || len(checkpoint.Attempts) != 1 {
+			t.Fatalf("plan not paused: %#v", checkpoint)
+		}
+		return checkpoint.Attempts[0], sessionruntime.SummarizePlanExecution(active.Document)
+	}
+
+	userSession := setup("user-stop")
+	req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+userSession+"/run/stop", bytes.NewBufferString(`{"type":"run.stop","run_id":"run-user-stop","target_swarm_id":"host-swarm-id","reason":"enough"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, withTestPrincipal(req))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	attempt, summary := pausedAttempt(userSession)
+	if attempt.StoppedBy != sessionruntime.PlanStoppedByUser || !summary.Paused || summary.StoppedBy != sessionruntime.PlanStoppedByUser {
+		t.Fatalf("user stop not recorded: attempt=%#v summary=%#v", attempt, summary)
+	}
+
+	otherSession := setup("other-cancel")
+	if _, cancelled, err := exec.CancelRun(sessionV3ExecutorJob{Principal: testPrincipal(), SessionID: otherSession, RunID: "run-other-cancel"}, "automation cancelled"); err != nil || !cancelled {
+		t.Fatalf("non-user cancel: cancelled=%t err=%v", cancelled, err)
+	}
+	attempt, summary = pausedAttempt(otherSession)
+	if attempt.StoppedBy != "" || summary.StoppedBy != "" || !summary.Paused {
+		t.Fatalf("non-user cancellation claimed a user stop: attempt=%#v summary=%#v", attempt, summary)
 	}
 }

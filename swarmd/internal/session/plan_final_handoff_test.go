@@ -326,3 +326,41 @@ func TestValidatePlanCheckpointRecommendationPromptSemantics(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanRecommendationAdvertisedValuesAreExactlyAccepted pins the
+// plan_manage recommendation contract: the exported value lists that the tool
+// schema advertises are exactly the values validation accepts. Dogfooding saw
+// agents guess action_state values ("complete", "blocked", "not_started")
+// because the schema advertised none, failing the first terminal call. The
+// session package owns validation, so this is the narrowest layer.
+func TestPlanRecommendationAdvertisedValuesAreExactlyAccepted(t *testing.T) {
+	base := pebblestore.SessionPlanCheckpointRecommendation{Decision: "ship", Action: "review", Reason: "done", ActionState: "ready"}
+	for _, state := range PlanRecommendationActionStates() {
+		rec := base
+		rec.ActionState = state
+		if err := validatePlanCheckpointRecommendation(normalizePlanCheckpointRecommendation(rec)); err != nil {
+			t.Fatalf("advertised action_state %q rejected: %v", state, err)
+		}
+	}
+	for _, decision := range PlanRecommendationDecisions() {
+		rec := base
+		rec.Decision = decision
+		if err := validatePlanCheckpointRecommendation(normalizePlanCheckpointRecommendation(rec)); err != nil {
+			t.Fatalf("advertised decision %q rejected: %v", decision, err)
+		}
+	}
+	for _, guessed := range []string{"complete", "blocked", "not_started", "pending"} {
+		rec := base
+		rec.ActionState = guessed
+		err := validatePlanCheckpointRecommendation(normalizePlanCheckpointRecommendation(rec))
+		if err == nil || !strings.Contains(err.Error(), "taken, ready, needs_approval") {
+			t.Fatalf("unadvertised action_state %q error = %v, want rejection naming the accepted values", guessed, err)
+		}
+	}
+	// Returned slices are copies; callers cannot widen the accepted set.
+	states := PlanRecommendationActionStates()
+	states[0] = "complete"
+	if PlanRecommendationActionStates()[0] != "taken" {
+		t.Fatal("PlanRecommendationActionStates returned shared mutable storage")
+	}
+}

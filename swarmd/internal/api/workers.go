@@ -1189,8 +1189,14 @@ func (s *Server) handleWorkerRuns(w http.ResponseWriter, r *http.Request, p iden
 		runs = []pebblestore.WorkerRunRecord{}
 	}
 
+	views, err := s.workerRunViews(runs)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"runs":        runs,
+		"runs":        views,
 		"next_cursor": next,
 	})
 }
@@ -1223,9 +1229,14 @@ func (s *Server) handleWorkerRunByID(w http.ResponseWriter, r *http.Request, p i
 		writeError(w, http.StatusNotFound, errors.New("worker run not found"))
 		return
 	}
+	views, err := s.workerRunViews([]pebblestore.WorkerRunRecord{run})
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"run": run,
+		"run": views[0],
 	})
 }
 

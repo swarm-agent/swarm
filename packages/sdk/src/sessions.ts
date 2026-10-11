@@ -101,10 +101,14 @@ export class SwarmSessionsNamespace {
     const data = res.data;
     if (data && typeof data === 'object') {
       const sessionObj = data.session || data;
+      // V3 sessions carry their source workspace as the primary grant.
+      const primaryGrant = Array.isArray(sessionObj.workspace_grants)
+        ? sessionObj.workspace_grants.find((grant: any) => grant?.kind === 'primary')
+        : undefined;
       return {
         id: sessionObj.id || sessionObj.session_id || sessionId,
         title: sessionObj.title || '',
-        workspace_id: sessionObj.workspace_id,
+        workspace_id: sessionObj.workspace_id || primaryGrant?.workspace_id,
         workspace_path: sessionObj.workspace_path,
         state: sessionObj.state || data.projection?.state || 'idle',
         mode: sessionObj.mode,
@@ -175,11 +179,37 @@ export class SwarmSessionsNamespace {
   }
 
   /**
+   * Renames a session or project conversation you own (`POST /v3/sessions/{id}/title`).
+   * The title is trimmed and must be 1–200 characters. A renamed conversation keeps its
+   * title: Swarm no longer titles it automatically. (Untitled conversations are named
+   * from their first message.) Retrying with the same `clientRequestId` is idempotent.
+   */
+  async rename(
+    sessionId: string,
+    title: string,
+    options: { clientRequestId?: string } = {}
+  ): Promise<{ ok: boolean; session_id: string; title: string }> {
+    const id = sessionId.trim();
+    if (!id) throw new Error('sessionId is required');
+    const trimmed = typeof title === 'string' ? title.trim() : '';
+    if (!trimmed) throw new Error('title is required');
+    if ([...trimmed].length > 200) throw new Error('title must be 200 characters or fewer');
+    const res = await this.transport.request<{ ok: boolean; session_id: string; title: string }>(
+      `/v3/sessions/${encodeURIComponent(id)}/title`,
+      {
+        method: 'POST',
+        body: { title: trimmed, client_request_id: options.clientRequestId || generateRequestId() },
+      }
+    );
+    return res.data;
+  }
+
+  /**
    * Appends a message to a session conversation.
    */
   async sendMessage(
     sessionId: string,
-    params: { content: string; role?: 'user' | 'assistant' | 'system'; client_request_id?: string }
+    params: { content: string; role?: 'user'; client_request_id?: string }
   ): Promise<any> {
     const id = encodeURIComponent(sessionId.trim());
     const clientRequestId = params.client_request_id || generateRequestId();
@@ -191,6 +221,36 @@ export class SwarmSessionsNamespace {
         role: params.role ?? 'user',
       },
     });
+    return res.data;
+  }
+
+  /**
+   * Starts a fresh model context in the same conversation (`POST /v3/sessions/{id}/context/clear`).
+   * History stays visible and the session ID is unchanged; the next turn starts without the
+   * earlier provider context. The daemon accepts this only for an idle project conversation
+   * without an unresolved plan, and only when `expectedLastEventSeq` equals the session's current
+   * durable sequence (`state.snapshot.projections_by_session[id].last_event_seq`); otherwise it
+   * rejects with `SwarmConflictError` and changes nothing. A standalone chat session cannot be
+   * cleared: create a new session instead. Retrying with the same `clientRequestId` is idempotent.
+   */
+  async clearContext(
+    sessionId: string,
+    params: { expectedLastEventSeq: number; clientRequestId?: string }
+  ): Promise<{ ok: boolean; session_id: string; mutation: Record<string, unknown> }> {
+    if (!Number.isSafeInteger(params.expectedLastEventSeq) || params.expectedLastEventSeq < 0) {
+      throw new Error('expectedLastEventSeq must be the current non-negative session event sequence');
+    }
+    const id = encodeURIComponent(sessionId.trim());
+    const res = await this.transport.request<{ ok: boolean; session_id: string; mutation: Record<string, unknown> }>(
+      `/v3/sessions/${id}/context/clear`,
+      {
+        method: 'POST',
+        body: {
+          client_request_id: params.clientRequestId || generateRequestId(),
+          expected_last_event_seq: params.expectedLastEventSeq,
+        },
+      }
+    );
     return res.data;
   }
 

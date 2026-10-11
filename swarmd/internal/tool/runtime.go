@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"time"
 	"unicode"
@@ -42,6 +43,7 @@ import (
 	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/taskscope"
 	todoruntime "swarm/packages/swarmd/internal/todo"
@@ -154,6 +156,17 @@ var (
 		"developer message",
 		"you are now",
 		"jailbreak",
+		"system override",
+		"admin mode",
+		"developer mode",
+		"maintenance mode",
+		"notice to the ai",
+		"to the ai assistant",
+		"to any ai reading",
+		"new instructions:",
+		"do not mention this",
+		"do not tell the user",
+		"call the bash tool",
 	}
 	errListScanLimit = errors.New("list scan limit reached")
 )
@@ -1623,7 +1636,7 @@ func (r *Runtime) Definitions() []Definition {
 					"result":               map[string]any{"type": "string", "description": "Checkpoint result for update/complete checkpoint operations."},
 					"handoff_overview":     map[string]any{"type": "string", "description": "Concise overview for final checkpoint completion or blocked handoffs."},
 					"impact_bullets":       map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{"type": "string"}, "description": "Up to 3 concise impact bullets for a final or blocked handoff."},
-					"recommendation":       map[string]any{"type": "object", "description": "Single final-review recommendation object (decision, action, reason, action_state)."},
+					"recommendation":       planRecommendationToolSchema(),
 					"complete_checkpoint":  map[string]any{"type": "boolean", "description": "For complete_subtask: complete checkpoint atomically when all work is done."},
 					"document":             sessionPlanDocumentToolSchema(),
 					"checkpoint":           map[string]any{"type": "object", "description": "Structured checkpoint object for checkpoint document operations (tasks, notes, agent progress/checklist). Call action='help' for schema. For start_session_checkpoint, transition_checkpoint_boundary, or restart_checkpoint, do not wrap fields inside a checkpoint object; pass change_request, checkpoint_title, tasks, acceptance_criteria, and notes directly at the top level."},
@@ -1951,6 +1964,24 @@ func sessionPlanArtifactToolSchema() map[string]any {
 	}
 }
 
+// planRecommendationToolSchema advertises the exact recommendation values that
+// session validation accepts, so the first terminal plan_manage call is valid.
+func planRecommendationToolSchema() map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": "Single final-review recommendation for a final or blocked handoff.",
+		"properties": map[string]any{
+			"decision":     map[string]any{"type": "string", "enum": sessionruntime.PlanRecommendationDecisions()},
+			"action":       map[string]any{"type": "string"},
+			"reason":       map[string]any{"type": "string"},
+			"action_state": map[string]any{"type": "string", "enum": sessionruntime.PlanRecommendationActionStates(), "description": "taken: already done; ready: user can act now; needs_approval: needs a user decision (blocked handoffs)."},
+			"prompt":       map[string]any{"type": "string", "description": "Optional chat prompt that takes the action."},
+		},
+		"required":             []string{"decision", "action", "reason", "action_state"},
+		"additionalProperties": false,
+	}
+}
+
 func sessionPlanInfoToolSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
@@ -2063,6 +2094,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 				return "", err
 			}
 			scope.PrimaryPath = repo
+		} else if strings.TrimSpace(scope.PrimaryPath) == "" && r.projectConversationWithoutWorkspace(scope) {
+			return "", errProjectWithoutWorkspace
 		}
 		return executeBash(ctx, scope, args, func(chunk string) {
 			if onProgress == nil {
@@ -2177,10 +2210,14 @@ func (r *Runtime) executeCustomTool(ctx context.Context, scope WorkspaceScope, n
 	if !ok {
 		return "", fmt.Errorf("unsupported tool %q", name)
 	}
-	if len(args) > 0 {
+	if len(args) > 0 && definition.Kind != pebblestore.AgentCustomToolKindClient {
 		return "", fmt.Errorf("custom tool %q does not accept arguments", name)
 	}
 	switch definition.Kind {
+	case pebblestore.AgentCustomToolKindClient:
+		// Answered by the session's client through the run service; reaching
+		// the runtime means that path was bypassed.
+		return "", fmt.Errorf("client tool %q is answered by the session's client, not executed", name)
 	case pebblestore.AgentCustomToolKindFixedBash:
 		return executeBashCommand(ctx, scope, map[string]any{}, strings.TrimSpace(definition.Command), func(chunk string) {
 			if onProgress == nil {
@@ -2577,6 +2614,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 	cmd.Stdout = capture
 	cmd.Stderr = capture
 
+	sandbox.Prepare(ctx, cmd)
 	err = cmd.Run()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	wasTruncated := capture.Truncated()
@@ -2663,6 +2701,7 @@ func gitOutputForEvidence(dir string, env []string, argv ...string) (string, err
 	cmd := exec.CommandContext(ctx, "git", argv...)
 	cmd.Dir = dir
 	cmd.Env = env
+	sandbox.Prepare(ctx, cmd)
 	output, err := cmd.Output()
 	return strings.TrimSpace(string(output)), err
 }
@@ -4993,8 +5032,11 @@ func resolveWebDownloadOutputDir(scope WorkspaceScope, outputDirArg string) (str
 		}
 		return path, filepath.ToSlash(path), nil
 	}
-	_, path, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, outputDirArg)
+	requestedPath, path, err := normalizeWorkspaceCandidatePath(scope.PrimaryPath, outputDirArg)
 	if err != nil {
+		return "", "", err
+	}
+	if err := refuseProtectedPath(requestedPath, path); err != nil {
 		return "", "", err
 	}
 	if len(scope.MutationScopes) > 0 {
@@ -5086,6 +5128,10 @@ func slugifyFilenameComponent(value string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// errExaNoAPIKey is client-neutral: the same text reaches the desktop, the
+// terminal UI, SDK apps and MCP clients, so it names no client's own UI.
+var errExaNoAPIKey = errors.New("Exa web access needs an API key, and no Exa API key is set up yet")
+
 func (r *Runtime) resolveExaConfig(ctx context.Context) (ExaRuntimeConfig, error) {
 	if r == nil || r.exaConfigResolver == nil {
 		return ExaRuntimeConfig{}, errors.New("Exa web access requires an active API key, but the account credential resolver is unavailable")
@@ -5096,7 +5142,7 @@ func (r *Runtime) resolveExaConfig(ctx context.Context) (ExaRuntimeConfig, error
 	}
 	config.APIKey = strings.TrimSpace(config.APIKey)
 	if !config.Enabled || config.APIKey == "" {
-		return ExaRuntimeConfig{}, errors.New("Exa web access requires an active API key; add one in Settings > Providers or run /auth key exa <api_key>")
+		return ExaRuntimeConfig{}, errExaNoAPIKey
 	}
 	config.Source = "api_key"
 	config.SearchURL = strings.TrimSpace(config.SearchURL)
@@ -5199,7 +5245,7 @@ func (r *Runtime) doExaRequest(ctx context.Context, endpoint, apiKey string, pay
 	}
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
-		return errors.New("Exa web access requires an active API key; add one in Settings > Providers or run /auth key exa <api_key>")
+		return errExaNoAPIKey
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -7992,6 +8038,13 @@ func (r *Runtime) manageAgentSessionTranscript(scope WorkspaceScope, args map[st
 	if scopeAccount := strings.TrimSpace(scope.Principal.AccountScopeID); scopeAccount != "" && strings.TrimSpace(session.AccountScopeID) != "" && !strings.EqualFold(scopeAccount, strings.TrimSpace(session.AccountScopeID)) {
 		return "", fmt.Errorf("session %q is not in the active account scope", sessionID)
 	}
+	boundary, err := r.selfReadContextBoundary(scope, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("manage-agent transcript context boundary failed: %w", err)
+	}
+	if boundary > 0 && afterGlobalSeq < boundary-1 {
+		afterGlobalSeq = boundary - 1
+	}
 	messages, err := r.sessions.ListMessages(sessionID, afterGlobalSeq, limit)
 	if err != nil {
 		return "", fmt.Errorf("manage-agent transcript list messages failed: %w", err)
@@ -10182,6 +10235,12 @@ func resolveWorkspacePath(scope WorkspaceScope, requested string) (string, error
 	if err != nil {
 		return "", err
 	}
+	if err := refuseProtectedPath(candidateAbs, resolvedCandidate); err != nil {
+		return "", err
+	}
+	if err := refuseRootContainingStorage(resolvedCandidate); err != nil {
+		return "", err
+	}
 
 	if !workspaceGitAdminAllowed(scope, resolvedCandidate) || !pathWithinAllowedRoots(resolveAllowedRoots(scope), resolvedCandidate) {
 		return "", fmt.Errorf("path %q escapes workspace scope", requested)
@@ -11050,4 +11109,11 @@ func detectPromptInjectionSignals(text string) ([]string, bool) {
 		}
 	}
 	return signals, scanTruncated
+}
+
+// UntrustedSafety labels text that entered the conversation from outside the
+// runtime (for example a client tool's result) the same way as file and web
+// output: untrusted, with any prompt-injection markers found in it.
+func UntrustedSafety(text string) map[string]any {
+	return buildUntrustedSafety(text)
 }

@@ -38,8 +38,12 @@ func (s *SessionStore) validateContextClear(input BeginExecutionEpochInput, repl
 	if err != nil {
 		return err
 	}
-	if !ok || session.UserID != input.UserID || session.AccountScopeID != input.AccountScopeID || ProjectConversationID(session) == "" {
+	if !ok || session.UserID != input.UserID || session.AccountScopeID != input.AccountScopeID {
 		return errors.New("project conversation not found")
+	}
+	if ProjectConversationID(session) == "" {
+		// An owned standalone session is a client error (409), not a server failure.
+		return ErrSessionContextClearConflict
 	}
 	if replay {
 		return nil

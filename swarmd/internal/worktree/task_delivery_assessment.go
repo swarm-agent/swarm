@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"time"
 
@@ -69,6 +70,7 @@ func (d *deliveryInspector) run(path string, args ...string) (string, error) {
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
 	cmd.Env = append(cmd.Env, d.env...)
 	cmd.Stdout, cmd.Stderr = out, out
+	sandbox.Prepare(d.ctx, cmd)
 	err := cmd.Run()
 	return strings.TrimRight(out.String(), "\n"), err
 }
@@ -174,16 +176,34 @@ func (d *deliveryInspector) finish(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	}
 	// Check cleanliness before the final OID reads so a commit made while
 	// reading status cannot escape the end-of-observation movement check.
+	// Any change left in the task worktree is uncommitted task work. In the
+	// target, untracked files the task does not write (an app's own state
+	// files, for example) do not block plain integration; tracked changes and
+	// colliding untracked files do. Delta recovery keeps a fully clean target.
+	integrateOnly := len(a.AllowedActions) == 0 || (len(a.AllowedActions) == 1 && a.AllowedActions[0] == "integrate")
+	a.SourceDirtyFiles, a.TargetDirtyFiles = nil, nil
 	for i, path := range []string{in.SourcePath, in.TargetPath} {
 		status, err := d.run(path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 		if err != nil {
 			return deliveryUnknown(a, "inspection_failed", "Could not inspect working tree", "unknown")
 		}
+		entries := parsePorcelainStatusZ(status)
 		if i == 0 {
 			a.SourceDirty = status != ""
-		} else {
-			a.TargetDirty = status != ""
+			a.SourceDirtyFiles = describeStatusEntries(entries)
+			continue
 		}
+		blocking := entries[:0:0]
+		for _, entry := range entries {
+			if entry.untracked() && untrackedPathCollides(entry.Path, a.Files) {
+				entry.Code = untrackedCollisionCode
+			} else if entry.untracked() && integrateOnly {
+				continue
+			}
+			blocking = append(blocking, entry)
+		}
+		a.TargetDirty = len(blocking) > 0 || (status != "" && len(entries) == 0) // unparsed output fails closed
+		a.TargetDirtyFiles = describeStatusEntries(blocking)
 	}
 	// Dirtiness blocks writes, not the committed ancestry observation.
 	if a.SourceDirty || a.TargetDirty {

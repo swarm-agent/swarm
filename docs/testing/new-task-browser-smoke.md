@@ -16,7 +16,7 @@ After startup, the test checks the exact generated fixture username, normal Desk
 
 ## Portable prerequisites inside the container
 
-Linux amd64/glibc (checked-in FFF), Go **1.26.7**, C compiler/build tools, Git, Bash, GNU timeout, curl, CA certificates, **xz-utils and unzip**. Node **24.16.0**, pnpm **11.13.1**, lockfile Playwright **1.59.1**. Browser libraries: use the bounded maintained Playwright `install-deps chromium` command with container package-manager authority, or bake those libraries into the image. No host sudo, home mounts, `.env` files or provider environment.
+Linux amd64/glibc (checked-in FFF), Go **1.26.9**, C compiler/build tools, Git, Bash, GNU timeout, curl, CA certificates, **xz-utils and unzip**. Node **24.16.0**, pnpm **11.13.1**, lockfile Playwright **1.59.1**. Browser libraries: use the bounded maintained Playwright `install-deps chromium` command with container package-manager authority, or bake those libraries into the image. No host sudo, home mounts, `.env` files or provider environment.
 
 Allow package egress only during installation/build. Parent must deny provider/network egress (loopback allowed) before the runtime command. The acknowledgement flag does not configure a firewall. Final managed deployment disposal is containment if the wrapper is forcibly killed.
 

@@ -10,11 +10,15 @@ export type TokenScope =
   | string;
 
 export interface SwarmClientConfig {
-  /** Base URL for the Swarm API/Desktop daemon (e.g. http://127.0.0.1:18080 or http://127.0.0.1:7781) */
+  /**
+   * Base URL of the Swarm daemon API (default http://127.0.0.1:7781). With no
+   * `baseUrl`, `socketPath` or environment override, Node clients use the
+   * owner socket of a system install when this process may connect to it.
+   */
   baseUrl?: string;
   /** Bearer authentication token (attach token or scoped token starting with 'swk_') */
   token?: string;
-  /** Unix domain socket path for zero-conf local IPC (e.g. /run/swarmd/swarmd.sock) */
+  /** Unix socket for local IPC (owner socket: /var/lib/swarmd/local-transport/api.sock) */
   socketPath?: string;
   /** Custom default HTTP headers */
   defaultHeaders?: Record<string, string>;
@@ -596,6 +600,45 @@ export interface ProjectTaskPlanBinding {
   receipt?: string;
 }
 
+/**
+ * Backend-inspected delivery facts for a task's captured worktree lane. Only the
+ * task-detail GET (`getTask`) observes Git; collection rows carry `freshness: 'stale'`.
+ */
+export interface ProjectTaskDeliveryAssessment {
+  task_id?: string;
+  task_revision?: number;
+  attempt_id?: string;
+  session_id?: string;
+  base_oid?: string;
+  source_oid?: string;
+  target_oid?: string;
+  source_branch?: string;
+  target_branch?: string;
+  state?: 'candidate_work' | 'integrated' | 'unavailable' | string;
+  reason_code?: string;
+  reason?: string;
+  freshness?: 'observed' | 'stale' | 'unknown' | string;
+  source_dirty?: boolean;
+  target_dirty?: boolean;
+  candidate_commits?: number;
+  files?: string[];
+  allowed_actions?: string[];
+  [key: string]: unknown;
+}
+
+/** One coordinator attempt (session reservation) on a project task. */
+export interface ProjectTaskAttempt {
+  id: string;
+  session_id?: string;
+  status?: string;
+  role?: string;
+  workspace_path?: string;
+  worktree_branch?: string;
+  base_branch?: string;
+  base_commit?: string;
+  [key: string]: unknown;
+}
+
 export interface ProjectTaskRecord {
   id: string;
   project_id: string;
@@ -613,6 +656,9 @@ export interface ProjectTaskRecord {
     | 'rejected'
     | string;
   session_id?: string;
+  active_attempt_id?: string;
+  attempts?: ProjectTaskAttempt[];
+  delivery_assessment?: ProjectTaskDeliveryAssessment;
   agent?: string;
   worker_name?: string;
   outcome_type?: string;
@@ -828,6 +874,32 @@ export interface RefineProjectTaskParams extends ProjectTaskApprovalGuards {
 export interface RefineProjectTaskResult {
   status: 'refined' | string;
   task: ProjectTaskRecord;
+}
+
+/**
+ * Selection body for POST /v3/projects/{id}/tasks/{taskId}/integrate. The daemon
+ * requires `session_id` (must equal the task's current session) plus the captured
+ * `source_branch`/`target_branch` (must equal the session worktree branch and its
+ * base branch). The remaining fields are the stale-state guards the daemon's
+ * `recover-integrate` path checks; plain integrate accepts and ignores them.
+ */
+export interface IntegrateProjectTaskSelection {
+  session_id: string;
+  source_branch: string;
+  target_branch: string;
+  revision?: number;
+  attempt_id?: string;
+  source_head?: string;
+  target_head?: string;
+}
+
+export interface IntegrateProjectTaskOptions extends RequestOptions {
+  /**
+   * Overrides merged over the selection the SDK derives from a fresh `getTask`.
+   * When `session_id`, `source_branch` and `target_branch` are all supplied, the
+   * SDK skips the task fetch and sends them as given.
+   */
+  selection?: Partial<IntegrateProjectTaskSelection>;
 }
 
 export interface IntegrateProjectTaskResult {

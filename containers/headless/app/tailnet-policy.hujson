@@ -1,0 +1,63 @@
+// Tailscale policy for a Swarm fleet. Paste it in the Tailscale admin console
+// under Access controls, replacing the default "everyone reaches everything"
+// rule (that rule would also let throwaway AI devices reach every machine).
+// Keep any other sections you already have, such as "hosts" or "groups".
+//
+//   tag:swarm            a Swarm machine (tag it under Machines → Edit ACL tags)
+//   tag:swarm-protected  a Swarm machine AI devices may only read
+//   tag:claude           a throwaway AI device (Claude Code on the web, CI),
+//                        joined with an ephemeral auth key carrying this tag
+//
+// What a device may do in Swarm comes from the swarmagent.dev/cap/swarm grant:
+// "read" sees sessions, usage and models; "write" may also start sessions,
+// send messages and stop runs. Approving tool calls and managing workers,
+// limits or models are never granted this way.
+{
+	"tagOwners": {
+		"tag:swarm":           ["autogroup:admin"],
+		"tag:swarm-protected": ["autogroup:admin"],
+		"tag:claude":          ["autogroup:admin"],
+	},
+
+	"grants": [
+		// Your own devices reach every device in the tailnet, as before.
+		{"src": ["autogroup:member"], "dst": ["*"], "ip": ["*"]},
+		// Your own devices (Claude Code on your laptop) may drive every Swarm.
+		{
+			"src": ["autogroup:member"],
+			"dst": ["tag:swarm", "tag:swarm-protected"],
+			"app": {"swarmagent.dev/cap/swarm": [{"level": "write"}]},
+		},
+
+		// Throwaway AI devices reach only the Swarm AI gateway port, nothing else.
+		{"src": ["tag:claude"], "dst": ["tag:swarm", "tag:swarm-protected"], "ip": ["tcp:8444"]},
+		// They may read every Swarm. Change "read" to "write" below to let them
+		// start sessions and send messages on tag:swarm machines.
+		{
+			"src": ["tag:claude"],
+			"dst": ["tag:swarm"],
+			"app": {"swarmagent.dev/cap/swarm": [{"level": "read"}]},
+		},
+		{
+			"src": ["tag:claude"],
+			"dst": ["tag:swarm-protected"],
+			"app": {"swarmagent.dev/cap/swarm": [{"level": "read"}]},
+		},
+	],
+
+	"ssh": [
+		// Keep `tailscale ssh` into your Swarm machines once they are tagged.
+		{
+			"action": "check",
+			"src":    ["autogroup:member"],
+			"dst":    ["tag:swarm", "tag:swarm-protected"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
+		{
+			"action": "check",
+			"src":    ["autogroup:member"],
+			"dst":    ["autogroup:self"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
+	],
+}

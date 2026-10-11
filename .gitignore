@@ -81,7 +81,6 @@ secrets.env
 !/docs/testing/
 /docs/testing/*
 !/docs/testing/committed-child-correction.md
-!/docs/testing/testbench-container.md
 !/docs/testing/new-task-browser-smoke.md
 !/docs/testing/multi-workspace-session-matrix.md
 !/docs/testing/worktree-reclamation-matrix.md
@@ -89,9 +88,9 @@ secrets.env
 !/docs/identity/*.md
 !/docs/migrations/
 !/docs/migrations/**
-!/docs/swarm-harness-vm.md
 !/docs/managed-host-launch-gate.md
 !/docs/managed-local-systemd-environments.md
+!/docs/permissions-defaults.md
 !/docs/task-program-probes/
 !/docs/task-program-probes/**
 /REPO_SHIP_READINESS_CHECKLIST.md

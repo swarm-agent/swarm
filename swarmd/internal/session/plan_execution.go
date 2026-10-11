@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -64,6 +65,9 @@ type PlanExecutionSummary struct {
 	StopReason           string `json:"stop_reason,omitempty"`
 	WaitingReason        string `json:"waiting_reason,omitempty"`
 	ResolutionAction     string `json:"resolution_action,omitempty"`
+	// StoppedBy is "user" when the plan is paused because the user stopped its
+	// run. A paused plan keeps its progress and resumes only on request.
+	StoppedBy string `json:"stopped_by,omitempty"`
 }
 
 type PlanCheckpointStartOptions struct {
@@ -170,6 +174,8 @@ type PlanCheckpointCancellationOptions struct {
 	ParentSessionID string
 	Reason          string
 	CancelledAt     int64
+	// StoppedBy records an explicit user stop (PlanStoppedByUser).
+	StoppedBy string
 }
 
 type PlanCheckpointCancellationDecision struct {
@@ -189,18 +195,39 @@ func normalizePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpoi
 	return value
 }
 
+// planRecommendationDecisions and planRecommendationActionStates are the only
+// accepted final-review recommendation values. The plan_manage tool schema
+// advertises these exact lists through the exported accessors below.
+var (
+	planRecommendationDecisions    = []string{"ship", "change", "revert", "defer"}
+	planRecommendationActionStates = []string{"taken", "ready", "needs_approval"}
+)
+
+// PlanRecommendationDecisions returns a copy of the accepted recommendation
+// decision values.
+func PlanRecommendationDecisions() []string {
+	return slices.Clone(planRecommendationDecisions)
+}
+
+// PlanRecommendationActionStates returns a copy of the accepted recommendation
+// action_state values: taken (the recommended action is already done), ready
+// (the user can take it now) and needs_approval (it requires a user decision).
+func PlanRecommendationActionStates() []string {
+	return slices.Clone(planRecommendationActionStates)
+}
+
 func validatePlanCheckpointRecommendation(value pebblestore.SessionPlanCheckpointRecommendation) error {
 	if value.Decision == "" && value.Action == "" && value.Reason == "" && value.ActionState == "" && value.Prompt == "" {
 		return nil
 	}
-	if value.Decision != "ship" && value.Decision != "change" && value.Decision != "revert" && value.Decision != "defer" {
-		return fmt.Errorf("review recommendation decision %q is not supported", value.Decision)
+	if !slices.Contains(planRecommendationDecisions, value.Decision) {
+		return fmt.Errorf("review recommendation decision %q is not supported; use one of: %s", value.Decision, strings.Join(planRecommendationDecisions, ", "))
 	}
 	if value.Action == "" || value.Reason == "" || value.ActionState == "" {
 		return errors.New("review recommendation requires action, reason, and action_state")
 	}
-	if value.ActionState != "taken" && value.ActionState != "ready" && value.ActionState != "needs_approval" {
-		return fmt.Errorf("review recommendation action_state %q is not supported", value.ActionState)
+	if !slices.Contains(planRecommendationActionStates, value.ActionState) {
+		return fmt.Errorf("review recommendation action_state %q is not supported; use one of: %s", value.ActionState, strings.Join(planRecommendationActionStates, ", "))
 	}
 	if err := validateFinalHandoffText("recommendation.action", value.Action, PlanFinalHandoffMaxOverviewRunes, true); err != nil {
 		return err
@@ -779,6 +806,7 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 				summary.Paused = true
 				summary.AutoAdvanceAllowed = false
 				summary.StopReason = PlanCheckpointStatusPaused
+				summary.StoppedBy = planCheckpointStoppedBy(checkpoint)
 				return summary
 			case PlanCheckpointStatusBlocked:
 				summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
@@ -833,6 +861,7 @@ func SummarizePlanExecution(doc *pebblestore.SessionPlanDocument) PlanExecutionS
 			summary.Paused = true
 			summary.AutoAdvanceAllowed = false
 			summary.StopReason = PlanCheckpointStatusPaused
+			summary.StoppedBy = planCheckpointStoppedBy(checkpoint)
 			return summary
 		case PlanCheckpointStatusBlocked:
 			summary.NextCheckpointID = strings.TrimSpace(checkpoint.ID)
@@ -1598,6 +1627,9 @@ func ApplyPlanCheckpointCancellation(doc *pebblestore.SessionPlanDocument, optio
 	attempt.Outcome = PlanCheckpointStatusPaused
 	attempt.Report = reason
 	attempt.Result = "run_paused"
+	if options.StoppedBy == PlanStoppedByUser {
+		attempt.StoppedBy = PlanStoppedByUser
+	}
 	if cancelledAt > 0 {
 		attempt.CompletedAt = cancelledAt
 	}
@@ -1723,4 +1755,24 @@ func firstPositiveInt64(values ...int64) int64 {
 		}
 	}
 	return 0
+}
+
+// PlanStoppedByUser marks a checkpoint attempt paused by an explicit user run
+// stop rather than by a start failure or an automation cancellation.
+const PlanStoppedByUser = "user"
+
+// planCheckpointStoppedBy reports who paused a checkpoint's current attempt.
+func planCheckpointStoppedBy(checkpoint pebblestore.SessionPlanCheckpoint) string {
+	attemptID := strings.TrimSpace(checkpoint.AttemptID)
+	for i := len(checkpoint.Attempts) - 1; i >= 0; i-- {
+		attempt := checkpoint.Attempts[i]
+		if attemptID != "" && strings.TrimSpace(attempt.ID) != attemptID {
+			continue
+		}
+		if normalizePlanCheckpointStatus(attempt.Status) == PlanCheckpointStatusPaused && attempt.StoppedBy == PlanStoppedByUser {
+			return PlanStoppedByUser
+		}
+		return ""
+	}
+	return ""
 }

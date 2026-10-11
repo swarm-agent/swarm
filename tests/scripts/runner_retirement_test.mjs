@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,7 +20,6 @@ function fixture(t) {
   const env = {
     PATH: `${bin}:${process.env.PATH}`, TMPDIR: scratch,
     INVOCATION_MARKER: marker,
-    SWARM_TESTBENCH_ENV_FILE: path.join(scratch, 'absent.env'),
   }
   return { scratch, marker, env }
 }
@@ -33,7 +32,7 @@ function shell(script, args, env) {
   return result
 }
 
-// Purpose: run-runner-test and run-testbench-runner own runner selection. Reject
+// Purpose: run-runner-test owns runner selection. Reject
 // implicit/retired/unknown/traversal requests before node, SSH, config or deployment.
 // Bounded subprocess admission tests assert nonzero/no success/no side effects;
 // no daemon, credentials, cloud calls, provider work or qualification is simulated.
@@ -46,11 +45,6 @@ test('runner launchers require explicit selection and reject retirement before e
     ['scripts/run-runner-test.sh', ['http://127.0.0.1:1', 'configured', 'basic-plan-auto'], /basic-plan-auto is retired/],
     ['scripts/run-runner-test.sh', ['ssh-alias', 'configured', 'unknown-runner'], /runner not found/],
     ['scripts/run-runner-test.sh', ['ssh-alias', 'configured', '../runners/task-program-worktrees'], /unsupported characters/],
-    ['scripts/run-testbench-runner.sh', [], /runner-name is required/],
-    ['scripts/run-testbench-runner.sh', ['--timeout-ms', '30000'], /runner-name is required/],
-    ['scripts/run-testbench-runner.sh', ['basic-plan-auto'], /basic-plan-auto is retired/],
-    ['scripts/run-testbench-runner.sh', ['unknown-runner'], /runner not found/],
-    ['scripts/run-testbench-runner.sh', ['../runners/task-program-worktrees'], /unsupported characters/],
   ]
   for (const [script, args, message] of cases) {
     const result = shell(script, args, env)
@@ -63,45 +57,10 @@ test('runner launchers require explicit selection and reject retirement before e
   }
 })
 
-// Purpose: launch pre-run's canonical manifest/default argv must not invoke the
-// retired scenario or replace an explicit old request. Dry-run is the narrowest
-// production boundary proving selection; it cannot qualify any suite as passed.
-test('pre-run defaults exclude retirement and explicit old suites fail without evidence', { timeout: 15000 }, t => {
-  const { scratch, marker, env } = fixture(t)
-  const listed = shell('scripts/run-testbench-launch-prerun.sh', ['--list-suites'], env)
-  assert.equal(listed.status, 0)
-  assert.doesNotMatch(listed.stdout, /plan-auto/)
-  for (const suite of ['task-program', 'task-routing', 'desktop', 'tui', 'provider-sync']) {
-    assert.ok(listed.stdout.split('\n').includes(suite))
-  }
-  for (const option of ['--suite', '--skip-suite']) {
-    for (const retired of ['plan-auto', 'basic-plan-auto']) {
-      const denied = shell('scripts/run-testbench-launch-prerun.sh', [option, retired, '--dry-run'], env)
-      assert.notEqual(denied.status, 0)
-      assert.equal(denied.stdout, '')
-      assert.match(denied.stderr, /is retired.*no replacement is selected/)
-      assert.equal(existsSync(marker), false)
-    }
-  }
-  const config = path.join(scratch, 'testbench.env'), installed = path.join(scratch, 'installed.py')
-  copyFileSync(path.join(root, '.env.example'), config)
-  writeFileSync(installed, '# dry-run argv fixture only; never executed\n')
-  const dry = shell('scripts/run-testbench-launch-prerun.sh', [
-    '--dry-run', '--installed-onboarding-runner', installed,
-    '--candidate-archive', 'candidate.tar.gz', '--candidate-checksum', 'candidate.tar.gz.sha256',
-  ], { ...env, SWARM_TESTBENCH_ENV_FILE: config })
-  assert.equal(dry.status, 0, dry.stderr)
-  assert.doesNotMatch(dry.stdout, /plan-auto/)
-  assert.match(dry.stdout, /run-testbench-runner\.sh task-program-worktrees/)
-  assert.match(dry.stdout, /run-testbench-runner\.sh task-routing/)
-  assert.equal(existsSync(marker), false)
-  assert.deepEqual(readdirSync(scratch).sort(), ['bin', 'installed.py', 'testbench.env'])
-})
-
-// Purpose: supported selection still reaches each wrapper's normal boundary.
-// run-runner-test argv forwarding and testbench role-model/tunnel adapter remain
+// Purpose: supported selection still reaches the wrapper's normal boundary.
+// run-runner-test argv forwarding remains
 // intact. Command spies record argv only, never fabricate provider/PASS evidence.
-test('explicit Task Program runner preserves direct argv and testbench model forwarding', { timeout: 10000 }, t => {
+test('explicit Task Program runner preserves direct argv forwarding', { timeout: 10000 }, t => {
   const { scratch, env } = fixture(t)
   const recorded = path.join(scratch, 'argv.json')
   writeFileSync(path.join(scratch, 'bin', 'node'), `#!/usr/bin/env bash\nexec '${process.execPath}' -e 'require("node:fs").writeFileSync(process.env.ARGV_RECORD, JSON.stringify(process.argv.slice(1)))' -- "$@"\n`, { mode: 0o700 })
@@ -114,32 +73,6 @@ test('explicit Task Program runner preserves direct argv and testbench model for
   assert.equal(argv[0], path.join(root, 'scripts/runners/task-program-worktrees.mjs'))
   assert.deepEqual(argv.slice(1), ['--api-url', 'http://127.0.0.1:1', '--provider', 'configured-provider',
     '--timeout-ms', '30000', '--coder-model', 'configured-coder', '--coder-thinking', 'off'])
-
-  const checkout = path.join(scratch, 'fixture'), scripts = path.join(checkout, 'scripts')
-  mkdirSync(path.join(scripts, 'runners'), { recursive: true })
-  for (const name of ['run-testbench-runner.sh', 'lib-testbench-e2e.sh']) {
-    copyFileSync(path.join(root, 'scripts', name), path.join(scripts, name))
-  }
-  copyFileSync(path.join(root, 'scripts/runners/task-program-worktrees.mjs'), path.join(scripts, 'runners/task-program-worktrees.mjs'))
-  const config = path.join(scratch, 'testbench.env')
-  copyFileSync(path.join(root, '.env.example'), config)
-  writeFileSync(path.join(scripts, 'testbench-e2e-tunnel.sh'), `#!/usr/bin/env bash\nexec '${process.execPath}' -e 'require("node:fs").writeFileSync(process.env.ARGV_RECORD, JSON.stringify(process.argv.slice(1)))' -- "$@"\n`, { mode: 0o700 })
-  const managed = shell(path.join(scripts, 'run-testbench-runner.sh'), ['task-program-worktrees', '--timeout-ms', '30000'], {
-    ...env, SWARM_TESTBENCH_ENV_FILE: config, ARGV_RECORD: recorded,
-  })
-  assert.equal(managed.status, 0, managed.stderr)
-  const tunnel = JSON.parse(readFileSync(recorded, 'utf8'))
-  assert.deepEqual(tunnel.slice(0, 5), ['run', path.join(scripts, 'run-runner-test.sh'), '__SWARM_DESKTOP_URL__', 'fireworks', 'task-program-worktrees'])
-  const configured = Object.fromEntries(readFileSync(config, 'utf8').split('\n')
-    .filter(line => /^SWARM_TESTBENCH_(ACTION|PLAN|CODER|DESIGNER)_(MODEL|THINKING)=/.test(line))
-    .map(line => line.split('=')))
-  for (const role of ['ACTION', 'PLAN', 'CODER', 'DESIGNER']) {
-    for (const setting of ['MODEL', 'THINKING']) {
-      const flag = `--${role.toLowerCase()}-${setting.toLowerCase()}`
-      assert.equal(tunnel[tunnel.indexOf(flag) + 1], configured[`SWARM_TESTBENCH_${role}_${setting}`])
-    }
-  }
-  assert.deepEqual(tunnel.slice(-2), ['--timeout-ms', '30000'])
 })
 
 // Purpose: retirement does not remove current session/Orchestrator/media

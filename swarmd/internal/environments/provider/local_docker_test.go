@@ -371,7 +371,7 @@ func TestLocalDockerProvider_Deploy_Basic(t *testing.T) {
 	runner := newMockRunner()
 	p := NewLocalDockerProvider(runner)
 
-	absHostPath, _ := filepath.Abs("/test/host/workspace")
+	absHostPath := existingWorkspaceDir(t)
 	req := DeployRequest{
 		Connection: &environments.Connection{
 			ID:             "conn-1",
@@ -490,7 +490,7 @@ func TestLocalDockerProvider_Deploy_Basic(t *testing.T) {
 func TestLocalDockerProvider_Deploy_ResourceLimitsAndEnvOverrides(t *testing.T) {
 	runner := newMockRunner()
 	p := NewLocalDockerProvider(runner)
-	absHostPath, _ := filepath.Abs("/workspace")
+	absHostPath := existingWorkspaceDir(t)
 
 	req := DeployRequest{
 		Connection: &environments.Connection{
@@ -591,7 +591,7 @@ func TestLocalDockerProvider_Deploy_SetupCommands(t *testing.T) {
 	}
 
 	p := NewLocalDockerProvider(runner)
-	absHostPath, _ := filepath.Abs("/workspace")
+	absHostPath := existingWorkspaceDir(t)
 
 	req := DeployRequest{
 		Connection: &environments.Connection{
@@ -685,7 +685,7 @@ func TestLocalDockerProvider_Deploy_HealthCheck(t *testing.T) {
 		return 200, nil
 	}
 
-	absHostPath, _ := filepath.Abs("/workspace")
+	absHostPath := existingWorkspaceDir(t)
 	req := DeployRequest{
 		Connection: &environments.Connection{
 			ID:             "conn-1",
@@ -778,7 +778,7 @@ func TestLocalDockerProvider_Deploy_HealthCheck(t *testing.T) {
 func TestLocalDockerProvider_Deploy_MultipleDeploymentsSameEnvironment(t *testing.T) {
 	runner := newMockRunner()
 	p := NewLocalDockerProvider(runner)
-	absHostPath, _ := filepath.Abs("/workspace")
+	absHostPath := existingWorkspaceDir(t)
 
 	sharedEnv := &environments.Environment{
 		ID:             "env-shared",
@@ -1155,7 +1155,7 @@ func TestRegistry(t *testing.T) {
 func TestLocalDockerProvider_Deploy_ValidationErrors(t *testing.T) {
 	runner := newMockRunner()
 	p := NewLocalDockerProvider(runner)
-	absHostPath, _ := filepath.Abs("/workspace")
+	absHostPath := existingWorkspaceDir(t)
 
 	conn := &environments.Connection{
 		ID:             "conn-1",
@@ -1245,7 +1245,7 @@ func TestLocalDockerProvider_Deploy_ValidationErrors(t *testing.T) {
 func TestLocalDockerProvider_Deploy_RejectsStoppedContainer(t *testing.T) {
 	runner := newMockRunner()
 	p := NewLocalDockerProvider(runner)
-	absHostPath, _ := filepath.Abs("/workspace")
+	absHostPath := existingWorkspaceDir(t)
 
 	// Override "run" handler so container is created in stopped state
 	runner.handlers["run"] = func(args []string) ([]byte, error) {
@@ -1312,7 +1312,7 @@ func TestLocalDockerProvider_Deploy_RejectsStoppedContainer(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err := p.Deploy(ctx, DeployRequest{Connection: conn, Environment: env, Deployment: dep})
+	_, err := p.Deploy(ctx, DeployRequest{Connection: conn, Environment: env, Deployment: dep, WorkspacePath: absHostPath})
 	if err == nil {
 		t.Fatal("expected Deploy to fail when newly deployed container is stopped")
 	}
@@ -1891,4 +1891,15 @@ func TestLocalDockerProvider_Exec_RedactedEnvInError(t *testing.T) {
 	if !strings.Contains(err.Error(), "SECRET_KEY=[REDACTED]") {
 		t.Fatalf("expected redacted key in error message, got: %s", err.Error())
 	}
+}
+
+// existingWorkspaceDir returns a real, symlink-resolved workspace directory:
+// host mounts are only admitted for paths that exist inside the workspace.
+func existingWorkspaceDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

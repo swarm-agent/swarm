@@ -1,0 +1,8 @@
+{
+  "name": "swarm",
+  "version": "0.1.1",
+  "description": "Drive your self-hosted Swarm from Claude Code: set it up, hand work to its agents, approve and review their work, and build your own apps on it.",
+  "author": { "name": "Swarm" },
+  "homepage": "https://swarmagent.dev",
+  "experimental": { "evals": "evals" }
+}

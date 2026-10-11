@@ -44,4 +44,6 @@ run_stage() {
 # Error-Mode=any prevents a partial index refresh from silently succeeding.
 # Total deadlines also bound slow trickles that never hit the socket timeout.
 run_stage apt-update 180s apt-get update
-run_stage apt-install 240s env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl sudo systemd
+# dbus: a real systemd host has the system bus; a non-root install owner's
+# systemctl queries need it (root talks to systemd's private socket instead).
+run_stage apt-install 240s env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl dbus sudo systemd

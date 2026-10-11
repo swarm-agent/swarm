@@ -98,7 +98,22 @@ func (s *WorkerExecutionService) ConfigureBindings(account, user, id string, rev
 	if !found || !strings.EqualFold(entry.State, "active") {
 		return store.WorkerRecord{}, store.ErrWorkerConflict
 	}
+	if activate {
+		// Every worker run executes as a project task. Refuse activation now
+		// rather than returning an active worker whose every run fails.
+		candidate := w
+		candidate.LocalBindings = map[string]string{"primary": strings.TrimSpace(bindings["primary"])}
+		if _, err := s.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID}, candidate); errors.Is(err, errWorkerProjectNotAssociated) {
+			return store.WorkerRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
+		}
+	}
 	return ws.ConfigureWorkerBindings(account, user, id, revision, bindings, activate)
+}
+
+// workerProjectRequiredError names the fix for a worker whose primary
+// workspace belongs to no project.
+func workerProjectRequiredError(workerID, workspaceID, workspacePath string) error {
+	return fmt.Errorf("%w: worker %q is bound to workspace %q (%s), which belongs to no project; create a project that includes this workspace (POST /v3/projects) or set the worker's metadata.project_id, then retry", errWorkerProjectNotAssociated, workerID, workspaceID, workspacePath)
 }
 
 // Accept validates exact revision, proposed bindings and workspace authorization,
@@ -224,6 +239,18 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	req.ResolvedModelProfile.PlanUseAccountDefault = false
 	req.ExpectedWorkerRevision = w.Revision
 	req.UserID = user
+	// A new admission needs a resolvable project, or its receipt would only
+	// fail during preparation and every same-key retry would replay that
+	// failure. Existing receipts still replay unchanged.
+	replay, err := ws.WorkerRunAdmissionExists(account, req)
+	if err != nil {
+		return store.WorkerRunRecord{}, err
+	}
+	if !replay {
+		if _, err := s.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, Input: req.Input}, w); errors.Is(err, errWorkerProjectNotAssociated) {
+			return store.WorkerRunRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
+		}
+	}
 	rec, err := ws.AdmitWorkerRun(account, req)
 	if err != nil {
 		return store.WorkerRunRecord{}, err
@@ -481,7 +508,15 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if canonical.SourceWorkspaceID != entry.WorkspaceID || canonical.Metadata == nil {
 			return store.ErrWorkerConflict
 		}
-		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, "HEAD", "agent/worker-"+r.ID[:16])
+		// Fork from the source workspace's current branch (as project tasks do) so
+		// the run's task records a real integration target, not a literal HEAD.
+		// A detached HEAD has no branch to integrate into: fork from the HEAD
+		// commit as before.
+		base := ""
+		if branch, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath); branchErr == nil && branch == "" {
+			base = "HEAD"
+		}
+		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		if err != nil {
 			return err
 		}
@@ -501,7 +536,12 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["swarm_v3_mandatory_worktree"] = true
 		meta["swarm_v3_worktree_owner_session_id"] = r.SessionID
 		meta["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
+		// The same captured lineage project tasks record, so a reviewed run can
+		// be integrated through the project task integrate route.
+		meta["base_commit"] = allocation.BaseCommit
 		meta["swarm_v3_source_workspace_path"] = canonical.SourceWorkspacePath
+		meta["swarm_v3_source_workspace_id"] = canonical.SourceWorkspaceID
+		meta["swarm_v3_source_workspace_generation"] = canonical.SourceWorkspaceGeneration
 		meta["swarm_v3_runtime_workspace_path"] = allocation.WorkspacePath
 		meta["project_id"] = proj.ID
 		meta["task_id"] = taskID
@@ -518,6 +558,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			t.WorktreeName = allocation.BranchName
 			t.BaseBranch = allocation.BaseBranch
 			t.BaseCommit = allocation.BaseCommit
+			t.SourceWorkspace = store.ProjectTaskSource{WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Provenance: "worker_binding"}
 			return nil
 		})
 		if err != nil {
@@ -635,6 +676,14 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			}
 		}
 		copyDoc.Info.Context = strings.TrimSpace(w.Instructions + "\n\n" + copyDoc.Info.Context)
+		if r.AutomationID != "" {
+			for _, a := range w.Automations {
+				if a.ID == r.AutomationID && a.Revision == r.AutomationRevision && automationHasSocialPost(a) {
+					copyDoc.Info.Context += "\n\n" + workerSocialPostInstruction
+					break
+				}
+			}
+		}
 		if len(r.Input) != 0 {
 			payload, err := json.Marshal(r.Input)
 			if err != nil {
@@ -924,6 +973,13 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			}
 		}
 		current.Status = "succeeded"
+		// Deliverables persist before the terminal receipt so a crash retries.
+		if invalid, err := s.recordWorkerRunDeliverables(current, plan.Document.Checkpoints); err != nil {
+			return err
+		} else if invalid != "" {
+			current.Status = "failed"
+			current.Error = invalid
+		}
 	case sessions.RunIntentFailed, sessions.RunIntentExpired, sessions.RunIntentInterrupted, sessions.RunIntentDispatchBlocked:
 		current.Status = "failed"
 		current.Error = "execution did not complete"
@@ -955,6 +1011,100 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		}
 	}
 	return err
+}
+
+// pinnedWorkerAutomation resolves the immutable worker revision and automation
+// revision a run was admitted with, matching startLocked. ok is false for
+// direct (non-automation) requests.
+func (s *WorkerExecutionService) pinnedWorkerAutomation(r store.WorkerRunRecord) (store.WorkerRecord, store.WorkerAutomationDefinition, bool, error) {
+	if r.AutomationID == "" {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, nil
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, err
+	}
+	history, found, err := ws.GetWorkerRevision(r.AccountScopeID, r.WorkerID, r.WorkerRevision)
+	if err != nil {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, err
+	}
+	if !found {
+		return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, store.ErrWorkerConflict
+	}
+	for _, a := range history.Worker.Automations {
+		if a.ID == r.AutomationID && a.Revision == r.AutomationRevision {
+			return history.Worker, a, true, nil
+		}
+	}
+	return store.WorkerRecord{}, store.WorkerAutomationDefinition{}, false, store.ErrWorkerConflict
+}
+
+// workerSocialPostInstruction is server-written plan context for automations
+// that declare a social_post deliverable. The agent supplies only the text.
+var workerSocialPostInstruction = fmt.Sprintf(`Social post deliverable: finish the final checkpoint with plan_manage complete_checkpoint whose result is exactly a JSON object {"tweet_text":"..."} with no other fields, and at most %d characters of post text. Nothing is posted by this run; the post is published only after a person reviews and approves it.`, store.WorkerSocialPostMaxRunes)
+
+func automationHasSocialPost(a store.WorkerAutomationDefinition) bool {
+	for _, req := range a.DeliverableRequirements {
+		if req.Kind == store.WorkerDeliverableKindSocialPost {
+			return true
+		}
+	}
+	return false
+}
+
+// recordWorkerRunDeliverables creates pending_review deliverables declared by
+// the pinned automation from the last completed checkpoint result. Records use
+// deterministic IDs, so repeated observation never duplicates them. A required
+// requirement whose agent result is invalid returns a run failure message and
+// persists nothing; an optional invalid one is skipped. The returned error is
+// reserved for storage/authority failures that must leave the run open.
+func (s *WorkerExecutionService) recordWorkerRunDeliverables(r store.WorkerRunRecord, checkpoints []store.SessionPlanCheckpoint) (string, error) {
+	w, auto, ok, err := s.pinnedWorkerAutomation(r)
+	if err != nil || !ok || !automationHasSocialPost(auto) {
+		return "", err
+	}
+	var source *store.SessionPlanCheckpoint
+	for i := len(checkpoints) - 1; i >= 0; i-- {
+		if checkpoints[i].Status == "completed" && strings.TrimSpace(checkpoints[i].Result) != "" {
+			source = &checkpoints[i]
+			break
+		}
+	}
+	var records []store.DeliverableRecord
+	for _, req := range auto.DeliverableRequirements {
+		if req.Kind != store.WorkerDeliverableKindSocialPost {
+			continue
+		}
+		var rec store.DeliverableRecord
+		buildErr := errors.New("no completed checkpoint result")
+		if source != nil {
+			rec, buildErr = store.BuildWorkerSocialPostDeliverable(w, auto, r, req, *source)
+		}
+		if buildErr != nil {
+			if req.Required {
+				return fmt.Sprintf("social_post deliverable invalid: %s: %v", strings.TrimSpace(req.Name), buildErr), nil
+			}
+			continue
+		}
+		records = append(records, rec)
+	}
+	for i := range records {
+		rec := &records[i]
+		existing, found, err := s.host.repository.GetDeliverable(r.AccountScopeID, rec.ID)
+		if err != nil {
+			return "", err
+		}
+		if found {
+			if existing.WorkerID != rec.WorkerID || existing.OccurrenceID != rec.OccurrenceID || existing.Kind != rec.Kind {
+				return "", fmt.Errorf("%w: deliverable %s belongs to another run", store.ErrWorkerConflict, rec.ID)
+			}
+			continue
+		}
+		if err = s.host.repository.PutDeliverable(r.AccountScopeID, rec); err != nil {
+			return "", err
+		}
+	}
+	return "", nil
 }
 
 // SetWorkerExecutionService wires the same execution authority used by the API
@@ -1681,7 +1831,7 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 		if runStatus == "succeeded" && taskRecord.LastError == "" {
 			return nil
 		}
-		if (runStatus == "failed" || runStatus == "cancelled") && taskRecord.LastError == runError {
+		if (runStatus == "failed" || runStatus == "cancelled") && taskRecord.LastError == workerTaskTerminalError(runStatus, runError, taskRecord.LastError) {
 			return nil
 		}
 	}
@@ -1724,14 +1874,24 @@ func (s *WorkerExecutionService) reconcileWorkerTaskTerminal(accountScopeID, pro
 			}
 		case "cancelled":
 			t.Status = "failed"
-			if runError != "" {
-				t.LastError = runError
-			} else {
-				t.LastError = "worker run cancelled"
-			}
+			t.LastError = workerTaskTerminalError(runStatus, runError, t.LastError)
 			t.ActionNeeded = "Action Needed: Run was cancelled. Retry or reassign task."
 		}
 		return nil
 	})
 	return err
+}
+
+// workerTaskTerminalError is the LastError a terminal run projects onto its
+// task. The no-op check must compare against it: terminal repair revisits
+// recent runs on every reconcile, and a mismatch rewrites the task and emits a
+// project event each pass.
+func workerTaskTerminalError(runStatus, runError, current string) string {
+	if runError != "" {
+		return runError
+	}
+	if runStatus == "cancelled" {
+		return "worker run cancelled"
+	}
+	return current
 }

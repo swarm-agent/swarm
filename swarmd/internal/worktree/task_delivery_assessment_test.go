@@ -280,7 +280,9 @@ func TestTaskDeliveryTopology(t *testing.T) {
 				git(in.TargetPath, "commit", "--allow-empty", "-m", "foreign")
 				want = "unavailable"
 			case "dirty-target":
-				if err := os.WriteFile(filepath.Join(in.TargetPath, "dirty"), []byte("uncommitted"), 0600); err != nil {
+				// A tracked change blocks writes; untracked files are covered by
+				// TestTaskDeliveryUntrackedTargetFiles.
+				if err := os.WriteFile(filepath.Join(in.TargetPath, "base"), []byte("uncommitted"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				want = "candidate_work"
@@ -331,6 +333,13 @@ func TestTaskDeliveryDirtyAncestry(t *testing.T) {
 				if got.State != want || got.Freshness != "observed" || got.SourceDirty != (lane == "source") || got.TargetDirty != (lane == "target") || len(got.AllowedActions) != 0 {
 					t.Fatalf("dirtiness obscured ancestry or authorized writes: %+v", got)
 				}
+				dirtyFiles := got.SourceDirtyFiles
+				if lane == "target" {
+					dirtyFiles = got.TargetDirtyFiles
+				}
+				if len(dirtyFiles) != 1 || dirtyFiles[0] != "base (modified)" {
+					t.Fatalf("blocking change not named: %+v", got)
+				}
 				if !integrated && got.CandidateCommits != 1 {
 					t.Fatalf("lost committed candidate: %+v", got)
 				}
@@ -341,4 +350,124 @@ func TestTaskDeliveryDirtyAncestry(t *testing.T) {
 			})
 		}
 	}
+}
+
+// Purpose: a cleanly committed task must stay integrable when the target
+// checkout only holds untracked files the task does not write (an app's own
+// state files), while uncommitted task work, untracked files the task would
+// overwrite and recovery-only states still block, each naming the exact paths.
+// Threat: "uncommitted changes" falsely hides integrate for committed work, or
+// a relaxed check lets integration clobber an untracked target file.
+// Owner: deliveryInspector.finish in AssessTaskDelivery. Real isolated Git is
+// the narrowest layer proving status classification against actual paths.
+func TestTaskDeliveryUntrackedTargetFiles(t *testing.T) {
+	write := func(path, text string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("unrelated-untracked-target", func(t *testing.T) {
+		in, git := deliveryFixture(t)
+		write(filepath.Join(in.TargetPath, "app-state.json"), `{"draft":true}`)
+		write(filepath.Join(in.TargetPath, ".app", "cache", "index.db"), "cache")
+		refs := git(in.SourcePath, "show-ref")
+		got := AssessTaskDelivery(context.Background(), in)
+		if got.State != "candidate_work" || got.Freshness != "observed" || got.SourceDirty || got.TargetDirty || len(got.TargetDirtyFiles) != 0 || len(got.AllowedActions) != 1 || got.AllowedActions[0] != "integrate" {
+			t.Fatalf("unrelated untracked target files blocked integration: %+v", got)
+		}
+		if refs != git(in.SourcePath, "show-ref") {
+			t.Fatal("assessment mutated refs")
+		}
+	})
+	for name, path := range map[string]string{"same-path": "feature", "file-below-task-path": filepath.Join("feature", "notes")} {
+		t.Run("colliding-untracked-target/"+name, func(t *testing.T) {
+			in, _ := deliveryFixture(t)
+			write(filepath.Join(in.TargetPath, path), "local")
+			got := AssessTaskDelivery(context.Background(), in)
+			want := filepath.ToSlash(path) + " (untracked, and the task writes this path)"
+			if got.State != "candidate_work" || !got.TargetDirty || len(got.AllowedActions) != 0 || len(got.TargetDirtyFiles) != 1 || got.TargetDirtyFiles[0] != want {
+				t.Fatalf("colliding untracked file not blocking: %+v", got)
+			}
+		})
+	}
+	t.Run("untracked-task-worktree", func(t *testing.T) {
+		in, _ := deliveryFixture(t)
+		write(filepath.Join(in.SourcePath, "notes.txt"), "forgotten")
+		got := AssessTaskDelivery(context.Background(), in)
+		if !got.SourceDirty || got.TargetDirty || len(got.AllowedActions) != 0 || len(got.SourceDirtyFiles) != 1 || got.SourceDirtyFiles[0] != "notes.txt (untracked)" {
+			t.Fatalf("uncommitted task work not blocking: %+v", got)
+		}
+	})
+	t.Run("recovery-keeps-clean-target", func(t *testing.T) {
+		in, git := deliveryFixture(t)
+		tree := git(in.TargetPath, "rev-parse", "HEAD^{tree}")
+		git(in.TargetPath, "update-ref", "refs/heads/dev", git(in.TargetPath, "commit-tree", tree, "-m", "rewrite"))
+		write(filepath.Join(in.TargetPath, "app-state.json"), "{}")
+		got := AssessTaskDelivery(context.Background(), in)
+		if got.State != "history_rewritten" || !got.TargetDirty || len(got.AllowedActions) != 0 || len(got.TargetDirtyFiles) != 1 || got.TargetDirtyFiles[0] != "app-state.json (untracked)" {
+			t.Fatalf("recovery admitted an untracked target: %+v", got)
+		}
+	})
+}
+
+// Purpose: PrepareTaskIntegration (and Apply, which re-prepares) must accept a
+// parent checkout whose only changes are untracked files the children do not
+// write, keep those files byte-for-byte, and refuse tracked changes or
+// untracked files the change would overwrite, naming them. Real Git proves the
+// merge result and preserved bytes; no integration step is mocked.
+func TestPrepareTaskIntegrationUntrackedParentFiles(t *testing.T) {
+	setup := func(t *testing.T) (TaskDeliveryInput, func(string, ...string) string, []TaskIntegrationChild) {
+		in, git := deliveryFixture(t)
+		head := git(in.SourcePath, "rev-parse", "HEAD")
+		return in, git, []TaskIntegrationChild{{SessionID: "task", BaseCommit: in.Identity.BaseOID, HeadCommit: head, PreserveAncestry: true}}
+	}
+	t.Run("unrelated-untracked-kept", func(t *testing.T) {
+		in, git, children := setup(t)
+		state := filepath.Join(in.TargetPath, "app-state.json")
+		if err := os.WriteFile(state, []byte(`{"keep":1}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		svc := &Service{}
+		parentHead := git(in.TargetPath, "rev-parse", "HEAD")
+		plan, err := svc.PrepareTaskIntegration(in.TargetPath, "dev", parentHead, children)
+		if err != nil {
+			t.Fatalf("prepare refused unrelated untracked file: %v", err)
+		}
+		result, err := svc.ApplyTaskIntegration(in.TargetPath, plan)
+		if err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+		git(in.TargetPath, "merge-base", "--is-ancestor", children[0].HeadCommit, result.ResultingParentHead)
+		if data, err := os.ReadFile(state); err != nil || string(data) != `{"keep":1}` {
+			t.Fatalf("untracked file changed: %q %v", data, err)
+		}
+	})
+	t.Run("colliding-untracked-refused", func(t *testing.T) {
+		in, git, children := setup(t)
+		if err := os.WriteFile(filepath.Join(in.TargetPath, "feature"), []byte("local"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		parentHead := git(in.TargetPath, "rev-parse", "HEAD")
+		_, err := (&Service{}).PrepareTaskIntegration(in.TargetPath, "dev", parentHead, children)
+		if err == nil || !strings.Contains(err.Error(), "would be overwritten by the task: feature;") {
+			t.Fatalf("colliding untracked file err=%v", err)
+		}
+		if git(in.TargetPath, "rev-parse", "HEAD") != parentHead {
+			t.Fatal("refused prepare moved the parent")
+		}
+	})
+	t.Run("tracked-change-refused", func(t *testing.T) {
+		in, git, children := setup(t)
+		if err := os.WriteFile(filepath.Join(in.TargetPath, "base"), []byte("edited"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := (&Service{}).PrepareTaskIntegration(in.TargetPath, "dev", git(in.TargetPath, "rev-parse", "HEAD"), children)
+		if err == nil || !strings.Contains(err.Error(), "parent worktree is dirty") || !strings.Contains(err.Error(), "base") {
+			t.Fatalf("tracked change err=%v", err)
+		}
+	})
 }

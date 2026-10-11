@@ -127,11 +127,13 @@ func TestBashApprovalProfileMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			policy := DefaultPolicy()
 			policy.BashProfile = tc.profile
-			got := ExplainPolicy("auto", "bash", bashEffectArguments(t, "printf hello", tc.category, tc.critical), policy)
+			// uname is a neutral command outside every built-in allow, so the
+			// matrix isolates the profile decision (printf is now built in).
+			got := ExplainPolicy("auto", "bash", bashEffectArguments(t, "uname -a", tc.category, tc.critical), policy)
 			if got.Decision != tc.want {
 				t.Fatalf("decision = %s (%s), want %s", got.Decision, got.Reason, tc.want)
 			}
-			if tc.profile != BashApprovalProfileCurrentRules && got.RulePreview != "allow bash prefix: printf" {
+			if tc.profile != BashApprovalProfileCurrentRules && got.RulePreview != "allow bash prefix: uname" {
 				t.Fatalf("rule preview = %q, want the always-allow prefix", got.RulePreview)
 			}
 		})

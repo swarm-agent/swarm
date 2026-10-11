@@ -22,47 +22,6 @@ func readRepositoryScript(t *testing.T, name string) string {
 	return string(raw)
 }
 
-func TestProviderBoundaryTestbenchCoversDelegatedWorktreesAcrossSecondBoundaries(t *testing.T) {
-	script := readRepositoryScript(t, "v3-provider-boundary-e2e-testbench.sh")
-
-	requiredGates := []string{
-		"task_program_multi_worktree",
-		"task_program_second_boundary",
-		"individual_coder_worktree",
-		"individual_coder_second_boundary",
-	}
-	for _, gate := range requiredGates {
-		if !strings.Contains(script, `result.gates.`+gate+`=true`) || !strings.Contains(script, `'`+gate+`'`) {
-			t.Errorf("provider-boundary testbench missing required gate %q", gate)
-		}
-	}
-
-	for _, contract := range []string{
-		"task_program:{id:",
-		"max_concurrency:2",
-		"task_program_id",
-		"task_program_job_id",
-		"new Set(taskProgramChildren.map(child=>child.worktree_root_path)).size===2",
-		"individualChildren.length===1",
-		"manage_worktree recall and integrate",
-		"Task Program scheduler atomically integrates the stage",
-		"manage_worktree promote",
-		"transition_checkpoint_boundary",
-		"assertCleanGitWorktree",
-	} {
-		if !strings.Contains(script, contract) {
-			t.Errorf("provider-boundary testbench missing workflow contract %q", contract)
-		}
-	}
-
-	if got := strings.Count(script, "SECOND_BOUNDARY_OK"); got < 2 {
-		t.Errorf("provider-boundary testbench has %d delegated-workflow second-boundary sentinels, want at least 2", got)
-	}
-	if got := strings.Count(script, "session lane was not promoted into the captured checkout"); got != 2 {
-		t.Errorf("provider-boundary testbench has %d promotion assertions, want 2", got)
-	}
-}
-
 func TestTaskProgramWorktreePermissionRunnerCoversThreeCoderNestedIsolation(t *testing.T) {
 	script := readRepositoryScript(t, filepath.Join("runners", "task-program-worktree-permissions.mjs"))
 

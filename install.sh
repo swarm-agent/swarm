@@ -10,14 +10,25 @@ SERVICE_MODE=""
 VERIFY_ONLY=0
 ACCOUNT_MODE=""
 ACCOUNT_NAME=""
+# none, stdin (stdin is a terminal) or tty (stdin is a pipe, /dev/tty opens).
+TERMINAL_MODE=""
+TTY_DEVICE="/dev/tty"
+SYSTEMD_RUN_DIR="/run/systemd/system"
+PUBLIC_INSTALL_COMMAND="curl -fsSL https://swarmagent.dev/install"
 
 usage() {
   cat <<'EOF'
 Usage:
   sh install.sh [--yes] [--service|--no-service] [--verify-only] [--version <tag>] [--artifact-root <path>]
+  curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
 
 Options:
-  --yes, -y              Run without the confirmation prompt (legacy default: locked service account for fresh direct root).
+  --yes, -y              Run without the confirmation prompt. Without a terminal and
+                         without --service/--no-service it picks --service when systemd
+                         is running and --no-service otherwise. Account: the invoking
+                         user; under sudo, the person who ran sudo (SUDO_USER); direct
+                         root without sudo, the locked service account. An existing
+                         install always keeps its owner.
   --install-user NAME    Select an existing non-root OS account; never reassign an existing install.
   --create-user NAME     Root explicitly creates a human account; OS passwd requires a terminal.
   --create-service-account  Explicitly choose the locked non-login service account.
@@ -27,9 +38,14 @@ Options:
   --artifact-root <path> Install from an extracted release artifact.
   --verify-only          Validate an artifact root without changing the host or provisioning prerequisites.
 
+Without a terminal (an AI agent, CI, cron), pass --yes; a non-root run then also
+needs passwordless sudo, otherwise rerun it as root:
+  curl -fsSL https://swarmagent.dev/install | sudo sh -s -- --yes
+
 EOF
 }
 
+parse_args() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --version)
@@ -88,6 +104,7 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+}
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -232,7 +249,95 @@ run_privileged() {
     echo "Install sudo before running install.sh, or pre-create the Swarm-owned system directories." >&2
     return 1
   fi
+  if [ "$TERMINAL_MODE" = "none" ]; then
+    # No terminal can answer a password prompt; never wait for one.
+    sudo -n "$@"
+    return $?
+  fi
   sudo "$@"
+}
+
+# A terminal exists only if stdin is one or /dev/tty can actually be opened.
+# Permission bits on /dev/tty say nothing: without a controlling terminal the
+# open fails (ENXIO) although the node is world read/write.
+detect_terminal() {
+  # shellcheck disable=SC2094 # opening the device both ways is the probe
+  if [ -t 0 ]; then
+    TERMINAL_MODE="stdin"
+  elif ( : <"$TTY_DEVICE" >"$TTY_DEVICE" ) 2>/dev/null; then
+    TERMINAL_MODE="tty"
+  else
+    TERMINAL_MODE="none"
+  fi
+}
+
+# Same test as require_systemd and swarmsetup: systemctl is installed and
+# systemd runs as the system manager (PID 1), i.e. /run/systemd/system exists.
+systemd_is_running() {
+  command -v systemctl >/dev/null 2>&1 && [ -d "$SYSTEMD_RUN_DIR" ]
+}
+
+# Root reached through sudo by a person: SUDO_USER/SUDO_UID name a non-root user.
+invoked_via_sudo() {
+  [ "$(id -u)" -eq 0 ] || return 1
+  [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ] || return 1
+  [ -n "${SUDO_UID:-}" ] && [ "$SUDO_UID" != "0" ] && [ -n "${SUDO_GID:-}" ]
+}
+
+print_no_terminal_rerun() {
+  cat >&2 <<EOF
+No terminal is available to answer the install questions, so nothing was changed.
+Rerun without questions (systemd service where systemd runs, files only elsewhere):
+  ${PUBLIC_INSTALL_COMMAND} | sh -s -- --yes
+Or choose the mode explicitly:
+  ${PUBLIC_INSTALL_COMMAND} | sh -s -- --yes --service
+  ${PUBLIC_INSTALL_COMMAND} | sh -s -- --yes --no-service
+EOF
+}
+
+require_noninteractive_sudo() {
+  who="$(id -un 2>/dev/null || id -u)"
+  if command -v sudo >/dev/null 2>&1 && sudo -n true </dev/null >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    reason="'sudo -n true' failed: sudo needs a password for ${who} and there is no terminal to type it"
+  else
+    reason="sudo is not installed"
+  fi
+  cat >&2 <<EOF
+Swarm installs system-wide (/usr/local, /etc, /var and the systemd unit), which needs administrator rights.
+This run is not root, ${reason}.
+Nothing was changed.
+Ask the person to run this in their own terminal (sudo asks for their password there):
+  ${PUBLIC_INSTALL_COMMAND} | sudo sh -s -- --yes
+It installs Swarm for them (the sudo user), not a separate service account.
+Alternatively grant ${who} passwordless sudo, or rerun from a terminal.
+EOF
+  exit 1
+}
+
+# Decide everything a missing terminal affects before any host change.
+plan_unattended_install() {
+  if [ "$TERMINAL_MODE" != "none" ]; then
+    return 0
+  fi
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    print_no_terminal_rerun
+    exit 2
+  fi
+  if [ -z "$SERVICE_MODE" ]; then
+    if systemd_is_running; then
+      SERVICE_MODE="systemd"
+      echo 'No terminal and --yes: chose --service because systemd is running (pass --no-service for files only).'
+    else
+      SERVICE_MODE="none"
+      echo 'No terminal and --yes: chose --no-service because systemd is not running; Swarm files are installed but not started.'
+    fi
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    require_noninteractive_sudo
+  fi
 }
 
 install_runtime_prerequisite_packages() {
@@ -341,13 +446,15 @@ Swarm install plan
   Daemon data: /var/lib/swarmd
   Daemon runtime: /run/swarmd
   Daemon cache/logs: /var/cache/swarmd, /var/log/swarmd
-  Account: ${ACCOUNT_MODE:-interactive choice (or legacy default with --yes)} ${ACCOUNT_NAME}
+  Account: $(account_plan_label)
   Direct root installs: choose an existing user, create a human user with OS prompts,
   or explicitly use the locked non-root swarm account with home /var/lib/swarm.
   Fresh sudo/non-root installs: use the invoking user's identity and home.
   Reinstall: preserve consistent existing install ownership, regardless of caller.
-  Account selection occurs before runtime provisioning. --yes retains the legacy
-  locked-service-account default unless --install-user or --create-user is supplied.
+  Account selection occurs before runtime provisioning. With --yes, direct root
+  without sudo keeps the legacy locked-service-account default and root through
+  sudo installs for the sudo user, unless --install-user, --create-user or
+  --create-service-account is supplied.
   No service-account password, sudo, interactive login, or SSH changes.
   Human account creation uses useradd and passwd on the OS terminal; no password
   enters Swarm logs. Optional sudo access is a separate administrator decision.
@@ -359,20 +466,38 @@ Reinstall preserves /etc/swarmd and /var/lib/swarmd by default.
 EOF
 }
 
+account_plan_label() {
+  if [ -n "$ACCOUNT_MODE" ]; then
+    printf '%s\n' "${ACCOUNT_MODE} ${ACCOUNT_NAME}"
+  elif [ "$(id -u)" -ne 0 ]; then
+    printf '%s\n' "this user ($(id -un 2>/dev/null || id -u)) for a fresh install"
+  elif [ "$ASSUME_YES" -ne 1 ]; then
+    printf '%s\n' 'interactive choice'
+  elif invoked_via_sudo; then
+    printf '%s\n' "sudo user ${SUDO_USER} for a fresh install (--yes under sudo)"
+  else
+    printf '%s\n' 'locked service account swarm for a fresh install (--yes as direct root)'
+  fi
+}
+
+# Returns non-zero when no answer can be read (no terminal, EOF, read error);
+# callers treat that as "no answer", never as an empty answer.
 read_prompt_answer() {
   prompt="$1"
   PROMPT_ANSWER=""
-  if [ -t 0 ]; then
-    printf '%s' "$prompt"
-    read PROMPT_ANSWER
-    return 0
-  fi
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    printf '%s' "$prompt" >/dev/tty
-    read PROMPT_ANSWER </dev/tty
-    return 0
-  fi
-  return 1
+  case "$TERMINAL_MODE" in
+    stdin)
+      printf '%s' "$prompt"
+      read -r PROMPT_ANSWER || return 1
+      ;;
+    tty)
+      printf '%s' "$prompt" >"$TTY_DEVICE" || return 1
+      read -r PROMPT_ANSWER <"$TTY_DEVICE" || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 choose_service_mode() {
@@ -429,7 +554,7 @@ require_systemd() {
     echo "Install systemd/systemctl support or rerun with --no-service." >&2
     return 1
   fi
-  if [ ! -d /run/systemd/system ]; then
+  if [ ! -d "$SYSTEMD_RUN_DIR" ]; then
     echo "systemd is not running as the system manager; cannot enable/start swarm.service." >&2
     echo "Run install.sh on a systemd host or provision /etc/systemd/system/swarm.service manually, then run: systemctl enable --now swarm.service" >&2
     return 1
@@ -605,9 +730,41 @@ print_service_commands() {
   printf '  swarm uninstall\n'
 }
 
+install_owner_name() {
+  owner="$(stat -c %U "$(install_root)" 2>/dev/null || true)"
+  case "$owner" in
+    ''|UNKNOWN|root) return 1 ;;
+  esac
+  printf '%s\n' "$owner"
+}
+
+# Same lines as README "Connect your AI"; printed in every successful mode.
+print_connect_lines() {
+  printf '\nConnect your AI:\n'
+  printf '  Claude Code (Swarm tools plus setup skills):\n'
+  printf '    claude plugin marketplace add swarm-agent/swarm && claude plugin install swarm@swarm\n'
+  printf '  Claude Code, tools only (any MCP client runs the same command):\n'
+  printf '    claude mcp add swarm -- swarm mcp\n'
+  printf '  Codex CLI (add to your Codex config.toml):\n'
+  printf '    [mcp_servers.swarm]\n'
+  printf '    command = "swarm"\n'
+  printf '    args = ["mcp"]\n'
+  if owner="$(install_owner_name)"; then
+    printf '  swarm mcp must run as %s, the user that runs Swarm.\n' "$owner"
+  else
+    printf '  swarm mcp must run as the user that runs Swarm.\n'
+  fi
+  if [ "$SERVICE_MODE" = "none" ]; then
+    printf '  Start Swarm first (no service was started); swarm mcp never starts it.\n'
+  fi
+  printf '  A new Swarm refuses swarm mcp until it has an owner: finish setup in swarm open, or run\n'
+  printf '    swarm ctl setup identity --username NAME --name SWARM_NAME\n'
+}
+
 finish_install() {
   echo 'Installation identity is separate from Swarm authentication: open Swarm and complete account setup or sign in. Reinstall retains completed setup.'
   print_path_refresh_instructions
+  print_connect_lines
 }
 
 run_bundle_install() {
@@ -621,7 +778,12 @@ run_bundle_install() {
     --create-service-account) set -- "$@" --create-service-account ;;
     '')
       if [ "$ASSUME_YES" -eq 1 ]; then
-        set -- "$@" --create-service-account
+        # No account flag: swarmsetup installs a fresh install for the invoking
+        # user (SUDO_UID under sudo) and keeps an existing install's owner. Only
+        # direct root, with no person behind it, gets the locked service account.
+        if [ "$(id -u)" -eq 0 ] && ! invoked_via_sudo; then
+          set -- "$@" --create-service-account
+        fi
       else
         set -- "$@" --choose-account
       fi
@@ -668,6 +830,12 @@ validate_artifact_root() {
   done
 }
 
+# Everything runs from main, called on the last line: under `curl | sh` the
+# shell has read the whole script before acting, so a truncated download runs
+# nothing and a child reading stdin cannot consume the rest of the script.
+main() {
+parse_args "$@"
+
 need_cmd uname
 need_cmd tar
 need_cmd sed
@@ -698,7 +866,9 @@ if [ "$VERIFY_ONLY" -eq 1 ] && [ -z "$ARTIFACT_ROOT" ]; then
   exit 2
 fi
 
+detect_terminal
 if [ "$VERIFY_ONLY" -ne 1 ]; then
+  plan_unattended_install
   ensure_runtime_prerequisites
 fi
 
@@ -843,3 +1013,6 @@ if ! verify_installed_runtime; then
 fi
 print_ok
 finish_install
+}
+
+main "$@"

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"time"
 
@@ -99,6 +100,10 @@ type TaskWorkspaceState struct {
 	HeadCommit    string `json:"head_commit"`
 	Status        string `json:"status"`
 	Clean         bool   `json:"clean"`
+	// TrackedClean ignores untracked files (see UntrackedTaskWorkspacePaths).
+	// Only project-task integration relies on it, and it still refuses untracked
+	// files the incoming change would overwrite.
+	TrackedClean bool `json:"-"`
 }
 
 type TaskIntegrationChild struct {
@@ -480,6 +485,7 @@ func (s *Service) TaskCommitDescendsFrom(workspacePath, baseCommit, headCommit s
 	}
 	cmd := exec.Command("git", "merge-base", "--is-ancestor", baseCommit, headCommit)
 	cmd.Dir = workspacePath
+	sandbox.Prepare(context.Background(), cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -501,7 +507,9 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 	if err != nil {
 		return TaskIntegrationPlan{}, fmt.Errorf("inspect parent worktree: %w", err)
 	}
-	if !state.Clean {
+	// Untracked files the children do not touch (an app's own state files, for
+	// example) are left alone; they are checked against the plan's files below.
+	if !state.TrackedClean {
 		return TaskIntegrationPlan{}, fmt.Errorf("parent worktree is dirty:\n%s", state.Status)
 	}
 	if state.BranchName != expectedParentBranch {
@@ -619,6 +627,19 @@ func (s *Service) PrepareTaskIntegration(parentPath, expectedParentBranch, expec
 			Files:                    files,
 		})
 		plan.Commits = append(plan.Commits, commits...)
+	}
+	if !state.Clean {
+		untracked, err := s.UntrackedTaskWorkspacePaths(parentPath)
+		if err != nil {
+			return TaskIntegrationPlan{}, err
+		}
+		var files []string
+		for _, entry := range plan.Entries {
+			files = append(files, entry.Files...)
+		}
+		if blocked := UntrackedCollisions(untracked, files); len(blocked) > 0 {
+			return TaskIntegrationPlan{}, fmt.Errorf("untracked files in the parent worktree would be overwritten by the task: %s; move or commit them first", DescribePaths(blocked))
+		}
 	}
 	// Project integration verifies original source ancestry. A replay changes
 	// commit IDs, so this explicit whole-lane mode must merge the source instead.
@@ -902,7 +923,7 @@ func rollbackTaskIntegration(parentPath, parentHead string) error {
 	if err != nil {
 		return fmt.Errorf("inspect parent after rollback: %w", err)
 	}
-	if state.HeadCommit != parentHead || !state.Clean {
+	if state.HeadCommit != parentHead || !state.TrackedClean {
 		return fmt.Errorf("selected batch abort did not restore clean parent HEAD %s", parentHead)
 	}
 	return nil
@@ -1011,12 +1032,14 @@ func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegratio
 	env := append(os.Environ(), "GIT_INDEX_FILE="+indexPath)
 	cmd := exec.Command("git", "-C", parentPath, "read-tree", parentHead)
 	cmd.Env = env
+	sandbox.Prepare(context.Background(), cmd)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("initialize integration preflight: %s", strings.TrimSpace(string(out)))
 	}
 	for _, entry := range entries {
 		for _, commit := range entry.Commits {
 			patch := exec.Command("git", "-C", parentPath, "diff-tree", "--binary", "--full-index", "--no-commit-id", "-p", commit+"^", commit)
+			sandbox.Prepare(context.Background(), patch)
 			data, err := patch.Output()
 			if err != nil {
 				return fmt.Errorf("read child %q commit %s patch: %w", entry.SessionID, commit, err)
@@ -1024,6 +1047,7 @@ func preflightCherryPick(parentPath, parentHead string, entries []TaskIntegratio
 			apply := exec.Command("git", "-C", parentPath, "apply", "--cached", "--3way", "--whitespace=nowarn", "-")
 			apply.Env = env
 			apply.Stdin = bytes.NewReader(data)
+			sandbox.Prepare(context.Background(), apply)
 			if out, err := apply.CombinedOutput(); err != nil {
 				detail := strings.TrimSpace(string(out))
 				if detail == "" {
@@ -1054,13 +1078,50 @@ func (s *Service) InspectTaskWorkspace(workspacePath string) (TaskWorkspaceState
 		return TaskWorkspaceState{}, fmt.Errorf("inspect task worktree status: %w", err)
 	}
 	status = strings.TrimSpace(status)
-	return TaskWorkspaceState{
+	state := TaskWorkspaceState{
 		WorkspacePath: workspacePath,
 		BranchName:    strings.TrimSpace(branch),
 		HeadCommit:    strings.TrimSpace(head),
 		Status:        status,
 		Clean:         status == "",
-	}, nil
+		TrackedClean:  status == "",
+	}
+	if status != "" {
+		// Classify only a dirty tree.
+		entries, err := workspaceStatusEntries(workspacePath)
+		if err != nil {
+			return TaskWorkspaceState{}, err
+		}
+		state.TrackedClean = true
+		for _, entry := range entries {
+			state.TrackedClean = state.TrackedClean && entry.untracked()
+		}
+	}
+	return state, nil
+}
+
+// UntrackedTaskWorkspacePaths lists untracked, non-ignored files in a checkout.
+func (s *Service) UntrackedTaskWorkspacePaths(workspacePath string) ([]string, error) {
+	entries, err := workspaceStatusEntries(strings.TrimSpace(workspacePath))
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		if entry.untracked() {
+			paths = append(paths, entry.Path)
+		}
+	}
+	return paths, nil
+}
+
+// workspaceStatusEntries reads NUL-separated porcelain status, keeping exact paths.
+func workspaceStatusEntries(workspacePath string) ([]statusEntry, error) {
+	raw, err := runGitRaw(workspacePath, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return nil, fmt.Errorf("inspect task worktree status: %w", err)
+	}
+	return parsePorcelainStatusZ(raw), nil
 }
 
 func (s *Service) AllocateTaskWorkspace(workspacePath string, base TaskBase, nameSeed string, ownedScopes []string) (Allocation, error) {
@@ -1678,6 +1739,11 @@ func resolveRepositoryHeadCommit(workspacePath string) (string, error) {
 	return "", errors.New("resolve repository HEAD: empty commit")
 }
 
+// CurrentBranch returns the checked-out branch, or "" on a detached HEAD.
+func CurrentBranch(workspacePath string) (string, error) {
+	return currentBranch(workspacePath)
+}
+
 func currentBranch(workspacePath string) (string, error) {
 	branch, err := runGit(workspacePath, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
@@ -1701,6 +1767,28 @@ func runGit(path string, args ...string) (string, error) {
 	return runGitWithEnv(path, nil, args...)
 }
 
+// runGitRaw returns stdout untrimmed, for formats whose leading spaces matter.
+func runGitRaw(path string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
+	sandbox.Prepare(ctx, cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		return "", errors.New(gitRequiredForWorktreesError)
+	}
+	if err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(err.Error())
+		}
+		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), detail)
+	}
+	return string(out), nil
+}
+
 func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
@@ -1709,6 +1797,7 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	if env != nil {
 		cmd.Env = env
 	}
+	sandbox.Prepare(ctx, cmd)
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if errors.Is(err, exec.ErrNotFound) {
@@ -1727,6 +1816,7 @@ func localBranchExists(repoRoot, branchName string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	sandbox.Prepare(ctx, cmd)
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
@@ -1875,6 +1965,7 @@ func runGitWorktreeAdd(repoRoot, worktreePath, branchName, effectiveBranch strin
 	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	sandbox.Prepare(ctx, cmd)
 	err := cmd.Run()
 	stdoutText := strings.TrimSpace(stdout.String())
 	stderrText := strings.TrimSpace(stderr.String())

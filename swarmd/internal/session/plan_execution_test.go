@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -417,5 +418,65 @@ func TestPlanDocumentPatchRejectsSetActiveAndUpsertThatStrandInProgress(t *testi
 	_, err = ApplyPlanDocumentPatch("plan-exec", "Execution Plan", base, PlanDocumentPatch{Operation: "upsert_checkpoint", Checkpoint: &pebblestore.SessionPlanCheckpoint{ID: "cp-2", Status: PlanCheckpointStatusInProgress}})
 	if err == nil || !strings.Contains(err.Error(), "resolve it first") {
 		t.Fatalf("upsert in_progress error = %v, want continuity rejection", err)
+	}
+}
+
+// Purpose: stopping a run pauses (not cancels) its plan so the checkpoint can
+// be resumed; dogfooding (s07) found "paused" ambiguous about whether the plan
+// might resume on its own or why it stopped. A user stop must be recorded on
+// the paused attempt and surfaced as summary.stopped_by="user"; other
+// cancellations (start failures, automation stops) must not claim it, and a
+// resumed attempt must clear it. ApplyPlanCheckpointCancellation and
+// SummarizePlanExecution own this state, so this pure layer is narrowest.
+func TestPlanCheckpointCancellationRecordsUserStop(t *testing.T) {
+	newDoc := func() *pebblestore.SessionPlanDocument {
+		return &pebblestore.SessionPlanDocument{
+			ID:                 "plan-stop",
+			Title:              "Stop plan",
+			ExecutionPolicy:    pebblestore.SessionPlanExecutionPolicy{Mode: PlanExecutionPolicyModeAutomatic, Shape: PlanExecutionShapeCheckpointed},
+			ActiveCheckpointID: "cp-1",
+			ExecutionState:     &pebblestore.SessionPlanExecutionState{Status: PlanExecutionStateInProgress, ActiveAttemptID: "cp-1:attempt-1", CurrentRunID: "run-1", CurrentSessionID: "session-1", ParentSessionID: "session-1"},
+			Checkpoints: []pebblestore.SessionPlanCheckpoint{{
+				ID: "cp-1", Status: PlanCheckpointStatusInProgress, AttemptID: "cp-1:attempt-1", RunID: "run-1", SessionID: "session-1",
+				Attempts: []pebblestore.SessionPlanCheckpointAttempt{{ID: "cp-1:attempt-1", CheckpointID: "cp-1", Status: PlanCheckpointStatusInProgress, RunID: "run-1", SessionID: "session-1", ParentSessionID: "session-1"}},
+			}},
+		}
+	}
+	options := PlanCheckpointCancellationOptions{PlanID: "plan-stop", CheckpointID: "cp-1", AttemptID: "cp-1:attempt-1", RunID: "run-1", SessionID: "session-1", ParentSessionID: "session-1", CancelledAt: 42}
+
+	other := newDoc()
+	if _, err := ApplyPlanCheckpointCancellation(other, options); err != nil {
+		t.Fatal(err)
+	}
+	if summary := SummarizePlanExecution(other); !summary.Paused || summary.StoppedBy != "" || other.Checkpoints[0].Attempts[0].StoppedBy != "" {
+		t.Fatalf("non-user cancellation claimed a user stop: %#v", summary)
+	}
+	forged := newDoc()
+	forgedOptions := options
+	forgedOptions.StoppedBy = "admin"
+	if _, err := ApplyPlanCheckpointCancellation(forged, forgedOptions); err != nil {
+		t.Fatal(err)
+	}
+	if forged.Checkpoints[0].Attempts[0].StoppedBy != "" {
+		t.Fatalf("unknown stop cause persisted: %#v", forged.Checkpoints[0].Attempts[0])
+	}
+
+	doc := newDoc()
+	options.StoppedBy = PlanStoppedByUser
+	if _, err := ApplyPlanCheckpointCancellation(doc, options); err != nil {
+		t.Fatal(err)
+	}
+	summary := SummarizePlanExecution(doc)
+	if !summary.Paused || summary.StopReason != PlanCheckpointStatusPaused || summary.StoppedBy != PlanStoppedByUser || summary.AutoAdvanceAllowed {
+		t.Fatalf("user stop summary = %#v", summary)
+	}
+	raw, err := json.Marshal(summary)
+	if err != nil || !strings.Contains(string(raw), `"stopped_by":"user"`) {
+		t.Fatalf("summary JSON = %s %v", raw, err)
+	}
+	// Resuming starts a new attempt; the plan is no longer reported as stopped.
+	resumed, changed, err := ReactivatePausedPlanForUserMessage(doc, "run-2", "session-1", "session-1", 43)
+	if err != nil || !changed || resumed.Paused || resumed.StoppedBy != "" {
+		t.Fatalf("resumed summary = %#v changed=%t err=%v", resumed, changed, err)
 	}
 }

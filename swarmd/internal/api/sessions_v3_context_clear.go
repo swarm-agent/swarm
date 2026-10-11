@@ -39,7 +39,9 @@ func (s *Server) handleSessionV3ClearContext(w http.ResponseWriter, r *http.Requ
 	}
 	payload, _ := json.Marshal(req)
 	digest := sha256.Sum256(payload)
-	result, err := s.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+	// The shared mutation path also wakes realtime subscribers; a bare store write was
+	// only discovered by the next keepalive scan, up to 15s later.
+	result, err := s.applySessionV3PrimaryMutation(pebblestore.V3SessionMutationInput{
 		Kind: pebblestore.V3SessionMutationClearContext, SessionID: sessionID,
 		UserID: principal.UserID, AccountScopeID: principal.AccountScopeID,
 		ClientRequestID: req.ClientRequestID, PayloadHash: hex.EncodeToString(digest[:]),
