@@ -469,7 +469,17 @@ async function scenarioChat(ctx) {
   // Tool records carry output and error (no status field): the command ran
   // when its output has the token on a line of its own; the file is the
   // second witness.
-  const echoed = (t) => new RegExp(`(^|\\n)${token}(\\n|$)`).test(String(t.output ?? ''))
+  // A bash tool record's output is the tool's JSON result; stdout is its
+  // "output" field (a plain string is checked as is).
+  const stdout = (t) => {
+    const raw = String(t.output ?? '')
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed.output === 'string') return parsed.output
+    } catch {}
+    return raw
+  }
+  const echoed = (t) => new RegExp(`(^|\\n)${token}(\\n|$)`).test(stdout(t))
   const ranAnyway = toolMessages(denied.state).some(echoed)
   const fileAfterDeny = await sessionHasFile(ctx, sessionId, `e2e-${token}.txt`)
   ctx.check('chat.approval_requested', deniedTarget.length >= 1, `decisions: ${JSON.stringify(denied.decisions)}; wait ended: ${denied.reason}`)
