@@ -42,6 +42,16 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			next.ServeHTTP(w, requestWithScopedToken(requestWithActorContext(r, actor), rec))
 			return
 		}
+		// This listener authenticates scoped keys, not OAuth. Private MCP
+		// tunnels probe both RFC 9728 discovery locations using their configured
+		// upstream credential. Report absent metadata as 404 so an auth error
+		// document is not mistaken for malformed OAuth metadata. Keep credential
+		// validation above this response; no product route is made public.
+		if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+			(r.URL.Path == "/.well-known/oauth-protected-resource" || r.URL.Path == "/.well-known/oauth-protected-resource/mcp") {
+			http.NotFound(w, r)
+			return
+		}
 		if isAIKey(rec) && r.URL.Path != controlMCPPath {
 			// An AI key's level is enforced per tool in Swarm Control; the raw
 			// routes below would bypass it (a write key could resolve permissions).
