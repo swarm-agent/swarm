@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Requirement: prove one exact local candidate can use its dedicated Codex
 // broker at Luna/medium without host credentials, tool execution or fallback.
-// Authority: local_testbench_codex.py checks HEAD/generation before this runner;
+// Authority: the caller checks the candidate HEAD/generation before this runner;
 // AttachClient bounds authenticated same-origin API calls; V3 hydrate supplies
 // durable completion evidence. This live runner is not a hermetic critical test.
 import assert from 'node:assert/strict'

@@ -1,11 +1,10 @@
 // Purpose: prove exact-origin authenticated attach, deadlines, byte bounds and
-// unchanged shared settings. Authority: AttachClient and canonical shell manifest.
+// unchanged shared settings. Authority: AttachClient and scripts/run-runner-test.sh.
 // Fake HTTP is the narrowest observable boundary; no real daemon/provider used.
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -38,7 +37,7 @@ function fixture(requests, { mismatch = false } = {}) {
 }
 
 async function shell(args, env = {}) {
-  const p = spawn('bash', args, {cwd:root,env:{...process.env,SWARM_TESTBENCH_ENV_FILE:'/nonexistent/attach-must-not-read',...env},stdio:['ignore','pipe','pipe']})
+  const p = spawn('bash', args, {cwd:root,env:{...process.env,...env},stdio:['ignore','pipe','pipe']})
   let output=''
   const timer=setTimeout(()=>p.kill('SIGTERM'),15000)
   for (const stream of [p.stdout,p.stderr]) stream.on('data', b=>{output+=b; if(output.length>32768)p.kill('SIGTERM')})
@@ -68,34 +67,10 @@ test('request deadline, response cap and redirects fail closed', {timeout:5000},
   const redirect=await server(t,(_req,res)=>{res.writeHead(302,{Location:noisy});res.end()})
   await assert.rejects(new AttachClient(redirect).inspect())
 })
-// Purpose: run-testbench-launch-prerun admission rejects unsafe and retired suites
-// before connection/mutation; the local HTTP fixture proves no additional requests
-// and no fake successful evidence, without deploying a testbench.
-test('canonical attach executes without .env and refuses unsafe suites/wrappers', {timeout:20000}, async t=>{
-  const requests=[];const url=await server(t,fixture(requests))
-  const scratch=await mkdtemp(path.join(process.env.TMPDIR,'attach-test-'))
-  t.after(()=>rm(scratch,{recursive:true,force:true}))
-  const result=await shell(['scripts/run-testbench-launch-prerun.sh','--attach-only',url,'--suite','attach-inspect'],{TMPDIR:scratch})
-  assert.equal(result.code,0,result.output)
-  assert.ok(requests.length>=8)
-  assert.ok(requests.every(r=>r.method==='GET'))
-  assert.ok(!result.output.includes('fixture-token'))
-  const dir=result.output.match(/launch-prerun: evidence=(.+)/)[1]
-  const evidence=JSON.parse(await readFile(path.join(dir,'results.json'),'utf8'))
-  assert.deepEqual(evidence.counts,{pass:1,fail:0,'not-run':0})
-  const before=requests.length
-  for(const suite of ['task-routing','task-program','workspace-routing','workspace-workers','desktop','tui','provider-sync','onboarding','omarchy-install']) {
-    const denied=await shell(['scripts/run-testbench-launch-prerun.sh','--attach-only',url,'--suite',suite])
-    assert.notEqual(denied.code,0)
-    assert.match(denied.output,/not attach-safe/)
-  }
-  const retired=await shell(['scripts/run-testbench-launch-prerun.sh','--attach-only',url,'--suite','plan-auto'])
-  assert.notEqual(retired.code,0)
-  assert.match(retired.output,/plan-auto is retired/)
-  for(const entry of ['run-testbench-runner.sh','run-runner-test.sh','testbench-e2e-tunnel.sh','testbench-container-deploy.sh']) {
-    const denied=await shell([`scripts/${entry}`,'run'],{SWARM_TESTBENCH_ATTACH_ONLY:'1'})
-    assert.equal(denied.code,2)
-    assert.doesNotMatch(denied.output,/missing .*env/)
-  }
-  assert.equal(requests.length,before)
+// Purpose: the kept runner launcher refuses attach-only mode before any
+// connection or shared-state mutation; no daemon or testbench is involved.
+test('runner launcher refuses attach-only mode', {timeout:10000}, async ()=>{
+  const denied=await shell(['scripts/run-runner-test.sh','run'],{SWARM_TESTBENCH_ATTACH_ONLY:'1'})
+  assert.equal(denied.code,2)
+  assert.match(denied.output,/not attach-safe/)
 })

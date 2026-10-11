@@ -178,10 +178,10 @@ qualification is implied by these scripts or hermetic tests.
 
 ### 7. Run post-PR supported-Linux lifecycle and onboarding tests
 
-“Collect supported-Linux VM evidence” means retaining a transcript of the complete privileged lifecycle on fresh supported Linux environments, starting with no Swarm installation. Ubuntu and Arch install/start/CLI coverage is automated in the PR/build workflows; a full VM remains authoritative for onboarding and update/rollback. Omarchy publishes a full ISO rather than an OCI image, so its supported proof uses the official ISO's unattended `cidata` path, a reusable clean base on testbench, and a throwaway overlay. Run the opt-in `omarchy-install` lane with the exact candidate archive and explicit SSH target; do not substitute a plain Arch container and call it Omarchy.
+“Collect supported-Linux VM evidence” means retaining a transcript of the complete privileged lifecycle on fresh supported Linux environments, starting with no Swarm installation. Ubuntu and Arch install/start/CLI coverage is automated in the PR/build workflows; a full VM remains authoritative for onboarding and update/rollback. Omarchy publishes a full ISO rather than an OCI image, so its supported proof uses the official ISO's unattended `cidata` path, a reusable clean base VM, and a throwaway overlay. Run `scripts/test-install-omarchy-vm.sh` with the exact candidate archive and explicit SSH target; do not substitute a plain Arch container and call it Omarchy.
 
 - [ ] Confirm Ubuntu and Arch exact-SHA distro install jobs pass and retain their public CI result.
-- [ ] Boot a clean official-ISO Omarchy overlay on testbench and run `scripts/run-testbench-launch-prerun.sh --suite omarchy-install --candidate-archive <archive.tar.gz> --omarchy-guest <user@host>` with any required explicit port/identity options; retain the bounded result privately without recording connection details in public source.
+- [ ] Boot a clean official-ISO Omarchy overlay and run `scripts/test-install-omarchy-vm.sh --archive <archive.tar.gz> --checksum <archive.tar.gz.sha256> --guest <user@host>` with any required explicit port/identity options; retain the bounded result privately without recording connection details in public source.
 - [ ] Start from a clean supported-Linux VM or restored clean snapshot with no prior Swarm install; record the OS image and candidate SHA/version
 - [ ] Install the exact versioned candidate through the documented systemd path and verify service-account ownership, group, and `0600` mode for the canonical config
 - [ ] Test real systemd start, `swarm status`, `swarm open`/health reachability, stop, and restart
@@ -219,7 +219,6 @@ For the first stable release, there is no older public stable version from which
 - `scripts/smoke-release-archive.sh`
 - `scripts/test-install-distro.sh`
 - `scripts/test-install-omarchy-vm.sh`
-- `scripts/run-testbench-launch-prerun.sh`
 - `.github/workflows/install-distro-smoke.yml`
 - `scripts/verify-release-candidate.sh`
 - `cmd/swarmsetup/main.go`

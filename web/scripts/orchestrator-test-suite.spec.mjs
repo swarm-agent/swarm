@@ -78,28 +78,6 @@ test('runner rejects additional selectors before starting tests', { timeout: 500
   assert.equal(result.stdout, '')
 })
 
-// Purpose: the retained run-desktop-launch-test.sh compatibility entrypoint must
-// report retirement with failure, never qualify an empty suite or contact a target.
-// The shell boundary is the narrowest observable proof; only --help may succeed.
-test('retired Desktop launch runner fails before any browser/provider work', { timeout: 5000 }, () => {
-  const runner = fileURLToPath(new URL('../../scripts/run-desktop-launch-test.sh', import.meta.url))
-  for (const args of [[], ['unused-target', 'unused-provider']]) {
-    const result = spawnSync('bash', [runner, ...args], {
-      encoding: 'utf8', timeout: 1000, maxBuffer: 4096,
-    })
-    assert.equal(result.error, undefined)
-    assert.equal(result.status, 1)
-    assert.match(result.stderr, /retired legacy chat journeys/)
-    assert.equal(result.stdout, '')
-  }
-  const help = spawnSync('bash', [runner, '--help'], {
-    encoding: 'utf8', timeout: 1000, maxBuffer: 4096,
-  })
-  assert.equal(help.error, undefined)
-  assert.equal(help.status, 0)
-  assert.match(help.stdout, /No replacement browser suite exists yet/)
-})
-
 // Purpose: PR composition must add the exact Orchestrator suite without replacing
 // still-supported session API/auth/hydration/realtime coverage or adding paid
 // journeys. package.json is the script-selection authority, not app security;

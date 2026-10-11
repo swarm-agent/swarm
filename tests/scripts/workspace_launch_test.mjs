@@ -132,65 +132,6 @@ test('repository comparison retains every substantive field', () => {
   assert.throws(() => repositoryState({ ...state, head_oid: '' }))
 })
 
-// Requirement: the real OS supervisor must allow WorkspaceTrial's asynchronous
-// authenticated stop to finish after TERM, including an in-flight lost response.
-// One Node worker and a loopback fake server prove the composed cleanup path.
-test('supervised trial cancels exact admitted run before KILL and preserves sibling', { timeout: 12000 }, async t => {
-  const { spawn } = await import('node:child_process')
-  const { mkdtemp, readFile, rm } = await import('node:fs/promises')
-  const path = await import('node:path')
-  const { pathToFileURL } = await import('node:url')
-  const dir = await mkdtemp(path.join(process.env.TMPDIR, 'workspace-supervisor-'))
-  t.after(() => rm(dir, { recursive: true, force: true }))
-  let admission, acknowledge
-  const admitted = new Promise(resolve => { admission = resolve })
-  const stopped = new Promise(resolve => { acknowledge = resolve })
-  let runID, stopID
-  const server = http.createServer(async (req, res) => {
-    let raw = ''; for await (const chunk of req) raw += chunk
-    assert.equal(req.headers['x-swarm-token'], 'fixture-token')
-    const body = JSON.parse(raw)
-    res.setHeader('Content-Type', 'application/json')
-    if (req.url.endsWith('/messages')) { runID = body.run_id; admission(); return }
-    if (req.url === '/v3/sync/hydrate') return res.end(JSON.stringify({ run_intents_by_session: { owned: [{ run_id: runID, status: 'running' }] } }))
-    assert.equal(req.url, '/v3/sessions/owned/run/stop')
-    stopID = body.run_id
-    // Beyond the retired .5s grace, still within the exact two-second fixture cap.
-    setTimeout(() => { res.end(JSON.stringify({ status: 'cancelled' })); acknowledge() }, 800)
-  })
-  server.listen(0, '127.0.0.1'); await once(server, 'listening')
-  t.after(() => { server.closeAllConnections(); server.close() })
-  const moduleURL = pathToFileURL(path.resolve('scripts/runners/workspace-launch.mjs')).href
-  const code = `import {WorkspaceTrial} from ${JSON.stringify(moduleURL)};
-    const t = new WorkspaceTrial(${JSON.stringify(`http://127.0.0.1:${server.address().port}/`)}, {evidencePath:${JSON.stringify(path.join(dir, 'trial.json'))}});
-    t.token='fixture-token'; t.identity={runtime_id:'runtime'}; t.sessions.set('owned',{id:'owned'}); t.evidence.sessions.push({id:'owned'});
-    process.on('SIGTERM',()=>t.interrupt());
-    try {await t.run('owned','fixture')} catch {} finally {await t.stopOwned(); process.exitCode=1}`
-  const proc = spawn('python3', ['scripts/launch-prerun-supervisor.py', path.join(dir, 'run'), '2'], {
-    env: { ...process.env, SWARM_LAUNCH_WALL_SECONDS: '5', SWARM_LAUNCH_STALL_SECONDS: '5' }, stdio: ['pipe', 'pipe', 'pipe'],
-  })
-  t.after(() => { if (proc.exitCode === null) proc.kill('SIGTERM') })
-  let output = ''; for (const stream of [proc.stdout, proc.stderr]) stream.on('data', chunk => { output += chunk; assert(output.length < 16384) })
-  const exited = once(proc, 'exit')
-  proc.stdin.end(JSON.stringify([{ id: 'trial', argv: [process.execPath, '--input-type=module', '-e', code], cleanup_seconds: 2 }, { id: 'sibling', argv: [process.execPath, '-e', 'process.exit(0)'] }]))
-  await admitted
-  // Wait for durable sibling completion, not a scheduling sleep.
-  for (let i = 0; i < 100; i++) {
-    try { if ((await readFile(path.join(dir, 'run/status/sibling.exit'), 'utf8')).trim() === '0') break } catch {}
-    if (i === 99) assert.fail('sibling never completed')
-    await new Promise(resolve => setTimeout(resolve, 10))
-  }
-  proc.kill('SIGTERM')
-  await stopped
-  await exited
-  assert.equal(stopID, runID)
-  const evidence = JSON.parse(await readFile(path.join(dir, 'trial.json'), 'utf8'))
-  assert.equal(evidence.cleanup[0].status, 'cancelled')
-  const result = JSON.parse(await readFile(path.join(dir, 'run/results.json'), 'utf8'))
-  assert.deepEqual(result.counts, { pass: 1, fail: 1, 'not-run': 0 })
-  assert.deepEqual(result.results.find(r => r.id === 'trial').remaining_pids, [])
-})
-
 // Requirement: executable proof reads exact bounded bytes and actual Git
 // common-dir/HEAD without relying on assistant prose. Use only a fresh temp repo.
 test('controlled filesystem proof executes with exact bytes and rejects symlink', { timeout: 6000 }, async t => {

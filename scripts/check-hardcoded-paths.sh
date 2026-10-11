@@ -19,21 +19,7 @@ filter_guest_image_paths() {
       'containers/headless/inspect.sh:test -s /etc/ssl/certs/ca-certificates.crt'|\
       'scripts/test-install-mint-guard.sh:    prepare) mint_guard_prepare /etc/systemd/system/swarm.service.d ;;'|\
       'containers/headless/app/entrypoint.sh:config=/etc/swarmd/headless-app'|\
-      'containers/headless/app/entrypoint.sh:if (( $# == 0 )); then set -- node /opt/workshop/examples/headless-app/server.mjs; fi'|\
-      'scripts/testbench-local-cache.sh:    export GOROOT=/opt/go GOTOOLCHAIN=local GOMAXPROCS=2 HOME=/root'|\
-      "scripts/testbench-local-image.sh:printf 'local-testbench-base/v1\\n' > \"\$mountpoint/etc/swarm-local-base\""|\
-      'scripts/testbench-local-tools.sh:[[ -f $point/etc/swarm-local-base ]] || exit 1'|\
-      'scripts/testbench-local-tools.sh:if [[ ! -e $point/opt/go && ! -e $point/opt/pnpm ]]; then'|\
-      'scripts/testbench-local-tools.sh:  cp -a -- "$goroot" "$point/opt/go"'|\
-      'scripts/testbench-local-tools.sh:  cp -a -- "$pnpmroot" "$point/opt/pnpm"'|\
-      'scripts/testbench-local-tools.sh:  chown -R root:root "$point/opt/go" "$point/opt/pnpm"'|\
-      'scripts/testbench-local-tools.sh:  ln -s /opt/go/bin/go "$point/usr/local/bin/go"'|\
-      'scripts/testbench-local-tools.sh:  ln -s /opt/go/bin/gofmt "$point/usr/local/bin/gofmt"'|\
-      'scripts/testbench-local-tools.sh:  ln -s /opt/pnpm/bin/pnpm.mjs "$point/usr/local/bin/pnpm"'|\
-      "scripts/testbench-local-tools.sh:  [[ \$(chroot \"\$point\" /usr/bin/env GOROOT=/opt/go /opt/go/bin/go version) == 'go version go1.26.9 linux/amd64' ]] || exit 1"|\
-      'scripts/testbench-local-tools.sh:  cmp -- "$pnpmroot/package.json" "$point/opt/pnpm/package.json" || exit 1'|\
-      "scripts/testbench-local-tools.sh:printf 'deb http://archive.ubuntu.com/ubuntu resolute main universe\\n' > \"\$point/etc/apt/sources.list\""|\
-      'scripts/testbench-local-tools.sh:    export DEBIAN_FRONTEND=noninteractive GOROOT=/opt/go') ;;
+      'containers/headless/app/entrypoint.sh:if (( $# == 0 )); then set -- node /opt/workshop/examples/headless-app/server.mjs; fi') ;;
       *) printf '%s\n' "$hit" ;;
     esac
   done
@@ -41,7 +27,7 @@ filter_guest_image_paths() {
 
 filter_allowed_runtime_paths() {
   # Security classifier allowlist entries below detect critical shell access; they are not runtime path defaults.
-  # Renderer and testbench constants name the fixed Chrome package covered by the
+  # The renderer constant names the fixed Chrome package covered by the
   # reviewed host AppArmor policy. Anchor the complete declaration: no directory,
   # whole-file exemption, alternate binary, or appended shell command is allowed.
   # Fresh-root detection checks the complete fixed installation layout and must
@@ -50,8 +36,7 @@ filter_allowed_runtime_paths() {
   # container layout they create; each is one exact declaration.
   filter_guest_image_paths | grep -Ev \
     -e '^(\./)?scripts/rebuild\.sh:[0-9]+:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm\.service; do$' \
-    -e '^(\./)?scripts/diagnose-live-workset-full-history\.sh:.*(/etc/swarmd|/var/lib/swarmd|/var/cache/swarmd|/var/log/swarmd|/run/swarmd)' \
-    -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go|scripts/ssh-fast-test\.sh):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
+    -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:.*[ :]/etc/swarmd[/ ]' \
     -e '^(\./)?containers/sealed/test/run\.sh:[0-9]+:.*--tmpfs /home/swarm:' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:OPT=/opt/swarm$' \
@@ -69,7 +54,6 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemConfigMarker[[:space:]]*=[[:space:]]*"/etc/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemDataMarker[[:space:]]*=[[:space:]]*"/var/lib/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/htmlcapture/renderer\.go:[0-9]+:[[:space:]]*SystemChromePath[[:space:]]*=[[:space:]]*"/opt/google/chrome/chrome"[[:space:]]*$' \
-    -e "^(\./)?scripts/run-testbench-runner\.sh:[0-9]+:readonly SYSTEM_CHROME_PATH='/opt/google/chrome/chrome'$" \
     || true
 }
 
@@ -97,7 +81,7 @@ if [[ "${1:-}" == "--self-test" ]]; then
       [[ "$rejected_hit" == "$guest_hit" ]] && continue
       [[ -n "$(printf '%s\n' "$rejected_hit" | filter_guest_image_paths)" ]] || exit 1
     done
-  done < <(rg -n "$DISALLOWED_ABS_PATH_PATTERN" scripts/testbench-local-cache.sh scripts/testbench-local-image.sh scripts/testbench-local-tools.sh containers/headless/inspect.sh containers/headless/app/entrypoint.sh)
+  done < <(rg -n "$DISALLOWED_ABS_PATH_PATTERN" containers/headless/inspect.sh containers/headless/app/entrypoint.sh)
   echo '[path-check] self-test PASS'
 fi
 
