@@ -124,7 +124,16 @@ Default local ports:
 
 ## Connect your AI
 
-An AI client on the same machine drives Swarm through Swarm Control (MCP)
+With Claude Code, install the `swarm` plugin (Swarm's tools plus skills for
+setting it up, running agents and building apps on it), then ask Claude to
+"help me set up Swarm":
+
+```bash
+claude plugin marketplace add swarm-agent/swarm
+claude plugin install swarm@swarm
+```
+
+Any other MCP client on the same machine drives Swarm through Swarm Control (MCP)
 with one line and no key to make. `swarm mcp` speaks MCP over stdio; run as
 the user that runs Swarm, it gets a short-lived AI key over Swarm's private
 owner socket, keeps it only in memory and deletes it on exit.
