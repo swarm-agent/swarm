@@ -8,6 +8,7 @@ relay, claude.ai connectors or routines.
 
 | Client | Endpoint | Credential |
 | --- | --- | --- |
+| Local AI client (Claude Code, Claude Desktop, Codex CLI) on the same machine | stdio: `swarm mcp` (native) or `swarmctl mcp` (headless), forwarding to `/mcp` on the owner socket | none to make: a short-lived in-memory AI key the bridge gets as the owner (see Local AI clients) |
 | Local MCP client (Claude Code, Desktop) on a native install | `http://127.0.0.1:7781/mcp` or the private socket | scoped token (`swk_…`) |
 | Host MCP client for a headless container | `http://127.0.0.1:<sdk-port>/mcp` (`--container-sdk-port`, loopback publish only) | scoped token from `swarmctl setup sdk-token` |
 | Remote AI client (claude.ai, ChatGPT, routines) | `https://<relay>/mcp` | OAuth access token issued by your relay |
@@ -44,6 +45,8 @@ unsupported protocol versions are rejected.
 | `swarm_manage_worker` (pause/resume/archive/delete/cancel_run/enable_schedule/disable_schedule) | `swarm:manage` | `POST /v3/workers/{id}/{action}`, `…/runs/{rid}/cancel`, `…/automations/{aid}/enable\|disable` |
 | `swarm_get_usage` | `swarm:read` | `GET /v3/usage` (tool requires `sessions:read`) |
 | `swarm_set_usage_limits` | `swarm:manage` | `POST /v3/usage/limits` (tool requires `usage:write`) |
+| `swarm_list_providers` | `swarm:read` | `GET /v1/providers` plus credential metadata from the auth service (count, active auth type, verification, latest key link outcome; never key material, last four or labels; tool requires `sessions:read`) |
+| `swarm_request_provider_key` (local only, not offered over the relay) | `swarm:manage` | none: returns a one-time link to the key page on the loopback API listener (tool requires `admin`); the page saves through `POST /v1/auth/credentials` |
 
 **Sessions.** `swarm` (default) works in one workspace and delegates to
 sub-agents; `system-orchestrator` runs a project and turns work into tasks for
@@ -60,6 +63,21 @@ defaults when created and those decide their model. Role defaults need
 `swarm:manage` (`settings:write`).
 Models are validated against the live catalog. The account default model,
 credentials and permission policy (rules, bypass) are not reachable.
+
+**Provider keys.** The AI never handles a key. `request_provider_key` returns
+`http://127.0.0.1:<api-port>/keys/<code>`: a 256-bit, single-use code that
+expires in 10 minutes, bound to one provider and to the account and AI key
+that asked. The person opens it on the machine and pastes the key into
+Swarm's own form. The page exists only on the loopback API listener (never
+peer transport, the private socket, Desktop, the scoped-token listener, the
+tailnet gateway or the relay), admits only direct loopback requests naming
+that listener, requires a same-origin form post, and sends no-store, `DENY`
+framing and a strict CSP. The key is saved through the canonical credential
+route as the requesting key (owner-only scope, vault, onboarding and
+verify-before-save rules apply) and made active; a rejected key is not
+stored and the link stays usable for up to five attempts. `list_providers`
+then shows `saved`, `failed` with a redacted reason, or `expired`. Codes live
+in memory only.
 
 **Review.** Finished orchestrator tasks and worker runs wait in
 `needs_review`. A worker run forks from the workspace's current branch (its
@@ -95,6 +113,45 @@ is 23 tools.
 add `--workers` (automations read/write), `--usage-limits` (`usage:write`) and
 `--settings` (`settings:write`) explicitly for the worker, limit and role-model
 tools.
+
+## Local AI clients (`swarm mcp`)
+
+One line connects an AI client on the same machine; nobody makes or pastes a
+key:
+
+| Client | Setup |
+| --- | --- |
+| Claude Code | `claude mcp add swarm -- swarm mcp` |
+| Claude Desktop | `claude_desktop_config.json`: `{"mcpServers": {"swarm": {"command": "swarm", "args": ["mcp"]}}}` (full path from `command -v swarm` if the app cannot find it) |
+| Codex CLI | `~/.codex/config.toml`: `[mcp_servers.swarm]` with `command = "swarm"` and `args = ["mcp"]` |
+| Headless container, client on its host | `claude mcp add swarm -- docker exec -i swarm-headless swarmctl mcp` |
+
+`swarm mcp` execs `swarmctl mcp` (`swarmd/cmd/swarmctl/mcp_bridge.go`), a
+stdio MCP bridge: newline-delimited JSON-RPC on stdin/stdout, each message
+forwarded unchanged to `/mcp` on the daemon's owner socket
+(`<data root>/local-transport/api.sock`), so tools, levels and results are
+those of an AI key and the bridge implements none. stdout carries only MCP;
+a stopped Swarm, a wrong user or a refusal is reported on stderr. A malformed
+line gets a JSON-RPC parse error, a line over 1 MiB an invalid-request error,
+and notifications get no reply. The bridge never starts the daemon.
+
+**Trust boundary.** The owner socket (directory `0700`, socket `0600`) admits
+only the OS user that runs `swarmd`, and that user already has owner access
+to the whole local API, so the bridge grants nothing new. It refuses to run
+as root or when the socket belongs to another user. It does not pass owner
+authority to the AI: at start it mints, over the socket, an AI key at
+`--access full` (default), `write` or `read`, and sends every message with
+it, so the AI-key gate (only `/mcp`), the Swarm Control level and route
+scopes apply exactly as for a pasted key; token-less socket calls to `/mcp`
+stay refused. The key lives only in the bridge's memory (never printed,
+logged or written to disk), lasts 30 minutes and is renewed with 15 minutes
+left, so a provider key link (10 minutes) survives renewal; replaced keys are
+deleted once expired, and every key the bridge minted is deleted when it
+exits (stdin closed, SIGINT/SIGTERM), which also ends any key link it handed
+out. A bridge killed with SIGKILL leaves an unheld key that expires within
+30 minutes. If Swarm refuses the key (for example the owner revoked it), the
+bridge answers the pending request with the reason and exits instead of
+minting a replacement.
 
 ## Relay transport (`swarm-remote-1`)
 
@@ -169,6 +226,12 @@ device→relay `auth`, `mcp.response`, `consent.decision`.
   and `go test -race ./internal/remote` — credential, origin, protocol,
   cross-account, read-vs-write, `allow_always`, traversal, ceiling and
   owner-only administration cases, each asserting no state change.
+- Stdio bridge: `go test ./cmd/swarmctl -run '^TestMCPBridge'` (framing,
+  concurrency, parse and size errors, non-owner/root/stopped-daemon refusal,
+  key renewal and deletion, key never in output or files) and
+  `go test ./internal/api -run '^TestControlMCPLocalBridgeKey$'` (owner-socket
+  minting only, key confined to `/mcp`, purge stops it). Not yet run against
+  a live daemon with a real AI client.
 - Headless container (`containers/headless`) with the official MCP TypeScript
   SDK client: real Codex-backed agent session created, prompted, approved and
   denied through `/mcp`.

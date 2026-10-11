@@ -3,7 +3,7 @@ import type { PendingPermissionRecord, ResolvePermissionResult } from './permiss
 import { confirmPermissionResolution, permissionId as validatePermissionId, permissionResolutionBody, PermissionResolutionError } from './permission-ui.js';
 import type { PermissionAction, ResolvePermissionOptions } from './permission-ui.js';
 export * from './permission-ui.js';
-import type { SessionWatchState, V3Message } from './realtime.js';
+import type { SessionWatchState, V3Message, V3RunState } from './realtime.js';
 import type { SwarmWebSocketClientMessage, SwarmWebSocketServerMessage } from './websocket.js';
 
 export interface SwarmBrowserChatOptions {
@@ -40,7 +40,8 @@ type EventMap = {
   permission_removed: (permissionId: string) => void;
   permission_error: (permissionId: string, error: Error) => void;
   permissions: (pending: PendingPermissionRecord[]) => void;
-  done: (messages: V3Message[]) => void;
+  /** Once per finished run; `run.status` distinguishes completed from failed or cancelled. */
+  done: (messages: V3Message[], run?: V3RunState) => void;
   error: (error: string) => void;
 };
 
@@ -276,7 +277,7 @@ export class SwarmBrowserChat {
         break;
       }
       case 'done':
-        this.emit('done', msg.messages || []);
+        this.emit('done', msg.messages || [], msg.run);
         break;
       case 'error':
         this.emit('error', msg.error || 'Unknown error');

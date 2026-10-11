@@ -103,10 +103,7 @@ func (s *Server) handleControlMCP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, errors.New("scoped token identity unavailable"))
 		return
 	}
-	s.controlMCPRoutesOnce.Do(func() {
-		s.controlMCPRoutes = s.withVaultGate(s.withJSON(s.apiMux()))
-	})
-	s.serveControlMCP(w, r, s.controlMCPRoutes)
+	s.serveControlMCP(w, r, s.internalRouteHandler())
 }
 
 func (s *Server) serveControlMCP(w http.ResponseWriter, r *http.Request, next http.Handler) {

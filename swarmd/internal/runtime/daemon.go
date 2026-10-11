@@ -894,9 +894,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetShutdownHandler(func(reason string) {
 		d.requestStop("api:" + strings.TrimSpace(reason))
 	})
+	// The loopback API listener alone also serves the provider key page.
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           apiServer.Handler(),
+		Handler:           apiServer.LoopbackAPIHandler(),
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		// Keep write timeout disabled so long-lived websocket/API streams are
@@ -1162,6 +1163,9 @@ func (d *Daemon) Run() error {
 	}
 	d.listener = ln
 	d.httpServer.Addr = ln.Addr().String()
+	if d.apiServer != nil {
+		d.apiServer.SetProviderKeyPageAddr(d.httpServer.Addr)
+	}
 	log.Printf("swarmd listener topology api_listen=%q desktop_port=%d desktop_assets_enabled=%t desktop_assets_on_api=%t", d.httpServer.Addr, d.cfg.DesktopPort, strings.TrimSpace(os.Getenv("SWARM_WEB_DIST_DIR")) != "", false)
 
 	d.serveDone = make(chan struct{})

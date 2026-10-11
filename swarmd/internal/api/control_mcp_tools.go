@@ -632,6 +632,23 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPConnectChatGPT,
 		},
+		{
+			Name: "swarm_list_providers", Title: "List model providers and their keys",
+			Description: "Each provider: whether it takes an API key, how many credentials are stored, the active one's verification (verified, failed with a reason, or not verified) and the latest key link from request_provider_key (waiting, saved, failed or expired). Never key material.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"provider": controlMCPStringProp("Only this provider.", 0, 100),
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPListProviders,
+		},
+		{
+			Name: "swarm_request_provider_key", Title: "Ask the person for a provider API key",
+			Description: "Set or replace a provider's API key without seeing it: returns a one-time link to a Swarm page on this machine (expires in 10 minutes). Give the person tell_the_person; they paste the key on that page, never in the chat. Swarm verifies the key, saves it and makes it active. Check the outcome with list_providers.",
+			InputSchema: controlMCPObject([]string{"provider"}, map[string]any{
+				"provider": controlMCPStringProp("A provider that takes an API key (see list_providers).", 1, 100),
+				"label":    controlMCPStringProp("Optional name for the stored key.", 0, providerKeyMaxLabel),
+			}),
+			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
+		},
 	}
 }
 

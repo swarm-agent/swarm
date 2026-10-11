@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -92,5 +93,74 @@ func TestSessionV3ContextClearAuthorizationAndProviderBoundary(t *testing.T) {
 	items, _ := sessions.Store().ListProjectConversations(p.AccountScopeID, p.UserID, "project", 10)
 	if len(items) != 1 || items[0].ID != id {
 		t.Fatal("clear created a replacement session")
+	}
+}
+
+// Purpose: context clear is defined only for project conversations. An owned
+// standalone chat session is a client error the caller can act on (start a new
+// session), so the HTTP boundary must answer 409, not 500, and must leave the
+// session's execution epoch and event sequence untouched.
+func TestSessionV3ContextClearRejectsStandaloneSessionAsConflict(t *testing.T) {
+	s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	created := createSessionsV3PrimaryTestSessionWithPreference(t, s, "context-clear-standalone", "standalone", pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	projection, _, _ := sessions.GetSessionProjection(created.ID)
+	before, _, _ := sessions.GetActiveExecutionEpoch(created.ID)
+	payload, _ := json.Marshal(map[string]any{"client_request_id": "clear-standalone", "expected_last_event_seq": projection.LastEventSeq})
+	r := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+created.ID+"/context/clear", bytes.NewReader(payload))
+	ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+	ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, Scopes: []string{"sessions:write"}})
+	w := httptest.NewRecorder()
+	s.handleSessionV3PrimaryByID(w, r.WithContext(ctx))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("standalone clear status = %d body=%s, want 409", w.Code, w.Body.String())
+	}
+	after, _, _ := sessions.GetActiveExecutionEpoch(created.ID)
+	afterProjection, _, _ := sessions.GetSessionProjection(created.ID)
+	if after.EpochID != before.EpochID || afterProjection.LastEventSeq != projection.LastEventSeq {
+		t.Fatalf("rejected clear changed state: epoch %q->%q seq %d->%d", before.EpochID, after.EpochID, projection.LastEventSeq, afterProjection.LastEventSeq)
+	}
+}
+
+// Purpose: an accepted context clear is a committed V3 event, so connected realtime
+// subscribers must be woken immediately rather than at the next keepalive scan.
+// Threat: the handler wrote through the bare store and skipped the outbox wake, so
+// streaming clients saw the clear up to 15 seconds late. Boundary: HTTP handler plus
+// the in-process outbox hub that drives /v3/realtime/stream delivery.
+func TestSessionV3ContextClearWakesRealtimeSubscribers(t *testing.T) {
+	s, sessions, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	if err := sessions.Store().PutProject(p.AccountScopeID, &pebblestore.ProjectRecord{ID: "project", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	created := projectConversationRequest(t, s, p, http.MethodPost, ProjectsPath+"/project/sessions", map[string]any{"client_request_id": "context-wake"})
+	var response struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &response); err != nil || response.SessionID == "" {
+		t.Fatalf("create: %s %v", created.Body.String(), err)
+	}
+	if s.v3RealtimeOutbox == nil {
+		s.v3RealtimeOutbox = newV3RealtimeOutboxHub()
+	}
+	sub := s.v3RealtimeOutbox.subscribe()
+	defer s.v3RealtimeOutbox.unsubscribe(sub)
+	projection, _, _ := sessions.GetSessionProjection(response.SessionID)
+	payload, _ := json.Marshal(map[string]any{"client_request_id": "wake", "expected_last_event_seq": projection.LastEventSeq})
+	r := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+response.SessionID+"/context/clear", bytes.NewReader(payload))
+	ctx := context.WithValue(r.Context(), productPrincipalRequestContextKey, p)
+	ctx = context.WithValue(ctx, productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: p.AccountScopeID, UserID: p.UserID, Scopes: []string{"sessions:write"}})
+	w := httptest.NewRecorder()
+	s.handleSessionV3PrimaryByID(w, r.WithContext(ctx))
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear: %d %s", w.Code, w.Body.String())
+	}
+	select {
+	case record := <-sub.send:
+		if record.SessionID != response.SessionID || record.Event.EventType != "execution_epoch.began" {
+			t.Fatalf("woken with %s/%s, want execution_epoch.began for %s", record.SessionID, record.Event.EventType, response.SessionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context clear committed without waking realtime subscribers")
 	}
 }

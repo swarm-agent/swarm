@@ -4,7 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { SwarmChatNamespace, ToolStreamItem } from './chat.js';
 import type { PendingPermissionRecord, SwarmPermissionsNamespace, PermissionResolver, ResolvePermissionOptions, ResolvePermissionResult } from './permissions.js';
 import { isAskUserPermission, permissionId, permissionResolutionBody, PermissionResolutionError } from './permission-ui.js';
-import type { SessionWatch, SessionWatchState, V3Message } from './realtime.js';
+import type { SessionWatch, SessionWatchState, V3Message, V3RunState } from './realtime.js';
 
 export interface SwarmWebSocketBridgeOptions {
   path?: string;
@@ -43,6 +43,8 @@ export interface SwarmWebSocketServerMessage {
   result?: ResolvePermissionResult;
   permissionId?: string;
   messages?: V3Message[];
+  /** Finished run on `done`: `status` is completed, failed, cancelled, ... */
+  run?: V3RunState;
   error?: string;
 }
 
@@ -180,7 +182,7 @@ export class SwarmWebSocketBridge {
       },
       onPermissionRemoved: permissionId => send({ type: 'permission_removed', permissionId }),
       onPermissionError: (error, permission) => send({ type: 'permission_error', permissionId: permission.id, error: error.message }),
-      onComplete: messages => send({ type: 'done', messages }),
+      onComplete: (messages, run) => send({ type: 'done', messages, run }),
       onError: error => {
         send({ type: 'error', error: error.message });
         if (this.activeWatches.get(ws)?.watch === watch) {

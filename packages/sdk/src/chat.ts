@@ -1,7 +1,7 @@
 import type { PendingPermissionRecord } from './permissions.js';
 import { SwarmPermissionsNamespace, isAskUserPermission, permissionId } from './permissions.js';
 import type { PermissionResolver } from './permissions.js';
-import type { SessionWatch, SessionWatchState, V3Message } from './realtime.js';
+import type { SessionWatch, SessionWatchState, V3Event, V3Message, V3RunState } from './realtime.js';
 import { SwarmRealtimeNamespace } from './realtime.js';
 import { SwarmSessionsNamespace } from './sessions.js';
 import type { SwarmTransport } from './transport.js';
@@ -79,9 +79,13 @@ export interface ChatStreamOptions {
   socketFactory?: import('./realtime.js').RealtimeSocketFactory;
   /** Authoritative conversation snapshot on hydrate, live change and reconnect. */
   onState?: (state: SessionWatchState) => void;
-  /** Invoked with incremental and cumulative assistant response text */
+  /**
+   * Incremental and cumulative assistant text per run/stream. Concatenating `delta` values
+   * yields exactly `fullText`, including across reconnects (never repeated, never skipped);
+   * a turn's final call carries any committed text beyond what streamed.
+   */
   onText?: (delta: string, fullText: string) => void;
-  /** Invoked with incremental and cumulative reasoning/thinking text */
+  /** Incremental and cumulative reasoning text from durable reasoning checkpoints. */
   onReasoning?: (delta: string, fullText: string) => void;
   /** Invoked when a tool call starts running */
   onToolStarted?: (tool: ToolStreamItem) => void;
@@ -98,8 +102,12 @@ export interface ChatStreamOptions {
   onPermissionRemoved?: (permissionId: string) => void;
   /** Recoverable UI/resolution failure; the watch stays open. Resolver also rejects. */
   onPermissionError?: (error: Error, permission: PendingPermissionRecord) => void;
-  /** Invoked when the agent turn completes */
-  onComplete?: (messages: V3Message[]) => void;
+  /**
+   * Once per finished run, including failed, cancelled and empty turns. `run.status`
+   * says which (`completed`, `failed`, ...); a failure's reason is in `run.blocked_reason`
+   * and its system message in `messages`. The watch stays open for the next turn.
+   */
+  onComplete?: (messages: V3Message[], run: V3RunState) => void;
   /** Invoked if an unrecoverable streaming error occurs */
   onError?: (err: Error) => void;
 }
@@ -243,7 +251,10 @@ export class SwarmChatNamespace {
     const id = permissionId(sessionId, 'sessionId');
     const activeTools = new Map<string, ToolStreamItem>();
     const seenEventIds = new Set<string>();
-    const previousStreams = new Map<string, string>();
+    // Text already reported through onText per run/stream: a high-water mark, never shrunk
+    // by a reconnect, so deltas are neither repeated nor lost across reconnects.
+    const reportedText = new Map<string, { runId: string; streamId: string; text: string }>();
+    const reasoning = new Map<string, string>();
     const completedRuns = new Set<string>();
     const pendingSeen = new Map<string, string>();
     const resolving = new Set<string>();
@@ -251,6 +262,63 @@ export class SwarmChatNamespace {
     let permissionsLive = false;
     let initialized = false;
     let observedRun: string | undefined;
+
+    // Only extensions are reported: a shorter text (reconnect before durable catch-up) or a
+    // committed message that differs from the streamed prefix is never re-sent as a delta.
+    const reportText = (key: string, runId: string, streamId: string, text: string) => {
+      const previous = reportedText.get(key)?.text ?? '';
+      if (text.length <= previous.length || !text.startsWith(previous)) return;
+      reportedText.set(key, { runId, streamId, text });
+      observedRun = runId;
+      options.onText?.(text.slice(previous.length), text);
+    };
+
+    // Applies one durable event. Hydrated history is applied silently: it is neither a new
+    // turn nor a new tool call, but running tools and partial reasoning must still be known.
+    const applyEvent = (evt: V3Event, notify: boolean) => {
+      const payload = evt.payload || {};
+      const eventType = evt.event_type;
+      const toolId = String(payload.call_id || payload.tool_instance_id || '');
+      if (eventType === 'session.tool.started') {
+        const toolItem: ToolStreamItem = {
+          id: toolId || evt.id,
+          name: String(payload.tool_name || 'tool'),
+          identity: payload.tool_identity ? String(payload.tool_identity) : undefined,
+          display: payload.tool_display ? String(payload.tool_display) : undefined,
+          arguments: payload.arguments ? String(payload.arguments) : undefined,
+          status: 'running',
+        };
+        activeTools.set(toolItem.id, toolItem);
+        if (notify) options.onToolStarted?.(toolItem);
+      } else if (eventType === 'session.tool.delta') {
+        const toolItem = activeTools.get(toolId);
+        const delta = String(payload.output || '');
+        if (toolItem && delta) {
+          toolItem.output = (toolItem.output || '') + delta;
+          if (notify) options.onToolDelta?.(toolItem, delta);
+        }
+      } else if (TERMINAL_TOOL_STATUS[eventType]) {
+        let toolItem = activeTools.get(toolId);
+        if (!toolItem) {
+          toolItem = { id: toolId, name: String(payload.tool_name || 'tool'), status: TERMINAL_TOOL_STATUS[eventType] };
+        }
+        activeTools.delete(toolId);
+        toolItem.status = TERMINAL_TOOL_STATUS[eventType];
+        if (payload.output) toolItem.output = String(payload.output);
+        if (toolItem.status === 'failed') toolItem.error = String(payload.error || 'Tool execution failed');
+        else if (payload.error) toolItem.error = String(payload.error);
+        if (payload.duration_ms) toolItem.durationMs = Number(payload.duration_ms);
+        if (notify) options.onToolCompleted?.(toolItem);
+      } else if (eventType === 'session.reasoning.delta' && typeof payload.delta === 'string') {
+        const key = JSON.stringify([payload.run_id, payload.reasoning_id ?? payload.reasoning_key]);
+        const previous = reasoning.get(key) ?? '';
+        const full = payload.delta_mode === 'replace' ? payload.delta : previous + payload.delta;
+        if (full === previous) return;
+        reasoning.set(key, full);
+        if (reasoning.size > 64) reasoning.delete(reasoning.keys().next().value!);
+        if (notify) options.onReasoning?.(full.startsWith(previous) ? full.slice(previous.length) : full, full);
+      }
+    };
 
     return this.realtime.watchSession(id, {
       signal: options.signal,
@@ -264,84 +332,35 @@ export class SwarmChatNamespace {
         const sessionEvents = state.snapshot.events_by_session?.[id] || [];
         if (!initialized) {
           initialized = true;
-          // Hydrated history is not a new turn or a new permission request.
-          for (const evt of sessionEvents) seenEventIds.add(evt.id);
+          for (const evt of sessionEvents) { seenEventIds.add(evt.id); applyEvent(evt, false); }
           if (run?.run_id && !run.active) completedRuns.add(run.run_id);
         }
         if (run?.active) observedRun = run.run_id;
+
+        // 1. Assistant text: live text per run/stream, then the committed message's tail.
+        const liveKeys = new Set<string>();
         for (const item of state.live || []) {
           const key = JSON.stringify([item.runId, item.streamId]);
-          const previous = previousStreams.get(key) ?? '';
-          if (item.text === previous) continue;
-          previousStreams.set(key, item.text);
-          observedRun = item.runId;
-          const delta = item.text.startsWith(previous) ? item.text.slice(previous.length) : item.text;
-          if (item.streamId.includes('reasoning')) options.onReasoning?.(delta, item.text);
-          else options.onText?.(delta, item.text);
+          liveKeys.add(key);
+          reportText(key, item.runId, item.streamId, item.text);
         }
-        // Bound transient state to streams still in the current snapshot.
-        const liveKeys = new Set(state.live.map(item => JSON.stringify([item.runId, item.streamId])));
-        for (const key of previousStreams.keys()) if (!liveKeys.has(key)) previousStreams.delete(key);
+        for (const [key, entry] of reportedText) {
+          if (liveKeys.has(key)) continue;
+          const committed = state.messages.find(m => m.role === 'assistant'
+            && m.metadata?.run_id === entry.runId && m.metadata?.stream_id === entry.streamId);
+          if (committed && typeof committed.content === 'string') {
+            reportText(key, entry.runId, entry.streamId, committed.content);
+            reportedText.delete(key);
+          } else if (state.status === 'live' && !(run?.active && run.run_id === entry.runId)) {
+            reportedText.delete(key);
+          }
+        }
 
-        // 2. Process Realtime Events (Tool streams & Permissions)
+        // 2. Durable events (tools, reasoning), each exactly once and in sequence order.
         for (const evt of sessionEvents) {
           if (seenEventIds.has(evt.id)) continue;
           seenEventIds.add(evt.id);
-
-          const payload = evt.payload || {};
-          const eventType = evt.event_type;
-
-          if (eventType === 'session.tool.started') {
-            const toolId = String(payload.call_id || payload.tool_instance_id || evt.id);
-            const toolItem: ToolStreamItem = {
-              id: toolId,
-              name: String(payload.tool_name || 'tool'),
-              identity: payload.tool_identity ? String(payload.tool_identity) : undefined,
-              display: payload.tool_display ? String(payload.tool_display) : undefined,
-              arguments: payload.arguments ? String(payload.arguments) : undefined,
-              status: 'running',
-            };
-            activeTools.set(toolId, toolItem);
-            options.onToolStarted?.(toolItem);
-          } else if (eventType === 'session.tool.delta') {
-            const toolId = String(payload.call_id || payload.tool_instance_id || '');
-            const toolItem = activeTools.get(toolId);
-            const delta = String(payload.output || '');
-            if (toolItem && delta) {
-              toolItem.output = (toolItem.output || '') + delta;
-              options.onToolDelta?.(toolItem, delta);
-            }
-          } else if (eventType === 'session.tool.completed') {
-            const toolId = String(payload.call_id || payload.tool_instance_id || '');
-            let toolItem = activeTools.get(toolId);
-            if (!toolItem) {
-              toolItem = {
-                id: toolId,
-                name: String(payload.tool_name || 'tool'),
-                status: 'completed',
-              };
-              activeTools.set(toolId, toolItem);
-            }
-            toolItem.status = 'completed';
-            if (payload.output) toolItem.output = String(payload.output);
-            if (payload.duration_ms) toolItem.durationMs = Number(payload.duration_ms);
-            options.onToolCompleted?.(toolItem);
-          } else if (eventType === 'session.tool.failed') {
-            const toolId = String(payload.call_id || payload.tool_instance_id || '');
-            let toolItem = activeTools.get(toolId);
-            if (!toolItem) {
-              toolItem = {
-                id: toolId,
-                name: String(payload.tool_name || 'tool'),
-                status: 'failed',
-              };
-              activeTools.set(toolId, toolItem);
-            }
-            toolItem.status = 'failed';
-            toolItem.error = String(payload.error || 'Tool execution failed');
-            if (payload.duration_ms) toolItem.durationMs = Number(payload.duration_ms);
-            options.onToolCompleted?.(toolItem);
-          }
+          applyEvent(evt, true);
           if (seenEventIds.size > 4096) seenEventIds.delete(seenEventIds.values().next().value!);
         }
 
@@ -390,7 +409,7 @@ export class SwarmChatNamespace {
         if (state.status === 'live' && run?.run_id && !run.active && !completedRuns.has(run.run_id)) {
           completedRuns.add(run.run_id);
           if (completedRuns.size > 4096) completedRuns.delete(completedRuns.values().next().value!);
-          if (observedRun === run.run_id || run.completed_at) options.onComplete?.(state.messages);
+          if (observedRun === run.run_id || run.completed_at) options.onComplete?.(state.messages, run);
         }
       },
       onError: (err) => {
@@ -399,3 +418,10 @@ export class SwarmChatNamespace {
     });
   }
 }
+
+const TERMINAL_TOOL_STATUS: Record<string, ToolStreamItem['status']> = {
+  'session.tool.completed': 'completed',
+  'session.tool.failed': 'failed',
+  'session.tool.cancelled': 'cancelled',
+  'session.tool.canceled': 'cancelled',
+};

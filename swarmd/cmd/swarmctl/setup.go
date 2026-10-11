@@ -192,6 +192,20 @@ type setupModels struct {
 }
 
 func newSetupClient(socket string) (*http.Client, error) {
+	socket, err := resolveOwnerSocket(socket)
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socket)
+	}}
+	return &http.Client{Transport: transport, Timeout: 120 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+}
+
+// resolveOwnerSocket returns the daemon's private owner socket: the explicit
+// path, else SWARMD_LOCAL_TRANSPORT_SOCKET, else the canonical data root's
+// local-transport/api.sock.
+func resolveOwnerSocket(socket string) (string, error) {
 	socket = strings.TrimSpace(socket)
 	if socket == "" {
 		socket = strings.TrimSpace(os.Getenv(localTransportSocketEnv))
@@ -199,17 +213,14 @@ func newSetupClient(socket string) (*http.Client, error) {
 	if socket == "" {
 		root, err := storagecontract.ResolveRoot(storagecontract.RootData, storagecontract.Options{OverrideRoots: map[storagecontract.RootKind]string{storagecontract.RootData: os.Getenv("DATA_DIR")}})
 		if err != nil {
-			return nil, errors.New("cannot resolve canonical data root; supply --socket")
+			return "", errors.New("cannot resolve canonical data root; supply --socket")
 		}
 		socket = filepath.Join(root, "local-transport", "api.sock")
 	}
 	if !filepath.IsAbs(socket) {
-		return nil, errors.New("setup socket must be an absolute path")
+		return "", errors.New("setup socket must be an absolute path")
 	}
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "unix", socket)
-	}}
-	return &http.Client{Transport: transport, Timeout: 120 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
+	return socket, nil
 }
 
 func setupRequest(client *http.Client, method, path string, payload, out any) error {

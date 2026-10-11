@@ -85,66 +85,104 @@ export interface SessionWatchOptions {
 }
 export interface SessionWatch { ready: Promise<void>; done: Promise<void>; dispose(): void }
 
-/** Offset authority is UTF-8 bytes (not JavaScript UTF-16 string length). */
+const LIVE_MAX_STREAM_BYTES = 4 * 1024 * 1024;
+const LIVE_MAX_STREAMS = 64;
+const LIVE_MAX_COMMITTED = 4096;
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+const DURABLE_TEXT_DELTA_EVENTS = new Set(['session.assistant.delta', 'session.message.delta']);
+interface LiveStream { runId: string; streamId: string; text: string; offset: number; held?: { start: number; bytes: Uint8Array } }
+
+/**
+ * Transient assistant text assembled from live patches and durable delta checkpoints.
+ * UTF-8 byte offsets (not JavaScript string length) are the only placement authority:
+ * duplicate and overlapping ranges are trimmed, and a range beyond the contiguous prefix
+ * (joining or reconnecting mid-turn, while durable checkpoints lag live output) is held,
+ * bounded, until a durable checkpoint fills the gap. Text is never dropped, repeated or
+ * shown with a hole. A committed message retires its stream.
+ */
 export class V3LiveText {
-  private streams = new Map<string, { runId: string; streamId: string; text: string; seq: number; offset: number }>();
+  private streams = new Map<string, LiveStream>();
   private committed = new Set<string>();
   reset(): void { this.streams.clear(); this.committed.clear(); }
   reconcile(messages: V3Message[]): void {
     for (const m of messages) {
       if (m.role !== 'assistant') continue;
-      const run = m.metadata?.run_id ?? m.metadata?.runId;
-      const stream = m.metadata?.stream_id;
-      if (typeof run === 'string' && typeof stream === 'string') {
-        const key = JSON.stringify([run, stream]);
-        if (!this.committed.has(key) && this.committed.size >= 4096) throw new Error('Live stream history limit reached; reconnect required');
-        this.streams.delete(key); this.committed.add(key);
-      }
+      this.commit(m.metadata?.run_id ?? m.metadata?.runId, m.metadata?.stream_id);
     }
   }
   durable(events: V3Event[]): void {
     for (const event of events) {
-      const p = event.payload;
+      const p = event.payload ?? {};
       if (event.event_type === 'session.assistant.completed') {
         const message = p.message as V3Message | undefined;
         if (message?.role === 'assistant') this.reconcile([message]);
-        const run = p.run_id ?? message?.metadata?.run_id;
-        const stream = p.stream_id ?? message?.metadata?.stream_id;
-        if (typeof run === 'string' && typeof stream === 'string') {
-          const key = JSON.stringify([run, stream]);
-          if (!this.committed.has(key) && this.committed.size >= 4096) throw new Error('Live history limit; reconnect required');
-          this.streams.delete(key); this.committed.add(key);
-        }
+        this.commit(p.run_id ?? message?.metadata?.run_id, p.stream_id ?? message?.metadata?.stream_id);
         continue;
       }
-      if (!['session.assistant.delta', 'session.message.delta'].includes(event.event_type)) continue;
-      const run = p.run_id, stream = p.stream_id, start = p.offset_start, end = p.offset_end;
+      if (!DURABLE_TEXT_DELTA_EVENTS.has(event.event_type)) continue;
       const text = p.delta ?? p.text_delta ?? p.content_delta;
-      if (typeof run !== 'string' || typeof stream !== 'string' || typeof start !== 'number' || typeof end !== 'number' || typeof text !== 'string') continue;
-      const key = JSON.stringify([run, stream]);
-      const old = this.streams.get(key);
-      if (this.committed.has(key) || end <= (old?.offset ?? 0)) continue;
-      const offset = old?.offset ?? 0;
-      const bytes = new TextEncoder().encode(text);
-      if (start < 0 || start > offset || end !== start + bytes.length || end > 4 * 1024 * 1024 || (!old && this.streams.size >= 64)) continue;
-      const suffix = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(offset - start));
-      this.streams.set(key, { runId: run, streamId: stream, text: (old?.text ?? '') + suffix, seq: 0, offset: end });
+      if (typeof p.run_id !== 'string' || typeof p.stream_id !== 'string' || typeof p.offset_start !== 'number' ||
+          typeof p.offset_end !== 'number' || typeof text !== 'string') continue;
+      this.append(p.run_id, p.stream_id, p.offset_start, p.offset_end, text);
     }
   }
+  /** Returns false only for a malformed patch; gaps and duplicates are handled here. */
   accept(p: V3LivePatch): boolean {
     if (p.stream_kind !== 'assistant_text') return true;
-    const key = JSON.stringify([p.run_id, p.stream_id]);
+    if (p.operation !== 'append' || typeof p.text !== 'string') return false;
+    return this.append(p.run_id, p.stream_id, p.offset_start, p.offset_end, p.text);
+  }
+  values(): SessionWatchState['live'] {
+    return [...this.streams.values()].filter(s => s.text).map(({ runId, streamId, text }) => ({ runId, streamId, text }));
+  }
+  private commit(run: unknown, stream: unknown): void {
+    if (typeof run !== 'string' || typeof stream !== 'string') return;
+    const key = JSON.stringify([run, stream]);
+    if (!this.committed.has(key) && this.committed.size >= LIVE_MAX_COMMITTED) throw new Error('Live stream history limit reached; reconnect required');
+    this.streams.delete(key); this.committed.add(key);
+  }
+  private append(runId: string, streamId: string, start: number, end: number, text: string): boolean {
+    const key = JSON.stringify([runId, streamId]);
     if (this.committed.has(key)) return true;
-    const old = this.streams.get(key);
-    if (old && p.offset_end <= old.offset) return true;
-    if (p.operation !== 'append' || (old?.seq !== 0 && p.live_seq_start !== (old?.seq ?? 0) + 1) ||
-        p.offset_start !== (old?.offset ?? 0) || p.live_seq_end < p.live_seq_start ||
-        p.offset_end !== p.offset_start + new TextEncoder().encode(p.text).length ||
-        p.offset_end > 4 * 1024 * 1024 || (!old && this.streams.size >= 64)) return false;
-    this.streams.set(key, { runId: p.run_id, streamId: p.stream_id, text: (old?.text ?? '') + p.text, seq: p.live_seq_end, offset: p.offset_end });
+    const bytes = utf8Encoder.encode(text);
+    if (!Number.isSafeInteger(start) || start < 0 || end !== start + bytes.length || end > LIVE_MAX_STREAM_BYTES) return false;
+    let stream = this.streams.get(key);
+    if (!stream) {
+      if (this.streams.size >= LIVE_MAX_STREAMS) return false;
+      stream = { runId, streamId, text: '', offset: 0 };
+      this.streams.set(key, stream);
+    }
+    if (end <= stream.offset) return true;
+    if (start > stream.offset) { holdLiveRange(stream, start, bytes); return true; }
+    if (!extendLiveStream(stream, bytes.subarray(stream.offset - start))) return false;
+    const held = stream.held;
+    if (held && held.start <= stream.offset) {
+      stream.held = undefined;
+      if (held.start + held.bytes.length > stream.offset && !extendLiveStream(stream, held.bytes.subarray(stream.offset - held.start))) return false;
+    }
     return true;
   }
-  values(): SessionWatchState['live'] { return [...this.streams.values()].map(({ runId, streamId, text }) => ({ runId, streamId, text })); }
+}
+function extendLiveStream(stream: LiveStream, suffix: Uint8Array): boolean {
+  try { stream.text += utf8Decoder.decode(suffix); } catch { return false; }
+  stream.offset += suffix.length;
+  return true;
+}
+/** Keeps one contiguous range ahead of the prefix; adjoining ranges merge, a later disjoint one replaces it. */
+function holdLiveRange(stream: LiveStream, start: number, bytes: Uint8Array): void {
+  const held = stream.held;
+  const end = start + bytes.length;
+  if (held && start <= held.start + held.bytes.length && end >= held.start) {
+    const from = Math.min(start, held.start);
+    const to = Math.max(end, held.start + held.bytes.length);
+    const merged = new Uint8Array(to - from);
+    merged.set(held.bytes, held.start - from);
+    merged.set(bytes, start - from);
+    stream.held = { start: from, bytes: merged };
+    return;
+  }
+  if (!held || end > held.start + held.bytes.length) stream.held = { start, bytes: bytes.slice() };
 }
 
 export class SwarmRealtimeNamespace {
@@ -203,35 +241,46 @@ export class SwarmRealtimeNamespace {
     const body: V3SyncRequest = { surface, session_ids: [id], selector: { kind: 'session_ids', session_ids: [id] },
       history: { mode: 'tail', max_messages_per_session: 200, max_events_per_session: 200, include_events: true },
       resources: { messages: true, events: true, current_run_state: true, session_view: true } };
+    // The budget bounds consecutive failures only; every replayed connection restores it.
     let attempts = 0;
+    let latest: SessionWatchState | undefined;
+    const onChange = (state: SessionWatchState) => { latest = state; options.onChange(state); };
     while (!signal.aborted) {
       // Every reconnect hydrates fresh durable authority before replay; no timer polling.
       const snapshot = await this.hydrate(body, signal);
       if (signal.aborted) return;
       if (!snapshot.sessions_by_id[id] || !snapshot.realtime?.resume.endpoint_cursor) throw new Error('Session omitted or realtime bootstrap unavailable');
       try {
-        await this.connection(id, body, snapshot, options, signal, ready);
+        await this.connection(id, body, snapshot, latest?.snapshot.events_by_session[id] ?? [], { ...options, onChange }, signal, ready, () => { attempts = 0; });
         return;
       } catch (error) {
         if (signal.aborted) return;
         if (error instanceof FatalRealtimeError || attempts >= (options.maxReconnects ?? 6)) throw error;
-        options.onChange({ sessionId: id, snapshot, messages: snapshot.messages_by_session[id] ?? [], live: [], status: 'reconnecting' });
+        // Keep the last rendered conversation (including partial text) while reconnecting.
+        onChange({ ...(latest ?? { sessionId: id, snapshot, messages: snapshot.messages_by_session[id] ?? [], live: [] }), status: 'reconnecting' });
         await delay(Math.min(250 * 2 ** attempts++, 8000), signal);
       }
     }
   }
-  private async connection(id: string, body: V3SyncRequest, initial: V3SyncSnapshot, options: SessionWatchOptions, signal: AbortSignal, ready: () => void): Promise<void> {
+  private async connection(id: string, body: V3SyncRequest, initial: V3SyncSnapshot, seenEvents: V3Event[], options: SessionWatchOptions, signal: AbortSignal, ready: () => void, onReplayed: () => void): Promise<void> {
     const socket = await (options.socketFactory ?? ((path) => this.socket(path)))(`/v3/realtime/stream?${new URLSearchParams({ surface: body.surface! })}`);
     if (signal.aborted) { socket.close(); return; }
     return new Promise<void>((resolve, reject) => {
       const requests = new AbortController();
       let snapshot = initial; let ended = false; let replayed = false; let hello = false; let liveNegotiated = false;
       let refreshing = false; let dirty = false; let readyPending = false; let lastSeq = snapshot.projections_by_session[id]?.last_event_seq ?? 0;
+      // Durable events delivered on the socket are merged into the hydrated tail, so a
+      // consumer sees every event once and immediately, even before the next hydration.
+      let events = mergeSessionEvents(seenEvents, snapshot.events_by_session[id] ?? []);
       const live = new V3LiveText(); live.reconcile(snapshot.messages_by_session[id] ?? []);
-      live.durable(snapshot.events_by_session[id] ?? []);
+      live.durable(events);
       const subscription = `sdk:session:${id}`;
       const timer = setTimeout(() => finish(new Error('Realtime handshake timed out')), 30_000);
-      const emit = () => { if (!ended) options.onChange({ sessionId: id, snapshot, messages: snapshot.messages_by_session[id] ?? [], live: live.values(), status: replayed ? 'live' : 'syncing' }); };
+      const emit = () => {
+        if (ended) return;
+        const view = { ...snapshot, events_by_session: { ...snapshot.events_by_session, [id]: events } };
+        options.onChange({ sessionId: id, snapshot: view, messages: snapshot.messages_by_session[id] ?? [], live: live.values(), status: replayed ? 'live' : 'syncing' });
+      };
       const finish = (error?: Error) => {
         if (ended) return; ended = true; requests.abort(); clearTimeout(timer); signal.removeEventListener('abort', cancel); socket.close();
         if (error) reject(error); else resolve();
@@ -249,6 +298,7 @@ export class SwarmRealtimeNamespace {
             if (!next.sessions_by_id[id]) throw new FatalRealtimeError('Session no longer available');
             snapshot = next;
             lastSeq = Math.max(lastSeq, next.projections_by_session[id]?.last_event_seq ?? 0);
+            events = mergeSessionEvents(events, next.events_by_session[id] ?? []);
             live.reconcile(next.messages_by_session[id] ?? []);
             live.durable(next.events_by_session[id] ?? []);
             emit();
@@ -281,21 +331,34 @@ export class SwarmRealtimeNamespace {
           if (!hello) throw new FatalRealtimeError('Realtime frame before hello');
           if (frame.session_id !== id) return;
           if (frame.subscription_id && frame.subscription_id !== subscription) return;
-          if (frame.kind === 'replay.complete') { replayed = true; clearTimeout(timer); readyPending = true; void refresh(); }
+          if (frame.kind === 'replay.complete') { replayed = true; onReplayed(); clearTimeout(timer); readyPending = true; void refresh(); }
           else if (frame.kind === 'live.patch' && frame.live?.session_id === id) {
             if (!liveNegotiated || !replayed) return;
-            if (!live.accept(frame.live)) { finish(new Error('Live stream gap; durable rehydration required')); } else emit();
+            if (!live.accept(frame.live)) { finish(new Error('Malformed live patch; durable rehydration required')); } else emit();
           } else if (frame.kind === 'event' && frame.event?.session_id === id) {
             if (frame.event.seq <= lastSeq) return;
             lastSeq = frame.event.seq;
+            events = mergeSessionEvents(events, [frame.event]);
             live.durable([frame.event]);
             emit();
-            void refresh();
+            // Streaming checkpoints change no hydrated authority (messages, run state,
+            // permissions); re-hydrating on each one would only add load.
+            if (!String(frame.event.event_type).endsWith('.delta')) void refresh();
           } else if (frame.kind === 'projection.high_watermark') { void refresh(); }
         } catch (e) { finish(e instanceof Error ? e : new Error(String(e))); }
       });
     });
   }
+}
+const MAX_WATCH_EVENTS = 1000;
+/** Union by durable sequence, ascending, bounded to the newest events. */
+function mergeSessionEvents(current: V3Event[], incoming: V3Event[]): V3Event[] {
+  if (!incoming.length) return current;
+  const bySeq = new Map<number, V3Event>();
+  for (const event of current) bySeq.set(event.seq, event);
+  for (const event of incoming) if (event && Number.isSafeInteger(event.seq) && !bySeq.has(event.seq)) bySeq.set(event.seq, event);
+  const merged = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+  return merged.length > MAX_WATCH_EVENTS ? merged.slice(merged.length - MAX_WATCH_EVENTS) : merged;
 }
 class FatalRealtimeError extends Error {}
 function delay(ms: number, signal: AbortSignal): Promise<void> {

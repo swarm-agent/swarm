@@ -169,6 +169,7 @@ type Server struct {
 	controlMCPRoutesOnce sync.Once
 	controlMCPRoutes     http.Handler
 	remoteTransport      RemoteTransportService
+	providerKeys         providerKeyRegistry
 
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
@@ -876,6 +877,21 @@ func (s *Server) apiMux() *http.ServeMux {
 
 func (s *Server) Handler() http.Handler {
 	return s.withAuth(s.withVaultGate(s.withJSON(s.apiMux())))
+}
+
+// LoopbackAPIHandler serves the daemon's loopback API listener: Handler plus
+// the provider key page (/keys/), which lives only here. Peer transport, the
+// private socket, Desktop, the scoped-token listener, the tailnet gateway and
+// the relay use their own handlers and never reach the page.
+func (s *Server) LoopbackAPIHandler() http.Handler {
+	api := s.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, providerKeyPagePrefix) {
+			s.handleProviderKeyPage(w, r)
+			return
+		}
+		api.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) localTransportMux() http.Handler {

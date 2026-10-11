@@ -172,50 +172,59 @@ always requires actual user input.
 
 ### 4. Interactive Chat & Live Tool Stream
 
-Build responsive chat UIs that stream model text, reasoning, and live tool execution cards like Swarm Desktop:
+One `chat.stream()` watch per selected conversation serves every turn. It hydrates the
+session, resumes `/v3/realtime/stream` from the snapshot cursor, and reconnects on its own.
 
 ```typescript
-// 1. Create a chat session
-const session = await client.chat.createSession({
-  title: 'Repository Exploration',
-  workspace_path: '/path/to/project',
-});
+const session = await client.chat.createSession({ title: 'Repo tour', workspace_path: '/path/to/repo' });
 
-// 2. Stream live text, reasoning, and tool calls
+let answer = '';
 const stream = await client.chat.stream(session.id, {
-  onText: (delta, fullText) => process.stdout.write(delta),
-  onReasoning: (delta) => console.log('[Thinking]', delta),
-  onToolStarted: (tool) => console.log(`[Tool Started] ${tool.name}`),
-  onToolDelta: (tool, delta) => console.log(`[Tool Output] ${delta}`),
-  onToolCompleted: (tool) => console.log(`[Tool Done] ${tool.name} in ${tool.durationMs}ms`),
-  onPermissionRequested: async (perm, resolve) => {
-    // Your UI must wait for a real user gesture. Keep errors visible and retain the form.
-    renderPermissionForm(describePermission(perm), async (action, userInput) => {
-      try {
-        const result = await resolve(action, action === 'allow_once' && describePermission(perm).kind === 'ask-user'
-          ? answerPermission(perm, userInput) : {});
-        showConfirmedDecision(result.permission);
-      } catch (error) { showPermissionError(perm.id, error); }
-    });
+  onText: (delta) => { answer += delta; render(answer); },  // deltas join to exactly the reply
+  onReasoning: (_delta, full) => renderThinking(full),
+  onToolStarted: (tool) => showTool(tool.id, tool.name, tool.arguments),
+  onToolDelta: (tool, chunk) => appendToolOutput(tool.id, chunk),
+  onToolCompleted: (tool) => finishTool(tool.id, tool.status), // completed | failed | cancelled
+  onPermissionRequested: (perm, resolve) => askUser(perm, resolve), // see section 3; never auto-answer
+  onState: (state) => setStatus(state.status),               // syncing | live | reconnecting
+  onComplete: (messages, run) => {                            // once per run, success or not
+    if (run.status !== 'completed') showFailure(run.status, run.blocked_reason, messages);
+    answer = '';
   },
-  onPermissionRemoved: id => removePermissionForm(id), // No longer pending; not necessarily approved.
-  onPermissionError: (error, perm) => showPermissionError(perm.id, error),
-  onState: (state) => renderConversation(state.messages, state.live, state.snapshot),
-  onComplete: () => console.log('Turn finished; stream remains open'),
+  onError: (error) => showDisconnected(error),               // terminal: auth/protocol/retries exhausted
 });
-
-await stream.ready; // Hydration and replay MUST finish before dispatch.
-await client.chat.sendMessage(session.id, 'Find all configuration files and summarize them.');
-// Keep this watch for subsequent messages. Dispose only on switch/unmount/shutdown.
-// stream.done means the watch ended, not that a single assistant turn finished.
-
-// 3. Or use chat.run while the watch above serves the explicit permission UI
-const response = await client.chat.run(session.id, {
-  message: 'What is the git status of this repository?',
-  timeoutMs: 120_000,
-});
-console.log(response.reply);
+await stream.ready;                                           // hydrated and replayed: safe to send
+await client.chat.sendMessage(session.id, 'Summarize the build setup.');
+// Send further turns on the same watch. Switching conversations: stream.dispose(), then
+// chat.stream(otherId). client.sessions.list() lists conversations.
 ```
+
+Guarantees, verified end to end against the API server (see "Streaming verification" below):
+
+- `onText` deltas concatenate to exactly the assistant text, including when the socket drops
+  mid-turn: nothing is repeated and nothing is skipped; the last call carries any committed
+  text beyond what streamed. Use `fullText` (2nd argument) to replace instead of append.
+- A dropped socket reconnects (exponential backoff, 6 consecutive attempts per outage) and
+  resumes from durable state; `state.status` is `reconnecting` meanwhile and keeps the last view.
+- `onComplete(messages, run)` fires once per finished run, whatever its outcome.
+  A failed provider turn has `run.status === 'failed'` and a system message in `messages`.
+- Durable events (newest 1000) are in `state.snapshot.events_by_session[id]` once, in sequence order.
+
+`state.messages` (a 200-message tail) and `state.live` are the rendering authority;
+callbacks are conveniences. Clearing context: `client.sessions.clearContext(id, { expectedLastEventSeq })`
+starts a fresh model context in the same conversation, but the daemon allows it only for an
+idle project conversation (`SwarmConflictError` otherwise, nothing changes); for a standalone
+chat, create a new session.
+
+**Streaming verification.** `swarmd/internal/api` `TestSDKChatStreamE2E` (opt-in:
+`npm run build`, then `SWARM_SDK_E2E=1 go test ./internal/api -run TestSDKChatStreamE2E`)
+drives the built package (`e2e/chat-stream.e2e.mjs`) against the real API server, store,
+executor and realtime socket with a scripted provider: incremental text, a socket drop mid-turn
+while durable checkpoints lag, completion, failure, session switching and context clear. It does
+not exercise a real model, tool calls or permission prompts, or token authentication.
+
+`chat.run()` (polling, returns the final reply) remains available for scripts; keep a
+`chat.stream()` watch open when tool permissions need an explicit answer.
 
 ---
 

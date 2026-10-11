@@ -1,0 +1,175 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+	"slices"
+	"sort"
+	"strings"
+	"unicode"
+
+	"swarm/packages/swarmd/internal/auth"
+)
+
+// Provider keys over Swarm Control. list_providers reports credential
+// metadata only (never key material, last four characters or labels);
+// request_provider_key hands the AI a link to Swarm's own key page on this
+// machine (provider_key_entry.go), so the person pastes the key there and it
+// never passes through the AI.
+
+// controlMCPKeyProviders reads /v1/providers and returns every provider id,
+// with whether it takes an API key.
+func (c *controlMCPCall) controlMCPKeyProviders() (map[string]map[string]any, error) {
+	response, err := c.dispatch(http.MethodGet, "/v1/providers", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]map[string]any{}
+	for _, raw := range controlMCPList(response["providers"]) {
+		provider := controlMCPMap(raw)
+		id, _ := provider["id"].(string)
+		if id == "" {
+			continue
+		}
+		acceptsKey := false
+		for _, method := range controlMCPList(provider["auth_methods"]) {
+			if kind, _ := controlMCPMap(method)["credential_type"].(string); kind == "api" {
+				acceptsKey = true
+			}
+		}
+		ready, _ := provider["ready"].(bool)
+		out[id] = map[string]any{"provider": id, "ready": ready, "accepts_api_key": acceptsKey}
+	}
+	return out, nil
+}
+
+func controlMCPVerification(connection *auth.ConnectionStatus) (string, string) {
+	switch {
+	case connection == nil:
+		return "not verified", ""
+	case connection.Connected:
+		return "verified", ""
+	default:
+		return "failed", providerKeyRedact(connection.Message, "")
+	}
+}
+
+func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error) {
+	// The providers handler checks no scope and credential routes are
+	// owner-only; this summary carries no key material, as list_models.
+	if err := c.requireTokenScope("sessions:read"); err != nil {
+		return nil, err
+	}
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok || c.server == nil || c.server.auth == nil {
+		return nil, controlMCPToolFailure("provider credentials are unavailable")
+	}
+	providers, err := c.controlMCPKeyProviders()
+	if err != nil {
+		return nil, err
+	}
+	list, err := c.server.auth.ListCredentialsForAccount(principal.AccountScopeID, "", "", 200)
+	if err != nil {
+		return nil, controlMCPToolFailure("provider credentials could not be read")
+	}
+	for _, record := range list.Records {
+		entry := providers[record.Provider]
+		if entry == nil {
+			entry = map[string]any{"provider": record.Provider}
+			providers[record.Provider] = entry
+		}
+		count, _ := entry["stored_credentials"].(int)
+		entry["stored_credentials"] = count + 1
+		if record.Active {
+			status, message := controlMCPVerification(record.Connection)
+			active := map[string]any{"auth_type": record.AuthType, "verification": status}
+			if message != "" {
+				active["verification_message"] = message
+			}
+			entry["active"] = active
+		}
+	}
+	only := controlMCPString(args, "provider")
+	ids := make([]string, 0, len(providers))
+	for id := range providers {
+		if only == "" || id == only {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	out := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		entry := providers[id]
+		if _, ok := entry["stored_credentials"]; !ok {
+			entry["stored_credentials"] = 0
+		}
+		if outcome := c.server.providerKeys.outcome(principal.AccountScopeID, id); outcome != nil {
+			entry["key_request"] = outcome
+		}
+		out = append(out, entry)
+	}
+	return map[string]any{"providers": out}, nil
+}
+
+func controlMCPKeyLabel(label string) (string, error) {
+	if len([]rune(label)) > providerKeyMaxLabel {
+		return "", controlMCPToolFailure("label exceeds %d characters", providerKeyMaxLabel)
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return "", controlMCPToolFailure("label must be plain text")
+		}
+	}
+	return label, nil
+}
+
+func controlMCPRequestProviderKey(c *controlMCPCall, args map[string]any) (any, error) {
+	// Saving a provider credential is an owner surface (ownerOnlyScope), so
+	// the link is offered only to a connection that could save it itself.
+	if err := c.requireTokenScope("admin"); err != nil {
+		return nil, err
+	}
+	record, ok := ScopedTokenFromRequest(c.request)
+	principal, principalOK := PrincipalFromRequest(c.request)
+	if !ok || !principalOK || c.server == nil || record.AccountScopeID != principal.AccountScopeID {
+		return nil, controlMCPToolFailure("this connection's identity is unavailable")
+	}
+	provider := strings.ToLower(controlMCPString(args, "provider"))
+	providers, err := c.controlMCPKeyProviders()
+	if err != nil {
+		return nil, err
+	}
+	accepted := []string{}
+	for id, entry := range providers {
+		if takes, _ := entry["accepts_api_key"].(bool); takes {
+			accepted = append(accepted, id)
+		}
+	}
+	sort.Strings(accepted)
+	if !slices.Contains(accepted, provider) {
+		return nil, controlMCPToolFailure("provider must be one that takes an API key: %s", strings.Join(accepted, ", "))
+	}
+	label, err := controlMCPKeyLabel(controlMCPString(args, "label"))
+	if err != nil {
+		return nil, err
+	}
+	_, link, err := c.server.providerKeys.issue(providerKeyRequest{
+		provider:       provider,
+		label:          label,
+		accountScopeID: principal.AccountScopeID,
+		userID:         principal.UserID,
+		token:          *record,
+	})
+	if err != nil {
+		return nil, controlMCPToolFailure("%s", err.Error())
+	}
+	minutes := int(providerKeyCodeTTL.Minutes())
+	return map[string]any{
+		"provider":           provider,
+		"url":                link,
+		"expires_in_seconds": int(providerKeyCodeTTL.Seconds()),
+		"tell_the_person": fmt.Sprintf("Open %s in a browser on this machine and paste your %s API key there. Do not paste the key into this chat. The link works once and expires in %d minutes.",
+			link, provider, minutes),
+		"next": "Call swarm_list_providers to see whether the key was saved and verified.",
+	}, nil
+}

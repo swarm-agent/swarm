@@ -122,6 +122,36 @@ Default local ports:
 | `swarm` | `http://127.0.0.1:7781` | `http://127.0.0.1:5555` |
 | `swarm dev` / `swarmdev` | `http://127.0.0.1:7782` | `http://127.0.0.1:5556` |
 
+## Connect your AI
+
+An AI client on the same machine drives Swarm through Swarm Control (MCP)
+with one line and no key to make. `swarm mcp` speaks MCP over stdio; run as
+the user that runs Swarm, it gets a short-lived AI key over Swarm's private
+owner socket, keeps it only in memory and deletes it on exit.
+
+```bash
+claude mcp add swarm -- swarm mcp
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{"mcpServers": {"swarm": {"command": "swarm", "args": ["mcp"]}}}
+```
+
+Codex CLI (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.swarm]
+command = "swarm"
+args = ["mcp"]
+```
+
+The default is full access (sessions, approvals, models, workers, provider
+key requests); add `--access write` or `--access read` to limit it. If a
+desktop app cannot find `swarm`, use its full path (`command -v swarm`).
+Details and the trust boundary: `docs/checkpoints/swarm-control.md`.
+
 ## Terminal UI commands
 
 Type `/` in the terminal UI to open command suggestions. Current command surfaces include:

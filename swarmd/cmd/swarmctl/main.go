@@ -50,6 +50,8 @@ func main() {
 		err = cmdContext(os.Args[2:])
 	case "session":
 		err = cmdSession(os.Args[2:])
+	case "mcp":
+		err = cmdMCP(os.Args[2:])
 	case "secret":
 		err = cmdSecret(os.Args[2:])
 	default:
@@ -67,6 +69,7 @@ func usage() {
 	fmt.Println("Usage:")
 	fmt.Println("  swarmctl setup <status|identity|credential|model|workspace|complete> --help")
 	fmt.Println("  swarmctl remote <status|init|enable|disable|approve|deny|reset>  # optional relay access, off by default")
+	fmt.Println("  swarmctl mcp [--access full|write|read] [--socket PATH]  # stdio MCP bridge for a local AI client; see swarmctl mcp --help")
 	fmt.Println("  swarmctl health [--addr URL]")
 	fmt.Println("  swarmctl auth codex status [--addr URL]")
 	fmt.Println("  swarmctl auth codex login [--method device|browser|manual] [--label NAME] [--addr URL]")

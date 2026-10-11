@@ -1597,6 +1597,21 @@ func RunForeground(path string, args []string, env []string) error {
 	return cmd.Run()
 }
 
+// RunMCPBridge replaces this process with `swarmctl mcp`, the stdio MCP
+// bridge for a local AI client, pointed at this profile's owner socket. Exec
+// (not a child) lets the client's stdin EOF and signals reach the bridge so it
+// deletes its in-memory AI key. It never starts the daemon and never writes to
+// stdout, which carries only MCP; the bridge reports a stopped Swarm or a
+// non-owner user on stderr.
+func RunMCPBridge(profile Profile, args []string) error {
+	ctlPath := filepath.Join(profile.BinDir, "swarmctl")
+	if !isExecutable(ctlPath) {
+		return missingInstalledBinaryError("swarmctl", ctlPath)
+	}
+	env := profile.EnvList(map[string]string{localTransportSocketEnv: LocalTransportSocketPath(profile)})
+	return syscall.Exec(ctlPath, append([]string{"swarmctl", "mcp"}, args...), env)
+}
+
 func RunCtl(profile Profile, rawArgs []string, auth bool) error {
 	if err := StartBackend(profile, StartBackendOptions{BuildIfMissing: false}); err != nil {
 		return err

@@ -199,6 +199,36 @@ export class SwarmSessionsNamespace {
   }
 
   /**
+   * Starts a fresh model context in the same conversation (`POST /v3/sessions/{id}/context/clear`).
+   * History stays visible and the session ID is unchanged; the next turn starts without the
+   * earlier provider context. The daemon accepts this only for an idle project conversation
+   * without an unresolved plan, and only when `expectedLastEventSeq` equals the session's current
+   * durable sequence (`state.snapshot.projections_by_session[id].last_event_seq`); otherwise it
+   * rejects with `SwarmConflictError` and changes nothing. A standalone chat session cannot be
+   * cleared: create a new session instead. Retrying with the same `clientRequestId` is idempotent.
+   */
+  async clearContext(
+    sessionId: string,
+    params: { expectedLastEventSeq: number; clientRequestId?: string }
+  ): Promise<{ ok: boolean; session_id: string; mutation: Record<string, unknown> }> {
+    if (!Number.isSafeInteger(params.expectedLastEventSeq) || params.expectedLastEventSeq < 0) {
+      throw new Error('expectedLastEventSeq must be the current non-negative session event sequence');
+    }
+    const id = encodeURIComponent(sessionId.trim());
+    const res = await this.transport.request<{ ok: boolean; session_id: string; mutation: Record<string, unknown> }>(
+      `/v3/sessions/${id}/context/clear`,
+      {
+        method: 'POST',
+        body: {
+          client_request_id: params.clientRequestId || generateRequestId(),
+          expected_last_event_seq: params.expectedLastEventSeq,
+        },
+      }
+    );
+    return res.data;
+  }
+
+  /**
    * Stops an active execution run for a session.
    */
   async stopRun(

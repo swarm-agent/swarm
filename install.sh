@@ -581,6 +581,8 @@ print_path_refresh_instructions() {
     printf '  swarm stop\n'
     printf '  swarm restart\n'
     printf '  swarm uninstall\n'
+    printf '\nConnect your AI client (Claude Code):\n'
+    printf '  claude mcp add swarm -- swarm mcp\n'
     printf '\nIf PATH still fails, run it directly:\n'
     printf '  %s status\n' "$target/swarm"
   fi
@@ -603,6 +605,8 @@ print_service_commands() {
   printf '  swarm stop\n'
   printf '  swarm restart\n'
   printf '  swarm uninstall\n'
+  printf '\nConnect your AI client (Claude Code):\n'
+  printf '  claude mcp add swarm -- swarm mcp\n'
 }
 
 finish_install() {
