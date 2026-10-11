@@ -2016,6 +2016,9 @@ func (e *sessionV3Executor) maybeStartSessionV3TitleFlow(job sessionV3ExecutorJo
 	if err != nil || !shouldGenerateSessionV3TitleWithMessages(session, messages) {
 		return
 	}
+	// Title the conversation immediately and without a model call; the
+	// background Compact/Router flow below may refine this provisional title.
+	e.applySessionV3FirstMessageTitle(job, session, messages)
 	go e.generateAndApplySessionV3Title(job)
 }
 
@@ -4263,7 +4266,9 @@ func (e *sessionV3Executor) newSessionV3ProviderToolInvoker(resolved sessionV3Re
 	if invoker == nil {
 		return nil, errors.New("provider-managed tool invoker is not configured")
 	}
-	return invoker, nil
+	// Calls are gated and executed in job.SessionID's own workspace scope, so
+	// the permission gate may resolve that scope for path-reading bash reads.
+	return runruntime.BindToolExecutionSession(invoker, job.SessionID, principal), nil
 }
 
 func (e *sessionV3Executor) sessionV3SourceMessageID(job sessionV3ExecutorJob) string {
@@ -5934,10 +5939,11 @@ func shouldGenerateSessionV3Title(session pebblestore.SessionSnapshot) bool {
 	if sessionV3TitleGenerationLocked(session.Metadata) {
 		return false
 	}
-	title := strings.TrimSpace(session.Title)
-	return title == "" || strings.EqualFold(title, sessionV3TitleDefault) ||
-		strings.EqualFold(title, "Automation conversation") ||
-		strings.EqualFold(title, "Automation session")
+	// A provisional first-message title may still be refined by Compact/Router.
+	if strings.EqualFold(sessionV3MetadataString(session.Metadata, "title_source"), sessionV3TitleSourceFirstMessage) {
+		return true
+	}
+	return sessionV3TitleIsPlaceholder(session.Title)
 }
 
 func shouldGenerateSessionV3TitleWithMessages(session pebblestore.SessionSnapshot, messages []pebblestore.MessageSnapshot) bool {

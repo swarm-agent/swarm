@@ -4644,7 +4644,7 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !cfg.Exists {
-			cfg = startupconfig.Default(cfg.Path)
+			cfg = startupconfig.NewInstall(cfg.Path)
 		}
 		cfg.BypassPermissions = req.Enabled
 		if err := startupconfig.Write(cfg); err != nil {

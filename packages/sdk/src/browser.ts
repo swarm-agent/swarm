@@ -3,6 +3,7 @@ import type { PendingPermissionRecord, ResolvePermissionResult } from './permiss
 import { confirmPermissionResolution, permissionId as validatePermissionId, permissionResolutionBody, PermissionResolutionError } from './permission-ui.js';
 import type { PermissionAction, ResolvePermissionOptions } from './permission-ui.js';
 export * from './permission-ui.js';
+export { copyTagsToMarkdown, hasCopyTags } from './copy-tags.js';
 import { SwarmChatNotReadyError } from './errors.js';
 export { SwarmChatNotReadyError } from './errors.js';
 export type { SwarmChatNotReadyCode } from './errors.js';

@@ -3,6 +3,7 @@ import {
   SwarmTimeoutError,
   SwarmValidationError,
 } from './errors.js';
+import { SwarmSessionsNamespace } from './sessions.js';
 import type { SwarmTransport } from './transport.js';
 import type {
   ApproveProjectTaskResult,
@@ -195,9 +196,19 @@ export class SwarmProjectsNamespace {
     });
   }
 
+  /** Rename a project conversation (a conversation ID is its session ID); see sessions.rename. */
+  async renameConversation(
+    conversationId: string,
+    title: string,
+    options: { clientRequestId?: string } = {}
+  ): Promise<{ ok: boolean; session_id: string; title: string }> {
+    return new SwarmSessionsNamespace(this.transport).rename(conversationId, title, options);
+  }
+
   /** Create an independent project conversation without archiving existing conversations.
    * Models/context resolve on the daemon. Project conversations never bind a workspace.
-   * Reuse clientRequestId when retrying an uncertain creation result.
+   * Reuse clientRequestId when retrying an uncertain creation result. Without a title the
+   * conversation is named from its first message; rename it with renameConversation.
    */
   async createConversation(
     projectId: string,
@@ -217,7 +228,7 @@ export class SwarmProjectsNamespace {
         body: {
           client_request_id: options.clientRequestId ?? `proj-orch-${globalThis.crypto.randomUUID()}`,
           agent_name: options.agentName ?? 'system-orchestrator',
-          title: options.title ?? 'Orchestrator AI',
+          title: options.title,
           mode: options.mode ?? 'auto',
         },
         ...reqOptions,

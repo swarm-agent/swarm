@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"swarm/packages/swarmd/internal/tool"
 )
 
 type PolicyDecision string
@@ -317,9 +319,16 @@ func NormalizePolicy(policy Policy) Policy {
 }
 
 func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyExplain {
+	return explainPolicyInScope(mode, toolName, toolArguments, policy, nil)
+}
+
+// explainPolicyInScope is ExplainPolicy with the trusted execution scope of the
+// call (nil when unknown). Only the built-in allow for path-reading bash
+// commands consults it; without a scope those commands keep asking.
+func explainPolicyInScope(mode, toolName, toolArguments string, policy Policy, scope *tool.WorkspaceScope) PolicyExplain {
 	policy = NormalizePolicy(policy)
 	ctx := buildPolicyEvalContext(toolName, toolArguments)
-	explain := explainPolicyDecision(mode, toolName, toolArguments, policy)
+	explain := explainPolicyDecision(mode, toolName, toolArguments, policy, scope)
 	if ctx.ToolName != "bash" {
 		return explain
 	}
@@ -340,7 +349,7 @@ func ExplainPolicy(mode, toolName, toolArguments string, policy Policy) PolicyEx
 	return explain
 }
 
-func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) PolicyExplain {
+func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy, scope *tool.WorkspaceScope) PolicyExplain {
 	ctx := buildPolicyEvalContext(toolName, toolArguments)
 	policy = NormalizePolicy(policy)
 	mode, bypass := splitPolicyMode(mode)
@@ -418,7 +427,7 @@ func explainPolicyDecision(mode, toolName, toolArguments string, policy Policy) 
 	if explain, ok := explainExplicitRule(ctx, policy); ok {
 		return explain
 	}
-	if explain, ok := explainBuiltinAllow(mode, ctx); ok {
+	if explain, ok := explainBuiltinAllow(mode, ctx, scope); ok {
 		return explain
 	}
 	decision := defaultPolicyDecision(policyModeWithBypass(mode, bypass), ctx.ToolName, toolArguments)
@@ -960,18 +969,19 @@ func explainBuiltinDeny(mode string, ctx policyEvalContext) (PolicyExplain, bool
 	return PolicyExplain{}, false
 }
 
-func explainBuiltinAllow(mode string, ctx policyEvalContext) (PolicyExplain, bool) {
+func explainBuiltinAllow(mode string, ctx policyEvalContext, scope *tool.WorkspaceScope) (PolicyExplain, bool) {
 	if ctx.ToolName != "bash" {
 		return PolicyExplain{}, false
 	}
 	// Built-in allows apply only to one simple command: a chained, piped,
 	// redirected or substituted command is never covered by its first word.
-	words, simple := bashSimpleCommandWords(ctx.ToolArguments)
+	cmd, simple := parseBashSimpleCommand(ctx.ToolArguments)
 	if !simple {
 		return PolicyExplain{}, false
 	}
+	words := cmd.Words
 	effect := ctx.BashEffect
-	if effect.Valid && effect.DeclaredCategory == BashEffectRead && effect.Category == BashEffectRead && !effect.Critical && !effect.Promoted && bashClearlyReadOnlyCommand(words) {
+	if effect.Valid && effect.DeclaredCategory == BashEffectRead && effect.Category == BashEffectRead && !effect.Critical && !effect.Promoted && bashClearlyReadOnlyCommand(cmd, scope) {
 		return PolicyExplain{
 			Decision:    PolicyDecisionAllow,
 			Source:      "builtin",
@@ -981,17 +991,16 @@ func explainBuiltinAllow(mode string, ctx policyEvalContext) (PolicyExplain, boo
 			RulePreview: fmt.Sprintf("allow read-only bash command: %s", words[0]),
 		}, true
 	}
-	for _, prefix := range []string{"cd", "ls"} {
-		if words[0] != prefix {
-			continue
-		}
+	// A lone cd changes nothing: every bash call starts a fresh shell. ls is
+	// covered above only when its paths stay inside the workspace scope.
+	if words[0] == "cd" {
 		return PolicyExplain{
 			Decision:    PolicyDecisionAllow,
 			Source:      "builtin",
-			Reason:      fmt.Sprintf("built-in allow for bash command prefix: %s", prefix),
+			Reason:      "built-in allow for bash command prefix: cd",
 			ToolName:    ctx.ToolName,
 			Command:     ctx.BashCommand,
-			RulePreview: fmt.Sprintf("allow bash command prefix: %s", prefix),
+			RulePreview: "allow bash command prefix: cd",
 		}, true
 	}
 	return PolicyExplain{}, false
@@ -1317,11 +1326,35 @@ func obviousCriticalBash(command string) bool {
 		"curl ", "wget ", " nc ", "netcat ", "ssh ", "scp ", "rsync ", "--listen", " -l ",
 		"pg_dump", "mysqldump", "terraform apply", "kubectl ",
 	} {
+		if marker == " -l " && bashListFlagNotListener(command) {
+			continue
+		}
 		if strings.HasPrefix(command, marker) || strings.Contains(command, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// bashListFlagNotListener reports a single simple command whose program uses
+// -l (or -L: the command is lowercased) for listings, line counts, depth or
+// file-name matches (ls -l, wc -l, tree -L, grep -l), never to open a
+// listener. Any shell syntax disqualifies it, so a chained listener such as
+// `ls -l; nc -l 80` stays critical.
+func bashListFlagNotListener(command string) bool {
+	if strings.ContainsAny(command, ";&|<>`$(){}\\\n\r") {
+		return false
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "ls", "wc", "grep", "rg", "du", "tree":
+		return true
+	default:
+		return false
+	}
 }
 
 func extractNormalizedBashCommand(arguments string) string {
@@ -1482,11 +1515,14 @@ func policyModeWithBypass(mode string, bypass bool) string {
 // manageProjectsReadOnlyActions are the manage_projects actions that only read
 // the caller's own project records or source catalog. They write nothing,
 // spend nothing, run no commands and reach no network, so they need no
-// approval. Every other action (including inspect_files, which runs file
-// tools against task results, and wait_tasks, which pends the run) keeps the
-// default approval.
+// approval. inspect_files resolves an authorized catalog source or one exact,
+// quiescent task result and runs at most one read/list/search/find tool
+// confined to that tree (no scope expansion), so it is a read as well.
+// wait_tasks, which pends the run, and every mutation keep the default
+// approval; propose_task/create_task are covered by
+// isManageProjectsPendingTaskProposal.
 var manageProjectsReadOnlyActions = map[string]bool{
-	"list": true, "get": true, "list_sources": true, "inspect_source": true,
+	"list": true, "get": true, "list_sources": true, "inspect_source": true, "inspect_files": true,
 	"list_media": true, "get_media": true, "list_tasks": true, "get_task": true,
 }
 
@@ -1514,12 +1550,74 @@ func IsManageProjectsReadOnlyAction(toolArguments string) bool {
 	return manageProjectsReadOnlyActions[action]
 }
 
+// isManageProjectsPendingTaskProposal reports whether a manage_projects
+// propose_task/create_task call only records a task card that waits in
+// pending_approval for the person's Approve on the card. That card is the
+// single approval gate, so the tool call itself needs none. The call qualifies
+// only when creation can neither start work nor spend:
+//   - auto_approve is absent or false (true starts the task immediately);
+//   - agent is coder, swarm or finder (or omitted with intent code/audit):
+//     plan starts a planning session, and image/video/sound/audio/designer
+//     media tasks may start generating at once;
+//   - intent is absent, code or audit, and operation is absent (a video
+//     operation turns the task into direct media generation);
+//   - title is set (an untitled task is named by a Router model call) and
+//     workspace_path or workspace_id is set (otherwise the Router may be asked
+//     to choose the source).
+//
+// Anything else, including malformed or non-string fields, keeps asking.
+func isManageProjectsPendingTaskProposal(toolArguments string) bool {
+	var args map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(toolArguments)), &args) != nil || args == nil {
+		return false
+	}
+	field := func(name string) (string, bool) {
+		raw, present := args[name]
+		if !present || raw == nil {
+			return "", true
+		}
+		value, ok := raw.(string)
+		return strings.TrimSpace(value), ok
+	}
+	action, ok := field("action")
+	if !ok || (strings.ToLower(action) != "propose_task" && strings.ToLower(action) != "create_task") {
+		return false
+	}
+	if raw, present := args["auto_approve"]; present && raw != nil && raw != false {
+		return false
+	}
+	agent, okAgent := field("agent")
+	intent, okIntent := field("intent")
+	operation, okOperation := field("operation")
+	title, okTitle := field("title")
+	workspacePath, okPath := field("workspace_path")
+	workspaceID, okID := field("workspace_id")
+	if !okAgent || !okIntent || !okOperation || !okTitle || !okPath || !okID {
+		return false
+	}
+	switch agent {
+	case "coder", "swarm", "finder":
+	case "":
+		if intent == "" {
+			return false
+		}
+	default:
+		return false
+	}
+	switch intent {
+	case "", "code", "audit":
+	default:
+		return false
+	}
+	return operation == "" && title != "" && (workspacePath != "" || workspaceID != "")
+}
+
 func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision {
 	toolName = normalizePolicyToolName(toolName)
 	mode, bypass := splitPolicyMode(mode)
 	switch toolName {
 	case "manage_projects":
-		if IsManageProjectsReadOnlyAction(toolArguments) {
+		if IsManageProjectsReadOnlyAction(toolArguments) || isManageProjectsPendingTaskProposal(toolArguments) {
 			return PolicyDecisionAllow
 		}
 		if bypass {

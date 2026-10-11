@@ -229,6 +229,60 @@ func TestProviderManagedV3ToolTerminalEventCarriesRealOutput(t *testing.T) {
 	})
 }
 
+// Purpose: apps read a finished command from the durable terminal tool event.
+// Invariant: a terminal bash event always carries "output" as a string ("" when
+// the command printed nothing) and the command's own exit code as "exit_code";
+// tools that report no exit code get none invented, and non-terminal events are
+// unchanged. Regression: a silent `true`/`mkdir` recorded no "output", which SDK
+// and app code surfaced as null. providerManagedV3ToolEventPayload is the single
+// builder of these durable payloads, so it is the narrowest layer.
+func TestProviderManagedV3ToolTerminalEventSilentCommandHasEmptyOutputAndExitCode(t *testing.T) {
+	config := providerToolInvokerConfig{runID: "run-silent", step: 1}
+	decode := func(t *testing.T, eventType string, call tool.Call, result tool.Result) map[string]any {
+		t.Helper()
+		raw, err := providerManagedV3ToolEventPayload(eventType, config, call, nil, result, 1234)
+		if err != nil {
+			t.Fatalf("build event payload: %v", err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			t.Fatalf("decode event payload: %v", err)
+		}
+		return payload
+	}
+	call := tool.Call{CallID: "call-silent", Name: "bash", Arguments: `{"command":"mkdir -p out"}`}
+
+	completed := decode(t, "session.tool.completed", call, tool.Result{CallID: call.CallID, Name: "bash", Output: `{"command":"mkdir -p out","exit_code":0,"output":"","summary":"bash mkdir -p out"}`})
+	if got, ok := completed["output"].(string); !ok || got != "" {
+		t.Fatalf("completed output = %#v (present=%v), want empty string", completed["output"], ok)
+	}
+	if completed["exit_code"] != float64(0) {
+		t.Fatalf("completed exit_code = %#v, want 0", completed["exit_code"])
+	}
+
+	failed := decode(t, "session.tool.failed", call, tool.Result{CallID: call.CallID, Name: "bash", Output: `{"command":"false","exit_code":1,"output":""}`, Error: "exit status 1"})
+	if got, ok := failed["output"].(string); !ok || got != "" || failed["exit_code"] != float64(1) {
+		t.Fatalf("failed payload output=%#v exit_code=%#v", failed["output"], failed["exit_code"])
+	}
+
+	noCode := decode(t, "session.tool.completed", tool.Call{CallID: "call-read", Name: "read"}, tool.Result{CallID: "call-read", Name: "read", Output: `{"path":"a.txt","content":""}`})
+	if _, ok := noCode["exit_code"]; ok {
+		t.Fatalf("exit_code invented for a tool that reports none: %#v", noCode)
+	}
+	fractional := decode(t, "session.tool.completed", call, tool.Result{CallID: call.CallID, Name: "bash", Output: `{"exit_code":1.5,"output":""}`})
+	if _, ok := fractional["exit_code"]; ok {
+		t.Fatalf("non-integral exit_code accepted: %#v", fractional)
+	}
+
+	started := decode(t, "session.tool.started", call, tool.Result{CallID: call.CallID, Name: "bash"})
+	if _, ok := started["output"]; ok {
+		t.Fatalf("started event gained output: %#v", started)
+	}
+	if _, ok := started["exit_code"]; ok {
+		t.Fatalf("started event gained exit_code: %#v", started)
+	}
+}
+
 func TestStoreProviderManagedWebResultV3BoundsSessionSearchIndexContent(t *testing.T) {
 	workspace := t.TempDir()
 	svc, sessionID, _, cleanup := newProviderManagedV3PermissionTestService(t, workspace)

@@ -1891,6 +1891,10 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				permissionMode = strings.Split(permissionMode, "+")[0]
 			}
 		}
+		var executionScope *tool.WorkspaceScope
+		if canonicalToolName(toolCalls[i].Name) == "bash" && permission.BashCommandReadsWorkspacePaths(permissionArguments) {
+			executionScope = s.permissionExecutionScope(ctx, sessionID)
+		}
 		auth, err := s.permissions.AuthorizeToolCall(permission.AuthorizationInput{
 			SessionID:                sessionID,
 			AccountScopeID:           accountScopeID,
@@ -1905,6 +1909,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			SubagentReservation:      subagentReservation,
 			SessionDeployReservation: sessionDeployReservation,
 			InputBoundary:            isClientTool,
+			ExecutionScope:           executionScope,
 		})
 		if err != nil {
 			decisions[i].Err = err

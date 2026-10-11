@@ -132,6 +132,10 @@ func ResolvePath() (string, error) {
 	return storagecontract.Join(configDir, configFileName)
 }
 
+// Default is the parse base for an existing startup config. Its
+// DesktopOnboardingComplete=true with DesktopOnboardingCompleteSet=false keeps
+// legacy files that predate the key out of onboarding. A Swarm without any
+// startup config file uses NewInstall instead.
 func Default(path string) FileConfig {
 	return FileConfig{
 		Path:                         path,
@@ -156,6 +160,17 @@ func Default(path string) FileConfig {
 	}
 }
 
+// NewInstall is the startup config of a Swarm that has no config file yet. A
+// brand-new Swarm has not finished onboarding, so the completion flag is
+// explicitly false; Desktop, the TUI or an SDK app sets it when its own setup
+// finishes.
+func NewInstall(path string) FileConfig {
+	cfg := Default(path)
+	cfg.DesktopOnboardingComplete = false
+	cfg.DesktopOnboardingCompleteSet = true
+	return cfg
+}
+
 func Load(path string) (FileConfig, error) {
 	cfg := Default(path)
 	if envText := decodeEnvMultiline(strings.TrimSpace(os.Getenv(childStartupConfigEnv))); strings.TrimSpace(envText) != "" {
@@ -174,7 +189,7 @@ func Load(path string) (FileConfig, error) {
 	_, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return cfg, nil
+			return NewInstall(path), nil
 		}
 		return FileConfig{}, fmt.Errorf("stat startup config %q: %w", path, err)
 	}

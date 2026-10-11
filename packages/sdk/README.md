@@ -319,6 +319,17 @@ const created = await client.projects.createConversation(project.id, {
 // Return created.id to the browser; await chat.subscribe(created.id) before sending.
 ```
 
+Conversation titles come from Swarm: a conversation created without a `title` is named from
+its first message (refined later when a title model is available), and `listConversations`
+returns it. Rename with `client.sessions.rename(id, title)` (or
+`client.projects.renameConversation(id, title)`); a renamed title is kept.
+
+Assistant text can contain `<copy label="…">…</copy>` snippet tags, which Swarm's own apps
+render as copy buttons. `chat.run`, `chat.listMessages` and `chat.stream` (and the browser
+bridge built on it) turn them into Markdown code blocks by default; pass `rawCopyTags: true`
+to keep them. For text read elsewhere (`sessions.get`, `realtime.watchSession`), use the
+exported `copyTagsToMarkdown(text)`.
+
 Use `state` as the conversation rendering authority, including initial history, failed/empty
 turns and durable reconnect recovery. `text`/tool callbacks are convenience notifications.
 History is a bounded 200-message tail; use canonical sync hydration for additional history.

@@ -87,8 +87,14 @@ const created = await client.projects.createConversation(project.id, {
 });
 ```
 
-Conversations cannot be renamed yet; label them in your UI (for example by the
-first message).
+Swarm titles a conversation from its first message; show `title` from
+`listConversations`. Rename with
+`client.projects.renameConversation(id, title)` (or
+`client.sessions.rename(id, title)`). Do not keep your own labels.
+
+Agent replies can contain `<copy label="…">…</copy>` snippet tags: pass reply
+text through `copyTagsToMarkdown(text)` (from `/sdk/browser.js`) before
+rendering it as Markdown.
 
 ## 4. Live chat
 
@@ -128,7 +134,9 @@ chat.sendMessage(text);
   (true while a run is going, including while it waits for a permission) and
   `status` (`completed`, `failed` or `cancelled` once it ended). Decide busy
   from `active`, not from status names.
-- Switch conversations with `await chat.subscribe(otherId)`.
+- Switch conversations with `await chat.subscribe(otherId)`. Selecting the
+  conversation that is already open must do nothing: never clear the thread
+  before the new subscription has delivered its state.
 - If a conversation is too large to load whole, `state.historyOmitted` is
   true and only the newest part is in `state.messages`: say older history is
   not shown.
@@ -139,7 +147,9 @@ chat.sendMessage(text);
 ## 5. Permissions
 
 `describePermission(p)` gives `kind` (`tool` or `ask-user`), `toolName`,
-`title`, `context`, `rawArguments`, `questions` and `actions`. Render as text
+`title`, `context`, `rawArguments`, `questions` and `actions`. Lead each card
+with `title` and `context` in plain words; put `rawArguments` behind a
+"details" toggle, never as the main content. Render as text
 (never HTML) and resolve only on the person's click:
 
 ```js
@@ -233,3 +243,19 @@ permission approve, deny and questions · new, list, switch conversations ·
 clear context · model and provider status · errors shown, never hidden · keys
 never logged or returned · loopback by default · own-origin checks on every
 write.
+
+## 11. Mistakes every earlier build made
+
+- Clicking the open conversation blanked it (see section 4).
+- Permission and task cards showed raw JSON instead of `title`/`context`.
+- On phones the composer hid under a bottom tab bar: size the layout with
+  `100dvh`, keep the composer in normal flow at the bottom of the scroll area
+  (or pad by the tab bar's height plus `env(safe-area-inset-bottom)`), and
+  check it at 390×844 with the keyboard closed and open.
+- A "Not sent" banner stayed after the connection came back: clear transient
+  connection errors on reconnect.
+- Copy claimed "nothing starts until you approve it" while the orchestrator
+  had started a task itself: describe what Swarm reports, not what you assume.
+- Write routes accepted requests from other web pages (section 1).
+- A form error vanished when a background poll re-rendered the card: keep
+  the last error until the person changes the form.

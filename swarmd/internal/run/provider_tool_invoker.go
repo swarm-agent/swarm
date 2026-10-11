@@ -1537,11 +1537,19 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 	// result replayed to the model). The completion label stays in "summary".
 	rawOutput := liveStreamRawOutput(call, result)
 	output, truncated := providerManagedV3ToolEventOutput(rawOutput)
-	if output != "" {
+	terminal := providerManagedV3ToolTerminalStatusForEventType(eventType) != ""
+	// A terminal event always carries "output", even when the tool printed
+	// nothing, so clients read "" rather than a missing/null value.
+	if output != "" || terminal {
 		payload["output"] = output
 		if truncated {
 			payload["output_truncated"] = true
 			payload["output_bytes"] = len(rawOutput)
+		}
+	}
+	if terminal {
+		if exitCode, ok := providerManagedV3ToolExitCode(result.Output); ok {
+			payload["exit_code"] = exitCode
 		}
 	}
 	if summary := formatProviderManagedToolCompletedOutput(call, result); summary != "" && summary != output {
@@ -1563,6 +1571,21 @@ func providerManagedV3ToolEventPayload(eventType string, config providerToolInvo
 		payload["client_effects"] = effects
 	}
 	return json.Marshal(payload)
+}
+
+// providerManagedV3ToolExitCode returns the process exit code a command tool
+// (bash, git) reported in its own structured result. Tools that report no
+// integral exit_code yield false, so no exit code is invented.
+func providerManagedV3ToolExitCode(toolOutput string) (int, bool) {
+	payload := decodeToolPayload(strings.TrimSpace(toolOutput))
+	if payload == nil {
+		return 0, false
+	}
+	value, ok := payload["exit_code"].(float64)
+	if !ok || value != float64(int(value)) {
+		return 0, false
+	}
+	return int(value), true
 }
 
 const providerManagedV3ToolEventOutputMarker = "\n[tool output truncated]"

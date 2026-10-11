@@ -157,6 +157,11 @@ type AuthorizationInput struct {
 	// resolution, even when approvals are bypassed or a broad allow rule
 	// exists; only an explicit deny skips the wait.
 	InputBoundary bool
+	// ExecutionScope is the trusted workspace scope in which the call would
+	// execute, resolved by the runtime (never from tool arguments). nil when
+	// the caller cannot bind the exact scope; path-reading bash commands then
+	// keep asking.
+	ExecutionScope *tool.WorkspaceScope
 }
 
 type AuthorizationResult struct {
@@ -560,7 +565,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		}
 	}
 	input.Mode = effectiveMode
-	explain, err := s.ExplainToolForAccount(input.AccountScopeID, effectiveMode, input.ToolName, input.ToolArguments, input.Overlay)
+	explain, err := s.explainToolForAccountInScope(input.AccountScopeID, effectiveMode, input.ToolName, input.ToolArguments, input.Overlay, input.ExecutionScope)
 	if err != nil {
 		return AuthorizationResult{}, err
 	}

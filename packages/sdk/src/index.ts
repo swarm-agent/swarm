@@ -12,6 +12,7 @@ export * from './sessions.js';
 export * from './projects.js';
 export * from './permissions.js';
 export * from './chat.js';
+export * from './copy-tags.js';
 export * from './workspaces.js';
 export * from './system.js';
 export * from './remote.js';

@@ -313,7 +313,7 @@ func (s *Server) onboardingResponseWithServeDetection(includeSensitive bool, det
 		return onboardingResponse{}, err
 	}
 	if !cfg.Exists {
-		cfg = startupconfig.Default(cfg.Path)
+		cfg = startupconfig.NewInstall(cfg.Path)
 	}
 	vaultStatus, err := s.readVaultStatus()
 	if err != nil {
@@ -482,7 +482,7 @@ func (s *Server) updateOnboarding(req onboardingUpdateRequest, includeSensitive 
 		return onboardingResponse{}, nil, err
 	}
 	if !cfg.Exists {
-		cfg = startupconfig.Default(cfg.Path)
+		cfg = startupconfig.NewInstall(cfg.Path)
 	}
 
 	identityPayload, identityBootstrapped, err := s.onboardingIdentityPayload()

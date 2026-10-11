@@ -7,6 +7,7 @@ import { SwarmSessionsNamespace } from './sessions.js';
 import type { SwarmTransport } from './transport.js';
 import type { SessionDetail, SessionRecord } from './types.js';
 import { SwarmTimeoutError } from './errors.js';
+import { copyTagsToMarkdown } from './copy-tags.js';
 import { SwarmWebSocketBridge, type SwarmWebSocketBridgeOptions } from './websocket.js';
 
 export interface CreateChatSessionOptions {
@@ -62,6 +63,11 @@ export interface ChatRunOptions {
   onToolEvent?: (event: ToolStreamItem) => void;
   /** Optional AbortSignal to cancel waiting */
   signal?: AbortSignal;
+  /**
+   * Keep Swarm's `<copy label="…">…</copy>` snippet tags in `reply` and assistant
+   * `messages`. By default they become Markdown code blocks (see copyTagsToMarkdown).
+   */
+  rawCopyTags?: boolean;
 }
 
 export interface ChatRunResult {
@@ -91,6 +97,14 @@ export interface ChatStreamOptions {
    * a turn's final call carries any committed text beyond what streamed.
    */
   onText?: (delta: string, fullText: string) => void;
+  /**
+   * Keep Swarm's `<copy label="…">…</copy>` snippet tags in `onText` and `onComplete`.
+   * By default they become Markdown code blocks while streaming (a half-written tag is
+   * held back until it is complete). Only if a snippet's own payload contains a run of
+   * four or more backticks is it re-fenced; that call's `delta` is then empty and
+   * `fullText` stays exact.
+   */
+  rawCopyTags?: boolean;
   /** Incremental and cumulative reasoning text from durable reasoning checkpoints. */
   onReasoning?: (delta: string, fullText: string) => void;
   /** Invoked when a tool call starts running */
@@ -153,7 +167,7 @@ export class SwarmChatNamespace {
   async createSession(options: CreateChatSessionOptions = {}): Promise<SessionRecord> {
     if (options.project_id) throw new Error('Use projects.createConversation(projectId) for project orchestrator conversations');
     return this.sessions.create({
-      title: options.title ?? 'Chat Session',
+      title: options.title,
       agent_name: options.agent_name ?? 'swarm',
       workspace_path: options.workspace_path,
       workspace_id: options.workspace_id,
@@ -172,9 +186,10 @@ export class SwarmChatNamespace {
   /**
    * Lists messages from a session conversation.
    */
-  async listMessages(sessionId: string): Promise<V3Message[]> {
+  async listMessages(sessionId: string, options: { rawCopyTags?: boolean } = {}): Promise<V3Message[]> {
     const detail = await this.sessions.get(sessionId);
-    return (detail.messages as V3Message[]) || [];
+    const messages = (detail.messages as V3Message[]) || [];
+    return options.rawCopyTags ? messages : messages.map(cleanAssistantMessage);
   }
 
   /**
@@ -230,10 +245,10 @@ export class SwarmChatNamespace {
         }
 
         return {
-          reply,
+          reply: options.rawCopyTags ? reply : copyTagsToMarkdown(reply),
           sessionId: id,
           runId: activeRun?.run_id || detail.last_run_id,
-          messages: msgs,
+          messages: options.rawCopyTags ? msgs : msgs.map(cleanAssistantMessage),
           pendingPermissions: pending,
           session: detail,
         };
@@ -271,12 +286,28 @@ export class SwarmChatNamespace {
 
     // Only extensions are reported: a shorter text (reconnect before durable catch-up) or a
     // committed message that differs from the streamed prefix is never re-sent as a delta.
+    // Copy tags are converted on the cumulative text (in streaming mode, which only ever
+    // appends), and the delta is taken from the converted text.
+    const shownText = new Map<string, string>();
     const reportText = (key: string, runId: string, streamId: string, text: string) => {
       const previous = reportedText.get(key)?.text ?? '';
       if (text.length <= previous.length || !text.startsWith(previous)) return;
       reportedText.set(key, { runId, streamId, text });
       observedRun = runId;
-      options.onText?.(text.slice(previous.length), text);
+      if (!options.onText) return;
+      if (options.rawCopyTags) {
+        options.onText(text.slice(previous.length), text);
+        return;
+      }
+      const shown = copyTagsToMarkdown(text, { streaming: true });
+      const before = shownText.get(key) ?? '';
+      if (shown === before) return;
+      shownText.set(key, shown);
+      options.onText(shown.startsWith(before) ? shown.slice(before.length) : '', shown);
+    };
+    const forgetText = (key: string) => {
+      reportedText.delete(key);
+      shownText.delete(key);
     };
 
     // Applies one durable event. Hydrated history is applied silently: it is neither a new
@@ -360,9 +391,9 @@ export class SwarmChatNamespace {
             && m.metadata?.run_id === entry.runId && m.metadata?.stream_id === entry.streamId);
           if (committed && typeof committed.content === 'string') {
             reportText(key, entry.runId, entry.streamId, committed.content);
-            reportedText.delete(key);
+            forgetText(key);
           } else if (state.status === 'live' && !(run?.active && run.run_id === entry.runId)) {
-            reportedText.delete(key);
+            forgetText(key);
           }
         }
 
@@ -419,7 +450,7 @@ export class SwarmChatNamespace {
         if (state.status === 'live' && run?.run_id && !run.active && !completedRuns.has(run.run_id)) {
           completedRuns.add(run.run_id);
           if (completedRuns.size > 4096) completedRuns.delete(completedRuns.values().next().value!);
-          if (observedRun === run.run_id || run.completed_at) options.onComplete?.(state.messages, run);
+          if (observedRun === run.run_id || run.completed_at) options.onComplete?.(options.rawCopyTags ? state.messages : state.messages.map(cleanAssistantMessage), run);
         }
       },
       onError: (err) => {
@@ -445,4 +476,11 @@ export function toolCallIdFromPayload(payload: Record<string, unknown> | undefin
   if (callId) return callId;
   const instance = typeof payload?.tool_instance_id === 'string' ? payload.tool_instance_id.trim() : '';
   return instance.replace(/^step-\d+:/, '');
+}
+
+/** Assistant message with Swarm copy tags turned into Markdown code blocks. */
+function cleanAssistantMessage(message: V3Message): V3Message {
+  if (message?.role !== 'assistant' || typeof message.content !== 'string') return message;
+  const content = copyTagsToMarkdown(message.content);
+  return content === message.content ? message : { ...message, content };
 }

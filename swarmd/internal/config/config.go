@@ -286,7 +286,7 @@ func startupConfigFromRuntime(path, listenAddr string, desktopPort int, bypassPe
 	if err != nil {
 		return startupconfig.FileConfig{}, fmt.Errorf("invalid listen port %q", portText)
 	}
-	cfg := startupconfig.Default(path)
+	cfg := startupconfig.NewInstall(path)
 	cfg.Host = host
 	cfg.Port = port
 	cfg.DesktopPort = desktopPort

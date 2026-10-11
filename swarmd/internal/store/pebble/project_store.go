@@ -1031,6 +1031,52 @@ func (s *SessionStore) ListProjectTasks(accountScopeID, projectID string, limit 
 	return tasks, nil
 }
 
+// ListRecentProjectTasks returns the newest `limit` tasks of a project, newest
+// first. Only the returned tasks are hydrated with attempt outcome and plan
+// document, so per-call work stays bounded by limit rather than project size.
+func (s *SessionStore) ListRecentProjectTasks(accountScopeID, projectID string, limit int) ([]ProjectTaskRecord, error) {
+	if s == nil || s.store == nil || s.store.db == nil {
+		return nil, errors.New("database not available")
+	}
+	accountScopeID = strings.TrimSpace(accountScopeID)
+	projectID = strings.TrimSpace(projectID)
+	if accountScopeID == "" || projectID == "" {
+		return nil, errors.New("account scope id and project id are required")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	var tasks []ProjectTaskRecord
+	err := s.store.IteratePrefix(ProjectTaskPrefix(accountScopeID, projectID), 10000, func(_ string, value []byte) error {
+		var rec ProjectTaskRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return nil
+		}
+		if rec.AccountID == accountScopeID && rec.ProjectID == projectID {
+			tasks = append(tasks, rec)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.SliceStable(tasks, func(i, j int) bool {
+		if tasks[i].CreatedAt != tasks[j].CreatedAt {
+			return tasks[i].CreatedAt > tasks[j].CreatedAt
+		}
+		return tasks[i].ID > tasks[j].ID
+	})
+	if len(tasks) > limit {
+		tasks = tasks[:limit]
+	}
+	for i := range tasks {
+		tasks[i].EnsureTaskAttempts()
+		s.hydrateTaskAttemptOutcome(&tasks[i])
+		s.hydrateProjectTaskPlanDocument(&tasks[i])
+	}
+	return tasks, nil
+}
+
 // ListProjectTasksByArchive returns the complete bounded project view before filtering.
 // Refuse oversized projects rather than silently omitting selectable tasks.
 func (s *SessionStore) ListProjectTasksByArchive(accountScopeID, projectID string, archived bool) ([]ProjectTaskRecord, error) {

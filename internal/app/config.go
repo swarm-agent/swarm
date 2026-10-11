@@ -407,7 +407,7 @@ func loadStartupConfigForApp() (startupconfig.FileConfig, error) {
 		return startupconfig.FileConfig{}, fmt.Errorf("load startup config: %w", err)
 	}
 	if !cfg.Exists {
-		cfg = startupconfig.Default(path)
+		cfg = startupconfig.NewInstall(path)
 	}
 	return cfg, nil
 }

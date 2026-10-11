@@ -167,3 +167,38 @@ func writeTestStartupConfig(t *testing.T) string {
 	}
 	return configDir
 }
+
+// Purpose: a brand-new Swarm must report that onboarding is not finished.
+// Invariant: when swarmd starts without a startup config file, the config it
+// writes (and later reads back) has desktop_onboarding_complete = false; Desktop,
+// the TUI or an SDK app sets it true when its own setup finishes. Regression: a
+// fresh daemon wrote the legacy default "true", so GET /v1/onboarding reported
+// config.desktop_onboarding_complete: true before any identity existed (verified
+// against a freshly built, isolated swarmd). Parse owns the first-start write,
+// so it is the narrowest layer that proves the persisted value.
+func TestParseFreshStartWritesOnboardingIncomplete(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "config")
+	t.Setenv("HOME", "/test-home/swarmd-config-test")
+	t.Setenv("STATE_DIRECTORY", "/var/lib/swarmd-unit")
+	t.Setenv("RUNTIME_DIRECTORY", "/run/swarmd-unit")
+	t.Setenv("CONFIGURATION_DIRECTORY", configDir)
+
+	if _, err := Parse(nil); err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	path := filepath.Join(configDir, "swarm.conf")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written startup config: %v", err)
+	}
+	if !strings.Contains(string(raw), "\ndesktop_onboarding_complete = false\n") {
+		t.Fatalf("fresh startup config does not record incomplete onboarding:\n%s", raw)
+	}
+	loaded, err := startupconfig.Load(path)
+	if err != nil {
+		t.Fatalf("reload startup config: %v", err)
+	}
+	if !loaded.DesktopOnboardingCompleteSet || loaded.DesktopOnboardingComplete {
+		t.Fatalf("reloaded onboarding complete=%v set=%v, want false/true", loaded.DesktopOnboardingComplete, loaded.DesktopOnboardingCompleteSet)
+	}
+}

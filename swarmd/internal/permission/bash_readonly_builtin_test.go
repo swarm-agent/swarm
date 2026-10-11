@@ -6,16 +6,19 @@ import (
 )
 
 // Purpose: in auto and plan modes a clearly read-only bash command must not
-// stop for approval (dogfooding: `git status`, `date` and plan validation reads
-// each needed a manual approval under the default current_rules profile).
-// The built-in allow is limited to single, simple commands whose effect is
-// equivalent to already default-allowed tools (git_status/git_diff/list) or
-// that touch no files (pwd, date). Threats: chaining, redirection, command
-// substitution, env/wrapper injection, git global options or output/external
-// diff flags, a contradictory declared category, explicit user rules, and the
-// existing `ls` built-in admitting a chained command. File-content readers
-// (cat/head/tail/wc) stay gated: unlike the read tool they follow symlinks out
-// of the workspace scope. ExplainPolicy is the pure decision boundary used by
+// stop for approval (dogfooding: `git status`, `date`, `echo`, `git branch`
+// and plan validation reads each needed a manual approval under the default
+// current_rules profile). The built-in allow is limited to single, simple
+// commands whose effect is equivalent to already default-allowed tools
+// (git_status/git_diff/list), that touch no files (pwd, date, echo, printf),
+// or (TestBashScopedReadBuiltinAllow) that read paths confined to the trusted
+// execution scope. Threats: chaining, redirection, command substitution,
+// env/wrapper injection, git global options or output/external diff flags,
+// git branch/worktree/remote mutations, a contradictory declared category and
+// explicit user rules. Without a trusted execution scope (as here) path
+// readers, including ls which was previously allowed with any path, stay
+// gated: unlike the read tool nothing confines them to the workspace.
+// ExplainPolicy is the pure decision boundary used by
 // Service.AuthorizeToolCall, so it is the narrowest proving layer.
 func TestBashClearlyReadOnlyBuiltinAllow(t *testing.T) {
 	args := func(command, category string, critical bool) string {
@@ -25,7 +28,8 @@ func TestBashClearlyReadOnlyBuiltinAllow(t *testing.T) {
 	allowed := []string{
 		"git status", "git status --short", "git log --oneline -5", "git diff", "git diff --stat HEAD~1",
 		"git show HEAD", "git show --stat", "pwd", "date", "date '+%Y-%m-%d %H:%M:%S %Z'",
-		"date '+Hello from greeter! The time is %Y-%m-%d %H:%M:%S %Z'", "ls", "ls -la",
+		"date '+Hello from greeter! The time is %Y-%m-%d %H:%M:%S %Z'", "echo hello", "printf 'done'",
+		"git branch -a", "git worktree list", "git rev-parse --show-toplevel", "git remote -v",
 	}
 	for _, mode := range []string{"auto", "plan"} {
 		for _, command := range allowed {
@@ -57,6 +61,8 @@ func TestBashClearlyReadOnlyBuiltinAllow(t *testing.T) {
 		{"git commit -m x", "write"},
 		{"git branch new", "write"},
 		{"cat secrets.txt", "read"},
+		{"ls", "read"},
+		{"ls -la", "read"},
 		{"cat /etc/passwd", "read"},
 		{"head -n 5 file", "read"},
 		{"tail -f log", "read"},
