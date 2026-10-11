@@ -185,3 +185,50 @@ func TestResolveAgentToolContractFailsClosedWhenSavedContractMissing(t *testing.
 		t.Fatalf("ResolveAgentToolContract() error = %v, want missing tool_contract", err)
 	}
 }
+
+// Requirement: the Orchestrator's compiled tool contract enables manage_projects,
+// which compiles to an "allow tool: manage_projects" rule ahead of the default
+// policy. That rule must keep authorizing reads and task cards that wait for the
+// person's Approve, but must not pre-approve the Orchestrator approving or
+// deploying its own cards, proposals that start work or spend at once
+// (auto_approve, plan, media), or project/task deletion and archiving. Threat:
+// an enabled tool silently bypassing the card gate and destructive-action
+// approval. ResolveAgentToolContract on the real Orchestrator profile plus
+// ExplainPolicy is the narrowest layer that proves the decision the run gate
+// evaluates (gateToolCalls passes this compiled policy as the overlay).
+func TestOrchestratorCompiledContractKeepsProjectLaunchAndRemovalApproval(t *testing.T) {
+	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
+	profile := agentruntime.SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
+	resolved, compiled, disabled, err := svc.ResolveAgentToolContract(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolved.Tools["manage_projects"].Enabled || disabled["manage_projects"] {
+		t.Fatalf("orchestrator manage_projects resolved=%+v disabled=%v", resolved.Tools["manage_projects"], disabled["manage_projects"])
+	}
+	for _, args := range []string{
+		`{"action":"list"}`,
+		`{"action":"get_task","project_id":"p","task_id":"t"}`,
+		`{"action":"propose_task","project_id":"p","prompt":"Fix login","agent":"coder"}`,
+		`{"action":"propose_task","project_id":"p","title":"Audit","agent":"finder","workspace_id":"w"}`,
+	} {
+		if got := permission.ExplainPolicy("auto", "manage_projects", args, *compiled); got.Decision != permission.PolicyDecisionAllow {
+			t.Fatalf("orchestrator %s = %+v, want allow", args, got)
+		}
+	}
+	for _, args := range []string{
+		`{"action":"approve_task","project_id":"p","task_id":"t"}`,
+		`{"action":"accept_task","project_id":"p","task_id":"t"}`,
+		`{"action":"deploy_task","project_id":"p","task_id":"t"}`,
+		`{"action":"propose_task","project_id":"p","prompt":"Fix","agent":"coder","auto_approve":true}`,
+		`{"action":"propose_task","project_id":"p","prompt":"Spec it","agent":"plan"}`,
+		`{"action":"propose_task","project_id":"p","prompt":"Logo","agent":"image"}`,
+		`{"action":"delete","id":"p"}`,
+		`{"action":"delete_task","project_id":"p","task_id":"t"}`,
+		`{"action":"archive_task","project_id":"p","task_id":"t"}`,
+	} {
+		if got := permission.ExplainPolicy("auto", "manage_projects", args, *compiled); got.Decision != permission.PolicyDecisionAsk {
+			t.Fatalf("orchestrator %s = %+v, want ask", args, got)
+		}
+	}
+}

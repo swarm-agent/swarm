@@ -242,6 +242,10 @@ type policyEvalContext struct {
 	BashCommand    string
 	BashPrefix     string
 	BashEffect     BashEffectAssessment
+	// DenyAlsoTool names the transport tool of a split policy identity. A deny
+	// rule for that tool still blocks the split action; allow and ask rules
+	// must name the split identity itself.
+	DenyAlsoTool string
 }
 
 const (
@@ -250,6 +254,12 @@ const (
 	policyToolWorkspaceDelete    = "workspace_delete"
 	policyToolWorkspaceMapUpdate = "workspace_map_update"
 	policyToolWorkspaceInvalid   = "workspace_invalid"
+	// manage_projects actions that start work, approve a card, spend before a
+	// card is approved, or delete/archive have their own identities so the
+	// compiled enabled-tool overlay (allow tool: manage_projects) or a generic
+	// manage_projects rule cannot authorize them.
+	policyToolProjectTaskLaunch = "project_task_launch"
+	policyToolProjectRemoval    = "project_removal"
 )
 
 type BashEffectAssessment struct {
@@ -669,6 +679,12 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	if toolName == "manage_worktree" && ShouldApproveManageWorktreePromotion(toolArguments) {
 		toolName = "worktree_promotion"
 	}
+	denyAlsoTool := ""
+	if toolName == "manage_projects" {
+		if identity := manageProjectsPolicyIdentity(toolArguments); identity != "" {
+			toolName, denyAlsoTool = identity, "manage_projects"
+		}
+	}
 	if toolName == "manage_sessions" {
 		switch {
 		case ShouldApproveManageSessionsDeploy(toolArguments):
@@ -683,6 +699,7 @@ func buildPolicyEvalContext(toolName, toolArguments string) policyEvalContext {
 	}
 	ctx := policyEvalContext{
 		ToolName:       toolName,
+		DenyAlsoTool:   denyAlsoTool,
 		ToolArguments:  toolArguments,
 		NormalizedArgs: strings.ToLower(toolArguments),
 		InvalidReason:  invalidReason,
@@ -818,7 +835,11 @@ func explainPhraseDeny(ctx policyEvalContext, policy Policy) (PolicyExplain, boo
 
 func explainExplicitDeny(ctx policyEvalContext, policy Policy) (PolicyExplain, bool) {
 	for _, rule := range policy.Rules {
-		if rule.Decision != PolicyDecisionDeny || !policyRuleMatches(ctx, rule) {
+		if rule.Decision != PolicyDecisionDeny {
+			continue
+		}
+		transportDeny := ctx.DenyAlsoTool != "" && rule.Kind == PolicyRuleKindTool && normalizePolicyToolName(rule.Tool) == ctx.DenyAlsoTool
+		if !transportDeny && !policyRuleMatches(ctx, rule) {
 			continue
 		}
 		matched := rule
@@ -1560,12 +1581,12 @@ func IsManageProjectsReadOnlyAction(toolArguments string) bool {
 //     plan starts a planning session, and image/video/sound/audio/designer
 //     media tasks may start generating at once;
 //   - intent is absent, code or audit, and operation is absent (a video
-//     operation turns the task into direct media generation);
-//   - title is set (an untitled task is named by a Router model call) and
-//     workspace_path or workspace_id is set (otherwise the Router may be asked
-//     to choose the source).
+//     operation turns the task into direct media generation).
 //
-// Anything else, including malformed or non-string fields, keeps asking.
+// A missing title or source does not disqualify the proposal: the small
+// Router call that names an untitled task or picks its source is accepted
+// running cost, and the resulting card still waits for Approve. Anything
+// else, including malformed or non-string fields, keeps asking.
 func isManageProjectsPendingTaskProposal(toolArguments string) bool {
 	var args map[string]any
 	if json.Unmarshal([]byte(strings.TrimSpace(toolArguments)), &args) != nil || args == nil {
@@ -1589,9 +1610,9 @@ func isManageProjectsPendingTaskProposal(toolArguments string) bool {
 	agent, okAgent := field("agent")
 	intent, okIntent := field("intent")
 	operation, okOperation := field("operation")
-	title, okTitle := field("title")
-	workspacePath, okPath := field("workspace_path")
-	workspaceID, okID := field("workspace_id")
+	_, okTitle := field("title")
+	_, okPath := field("workspace_path")
+	_, okID := field("workspace_id")
 	if !okAgent || !okIntent || !okOperation || !okTitle || !okPath || !okID {
 		return false
 	}
@@ -1609,7 +1630,38 @@ func isManageProjectsPendingTaskProposal(toolArguments string) bool {
 	default:
 		return false
 	}
-	return operation == "" && title != "" && (workspacePath != "" || workspaceID != "")
+	return operation == ""
+}
+
+// manageProjectsPolicyIdentity returns the separate policy identity of a
+// manage_projects call that must keep its own approval even when the agent's
+// compiled tool contract allows manage_projects, or "" for the shared
+// manage_projects identity. The action is read the way the tool runtime reads
+// it (trimmed, lower-case; a non-string action never reaches these actions).
+//   - project_task_launch: approve_task/accept_task/deploy_task start an
+//     approved task's session (approving the card is the person's gate), and a
+//     propose_task/create_task that is not a pending card
+//     (isManageProjectsPendingTaskProposal) starts work or spends at once.
+//   - project_removal: delete (project), delete_task and archive_task.
+func manageProjectsPolicyIdentity(toolArguments string) string {
+	var args map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(toolArguments)), &args) != nil || args == nil {
+		return ""
+	}
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "approve_task", "accept_task", "deploy_task":
+		return policyToolProjectTaskLaunch
+	case "propose_task", "create_task":
+		if isManageProjectsPendingTaskProposal(toolArguments) {
+			return ""
+		}
+		return policyToolProjectTaskLaunch
+	case "delete", "delete_task", "archive_task":
+		return policyToolProjectRemoval
+	default:
+		return ""
+	}
 }
 
 func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision {
@@ -1620,6 +1672,13 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 		if IsManageProjectsReadOnlyAction(toolArguments) || isManageProjectsPendingTaskProposal(toolArguments) {
 			return PolicyDecisionAllow
 		}
+		if bypass {
+			return PolicyDecisionAllow
+		}
+		return PolicyDecisionAsk
+	case policyToolProjectTaskLaunch, policyToolProjectRemoval:
+		// Same default as other manage_projects mutations; only the identity is
+		// separate, so the enabled-tool overlay cannot pre-approve it.
 		if bypass {
 			return PolicyDecisionAllow
 		}
