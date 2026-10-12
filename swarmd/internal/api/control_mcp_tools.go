@@ -79,6 +79,10 @@ var controlMCPRoutes = []string{
 	"GET v1/workspace/list",
 	"POST v1/workspace/repository/setup",
 	"POST v1/workspace/add",
+	// Host change requests (host:request) and their listing; approval stays
+	// owner-only and is not an MCP tool.
+	"GET v1/host/changes",
+	"POST v1/host/changes",
 	"GET v1/providers",
 	"GET v1/model/catalog",
 	"GET v1/agent-model-settings",

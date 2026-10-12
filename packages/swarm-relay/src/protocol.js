@@ -17,6 +17,10 @@ export const SCOPE_WRITE = 'swarm:write';
 export const SCOPE_APPROVE = 'swarm:approve';
 // Worker administration, usage limits and agent role default models.
 export const SCOPE_MANAGE = 'swarm:manage';
+// API scope of a scoped token that may request an owner-approved host change
+// (POST /v1/host/changes). Not an OAuth level: never granted to relay clients
+// and needed by no relay tool.
+export const SCOPE_HOST_REQUEST = 'host:request';
 export const SCOPES = [SCOPE_READ, SCOPE_WRITE, SCOPE_APPROVE, SCOPE_MANAGE];
 
 // Scope each Swarm Control tool needs. Unknown tools need write. The device

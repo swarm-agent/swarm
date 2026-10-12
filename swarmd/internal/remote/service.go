@@ -37,6 +37,10 @@ const (
 	ScopeWrite   = "swarm:write"
 	ScopeApprove = "swarm:approve"
 	ScopeManage  = "swarm:manage"
+	// ScopeHostRequest is the API scope (not a Swarm Control level) a scoped
+	// token needs to request an owner-approved host change; it is never part
+	// of a relay ceiling and no relay tool needs it.
+	ScopeHostRequest = "host:request"
 
 	handshakeTimeout = 15 * time.Second
 	pingInterval     = 30 * time.Second

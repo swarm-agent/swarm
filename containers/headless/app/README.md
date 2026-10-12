@@ -72,13 +72,40 @@ it is ready. Never point work at a freshly initialised, empty repository in
 place of their code; `swarm_create_workspace` is only for a new project started
 from scratch.
 
+**Workspaces on this machine.** A workspace is the repository on this
+machine's disk, worked in place (sparse worktrees per agent, agent commands in
+that project's sandbox): never a copy or a clone. Register the person's real
+folder as it is. Swarm runs as the `swarm` user with the rest of the machine
+hidden from it, so when it cannot see a folder, `POST /v1/workspace/add`
+answers `409 workspace_not_visible` with the host change that fixes it
+(`host_change: {"op":"mount-workspace","path":...}` and `supported`). Whoever
+is setting the machine up (an SDK token minted with
+`swarmctl setup sdk-token --host-request`, i.e. the `host:request` scope, or
+the owner) records that request with `POST /v1/host/changes`
+(`{"op":"mount-workspace","path":"/abs/folder","reason":"..."}`; also
+`unmount-workspace`) and reads the queue with `GET /v1/host/changes?status=pending`
+(`host:request` or `swarm:read`). Only the machine owner decides:
+`POST /v1/host/changes/ID/approve` or `/deny` over the private socket, or
+`sudo swarmctl host list|approve ID|deny ID`; agents and AI keys are refused.
+An approval asks the root-owned host-change helper, over its socket (daemon
+flag `--host-change-helper`), to run `mount-workspace PATH`: a systemd drop-in
+that binds exactly that folder into the service, access for the `swarm` user
+on that folder only, and a daemon restart; every call is logged to a root-only
+log; it is never a shell command. `install.sh host-helper` installs the helper;
+without it, requests answer `host_changes_unsupported`. Each request is kept
+(`pending`, `applying`, `applied`, `failed`, `denied`; the newest 200), and a
+folder made visible this way, which belongs to the person rather than to
+`swarm`, gets Git's `safe.directory` from the daemon and inside the sandbox.
+
 **Agent sandboxes.** Swarm keeps its keys, login and local socket to itself.
 Agents' commands, and Swarm's own Git on their projects, run in one sandbox
 per project (`swarmd/internal/sandbox`, image `containers/sandbox`): gVisor
 when it runs correctly on the machine (else Docker's default runtime), all
 capabilities dropped, no-new-privileges, the `swarm` user's uid, memory and
-process limits, only that project and its worktrees mounted at the same paths,
-nothing from Swarm's environment. The sandbox network (`swarm-sandbox`, bridge
+process limits, only that project and its worktrees mounted at the same paths
+(the project's `.git/hooks` and `.git/config` read-only on top, so an agent
+cannot plant hooks or configuration that run programs), nothing from Swarm's
+environment. The sandbox network (`swarm-sandbox`, bridge
 `br-swarm-sbx`, rules from `containers/sandbox/firewall.sh`, re-applied at
 boot by `swarm-sandbox-firewall`) reaches the internet but drops new
 connections to this server, the tailnet, private ranges, loopback and cloud

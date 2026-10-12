@@ -154,6 +154,12 @@ type Manager struct {
 	// search domain). Docker's embedded resolver (127.0.0.11) does not
 	// answer under gVisor, and the host's search domain names the tailnet.
 	resolvConf string
+	// owner reports a path's owning uid (tests inject it); safeDirs caches the
+	// foreign-owned project directories Git needs safe.directory for.
+	owner      func(path string) (int, bool)
+	safeMu     sync.Mutex
+	safeDirs   []string
+	safeDirsAt time.Time
 }
 
 type box struct {
@@ -489,7 +495,7 @@ func within(root, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
-func (m *Manager) specHash(mounts []string, secretFingerprint string) string {
+func (m *Manager) specHash(root string, mounts []string, secretFingerprint string) string {
 	m.mu.Lock()
 	parts := []string{
 		"v3", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
@@ -497,6 +503,7 @@ func (m *Manager) specHash(mounts []string, secretFingerprint string) string {
 	}
 	m.mu.Unlock()
 	parts = append(parts, mounts...)
+	parts = append(parts, gitGuardSpec(gitGuardMounts(root))...)
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:12])
 }
@@ -546,6 +553,10 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 	for _, mount := range mounts {
 		args = append(args, "--mount", "type=bind,src="+mount+",dst="+mount)
 	}
+	// Read-only guards over the project's hooks and config (gitguard.go).
+	for _, g := range gitGuardMounts(root) {
+		args = append(args, "--mount", "type=bind,src="+g.HostPath+",dst="+g.Dest+",readonly")
+	}
 	for _, kv := range secret.Env {
 		args = append(args, "--env", kv)
 	}
@@ -579,7 +590,7 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 			return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
 		}
 	}
-	spec := m.specHash(mounts, secret.Fingerprint)
+	spec := m.specHash(root, mounts, secret.Fingerprint)
 
 	m.mu.Lock()
 	b := m.boxes[name]
@@ -707,6 +718,9 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	if err := m.requireMounted(b, req.WorkingDir); err != nil {
 		return nil, err
 	}
+	// Agent Git inside the sandbox needs safe.directory for folders the owner
+	// made visible, which belong to another uid.
+	req.Env = safeDirectoryEnvMap(req.Env, m.safeDirectories())
 	var progress provider.ExecProgressCallback
 	if req.OnOutput != nil {
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }

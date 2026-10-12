@@ -12,6 +12,7 @@ import (
 
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm-refactor/swarmtui/pkg/storagecontract"
+	"swarm/packages/swarmd/internal/hostchange"
 	"swarm/packages/swarmd/internal/sandbox"
 )
 
@@ -39,6 +40,10 @@ type Config struct {
 	SandboxRuntime          string
 	SecretsGateway          string // off (default) | on
 	SecretsGatewayAddr      string // bridge address:port the gateway listens on
+	// HostChangeHelper is the unix socket of the root-owned host-change helper
+	// (installed by the headless installer's host-helper step); empty means
+	// host changes are unsupported on this Swarm.
+	HostChangeHelper string
 }
 
 func Parse(args []string) (Config, error) {
@@ -101,6 +106,7 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
 	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
 	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")
+	fs.StringVar(&cfg.HostChangeHelper, "host-change-helper", "", "unix socket of the root-owned host-change helper that makes owner-approved folders visible to Swarm (installed by the headless installer's host-helper step); empty = host changes unsupported")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
 	fs.StringVar(&cfg.DBPath, "db-path", defaultDBPath, "Pebble database path")
 	fs.StringVar(&cfg.LockPath, "lock-path", defaultLockPath, "daemon lock file path")
@@ -139,6 +145,10 @@ func Parse(args []string) (Config, error) {
 	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err
 	}
+	if err := hostchange.ValidateSocketPath(cfg.HostChangeHelper); err != nil {
+		return Config{}, err
+	}
+	cfg.HostChangeHelper = strings.TrimSpace(cfg.HostChangeHelper)
 
 	if strings.TrimSpace(cfg.StartupCWD) == "" {
 		cfg.StartupCWD = defaultStartupCWD

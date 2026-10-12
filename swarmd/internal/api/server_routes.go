@@ -64,6 +64,8 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v3/signals/sinks/", s.handleSignalSinks)
 	mux.HandleFunc("/v1/secrets", s.handleSecrets)
 	mux.HandleFunc("/v1/secrets/", s.handleSecrets)
+	mux.HandleFunc(hostChangesPath, s.handleHostChanges)
+	mux.HandleFunc(hostChangesPath+"/", s.handleHostChanges)
 	mux.HandleFunc("/v1/account/username", s.handleAccountUsername)
 	mux.HandleFunc("/v1/account/avatar", s.handleAccountAvatar)
 	mux.HandleFunc("/v1/account/team/upgrade", s.handleAccountTeamUpgrade)

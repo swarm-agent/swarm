@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"swarm/packages/swarmd/internal/memory"
@@ -97,38 +100,43 @@ const (
 type Server struct {
 	automations *automationHTTPServices
 
-	memory                      *memory.Service
-	auth                        *auth.Service
-	agents                      *agentruntime.Service
-	model                       *model.Service
-	modelProfiles               *modelprofile.Service
-	agentModelSettings          *agentmodelsettings.Service
-	agentModelSettingsStore     *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
-	runner                      runService
-	runStreams                  *runControlAllocator
-	v3RealtimeOutbox            *v3RealtimeOutboxHub
-	v3LiveHub                   *v3LiveHub
-	v3LivePatchEnabled          bool
-	v3SyncCursors               *v3SyncCursorKeyring
-	v3SessionExecutor           *sessionV3Executor
-	planLifecycle               *sessionruntime.PlanLifecycleService
-	sessions                    *sessionruntime.Service
-	workspace                   *workspace.Service
-	discovery                   *discovery.Service
-	worktrees                   worktreeService
-	mcp                         mcpService
-	security                    *security.Service
-	providers                   *registry.Registry
-	codexAccount                codexAccountClient
-	claudeCodeUsage             claudeCodeUsageClient
-	perm                        permissionService
-	notifications               notificationService
-	storageHub                  *storagehub.Service
-	secretSlots                 *pebblestore.SecretSlotStore
-	signals                     *pebblestore.SignalStore
-	secretsGatewayEnabled       bool
-	signalSinks                 *pebblestore.SignalSinkStore
-	secretValues                secretValueSetter
+	memory                  *memory.Service
+	auth                    *auth.Service
+	agents                  *agentruntime.Service
+	model                   *model.Service
+	modelProfiles           *modelprofile.Service
+	agentModelSettings      *agentmodelsettings.Service
+	agentModelSettingsStore *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
+	runner                  runService
+	runStreams              *runControlAllocator
+	v3RealtimeOutbox        *v3RealtimeOutboxHub
+	v3LiveHub               *v3LiveHub
+	v3LivePatchEnabled      bool
+	v3SyncCursors           *v3SyncCursorKeyring
+	v3SessionExecutor       *sessionV3Executor
+	planLifecycle           *sessionruntime.PlanLifecycleService
+	sessions                *sessionruntime.Service
+	workspace               *workspace.Service
+	discovery               *discovery.Service
+	worktrees               worktreeService
+	mcp                     mcpService
+	security                *security.Service
+	providers               *registry.Registry
+	codexAccount            codexAccountClient
+	claudeCodeUsage         claudeCodeUsageClient
+	perm                    permissionService
+	notifications           notificationService
+	storageHub              *storagehub.Service
+	secretSlots             *pebblestore.SecretSlotStore
+	signals                 *pebblestore.SignalStore
+	secretsGatewayEnabled   bool
+	signalSinks             *pebblestore.SignalSinkStore
+	secretValues            secretValueSetter
+	hostChanges             *pebblestore.HostChangeStore
+	hostChangeHelper        hostChangeHelper
+	// hostChangeRestartDelay separates the applied record and the HTTP reply
+	// from the daemon restart the helper then performs.
+	hostChangeRestartDelay      time.Duration
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
@@ -433,6 +441,19 @@ func (s *Server) SetSecretServices(slots *pebblestore.SecretSlotStore, values se
 	}
 	s.secretSlots = slots
 	s.secretValues = values
+}
+
+// SetHostChangeServices wires the owner-approved host change records and the
+// client of the installer-placed helper that applies them.
+func (s *Server) SetHostChangeServices(changes *pebblestore.HostChangeStore, helper hostChangeHelper) {
+	if s == nil {
+		return
+	}
+	s.hostChanges = changes
+	s.hostChangeHelper = helper
+	if s.hostChangeRestartDelay == 0 {
+		s.hostChangeRestartDelay = defaultHostChangeRestartDelay
+	}
 }
 
 func (s *Server) SetMediaStagingService(service *mediastaging.Service) {
@@ -2115,6 +2136,9 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, errors.New("context folder registration cannot select a coding workspace"))
 			return
 		}
+		if s.writeWorkspaceNotVisible(w, req.Path) {
+			return
+		}
 		register := s.workspace.RegisterContextFolderForPrincipal
 		if req.RequireExistingContent {
 			register = s.workspace.RegisterExistingFolderForPrincipal
@@ -2125,6 +2149,9 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": resolution, "workspace_id": resolution.WorkspaceID})
+		return
+	}
+	if s.writeWorkspaceNotVisible(w, req.Path) {
 		return
 	}
 	// Repository readiness is a filesystem prerequisite. Check it before any
@@ -2212,6 +2239,37 @@ func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "repository": repository})
+}
+
+// writeWorkspaceNotVisible answers a workspace registration whose absolute
+// path the daemon cannot see (it runs as its own user, with the person's
+// folders hidden from it) with the host change that fixes it, instead of a
+// dead "no such directory". Only a missing or unreadable path outside Swarm's
+// own storage qualifies; everything else keeps its usual error.
+func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bool {
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	clean := filepath.Clean(path)
+	_, err := os.Stat(clean)
+	if err == nil {
+		_, err = filepath.EvalSymlinks(clean)
+	}
+	if err == nil || !(errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission)) {
+		return false
+	}
+	if tool.RefuseProtectedPath(clean) != nil {
+		return false
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"ok":          false,
+		"code":        "workspace_not_visible",
+		"error":       clean + " is not visible to Swarm on this machine.",
+		"host_change": map[string]string{"op": pebblestore.HostChangeOpMountWorkspace, "path": clean},
+		"supported":   s.hostChangesSupported(),
+	})
+	return true
 }
 
 func writeWorkspaceRepositoryError(w http.ResponseWriter, err error) {

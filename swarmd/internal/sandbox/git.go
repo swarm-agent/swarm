@@ -116,6 +116,16 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 	if len(cmd.Args) == 0 || filepath.Base(cmd.Args[0]) != "git" {
 		return fmt.Errorf("sandbox git routing expects a git command, got %q", cmd.Args)
 	}
+	// Every daemon Git command, routed or not, gets safe.directory for the
+	// folders the owner made visible (owned by another uid); the sandbox
+	// path forwards GIT_* below.
+	if safe := m.safeDirectories(); len(safe) > 0 {
+		env := cmd.Env
+		if env == nil {
+			env = os.Environ()
+		}
+		cmd.Env = AppendSafeDirectoryEnv(env, safe)
+	}
 	target, err := gitTarget(cmd)
 	if err != nil {
 		return err
