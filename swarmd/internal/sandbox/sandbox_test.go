@@ -483,3 +483,39 @@ func TestSandboxRunsAsTheFolderOwner(t *testing.T) {
 		t.Error("spec hash ignores the sandbox user")
 	}
 }
+
+func TestWarmStartsTheSandboxUnderItsOwnBudget(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	project := filepath.Join(base, "p")
+	_ = os.MkdirAll(project, 0o700)
+	runner := readyRunner()
+	m := newTestManager(t, ModeRequired, runner, Config{})
+	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{project}, nil }})
+
+	// A caller whose own deadline is already gone still gets the sandbox
+	// started: the start is bounded by the sandbox's budget, not the caller's.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.Warm(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.ran("run -d --init") {
+		t.Fatal("warm did not start the sandbox")
+	}
+	before := len(runner.calls)
+	if err := m.Warm(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range runner.calls[before:] {
+		if strings.HasPrefix(strings.Join(c, " "), "run ") {
+			t.Fatal("a warm sandbox was started again")
+		}
+	}
+	// Outside every project: nothing happens.
+	if err := m.Warm(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	if (&Manager{}).Warm(context.Background(), project) != nil || Warm(context.Background(), project) != nil {
+		t.Fatal("warm without a manager must be a no-op")
+	}
+}

@@ -305,3 +305,30 @@ func engineEnv(env []string) []string {
 	}
 	return out
 }
+
+// Warm starts the sandbox of the project dir belongs to, if it needs one,
+// so a command that follows under its own short budget does not spend it on
+// container start-up (a cold gVisor sandbox takes seconds). It is a no-op
+// for directories outside any sandboxed project, when no sandbox is needed,
+// or when no manager is installed; a sandbox that cannot start is reported
+// by the command itself, so errors here are only informational.
+func Warm(ctx context.Context, dir string) error {
+	return Default().Warm(ctx, dir)
+}
+
+// Warm is the package-level Warm for this manager.
+func (m *Manager) Warm(ctx context.Context, dir string) error {
+	if m == nil || !m.Active() {
+		return nil
+	}
+	scope, ok, err := m.ScopeFor(dir)
+	if err != nil || !ok {
+		return err
+	}
+	b, err := m.acquire(ctx, scope)
+	if err != nil {
+		return err
+	}
+	m.release(b)
+	return nil
+}

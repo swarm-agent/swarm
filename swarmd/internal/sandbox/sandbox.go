@@ -642,7 +642,10 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 	b.mu.RUnlock()
 
 	b.mu.Lock()
-	ensureCtx, cancel := context.WithTimeout(ctx, ensureTimeout)
+	// Starting a sandbox is bounded by its own budget, not by the caller's
+	// deadline: a short command budget must not abort a container start
+	// halfway, and the next command then finds the sandbox ready.
+	ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
 	err = m.ensure(ensureCtx, name, root, spec, mounts, secret)
 	cancel()
 	if err == nil {
