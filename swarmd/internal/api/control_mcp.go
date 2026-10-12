@@ -51,6 +51,7 @@ type controlMCPInstruction struct {
 var controlMCPInstructionLines = []controlMCPInstruction{
 	{nil, "Swarm Control drives Swarm, a local AI coding workspace, on one machine."},
 	{[]string{"swarm_add_workspace", "swarm_create_project", "swarm_get_project", "swarm_start_session"}, "To set Swarm up for someone's work, first ask them which workspaces to add: existing folders or git repositories on this machine, possibly several. Register each with add_workspace, group them with create_project, wait with get_project until the project's project.md is ready, then work through the project's orchestrator: start_session with agent system-orchestrator and the project_id."},
+	{[]string{"swarm_add_workspace", "swarm_request_host_change", "swarm_list_host_changes"}, "If add_workspace answers blocked not_visible, request the host change it names with request_host_change, tell the person it waits for their approval in Swarm, and add the folder again once list_host_changes shows it applied."},
 	{[]string{"swarm_create_workspace"}, "Never hand the person an empty repository as their work target: create_workspace makes a new, empty repository and is only for a brand-new project they asked to start from scratch."},
 	{[]string{"swarm_start_session", "swarm_get_session"}, "Work is asynchronous: start_session, send_message and run_plan return at once with the session's current state; pass wait_seconds to start_session, send_message or get_session to wait until the run settles (it ended: finished, failed or stopped; or it waits on a decision in pending_permissions)."},
 	{[]string{"swarm_start_session"}, "Prefer giving a plan (checkpoints with acceptance criteria) for multi-step work; Swarm runs its checkpoints one after another, but agent tool calls still follow the permission policy."},
@@ -112,10 +113,28 @@ type controlMCPCall struct {
 // controlMCPToolError is reported to the model as a tool result with isError,
 // not as a protocol failure, so it can correct its call.
 // status is the HTTP status of a rejected sub-request (0 otherwise), so tools
-// can turn a 404 into a hint naming the id and the list tool.
+// can turn a 404 into a hint naming the id and the list tool; body is that
+// sub-request's raw JSON reply (kept as text so the error stays comparable),
+// so a tool can read a coded refusal (for example workspace_not_visible) and
+// answer with its next step instead of an error.
 type controlMCPToolError struct {
 	message string
 	status  int
+	body    string
+}
+
+// controlMCPRejection decodes the reply of a sub-request Swarm rejected with the given
+// status; nil for any other error or status.
+func controlMCPRejection(err error, status int) map[string]any {
+	var toolErr controlMCPToolError
+	if !errors.As(err, &toolErr) || toolErr.status != status {
+		return nil
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(toolErr.body), &body) != nil {
+		return nil
+	}
+	return body
 }
 
 func (e controlMCPToolError) Error() string { return e.message }
@@ -280,18 +299,35 @@ func (c *controlMCPCall) levels() []string {
 	return levels
 }
 
+// levelAllows decides whether this key sees and may call a tool. A tool whose
+// scope is an API scope rather than a Swarm Control level (host:request for
+// swarm_request_host_change) is offered only to keys that hold that scope,
+// whatever their levels: a plain write key never requests host changes.
 func (c *controlMCPCall) levelAllows(name string) bool {
+	need := remote.ToolScope(name)
+	if !strings.HasPrefix(need, "swarm:") {
+		record, ok := ScopedTokenFromRequest(c.request)
+		return ok && record.HasScope(need)
+	}
 	levels := c.levels()
 	if len(levels) == 0 {
 		return true
 	}
-	need := remote.ToolScope(name)
 	for _, level := range levels {
 		if level == need {
 			return true
 		}
 	}
 	return false
+}
+
+// levelRefusal is the tool result for a call levelAllows refused.
+func (c *controlMCPCall) levelRefusal(name string) error {
+	need := remote.ToolScope(name)
+	if !strings.HasPrefix(need, "swarm:") {
+		return controlMCPToolFailure("this key lacks the %s permission that %s needs (a key minted with swarmctl setup sdk-token --host-request, or a full AI key)", need, name)
+	}
+	return controlMCPToolFailure("this key is limited to %s; %s needs %s", strings.Join(c.levels(), ", "), name, need)
 }
 
 func (c *controlMCPCall) visibleTools() []controlMCPTool {
@@ -325,7 +361,7 @@ func (c *controlMCPCall) callTool(params json.RawMessage) (map[string]any, *cont
 		return nil, &controlMCPError{Code: -32602, Message: "unknown tool"}
 	}
 	if !c.levelAllows(tool.Name) {
-		return controlMCPToolResult(nil, controlMCPToolFailure("this key is limited to %s; %s needs %s", strings.Join(c.levels(), ", "), tool.Name, remote.ToolScope(tool.Name))), nil
+		return controlMCPToolResult(nil, c.levelRefusal(tool.Name)), nil
 	}
 	args := map[string]any{}
 	if len(bytes.TrimSpace(p.Arguments)) > 0 && string(bytes.TrimSpace(p.Arguments)) != "null" {
@@ -482,7 +518,7 @@ func (c *controlMCPCall) dispatch(method, path string, query url.Values, body an
 		if strings.TrimSpace(message) == "" {
 			message = http.StatusText(recorder.status)
 		}
-		return nil, controlMCPToolError{message: fmt.Sprintf("Swarm rejected the request (HTTP %d): %s", recorder.status, message), status: recorder.status}
+		return nil, controlMCPToolError{message: fmt.Sprintf("Swarm rejected the request (HTTP %d): %s", recorder.status, message), status: recorder.status, body: recorder.body.String()}
 	}
 	return decoded, nil
 }

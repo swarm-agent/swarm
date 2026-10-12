@@ -15,6 +15,7 @@ export * from './permissions.js';
 export * from './chat.js';
 export * from './copy-tags.js';
 export * from './workspaces.js';
+export * from './host.js';
 export * from './system.js';
 export * from './remote.js';
 export * from './agents.js';

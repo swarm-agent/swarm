@@ -62,6 +62,41 @@ export class SwarmConflictError extends SwarmApiError {
   }
 }
 
+/**
+ * `workspaces.add` was refused with `409 workspace_not_visible`: the folder is
+ * not visible to Swarm on this machine (a headless Swarm runs as its own user).
+ * `hostChange` is the request that fixes it (`client.host.request`), to be
+ * approved by the machine owner; `supported` is false when the machine has no
+ * host-change helper, so no request can be applied there.
+ */
+export class SwarmWorkspaceNotVisibleError extends SwarmConflictError {
+  readonly hostChange: { op: 'mount-workspace' | 'unmount-workspace'; path: string };
+  readonly supported: boolean;
+
+  constructor(message: string, options: Omit<SwarmApiErrorOptions, 'status'> & { hostChange: SwarmWorkspaceNotVisibleError['hostChange']; supported: boolean }) {
+    const { hostChange, supported, ...rest } = options;
+    super(message, { ...rest, code: 'workspace_not_visible' });
+    this.name = 'SwarmWorkspaceNotVisibleError';
+    this.hostChange = hostChange;
+    this.supported = supported;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+
+  /** The `SwarmConflictError` for `workspace_not_visible`, retyped; any other error is returned as it is. */
+  static from(err: unknown): unknown {
+    if (!(err instanceof SwarmConflictError) || err.code !== 'workspace_not_visible' || err instanceof SwarmWorkspaceNotVisibleError) return err;
+    const details = (err.details && typeof err.details === 'object' ? err.details : {}) as Record<string, unknown>;
+    const fix = (details.host_change && typeof details.host_change === 'object' ? details.host_change : {}) as Record<string, unknown>;
+    if (typeof fix.op !== 'string' || typeof fix.path !== 'string') return err;
+    return new SwarmWorkspaceNotVisibleError(err.message, {
+      details: err.details,
+      responseBody: err.responseBody,
+      hostChange: { op: fix.op as 'mount-workspace' | 'unmount-workspace', path: fix.path },
+      supported: details.supported === true,
+    });
+  }
+}
+
 export class SwarmTimeoutError extends SwarmError {
   readonly timeoutMs: number;
 

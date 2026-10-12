@@ -34,7 +34,10 @@ unsupported protocol versions are rejected.
 | `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
 | `swarm_stop_run` | `swarm:write` | `POST …/run/stop`, then waits up to 10 s and reports the run's final status (`finished`, `failed`, `stopped` or `stopping`), the plan's state (a stopped plan is `paused`: it keeps progress and resumes only with a new message) and a summary |
 | `swarm_resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` (one decision; Swarm has no session-scoped allowance, and persistent rules stay owner-only) |
-| `swarm_add_workspace` | `swarm:write` | `POST /v1/workspace/add` with `context_only` and `require_existing_content` (an existing, non-empty folder outside system/Swarm storage and outside registered workspaces; nothing initialised or committed; an already registered path is returned) (tool requires `sessions:write`) |
+| `swarm_add_workspace` | `swarm:write` | `POST /v1/workspace/add` with `context_only` and `require_existing_content` (an existing, non-empty folder outside system/Swarm storage and outside registered workspaces; nothing initialised or committed; an already registered path is returned) (tool requires `sessions:write`); a `409 workspace_not_visible` (a headless Swarm cannot see the folder) is a non-error result `{added: false, blocked: "not_visible", path, host_change: {op, path}, supported, next}` whose `next` sends the AI to `swarm_request_host_change` (or, with `supported: false`, to the owner's `install.sh host-helper`) |
+| `swarm_request_host_change` (`op`, `path`, `reason`) | `host:request` (an API scope, not a level: a plain write key never has it; `swarmctl setup sdk-token --host-request`, or a full AI key's `admin`; outside every relay ceiling, so never offered through a relay) | `POST /v1/host/changes`: records a `mount-workspace` or `unmount-workspace` request for the owner (an identical pending one is returned); returns `{change, next}` saying it waits for the owner's approval; `host_changes_unsupported` becomes a tool error naming the helper step |
+| `swarm_list_host_changes` (+ `status`) | `swarm:read` | `GET /v1/host/changes[?status=]` (route scope `host:request` or `swarm:read`): `{supported, changes[]}` with `id`, `op`, `path`, `reason`, `status` (`pending`, `applying`, `applied`, `failed`, `denied`), `requested_by`, `error` |
+| *(no tool)* approve or deny a host change | — | `POST /v1/host/changes/{id}/approve\|deny` are owner-only and outside the Swarm Control allowlist: `swarmctl host approve\|deny ID` or the app |
 | `swarm_create_workspace` | `swarm:write` | `POST /v1/workspace/repository/setup` then `POST /v1/workspace/add`: a new, empty repository under the daemon's workspace folder, only for a project started from scratch (tool requires `sessions:write`) |
 | `swarm_list_projects` | `swarm:read` | `GET /v3/projects` (workspaces with roles and `context_status`) |
 | `swarm_create_project` | `swarm:manage` | `POST /v3/projects` with registered workspaces (by path or id; role `primary_code`, `auxiliary` or `docs`); Swarm then generates `project.md` |
@@ -125,13 +128,14 @@ copy). Sessions, runs, plans and workers are reduced to ids, names and
 status; text is truncated (messages 1,500, tool arguments 800, tool output
 300 characters, raised per call with `get_session` `detail_chars`) and plans
 show only per-checkpoint status. Server instructions name only tools the
-caller's level allows. The full tool list
-is 34 tools.
+caller's level allows (and, for `swarm_request_host_change`, only a key
+holding `host:request`). The full tool list is 41 tools.
 
 **Local tokens.** `swarmctl setup sdk-token` mints session scopes by default;
 add `--workers` (automations read/write), `--usage-limits` (`usage:write`) and
 `--settings` (`settings:write`) explicitly for the worker, limit and role-model
-tools.
+tools, and `--host-request` (`host:request`) for `swarm_request_host_change`;
+a full AI key (`admin`) has it too, read and write AI keys never do.
 
 ## Local AI clients (`swarm mcp`)
 

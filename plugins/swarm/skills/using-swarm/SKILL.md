@@ -59,6 +59,14 @@ authentication. A service-account socket error is also a connection issue.
   `swarm_create_workspace` makes a new, empty repo and is only for a brand-new
   project they asked to start from scratch. Verify the requested files exist
   before assigning a repository review.
+- **A folder Swarm cannot see.** A headless Swarm sees only the folders it was
+  given. If `swarm_add_workspace` answers `blocked: "not_visible"`, request the
+  host change it names with `swarm_request_host_change` (its `op` and `path`,
+  plus a one-sentence reason), tell the person it waits for their approval in
+  Swarm and that Swarm restarts when applied, and add the folder again once
+  `swarm_list_host_changes` shows it `applied`. You cannot approve it, and no
+  tool can; `supported: false` means the machine has no host-change helper and
+  the owner must install it first.
 
 ## 3. Hand work to an agent
 

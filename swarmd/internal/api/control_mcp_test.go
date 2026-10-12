@@ -142,7 +142,8 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 	if got := rpc(read, "initialize", map[string]any{"protocolVersion": "2025-06-18"}); got.Result.ProtocolVersion != "2025-06-18" {
 		t.Fatalf("protocol negotiation: %q", got.Result.ProtocolVersion)
 	}
-	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != len(controlMCPTools()) {
+	// A key without host:request is never offered swarm_request_host_change.
+	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != len(controlMCPTools())-1 {
 		t.Fatalf("tool surface changed: %d tools", len(got.Result.Tools))
 	}
 	if got := rpc(read, "no/such", nil); got.Error == nil || got.Error.Code != -32601 {
@@ -603,7 +604,7 @@ func TestControlMCPServedToolsHaveRelayScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tool := range controlMCPTools() {
-		if !regexp.MustCompile(`(?m)^\s+` + tool.Name + `:\s+SCOPE_[A-Z]+,$`).Match(source) {
+		if !regexp.MustCompile(`(?m)^\s+` + tool.Name + `:\s+SCOPE_[A-Z_]+,$`).Match(source) {
 			t.Fatalf("%s has no explicit relay scope", tool.Name)
 		}
 	}

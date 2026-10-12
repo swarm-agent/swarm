@@ -1,3 +1,4 @@
+import { SwarmWorkspaceNotVisibleError } from './errors.js';
 import type { SwarmTransport } from './transport.js';
 import type { WorkspaceRecord } from './types.js';
 
@@ -33,9 +34,18 @@ export class SwarmWorkspacesNamespace {
    * coding workspace), and with `require_existing_content` as well the daemon
    * refuses empty folders, system/Swarm storage directories and folders inside
    * an already registered workspace (for folders the person named).
+   *
+   * A folder Swarm cannot see on this machine (a headless Swarm runs as its
+   * own user) rejects with `SwarmWorkspaceNotVisibleError`, whose `hostChange`
+   * is the request to make with `client.host.request` for the owner to approve;
+   * add the folder again once that request is `applied`.
    */
   async add(body: { path: string; name?: string; theme_id?: string; make_current?: boolean; confirm_committed_only?: boolean; context_only?: boolean; require_existing_content?: boolean }): Promise<WorkspaceResolution> {
-    return (await this.transport.request<{ ok: boolean; workspace: WorkspaceResolution }>('/v1/workspace/add', { method: 'POST', body })).data.workspace;
+    try {
+      return (await this.transport.request<{ ok: boolean; workspace: WorkspaceResolution }>('/v1/workspace/add', { method: 'POST', body })).data.workspace;
+    } catch (err) {
+      throw SwarmWorkspaceNotVisibleError.from(err);
+    }
   }
   async inspectRepository(path: string): Promise<WorkspaceRepository> {
     return (await this.transport.request<{ ok: boolean; repository: WorkspaceRepository }>(`/v1/workspace/repository?${new URLSearchParams({ path })}`)).data.repository;

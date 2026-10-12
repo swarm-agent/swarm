@@ -447,6 +447,33 @@ for (const ws of workspaces) {
 }
 ```
 
+#### Host changes
+
+A headless Swarm runs as its own user and sees only the folders it was given.
+When `workspaces.add` is refused with `409 workspace_not_visible`, the SDK throws
+`SwarmWorkspaceNotVisibleError` with `hostChange` (the request that fixes it)
+and `supported` (false when the machine has no host-change helper). Record the
+request with `client.host.request` (a scoped key needs `host:request`, minted
+with `swarmctl setup sdk-token --host-request`); only the machine owner's
+credential can `approve` or `deny` it (every scoped key is refused), and
+approval restarts Swarm. Follow it with `client.host.list` and add the folder
+again once it is `applied`.
+
+```typescript
+import { SwarmWorkspaceNotVisibleError } from '@swarm-agent/sdk';
+
+try {
+  await client.workspaces.add({ path: '/home/person/app', context_only: true, require_existing_content: true, make_current: false });
+} catch (err) {
+  if (err instanceof SwarmWorkspaceNotVisibleError && err.supported) {
+    const change = await client.host.request({ ...err.hostChange, reason: 'the app the person asked Swarm to work on' });
+    console.log(`waiting for the owner to approve ${change.id}`); // then: client.host.list({ status: 'applied' })
+  } else {
+    throw err;
+  }
+}
+```
+
 ### 6. Projects, Autonomous Tasks, and Orchestrate Primitives
 
 Manage multi-workspace projects, autonomous tasks, route previews, plan review lifecycles, and opaque event sync streams:

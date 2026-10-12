@@ -18,8 +18,9 @@ export const SCOPE_APPROVE = 'swarm:approve';
 // Worker administration, usage limits and agent role default models.
 export const SCOPE_MANAGE = 'swarm:manage';
 // API scope of a scoped token that may request an owner-approved host change
-// (POST /v1/host/changes). Not an OAuth level: never granted to relay clients
-// and needed by no relay tool.
+// (POST /v1/host/changes). Not an OAuth level: never granted to relay clients,
+// so the one tool mapped to it (swarm_request_host_change) is never offered
+// through a relay.
 export const SCOPE_HOST_REQUEST = 'host:request';
 export const SCOPES = [SCOPE_READ, SCOPE_WRITE, SCOPE_APPROVE, SCOPE_MANAGE];
 
@@ -39,6 +40,8 @@ export const TOOL_SCOPES = {
   swarm_list_tasks: SCOPE_READ,
   swarm_create_workspace: SCOPE_WRITE,
   swarm_add_workspace: SCOPE_WRITE,
+  swarm_request_host_change: SCOPE_HOST_REQUEST,
+  swarm_list_host_changes: SCOPE_READ,
   swarm_start_session: SCOPE_WRITE,
   swarm_send_message: SCOPE_WRITE,
   swarm_run_plan: SCOPE_WRITE,

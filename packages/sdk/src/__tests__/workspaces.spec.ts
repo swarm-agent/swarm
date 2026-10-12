@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { SwarmConflictError, SwarmWorkspaceNotVisibleError } from '../errors.js';
 import { SwarmWorkspacesNamespace } from '../workspaces.js';
 import type { SwarmTransport } from '../transport.js';
 
@@ -24,4 +25,35 @@ test('workspaces.create sets up and registers one folder under the parent', asyn
   }
   await assert.rejects(ns.create({ parent_path: 'project', name: 'bot' }), /absolute/);
   assert.equal(calls.length, 2);
+});
+
+// Purpose: a folder Swarm cannot see on this machine (409 workspace_not_visible)
+// must reach the app as SwarmWorkspaceNotVisibleError carrying the host change
+// to request and whether the machine can apply it, so the app asks the owner
+// instead of retrying a dead path; every other refusal keeps its own type.
+// Boundary: SwarmWorkspacesNamespace.add over the transport's typed errors.
+test('workspaces.add surfaces workspace_not_visible with its host change', async () => {
+  const body = { ok: false, code: 'workspace_not_visible', error: '/home/person/app is not visible to Swarm on this machine.', host_change: { op: 'mount-workspace', path: '/home/person/app' }, supported: true };
+  const refuse = (payload: Record<string, unknown>, code?: string) =>
+    ({ request: async () => { throw new SwarmConflictError(String(payload.error), { code, details: payload }); } }) as unknown as SwarmTransport;
+  await assert.rejects(
+    new SwarmWorkspacesNamespace(refuse(body, 'workspace_not_visible')).add({ path: '/home/person/app', context_only: true, require_existing_content: true }),
+    (err: unknown) =>
+      err instanceof SwarmWorkspaceNotVisibleError && err instanceof SwarmConflictError && err.status === 409 && err.code === 'workspace_not_visible' &&
+      err.supported === true && err.hostChange.op === 'mount-workspace' && err.hostChange.path === '/home/person/app' && /not visible/.test(err.message),
+  );
+  await assert.rejects(
+    new SwarmWorkspacesNamespace(refuse({ ...body, supported: false }, 'workspace_not_visible')).add({ path: '/home/person/app' }),
+    (err: unknown) => err instanceof SwarmWorkspaceNotVisibleError && err.supported === false,
+  );
+  // Other conflicts, and a not_visible reply without its host change, keep their type.
+  const other = { ok: false, code: 'workspace_repository_not_ready', error: 'not ready', repository: {} };
+  await assert.rejects(
+    new SwarmWorkspacesNamespace(refuse(other, 'workspace_repository_not_ready')).add({ path: '/home/person/app' }),
+    (err: unknown) => err instanceof SwarmConflictError && !(err instanceof SwarmWorkspaceNotVisibleError) && err.code === 'workspace_repository_not_ready',
+  );
+  await assert.rejects(
+    new SwarmWorkspacesNamespace(refuse({ ok: false, code: 'workspace_not_visible', error: 'x' }, 'workspace_not_visible')).add({ path: '/x' }),
+    (err: unknown) => err instanceof SwarmConflictError && !(err instanceof SwarmWorkspaceNotVisibleError),
+  );
 });

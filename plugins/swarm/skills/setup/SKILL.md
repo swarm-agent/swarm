@@ -100,6 +100,16 @@ system permissions, sign-in or secret entry. Do not reset existing state.
   familiar name do not prove the person's code is present; verify the requested
   files before assigning a repository task. Use `swarm_create_workspace` (a
   new, empty repository) only when they ask to start a new project from scratch.
+- A headless Swarm sees only the folders it was given. When `swarm_add_workspace`
+  answers `blocked: "not_visible"`, call `swarm_request_host_change` with the
+  `op` and `path` from its `host_change` (and a one-sentence reason), tell the
+  person it waits for their approval in Swarm (`swarmctl host list|approve ID`
+  on the machine, or the app) and that Swarm restarts when applied, follow it
+  with `swarm_list_host_changes`, and call `swarm_add_workspace` again once its
+  status is `applied`. You cannot approve it: there is no such tool. The
+  request tool needs a key with `host:request` (`swarmctl setup sdk-token
+  --host-request`, or a full AI key); if `supported` is false the machine has
+  no host-change helper and the owner runs `install.sh host-helper` first.
 - Reconnect/refresh the plugin's MCP after installation or configuration changes.
   Confirm a real tool call succeeds before saying it is connected.
 
