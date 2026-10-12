@@ -313,6 +313,12 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		want         bool
 	}{
 		{"GET", "/v3/sessions/abc", true},
+		{"POST", "/v3/projects/proj_1/tasks", true},
+		{"GET", "/v3/projects/proj_1/tasks/task_1", true},
+		{"PATCH", "/v3/projects/proj_1/tasks/task_1", false},
+		{"POST", "/v3/projects/proj_1/tasks/task_1/complete", false},
+		{"POST", "/v3/projects/proj_1/tasks/task_1/accept", false},
+		{"POST", "/v3/projects/proj_1/tasks:preview", false},
 		{"POST", "/v3/sessions/abc/plan-mode/plans/plan_1/start-automatic", true},
 		{"POST", "/v3/workers/wkr_1/direct", true},
 		{"POST", "/v3/workers/wkr_1/runs/run_1/cancel", true},
@@ -331,6 +337,9 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"GET", "/v1/model/catalog", true},
 		{"POST", "/v1/model/catalog", false},
 		{"PATCH", "/v1/agent-model-settings", true},
+		{"GET", "/v1/ui/settings", true},
+		{"POST", "/v1/ui/settings", true},
+		{"DELETE", "/v1/ui/settings", false},
 		{"POST", "/v1/agent-model-settings/restore-defaults", false},
 		{"POST", "/v1/model", false},
 		{"POST", "/v1/permissions/bypass", false},
@@ -351,8 +360,8 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"GET", "/v3/projects/active", false},
 		{"POST", "/v3/projects/prj_1/orchestrator:clear-context", false},
 		{"GET", "/v3/projects/prj_1/tasks", true},
-		{"POST", "/v3/projects/prj_1/tasks", false},
-		{"GET", "/v3/projects/prj_1/tasks/task_1", false},
+		{"POST", "/v3/projects/prj_1/tasks", true},       // one-hop delegation (run_task)
+		{"GET", "/v3/projects/prj_1/tasks/task_1", true}, // one task with fresh git state (wait_task, task_result)
 		{"POST", "/v3/projects/prj_1/tasks/task_1/integrate", true},
 		{"POST", "/v3/projects/prj_1/tasks/task_1/recover-integrate", false},
 		{"POST", "/v3/projects/prj_1/tasks/task_1/approve", true},

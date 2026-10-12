@@ -31,6 +31,7 @@ unsupported protocol versions are rejected.
 | `swarm_list_models` | `swarm:read` | `GET /v1/providers`, `GET /v1/model/catalog`, `GET /v1/agent-model-settings` (tool requires `sessions:read`) |
 | `swarm_set_session_model` | `swarm:write` | `PUT /v3/sessions/{id}/model-profile` (session-owned selection, validated against the catalog) |
 | `swarm_set_agent_model` | `swarm:manage` | `PATCH /v1/agent-model-settings`, one role (tool requires `settings:write`) |
+| `swarm_set_media_models` | `swarm:manage` | `POST /v1/ui/settings` (tools.image/video/audio default models, media transcription model; requires `settings:write`) |
 | `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
 | `swarm_stop_run` | `swarm:write` | `POST …/run/stop`, then waits up to 10 s and reports the run's final status (`finished`, `failed`, `stopped` or `stopping`), the plan's state (a stopped plan is `paused`: it keeps progress and resumes only with a new message) and a summary |
 | `swarm_resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` (one decision; Swarm has no session-scoped allowance, and persistent rules stay owner-only) |
@@ -42,6 +43,9 @@ unsupported protocol versions are rejected.
 | `swarm_update_project_context`, `swarm_set_project_workspaces` | `swarm:manage` | `PATCH /v3/projects/{pid}` with only `project_context` or only the full `workspaces` list; refused (with the next step) until generation is `ready` |
 | `swarm_retry_project_context` | `swarm:manage` | `POST /v3/projects/{pid}/context:retry` with the current attempt |
 | `swarm_list_tasks` | `swarm:read` | `GET /v3/projects/{pid}/tasks` (orchestrator tasks and worker runs, with branches and review state) |
+| `swarm_run_task` (project, role `coder|finder|designer|image|video|sound|swarm`, brief, optional title, workspace, files, model, `wait_seconds`) | `swarm:write` | `POST /v3/projects/{pid}/tasks` with `auto_approve` (the delegating AI is the gate) and a fixed `client_request_id`; coder needs a registered workspace; `files` become a scope paragraph of the brief; `model` is checked against the catalog |
+| `swarm_wait_task` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}`, woken by committed realtime records of the task's session or the project's task updates; settles on needs_review, completed, failed, blocked, rejected, needs_input, pending_approval |
+| `swarm_task_result` (+ `include_diff`, `diff_chars`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}` (fresh git and delivery state) plus `GET /v3/sessions/{sid}` for `usage_summary`; commits, files and the optional diff come from the same local Git read as `swarm_get_changes` |
 | `swarm_integrate_task` | `swarm:approve` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict; nothing is pushed) |
 | `swarm_approve_task` (`approve`/`reject`) | `swarm:manage` | `POST /v3/projects/{pid}/tasks/{tid}/approve` or `…/reject` (the Desktop's buttons) for a `pending_approval` task only, with the task's own session, plan and plan revision as guards; the media `…/accept` alias that publishes deliverables is not reachable |
 | `swarm_accept_review` | `swarm:approve` | `GET …/plans/active`, then `POST /v3/sessions/{id}/plan-mode/checkpoints/{cid}/accept` on the checkpoint waiting for review (tool requires `sessions:write`); a last checkpoint completes the plan |
@@ -126,7 +130,7 @@ status; text is truncated (messages 1,500, tool arguments 800, tool output
 300 characters, raised per call with `get_session` `detail_chars`) and plans
 show only per-checkpoint status. Server instructions name only tools the
 caller's level allows. The full tool list
-is 34 tools.
+is 43 tools.
 
 **Local tokens.** `swarmctl setup sdk-token` mints session scopes by default;
 add `--workers` (automations read/write), `--usage-limits` (`usage:write`) and

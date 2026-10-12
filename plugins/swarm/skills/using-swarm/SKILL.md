@@ -49,7 +49,12 @@ authentication. A service-account socket error is also a connection issue.
   - ChatGPT plan: `swarm_connect_chatgpt`, then show the code and link.
 - **Models.** `swarm_list_models` shows each role's default (swarm, coder,
   orchestrator, finder, ...). Change models only when the person asks
-  (`swarm_set_agent_model`, `swarm_set_session_model`).
+  (`swarm_set_agent_model`, `swarm_set_session_model`). Media (run_task with role
+  image, video or sound) uses the media models: `swarm_list_models` shows them
+  under `media`, `swarm_set_media_models` sets them once `swarm_list_providers`
+  shows the provider ready. `swarm_get_project` returns a `status` block
+  (workspaces, open tasks with their branches, `status_md`) to resume from in a
+  new conversation.
 - **Workspaces and a project** ("make me a swarm"). Ask the person: "What
   workspaces would you like to add?" — existing folders or git repositories,
   possibly several. Register each with `swarm_add_workspace` (absolute path as
@@ -125,14 +130,27 @@ claim an independent file/diff check from a session summary alone.
    anything wrong with `swarm_update_project_context`; change the workspace list
    with `swarm_set_project_workspaces` (full list). Both are refused until
    `project.md` is ready.
-3. `swarm_start_session` with `agent` `system-orchestrator` and the
-   `project_id`: this is the project's orchestrator. Tell it the goal; it splits
-   work into tasks.
-4. `swarm_list_tasks`. Tasks in `pending_approval` need a go-ahead: show the
-   person the task list and, with their OK, `swarm_approve_task`.
-5. Finished tasks reach `needs_review`: check them (`swarm_get_changes`,
-   `swarm_read_file`), then `swarm_integrate_task` merges the work into the
-   workspace's branch.
+3. Delegate in one hop with `swarm_run_task` (`role` `coder` for code
+   changes, with `workspace` the registered repository; `finder` for research
+   or audits; `designer` for UI and design; `image`/`video`/`sound` for media;
+   `swarm` only for a big feature that needs a plan and several coders). The
+   `brief` is the whole instruction: what to do, where, and the acceptance
+   criteria; `files` limits the scope; `model` overrides the role's model for
+   this task. The task starts at once: you are its approval, under your own
+   chat's permission prompts. Media beyond the batch threshold and plans wait
+   in `pending_approval` (`swarm_approve_task`).
+4. `swarm_wait_task` returns when the task settles (`needs_review` means the
+   work is done; `failed`/`blocked` carry `last_error`; `needs_input` means
+   the agent asked something: answer in its session with `swarm_send_message`).
+5. `swarm_task_result` shows the agent branch, commits, changed files, the
+   agent's report, cost and, with `include_diff`, the patch. Review it, then
+   `swarm_integrate_task` merges the work into the workspace's branch.
+   `swarm_list_tasks` lists everything in the project.
+
+   Optional: a project's own orchestrator (`swarm_start_session` with `agent`
+   `system-orchestrator` and the `project_id`) splits a larger goal into
+   tasks itself and asks for approval per task; use it only when the person
+   wants Swarm to manage the work rather than you.
 
 ## 7. Workers (repeating or scheduled jobs)
 

@@ -26,6 +26,34 @@ Claude Code ──stdio──► swarm-fleet ──tailnet──► social  http
 Setup, the Tailscale policy and the Claude Code on the web environment are in
 [containers/headless/app/TAILNET.md](../../containers/headless/app/TAILNET.md).
 
+## One model table for the fleet
+
+Every machine runs the same agent model table: one `provider`, `model` and
+`thinking` per role (`coder`, `finder`, `designer`, `compact`, `router`; the
+advanced `action` and `plan` rows are the orchestrating agents and rarely
+worth changing). A machine differs only by an explicit override, which is the
+exception: the point is delegating the same way everywhere, not tuning each
+box. Two tools carry it:
+
+- `swarm_fleet_models`: the table, the overrides, and per machine what each
+  role actually runs: `in_sync`, `override`, `drift` (differs from the table,
+  with `wanted`), `unset` (nothing in the table) or `unknown` (unreachable).
+- `swarm_fleet_set_models`: `{models: {coder: {provider: "<provider>",
+  model: "<model>", thinking?: "<level>"}}}` merges into the table and applies
+  it to every machine, one `swarm_set_agent_model` per role per machine;
+  `{machine, models}` sets an override for that machine only; `{machine,
+  clear_override: true}` drops it and applies the table there again;
+  `apply: false` only records. Leave `thinking` out to use each machine's
+  catalog default. Machines that refuse or cannot be reached are listed in
+  `applied` with `ok: false`.
+
+The table is the server's only state: `SWARM_FLEET_STATE` (default
+`$XDG_CONFIG_HOME/swarm-fleet/fleet.json`, else `~/.config/swarm-fleet/fleet.json`),
+mode 0600, no secrets in it. Setting models is a `manage` operation on the
+machine: a machine admitted only by the tailnet grant (read or write) is
+shown but cannot be changed; give it a full AI key as `token` in
+`SWARM_FLEET`.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -34,6 +62,7 @@ Setup, the Tailscale policy and the Claude Code on the web environment are in
 | `FLEET_PORT` | `8444` | AI gateway port on each machine |
 | `SWARM_FLEET` | empty | extra or overriding machines: `[{"name","url","token"?}]` |
 | `FLEET_DISCOVER` | on | `off` uses only `SWARM_FLEET` |
+| `SWARM_FLEET_STATE` | `~/.config/swarm-fleet/fleet.json` | the fleet model table (see above) |
 | `TS_AUTHKEY` | | ephemeral, tagged auth key, only where the device is not on the tailnet |
 | `FLEET_USERSPACE` | | `1` joins as a throwaway node even where Tailscale runs |
 | `SWARM_FLEET_CA_BUNDLE` | `SSL_CERT_FILE` | CA file for Tailscale behind an inspecting proxy |
@@ -45,6 +74,6 @@ server with Tailscale inside for clients that prefer Docker.
 ## Development
 
 ```sh
-node --test test/*.test.mjs            # routing, discovery, fleet status, CONNECT + TLS path
+node --test test/*.test.mjs            # routing, discovery, fleet status, the model table, CONNECT + TLS path
 sudo bash test/gateway-e2e.sh          # a real swarmd with tailnet identity behind a Serve stand-in
 ```
