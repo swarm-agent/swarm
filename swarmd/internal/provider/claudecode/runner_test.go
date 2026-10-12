@@ -469,3 +469,38 @@ func TestEffortForThinking(t *testing.T) {
 		}
 	}
 }
+
+// TestCLIModelAsksForTheCatalogContextWindow: Swarm compacts against the
+// catalog window, so a 1M catalog window must reach Claude Code as the "[1m]"
+// variant (Opus 4.6 and Sonnet 4.6 otherwise run with 200k and fail long
+// conversations before Swarm compacts); 200k models and explicit variants are
+// passed unchanged.
+func TestCLIModelAsksForTheCatalogContextWindow(t *testing.T) {
+	cases := []struct {
+		model  string
+		window int
+		want   string
+	}{
+		{"claude-sonnet-4-6", 1000000, "claude-sonnet-4-6[1m]"},
+		{" claude-opus-4-7 ", 1000000, "claude-opus-4-7[1m]"},
+		{"claude-haiku-4-5-20251001", 200000, "claude-haiku-4-5-20251001"},
+		{"claude-sonnet-4-6", 0, "claude-sonnet-4-6"},
+		{"claude-sonnet-4-6[1m]", 1000000, "claude-sonnet-4-6[1m]"},
+		{"", 1000000, ""},
+	}
+	for _, c := range cases {
+		if got := cliModel(c.model, c.window); got != c.want {
+			t.Fatalf("cliModel(%q, %d) = %q, want %q", c.model, c.window, got, c.want)
+		}
+	}
+}
+
+// TestCatalogModelNameDropsTheVariant: usage records and the response name the
+// catalog model even when Claude Code ran its "[1m]" variant.
+func TestCatalogModelNameDropsTheVariant(t *testing.T) {
+	for in, want := range map[string]string{"claude-sonnet-4-6[1m]": "claude-sonnet-4-6", " claude-opus-4-7 ": "claude-opus-4-7", "": ""} {
+		if got := catalogModelName(in); got != want {
+			t.Fatalf("catalogModelName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

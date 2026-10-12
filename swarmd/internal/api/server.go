@@ -120,6 +120,7 @@ type Server struct {
 	security                    *security.Service
 	providers                   *registry.Registry
 	codexAccount                codexAccountClient
+	claudeCodeUsage             claudeCodeUsageClient
 	perm                        permissionService
 	notifications               notificationService
 	storageHub                  *storagehub.Service

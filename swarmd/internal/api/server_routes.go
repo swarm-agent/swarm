@@ -114,6 +114,7 @@ func (s *Server) agentConfigScope(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) registerProviderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/codex/account/usage", s.handleCodexAccountUsage)
+	mux.HandleFunc("/v1/claudecode/usage", s.handleClaudeCodeUsage)
 	mux.HandleFunc("/v1/codex/account/reset-credits", s.handleCodexResetCredits)
 	mux.HandleFunc("/v1/codex/account/reset-credits/consume", s.handleCodexConsumeResetCredit)
 	mux.HandleFunc("/v1/image/providers", s.handleImageGenerationProviders)

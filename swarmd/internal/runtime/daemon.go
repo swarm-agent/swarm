@@ -805,6 +805,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageSessionController(apiServer)
 	artifactMetadata.SetPublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
+	apiServer.SetClaudeCodeUsageClient(claudeCodeCLI)
 	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetModelProfileService(modelProfileSvc)
 	apiServer.SetAgentModelSettingsService(agentModelSettingsSvc, agentModelSettingsStore)

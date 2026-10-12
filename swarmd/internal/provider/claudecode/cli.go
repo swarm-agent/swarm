@@ -109,6 +109,8 @@ type AuthStatus struct {
 	LoggedIn    bool   `json:"loggedIn"`
 	AuthMethod  string `json:"authMethod"`
 	APIProvider string `json:"apiProvider"`
+	// SubscriptionType is the Claude plan (for example "max"), when reported.
+	SubscriptionType string `json:"subscriptionType,omitempty"`
 }
 
 // CLIStatus is the observed local Claude Code installation state.
@@ -129,6 +131,7 @@ type CLI struct {
 
 	mu       sync.Mutex
 	cached   CLIStatus
+	limits   *RateLimits
 	cachedAt time.Time
 }
 

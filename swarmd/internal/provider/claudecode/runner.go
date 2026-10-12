@@ -72,6 +72,8 @@ type turnPlan struct {
 	bridge   *mcpBridge
 	restart  *restartSignal
 	correlat *toolUseCorrelator
+	// onRateLimits receives each rate_limit_event's rate_limit_info.
+	onRateLimits func(json.RawMessage)
 }
 
 func (r *Runner) run(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
@@ -119,9 +121,10 @@ func (r *Runner) run(ctx context.Context, req provideriface.Request, onEvent fun
 
 func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDir string) (turnPlan, error) {
 	plan := turnPlan{
-		workDir:  workDir,
-		restart:  &restartSignal{},
-		correlat: newToolUseCorrelator(),
+		workDir:      workDir,
+		restart:      &restartSignal{},
+		correlat:     newToolUseCorrelator(),
+		onRateLimits: r.cli.RecordRateLimits,
 	}
 	staticInstructions, dynamicContext := provideriface.SplitStaticInstructionsAndDynamicContext(req.Instructions)
 
@@ -137,7 +140,7 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 		"--disable-slash-commands",
 		"--no-session-persistence",
 		"--permission-mode", "dontAsk",
-		"--model", strings.TrimSpace(req.Model),
+		"--model", cliModel(req.Model, req.ContextWindow),
 	}
 	if staticInstructions != "" {
 		promptPath := filepath.Join(workDir, "system-prompt.txt")
@@ -192,6 +195,33 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 	}
 	plan.stdin = append(message, '\n')
 	return plan, nil
+}
+
+// claudeCodeDefaultContextWindow is the window Claude Code gives a model that
+// is not asked for its long-context variant.
+const claudeCodeDefaultContextWindow = 200000
+
+// cliModel names the model for --model. Some catalog models (Opus 4.6, Sonnet
+// 4.6) run with a 200k window in Claude Code unless the 1M variant is named
+// with the "[1m]" suffix, while Swarm plans compaction against the catalog
+// window; asking for the suffix whenever that window is larger keeps the two
+// equal. Models that are 1M by default accept the suffix unchanged.
+func cliModel(model string, contextWindow int) string {
+	model = strings.TrimSpace(model)
+	if model == "" || contextWindow <= claudeCodeDefaultContextWindow || strings.Contains(model, "[") {
+		return model
+	}
+	return model + "[1m]"
+}
+
+// catalogModelName drops a Claude Code variant suffix such as "[1m]" from a
+// model name the CLI reports, so usage records name the catalog model.
+func catalogModelName(model string) string {
+	model = strings.TrimSpace(model)
+	if i := strings.Index(model, "["); i > 0 {
+		model = model[:i]
+	}
+	return model
 }
 
 // effortForThinking maps Swarm thinking levels onto Claude Code --effort.
@@ -282,6 +312,7 @@ func executeTurn(ctx context.Context, path string, plan turnPlan, model string, 
 	}()
 
 	state := newTurnState(model, plan.correlat)
+	state.onRateLimits = plan.onRateLimits
 	readErr := readStream(ctx, stdout, state, onEvent)
 	waitErr := cmd.Wait()
 	writeErr := <-writeDone
@@ -360,6 +391,8 @@ type turnState struct {
 	callIndex     int
 	stopReason    string
 
+	onRateLimits func(json.RawMessage)
+
 	lastCallUsage map[string]any
 	callUsages    []map[string]any
 	result        *streamResult
@@ -378,6 +411,7 @@ type streamLine struct {
 	TotalCostUSD    float64         `json:"total_cost_usd"`
 	NumTurns        int             `json:"num_turns"`
 	Errors          json.RawMessage `json:"errors"`
+	RateLimitInfo   json.RawMessage `json:"rate_limit_info"`
 }
 
 type streamResult struct {
@@ -442,7 +476,7 @@ func (s *turnState) handleLine(raw []byte, onEvent func(provideriface.StreamEven
 	switch line.Type {
 	case "system":
 		if line.Subtype == "init" && strings.TrimSpace(line.Model) != "" {
-			s.model = strings.TrimSpace(line.Model)
+			s.model = catalogModelName(line.Model)
 		}
 	case "stream_event":
 		var event streamEvent
@@ -453,6 +487,10 @@ func (s *turnState) handleLine(raw []byte, onEvent func(provideriface.StreamEven
 		var message assistantMessage
 		if err := json.Unmarshal(line.Message, &message); err == nil {
 			s.handleAssistantMessage(message)
+		}
+	case "rate_limit_event":
+		if s.onRateLimits != nil {
+			s.onRateLimits(line.RateLimitInfo)
 		}
 	case "result":
 		s.result = &streamResult{
@@ -472,7 +510,7 @@ func (s *turnState) handleStreamEvent(event streamEvent, onEvent func(providerif
 	case "message_start":
 		s.callIndex++
 		s.blockTypes = make(map[int]string, 4)
-		if model := strings.TrimSpace(event.Message.Model); model != "" {
+		if model := catalogModelName(event.Message.Model); model != "" {
 			s.model = model
 		}
 		s.lastCallUsage = cloneJSONMap(event.Message.Usage)
@@ -527,7 +565,7 @@ func (s *turnState) emitText(delta string, onEvent func(provideriface.StreamEven
 }
 
 func (s *turnState) handleAssistantMessage(message assistantMessage) {
-	if model := strings.TrimSpace(message.Model); model != "" {
+	if model := catalogModelName(message.Model); model != "" {
 		s.model = model
 	}
 	for _, block := range message.Content {

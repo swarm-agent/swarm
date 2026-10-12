@@ -70,6 +70,7 @@ func buildHomeCommandSuggestions(devMode bool) []ui.CommandSuggestion {
 		{Command: "/auth", Hint: "Auth status or key setup", QuickTips: []string{"/auth status", "/auth key <provider> <api_key>"}},
 		{Command: "/memory", Hint: "List, edit, or permanently forget saved memories", QuickTips: []string{"/memory", "/memory help"}},
 		{Command: "/codex", Hint: "Show Codex account usage and reset credits", QuickTips: []string{"/codex", "/codex refresh"}},
+		{Command: "/claude", Hint: "Show Claude Code status, plan and usage limits", QuickTips: []string{"/claude", "/claude refresh"}},
 		{Command: "/commit", Hint: "Commit all changes with a message, or use AI to generate one", QuickTips: []string{"/commit <message>", "/commit ai"}},
 		{Command: "/copy", Hint: "Copy chat snapshot or /copy N block to clipboard"},
 		{Command: "/header", Hint: "Toggle chat header visibility", QuickTips: []string{"/header toggle"}},
@@ -2269,6 +2270,8 @@ func (a *App) executeCommand(raw string) {
 		a.handleMemoryCommand(raw)
 	case "codex":
 		a.handleCodexCommand(args)
+	case "claude":
+		a.handleClaudeCommand(args)
 	case "workspace":
 		a.handleWorkspaceCommand(args)
 	case "workspaces":
@@ -2338,6 +2341,7 @@ func (a *App) showHelp() {
 		"/git   (show authoritative Git status for the active workspace)",
 		"/memory   (list saved objects; /memory help for edit and permanent forget)",
 		"/codex [refresh]   (Codex account usage and reset credits)",
+		"/claude [refresh]   (Claude Code status, plan and usage limits)",
 		"/workspace   (open workspace manager)",
 		"/workspaces   (alias for /workspace)",
 		"/workspace save [path|#n]   (open workspace setup)",
