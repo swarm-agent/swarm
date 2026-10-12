@@ -4,7 +4,9 @@
 # Boundary: install.sh -> swarm install -> launcher system paths/systemd unit.
 # This destructive scenario is only invoked INSIDE the disposable distro runner.
 # It is not agent/provider execution evidence; that requires an authenticated run.
-set -euo pipefail
+set -Eeuo pipefail
+# Name the failing check instead of exiting silently.
+trap 'echo "root scenario failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 [[ $# == 3 && $(id -u) == 0 && -d /candidate-source && -d /run/systemd/system ]]
 # Standalone invocations must also establish the guard before any installer call.
 bash /run/test-install-mint-guard.sh prepare
@@ -72,6 +74,21 @@ verify_service() {
   grep -Fxq 'daemon_health=healthy' <<<"$status"
   grep -Fxq 'daemon_status=running' <<<"$status"
 }
+# A raw systemctl restart returns before the daemon is ready; the installer
+# waits on its own, a restart does not.
+wait_healthy() {
+  local status
+  for _ in $(seq 1 120); do
+    if systemctl is-active --quiet swarm.service &&
+      status=$(runuser -u swarm -- env HOME=/var/lib/swarm /usr/local/bin/swarm status 2>/dev/null) &&
+      grep -Fxq 'daemon_health=healthy' <<<"$status"; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo 'swarm.service did not become healthy within 60 s of the restart' >&2
+  return 1
+}
 # Verify interrupted setup recovery resilience:
 # A lingering recovery record pointing to an obsolete/deleted artifact path must not block installation.
 recovery_dir="$(printf '/%s/%s' etc swarm-setup)"
@@ -101,6 +118,7 @@ workspace_before=$(sha256sum "$home/root-install-workspace/probe")
 install_candidate
 verify_service
 systemctl restart swarm.service
+wait_healthy
 verify_service
 [[ $(getent passwd swarm) == "$identity_before" ]]
 [[ $(getent group swarm) == "$group_before" ]]
