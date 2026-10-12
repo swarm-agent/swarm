@@ -325,11 +325,13 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 			}
 		}
 		changesArgs := map[string]any{"session_id": sessionID, "diff_chars": 0}
+		keys := []string{"commits", "files", "files_truncated", "note"}
 		if include, _ := args["include_diff"].(bool); include {
 			changesArgs["diff_chars"] = controlMCPInt(args, "diff_chars", controlMCPDefaultDiffChars)
+			keys = append(keys, "diff", "diff_truncated", "diff_note")
 		}
 		if changes, err := controlMCPGetChanges(c, changesArgs); err == nil {
-			for key, value := range controlMCPPick(controlMCPMap(changes), "commits", "files", "files_truncated", "diff", "diff_truncated", "diff_note", "note") {
+			for key, value := range controlMCPPick(controlMCPMap(changes), keys...) {
 				out[key] = value
 			}
 		} else {
