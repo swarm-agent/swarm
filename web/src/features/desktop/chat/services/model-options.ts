@@ -51,6 +51,7 @@ export function modelOptionKey(provider: string, model: string, contextMode = ''
 export function modelProviderLabel(provider: string): string {
   const normalized = normalizeProviderID(provider)
   if (normalized === 'openrouter') return 'OpenRouter (routed)'
+  if (normalized === 'claudecode') return 'Claude Code (local CLI)'
   return normalized
 }
 

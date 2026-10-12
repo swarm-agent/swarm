@@ -226,6 +226,8 @@ func formatProviderDisplayName(provider string) string {
 		return "GitHub Copilot"
 	case "openrouter":
 		return "OpenRouter"
+	case "claudecode":
+		return "Claude Code (local CLI)"
 	default:
 		return strings.Title(provider)
 	}

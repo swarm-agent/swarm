@@ -1,0 +1,470 @@
+package claudecode
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+)
+
+const (
+	mcpServerName          = "swarm"
+	mcpToolPrefix          = "mcp__" + mcpServerName + "__"
+	mcpDefaultProtocol     = "2025-06-18"
+	mcpMaxRequestBytes     = 32 << 20
+	mcpToolUseIDMetaKey    = "claudecode/toolUseId"
+	mcpCorrelationWaitTime = 2 * time.Second
+)
+
+var mcpSupportedProtocols = map[string]struct{}{
+	"2024-11-05": {},
+	"2025-03-26": {},
+	"2025-06-18": {},
+	"2025-11-25": {},
+}
+
+var mcpToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// mcpBridge exposes one turn's Swarm tools to the Claude Code CLI over a
+// loopback-only MCP endpoint guarded by a per-turn bearer token. Every tool call
+// is executed by the Swarm ToolInvoker, so Swarm permissions, persistence and
+// workspace authority apply exactly as for any other provider.
+type mcpBridge struct {
+	ctx      context.Context
+	invoker  provideriface.ToolInvoker
+	tools    []mcpTool
+	byName   map[string]string
+	token    string
+	listener net.Listener
+	server   *http.Server
+
+	onRestart   func()
+	correlation *toolUseCorrelator
+	callSeq     atomic.Int64
+}
+
+type mcpTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"inputSchema"`
+}
+
+func newMCPBridge(ctx context.Context, definitions []provideriface.ToolDefinition, invoker provideriface.ToolInvoker, correlation *toolUseCorrelator, onRestart func()) (*mcpBridge, error) {
+	if invoker == nil {
+		return nil, errors.New("claude code tools require a Swarm tool invoker")
+	}
+	tools, byName, err := buildMCPTools(definitions)
+	if err != nil {
+		return nil, err
+	}
+	token, err := randomToken()
+	if err != nil {
+		return nil, err
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, fmt.Errorf("listen for claude code tool bridge: %w", err)
+	}
+	bridge := &mcpBridge{
+		ctx:         ctx,
+		invoker:     invoker,
+		tools:       tools,
+		byName:      byName,
+		token:       token,
+		listener:    listener,
+		onRestart:   onRestart,
+		correlation: correlation,
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/mcp", bridge.handle)
+	bridge.server = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	go func() { _ = bridge.server.Serve(listener) }()
+	return bridge, nil
+}
+
+func (b *mcpBridge) URL() string {
+	return "http://" + b.listener.Addr().String() + "/mcp"
+}
+
+// Config is the --mcp-config document. It holds the per-turn bearer token and
+// must only be written to a private (0600) file, never passed on argv.
+func (b *mcpBridge) Config() ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			mcpServerName: map[string]any{
+				"type":    "http",
+				"url":     b.URL(),
+				"headers": map[string]string{"Authorization": "Bearer " + b.token},
+			},
+		},
+	})
+}
+
+func (b *mcpBridge) Close() {
+	if b == nil || b.server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = b.server.Shutdown(ctx)
+}
+
+func buildMCPTools(definitions []provideriface.ToolDefinition) ([]mcpTool, map[string]string, error) {
+	tools := make([]mcpTool, 0, len(definitions))
+	byName := make(map[string]string, len(definitions))
+	for _, definition := range definitions {
+		original := strings.TrimSpace(definition.Name)
+		if original == "" {
+			continue
+		}
+		if !mcpToolNamePattern.MatchString(original) {
+			return nil, nil, fmt.Errorf("swarm tool %q cannot be exposed to Claude Code: MCP tool names must match %s", original, mcpToolNamePattern.String())
+		}
+		if _, exists := byName[original]; exists {
+			return nil, nil, fmt.Errorf("duplicate swarm tool %q", original)
+		}
+		byName[original] = original
+		schema := cloneJSONMap(definition.Parameters)
+		if schema == nil {
+			schema = map[string]any{}
+		}
+		if _, ok := schema["type"]; !ok {
+			schema["type"] = "object"
+		}
+		tools = append(tools, mcpTool{Name: original, Description: strings.TrimSpace(definition.Description), InputSchema: schema})
+	}
+	return tools, byName, nil
+}
+
+type jsonRPCMessage struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+}
+
+type jsonRPCError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+type jsonRPCResponse struct {
+	JSONRPC string          `json:"jsonrpc"`
+	ID      json.RawMessage `json:"id"`
+	Result  any             `json:"result,omitempty"`
+	Error   *jsonRPCError   `json:"error,omitempty"`
+}
+
+func (b *mcpBridge) handle(w http.ResponseWriter, r *http.Request) {
+	if !b.authorized(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+	case http.MethodDelete:
+		w.WriteHeader(http.StatusOK)
+		return
+	default:
+		// No server-initiated stream: this bridge only answers requests.
+		w.Header().Set("Allow", "POST, DELETE")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, mcpMaxRequestBytes+1))
+	if err != nil {
+		http.Error(w, "read request", http.StatusBadRequest)
+		return
+	}
+	if len(body) > mcpMaxRequestBytes {
+		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	body = bytes.TrimSpace(body)
+	if len(body) > 0 && body[0] == '[' {
+		var batch []jsonRPCMessage
+		if err := json.Unmarshal(body, &batch); err != nil {
+			writeJSON(w, jsonRPCResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &jsonRPCError{Code: -32700, Message: "parse error"}})
+			return
+		}
+		responses := make([]jsonRPCResponse, 0, len(batch))
+		for _, message := range batch {
+			if response, ok := b.dispatch(r.Context(), message); ok {
+				responses = append(responses, response)
+			}
+		}
+		if len(responses) == 0 {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		writeJSON(w, responses)
+		return
+	}
+	var message jsonRPCMessage
+	if err := json.Unmarshal(body, &message); err != nil {
+		writeJSON(w, jsonRPCResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &jsonRPCError{Code: -32700, Message: "parse error"}})
+		return
+	}
+	response, ok := b.dispatch(r.Context(), message)
+	if !ok {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	writeJSON(w, response)
+}
+
+func (b *mcpBridge) authorized(r *http.Request) bool {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(header[len(prefix):])), []byte(b.token)) == 1
+}
+
+// dispatch returns false for notifications, which receive no response.
+func (b *mcpBridge) dispatch(requestCtx context.Context, message jsonRPCMessage) (jsonRPCResponse, bool) {
+	if len(message.ID) == 0 || string(message.ID) == "null" {
+		return jsonRPCResponse{}, false
+	}
+	response := jsonRPCResponse{JSONRPC: "2.0", ID: message.ID}
+	switch message.Method {
+	case "initialize":
+		var params struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(message.Params, &params)
+		version := mcpDefaultProtocol
+		if _, ok := mcpSupportedProtocols[strings.TrimSpace(params.ProtocolVersion)]; ok {
+			version = strings.TrimSpace(params.ProtocolVersion)
+		}
+		response.Result = map[string]any{
+			"protocolVersion": version,
+			"capabilities":    map[string]any{"tools": map[string]any{"listChanged": false}},
+			"serverInfo":      map[string]any{"name": mcpServerName, "version": "1"},
+		}
+	case "ping":
+		response.Result = map[string]any{}
+	case "tools/list":
+		response.Result = map[string]any{"tools": b.tools}
+	case "tools/call":
+		result, rpcErr := b.callTool(requestCtx, message.Params)
+		if rpcErr != nil {
+			response.Error = rpcErr
+		} else {
+			response.Result = result
+		}
+	default:
+		response.Error = &jsonRPCError{Code: -32601, Message: "method not found"}
+	}
+	return response, true
+}
+
+func (b *mcpBridge) callTool(requestCtx context.Context, rawParams json.RawMessage) (map[string]any, *jsonRPCError) {
+	var params struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		Meta      map[string]any  `json:"_meta"`
+	}
+	if err := json.Unmarshal(rawParams, &params); err != nil {
+		return nil, &jsonRPCError{Code: -32602, Message: "invalid tools/call params"}
+	}
+	original, ok := b.byName[strings.TrimSpace(params.Name)]
+	if !ok {
+		return nil, &jsonRPCError{Code: -32602, Message: fmt.Sprintf("unknown tool %q", params.Name)}
+	}
+	arguments := strings.TrimSpace(string(params.Arguments))
+	if arguments == "" || arguments == "null" {
+		arguments = "{}"
+	}
+
+	// The tool runs under the turn context, and stops early if Claude Code drops
+	// the request (for example when the turn is interrupted).
+	ctx, cancel := context.WithCancel(b.ctx)
+	defer cancel()
+	stop := context.AfterFunc(requestCtx, cancel)
+	defer stop()
+
+	callID := ""
+	if params.Meta != nil {
+		if value, ok := params.Meta[mcpToolUseIDMetaKey].(string); ok {
+			callID = strings.TrimSpace(value)
+		}
+	}
+	if callID == "" && b.correlation != nil {
+		callID = b.correlation.Claim(ctx, mcpToolPrefix+original, arguments, mcpCorrelationWaitTime)
+	}
+	if callID == "" {
+		callID = fmt.Sprintf("claudecode_call_%d", b.callSeq.Add(1))
+	}
+
+	provideriface.ReportAttemptActivity(b.ctx, provideriface.AttemptActivityStreamEvent)
+	defer provideriface.ReportAttemptActivity(b.ctx, provideriface.AttemptActivityStreamEvent)
+	result, err := b.invoker.ExecuteTool(ctx, provideriface.ToolInvocation{
+		CallID:    callID,
+		Name:      original,
+		Arguments: arguments,
+		Metadata: map[string]any{
+			ProviderID: map[string]any{
+				"mcp_tool_name": mcpToolPrefix + original,
+				"tool_use_id":   callID,
+			},
+		},
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, &jsonRPCError{Code: -32603, Message: "tool call cancelled"}
+		}
+		return map[string]any{
+			"content": []map[string]any{{"type": "text", "text": err.Error()}},
+			"isError": true,
+		}, nil
+	}
+	if result.RestartTurn && b.onRestart != nil {
+		b.onRestart()
+	}
+	text := strings.TrimSpace(result.TextForModel)
+	if text == "" {
+		text = strings.TrimSpace(result.Output)
+	}
+	isError := strings.TrimSpace(result.Error) != ""
+	if text == "" && isError {
+		text = strings.TrimSpace(result.Error)
+	}
+	return map[string]any{
+		"content": []map[string]any{{"type": "text", "text": text}},
+		"isError": isError,
+	}, nil
+}
+
+// toolUseCorrelator matches MCP tool calls to the tool_use blocks Claude Code
+// reports on its output stream, so Swarm records the model's own call IDs.
+type toolUseCorrelator struct {
+	mu      sync.Mutex
+	pending []pendingToolUse
+	notify  chan struct{}
+}
+
+type pendingToolUse struct {
+	id        string
+	name      string
+	arguments string
+}
+
+func newToolUseCorrelator() *toolUseCorrelator {
+	return &toolUseCorrelator{notify: make(chan struct{})}
+}
+
+func (c *toolUseCorrelator) Observe(id, name string, input json.RawMessage) {
+	if c == nil || strings.TrimSpace(id) == "" {
+		return
+	}
+	c.mu.Lock()
+	for _, existing := range c.pending {
+		if existing.id == id {
+			c.mu.Unlock()
+			return
+		}
+	}
+	c.pending = append(c.pending, pendingToolUse{id: strings.TrimSpace(id), name: strings.TrimSpace(name), arguments: canonicalJSON(input)})
+	close(c.notify)
+	c.notify = make(chan struct{})
+	c.mu.Unlock()
+}
+
+func (c *toolUseCorrelator) Claim(ctx context.Context, name, arguments string, wait time.Duration) string {
+	if c == nil {
+		return ""
+	}
+	want := canonicalJSON(json.RawMessage(arguments))
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	for {
+		c.mu.Lock()
+		for i, candidate := range c.pending {
+			if candidate.name == name && candidate.arguments == want {
+				c.pending = append(c.pending[:i], c.pending[i+1:]...)
+				c.mu.Unlock()
+				return candidate.id
+			}
+		}
+		notify := c.notify
+		c.mu.Unlock()
+		select {
+		case <-notify:
+		case <-timer.C:
+			return ""
+		case <-ctx.Done():
+			return ""
+		}
+	}
+}
+
+func canonicalJSON(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return "{}"
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return string(raw)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return string(raw)
+	}
+	return string(encoded)
+}
+
+func writeJSON(w http.ResponseWriter, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func randomToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate claude code tool bridge token: %w", err)
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func cloneJSONMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = cloneJSONValue(value)
+	}
+	return out
+}
+
+func cloneJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneJSONMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneJSONValue(item)
+		}
+		return out
+	default:
+		return value
+	}
+}

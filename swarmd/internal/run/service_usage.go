@@ -191,6 +191,16 @@ func shouldPersistProviderUsage(providerID string, usage provideriface.TokenUsag
 		return usage.InputTokens > 0 ||
 			usage.OutputTokens > 0 ||
 			usage.TotalTokens > 0
+	case "claudecode":
+		source := strings.ToLower(strings.TrimSpace(usage.Source))
+		if source != "claudecode_cli_usage" {
+			return false
+		}
+		return usage.InputTokens > 0 ||
+			usage.OutputTokens > 0 ||
+			usage.TotalTokens > 0 ||
+			usage.CacheReadTokens > 0 ||
+			usage.CacheWriteTokens > 0
 	default:
 		return false
 	}

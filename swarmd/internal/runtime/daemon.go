@@ -47,6 +47,7 @@ import (
 	"swarm/packages/swarmd/internal/notification"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/anthropic"
+	"swarm/packages/swarmd/internal/provider/claudecode"
 	"swarm/packages/swarmd/internal/provider/codex"
 	"swarm/packages/swarmd/internal/provider/copilot"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
@@ -626,8 +627,12 @@ func New(cfg config.Config) (*Daemon, error) {
 	// sidecar flow while the required paid Copilot plan is unavailable, so keep
 	// the implementation dormant until it can be tested end-to-end.
 	var copilotManager *copilot.Manager
+	// Claude Code drives the person's own locally signed-in, unmodified CLI;
+	// Swarm never handles Claude credentials (see provider/claudecode).
+	claudeCodeCLI := claudecode.NewCLI()
 	providers := registry.New(
 		anthropic.NewAdapter(authStore),
+		claudecode.NewAdapter(authStore, claudeCodeCLI),
 		codex.NewAdapter(authStore),
 		fireworks.NewAdapter(authStore),
 		google.NewAdapter(authStore),
@@ -636,6 +641,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		exaprovider.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
+	providers.RegisterRunner(claudecode.NewRunner(authStore, claudeCodeCLI))
 	// Copilot runner registration is disabled with the adapter above; leave the
 	// code in place for re-enablement after paid-plan validation is possible.
 	providers.RegisterRunner(codex.NewRunner(codexClient))

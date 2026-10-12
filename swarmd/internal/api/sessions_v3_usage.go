@@ -83,6 +83,8 @@ func sessionV3ShouldTrackProviderUsage(providerID string, usage provideriface.To
 		return source == "fireworks_api_usage" && rawPath == "usage"
 	case "openrouter":
 		return source == "openrouter_api_usage" && rawPath == "usage"
+	case "claudecode":
+		return source == "claudecode_cli_usage" && rawPath == "usage"
 	default:
 		return false
 	}
