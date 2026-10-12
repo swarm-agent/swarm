@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -339,6 +340,7 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createWorkerRequestBody struct {
+	Role                  string                                   `json:"role,omitempty"`
 	Name                  string                                   `json:"name"`
 	Description           string                                   `json:"description,omitempty"`
 	Instructions          string                                   `json:"instructions,omitempty"`
@@ -498,8 +500,13 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 				return
 			}
 		}
+		if err := s.validateWorkerAutomationWorkspaces(p, req.Automations); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 
 		created, err := s.sessions.CreateWorker(r.Context(), p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{
+			Role:                  req.Role,
 			Name:                  req.Name,
 			Description:           req.Description,
 			Instructions:          req.Instructions,
@@ -524,6 +531,7 @@ func (s *Server) handleWorkerCollection(w http.ResponseWriter, r *http.Request, 
 }
 
 type updateWorkerRequestBody struct {
+	Role                  *string                                  `json:"role,omitempty"`
 	ExecutionMode         *string                                  `json:"execution_mode,omitempty"`
 	ModelProfile          *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	ExpectedRevision      uint64                                   `json:"expected_revision"`
@@ -595,13 +603,34 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 			return
 		}
 
+		if err := s.validateWorkerAutomationWorkspaces(p, req.Automations); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		if req.ModelProfile != nil {
 			execution, err := s.workerExecutionService()
 			if err != nil {
 				workerHTTPError(w, err)
 				return
 			}
-			resolved, err := execution.ResolveModelProfile(p.AccountScopeID, req.ModelProfile)
+			// Inherited slots resolve against the role the worker will have.
+			role := ""
+			if req.Role != nil {
+				role, err = pebblestore.NormalizeWorkerRole(*req.Role)
+				if err != nil {
+					writeError(w, http.StatusBadRequest, err)
+					return
+				}
+			} else if current, found, err := s.sessions.GetWorker(p.AccountScopeID, workerID); err != nil {
+				workerHTTPError(w, err)
+				return
+			} else if found {
+				role = current.Role
+				if current.PendingReview != nil {
+					role = current.PendingReview.Role
+				}
+			}
+			resolved, err := execution.ResolveRoleModelProfile(p.AccountScopeID, role, req.ModelProfile)
 			if err != nil {
 				workerHTTPError(w, err)
 				return
@@ -609,6 +638,7 @@ func (s *Server) handleWorkerByID(w http.ResponseWriter, r *http.Request, p iden
 			req.ModelProfile = resolved
 		}
 		updated, err := s.sessions.UpdateWorker(p.AccountScopeID, p.UserID, workerID, req.ExpectedRevision, pebblestore.UpdateWorkerRequest{
+			Role:                  req.Role,
 			ExecutionMode:         req.ExecutionMode,
 			ModelProfile:          req.ModelProfile,
 			Name:                  req.Name,
@@ -887,6 +917,10 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusBadRequest, errors.New("client-supplied automation timestamps are not permitted on attach"))
 			return
 		}
+		if err := s.validateWorkerAutomationWorkspaces(p, []pebblestore.WorkerAutomationDefinition{req.Automation}); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 
 		updated, err := s.sessions.AttachWorkerAutomation(p.AccountScopeID, p.UserID, workerID, req.ExpectedWorkerRevision, req.Automation)
 		if err != nil {
@@ -939,6 +973,10 @@ func (s *Server) handleWorkerAutomations(w http.ResponseWriter, r *http.Request,
 			}
 			req.Automation.ID = automationID
 			req.Automation.WorkerID = workerID
+			if err := s.validateWorkerAutomationWorkspaces(p, []pebblestore.WorkerAutomationDefinition{req.Automation}); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
 
 			updated, err := s.sessions.UpdateWorkerAutomation(p.AccountScopeID, p.UserID, workerID, automationID, req.ExpectedWorkerRevision, req.Automation)
 			if err != nil {
@@ -1254,10 +1292,15 @@ type setAutomationEnabledRequestBody struct {
 	ExpectedWorkerRevision uint64 `json:"expected_worker_revision"`
 }
 
+// WorkspaceID or WorkspacePath (an exact registered workspace root) names the
+// workspace this job works in; without either, the job uses its automation's
+// workspace or the worker's primary binding.
 type directWorkerRequestBody struct {
 	Prompt         string         `json:"prompt,omitempty"`
 	Input          map[string]any `json:"input,omitempty"`
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	WorkspaceID    string         `json:"workspace_id,omitempty"`
+	WorkspacePath  string         `json:"workspace_path,omitempty"`
 }
 
 type testWorkerRunRequestBody struct {
@@ -1265,6 +1308,8 @@ type testWorkerRunRequestBody struct {
 	Prompt         string         `json:"prompt,omitempty"`
 	Input          map[string]any `json:"input,omitempty"`
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	WorkspaceID    string         `json:"workspace_id,omitempty"`
+	WorkspacePath  string         `json:"workspace_path,omitempty"`
 }
 
 type triggerWorkerRequestBody struct {
@@ -1689,12 +1734,18 @@ func (s *Server) handleWorkerDirectRequest(w http.ResponseWriter, r *http.Reques
 		inputMap["prompt"] = prompt
 	}
 
+	workspaceID, err := s.resolveWorkerJobWorkspace(p, req.WorkspaceID, req.WorkspacePath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
 	execution, err := s.workerExecutionService()
 	if err != nil {
 		workerHTTPError(w, err)
 		return
 	}
-	recorded, err := execution.Dispatch(r.Context(), p.AccountScopeID, p.UserID, pebblestore.WorkerRunAdmission{WorkerID: workerID, RequestSource: "direct", Input: inputMap, IdempotencyKey: idempKey})
+	recorded, err := execution.Dispatch(r.Context(), p.AccountScopeID, p.UserID, pebblestore.WorkerRunAdmission{WorkerID: workerID, RequestSource: "direct", Input: inputMap, IdempotencyKey: idempKey, WorkspaceID: workspaceID})
 	if err != nil {
 		workerHTTPError(w, err)
 		return
@@ -1771,12 +1822,18 @@ func (s *Server) handleWorkerTestRun(w http.ResponseWriter, r *http.Request, p i
 		inputMap["prompt"] = prompt
 	}
 
+	workspaceID, err := s.resolveWorkerJobWorkspace(p, req.WorkspaceID, req.WorkspacePath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
 	execution, err := s.workerExecutionService()
 	if err != nil {
 		workerHTTPError(w, err)
 		return
 	}
-	recorded, err := execution.Dispatch(r.Context(), p.AccountScopeID, p.UserID, pebblestore.WorkerRunAdmission{WorkerID: workerID, AutomationID: autoID, RequestSource: "test_run", Input: inputMap, IdempotencyKey: idempKey})
+	recorded, err := execution.Dispatch(r.Context(), p.AccountScopeID, p.UserID, pebblestore.WorkerRunAdmission{WorkerID: workerID, AutomationID: autoID, RequestSource: "test_run", Input: inputMap, IdempotencyKey: idempKey, WorkspaceID: workspaceID})
 	if err != nil {
 		workerHTTPError(w, err)
 		return
@@ -2026,4 +2083,91 @@ func (s *Server) workerWorkspaceViews(p identity.Principal, worker pebblestore.W
 		views[role] = view
 	}
 	return views, nil
+}
+
+// WorkersEnsurePresetsPath creates and activates the account's missing premade
+// workers (Coder, Designer, Finder) and returns the three of them.
+const WorkersEnsurePresetsPath = WorkersPath + ":ensure-presets"
+
+func (s *Server) handleWorkersEnsurePresets(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.authenticateWorkerRequest(w, r)
+	if !ok {
+		return
+	}
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	if !s.requireScope(w, r, "automations:write") {
+		return
+	}
+	if scopedRec, ok := ScopedTokenFromRequest(r); ok && scopedRec != nil && scopedRec.WorkerID != "" {
+		writeError(w, http.StatusForbidden, errors.New("scoped token cannot manage workers"))
+		return
+	}
+	if _, err := parseAndValidateQuery(r); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	workers, err := execution.EnsurePresets(r.Context(), p.AccountScopeID, p.UserID)
+	if err != nil {
+		workerHTTPError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workers": workers})
+}
+
+// resolveWorkerJobWorkspace turns a job's workspace_id or workspace_path into
+// a workspace ID. A path must be exactly a registered workspace root for this
+// principal; the execution service still verifies the workspace is active.
+func (s *Server) resolveWorkerJobWorkspace(p identity.Principal, workspaceID, workspacePath string) (string, error) {
+	workspaceID, workspacePath = strings.TrimSpace(workspaceID), strings.TrimSpace(workspacePath)
+	if workspacePath == "" {
+		return workspaceID, nil
+	}
+	if s.workspace == nil {
+		return "", errors.New("workspace catalog is unavailable")
+	}
+	if !filepath.IsAbs(workspacePath) {
+		return "", fmt.Errorf("workspace_path %q must be absolute", workspacePath)
+	}
+	root := filepath.Clean(workspacePath)
+	scope, err := s.workspace.ScopeForPathForPrincipal(p, root)
+	if err != nil {
+		return "", fmt.Errorf("workspace_path %q is not a registered workspace: %v", workspacePath, err)
+	}
+	if !scope.Matched || scope.WorkspaceID == "" || scope.WorkspacePath != root {
+		return "", fmt.Errorf("workspace_path %q is not a registered workspace root; add the folder as a workspace first", workspacePath)
+	}
+	if workspaceID != "" && workspaceID != scope.WorkspaceID {
+		return "", errors.New("workspace_id and workspace_path name different workspaces")
+	}
+	return scope.WorkspaceID, nil
+}
+
+// validateWorkerAutomationWorkspaces requires every automation workspace_id to
+// be a registered active workspace of this principal.
+func (s *Server) validateWorkerAutomationWorkspaces(p identity.Principal, automations []pebblestore.WorkerAutomationDefinition) error {
+	for _, auto := range automations {
+		id := strings.TrimSpace(auto.WorkspaceID)
+		if id == "" {
+			continue
+		}
+		if s.workspace == nil {
+			return errors.New("workspace catalog is unavailable")
+		}
+		entry, found, err := s.workspace.GetByWorkspaceIDForPrincipal(p, id)
+		if err != nil {
+			return err
+		}
+		if !found || !strings.EqualFold(entry.State, "active") {
+			return fmt.Errorf("automation %q workspace_id %q is not a registered active workspace", auto.Name, id)
+		}
+	}
+	return nil
 }

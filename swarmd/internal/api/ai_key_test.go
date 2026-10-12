@@ -66,7 +66,7 @@ func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 	handler := s.ContainerSDKHandler()
 	listTools := func(token string) map[string]bool {
 		t.Helper()
-		r := httptest.NewRequest("POST", "http://127.0.0.1:7783/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7783/mcp?tools=all", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 		r.RemoteAddr = "192.0.2.1:40000"
 		r.Header.Set("Content-Type", "application/json")
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -94,7 +94,8 @@ func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 			t.Fatalf("%s missing for AI keys", name)
 		}
 	}
-	for _, name := range []string{"swarm_start_session", "swarm_send_message", "swarm_stop_run"} {
+	for _, name := range []string{"swarm_start_session", "swarm_send_message", "swarm_stop_run",
+		"swarm_give_job", "swarm_answer_job", "swarm_deliver_job", "swarm_integrate_task", "swarm_stop_job", "swarm_deploy_worker", "swarm_schedule_job", "swarm_request_media"} {
 		if readTools[name] {
 			t.Fatalf("read key lists %s", name)
 		}
@@ -102,7 +103,13 @@ func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 			t.Fatalf("write key misses %s", name)
 		}
 	}
-	for _, name := range []string{"swarm_resolve_permission", "swarm_integrate_task", "swarm_create_worker", "swarm_set_usage_limits", "swarm_set_agent_model",
+	// Monitoring and job results are read: both keys see them.
+	for _, name := range []string{"swarm_status", "swarm_activity", "swarm_get_job", "swarm_list_secrets"} {
+		if !readTools[name] || !writeTools[name] {
+			t.Fatalf("%s missing for AI keys", name)
+		}
+	}
+	for _, name := range []string{"swarm_resolve_permission", "swarm_create_worker", "swarm_set_usage_limits", "swarm_set_agent_model",
 		"swarm_define_agent", "swarm_create_client_key", "swarm_connect_chatgpt"} {
 		if readTools[name] || writeTools[name] {
 			t.Fatalf("AI key lists %s", name)

@@ -69,7 +69,7 @@ var toolScopes = map[string]string{
 	"swarm_assign_worker_task":     ScopeWrite,
 	"swarm_set_session_model":      ScopeWrite,
 	"swarm_resolve_permission":     ScopeApprove,
-	"swarm_integrate_task":         ScopeApprove,
+	"swarm_integrate_task":         ScopeWrite,
 	"swarm_create_project":         ScopeManage,
 	"swarm_update_project_context": ScopeManage,
 	"swarm_set_project_workspaces": ScopeManage,
@@ -90,6 +90,21 @@ var toolScopes = map[string]string{
 	"swarm_get_changes":            ScopeRead,
 	"swarm_accept_review":          ScopeApprove,
 	"swarm_approve_task":           ScopeManage,
+	// Workers and jobs, the default surface: reading them and the machine's
+	// state is read; deploying workers, giving, answering, merging, stopping
+	// and scheduling jobs is write. Answering covers a worker's questions only,
+	// never a tool-call approval; merging is a local git merge, never a push.
+	"swarm_status":        ScopeRead,
+	"swarm_activity":      ScopeRead,
+	"swarm_get_job":       ScopeRead,
+	"swarm_list_secrets":  ScopeRead,
+	"swarm_deploy_worker": ScopeWrite,
+	"swarm_give_job":      ScopeWrite,
+	"swarm_answer_job":    ScopeWrite,
+	"swarm_deliver_job":   ScopeWrite,
+	"swarm_stop_job":      ScopeWrite,
+	"swarm_schedule_job":  ScopeWrite,
+	"swarm_request_media": ScopeWrite,
 }
 
 // localOnlyTools need the owner's admin authority, which the device token

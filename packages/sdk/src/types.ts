@@ -1091,10 +1091,19 @@ export interface WorkerAutomationDefinition {
   plan_document: SessionPlanDocument;
   input_requirements?: WorkerInputRequirement[] | null;
   deliverable_requirements?: WorkerDeliverableRequirement[] | null;
+  /** Registered workspace this automation's runs work in; absent means the worker's primary binding. */
+  workspace_id?: string | null;
   revision: number;
   created_at: number;
   updated_at: number;
 }
+
+/**
+ * Code-owned system agent that runs a worker's jobs. Absent means `swarm`.
+ * `swarm` executes jobs as accepted plans; `coder`, `designer` and `finder`
+ * run their compiled agent in an auto session.
+ */
+export type WorkerRole = 'swarm' | 'coder' | 'designer' | 'finder';
 
 export interface WorkerAutomationInput {
   name: string;
@@ -1111,11 +1120,14 @@ export interface WorkerAutomationInput {
   plan_document: SessionPlanDocument;
   input_requirements?: WorkerInputRequirement[];
   deliverable_requirements?: WorkerDeliverableRequirement[];
+  /** Registered workspace this automation's runs work in. Required for schedules of a worker with no primary binding. */
+  workspace_id?: string;
 }
 
 export interface WorkerRecord {
   id: string;
   account_scope_id: string;
+  role?: WorkerRole | null;
   name: string;
   description?: string | null;
   instructions: string;
@@ -1151,6 +1163,12 @@ export interface WorkerRunRecord {
   automation_id?: string;
   automation_revision?: number;
   occurrence_id?: string;
+  /** Workspace pinned at admission. */
+  workspace_id?: string;
+  /** `worker_job` when the request or automation named the workspace, `worker_binding` when it came from the primary binding. */
+  workspace_source?: 'worker_job' | 'worker_binding' | string;
+  /** Worker role pinned at admission; absent means `swarm`. */
+  role?: WorkerRole | string;
   session_id?: string;
   request_source: 'direct' | 'schedule' | 'trigger' | 'test_run' | 'orchestrator' | string;
   input?: Record<string, unknown>;
@@ -1198,6 +1216,7 @@ export interface PortableWorkerDefinition {
 }
 
 export interface CreateWorkerParams {
+  role?: WorkerRole;
   name: string;
   description?: string;
   instructions?: string;
@@ -1209,6 +1228,7 @@ export interface CreateWorkerParams {
 }
 
 export interface UpdateWorkerParams {
+  role?: WorkerRole;
   name?: string;
   description?: string;
   instructions?: string;
@@ -1305,6 +1325,10 @@ export interface DirectWorkerRequestParams {
   prompt?: string;
   input?: Record<string, unknown>;
   idempotency_key?: string;
+  /** Workspace this job works in (registered workspace ID). Required when the worker has no primary binding. */
+  workspace_id?: string;
+  /** Alternative to workspace_id: the exact root path of a registered workspace. */
+  workspace_path?: string;
 }
 
 export interface TestWorkerRunParams {
@@ -1313,6 +1337,10 @@ export interface TestWorkerRunParams {
   prompt?: string;
   input?: Record<string, unknown>;
   idempotency_key?: string;
+  /** Workspace this job works in (registered workspace ID). */
+  workspace_id?: string;
+  /** Alternative to workspace_id: the exact root path of a registered workspace. */
+  workspace_path?: string;
 }
 
 export interface TriggerWorkerParams {

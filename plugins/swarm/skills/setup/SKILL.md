@@ -1,132 +1,107 @@
 ---
 name: setup
-description: Install or connect Swarm locally, onboard a model provider, the person's workspaces and a project, and verify a first delegated task. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help configure a private tunnel or relay only if they request remote access.
+description: Install Swarm (a box the person deploys AI workers to) on their Linux machine, connect their AI to it locally, get a model provider ready, register their folders, and prove a first job. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help with Tailscale or a relay only if they want to reach Swarm from other machines.
 ---
 
 # Set up Swarm
 
-Default to local operation. The skills package supplies instructions; the local
-Codex package also supplies an MCP bridge. Neither contains the Swarm daemon.
-Installing a custom MCP connection does not install these skills, and installing
-these skills does not deploy Swarm or authorize a connection.
-A relay, public URL and cloud account are not local prerequisites.
+Swarm runs on the person's Linux machine (Ubuntu 24.04 x86_64: their own PC or
+a server) as a box they deploy AI workers to. It works on one machine with a
+local AI; Tailscale and relays are optional extras for other machines. The
+person's part is consent, choices, typing keys where Swarm asks, and sign-in.
+You do the rest when you can run commands on that machine.
 
-## Select the client before connecting
+## 1. Is Swarm already there?
 
-Identify where the requesting AI runs and where Swarm runs. Reuse a working
-connection. Do not apply one client's transport setup to another:
+Reuse what exists. Call `swarm_status`: if it answers, Swarm is installed and
+connected — skip to section 4. A 401 is a key problem, not a missing install.
+On the machine, `ls ~/.config/swarm/ai-key` and `systemctl is-active
+swarm-headless` tell you whether the box is installed and this person has a
+key.
 
-| Client | Connection instructions |
-| --- | --- |
-| Codex/local MCP runtime on the person's computer | [Local stdio, Docker or tailnet](references/connection.md) |
-| ChatGPT Work or dot using private remote Swarm | [OpenAI private tunnel](references/chatgpt-tunnel.md) |
-| Claude Code or Claude Desktop local MCP | [Claude local connection](references/remote.md#claude-clients); no OpenAI tunnel |
-| Claude.ai or an explicitly requested public relay | [Remote client options](references/remote.md) |
+## 2. Install the box
 
-A cloud client cannot reach a desktop's localhost or tailnet just because that
-desktop can. ChatGPT setup needs authorized execution on the actual Swarm host
-(a connected computer or selected remote host); the skill alone cannot supply
-that access. Keep the person's role to missing choices, consent, sign-in and
-hidden secret entry. Perform authorized deployment and connection mechanics.
-
-## Connect first
-
-Reuse existing Swarm before installing another daemon. For the local Codex
-bridge, read [connection modes](references/connection.md): it needs Node 22+ and
-exactly one native, Docker or tailnet mode configured with the bundled helper.
-For a ChatGPT private tunnel, follow its dedicated guide instead: it goes
-directly to Swarm HTTP and does not use the Node adapter or connection.json.
-A 401 is an authentication failure, not a missing installation.
-For local bridge authorization, follow [AI-assisted authorization](references/authorization.md);
-the tunnel guide has its own service credential handoff. Create and connect a
-scoped key when owner execution is available. Handle
-the mechanics yourself; the person's role is to authorize access or complete
-an OS password prompt, not learn key management.
-
-## Find the missing step
-
-Inspect the live tool list first: installed daemon versions and access grants
-may expose different tools. Call `swarm_list_models` and
-`swarm_list_workspaces`, plus `swarm_list_providers` when available. Reuse the existing installation
-and account. Missing tools do NOT prove that Swarm is absent: check plugin
-activation, MCP startup errors, the selected execution computer and PATH.
-
-If a shell on the person's selected computer is available, inspect the OS,
-architecture, `command -v swarm`, and whether their chosen Docker container
-exists. On Windows use the shell's equivalent command discovery. Never deploy
-into an unrelated cloud execution sandbox and call it the person's computer.
-If local execution is unavailable, explain that setup needs their connected
-computer or give them the exact commands to run there.
-
-To install Swarm natively (Linux x86_64 only), use the maintained one-line
-installer after the person authorizes its system changes:
+After the person agrees to the system changes (it installs Docker unless a
+working one is there, gVisor, and Swarm as a service), run on that machine, as
+the person, with sudo:
 
 ```sh
-curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
 ```
 
-It installs under `/usr/local` and starts the systemd service on systemd hosts.
-Without a terminal, a non-root run needs passwordless sudo; otherwise the
-person runs it in their own terminal with `| sudo sh -s -- --yes`. If Swarm is
-installed but `swarm help` does not list `swarm mcp`, or the MCP server says
-this Swarm is too old for AI connections, run the same line to update it; it
-keeps the existing install's owner. Then reconnect the MCP server.
+Everything it starts listens on 127.0.0.1 only. At the end it creates Swarm's
+owner for the person who ran it, puts an AI key for their AI in
+`~/.config/swarm/ai-key` (only they can read it) and prints the connect lines.
+Workers run in a sandbox per project without permission prompts, and the
+secret gateway is on. `install.sh connect-ai` makes a new key later.
 
-For missing installation or connection failures, read
-[local deployment](references/local-deployment.md). Perform authorized setup
-steps yourself when tools permit; pause only for missing choices, required
-system permissions, sign-in or secret entry. Do not reset existing state.
+Add `--tailnet` only if the person wants to reach Swarm from other devices
+(see [remote access](references/remote.md)); it is not needed for a local AI.
 
-## Onboard only what is missing
+## 3. Connect the AI
 
-- If owner identity is absent (MCP tools answer "Swarm has no owner yet"), ask the
-  person for their name and a name for this Swarm, then run on the daemon's host
-  `swarm ctl setup identity --username <name> --name <swarm name>` (or use the
-  setup UI). Inspect `swarm ctl setup status` first; identity is one-time.
-- For a provider API key, use `swarm_request_provider_key` when its returned
-  page is reachable by the person. In Docker, loopback links from the container
-  may not be reachable: use the documented headless credential input instead.
-  Never request a key in chat or print a secret file. `swarm_connect_chatgpt`
-  signs Swarm into a model provider; it does not connect this plugin to ChatGPT.
-- Read the available models and account defaults. Ask for missing model choices;
-  preserve existing assignments. Do not choose a hardcoded provider/model.
-- Ask the person: "What workspaces would you like to add?" — existing folders
-  or git repositories, possibly several. Register each with
-  `swarm_add_workspace` and group them into a project with
-  `swarm_create_project`; wait with `swarm_get_project` until its `project.md`
-  is ready (see the `using-swarm` skill, section 6). Swarm only sees folders it
-  can read: Docker paths are inside the container (e.g. `/project`), and a
-  service install sees what its service account can read. A headless install
-  hides home folders; when `swarm_add_workspace` answers
-  `workspace_not_visible`, run the command it names as root on that machine
-  (`install.sh workspace add PATH`, which binds exactly that repository into
-  the service and restarts Swarm; Swarm never changes the machine itself),
-  then add the folder again. Registration and a
-  familiar name do not prove the person's code is present; verify the requested
-  files before assigning a repository task. Use `swarm_create_workspace` (a
-  new, empty repository) only when they ask to start a new project from scratch.
-- Reconnect/refresh the plugin's MCP after installation or configuration changes.
-  Confirm a real tool call succeeds before saying it is connected.
+- **Claude Code with this plugin:** nothing to configure. The plugin finds
+  `~/.config/swarm/ai-key` and connects to `http://127.0.0.1:7783/mcp` (it
+  needs Node 22+). Restart or reconnect the plugin's MCP server after the
+  install.
+- **Claude Code, tools only:**
+  `claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp --header "Authorization: Bearer $(cat ~/.config/swarm/ai-key)"`
+- **Codex:** the line the installer printed (it reads the key from an
+  environment variable).
 
-## Prove the first task
+Confirm a real call (`swarm_status`) succeeds before saying it is connected.
+For other clients and remote setups, see [connection modes](references/connection.md)
+and [remote access](references/remote.md).
 
-Follow the packaged `using-swarm` skill. Use the person's actual task, or agree
-on a small task in their project. Talk to the project's orchestrator
-(`swarm_start_session` with agent `system-orchestrator` and the `project_id`),
-or for a quick check start a session in one of its workspaces. Keep its ID, handle
-pending decisions, and inspect the result using `swarm_get_changes` and
-`swarm_read_file` when exposed. Otherwise use authorized local file access or
-the owner's Swarm UI, and state what remains unverified. Prefer waits of 20–30
-seconds within the live tool schema's limit. A timeout
-means work may still be running; resume the same session instead of duplicating
-it. Report failures honestly. End with what runs where, which workspaces the
-project holds and what was verified.
+## 4. A model provider
 
-For requested remote access later, read [optional remote access](references/remote.md).
-Do not enable it as a workaround for a local setup error. Do not promise dots
-or cloud access merely because the desktop connection works; verify that
-client's tool access separately.
+`swarm_list_providers` shows which providers are ready. If none is, the person
+adds a key in one of two ways; never ask for a key in chat, and if one is
+pasted, tell them to revoke it:
 
-For protocol checks, response parsing, scope filtering or MCP errors, read
-[Swarm's MCP contract](references/mcp-protocol.md). Use the live schema; do not
-assume all installations expose the same tools.
+- the setup page: `http://127.0.0.1:8443` on the machine (on a server, the
+  installer printed the `ssh -L` line to open it from their computer);
+- by script on the machine: `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
+
+Workers use Swarm's recommended model for each role on the connected
+providers. Do not change models unless the person asks.
+
+## 5. Their folders
+
+Ask: "Which folders is your work in?" — existing folders or git repositories,
+possibly several. Register each with `swarm_add_workspace`.
+
+- `workspace_not_found`: the path is wrong; check it with the person.
+- `workspace_not_visible`: Swarm (its own user) cannot see inside a home
+  folder and never changes its host itself. Run, as root on that machine,
+  `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh workspace add PATH`
+  (the command the error names), then add the folder again.
+
+Use `swarm_create_workspace` (a new, empty repository; advanced tools) only
+when the person asks to start a new project from scratch.
+
+## 6. Prove a first job
+
+Use the person's real task, or agree on a small one in their folder. Follow
+the `using-swarm` skill: `swarm_give_job` (coder, designer or finder; the
+folder; a brief with acceptance criteria), `swarm_get_job` with
+`wait_seconds` until it settles, check the result yourself (diff, files,
+tests), then `swarm_deliver_job` if the person wants it merged. A timeout
+means it is still working: wait again, never start a duplicate.
+
+End with what runs where, which folders are registered, what the job did,
+what it cost, and what you verified.
+
+## Secrets
+
+If workers need an API token for a website (for example to post or deploy),
+the person sets it on the machine; you never see it:
+
+- `install.sh secret set NAME --hosts api.example.com` (value on stdin),
+- `install.sh secret grant NAME FOLDER --days N`.
+
+`swarm_list_secrets` then shows it granted to that folder; a job in that folder
+uses it through Swarm's gateway, never seeing the value.
+
+For protocol checks, response parsing or MCP errors, read
+[Swarm's MCP contract](references/mcp-protocol.md).

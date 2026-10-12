@@ -142,7 +142,18 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 	if got := rpc(read, "initialize", map[string]any{"protocolVersion": "2025-06-18"}); got.Result.ProtocolVersion != "2025-06-18" {
 		t.Fatalf("protocol negotiation: %q", got.Result.ProtocolVersion)
 	}
-	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != len(controlMCPTools()) {
+	// By default only the worker and job tools are listed; the rest stay
+	// callable by name (/mcp?tools=all lists them).
+	core := 0
+	for _, tool := range controlMCPTools() {
+		if controlMCPCoreTools[tool.Name] {
+			core++
+		}
+	}
+	if core != len(controlMCPCoreTools) {
+		t.Fatalf("default tool list names %d tools, %d exist", len(controlMCPCoreTools), core)
+	}
+	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != core {
 		t.Fatalf("tool surface changed: %d tools", len(got.Result.Tools))
 	}
 	if got := rpc(read, "no/such", nil); got.Error == nil || got.Error.Code != -32601 {

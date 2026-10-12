@@ -118,6 +118,9 @@ var controlMCPRoutes = []string{
 	"POST v3/sessions/*/plan-mode/checkpoints/*/accept",
 	"GET v3/workers",
 	"POST v3/workers",
+	// The preset coder, designer and finder (created when missing, never
+	// overwritten) for the job tools (control_mcp_jobs.go).
+	"POST v3/workers:ensure-presets",
 	"GET v3/workers/*",
 	"PUT v3/workers/*",
 	"GET v3/workers/*/summary",
@@ -135,6 +138,11 @@ var controlMCPRoutes = []string{
 	"GET v3/usage",
 	"GET v3/usage/limits",
 	"POST v3/usage/limits",
+	// Monitoring: the machine summary and its signal feed (handlers require
+	// signals:read), and which secrets exist where (secrets:read; never values).
+	"GET v3/box/summary",
+	"GET v3/signals",
+	"GET v3/secrets/status",
 	// Box setup (control_mcp_builders.go). Each tool fixes its body: custom
 	// sub-agents only, client keys with sessions scopes only, ChatGPT device
 	// sign-in only (no callback completion, no credential reads).
@@ -498,7 +506,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_add_workspace", Title: "Add an existing folder as a workspace",
-			Description: "Register a folder that already holds the person's work (a git repository or any folder of files) so a project can include it. Ask the person which folders to add, and use the absolute path as the machine running Swarm sees it. If the answer is workspace_not_visible, Swarm (its own user, home folders hidden) cannot see the folder and never changes its host itself: the person, or you if you run on that machine, makes it visible as root with the command the error names (headless install: `install.sh workspace add PATH`), then add it again. Empty folders, system and Swarm storage directories and folders inside an already registered workspace are refused. A folder that is already registered is returned as it is. Nothing in the folder is changed: no git init, no commit.",
+			Description: "Register a folder that already holds the person's work (a git repository or any folder of files) so workers can take jobs in it. Ask the person which folders to add, and use the absolute path as the machine running Swarm sees it. workspace_not_found means the path is wrong. workspace_not_visible means Swarm (its own user, home folders hidden) cannot see it and never changes its host itself: if the folder exists, the person, or you if you run on that machine, makes it visible as root with the command the error names (`install.sh workspace add PATH`), then add it again. Empty folders, system and Swarm storage directories and folders inside an already registered workspace are refused. A folder that is already registered is returned as it is. Nothing in the folder is changed: no git init, no commit.",
 			InputSchema: controlMCPObject([]string{"path"}, map[string]any{
 				"path": controlMCPStringProp("Absolute path of an existing, non-empty folder.", 1, 4096),
 				"name": controlMCPStringProp("Display name; defaults to the folder name.", 0, 100),
@@ -731,14 +739,6 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPReadOnly, call: controlMCPTaskResult,
 		},
 		{
-			Name: "swarm_list_workers", Title: "List workers",
-			Description: "Durable workers (specialists that take tasks and run in the background) with lifecycle state.",
-			InputSchema: controlMCPObject(nil, map[string]any{
-				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": controlMCPMaxListItems, "description": "Default 20."},
-			}),
-			Annotations: controlMCPReadOnly, call: controlMCPListWorkers,
-		},
-		{
 			Name: "swarm_get_worker", Title: "Read a worker or one of its runs",
 			Description: "Without run_id: the worker, its schedules, next scheduled run and 5 latest runs. With run_id: that run's status, session_id (read it with get_session), error and deliverables.",
 			InputSchema: controlMCPObject([]string{"worker_id"}, map[string]any{"worker_id": workerID, "run_id": controlMCPStringProp("", 0, 200)}),
@@ -862,7 +862,7 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
-	}, controlMCPReviewTools(sessionID)...)
+	}, append(controlMCPReviewTools(sessionID), controlMCPJobTools()...)...)
 }
 
 // ---- sessions ------------------------------------------------------------
@@ -2200,20 +2200,6 @@ func controlMCPIntegrateTask(c *controlMCPCall, args map[string]any) (any, error
 }
 
 // ---- workers -------------------------------------------------------------
-
-func controlMCPListWorkers(c *controlMCPCall, args map[string]any) (any, error) {
-	response, err := c.dispatch(http.MethodGet, "/v3/workers", url.Values{"limit": {strconv.Itoa(controlMCPInt(args, "limit", 20))}}, nil)
-	if err != nil {
-		return nil, err
-	}
-	workers := []map[string]any{}
-	for _, raw := range controlMCPList(response["workers"]) {
-		if worker := controlMCPMap(raw); worker != nil {
-			workers = append(workers, controlMCPWorkerSummary(worker))
-		}
-	}
-	return map[string]any{"workers": workers}, nil
-}
 
 func (c *controlMCPCall) worker(workerID string) (map[string]any, error) {
 	response, err := c.dispatch(http.MethodGet, "/v3/workers/"+workerID, nil, nil)

@@ -189,7 +189,7 @@ func (s *WorkerExecutionService) QueueDeploymentJob(ctx context.Context, req sto
 	if target != d.Target {
 		return store.WorkerRunRecord{}, store.ErrWorkerConflict
 	}
-	req.ResolvedModelProfile, err = s.ResolveModelProfile(account, w.ModelProfile)
+	req.ResolvedModelProfile, err = s.ResolveRoleModelProfile(account, w.Role, w.ModelProfile)
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}

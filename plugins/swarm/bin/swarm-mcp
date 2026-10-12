@@ -19,6 +19,20 @@ if [ -n "${SWARM_MCP_CONTAINER:-}" ]; then
   exec docker exec -i "$SWARM_MCP_CONTAINER" swarmctl mcp
 fi
 
+# The Swarm box on this machine: its installer gave this person an AI key
+# (~/.config/swarm/ai-key) for Swarm's MCP on loopback. That speaks HTTP, which
+# the Node adapter next to this script does. Only without a saved connection
+# (connection.json) and without native overrides.
+BOX_KEY=${SWARM_AI_KEY_FILE:-${HOME:-}/.config/swarm/ai-key}
+CONNECTION=${SWARM_MCP_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/swarm-mcp/connection.json}
+if [ -z "${SWARM_MCP_SOCKET:-}${SWARM_MCP_BIN:-}" ] && [ ! -e "$CONNECTION" ] && [ -r "$BOX_KEY" ]; then
+  if command -v node >/dev/null 2>&1; then
+    exec node "$(dirname "$0")/swarm-mcp.mjs"
+  fi
+  echo "swarm-mcp: this machine's Swarm box gave you an AI key ($BOX_KEY), but Node is needed to use it; install Node 22+, or connect directly: claude mcp add --transport http swarm http://127.0.0.1:7783/mcp --header \"Authorization: Bearer \$(cat ~/.config/swarm/ai-key)\"" >&2
+  exit 1
+fi
+
 bounded() {
   if command -v timeout >/dev/null 2>&1; then timeout 10 "$@"; else "$@"; fi
 }

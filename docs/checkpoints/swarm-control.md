@@ -19,7 +19,35 @@ accepts **only scoped tokens**: attach tokens, desktop sessions and implicit
 socket ownership are refused. Cross-origin browser requests, batches and
 unsupported protocol versions are rejected.
 
-## Tools
+## Default tools: workers and jobs
+
+By default `tools/list` shows only the worker and job tools, and the server
+instructions tell that story: register the person's folders, give the coder,
+designer or finder a job, wait, read the result, answer questions, merge.
+Every other tool below stays callable by name and is listed when the client
+asks for all tools (`/mcp?tools=all`, `swarm mcp --all-tools`). The default set
+is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
+`control_mcp_jobs.go`.
+
+| Tool | Relay scope | Routes reached |
+| --- | --- | --- |
+| `swarm_status` | `swarm:read` | `GET /v3/box/summary` (requires `signals:read`); adds `activity_cursor` |
+| `swarm_activity` (`after` cursor, `limit`, `min_severity`) | `swarm:read` | `GET /v3/signals` (requires `signals:read`); worker signals carry a `job_id` |
+| `swarm_list_workers` (`include_jobs`) | `swarm:read` | `GET /v3/workers` (`POST /v3/workers:ensure-presets` when a preset is missing), `GET …/runs` |
+| `swarm_deploy_worker` (preset, or name, role and instructions) | `swarm:write` | `POST /v3/workers:ensure-presets`, or `POST /v3/workers` then `…/activate` with no folder binding |
+| `swarm_give_job` (worker, brief, workspace, files, `wait_seconds`) | `swarm:write` | `GET /v1/workspace/list`, `GET /v3/projects` (`POST /v3/projects` when the folder has no project), `POST /v3/workers/{id}/direct` with `workspace_path`; returns `job_id` `worker/<worker>/<run>` |
+| `swarm_get_job` (`wait_seconds`, `include_diff`) | `swarm:read` | `GET …/runs/{rid}`, the run's session (pending questions) and project task; when settled, the `swarm_task_result` view (branch, commits, files, report, cost, diff) |
+| `swarm_answer_job` | `swarm:write` | `POST /v3/sessions/{id}/permissions/{pid}/resolve` for an open `ask_user` question only, never a tool-call approval |
+| `swarm_deliver_job` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` (a local git merge) |
+| `swarm_stop_job` | `swarm:write` | `POST /v3/workers/{id}/runs/{rid}/cancel` (or `…/run/stop` for a media job) |
+| `swarm_schedule_job` (worker, brief, schedule, workspace) | `swarm:write` | `POST /v3/workers` with the schedule, `…/activate` bound to the folder, `…/automations/{aid}/enable` |
+| `swarm_request_media` (image, video, sound) | `swarm:write` | `POST /v3/projects/{pid}/tasks` (as `swarm_run_task`); returns `job_id` `media/<project>/<task>` |
+| `swarm_list_secrets` | `swarm:read` | `GET /v3/secrets/status` (requires `secrets:read`): names, allowed websites, whether a value is set, unexpired folder grants; never values |
+
+`swarm_list_workspaces`, `swarm_add_workspace`, `swarm_manage_worker`,
+`swarm_list_providers` and `swarm_get_usage` (below) complete the default list.
+
+## All tools
 
 | Tool | Relay scope | Routes reached |
 | --- | --- | --- |
@@ -46,12 +74,12 @@ unsupported protocol versions are rejected.
 | `swarm_run_task` (project, role `coder|finder|designer|image|video|sound|swarm`, brief, optional title, workspace, files, model, `wait_seconds`) | `swarm:write` | `POST /v3/projects/{pid}/tasks` with `auto_approve` (the delegating AI is the gate) and a fixed `client_request_id`; coder needs a registered workspace; `files` become a scope paragraph of the brief; `model` is checked against the catalog |
 | `swarm_wait_task` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}`, woken by committed realtime records of the task's session or the project's task updates; settles on needs_review, completed, failed, blocked, rejected, needs_input, pending_approval |
 | `swarm_task_result` (+ `include_diff`, `diff_chars`) | `swarm:read` | `GET /v3/projects/{pid}/tasks/{tid}` (fresh git and delivery state) plus `GET /v3/sessions/{sid}` for `usage_summary`; commits, files and the optional diff come from the same local Git read as `swarm_get_changes` |
-| `swarm_integrate_task` | `swarm:approve` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict; nothing is pushed) |
+| `swarm_integrate_task` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict; nothing is pushed) |
 | `swarm_approve_task` (`approve`/`reject`) | `swarm:manage` | `POST /v3/projects/{pid}/tasks/{tid}/approve` or `…/reject` (the Desktop's buttons) for a `pending_approval` task only, with the task's own session, plan and plan revision as guards; the media `…/accept` alias that publishes deliverables is not reachable |
 | `swarm_accept_review` | `swarm:approve` | `GET …/plans/active`, then `POST /v3/sessions/{id}/plan-mode/checkpoints/{cid}/accept` on the checkpoint waiting for review (tool requires `sessions:write`); a last checkpoint completes the plan |
 | `swarm_read_file` | `swarm:read` | session detail (worktree root, else workspace) or the registered-workspace list; the file is opened with `os.Root` beneath that folder (no `..`, absolute paths or symlink escape), `.git`, `.env*`, binary files and protected storage refused, 256 KiB cap; directories list up to 200 entries (tool requires `sessions:read`) |
 | `swarm_get_changes` (+ `path`, `diff_chars` up to 200,000) | `swarm:read` | session detail, then read-only Git through the sandbox router in the session's worktree against its base commit (or uncommitted changes against `HEAD` without a worktree): commits, changed and untracked files, bounded diff without external diff or textconv helpers (tool requires `sessions:read`) |
-| `swarm_list_workers`, `swarm_get_worker` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
+| `swarm_get_worker` (+ run) | `swarm:read` | `GET /v3/workers[/{id}[/runs[/{rid}]]]` |
 | `swarm_assign_worker_task` | `swarm:write` | `POST /v3/workers/{id}/direct` |
 | `swarm_create_worker` (optional `schedule` + `scheduled_plan`) | `swarm:manage` | `POST /v3/workers` (schedule included), `POST …/activate` (primary workspace binding; the workspace must be in one project, or pass `project_id`), `POST …/automations/{aid}/enable` |
 | `swarm_update_worker` | `swarm:manage` | `PUT /v3/workers/{id}` (revision-guarded) |

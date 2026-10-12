@@ -2229,7 +2229,9 @@ func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.R
 // changes its own host: the person, or the AI setting the machine up, makes
 // the folder visible from outside (on a headless install,
 // `install.sh workspace add PATH` as root) and adds it again. Only a missing
-// or unreadable path outside Swarm's own storage qualifies.
+// or unreadable path outside Swarm's own storage qualifies. A path whose
+// parent Swarm can see and that simply is not there is answered as
+// workspace_not_found, so a typo never sends anyone to change the host.
 func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bool {
 	path = strings.TrimSpace(path)
 	if !filepath.IsAbs(path) {
@@ -2246,13 +2248,35 @@ func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bo
 	if tool.RefuseProtectedPath(clean) != nil {
 		return false
 	}
+	if errors.Is(err, fs.ErrNotExist) && !workspaceUnderHiddenRoot(clean) {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"ok":    false,
+			"code":  "workspace_not_found",
+			"path":  clean,
+			"error": clean + " does not exist on this machine. Check the path with the person (it is the absolute path as this machine sees it) and add it again.",
+		})
+		return true
+	}
 	writeJSON(w, http.StatusConflict, map[string]any{
 		"ok":    false,
 		"code":  "workspace_not_visible",
 		"path":  clean,
-		"error": clean + " is not visible to Swarm on this machine: Swarm runs as its own user with home folders hidden, and never changes its host itself. Make the folder visible from outside, as root on that machine (headless install: `install.sh workspace add " + clean + "`), then add it again.",
+		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `install.sh workspace add " + clean + "`, then add it again.",
 	})
 	return true
+}
+
+// workspaceHiddenRoots are the folders a service install hides from Swarm
+// (systemd ProtectHome): a missing path under one may exist but be hidden.
+var workspaceHiddenRoots = []string{"/home", "/root", "/run/user"}
+
+func workspaceUnderHiddenRoot(path string) bool {
+	for _, root := range workspaceHiddenRoots {
+		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeWorkspaceRepositoryError(w http.ResponseWriter, err error) {

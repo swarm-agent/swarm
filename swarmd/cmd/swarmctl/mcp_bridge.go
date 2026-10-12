@@ -77,13 +77,17 @@ to Swarm Control (/mcp) unchanged. stdout carries only MCP; messages go to
 stderr.
 
 Usage:
-  swarm mcp [--access full|write|read]                     (native install)
-  swarmctl mcp [--access full|write|read] [--socket PATH]
+  swarm mcp [--access full|write|read] [--all-tools]       (native install)
+  swarmctl mcp [--access full|write|read] [--all-tools] [--socket PATH]
 
   --access  full (default): every Swarm Control tool, including approving
             tool calls, models, workers and provider key requests.
-            write: read tools plus start sessions, send messages, stop runs.
+            write: read tools plus deploy workers, give and merge jobs, stop
+            runs.
             read: read-only tools.
+  --all-tools  also list the advanced tools (sessions, plans, project
+            orchestrators, tasks by role, models, box setup). By default the
+            AI sees the worker and job tools; the others stay callable.
   --socket  Swarm's owner socket (default: $SWARMD_LOCAL_TRANSPORT_SOCKET or
             <data root>/local-transport/api.sock).
 
@@ -111,6 +115,7 @@ func runMCPBridge(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	flags := flag.NewFlagSet("mcp", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	access := flags.String("access", "full", "full, write or read")
+	allTools := flags.Bool("all-tools", false, "also list the advanced tools")
 	socket := flags.String("socket", "", "Swarm's owner socket")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -134,12 +139,13 @@ func runMCPBridge(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return err
 	}
 	bridge := &mcpBridge{
-		client: mcpBridgeClient(path),
-		socket: path,
-		access: level,
-		now:    time.Now,
-		out:    stdout,
-		log:    stderr,
+		client:   mcpBridgeClient(path),
+		socket:   path,
+		access:   level,
+		allTools: *allTools,
+		now:      time.Now,
+		out:      stdout,
+		log:      stderr,
 	}
 	defer bridge.shutdown()
 	key, err := bridge.acquire(ctx)
@@ -196,11 +202,12 @@ type mcpBridgeKey struct {
 }
 
 type mcpBridge struct {
-	client *http.Client
-	socket string
-	access string
-	now    func() time.Time
-	log    io.Writer
+	client   *http.Client
+	socket   string
+	access   string
+	allTools bool
+	now      func() time.Time
+	log      io.Writer
 
 	mu      sync.Mutex
 	current *mcpBridgeKey
@@ -347,7 +354,11 @@ func (b *mcpBridge) forward(ctx context.Context, message []byte) ([]byte, error)
 		return nil, err
 	}
 	defer b.release(key)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpBridgeBaseURL+"/mcp", bytes.NewReader(message))
+	target := mcpBridgeBaseURL + "/mcp"
+	if b.allTools {
+		target += "?tools=all"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(message))
 	if err != nil {
 		return nil, errors.New("cannot build the request to Swarm")
 	}

@@ -16,18 +16,22 @@ short-lived write key after approval using `bin/authorize.mjs`. The person does
 not copy a key. Service-account installations may require one OS password prompt
 in their terminal. See `skills/setup/references/authorization.md`.
 
-## Quick start (Claude Code, Linux x86_64)
+## Quick start (Claude Code, Ubuntu 24.04 x86_64)
 
 ```sh
-curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
 claude plugin marketplace add swarm-agent/swarm
 claude plugin install swarm@swarm
 ```
 
-Then ask Claude to set up Swarm; you type your model key on Swarm's local key
-page, never in chat. The plugin's `bin/swarm-mcp` uses `swarm mcp`, or
-`swarmctl mcp` from the install, and reports a Swarm too old for AI
-connections instead of starting it.
+The installer gives you an AI key in `~/.config/swarm/ai-key`; with no
+`connection.json`, the plugin's `bin/swarm-mcp` finds it and connects to the
+box's MCP on `http://127.0.0.1:7783/mcp` through the Node adapter (Node 22+;
+plain HTTP is accepted only for loopback). Then ask Claude to set up Swarm;
+you type your model key on the setup page or set it by script, never in chat.
+Without the box key, `bin/swarm-mcp` uses `swarm mcp` (the desktop and
+terminal launcher install), or `swarmctl mcp` from it, and reports a Swarm too
+old for AI connections instead of starting it.
 
 ## Choose the package and client
 

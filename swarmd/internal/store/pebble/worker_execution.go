@@ -25,6 +25,12 @@ type WorkerRunAdmission struct {
 	IdempotencyKey         string
 	OccurrenceID           string
 	SessionID              string
+	// WorkspaceID is the workspace the caller named for this job (part of the
+	// idempotency payload). ResolvedWorkspaceID is the workspace the execution
+	// service authorized for the job; admission recomputes the per-job rule
+	// under the worker lock and refuses a mismatch, then pins it on the receipt.
+	WorkspaceID         string
+	ResolvedWorkspaceID string
 }
 
 type workerRunIdempotency struct {
@@ -95,6 +101,21 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes})
 	if err != nil {
 		return WorkerRunRecord{}, err
+	}
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	if req.WorkspaceID != "" {
+		if req.Placement != nil || len(req.WorkspaceID) > 128 {
+			return WorkerRunRecord{}, fmt.Errorf("%w: invalid job workspace", ErrWorkerConflict)
+		}
+		// Only a named workspace extends the payload, so receipts admitted
+		// before per-job workspaces keep replaying under their original hash.
+		hash, err = hashWorkerPayload(struct {
+			Base      string
+			Workspace string
+		}{hash, req.WorkspaceID})
+		if err != nil {
+			return WorkerRunRecord{}, err
+		}
 	}
 	if req.Placement != nil {
 		hash, err = hashWorkerPayload(struct {
@@ -173,8 +194,27 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if worker.Provenance != nil && (worker.Provenance.MigratedAt != 0 || worker.Provenance.SourceProposalID != "") {
 		return WorkerRunRecord{}, fmt.Errorf("%w: legacy migration is read-only until cutover", ErrWorkerConflict)
 	}
-	if len(worker.RequestedCapabilities) != 0 || len(worker.WorkspaceRequirements) != 1 || worker.WorkspaceRequirements[0].Role != "primary" || !worker.WorkspaceRequirements[0].Required || len(worker.LocalBindings) != 1 || worker.LocalBindings["primary"] == "" {
-		return WorkerRunRecord{}, fmt.Errorf("%w: an approved primary workspace binding and no unapproved capabilities are required", ErrWorkerConflict)
+	if len(worker.RequestedCapabilities) != 0 {
+		return WorkerRunRecord{}, fmt.Errorf("%w: no unapproved capabilities are allowed", ErrWorkerConflict)
+	}
+	primary, err := WorkerPrimaryBinding(worker.WorkspaceRequirements, worker.LocalBindings)
+	if err != nil {
+		return WorkerRunRecord{}, fmt.Errorf("%w: %v", ErrWorkerConflict, err)
+	}
+	var workspaceID, workspaceSource string
+	if req.Placement != nil {
+		// Remote placement keeps its bound-worker contract.
+		if primary == "" {
+			return WorkerRunRecord{}, fmt.Errorf("%w: remote placement requires an approved primary workspace binding", ErrWorkerConflict)
+		}
+	} else {
+		workspaceID, workspaceSource, err = ResolveWorkerRunWorkspace(worker, req.AutomationID, req.WorkspaceID)
+		if err != nil {
+			return WorkerRunRecord{}, fmt.Errorf("%w: %w", ErrWorkerConflict, err)
+		}
+		if strings.TrimSpace(req.ResolvedWorkspaceID) != workspaceID {
+			return WorkerRunRecord{}, fmt.Errorf("%w: job workspace changed before admission", ErrWorkerConflict)
+		}
 	}
 	unlockBudget := ws.store.sessionMutations.lockSessions("account:" + account)
 	defer unlockBudget()
@@ -216,7 +256,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	now := time.Now().UnixMilli()
 	runID := GenerateWorkerRunID()
 	req.SessionID = "worker-execution-" + runID
-	receipt := WorkerRunRecord{ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
+	receipt := WorkerRunRecord{ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: req.UserID, workerID: worker.ID}
 	if err := ws.pinWorkerPlacement(account, req, worker, &receipt, m); err != nil {
 		return WorkerRunRecord{}, err
@@ -527,16 +567,16 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 		w = candidate
 		w.PendingReview = nil
 	}
-	if len(w.WorkspaceRequirements) != 1 || w.WorkspaceRequirements[0].Role != "primary" || !w.WorkspaceRequirements[0].Required {
-		return WorkerRecord{}, ErrWorkerConflict
-	}
 	if len(w.RequestedCapabilities) != 0 {
 		return WorkerRecord{}, fmt.Errorf("%w: capability approvals unsupported", ErrWorkerConflict)
 	}
-	if len(bindings) != 1 || strings.TrimSpace(bindings["primary"]) == "" {
-		return WorkerRecord{}, fmt.Errorf("%w: one required primary workspace role must be bound", ErrWorkerConflict)
+	// A proposal is either box-level (no roles, no bindings) or proposes exactly
+	// one required primary workspace that the caller accepts verbatim.
+	primary, err := WorkerPrimaryBinding(w.WorkspaceRequirements, bindings)
+	if err != nil {
+		return WorkerRecord{}, fmt.Errorf("%w: %v", ErrWorkerConflict, err)
 	}
-	if w.ProposedBindings == nil || len(w.ProposedBindings) == 0 {
+	if primary != "" && len(w.ProposedBindings) == 0 {
 		return WorkerRecord{}, fmt.Errorf("%w: worker proposal has no proposed bindings", ErrWorkerConflict)
 	}
 	if len(bindings) != len(w.ProposedBindings) {
@@ -557,7 +597,10 @@ func (ws *WorkerStore) AcceptWorker(account, user, id string, revision uint64, b
 		}
 		w.ModelProfile = CloneSessionModelProfileSnapshot(models[0])
 	}
-	w.LocalBindings = map[string]string{"primary": strings.TrimSpace(bindings["primary"])}
+	w.LocalBindings = nil
+	if primary != "" {
+		w.LocalBindings = map[string]string{"primary": primary}
+	}
 	w.LifecycleState = resumeState
 	w.Revision++
 	w.UpdatedAt = now
@@ -641,11 +684,15 @@ func (ws *WorkerStore) ConfigureWorkerBindings(account, user, id string, revisio
 			return WorkerRecord{}, ErrWorkerConflict
 		}
 	}
-	if len(w.WorkspaceRequirements) != 1 || w.WorkspaceRequirements[0].Role != "primary" || !w.WorkspaceRequirements[0].Required || len(bindings) != 1 || bindings["primary"] == "" {
-		return WorkerRecord{}, fmt.Errorf("%w: one required primary workspace role must be bound", ErrWorkerConflict)
+	primary, err := WorkerPrimaryBinding(w.WorkspaceRequirements, bindings)
+	if err != nil {
+		return WorkerRecord{}, fmt.Errorf("%w: a box-level worker takes no bindings; a worker with a primary workspace role must bind exactly that role", ErrWorkerConflict)
 	}
 	now := time.Now().UnixMilli()
-	w.LocalBindings = map[string]string{"primary": bindings["primary"]}
+	w.LocalBindings = nil
+	if primary != "" {
+		w.LocalBindings = map[string]string{"primary": primary}
+	}
 	if activate {
 		w.LifecycleState = WorkerLifecycleStateActive
 	} else if w.LifecycleState != WorkerLifecycleStateIdle {

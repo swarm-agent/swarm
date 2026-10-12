@@ -3,6 +3,7 @@ package run
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -19,6 +20,31 @@ func workerExecutionPreference(w store.WorkerRecord) store.ModelPreference {
 // ResolveWorkerModelProfile captures account-owned Swarm plan/action settings or
 // validates an explicit review selection without writing any account settings.
 func (s *Service) ResolveWorkerModelProfile(account string, selected *store.SessionModelProfileSnapshot) (*store.SessionModelProfileSnapshot, error) {
+	return s.ResolveWorkerRoleModelProfile(account, "", selected)
+}
+
+// workerRoleAssignment returns the account-scoped model setting of a worker
+// role's system agent; ok is false for the Swarm role, which uses its plan and
+// action settings.
+func workerRoleAssignment(settings store.AgentModelSettingsRecord, role string) (store.AgentModelAssignment, bool) {
+	switch strings.TrimSpace(role) {
+	case store.WorkerRoleCoder:
+		return settings.SystemAgents.Coder, true
+	case store.WorkerRoleDesigner:
+		return settings.SystemAgents.Designer, true
+	case store.WorkerRoleFinder:
+		return settings.SystemAgents.Finder, true
+	default:
+		return store.AgentModelAssignment{}, false
+	}
+}
+
+// ResolveWorkerRoleModelProfile is ResolveWorkerModelProfile for a worker role:
+// inherited slots capture the role's account-scoped agent model setting (the
+// Swarm role keeps its plan/action settings). An unconfigured or unavailable
+// role setting falls back to the account default with a ResolutionWarning,
+// never to a hardcoded model.
+func (s *Service) ResolveWorkerRoleModelProfile(account, role string, selected *store.SessionModelProfileSnapshot) (*store.SessionModelProfileSnapshot, error) {
 	if s == nil || s.model == nil {
 		return nil, errors.New("worker model catalog unavailable")
 	}
@@ -27,7 +53,7 @@ func (s *Service) ResolveWorkerModelProfile(account string, selected *store.Sess
 		if err := store.ValidateWorkerModelProfile(p); err != nil {
 			return nil, err
 		}
-		defaults, err := s.ResolveWorkerModelProfile(account, nil)
+		defaults, err := s.ResolveWorkerRoleModelProfile(account, role, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -50,8 +76,16 @@ func (s *Service) ResolveWorkerModelProfile(account string, selected *store.Sess
 		selection := func(a store.AgentModelAssignment) store.ModelProfileSelection {
 			return store.ModelProfileSelection{Provider: a.Provider, Model: a.Model, Thinking: a.Thinking, ServiceTier: a.ServiceTier, ContextMode: a.ContextMode}
 		}
-		plan := selection(settings.Swarm.Plan)
-		p = &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, Action: selection(settings.Swarm.Action), Plan: &plan}
+		if assignment, isRole := workerRoleAssignment(settings, role); isRole {
+			if strings.TrimSpace(assignment.Provider) == "" || strings.TrimSpace(assignment.Model) == "" {
+				return s.workerDefaultFallback(account, fmt.Errorf("%s model setting is not configured", role))
+			}
+			plan := selection(assignment)
+			p = &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, Action: selection(assignment), Plan: &plan}
+		} else {
+			plan := selection(settings.Swarm.Plan)
+			p = &store.SessionModelProfileSnapshot{Source: store.SessionModelProfileSourceSwarmSettings, Action: selection(settings.Swarm.Action), Plan: &plan}
+		}
 	} else if err := store.ValidateWorkerModelProfile(p); err != nil {
 		return nil, err
 	}
@@ -96,11 +130,17 @@ func (s *WorkerExecutionService) ResolveModelProfile(account string, selected *s
 	return s.host.runs.ResolveWorkerModelProfile(account, selected)
 }
 
+// ResolveRoleModelProfile resolves a worker's model policy against its role's
+// account-scoped model setting.
+func (s *WorkerExecutionService) ResolveRoleModelProfile(account, role string, selected *store.SessionModelProfileSnapshot) (*store.SessionModelProfileSnapshot, error) {
+	return s.host.runs.ResolveWorkerRoleModelProfile(account, role, selected)
+}
+
 func (s *WorkerExecutionService) initializeWorkerModel(w store.WorkerRecord, user string) (store.WorkerRecord, error) {
 	if w.ModelProfile != nil {
 		return w, store.ValidateWorkerModelProfile(w.ModelProfile)
 	}
-	p, err := s.ResolveModelProfile(w.AccountScopeID, nil)
+	p, err := s.ResolveRoleModelProfile(w.AccountScopeID, w.Role, nil)
 	if err != nil {
 		return store.WorkerRecord{}, err
 	}

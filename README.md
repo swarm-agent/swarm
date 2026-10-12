@@ -4,24 +4,100 @@
 
 # Swarm
 
-**Swarm is a local AI coding workspace for the terminal and browser, written in Go.**
+**Swarm is a box you deploy AI workers to.**
 
-It combines an installed `swarm` launcher, the `swarmd` daemon, a tcell terminal UI, and a desktop web UI for working with local repositories, AI model providers, sessions, tools, permissions, themes, and workspace state.
+Install it on a Linux machine (your own PC or a server), give it your model
+keys, and it comes with three workers on the recommended models: a **coder**,
+a **designer** and a **finder**. Your own AI (Claude Code, Codex, ChatGPT)
+gives them jobs, waits, reads what they delivered and what it cost, and merges
+it. It can also ask for images, video or sound. It works the same on every
+machine you own, so your AI can work with AI across machines, safely.
 
-This repository is under active development. The README below is intentionally conservative: it describes capabilities represented in the current codebase and avoids placeholder screenshots, hosted-service promises, or benchmark claims.
+- **Workers** work in any folder you register, each job on its own branch, in a
+  sandbox per project (gVisor when available), with no access to the host, your
+  network or Swarm's keys. Jobs run without permission prompts only while that
+  sandbox is active.
+- **Secrets** reach a job only through Swarm's gateway: inside the sandbox an
+  agent sees a stand-in, and the value goes out only to the websites you
+  allowed, for the folders you granted.
+- **Schedules** run a worker's job every N minutes or on cron.
+- **Monitoring** is part of the product: your AI asks whether the box is all
+  right and what happened since last time (jobs finished or failed, cost,
+  workers blocked), over MCP or HTTP.
+- **No dashboard to learn.** You talk to your AI; it talks to Swarm through its
+  MCP tools. The only page is the setup page where you type your keys (or a
+  script does it).
 
-## What Swarm does
-
-- Installs a local backend daemon (`swarmd`) that stays running for workspace, session, model, auth, permission, and UI settings state.
-- Opens controller clients that attach to the daemon: `swarm session` for the terminal UI and `swarm open` for the desktop UI.
-- Keeps daemon lifecycle explicit with `swarm install`, `swarm status`, `swarm start`, `swarm stop`, `swarm restart`, and `swarm uninstall`.
-- Stores runtime data under system locations instead of repository-local mutable state.
-- Uses attach-token authenticated local API endpoints for non-health daemon access.
-- Includes provider adapters and auth/status plumbing for Anthropic, Codex, Google, Fireworks, OpenRouter, and Exa search support. Copilot is not currently available as a selectable or runnable provider.
-- Includes repository guardrails for public-repo hygiene, pre-commit checks, secret scanning, policy checks, and vulnerability scanning.
-- Dedicated local-container execution and APIs are retired. V3 session durability and generic Swarm targets remain current contracts; containers or other non-local execution may return only as future runner targets.
+This repository is under active development; this README describes what the
+current code does.
 
 ## Install
+
+Ubuntu 24.04, x86_64. From your own account:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
+```
+
+It installs Docker (unless a working one is there) and gVisor, and runs Swarm
+and its setup page as services that listen on 127.0.0.1 only. At the end it
+creates Swarm's owner for you, puts an AI key for your AI in
+`~/.config/swarm/ai-key` (only you can read it) and prints how to connect.
+Tailscale is not needed; add `--tailnet` only to reach this machine from your
+other devices. Details: `containers/headless/app/README.md`.
+
+Your model provider key goes on the setup page (`http://127.0.0.1:8443`) or in
+by script, never through chat:
+
+```bash
+sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file
+```
+
+## Connect your AI
+
+**Claude Code**: install the `swarm` plugin. It finds `~/.config/swarm/ai-key`
+by itself (it needs Node 22+) and brings Swarm's skills:
+
+```bash
+claude plugin marketplace add swarm-agent/swarm
+claude plugin install swarm@swarm
+```
+
+or add only the tools:
+
+```bash
+claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp --header "Authorization: Bearer $(cat ~/.config/swarm/ai-key)"
+```
+
+**Codex**: the installer prints the line (it reads the key from an
+environment variable).
+
+**Then tell your AI: "set up Swarm".** It asks which folders your work is in,
+registers them, and gives the coder a first job.
+
+## What your AI does with it
+
+| Tool | What it does |
+| --- | --- |
+| `swarm_add_workspace` | register a folder (nothing in it is changed) |
+| `swarm_give_job` | give the coder, designer or finder a job in a folder |
+| `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff |
+| `swarm_answer_job` | reply when a worker asks something |
+| `swarm_deliver_job` | merge the result into the folder (local git merge, never a push) |
+| `swarm_request_media` | an image, video or sound |
+| `swarm_schedule_job` | a worker that runs a job on a schedule |
+| `swarm_status`, `swarm_activity` | is the box all right; what happened since last time |
+| `swarm_list_secrets` | which secrets exist and which folders may use them (never values) |
+
+Advanced tools (sessions, plans, project orchestrators, model overrides) stay
+available: `/mcp?tools=all` or `swarm mcp --all-tools`. The full catalog and
+the trust boundary: `docs/checkpoints/swarm-control.md`.
+
+## Desktop and terminal app
+
+Swarm also ships a launcher with a terminal UI and a desktop web UI for
+working with it by hand. They are not needed for the box above.
+
 
 Linux x86_64 only. One line, no confirmation prompt:
 
@@ -29,7 +105,7 @@ Linux x86_64 only. One line, no confirmation prompt:
 curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
 ```
 
-It installs Swarm and, on a systemd host, starts the `swarm` service. Without a terminal (an AI agent, CI) a non-root run needs passwordless sudo; otherwise run it as root with `| sudo sh -s -- --yes`. Then [connect your AI](#connect-your-ai).
+It installs Swarm and, on a systemd host, starts the `swarm` service. Without a terminal (an AI agent, CI) a non-root run needs passwordless sudo; otherwise run it as root with `| sudo sh -s -- --yes`. Then [connect your AI](#connect-your-ai-to-the-launcher-install).
 
 To choose the service behavior explicitly:
 
@@ -67,7 +143,7 @@ From a source checkout, the setup helper can build and install local development
 ./setup
 ```
 
-## Connect your AI
+### Connect your AI to the launcher install
 
 Your AI talks to Swarm through `swarm mcp`: MCP over stdio, no key to make or
 paste. Run as the user that runs Swarm, it gets a short-lived AI key over
@@ -134,7 +210,7 @@ When `dev_mode = true` is set in `swarm.conf`, use the checked-in same-machine p
 
 The helper bootstraps an authenticated local Desktop session, calls `POST /v3/developer/session-dump`, and prints the server-controlled absolute dump path. It accepts only localhost or loopback session URLs and never reads the Pebble database directly. Dump files are private (`0600`) under the daemon data directory at `session-dumps/` and include the session snapshot, projection, complete messages/events, run intents/state, plans, permissions, and usage summary. The endpoint returns `403` unless development mode is enabled and `404` when the session does not exist.
 
-## Quick start
+## Launcher quick start
 
 Install Swarm with the systemd service and verify the daemon:
 
