@@ -2,4 +2,4 @@
 
 package appstorage
 
-func ownedByAnother(string) bool { return false }
+func OwnedByAnother(string) bool { return false }

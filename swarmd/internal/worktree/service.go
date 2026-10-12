@@ -426,7 +426,7 @@ func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useC
 			}
 		}
 	}
-	if err := os.Chmod(worktreePath, appstorage.PrivateDirPerm); err != nil {
+	if err := appstorage.SetPrivateDirPerm(worktreePath); err != nil {
 		cleanupErr := cleanupAllocatedWorktree(repoRoot, worktreePath, branchName)
 		return Allocation{}, fmt.Errorf("set worktree directory permissions: %w", allocationFailureWithCleanup(err, cleanupErr))
 	}
@@ -1294,7 +1294,7 @@ func (s *Service) MoveWorkspaceToTitle(workspacePath, sessionID, title string) (
 	if _, err := runGit(repoRoot, "worktree", "move", workspacePath, targetPath); err != nil {
 		return "", fmt.Errorf("move worktree path: %w", err)
 	}
-	if err := os.Chmod(targetPath, appstorage.PrivateDirPerm); err != nil {
+	if err := appstorage.SetPrivateDirPerm(targetPath); err != nil {
 		return "", fmt.Errorf("set worktree directory permissions: %w", err)
 	}
 	return targetPath, nil

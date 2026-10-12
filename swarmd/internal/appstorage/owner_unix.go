@@ -7,9 +7,9 @@ import (
 	"syscall"
 )
 
-// ownedByAnother reports whether path belongs to a user other than this
+// OwnedByAnother reports whether path belongs to a user other than this
 // process (a person's folder made visible to the daemon).
-func ownedByAnother(path string) bool {
+func OwnedByAnother(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
