@@ -423,7 +423,10 @@ Requires=docker.service $FIREWALL_UNIT
 User=$SERVICE_USER
 Group=$SERVICE_USER
 SupplementaryGroups=docker
-UMask=0077
+# 0007, not 0077: a sandbox for a person's folder runs as that person with
+# Swarm's group, so what Swarm writes there must admit its group (Swarm's own
+# state directories are 0700 and nobody else is in its group).
+UMask=0007
 Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
 Environment=LD_LIBRARY_PATH=$OPT/current/lib
 Environment=PATH=$OPT/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

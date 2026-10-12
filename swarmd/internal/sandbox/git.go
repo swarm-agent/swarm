@@ -151,6 +151,13 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		return err
 	}
 	name, mounts := b.name, append([]string(nil), b.mounts...)
+	// Files Git writes in a person's folder (the sandbox runs as its owner)
+	// stay writable for the daemon through its group; otherwise as the
+	// daemon would have written them.
+	umask := "022"
+	if m.RunsAsOwner(b.root) {
+		umask = "002"
+	}
 	m.release(b)
 
 	env := cmd.Env
@@ -179,9 +186,8 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		}
 		execArgs = append(execArgs, "timeout", "--kill-after=2", fmt.Sprintf("%d", secs))
 	}
-	// Container exec starts with umask 0; keep files Git writes in the host
-	// project as the daemon would have written them.
-	execArgs = append(execArgs, "sh", "-c", `umask 022 && exec "$@"`, "swarm-git", "git")
+	// Container exec starts with umask 0.
+	execArgs = append(execArgs, "sh", "-c", "umask "+umask+` && exec "$@"`, "swarm-git", "git")
 	execArgs = append(execArgs, cmd.Args[1:]...)
 
 	enginePath, err := exec.LookPath(m.cfg.Engine)

@@ -92,7 +92,19 @@ func WorktreeDataDir(repoRoot string, parts ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ensurePrivateAppDir(root, path)
+	dir, err := ensurePrivateAppDir(root, path)
+	if err != nil {
+		return "", err
+	}
+	// The sandbox of a folder that belongs to a person runs as that person
+	// with the daemon's group; the bucket must admit the group so Git can
+	// create worktrees in it (the daemon's own state stays private).
+	if ownedByAnother(repoRoot) {
+		if err := os.Chmod(filepath.Join(root, WorktreesDir, bucket), 0o770); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 // WorktreesRoot returns the directory holding every repository's worktree

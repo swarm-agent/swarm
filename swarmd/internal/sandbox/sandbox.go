@@ -495,11 +495,36 @@ func within(root, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
+// sandboxUser returns the uid:gid a project's sandbox runs as. A folder a
+// person made visible to Swarm belongs to that person, and gVisor decides
+// file access from plain ownership and mode bits (it does not see POSIX
+// ACLs), so such a sandbox runs as the folder's owner with the daemon's
+// group: agent commands and Git see the repository as its owner does, and
+// what they create stays the person's. Everything else runs as the daemon.
+func (m *Manager) sandboxUser(root string) (int, int) {
+	owner := m.owner
+	if owner == nil {
+		owner = fileOwnerUID
+	}
+	if uid, ok := owner(root); ok && uid != 0 && uid != m.cfg.UID {
+		return uid, m.cfg.GID
+	}
+	return m.cfg.UID, m.cfg.GID
+}
+
+// RunsAsOwner reports whether root's sandbox runs as the folder's owner
+// rather than the daemon.
+func (m *Manager) RunsAsOwner(root string) bool {
+	uid, _ := m.sandboxUser(filepath.Clean(root))
+	return uid != m.cfg.UID
+}
+
 func (m *Manager) specHash(root string, mounts []string, secretFingerprint string) string {
+	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
 		"v3", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
-		strconv.Itoa(m.cfg.UID), strconv.Itoa(m.cfg.GID), strings.Join(m.cfg.DNS, ","), secretFingerprint,
+		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
 	parts = append(parts, mounts...)
@@ -514,7 +539,8 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 	m.mu.Lock()
 	runtime := m.runtime
 	m.mu.Unlock()
-	user := fmt.Sprintf("%d:%d", m.cfg.UID, m.cfg.GID)
+	uid, gid := m.sandboxUser(root)
+	user := fmt.Sprintf("%d:%d", uid, gid)
 	args := []string{"run", "-d", "--init", "--name", name,
 		"--label", labelSandbox + "=1",
 		"--label", labelRoot + "=" + root,
@@ -533,7 +559,7 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 		"--hostname", "sandbox",
 		"--ipc", "private",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
-		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", m.cfg.UID, m.cfg.GID),
+		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
 		"--mount", "type=volume,src="+name+"-home,dst="+sandboxHome,
 		"--env", "HOME="+sandboxHome,
 		"--env", "PATH="+sandboxPath,

@@ -69,7 +69,9 @@ visible from outside: `sudo install.sh workspace add /home/NAME/my-app` (run
 by the person, or by the AI setting the machine up) binds exactly that Git
 repository into the service at its real path, gives Swarm's user access to it
 (the owner keeps full rights on what Swarm creates) and restarts Swarm.
-Swarm itself never changes the machine. Then register the folder in place
+Swarm itself never changes the machine. That folder's agent sandbox runs as its
+owner (with Swarm's group), so what agents create stays the person's, while
+Swarm keeps running as `swarm`. Then register the folder in place
 (`swarm_add_workspace`, nothing copied), group folders into a project
 (`swarm_create_project`) so Swarm writes its `project.md`, and work through
 the project's orchestrator once it is ready. Agents get worktrees of the
