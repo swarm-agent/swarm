@@ -1,10 +1,16 @@
 # One tailnet, every Swarm: AI access without keys or a public endpoint
 
-Every Swarm machine serves its AI gateway (Swarm Control, an MCP server) only
-on your tailnet, at `https://NAME.TAILNET.ts.net:8444/mcp`. Your Tailscale
-policy decides which devices may use it and at what level. An AI client gets
-the Swarm tools by running on a device in your tailnet: your laptop, or a
-Claude Code on the web session that joins as a throwaway device.
+Tailscale is optional. Swarm works on one machine without it: the installer
+serves everything on 127.0.0.1 and `install.sh connect-ai` connects the AI on
+that machine (see [README.md](README.md)). This page is for reaching Swarm
+machines from your other devices.
+
+A Swarm machine installed with `--tailnet` (or switched with
+`install.sh tailnet on`) also serves its AI gateway (Swarm Control, an MCP
+server) on your tailnet, at `https://NAME.TAILNET.ts.net:8444/mcp`. Your
+Tailscale policy decides which devices may use it and at what level. An AI
+client gets the Swarm tools by running on a device in your tailnet: your
+laptop, or a Claude Code on the web session that joins as a throwaway device.
 
 ```
  your tailnet (private; nothing on the public internet)
@@ -36,9 +42,12 @@ which would otherwise let throwaway AI devices reach every machine.
 
 ## 2. Each Swarm machine
 
-- New machine: install with `TS_AUTHKEY=… bash install.sh --tag tag:swarm`
-  (or open the login link and tag it afterwards). Tailnet identity is on when
-  Tailscale is 1.92 or newer; the installer updates Tailscale if needed.
+- New machine: install with `TS_AUTHKEY=… bash install.sh --tailnet --tag tag:swarm`
+  (or open the login link and tag it afterwards). A machine installed without
+  Tailscale joins later with `sudo bash install.sh tailnet on --tag tag:swarm`
+  (run as root with `TS_AUTHKEY` in the environment to skip the login link).
+  Tailnet identity is on when Tailscale is 1.92 or newer; the installer
+  updates Tailscale if needed.
 - Existing machine:
   1. Admin console → **Machines** → the machine → **Edit ACL tags** →
      `tag:swarm` (or `tag:swarm-protected` for read only from AI devices).

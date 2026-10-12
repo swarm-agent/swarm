@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
-# One-line installer for a private, headless Swarm with its setup app.
+# One-line installer for Swarm on this machine: headless, with its setup page.
 #
-# On a fresh Ubuntu 24.04 x86_64 server, as root:
+# On Ubuntu 24.04 x86_64 (a server or your own PC), from your own account:
 #   curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh \
-#     | bash -s -- --relay https://swarm-relay.YOU.workers.dev
+#     | sudo bash
 #
-# It installs Docker, gVisor and Tailscale, joins your tailnet (you open one
-# login link), builds Swarm and the app from source, and serves the app only
-# on your tailnet at https://NAME.TAILNET.ts.net. The app then walks you
-# through the rest: owner, provider sign-in, models, workspace and Connect to
-# Claude. It also serves Swarm's AI gateway (Swarm Control MCP) on your tailnet
-# at https://NAME.TAILNET.ts.net:8444/mcp; it answers to AI keys you create in
-# the app (none exist at first) and to tailnet devices your Tailscale policy
-# grants swarmagent.dev/cap/swarm (read or write; see
-# containers/headless/app/TAILNET.md). Skip it with --no-ai-access.
-# To join the tailnet without opening a login link, run with TS_AUTHKEY set in
-# the environment (it is passed to Tailscale through a private file, never on
-# a command line); --tag TAG joins as that tag (for example tag:swarm).
-# Nothing listens on the public internet and no secret is passed to this script.
+# It installs Docker (unless a working one with buildx is already there) and
+# gVisor, builds Swarm and the setup page from source and runs both as
+# services. Everything listens on 127.0.0.1 only: the setup page on
+# http://127.0.0.1:8443 (owner login, provider sign-in, models, workspace) and
+# Swarm's MCP (Swarm Control) on http://127.0.0.1:7783/mcp, which answers only
+# to AI keys (skip it with --no-ai-access). At the end it creates Swarm's owner
+# for the person who ran it with sudo (or --for-user NAME), puts an AI key for
+# their AI in a file only they can read (`install.sh connect-ai` does this
+# later, or again) and prints the lines that connect Claude Code or Codex on
+# this machine. Provider keys can also be set by script (`install.sh key
+# PROVIDER`, the key on stdin). Nothing is opened in the firewall and no secret
+# is passed to this script on its command line.
+#
+# Tailscale is optional, only for reaching this machine from other devices:
+# --tailnet (or later `install.sh tailnet on`) installs Tailscale, joins your
+# tailnet (one login link, or TS_AUTHKEY from the environment, passed to
+# Tailscale through a private file; --tag TAG joins as that tag), admits only
+# the tailnet inbound with ufw, serves the setup page at
+# https://NAME.TAILNET.ts.net and the MCP at https://NAME.TAILNET.ts.net:8444/mcp
+# for AI keys and for tailnet devices your Tailscale policy grants
+# swarmagent.dev/cap/swarm (see containers/headless/app/TAILNET.md).
 #
 # Swarm runs as a system service under its own "swarm" user and keeps its keys,
 # login and local socket to itself. Agents' commands, and Swarm's Git on their
@@ -25,11 +33,14 @@
 # works on this machine) with no capabilities, Swarm's non-root user, memory
 # and process limits, only that project and its worktrees mounted, and a
 # network that reaches the internet but never this server, your tailnet,
-# private networks or cloud metadata. Agents may run without permission
-# prompts only while that sandbox is active.
+# private networks or cloud metadata. Agents run without permission prompts
+# (so unattended jobs never wait on a person) only while that sandbox is
+# active: Swarm runs with --sandbox=required and fails closed without it;
+# --ask-permissions (or `install.sh permissions ask`) keeps the prompts. The
+# secret gateway is on by default (--secrets-gateway off turns it off).
 #
-# The first visit to the app creates your login (username, password and an
-# optional authenticator code) from a device on your tailnet.
+# The first visit to the setup page creates your login (username, password
+# and an optional authenticator code).
 # Later: `install.sh update` (also run by a 5-minute timer) rebuilds when the
 # branch moves forward; `install.sh channel BRANCH` switches the branch it
 # follows and keeps everything else; `install.sh reset-login` deletes the login
@@ -40,6 +51,8 @@
 # `install.sh reinstall` wipes Swarm's state and installs it fresh with the same
 # settings; `install.sh uninstall` only removes it. Both keep Docker, gVisor,
 # Tailscale, ufw and (unless --delete-projects) the project folder.
+# Existing installs made before Tailscale was optional keep their tailnet
+# setup on update (install.env records TAILNET=on for them).
 set -euo pipefail
 
 STATE=/var/lib/swarm-headless
@@ -66,6 +79,16 @@ SECRETS_GATEWAY_PORT=8080
 DATA_DIRS=(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd)
 APP_CONFIG=/etc/swarmd/headless-app
 GVISOR_LIST=/etc/apt/sources.list.d/gvisor.list
+# This installer as kept in the checkout, for the commands it prints.
+INSTALLER=$SRC/containers/headless/app/install.sh
+SWARMCTL=/usr/local/bin/swarmctl
+# Everything Swarm serves on this machine listens on loopback.
+LOCAL_APP_ORIGIN=http://127.0.0.1:8443
+LOCAL_MCP_URL=http://127.0.0.1:7783/mcp
+# Revocation IDs of the AI keys connect-ai gave each person (root-only).
+AI_KEY_IDS=$STATE/ai-keys
+# AI keys from connect-ai last a year; run it again to replace one.
+AI_KEY_SECONDS=31536000
 
 # The earlier layout ran Swarm itself inside a container; reinstall/uninstall
 # remove what it left behind.
@@ -78,28 +101,67 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TAG] [--lock-ssh] [--no-ai-access] [--secrets-gateway on|off]
+Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref BRANCH] [--no-ai-access]
+                  [--secrets-gateway on|off] [--ask-permissions] [--tailnet [--tag TAG] [--lock-ssh]]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
        install.sh dev-sync /path/to/checkout | off
        install.sh channel [BRANCH]
+       install.sh connect-ai [--for-user NAME] [--access write|full]
+       install.sh key PROVIDER                      (the API key on stdin)
+       install.sh secret set NAME [--hosts HOST,...] (the value on stdin)
+       install.sh secret grant NAME FOLDER --days N | --hours N
        install.sh daemon-env list | set NAME... | unset NAME...
+       install.sh tailnet on [--tag TAG] [--lock-ssh] | off
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
-       install.sh workspace add PATH | remove PATH | list
+       install.sh permissions auto|ask
+       install.sh workspace add PATH [--for-user NAME] | remove PATH | list
 
+  --for-user NAME  the person this install is for (default: the account that
+                ran sudo); used for the AI connection and workspace folders
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
-  --name NAME   tailnet machine name and Swarm machine name (default: swarm)
+  --name NAME   Swarm machine name, and tailnet machine name (default: swarm)
   --ref BRANCH  swarm branch to build (default: main, the released build;
                 dev follows development and changes several times a day)
-  --tag TAG     join the tailnet as this tag, e.g. tag:swarm (the tailnet
-                policy must list it under tagOwners); first join only
-  --lock-ssh    also close public SSH (use after `tailscale ssh` works)
-  --no-ai-access  do not serve the AI gateway on the tailnet (port 8444)
+  --no-ai-access  do not run Swarm's MCP (127.0.0.1:7783, and :8444 on the
+                tailnet); connect-ai then has nothing to connect to
   --secrets-gateway on|off
-                inject granted secrets through the egress gateway (default off;
+                inject granted secrets through the egress gateway (default on;
                 see secrets-gateway below)
+  --ask-permissions
+                agents ask before commands and file changes; by default they
+                run without prompts, which Swarm allows only inside the sandbox
+  --tailnet     also reach this machine from your other devices over
+                Tailscale (installs and joins it; TS_AUTHKEY in the
+                environment joins without a login link)
+  --tag TAG     with --tailnet: join as this tag, e.g. tag:swarm (the tailnet
+                policy must list it under tagOwners); first join only
+  --lock-ssh    with --tailnet: also close public SSH (use after
+                `tailscale ssh` works)
+
+  connect-ai       create Swarm's owner for the person if there is none, then
+                   mint an AI key for them (write by default; full also
+                   approves tool calls and sets models, providers and
+                   workers), store it in
+                   ~/.config/swarm/ai-key (that person only, mode 0600; the
+                   value is never printed) and print the Claude Code and Codex
+                   connect lines. Running it again replaces the key.
+  key PROVIDER     set the first provider API key, read from stdin (or typed
+                   at a hidden prompt); never on a command line
+  secret set NAME  create the secret for the websites in --hosts (when given)
+                   and set its value from stdin (or a hidden prompt)
+  secret grant NAME FOLDER
+                   let the agents of that workspace folder use the secret for
+                   --days and/or --hours (needs secrets-gateway on)
+  tailnet on|off   add Tailscale later (as --tailnet), or stop serving on the
+                   tailnet and go back to loopback only (Tailscale and ufw
+                   stay installed)
+  permissions auto|ask
+                   auto: agents run without prompts while the sandbox is
+                   active (the default); ask: they ask first. Applied at
+                   every start of Swarm.
 
   reinstall / uninstall remove Swarm's services, binaries, sandboxes and state
   (owner, provider sign-in, AI keys, relay pairing, agent worktrees), its
@@ -125,9 +187,10 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
   secrets-gateway on|off
                    inject secrets granted to a project (swarmctl secret) on
                    the way out to their allowed websites; agents only see
-                   stand-ins (off by default)
-  workspace add PATH | remove PATH | list
-                   make a person's Git repository visible and writable to
+                   stand-ins (on by default)
+  workspace add PATH [--for-user NAME] | remove PATH | list
+                   make a folder the person owns (a Git repository or not)
+                   visible and writable to
                    Swarm and its agent sandboxes at its real path (a unit
                    drop-in binds exactly that folder; Swarm's user gets
                    access to it; the owner keeps full rights on what Swarm
@@ -139,8 +202,86 @@ USAGE
 }
 
 load_conf() {
+  [[ -f $CONF ]] || die "Swarm is not installed on this machine ($CONF is missing)"
   # shellcheck disable=SC1090
   . "$CONF"
+}
+
+# Replace one setting in install.env.
+conf_set() {
+  sed -i "/^$1=/d" "$CONF" && printf '%s=%s\n' "$1" "$2" >>"$CONF"
+}
+
+# TAILNET from install.env. Installs from before Tailscale was optional did
+# not record it; they all served on the tailnet and recorded its origin.
+saved_tailnet() {
+  # shellcheck disable=SC1090
+  (
+    . "$CONF"
+    if [[ -n ${TAILNET:-} ]]; then echo "$TAILNET"
+    elif [[ ${APP_ORIGIN:-} == https://*.ts.net ]]; then echo on
+    else echo off; fi
+  )
+}
+
+# Settings added after the first installs: write them for an install that
+# predates them, from what that install already recorded, and say so.
+conf_migrate() {
+  if [[ -z ${TAILNET:-} ]]; then
+    TAILNET=$(saved_tailnet)
+    conf_set TAILNET "$TAILNET"
+    echo "swarm: recorded TAILNET=$TAILNET for this install"
+  fi
+  if [[ -z ${PERMISSIONS:-} ]]; then
+    PERMISSIONS=auto
+    conf_set PERMISSIONS auto
+    echo "swarm: agents now run without permission prompts while the sandbox is active (install.sh permissions ask turns them back on)"
+  fi
+}
+
+# The person an install, AI key or workspace is for: --for-user NAME, else the
+# account that ran sudo. Never root, Swarm's own user or a system account.
+person() {
+  local name=${1:-${SUDO_USER:-}}
+  [[ -n $name ]] || die "cannot tell who this is for: run with sudo from your own account, or pass --for-user NAME"
+  [[ $name =~ ^[a-z_][a-z0-9_.-]{0,31}$ ]] || die "--for-user must be a user name"
+  id -u "$name" >/dev/null 2>&1 || die "there is no user $name on this machine"
+  [[ $name != root && $name != "$SERVICE_USER" ]] || die "$name is not a person's account; pass --for-user NAME"
+  local uid
+  uid=$(id -u "$name")
+  [[ $uid -ge 1000 && $uid -ne 65534 ]] || die "$name is a system account; pass --for-user NAME"
+  printf '%s' "$name"
+}
+
+person_home() {
+  local home
+  home=$(getent passwd "$1" | cut -d: -f6)
+  [[ $home == /* && -d $home ]] || die "$1 has no home folder"
+  printf '%s' "$home"
+}
+
+# Swarm must be running and have its owner (made by connect-ai, the setup page
+# or swarmctl setup identity) before keys can be set.
+require_owner() {
+  systemctl is-active -q "$DAEMON_UNIT" || die "Swarm is not running; check: journalctl -u $DAEMON_UNIT"
+  local status
+  status=$("$SWARMCTL" setup status) || die "could not read Swarm's setup status"
+  [[ $status == *identity=true* ]] ||
+    die "Swarm has no owner yet: run install.sh connect-ai (it creates the owner for you) or open the setup page ($APP_ORIGIN), then run this again"
+}
+
+# Read one secret into the named variable: from a hidden prompt on a terminal,
+# else all of stdin. It never reaches a command line or the screen.
+read_secret() {
+  local -n into=$1
+  if [[ -t 0 ]]; then
+    printf '%s (it is not shown), then Enter: ' "$2" >&2
+    IFS= read -rs into || true
+    echo >&2
+  else
+    into=$(cat)
+  fi
+  [[ -n $into ]] || die "nothing was entered"
 }
 
 # The port the sandbox firewall opens to the secret gateway, or nothing when the
@@ -260,7 +401,7 @@ up() {
   # Keep the running release and the one before it.
   find "$OPT/releases" -mindepth 1 -maxdepth 1 -type d ! -path "$release" -printf '%T@ %p\n' 2>/dev/null |
     sort -rn | tail -n +2 | cut -d' ' -f2- | xargs -r rm -rf
-  install -m 0755 /dev/stdin /usr/local/bin/swarmctl <<WRAPPER
+  install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER
 #!/bin/sh
 # swarmctl talks to Swarm's private socket, so it runs as Swarm's own user.
 if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
@@ -385,14 +526,25 @@ daemon_env() {
 
 install_units() {
   load_conf
-  local sdk_args='' runtime_arg='' secrets_arg='' release
+  conf_migrate
+  local sdk_args='' runtime_arg='' secrets_arg='' permissions_arg ai_url='' ai_ip='' release
   # The app starts only when run as the main module, which Node decides on
   # the symlink-resolved path, so its unit names the release itself.
   release=$(readlink -f "$OPT/current")
+  # Swarm's MCP for AI keys, on loopback (and on the tailnet through Serve).
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
-  [[ ${AI_ACCESS:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'
+  [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'
+  [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on ]] && ai_url=${APP_AI_URL:-} ai_ip=${APP_AI_IP:-}
   [[ ${SANDBOX_RUNTIME:-default} == default ]] && runtime_arg='--sandbox-runtime=runc'
   [[ ${SECRETS_GATEWAY:-off} == on ]] && secrets_arg=--secrets-gateway=on
+  # Unattended jobs never wait on a person: with --sandbox=required Swarm does
+  # not start without its sandbox, and bypass applies only while it is active.
+  # The installer's choice is applied at every start.
+  case ${PERMISSIONS:-} in
+    auto) permissions_arg=--bypass-permissions ;;
+    ask) permissions_arg=--bypass-permissions=false ;;
+    *) die "install.env has no valid PERMISSIONS (auto or ask); run install.sh permissions auto|ask" ;;
+  esac
   install -d "$UNITS"
   cat > "$UNITS/$FIREWALL_UNIT" <<UNIT
 [Unit]
@@ -443,7 +595,7 @@ ConfigurationDirectoryMode=0700
 LogsDirectory=swarmd
 LogsDirectoryMode=0700
 WorkingDirectory=$PROJECT
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $runtime_arg $sdk_args $secrets_arg
+ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $permissions_arg $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -463,10 +615,10 @@ ReadWritePaths=$SERVICE_HOME $PROJECT
 WantedBy=multi-user.target
 UNIT
   # The setup app talks to Swarm over its private socket and listens on
-  # loopback only; Tailscale Serve is its only way in.
+  # loopback only; with the tailnet, Tailscale Serve is its only other way in.
   cat > "$UNITS/$APP_UNIT" <<UNIT
 [Unit]
-Description=Swarm setup app (tailnet only)
+Description=Swarm setup app (loopback only)
 After=$DAEMON_UNIT
 BindsTo=$DAEMON_UNIT
 
@@ -476,7 +628,7 @@ Group=$SERVICE_USER
 UMask=0077
 Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1 APP_LISTEN=127.0.0.1 APP_PROJECT=$PROJECT
 Environment=APP_ORIGIN=${APP_ORIGIN} APP_RELAY_URL=${APP_RELAY_URL} APP_DEVICE_NAME=${APP_DEVICE_NAME}
-Environment=APP_AI_URL=$([[ ${AI_ACCESS:-off} == on ]] && echo "${APP_AI_URL:-}") APP_AI_IP=$([[ ${AI_ACCESS:-off} == on ]] && echo "${APP_AI_IP:-}")
+Environment=APP_AI_URL=$ai_url APP_AI_IP=$ai_ip
 ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do curl -fsS --unix-socket /var/lib/swarmd/local-transport/api.sock -o /dev/null http://swarmd/readyz && exit 0; sleep 1; done; exit 1'
 ExecStart=$release/bin/node $release/app/examples/headless-app/server.mjs
 WorkingDirectory=$release/app/examples/headless-app
@@ -519,12 +671,11 @@ UNIT
   systemctl enable --now swarm-headless-update.timer >/dev/null
 }
 
-# Wait until the app answers on its loopback port.
 # ---- Workspaces: the person's own folders, made visible to Swarm -------------
 # Swarm runs as its own user with every home folder hidden (ProtectHome=yes),
-# so it cannot see a person's repositories. `install.sh workspace add PATH`,
-# run as root by the person or by the AI setting this machine up, makes
-# exactly that Git repository visible and writable to Swarm and its agent
+# so it cannot see a person's folders. `install.sh workspace add PATH`, run as
+# root by the person or by the AI setting this machine up, makes exactly that
+# folder (a Git repository or not) visible and writable to Swarm and its agent
 # sandboxes at its real path: a unit drop-in binds the folder into the
 # service, and Swarm's user gets access to that folder only (the owner keeps
 # full rights on everything Swarm creates inside). Swarm itself never changes
@@ -535,27 +686,43 @@ WORKSPACES=$STATE/workspaces
 WORKSPACES_DROPIN=$UNITS/$DAEMON_UNIT.d/50-workspaces.conf
 
 # A folder Swarm may work in: absolute, no "..", an existing directory with no
-# link in its path, a Git repository, inside a real person's home (never the
-# service user's, root's or Swarm's own storage), owned by that person.
+# link in its path, owned by the person it is added for (never root's, Swarm's
+# or a system account's), not a system or settings folder, not that person's
+# whole home and not inside anyone else's home.
 workspace_check() {
-  local path=$1 real owner
+  local path=$1 who=$2 real owner home top sub other uid other_home dir
   [[ $path == /* ]] || die "path must be absolute"
   [[ $path != *..* && $path != *$'\n'* ]] || die "path must not contain .. or newlines"
   [[ -d $path ]] || die "$path is not a directory"
   real=$(realpath -e "$path") || die "$path cannot be resolved"
   [[ $real == "$path" ]] || die "$path goes through a link; use $real"
-  [[ -d $path/.git || -f $path/.git ]] || die "$path is not a Git repository (Swarm works on repositories in place)"
-  case $path in
-    /home/*/*) ;;
-    *) die "$path is not inside a person's home folder" ;;
+  [[ $path != / ]] || die "$path is a system folder"
+  top=${path#/} top=${top%%/*}
+  case $top in
+    bin|boot|dev|etc|lib|lib32|lib64|libx32|proc|root|run|sbin|snap|sys|tmp|usr) die "$path is a system folder" ;;
   esac
-  case $path in
-    /home/*/.*|*/.ssh|*/.ssh/*|*/.gnupg|*/.gnupg/*|*/.config/*|*/.local/*) die "$path is a settings or credentials folder" ;;
+  if [[ $top == var ]]; then
+    sub=${path#/var} sub=${sub#/} sub=${sub%%/*}
+    case $sub in
+      ''|cache|lib|lock|log|mail|run|spool|tmp) die "$path is a system folder" ;;
+    esac
+  fi
+  for dir in "${DATA_DIRS[@]}" "$SERVICE_HOME" "$STATE" "$OPT"; do
+    [[ $path != "$dir" && $path != "$dir"/* ]] || die "$path is Swarm's own storage"
+  done
+  case /$path/ in
+    */.*/*) die "$path is a settings or credentials folder" ;;
   esac
   owner=$(stat -c %U "$path")
   [[ $owner != root && $owner != "$SERVICE_USER" ]] || die "$path must belong to a person, not $owner"
   [[ $(id -u "$owner") -ge 1000 ]] || die "$path belongs to a system account"
-  [[ $path == /home/$owner/* ]] || die "$path is not inside $owner's home folder"
+  [[ $owner == "$who" ]] || die "$path belongs to $owner, not $who (pass --for-user $owner if it is for them)"
+  home=$(person_home "$who")
+  [[ $path != "$home" && $home != "$path"/* ]] || die "$path is $who's whole home folder (or holds it); add the project folder inside it"
+  while IFS=: read -r other _ uid _ _ other_home _; do
+    [[ $other != "$who" && $uid -ge 1000 && $uid -ne 65534 && $other_home == /?* ]] || continue
+    [[ $path != "$other_home" && $path != "$other_home"/* ]] || die "$path is inside $other's home folder"
+  done < <(getent passwd)
   WORKSPACE_OWNER=$owner
 }
 
@@ -617,8 +784,14 @@ workspace() {
   command -v setfacl >/dev/null || die "setfacl is missing (apt-get install acl)"
   case ${1:-} in
     add)
-      [[ $# == 2 ]] || die "usage: install.sh workspace add PATH"
-      workspace_check "$2"
+      local who=''
+      if [[ $# == 4 && $3 == --for-user ]]; then
+        who=$4
+      else
+        [[ $# == 2 ]] || die "usage: install.sh workspace add PATH [--for-user NAME]"
+      fi
+      who=$(person "$who") || exit 1
+      workspace_check "$2" "$who"
       install -d -m 0755 "$STATE"
       if ! workspace_listed | grep -qxF "$2"; then
         printf '%s\n' "$2" >>"$WORKSPACES"
@@ -644,14 +817,15 @@ workspace() {
       [[ $# == 1 ]] || die "usage: install.sh workspace list"
       workspace_listed
       ;;
-    *) die "usage: install.sh workspace add PATH | remove PATH | list" ;;
+    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list" ;;
   esac
 }
 
+# Wait until the app answers on its loopback port (with the Host it accepts).
 wait_ready() {
   load_conf
   for _ in $(seq 1 120); do
-    curl -fsS -o /dev/null -H "Host: ${APP_ORIGIN#https://}" http://127.0.0.1:8443/ 2>/dev/null && return 0
+    curl -fsS -o /dev/null -H "Host: ${APP_ORIGIN#*://}" http://127.0.0.1:8443/ 2>/dev/null && return 0
     sleep 1
   done
   die "the app has not started; check: journalctl -u $DAEMON_UNIT -u $APP_UNIT"
@@ -659,14 +833,14 @@ wait_ready() {
 
 # Forgotten password or lost authenticator: delete the login (not Swarm or
 # your work) and restart the app, which also signs out every browser. The next
-# visit from a device on your tailnet creates a new login.
+# visit to the setup page creates a new login.
 reset_login() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
   rm -f "$APP_CONFIG/account.json"
   systemctl restart "$APP_UNIT"
   wait_ready
   load_conf
-  echo "Login deleted. Open $APP_ORIGIN from your own device to create a new one."
+  echo "Login deleted. Open the setup page ($APP_ORIGIN) to create a new one."
 }
 
 remove_legacy_layout() {
@@ -709,7 +883,8 @@ uninstall_all() {
   fi
 
   say "Removing Swarm"
-  local ws
+  local ws tailnet=off
+  [[ -f $CONF ]] && tailnet=$(saved_tailnet)
   while IFS= read -r ws; do
     [[ -n $ws && -d $ws ]] || continue
     workspace_revoke "$ws" "$(stat -c %U "$ws")"
@@ -722,7 +897,8 @@ uninstall_all() {
     "$UNITS/$APP_UNIT" "$UNITS/$DAEMON_UNIT" "$UNITS/$FIREWALL_UNIT"
   remove_legacy_layout
   systemctl daemon-reload
-  if command -v tailscale >/dev/null; then
+  # Only Swarm's own Serve entries; Tailscale used for anything else is left alone.
+  if [[ $tailnet == on ]] && command -v tailscale >/dev/null; then
     tailscale serve --https=443 off >/dev/null 2>&1 || true
     tailscale serve --https=8444 off >/dev/null 2>&1 || true
   fi
@@ -739,7 +915,7 @@ uninstall_all() {
     iptables -F SWARM-SANDBOX 2>/dev/null && iptables -X SWARM-SANDBOX 2>/dev/null || true
     iptables -F SWARM-SANDBOX-HOST 2>/dev/null && iptables -X SWARM-SANDBOX-HOST 2>/dev/null || true
   fi
-  rm -rf "${DATA_DIRS[@]}" /run/swarmd "$SERVICE_HOME" "$OPT" "$STAGE" /usr/local/bin/swarmctl
+  rm -rf "${DATA_DIRS[@]}" /run/swarmd "$SERVICE_HOME" "$OPT" "$STAGE" "$SWARMCTL" "$AI_KEY_IDS"
   rm -f "$CONF"
   if ((delete_projects)); then
     rm -rf "$PROJECT"
@@ -747,6 +923,7 @@ uninstall_all() {
     echo "Kept your projects in $PROJECT"
   fi
   echo "Swarm is removed. Docker, gVisor, Tailscale and ufw are unchanged."
+  echo "AI key files made by connect-ai (~/.config/swarm/ai-key) no longer work; delete them or run connect-ai after a new install."
 }
 
 # Wipe and install again with the saved settings unless new ones are given.
@@ -760,14 +937,17 @@ reinstall_all() {
   done
   if [[ -f $CONF ]]; then
     # shellcheck disable=SC1090
-    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}")
+    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}" "${PERMISSIONS:-}")
+    saved+=("$(saved_tailnet)")
   fi
   [[ -n ${saved[0]:-} ]] && args+=(--relay "${saved[0]}")
   [[ -n ${saved[1]:-} ]] && args+=(--name "${saved[1]}")
   # The retired container layout's branch: everything it carried is on dev.
   [[ -n ${saved[2]:-} && ${saved[2]} != swarm-control ]] && args+=(--ref "${saved[2]}")
   [[ ${saved[3]:-} == off ]] && args+=(--no-ai-access)
-  [[ ${saved[4]:-} == on ]] && args+=(--secrets-gateway on)
+  [[ -n ${saved[4]:-} ]] && args+=(--secrets-gateway "${saved[4]}")
+  [[ ${saved[5]:-} == ask ]] && args+=(--ask-permissions)
+  [[ ${saved[6]:-} == on ]] && args+=(--tailnet)
   # Later options win, so anything passed now overrides the saved settings.
   uninstall_all "${uninstall[@]}"
   install_all "${args[@]}" "${install[@]}"
@@ -814,6 +994,7 @@ serve_ai_gateway() {
 set_tailnet_identity() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
   load_conf
+  [[ $(saved_tailnet) == on ]] || die "this machine is not on a tailnet (install.sh tailnet on adds it)"
   [[ ${AI_ACCESS:-off} == on ]] || die "the AI gateway is off on this machine (installed with --no-ai-access)"
   case ${1:-} in
     on)
@@ -832,47 +1013,15 @@ set_tailnet_identity() {
   journalctl -u "$DAEMON_UNIT" -n 200 --no-pager 2>/dev/null | grep -E 'tailnet identity (on|off)' | tail -n1 || true
 }
 
-install_all() {
-  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=off
-  while (($#)); do
-    case $1 in
-      --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
-      --name) name=${2:?--name needs a value}; shift 2 ;;
-      --ref) ref=${2:?--ref needs a branch}; shift 2 ;;
-      --tag) tag=${2:?--tag needs a tag such as tag:swarm}; shift 2 ;;
-      --lock-ssh) lock_ssh=1; shift ;;
-      --no-ai-access) ai_access=off; shift ;;
-      --ai-access) ai_access=on; shift ;;
-      --secrets-gateway) secrets_gateway=${2:?--secrets-gateway needs on or off}; shift 2 ;;
-      -h|--help) usage; exit 0 ;;
-      *) usage >&2; die "unknown option $1" ;;
-    esac
-  done
-  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
-  [[ $(uname -m) == x86_64 ]] || die "Swarm's headless build is x86_64 only (this machine is $(uname -m))"
-  [[ $name =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--name must be lowercase letters, digits and dashes"
-  [[ $secrets_gateway == on || $secrets_gateway == off ]] || die "--secrets-gateway must be on or off"
-  [[ -z $relay || $relay =~ ^https://[A-Za-z0-9.-]+/?$ ]] || die "--relay must be an https origin such as https://swarm-relay.example.workers.dev"
-  [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "--ref must be a branch name"
-  [[ -z $tag || $tag =~ ^tag:[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--tag must look like tag:swarm"
-
-  # Snap's Docker is confined: it cannot bind-mount project folders outside
-  # home or take the gVisor runtime, so agent sandboxes cannot run on it, and
-  # installing the distribution's Docker beside it leaves two daemons fighting
-  # over one socket.
-  if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
-    die "this machine runs Docker from snap, which cannot run Swarm's agent sandboxes (it cannot mount project folders or use gVisor). Remove it first with: sudo snap remove docker (this deletes the containers, images and volumes it holds), then run this again"
-  fi
-
-  say "Installing Docker, gVisor, Git and a firewall"
-  apt-get update -qq
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    docker.io docker-buildx git ufw python3 curl ca-certificates gnupg iproute2 >/dev/null
-  systemctl enable --now docker >/dev/null
-  install_gvisor
-  register_gvisor
-
+# Install Tailscale, join the tailnet as NAME (as TAG when given) and admit only
+# the tailnet inbound with ufw (SSH stays open unless LOCK_SSH is 1). Sets
+# TS_DNS, TS_IP and TS_IDENTITY (on when the AI gateway can admit tailnet
+# devices by your Tailscale policy).
+join_tailnet() {
+  local name=$1 tag=$2 lock_ssh=$3 ai_access=$4
   say "Joining your tailnet"
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ufw jq >/dev/null
   command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
   if ! tailscale status >/dev/null 2>&1; then
     local up=(up --ssh --hostname="$name") keyfile=''
@@ -893,18 +1042,18 @@ install_all() {
   fi
   # Tailnet identity needs Serve to set (and strip forged copies of) the app
   # capability header, which Tailscale does from 1.92.
-  local tailnet_identity=off
+  TS_IDENTITY=off
   if [[ $ai_access == on ]]; then
     tailscale_new_enough || tailscale update --yes >/dev/null 2>&1 || true
     if tailscale_new_enough; then
-      tailnet_identity=on
+      TS_IDENTITY=on
     else
       echo "warning: Tailscale $(tailscale version | head -n1) is older than 1.92; the AI gateway accepts AI keys only" >&2
     fi
   fi
-  local dns
-  dns=$(tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
-  [[ $dns == *.ts.net ]] || die "no tailnet name yet: turn on MagicDNS in the Tailscale admin console (DNS page), then run this again"
+  TS_DNS=$(tailscale status --json | jq -r '(.Self.DNSName // "") | rtrimstr(".")')
+  [[ $TS_DNS == *.ts.net ]] || die "no tailnet name yet: turn on MagicDNS in the Tailscale admin console (DNS page), then run this again"
+  TS_IP=$(tailscale ip -4 | head -n1)
 
   say "Firewall: nothing inbound except your tailnet"
   ufw default deny incoming >/dev/null
@@ -919,6 +1068,312 @@ install_all() {
     ufw allow OpenSSH >/dev/null
   fi
   ufw --force enable >/dev/null
+}
+
+# Serve the setup page (https 443) and, when the MCP is on, the AI gateway
+# (https 8444) on the tailnet, both through Tailscale Serve to loopback.
+serve_tailnet() {
+  local ai_access=$1 identity=$2
+  say "Serving Swarm on your tailnet"
+  tailscale serve --bg 8443 >/dev/null ||
+    die "tailscale serve failed: turn on HTTPS certificates in the Tailscale admin console (DNS page), then run this again"
+  if [[ $ai_access == on ]]; then
+    serve_ai_gateway "$identity"
+  else
+    tailscale serve --https=8444 off >/dev/null 2>&1 || true
+  fi
+}
+
+# Restart Swarm and its setup page and wait until the page answers.
+restart_swarm() {
+  systemctl restart "$DAEMON_UNIT"
+  systemctl restart "$APP_UNIT"
+  wait_ready
+}
+
+# Add Tailscale to an install, or stop serving on the tailnet.
+tailnet_cmd() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  conf_migrate
+  local usage="usage: install.sh tailnet on [--tag TAG] [--lock-ssh] | off"
+  case ${1:-} in
+    on)
+      shift
+      local tag='' lock_ssh=0
+      while (($#)); do
+        case $1 in
+          --tag) tag=${2:?--tag needs a tag such as tag:swarm}; shift 2 ;;
+          --lock-ssh) lock_ssh=1; shift ;;
+          *) die "$usage" ;;
+        esac
+      done
+      [[ -z $tag || $tag =~ ^tag:[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--tag must look like tag:swarm"
+      join_tailnet "$APP_DEVICE_NAME" "$tag" "$lock_ssh" "${AI_ACCESS:-off}"
+      conf_set TAILNET on
+      conf_set APP_ORIGIN "https://$TS_DNS"
+      conf_set TAILNET_IDENTITY "$TS_IDENTITY"
+      conf_set APP_AI_URL "https://$TS_DNS:8444/mcp"
+      conf_set APP_AI_IP "$TS_IP"
+      install_units
+      restart_swarm
+      serve_tailnet "${AI_ACCESS:-off}" "$TS_IDENTITY"
+      echo "Swarm is on your tailnet. The setup page is now https://$TS_DNS (from this machine too)."
+      if [[ ${AI_ACCESS:-off} == on ]]; then
+        echo "Swarm's MCP: https://$TS_DNS:8444/mcp on the tailnet, and $LOCAL_MCP_URL on this machine."
+      fi
+      ;;
+    off)
+      [[ $# == 1 ]] || die "$usage"
+      if [[ $TAILNET != on ]]; then
+        echo "Swarm is not served on a tailnet; nothing to change."
+        return 0
+      fi
+      tailscale serve --https=443 off >/dev/null || echo "warning: could not remove Tailscale Serve for https 443; check: tailscale serve status" >&2
+      tailscale serve --https=8444 off >/dev/null 2>&1 || true
+      conf_set TAILNET off
+      conf_set APP_ORIGIN "$LOCAL_APP_ORIGIN"
+      conf_set TAILNET_IDENTITY off
+      conf_set APP_AI_URL ''
+      conf_set APP_AI_IP ''
+      install_units
+      restart_swarm
+      echo "Swarm no longer serves on your tailnet; the setup page is $LOCAL_APP_ORIGIN on this machine. Tailscale and ufw are unchanged."
+      ;;
+    *) die "$usage" ;;
+  esac
+}
+
+# Agents without prompts (auto, inside the sandbox only) or asking first.
+set_permissions() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  case ${1:-} in
+    auto|ask) ;;
+    *) die "usage: install.sh permissions auto|ask" ;;
+  esac
+  conf_set PERMISSIONS "$1"
+  install_units
+  restart_swarm
+  if [[ $1 == auto ]]; then
+    echo "Agents run without permission prompts, only while their sandbox is active."
+  else
+    echo "Agents ask before commands and file changes."
+  fi
+}
+
+# The lines that connect a person's AI on this machine to Swarm's MCP, reading
+# the key from their private file. They run as that person, not root.
+print_connect() {
+  cat <<CONNECT
+  As $1, connect your AI (the key stays in ~/.config/swarm/ai-key):
+    Claude Code, with Swarm's skills (the plugin finds the key by itself):
+      claude plugin marketplace add swarm-agent/swarm && claude plugin install swarm@swarm
+    Claude Code, tools only:
+      claude mcp add --scope user --transport http swarm $LOCAL_MCP_URL --header "Authorization: Bearer \$(cat ~/.config/swarm/ai-key)"
+    Codex (start it with SWARM_AI_KEY="\$(cat ~/.config/swarm/ai-key)" codex):
+      codex mcp add swarm --url $LOCAL_MCP_URL --bearer-token-env-var SWARM_AI_KEY
+CONNECT
+}
+
+# Swarm's owner, created for the person when Swarm has none yet (the same
+# call as `swarmctl setup identity`; the setup page then keeps this owner and
+# its first visit still creates your login).
+ensure_owner() {
+  local who=$1 status
+  systemctl is-active -q "$DAEMON_UNIT" || die "Swarm is not running; check: journalctl -u $DAEMON_UNIT"
+  status=$("$SWARMCTL" setup status) || die "could not read Swarm's setup status"
+  [[ $status == *identity=true* ]] && return 0
+  "$SWARMCTL" setup identity --username "$who" --name "$APP_DEVICE_NAME" >/dev/null ||
+    die "could not create Swarm's owner $who"
+  echo "Created Swarm's owner ($who)."
+}
+
+# Give a person's AI on this machine its own AI key for Swarm's MCP, in a file
+# only they can read. The key goes from Swarm to that file through a private
+# root-only file and a pipe; it is never printed or put on a command line.
+mint_ai_key() {
+  local who=$1 access=$2 home dir keyfile idfile tmp old_id=''
+  [[ ${AI_ACCESS:-off} == on ]] || die "Swarm's MCP is off on this machine (installed with --no-ai-access); reinstall without it to connect an AI"
+  command -v jq >/dev/null || die "jq is missing (apt-get install jq)"
+  ensure_owner "$who"
+  home=$(person_home "$who")
+  dir=$home/.config/swarm
+  keyfile=$dir/ai-key
+  # Made as the person, so nothing below writes through a link they placed.
+  runuser -u "$who" -- mkdir -p -m 0700 "$dir" || die "could not create $dir"
+  [[ -d $dir && ! -L $dir && $(stat -c %U "$dir") == "$who" ]] || die "$dir must be a folder owned by $who"
+  install -d -m 0700 -o root -g root "$AI_KEY_IDS"
+  idfile=$AI_KEY_IDS/$who
+  [[ -f $idfile ]] && old_id=$(<"$idfile")
+  tmp=$(mktemp "$AI_KEY_IDS/.mint.XXXXXX")
+  if ! "$SWARMCTL" setup sdk-token --ai-access "$access" --name "local-ai-$who" \
+    --expires-in-seconds "$AI_KEY_SECONDS" >"$tmp"; then
+    rm -f "$tmp"
+    die "no AI key was made; if Swarm made one anyway it shows under AI keys on the setup page"
+  fi
+  if ! jq -er '.token | select(startswith("swk_"))' "$tmp" |
+    runuser -u "$who" -- sh -c 'umask 077 && cat >"$1.new" && mv -f "$1.new" "$1"' sh "$keyfile"; then
+    rm -f "$tmp"
+    die "could not write $keyfile; revoke the new local-ai-$who key on the setup page"
+  fi
+  jq -er '.id' "$tmp" >"$idfile.new" && mv -f "$idfile.new" "$idfile"
+  rm -f "$tmp"
+  if [[ -n $old_id ]]; then
+    "$SWARMCTL" setup revoke-sdk-token --id "$old_id" >/dev/null ||
+      echo "warning: could not revoke $who's previous AI key (id $old_id); revoke it on the setup page" >&2
+  fi
+  echo "Made a $access AI key for $who in ~/.config/swarm/ai-key (only $who can read it; valid for a year)."
+}
+
+connect_ai() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  local who='' access=write
+  while (($#)); do
+    case $1 in
+      --for-user) who=${2:?--for-user needs a user name}; shift 2 ;;
+      --access) access=${2:?--access needs write or full}; shift 2 ;;
+      *) die "usage: install.sh connect-ai [--for-user NAME] [--access write|full]" ;;
+    esac
+  done
+  [[ $access == write || $access == full ]] || die "--access must be write or full"
+  who=$(person "$who") || exit 1
+  mint_ai_key "$who" "$access"
+  print_connect "$who"
+  echo
+  echo "Then tell your AI: set up Swarm"
+}
+
+# Set the first provider API key by script; the key comes on stdin (or a
+# hidden prompt) and reaches Swarm only through a pipe.
+provider_key() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  [[ $# == 1 && $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] ||
+    die "usage: install.sh key PROVIDER (the API key on stdin, or typed at a hidden prompt)"
+  load_conf
+  require_owner
+  local key
+  read_secret key "Paste the $1 API key"
+  printf '%s' "$key" | "$SWARMCTL" setup credential --provider "$1" --api-key-stdin
+  key=''
+}
+
+# Secrets agents can use but never see (swarmctl secret, over Swarm's socket).
+secret_cmd() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  local usage="usage: install.sh secret set NAME [--hosts HOST,...] | secret grant NAME FOLDER --days N | --hours N"
+  local action=${1:-} name=${2:-}
+  [[ $name =~ ^[A-Za-z0-9_.-]{1,128}$ ]] || die "$usage"
+  shift 2
+  load_conf
+  require_owner
+  case $action in
+    set)
+      local hosts='' value
+      while (($#)); do
+        case $1 in
+          --hosts) hosts=${2:?--hosts needs HOST,...}; shift 2 ;;
+          *) die "$usage" ;;
+        esac
+      done
+      [[ -z $hosts || $hosts =~ ^[A-Za-z0-9.,*:-]+$ ]] || die "--hosts must be website names separated by commas"
+      if [[ -n $hosts ]]; then
+        "$SWARMCTL" secret create --name "$name" --hosts "$hosts" ||
+          die "could not create the secret $name (if it exists, run without --hosts to set its value)"
+      fi
+      read_secret value "Paste the value for $name"
+      printf '%s' "$value" | "$SWARMCTL" secret set-value --name "$name" --value-stdin
+      value=''
+      ;;
+    grant)
+      local folder=${1:-} days=0 hours=0
+      [[ $folder == /* ]] || die "$usage"
+      shift
+      while (($#)); do
+        case $1 in
+          --days) days=${2:?--days needs a number}; shift 2 ;;
+          --hours) hours=${2:?--hours needs a number}; shift 2 ;;
+          *) die "$usage" ;;
+        esac
+      done
+      [[ $days =~ ^[0-9]{1,4}$ && $hours =~ ^[0-9]{1,6}$ ]] && ((days + hours > 0)) ||
+        die "set --days and/or --hours for how long the grant lasts"
+      [[ ${SECRETS_GATEWAY:-off} == on ]] ||
+        echo "note: the secret gateway is off on this machine; agents get the secret once install.sh secrets-gateway on" >&2
+      "$SWARMCTL" secret grant --name "$name" --workspace "$folder" --days "$days" --hours "$hours"
+      ;;
+    *) die "$usage" ;;
+  esac
+}
+
+install_all() {
+  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=on permissions=auto tailnet=off for_user=''
+  while (($#)); do
+    case $1 in
+      --for-user) for_user=${2:?--for-user needs a user name}; shift 2 ;;
+      --relay) relay=${2:?--relay needs a URL}; shift 2 ;;
+      --name) name=${2:?--name needs a value}; shift 2 ;;
+      --ref) ref=${2:?--ref needs a branch}; shift 2 ;;
+      --tailnet) tailnet=on; shift ;;
+      --no-tailnet) tailnet=off; shift ;;
+      --tag) tag=${2:?--tag needs a tag such as tag:swarm}; shift 2 ;;
+      --lock-ssh) lock_ssh=1; shift ;;
+      --no-ai-access) ai_access=off; shift ;;
+      --ai-access) ai_access=on; shift ;;
+      --secrets-gateway) secrets_gateway=${2:?--secrets-gateway needs on or off}; shift 2 ;;
+      --ask-permissions) permissions=ask; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) usage >&2; die "unknown option $1" ;;
+    esac
+  done
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  [[ $(uname -m) == x86_64 ]] || die "Swarm's headless build is x86_64 only (this machine is $(uname -m))"
+  [[ $name =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--name must be lowercase letters, digits and dashes"
+  [[ $secrets_gateway == on || $secrets_gateway == off ]] || die "--secrets-gateway must be on or off"
+  [[ -z $relay || $relay =~ ^https://[A-Za-z0-9.-]+/?$ ]] || die "--relay must be an https origin such as https://swarm-relay.example.workers.dev"
+  [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "--ref must be a branch name"
+  [[ -z $tag || $tag =~ ^tag:[a-z0-9][a-z0-9-]{0,40}$ ]] || die "--tag must look like tag:swarm"
+  [[ $tailnet == on || (-z $tag && $lock_ssh == 0) ]] || die "--tag and --lock-ssh are for the tailnet; add --tailnet"
+  [[ $tailnet == on || -z ${TS_AUTHKEY:-} ]] || die "TS_AUTHKEY is set but --tailnet is not: add --tailnet to join your tailnet, or unset TS_AUTHKEY"
+  # The person the AI connection is for: --for-user (checked now), else the
+  # account that ran sudo when it is a person's. Without one, the final output
+  # names the connect-ai step instead.
+  local who=''
+  if [[ -n $for_user ]]; then
+    who=$(person "$for_user") || exit 1
+  elif [[ -n ${SUDO_USER:-} ]]; then
+    who=$(person "" 2>/dev/null) || who=''
+  fi
+
+  # Snap's Docker is confined: it cannot bind-mount project folders outside
+  # home or take the gVisor runtime, so agent sandboxes cannot run on it, and
+  # installing the distribution's Docker beside it leaves two daemons fighting
+  # over one socket.
+  if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
+    die "this machine runs Docker from snap, which cannot run Swarm's agent sandboxes (it cannot mount project folders or use gVisor). Remove it first with: sudo snap remove docker (this deletes the containers, images and volumes it holds), then run this again"
+  fi
+
+  say "Installing Docker, gVisor and Git"
+  local packages=(git curl ca-certificates gnupg iproute2 jq acl)
+  # A working Docker with buildx (such as Docker's own docker-ce) stays:
+  # the distribution's packages would conflict with it.
+  if command -v docker >/dev/null && docker buildx version >/dev/null 2>&1; then
+    echo "Using the Docker already on this machine ($(docker --version))"
+  else
+    packages+=(docker.io docker-buildx)
+  fi
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${packages[@]}" >/dev/null
+  systemctl enable --now docker >/dev/null
+  install_gvisor
+  register_gvisor
+
+  local origin=$LOCAL_APP_ORIGIN ai_url='' ai_ip='' tailnet_identity=off
+  if [[ $tailnet == on ]]; then
+    join_tailnet "$name" "$tag" "$lock_ssh" "$ai_access"
+    origin=https://$TS_DNS ai_url=https://$TS_DNS:8444/mcp ai_ip=$TS_IP tailnet_identity=$TS_IDENTITY
+  fi
 
   say "Fetching Swarm ($ref)"
   install -d -m 0755 "$STATE"
@@ -942,50 +1397,103 @@ install_all() {
     "git config --global user.name >/dev/null || git config --global user.name 'Swarm agent'; \
      git config --global user.email >/dev/null || git config --global user.email 'swarm@$name.invalid'"
 
-  local previous_relay=''
+  local previous_relay='' previous_tailnet=off
   # shellcheck disable=SC1090
   [[ -f $CONF ]] && previous_relay=$(. "$CONF" && printf '%s' "${APP_RELAY_URL:-}")
+  [[ -f $CONF ]] && previous_tailnet=$(saved_tailnet)
+  if [[ $previous_tailnet == on && $tailnet == off ]] && command -v tailscale >/dev/null; then
+    echo "This install served Swarm on your tailnet; installing without --tailnet stops that (Tailscale stays)."
+    tailscale serve --https=443 off >/dev/null 2>&1 || true
+    tailscale serve --https=8444 off >/dev/null 2>&1 || true
+  fi
   umask 077
   cat > "$CONF" <<CONF
 SWARM_REF=$ref
-APP_ORIGIN=https://$dns
+TAILNET=$tailnet
+APP_ORIGIN=$origin
 APP_RELAY_URL=${relay:-$previous_relay}
 APP_DEVICE_NAME=$name
 AI_ACCESS=$ai_access
 TAILNET_IDENTITY=$tailnet_identity
 SECRETS_GATEWAY=$secrets_gateway
-APP_AI_URL=https://$dns:8444/mcp
-APP_AI_IP=$(tailscale ip -4 | head -n1)
+PERMISSIONS=$permissions
+APP_AI_URL=$ai_url
+APP_AI_IP=$ai_ip
 SANDBOX_RUNTIME=default
 CONF
   umask 022
 
   remove_legacy_layout
   up
-
-  say "Serving the app on your tailnet"
-  tailscale serve --bg 8443 >/dev/null ||
-    die "tailscale serve failed: turn on HTTPS certificates in the Tailscale admin console (DNS page), then run this again"
-  if [[ $ai_access == on ]]; then
-    serve_ai_gateway "$tailnet_identity"
-  else
-    tailscale serve --https=8444 off >/dev/null 2>&1 || true
-  fi
+  [[ $tailnet == on ]] && serve_tailnet "$ai_access" "$tailnet_identity"
 
   wait_ready
-  say "Checking that agent sandboxes cannot reach this server or your tailnet"
+  say "Checking that agent sandboxes cannot reach this server or your networks"
   check_isolation
-  cat <<DONE
 
-  ┌───────────────────────────────────────────────────────────────
-  │ Swarm is ready. From your own device on your tailnet, open:
-  │
-  │   https://$dns
-  │
-  │ Create your login there (save it in your password manager);
-  │ the app then walks you through the rest.
-  └───────────────────────────────────────────────────────────────
-DONE
+  # The person's AI on this machine gets its key now (Swarm's owner is
+  # created for them). A failure is reported, and the install exits non-zero.
+  local key_made=0 rc=0
+  if [[ -n $who && $ai_access == on ]]; then
+    say "Connecting $who's AI on this machine"
+    set +e
+    (
+      set -e
+      load_conf
+      mint_ai_key "$who" write
+    )
+    rc=$?
+    set -e
+    ((rc == 0)) && key_made=1
+  fi
+  install_done "$who" "$key_made"
+  if ((rc != 0)); then
+    die "Swarm is running, but the AI key for $who could not be made (see above); run: sudo bash $INSTALLER connect-ai --for-user $who"
+  fi
+}
+
+# What runs, where, and the next steps.
+install_done() {
+  local who=$1 key_made=${2:-0}
+  load_conf
+  echo
+  echo "Swarm is running on this machine; its services listen on 127.0.0.1 only:"
+  echo "  Swarm          swarm-headless: agents in one sandbox per project ($(
+    [[ $SANDBOX_RUNTIME == runsc ]] && echo gVisor || echo Docker runc)), $(
+    [[ $PERMISSIONS == auto ]] && echo 'no permission prompts inside the sandbox' || echo 'agents ask first'), secret gateway $SECRETS_GATEWAY"
+  if [[ $TAILNET == on ]]; then
+    echo "  Setup page     127.0.0.1:8443, opened as $APP_ORIGIN (swarm-headless-app)"
+  else
+    echo "  Setup page     $LOCAL_APP_ORIGIN (swarm-headless-app)"
+  fi
+  if [[ $AI_ACCESS == on ]]; then
+    echo "  Swarm MCP      $LOCAL_MCP_URL (AI keys only)"
+  fi
+  if [[ $TAILNET == on ]]; then
+    echo "  On your tailnet (Tailscale Serve): $APP_ORIGIN$([[ $AI_ACCESS == on ]] && echo " and $APP_AI_URL")"
+  fi
+  echo
+  echo "Setup page (your login, provider keys, models):"
+  if [[ $TAILNET == on ]]; then
+    echo "  $APP_ORIGIN   (from this machine or any device on your tailnet)"
+  else
+    echo "  on this machine:     $LOCAL_APP_ORIGIN"
+    echo "  from your computer:  ssh -N -L 8443:127.0.0.1:8443 ${who:-USER}@$(hostname)"
+    echo "                       then open $LOCAL_APP_ORIGIN there"
+  fi
+  echo "Provider key by script instead (the key on stdin, never shown):"
+  echo "  sudo bash $INSTALLER key PROVIDER < key-file"
+  if [[ $AI_ACCESS == on ]]; then
+    if ((key_made)); then
+      echo "Your AI on this machine:"
+    else
+      echo "Your AI on this machine needs its key first (this also creates Swarm's owner if needed):"
+      echo "  sudo bash $INSTALLER connect-ai --for-user ${who:-NAME}"
+    fi
+    print_connect "${who:-NAME}"
+  fi
+  echo
+  echo "Then tell your AI: set up Swarm"
 }
 
 # Turn the agent secret gateway on or off for an existing install. When on,
@@ -1008,6 +1516,16 @@ set_secrets_gateway() {
   echo "Secret gateway is $1."
 }
 
+status_cmd() {
+  systemctl --no-pager status "$DAEMON_UNIT" "$APP_UNIT" | grep -E '●|Active:' || true
+  if [[ -f $CONF ]]; then
+    load_conf
+    echo "Setup page: $APP_ORIGIN; Swarm MCP: $([[ ${AI_ACCESS:-off} == on ]] && echo "$LOCAL_MCP_URL" || echo off); tailnet: $(saved_tailnet); permissions: ${PERMISSIONS:-auto (after the next update)}; secret gateway: ${SECRETS_GATEWAY:-off}"
+  fi
+  check_sandbox
+  if [[ -f $CONF && $(saved_tailnet) == on ]]; then tailscale serve status; fi
+}
+
 main() {
   case ${1:-install} in
     install) shift || true; install_all "$@" ;;
@@ -1024,10 +1542,15 @@ main() {
     firewall) firewall ;;
     check-isolation) check_isolation ;;
     check-sandbox) check_sandbox ;;
+    connect-ai) shift; connect_ai "$@" ;;
+    key) shift; provider_key "$@" ;;
+    secret) shift; secret_cmd "$@" ;;
+    tailnet) shift; tailnet_cmd "$@" ;;
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
     secrets-gateway) shift; set_secrets_gateway "$@" ;;
+    permissions) shift; set_permissions "$@" ;;
     workspace) shift; workspace "$@" ;;
-    status) systemctl --no-pager status "$DAEMON_UNIT" "$APP_UNIT" | grep -E '●|Active:' || true; check_sandbox; tailscale serve status ;;
+    status) status_cmd ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
   esac

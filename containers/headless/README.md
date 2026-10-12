@@ -1,5 +1,13 @@
 # Headless distribution image (Linux amd64)
 
+To run Swarm on a machine (a server or your own PC) with its setup page, use
+the one-line installer in [app/README.md](app/README.md): no Tailscale needed,
+everything listens on 127.0.0.1, and your AI on that machine connects to
+`http://127.0.0.1:7783/mcp` with the AI key the installer puts in
+`~/.config/swarm/ai-key`. Tailscale (`--tailnet`) is optional, only for
+reaching the machine from your other devices. This page covers the container
+image.
+
 This packages the existing daemon, not a workspace container runner. It builds
 `swarmd`, `swarmctl`, and `swarm-fff-search` with CGO using the daemon targets and
 shared buildinfo fields from `scripts/build-main-dist.sh`. The build stage uses

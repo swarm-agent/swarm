@@ -7,30 +7,71 @@ that privileged socket or expose the daemon over a public listener.
 `--container-sdk-port` is only the basic session boundary: it does not grant
 apps, workers, sync, storage or publication APIs.
 
-## One-line install on your own server (private, on your tailnet)
+## One-line install on your machine (local; Tailscale optional)
 
-For a fresh Ubuntu 24.04 **x86_64** server you control, with Tailscale
-MagicDNS and HTTPS certificates turned on for your tailnet. Docker from snap
-cannot run the agent sandboxes; the installer stops and asks you to remove it.
-As root:
+For Ubuntu 24.04 **x86_64**: a server or your own PC. It works on the one
+machine with your own AI (Claude Code or Codex) and needs no Tailscale.
+Docker from snap cannot run the agent sandboxes; the installer stops and asks
+you to remove it. From your own account (the AI connection is made for you):
 
 <copy label="Install">
 curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh \
-  | bash -s -- --relay https://swarm-relay.YOU.workers.dev
+  | sudo bash
 </copy>
 
-`install.sh` installs Docker, gVisor and Tailscale, prints one Tailscale login
-link to approve the machine, turns on a firewall that admits only the tailnet
-(and SSH until `--lock-ssh`), builds Swarm and this app from source
-(`Dockerfile.host`, exported as files) and serves the app with
-`tailscale serve` at `https://NAME.TAILNET.ts.net`; no provider key or other
-secret is passed to it. On the first visit, from your own device on the
-tailnet, you create your login (username, password, optional authenticator
-code; see `examples/headless-app`). Setup then covers provider sign-in, models,
-a workspace and **Connect to Claude**, which shows a pairing code for your
-relay (see `packages/swarm-relay`).
+`install.sh` installs Docker (it keeps a working Docker with buildx, such as
+docker-ce) and gVisor, builds Swarm and this app from source
+(`Dockerfile.host`, exported as files) and starts them. Everything listens on
+127.0.0.1 only and no firewall rule is opened: the setup page on
+`http://127.0.0.1:8443` and Swarm's MCP (Swarm Control) on
+`http://127.0.0.1:7783/mcp`, which answers only to AI keys. On a server, reach
+the page with `ssh -N -L 8443:127.0.0.1:8443 USER@SERVER` and open
+`http://127.0.0.1:8443` on your computer (the installer prints the exact line).
+No provider key or other secret is passed to the installer. On the first visit
+you create your login (username, password, optional authenticator code; see
+`examples/headless-app`) and Swarm's owner; setup then covers provider
+sign-in, models, a workspace and **Connect to Claude**, which shows a pairing
+code for your relay (`--relay URL`; see `packages/swarm-relay`).
 
-**Layout.** Swarm runs on the server itself as two systemd services under a
+**Your AI on this machine.** At the end of the install (run through sudo, or
+with `--for-user NAME`) the installer creates Swarm's owner for that person
+(the setup page keeps it) and mints an AI key (write: start and steer work,
+deploy workers, merge results) through `swarmctl setup sdk-token --ai-access`,
+writes it to their `~/.config/swarm/ai-key` (mode 0600, owned by them; never
+printed) and prints the connect lines.
+`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`
+does the same later (`--access full` also approves tool calls and manages
+models, providers and workers); running it again replaces the key and revokes
+the old one.
+
+<copy label="Connect Claude Code (as yourself)">
+claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp \
+  --header "Authorization: Bearer $(cat ~/.config/swarm/ai-key)"
+</copy>
+
+For Codex: `codex mcp add swarm --url http://127.0.0.1:7783/mcp --bearer-token-env-var SWARM_AI_KEY`,
+started with `SWARM_AI_KEY="$(cat ~/.config/swarm/ai-key)" codex`. Then tell
+your AI: set up Swarm.
+
+**Keys by script.** `install.sh key PROVIDER` sets the first provider API key
+from stdin (or a hidden prompt) through `swarmctl setup credential
+--api-key-stdin`; it never appears on a command line or the screen.
+`install.sh secret set NAME --hosts api.example.com` creates a secret for those
+websites and reads its value the same way (without `--hosts` it only sets the
+value); `install.sh secret grant NAME FOLDER --days N` (or `--hours N`) lets
+that workspace's agents use it.
+
+**Tailscale (optional, for your other devices).** `--tailnet` at install, or
+`install.sh tailnet on` later, installs Tailscale and prints one login link
+(or joins with `TS_AUTHKEY` from the environment; `--tag tag:swarm`), turns on
+ufw admitting only the tailnet (and SSH until `--lock-ssh`), and serves the
+setup page at `https://NAME.TAILNET.ts.net` (it then answers only there, also
+from this machine) and the MCP at `https://NAME.TAILNET.ts.net:8444/mcp`; your
+MagicDNS and HTTPS certificates must be on. See [TAILNET.md](TAILNET.md).
+`install.sh tailnet off` goes back to loopback only. Installs from before
+Tailscale was optional keep their tailnet setup on update.
+
+**Layout.** Swarm runs on the machine itself as two systemd services under a
 dedicated `swarm` user: `swarm-headless` (the daemon, `--sandbox=required`)
 and `swarm-headless-app` (this app on 127.0.0.1:8443). Binaries live in
 `/opt/swarm/current`; Swarm's state in `/etc/swarmd`, `/var/lib/swarmd`,
@@ -64,10 +105,11 @@ only removes it. Both keep Docker, gVisor, Tailscale, ufw and the project
 folder (unless `--delete-projects`), and remove the earlier
 Swarm-in-a-container layout if present.
 **Workspaces and projects.** Swarm runs as the `swarm` user with every home
-folder hidden, so it cannot see a person's repositories until they are made
-visible from outside: `sudo install.sh workspace add /home/NAME/my-app` (run
-by the person, or by the AI setting the machine up) binds exactly that Git
-repository into the service at its real path, gives Swarm's user access to it
+folder hidden, so it cannot see a person's folders until they are made visible
+from outside: `sudo install.sh workspace add ~/my-app` (run by the person, or
+by the AI setting the machine up; `--for-user NAME` when not run through sudo)
+binds exactly that folder, a Git repository or not, owned by that person, into
+the service at its real path, gives Swarm's user access to it
 (the owner keeps full rights on what Swarm creates) and restarts Swarm.
 Swarm itself never changes the machine. That folder's agent sandbox runs as its
 owner (with Swarm's group), so what agents create stays the person's, while
@@ -77,8 +119,10 @@ Swarm keeps running as `swarm`. Then register the folder in place
 the project's orchestrator once it is ready. Agents get worktrees of the
 repository and their commits land in it. Never point work at a freshly
 initialised, empty repository in place of their code; `swarm_create_workspace`
-is only for a new project started from scratch. `workspace remove PATH`
-reverses `add`; `workspace list` shows the folders.
+is only for a new project started from scratch. System folders, settings
+folders (any `.name` folder), Swarm's storage, the whole home folder and
+other people's folders are refused. `workspace remove PATH` reverses `add`;
+`workspace list` shows the folders.
 
 **Agent sandboxes.** Swarm keeps its keys, login and local socket to itself.
 Agents' commands, and Swarm's own Git on their projects, run in one sandbox
@@ -95,38 +139,43 @@ metadata. File tools refuse Swarm's storage and credential paths outright.
 (the installer runs it at the end); `install.sh check-sandbox` shows each
 running sandbox's runtime, user, capabilities, limits and mounts.
 
-**Secrets agents can use but never see** (off by default).
-`sudo bash install.sh secrets-gateway on` starts Swarm's secret gateway on the
-sandbox bridge and opens only its port to sandboxes. The owner then creates a
+**Secrets agents can use but never see** (on by default; `--secrets-gateway
+off` or `install.sh secrets-gateway off` turns it off). The gateway runs on the
+sandbox bridge and only its port is open to sandboxes. The owner then creates a
 secret with the exact websites it may go to, sets its value from stdin and
-grants it to a project for a limited time (`swarmctl secret create|set-value|grant`,
-run as the `swarm` user over its local socket). A granted project's sandbox
-sees only a stand-in (`NAME=swarm-secret://NAME`); the gateway swaps in the
-real value on requests to the allowed websites, scrubs it from responses and
-logs each use (`swarmctl secret uses`). `secrets-gateway off` turns it back off.
+grants it to a project for a limited time (`install.sh secret set|grant`, or
+`swarmctl secret create|set-value|grant` run as the `swarm` user over its local
+socket). A granted project's sandbox sees only a stand-in
+(`NAME=swarm-secret://NAME`); the gateway swaps in the real value on requests
+to the allowed websites, scrubs it from responses and logs each use (`swarmctl secret uses`).
 
-**Agent permissions.** Setup asks how agents work: **Ask me first**
-(default; agents pause before commands and file changes) or **On their own**
-(the owner-only bypass setting: no ordinary prompts; plans to accept, agent
-questions and hard denials still stop). No sandbox, no autonomy: bypass takes
-effect only while the agent sandbox is active, and turning it on is refused
-otherwise.
+**Agent permissions.** Unattended jobs never wait on a person: the installer
+starts Swarm with `--sandbox=required --bypass-permissions`, so agents run
+without ordinary prompts (plans to accept, agent questions and hard denials
+still stop). No sandbox, no autonomy: Swarm does not start without its
+sandbox, and bypass takes effect only while the sandbox is active.
+`--ask-permissions` at install, or `install.sh permissions ask`, starts it with
+`--bypass-permissions=false` instead (agents pause before commands and file
+changes); `permissions auto` goes back. The installer's choice applies at every
+start of Swarm, so a different choice on the setup page lasts until the next
+restart.
 
-It also serves Swarm's **AI gateway** (Swarm Control MCP on the scoped-token
-listener, bound to 127.0.0.1:7783) on the tailnet at
-`https://NAME.TAILNET.ts.net:8444/mcp`; `tailscale serve` is its only way in.
-It answers only to **AI keys** created in the app under **AI access over
-Tailscale** (none exist at first): read only, or read and write (start
-sessions, send messages, stop runs); keys made there never approve tool
-calls or manage workers, limits or models. A **full** key, minted only by
-the owner with `swarmctl setup sdk-token --ai-access full` or the SDK, also
-approves tool calls and manages the box (models, workers, limits, custom
+Swarm's **AI gateway** (Swarm Control MCP on the scoped-token listener) is
+`http://127.0.0.1:7783/mcp` on the machine and, with the tailnet,
+`https://NAME.TAILNET.ts.net:8444/mcp` through `tailscale serve`.
+It answers only to **AI keys** (from `connect-ai`, or created in the app
+under **AI access**; none exist at first): read only, or read and write (start
+sessions, send messages, stop runs); those never approve tool calls or
+manage workers, limits or models. A **full** key, minted only by the owner
+(`connect-ai --access full`, `swarmctl setup sdk-token --ai-access full` or the
+SDK), also approves tool calls and manages the box (models, workers, limits, custom
 agents, client app keys, ChatGPT sign-in). No AI key reaches any route but
 `/mcp`. The page shows the
 key once, lists keys with last use, revokes them, and shows the Tailscale
 access rule and client settings. `--no-ai-access` skips the gateway. Clients:
-Claude Code on a tailnet device (`claude mcp add --transport http`), or
-`packages/swarm-fleet` for Claude Code on the web and routines.
+Claude Code or Codex on the machine (`connect-ai`), Claude Code on a tailnet
+device (`claude mcp add --transport http`), or `packages/swarm-fleet` for
+Claude Code on the web and routines.
 
 To watch the machine from a dashboard, mint a **monitor key**:
 `sudo -u swarm swarmctl setup sdk-token --monitor --name dashboard
