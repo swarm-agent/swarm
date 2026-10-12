@@ -27,7 +27,6 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	sessionsPerHour := fs.Int("sessions-per-hour", 0, "with --agent: most new conversations per hour (default 300)")
 	aiAccess := fs.String("ai-access", "", "mint an AI key for Swarm Control (/mcp): read (default level for AI clients), write, or full (the AI runs this box: approvals, models, workers, custom agents, client keys); lifetime up to 365 days")
 	monitor := fs.Bool("monitor", false, "mint a read-only monitoring key: the machine summary and signal feed (signals:read) and nothing else; lifetime up to 365 days")
-	hostRequest := fs.Bool("host-request", false, "also allow requesting owner-approved host changes (host:request): asking to make a folder visible to Swarm; approval stays with the owner")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -45,19 +44,19 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	}
 	maxSeconds := int64(86400)
 	if strings.TrimSpace(*agent) != "" {
-		if *workers || *usageLimits || *settings || *hostRequest {
+		if *workers || *usageLimits || *settings {
 			return errors.New("--agent tokens take no other authority")
 		}
 		maxSeconds = 30 * 86400
 	}
 	if *monitor {
-		if *workers || *usageLimits || *settings || *hostRequest || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
+		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
 			return errors.New("--monitor keys take no other authority")
 		}
 		maxSeconds = 365 * 86400
 	}
 	if level := strings.TrimSpace(*aiAccess); level != "" {
-		if *workers || *usageLimits || *settings || *hostRequest || strings.TrimSpace(*agent) != "" {
+		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" {
 			return errors.New("--ai-access keys take no other authority")
 		}
 		if level != "read" && level != "write" && level != "full" {
@@ -116,17 +115,13 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	if *settings {
 		scopes = append(scopes, "settings:write")
 	}
-	if *hostRequest {
-		// Asking for a host change; deciding it stays with the owner.
-		scopes = append(scopes, "host:request")
-	}
 	if *monitor {
 		// A monitor reads how the machine is doing; it starts and sees nothing.
 		scopes = []string{"signals:read"}
 	}
 	payload := map[string]any{"name": strings.TrimSpace(*name), "scopes": scopes, "expires_in_seconds": *seconds}
 	if *monitor {
-		if *workers || *usageLimits || *settings || *hostRequest || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
+		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
 			return errors.New("--monitor keys take no other authority")
 		}
 		maxSeconds = 365 * 86400

@@ -112,12 +112,7 @@ metadata or remove authentication as a workaround.
    can do a read-only smoke test. Project orchestration instead needs a project
    (folders the person named, registered with `swarm_add_workspace`, grouped by
    `swarm_create_project`, `project.md` ready per `swarm_get_project`) and the
-   orchestrator agent. An `swarm_add_workspace` answer of `blocked: "not_visible"`
-   means a headless Swarm cannot see that folder: `swarm_request_host_change`
-   (op and path from its `host_change`; needs a key with `host:request`) records
-   a request only the machine owner approves; `swarm_list_host_changes` shows
-   when it is `applied` (Swarm restarts), then add the folder again. No tool
-   approves or denies. Preserve the returned `session.id`.
+   orchestrator agent. Preserve the returned `session.id`.
 3. Inspect `started`, current session state, `messages`, `pending_permissions`
    and `waited`. The observed reply did not have a top-level `run` result; do not
    require one. Prefer waits of 20–30 seconds, under client timeout and live limit.

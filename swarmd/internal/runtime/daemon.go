@@ -33,7 +33,6 @@ import (
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
-	"swarm/packages/swarmd/internal/hostchange"
 	"swarm/packages/swarmd/internal/htmlcapture"
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
@@ -725,16 +724,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
-	hostChanges := pebblestore.NewHostChangeStore(store)
-	if interrupted, err := hostChanges.FailInterrupted(); err != nil {
-		log.Printf("warning: host changes: mark interrupted records: %v", err)
-	} else if interrupted > 0 {
-		log.Printf("host changes: %d record(s) left applying by the previous process marked failed (interrupted)", interrupted)
-	}
-	apiServer.SetHostChangeServices(hostChanges, hostchange.NewClient(cfg.HostChangeHelper))
-	if cfg.HostChangeHelper != "" {
-		log.Printf("swarmd host-change helper configured at %s; owner-approved host changes are supported", cfg.HostChangeHelper)
-	}
 	apiServer.SetSignalStore(signalStore)
 	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
 	signalSinks := pebblestore.NewSignalSinkStore(store)

@@ -79,10 +79,6 @@ var controlMCPRoutes = []string{
 	"GET v1/workspace/list",
 	"POST v1/workspace/repository/setup",
 	"POST v1/workspace/add",
-	// Host change requests (host:request) and their listing; approval stays
-	// owner-only and is not an MCP tool.
-	"GET v1/host/changes",
-	"POST v1/host/changes",
 	"GET v1/providers",
 	"GET v1/model/catalog",
 	"GET v1/agent-model-settings",
@@ -496,7 +492,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_add_workspace", Title: "Add an existing folder as a workspace",
-			Description: "Register a folder that already holds the person's work (a git repository or any folder of files) so a project can include it. Ask the person which folders to add, and use the absolute path as the machine running Swarm sees it (Swarm in a container sees only its mounted folders). Empty folders, system and Swarm storage directories and folders inside an already registered workspace are refused. A folder that is already registered is returned as it is. Nothing in the folder is changed: no git init, no commit.",
+			Description: "Register a folder that already holds the person's work (a git repository or any folder of files) so a project can include it. Ask the person which folders to add, and use the absolute path as the machine running Swarm sees it. If the answer is workspace_not_visible, Swarm (its own user, home folders hidden) cannot see the folder and never changes its host itself: the person, or you if you run on that machine, makes it visible as root with the command the error names (headless install: `install.sh workspace add PATH`), then add it again. Empty folders, system and Swarm storage directories and folders inside an already registered workspace are refused. A folder that is already registered is returned as it is. Nothing in the folder is changed: no git init, no commit.",
 			InputSchema: controlMCPObject([]string{"path"}, map[string]any{
 				"path": controlMCPStringProp("Absolute path of an existing, non-empty folder.", 1, 4096),
 				"name": controlMCPStringProp("Display name; defaults to the folder name.", 0, 100),
@@ -510,24 +506,6 @@ func controlMCPTools() []controlMCPTool {
 				"name": map[string]any{"type": "string", "pattern": controlMCPWorkspaceName.String(), "maxLength": 63, "description": "Folder name: lowercase letters, digits, dashes and underscores, e.g. social-bot."},
 			}),
 			Annotations: controlMCPWrites, call: controlMCPCreateWorkspace,
-		},
-		{
-			Name: "swarm_request_host_change", Title: "Ask the machine owner to make a folder visible to Swarm",
-			Description: "Record a request for one change to the machine that only its owner can approve: mount-workspace makes the person's folder visible to Swarm (headless Swarm runs as its own user and sees only the folders it was given); unmount-workspace takes it away again. Use it when add_workspace answers blocked not_visible, with the op and path it names. The request waits for the owner's approval in Swarm (swarmctl host, or the app); you cannot approve it, and no tool here can. An identical pending request is returned instead of duplicated. Follow it with list_host_changes; once it is applied (Swarm restarts for it), add the folder again.",
-			InputSchema: controlMCPObject([]string{"op", "path", "reason"}, map[string]any{
-				"op":     map[string]any{"type": "string", "enum": pebblestore.HostChangeOps(), "description": "mount-workspace or unmount-workspace."},
-				"path":   controlMCPStringProp("Absolute, clean folder path on the machine, as add_workspace's host_change.path gives it.", 1, pebblestore.MaxHostChangePathBytes),
-				"reason": controlMCPStringProp("One sentence for the owner: whose folder it is and what Swarm will do there.", 1, pebblestore.MaxHostChangeReasonChars),
-			}),
-			Annotations: controlMCPWrites, call: controlMCPRequestHostChange,
-		},
-		{
-			Name: "swarm_list_host_changes", Title: "List host change requests",
-			Description: "Host change requests of this account, newest first, each with its status: pending (waits for the owner), applying, applied (done; Swarm restarted for it), failed (error says why) or denied. supported is false when this machine has no host-change helper, so no request can be applied here.",
-			InputSchema: controlMCPObject(nil, map[string]any{
-				"status": map[string]any{"type": "string", "enum": controlMCPHostChangeStatuses, "description": "Only requests in this status."},
-			}),
-			Annotations: controlMCPReadOnly, call: controlMCPListHostChanges,
 		},
 		{
 			Name: "swarm_list_sessions", Title: "List sessions",
@@ -928,9 +906,6 @@ func controlMCPAddWorkspace(c *controlMCPCall, args map[string]any) (any, error)
 	}
 	response, err := c.dispatch(http.MethodPost, "/v1/workspace/add", nil, body)
 	if err != nil {
-		if blocked := controlMCPWorkspaceNotVisible(err, path); blocked != nil {
-			return blocked, nil
-		}
 		return nil, err
 	}
 	resolved, _ := controlMCPMap(response["workspace"])["resolved_path"].(string)
@@ -971,107 +946,6 @@ func (c *controlMCPCall) workspaceID(path string) (string, error) {
 		}
 	}
 	return "", controlMCPToolFailure("no registered workspace at %s (see list_workspaces)", path)
-}
-
-// ---- host changes --------------------------------------------------------
-
-// The statuses a request moves through (pebblestore.ValidHostChangeStatus).
-var controlMCPHostChangeStatuses = []string{
-	pebblestore.HostChangeStatusPending, pebblestore.HostChangeStatusApplying, pebblestore.HostChangeStatusApplied,
-	pebblestore.HostChangeStatusFailed, pebblestore.HostChangeStatusDenied,
-}
-
-// controlMCPWorkspaceNotVisible turns the daemon's 409 workspace_not_visible
-// (the folder exists for the person but not for Swarm's own user) into a
-// non-error result that names the host change and the next step, so the AI
-// requests it instead of giving up or retrying. Any other refusal is nil.
-func controlMCPWorkspaceNotVisible(err error, path string) map[string]any {
-	body := controlMCPRejection(err, http.StatusConflict)
-	if body["code"] != "workspace_not_visible" {
-		return nil
-	}
-	fix := controlMCPMap(body["host_change"])
-	op, _ := fix["op"].(string)
-	fixPath, _ := fix["path"].(string)
-	if op == "" || fixPath == "" {
-		return nil
-	}
-	supported, _ := body["supported"].(bool)
-	next := "This machine has no host-change helper, so Swarm cannot be given this folder from here: the machine owner runs the headless installer's host-helper step (install.sh host-helper) on the machine, then call add_workspace again with this path."
-	if supported {
-		next = fmt.Sprintf("Call request_host_change with op %s and path %s (and a one-sentence reason), tell the person it waits for their approval in Swarm, and once list_host_changes shows it applied (Swarm restarts for it), call add_workspace again with this path.", op, fixPath)
-	}
-	return map[string]any{
-		"added":       false,
-		"blocked":     "not_visible",
-		"path":        path,
-		"host_change": map[string]any{"op": op, "path": fixPath},
-		"supported":   supported,
-		"next":        next,
-	}
-}
-
-// controlMCPHostChange is the bounded view of one request record.
-func controlMCPHostChange(change map[string]any) map[string]any {
-	out := controlMCPPick(change, "id", "op", "path", "reason", "status", "requested_by", "error")
-	if errText, ok := out["error"].(string); ok {
-		out["error"] = controlMCPTruncate(errText, controlMCPToolOutputLimit)
-	}
-	return out
-}
-
-// controlMCPRequestHostChange records a request; the daemon's route requires
-// host:request (levelAllows already offered the tool only to such keys),
-// validates op and path and returns an identical pending request as it is.
-// Deciding is the owner's: no route here approves or denies.
-func controlMCPRequestHostChange(c *controlMCPCall, args map[string]any) (any, error) {
-	if err := c.requireTokenScope(ScopeHostRequest); err != nil {
-		return nil, err
-	}
-	body := map[string]any{"op": controlMCPString(args, "op"), "path": controlMCPString(args, "path"), "reason": controlMCPString(args, "reason")}
-	response, err := c.dispatch(http.MethodPost, hostChangesPath, nil, body)
-	if err != nil {
-		if controlMCPRejection(err, http.StatusConflict)["code"] == hostChangeUnsupportedCode {
-			return nil, controlMCPToolFailure("this machine has no host-change helper, so no host change can be applied here; the machine owner runs the headless installer's host-helper step (install.sh host-helper) first")
-		}
-		return nil, err
-	}
-	change := controlMCPMap(response["change"])
-	if change == nil {
-		return nil, controlMCPToolFailure("Swarm returned no host change record")
-	}
-	return map[string]any{
-		"change": controlMCPHostChange(change),
-		"next":   "This request waits for the machine owner's approval in Swarm (swarmctl host, or the app); you cannot approve it. Tell the person, then follow it with list_host_changes: once its status is applied (Swarm restarts for it), add the folder again with add_workspace.",
-	}, nil
-}
-
-// controlMCPListHostChanges lists the account's requests (route scope
-// host:request or swarm:read), optionally one status.
-func controlMCPListHostChanges(c *controlMCPCall, args map[string]any) (any, error) {
-	record, ok := ScopedTokenFromRequest(c.request)
-	if !ok || !(record.HasScope(ScopeHostRequest) || record.HasScope("swarm:read")) {
-		return nil, controlMCPToolFailure("this connection lacks the %s or swarm:read permission", ScopeHostRequest)
-	}
-	query := url.Values{}
-	if status := controlMCPString(args, "status"); status != "" {
-		query.Set("status", status)
-	}
-	response, err := c.dispatch(http.MethodGet, hostChangesPath, query, nil)
-	if err != nil {
-		return nil, err
-	}
-	changes := []map[string]any{}
-	for _, raw := range controlMCPList(response["changes"]) {
-		if change := controlMCPMap(raw); change != nil {
-			changes = append(changes, controlMCPHostChange(change))
-		}
-		if len(changes) == controlMCPMaxListItems {
-			break
-		}
-	}
-	supported, _ := response["supported"].(bool)
-	return map[string]any{"supported": supported, "changes": changes}, nil
 }
 
 func controlMCPListSessions(c *controlMCPCall, args map[string]any) (any, error) {

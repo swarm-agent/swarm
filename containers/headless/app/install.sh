@@ -57,13 +57,6 @@ SERVICE_HOME=/var/lib/swarm
 DAEMON_UNIT=swarm-headless.service
 APP_UNIT=swarm-headless-app.service
 FIREWALL_UNIT=swarm-sandbox-firewall.service
-HOST_HELPER=/usr/local/libexec/swarm-host-change
-HOST_SOCKET=/run/swarm-host-change.sock
-HOST_SOCKET_UNIT=swarm-host-change.socket
-HOST_SERVICE_UNIT=swarm-host-change@.service
-# Written by the helper: the folders it mounted, and the daemon's drop-in.
-HOST_WORKSPACES=/etc/swarm-headless/workspaces
-HOST_DROPIN_DIR=/etc/systemd/system/$DAEMON_UNIT.d
 SANDBOX_IMAGE=swarm-sandbox:local
 SANDBOX_NETWORK=swarm-sandbox
 SANDBOX_SUBNET=172.31.251.0/24
@@ -89,12 +82,12 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
-       install.sh host-helper
        install.sh dev-sync /path/to/checkout | off
        install.sh channel [BRANCH]
        install.sh daemon-env list | set NAME... | unset NAME...
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
+       install.sh workspace add PATH | remove PATH | list
 
   --relay URL   your Swarm Control relay (prefills "Connect to Claude")
   --name NAME   tailnet machine name and Swarm machine name (default: swarm)
@@ -124,14 +117,7 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
                    `unset NAME...` removes them
   check-isolation  prove from inside a sandbox that this server, the tailnet,
                    private networks and cloud metadata are unreachable
-  check-sandbox    show each running agent sandbox and its hardening, and the
-                   folders mounted for Swarm by owner-approved host changes
-  host-helper      (re)install the host-change helper and its socket: the
-                   one root program that may change this machine for Swarm
-                   (mount a person's folder for Swarm and its sandboxes,
-                   unmount it, restart Swarm), each change approved by the
-                   owner through Swarm's API first; installed by install and
-                   every update, this just repairs it
+  check-sandbox    show each running agent sandbox and its hardening
   tailnet-identity on|off
                    let the AI gateway admit tailnet devices by the
                    swarmagent.dev/cap/swarm grant in your Tailscale policy
@@ -140,6 +126,15 @@ Usage: install.sh [install] [--relay URL] [--name NAME] [--ref BRANCH] [--tag TA
                    inject secrets granted to a project (swarmctl secret) on
                    the way out to their allowed websites; agents only see
                    stand-ins (off by default)
+  workspace add PATH | remove PATH | list
+                   make a person's Git repository visible and writable to
+                   Swarm and its agent sandboxes at its real path (a unit
+                   drop-in binds exactly that folder; Swarm's user gets
+                   access to it; the owner keeps full rights on what Swarm
+                   creates), then restart Swarm. The person or the AI setting
+                   the machine up runs this as root; Swarm never changes the
+                   machine itself. Then register the folder in place with
+                   swarm_add_workspace. remove reverses it.
 USAGE
 }
 
@@ -226,7 +221,6 @@ check_isolation() {
 # Show each agent sandbox as Docker sees it, for checking from outside.
 check_sandbox() {
   local ids
-  echo "Folders mounted for Swarm (owner-approved host changes): $(host_workspaces)"
   ids=$(docker ps -q --filter label=swarm.sandbox=1)
   if [[ -z $ids ]]; then
     echo "No agent sandbox is running (one starts when an agent runs a command)."
@@ -276,60 +270,10 @@ WRAPPER
   firewall
   choose_runtime
   sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" && echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF"
-  install_host_helper
   install_units
   systemctl restart "$DAEMON_UNIT"
   systemctl restart "$APP_UNIT"
   echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
-}
-
-# The host-change helper: the one program that may change this machine for
-# Swarm (host-change.sh: mount a person's folder for Swarm and its sandboxes,
-# unmount it, restart Swarm, list), root-owned, with a fixed menu. The daemon
-# (its own user, no new privileges, so never sudo) reaches it over a
-# root-owned socket that systemd opens; each connection runs the helper once
-# as root, only for a change the owner approved through Swarm's API
-# (POST /v1/host/changes, then /approve). Its log is root-only.
-install_host_helper() {
-  install -o root -g root -m 0755 "$SRC/containers/headless/app/host-change.sh" "$HOST_HELPER"
-  install -d "$UNITS"
-  cat > "$UNITS/$HOST_SOCKET_UNIT" <<UNIT
-[Unit]
-Description=Swarm host-change helper socket (owner-approved machine changes)
-
-[Socket]
-ListenStream=$HOST_SOCKET
-SocketUser=$SERVICE_USER
-SocketGroup=$SERVICE_USER
-SocketMode=0600
-Accept=yes
-MaxConnections=4
-MaxConnectionsPerSource=4
-
-[Install]
-WantedBy=sockets.target
-UNIT
-  cat > "$UNITS/$HOST_SERVICE_UNIT" <<UNIT
-[Unit]
-Description=Swarm host-change helper connection
-CollectMode=inactive-or-failed
-
-[Service]
-Type=oneshot
-ExecStart=$HOST_HELPER serve
-StandardInput=socket
-StandardOutput=socket
-StandardError=journal
-Environment=SWARM_SERVICE_USER=$SERVICE_USER SWARM_DAEMON_UNIT=$DAEMON_UNIT
-TimeoutStartSec=120
-UNIT
-  systemctl daemon-reload
-  systemctl enable --now "$HOST_SOCKET_UNIT" >/dev/null
-}
-
-# What the helper has mounted for Swarm, from its own list.
-host_workspaces() {
-  if [[ -x $HOST_HELPER ]]; then "$HOST_HELPER" list; else echo '{"ok":false,"error":"host-change helper not installed"}'; fi
 }
 
 # Development: build the committed HEAD of a checkout on this machine instead
@@ -496,7 +440,7 @@ ConfigurationDirectoryMode=0700
 LogsDirectory=swarmd
 LogsDirectoryMode=0700
 WorkingDirectory=$PROJECT
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required --host-change-helper=$HOST_SOCKET $runtime_arg $sdk_args $secrets_arg
+ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -573,6 +517,134 @@ UNIT
 }
 
 # Wait until the app answers on its loopback port.
+# ---- Workspaces: the person's own folders, made visible to Swarm -------------
+# Swarm runs as its own user with every home folder hidden (ProtectHome=yes),
+# so it cannot see a person's repositories. `install.sh workspace add PATH`,
+# run as root by the person or by the AI setting this machine up, makes
+# exactly that Git repository visible and writable to Swarm and its agent
+# sandboxes at its real path: a unit drop-in binds the folder into the
+# service, and Swarm's user gets access to that folder only (the owner keeps
+# full rights on everything Swarm creates inside). Swarm itself never changes
+# the machine; this is the installer's job, done from outside. Afterwards the
+# folder is registered in place with swarm_add_workspace (or
+# `swarmctl workspace add`); nothing is copied.
+WORKSPACES=$STATE/workspaces
+WORKSPACES_DROPIN=$UNITS/$DAEMON_UNIT.d/50-workspaces.conf
+
+# A folder Swarm may work in: absolute, no "..", an existing directory with no
+# link in its path, a Git repository, inside a real person's home (never the
+# service user's, root's or Swarm's own storage), owned by that person.
+workspace_check() {
+  local path=$1 real owner
+  [[ $path == /* ]] || die "path must be absolute"
+  [[ $path != *..* && $path != *$'\n'* ]] || die "path must not contain .. or newlines"
+  [[ -d $path ]] || die "$path is not a directory"
+  real=$(realpath -e "$path") || die "$path cannot be resolved"
+  [[ $real == "$path" ]] || die "$path goes through a link; use $real"
+  [[ -d $path/.git || -f $path/.git ]] || die "$path is not a Git repository (Swarm works on repositories in place)"
+  case $path in
+    /home/*/*) ;;
+    *) die "$path is not inside a person's home folder" ;;
+  esac
+  case $path in
+    /home/*/.*|*/.ssh|*/.ssh/*|*/.gnupg|*/.gnupg/*|*/.config/*|*/.local/*) die "$path is a settings or credentials folder" ;;
+  esac
+  owner=$(stat -c %U "$path")
+  [[ $owner != root && $owner != "$SERVICE_USER" ]] || die "$path must belong to a person, not $owner"
+  [[ $(id -u "$owner") -ge 1000 ]] || die "$path belongs to a system account"
+  [[ $path == /home/$owner/* ]] || die "$path is not inside $owner's home folder"
+  WORKSPACE_OWNER=$owner
+}
+
+workspace_listed() { [[ -f $WORKSPACES ]] && grep -v '^\s*$' "$WORKSPACES" || true; }
+
+# The drop-in: ProtectHome=tmpfs hides every home folder except the bound
+# ones, which appear at their real paths, writable.
+workspace_dropin() {
+  local paths p
+  paths=$(workspace_listed)
+  if [[ -z $paths ]]; then
+    rm -f "$WORKSPACES_DROPIN"
+    rmdir "$(dirname "$WORKSPACES_DROPIN")" 2>/dev/null || true
+    return
+  fi
+  install -d -m 0755 "$(dirname "$WORKSPACES_DROPIN")"
+  {
+    echo "# Written by install.sh workspace; each folder was added by this machine's administrator."
+    echo "[Service]"
+    echo "ProtectHome=tmpfs"
+    while IFS= read -r p; do
+      echo "BindPaths=$p"
+      echo "ReadWritePaths=$p"
+    done <<<"$paths"
+  } >"$WORKSPACES_DROPIN.tmp"
+  chmod 0644 "$WORKSPACES_DROPIN.tmp"
+  mv -f "$WORKSPACES_DROPIN.tmp" "$WORKSPACES_DROPIN"
+}
+
+# Swarm's user gets rwx on the folder (and x on the folders above it, where
+# missing); the owner keeps rwx on everything Swarm creates inside.
+workspace_grant() {
+  local path=$1 owner=$2 parent
+  setfacl -R -m "u:$SERVICE_USER:rwX" "$path"
+  setfacl -R -d -m "u:$SERVICE_USER:rwX" -m "u:$owner:rwX" "$path"
+  parent=$(dirname "$path")
+  while [[ $parent != / && $parent != /home ]]; do
+    runuser -u "$SERVICE_USER" -- test -x "$parent" || setfacl -m "u:$SERVICE_USER:--x" "$parent"
+    parent=$(dirname "$parent")
+  done
+}
+workspace_revoke() {
+  local path=$1 owner=$2
+  setfacl -R -x "u:$SERVICE_USER" "$path" 2>/dev/null || true
+  setfacl -R -d -x "u:$SERVICE_USER" "$path" 2>/dev/null || true
+  setfacl -R -d -x "u:$owner" "$path" 2>/dev/null || true
+}
+
+workspace_restart() {
+  systemctl daemon-reload
+  if systemctl is-active -q "$DAEMON_UNIT"; then
+    systemctl restart "$DAEMON_UNIT"
+    echo "Swarm restarted with the new folder list."
+  fi
+}
+
+workspace() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  command -v setfacl >/dev/null || die "setfacl is missing (apt-get install acl)"
+  case ${1:-} in
+    add)
+      [[ $# == 2 ]] || die "usage: install.sh workspace add PATH"
+      workspace_check "$2"
+      install -d -m 0755 "$STATE"
+      if ! workspace_listed | grep -qxF "$2"; then
+        printf '%s\n' "$2" >>"$WORKSPACES"
+        chmod 0644 "$WORKSPACES"
+      fi
+      workspace_grant "$2" "$WORKSPACE_OWNER"
+      workspace_dropin
+      workspace_restart
+      echo "$2 is visible to Swarm (owner $WORKSPACE_OWNER). Register it in place: swarm_add_workspace $2"
+      ;;
+    remove)
+      [[ $# == 2 ]] || die "usage: install.sh workspace remove PATH"
+      [[ $2 == /* && $2 != *..* ]] || die "path must be absolute"
+      workspace_listed | grep -qxF "$2" || die "$2 is not a Swarm workspace folder on this machine"
+      grep -vxF "$2" "$WORKSPACES" >"$WORKSPACES.tmp" || true
+      mv -f "$WORKSPACES.tmp" "$WORKSPACES"
+      [[ ! -d $2 ]] || workspace_revoke "$2" "$(stat -c %U "$2")"
+      workspace_dropin
+      workspace_restart
+      echo "$2 is no longer visible to Swarm."
+      ;;
+    list)
+      [[ $# == 1 ]] || die "usage: install.sh workspace list"
+      workspace_listed
+      ;;
+    *) die "usage: install.sh workspace add PATH | remove PATH | list" ;;
+  esac
+}
+
 wait_ready() {
   load_conf
   for _ in $(seq 1 120); do
@@ -634,17 +706,15 @@ uninstall_all() {
   fi
 
   say "Removing Swarm"
+  local ws
+  while IFS= read -r ws; do
+    [[ -n $ws && -d $ws ]] || continue
+    workspace_revoke "$ws" "$(stat -c %U "$ws")"
+  done < <(workspace_listed)
+  rm -rf "$(dirname "$WORKSPACES_DROPIN")" "$WORKSPACES"
   systemctl disable --now swarm-headless-update.timer >/dev/null 2>&1 || true
   systemctl disable --now "$APP_UNIT" "$DAEMON_UNIT" >/dev/null 2>&1 || true
   systemctl disable "$FIREWALL_UNIT" >/dev/null 2>&1 || true
-  # Folders the owner had mounted for Swarm lose Swarm's access again (the
-  # helper removes only the entries it added); the folders themselves stay.
-  if [[ -x $HOST_HELPER && -f $HOST_WORKSPACES ]]; then
-    while IFS= read -r p; do [[ -z $p ]] || "$HOST_HELPER" unmount-workspace "$p" >/dev/null 2>&1 || true; done <"$HOST_WORKSPACES"
-  fi
-  systemctl disable --now "$HOST_SOCKET_UNIT" >/dev/null 2>&1 || true
-  rm -f "$UNITS/$HOST_SOCKET_UNIT" "$UNITS/$HOST_SERVICE_UNIT" "$HOST_HELPER" "$HOST_WORKSPACES" /var/log/swarm-host-change.log
-  rm -rf "$HOST_DROPIN_DIR"
   rm -f "$UNITS/swarm-headless-update.service" "$UNITS/swarm-headless-update.timer" \
     "$UNITS/$APP_UNIT" "$UNITS/$DAEMON_UNIT" "$UNITS/$FIREWALL_UNIT"
   remove_legacy_layout
@@ -951,9 +1021,9 @@ main() {
     firewall) firewall ;;
     check-isolation) check_isolation ;;
     check-sandbox) check_sandbox ;;
-    host-helper) [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"; load_conf; install_host_helper; echo "Host-change helper installed; mounted: $(host_workspaces)" ;;
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
     secrets-gateway) shift; set_secrets_gateway "$@" ;;
+    workspace) shift; workspace "$@" ;;
     status) systemctl --no-pager status "$DAEMON_UNIT" "$APP_UNIT" | grep -E '●|Active:' || true; check_sandbox; tailscale serve status ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;

@@ -37,11 +37,6 @@ const (
 	ScopeWrite   = "swarm:write"
 	ScopeApprove = "swarm:approve"
 	ScopeManage  = "swarm:manage"
-	// ScopeHostRequest is the API scope (not a Swarm Control level) a scoped
-	// token needs to request an owner-approved host change. It is never part
-	// of a relay ceiling, so the one tool mapped to it (swarm_request_host_change)
-	// is never listed for or forwarded from a relay client.
-	ScopeHostRequest = "host:request"
 
 	handshakeTimeout = 15 * time.Second
 	pingInterval     = 30 * time.Second
@@ -64,8 +59,6 @@ var toolScopes = map[string]string{
 	"swarm_list_tasks":             ScopeRead,
 	"swarm_create_workspace":       ScopeWrite,
 	"swarm_add_workspace":          ScopeWrite,
-	"swarm_request_host_change":    ScopeHostRequest,
-	"swarm_list_host_changes":      ScopeRead,
 	"swarm_start_session":          ScopeWrite,
 	"swarm_send_message":           ScopeWrite,
 	"swarm_run_plan":               ScopeWrite,
@@ -113,8 +106,7 @@ func toolScope(name string) string {
 }
 
 // ToolScope is the Swarm Control level (swarm:read, swarm:write, swarm:approve
-// or swarm:manage) a tool needs, or the API scope host:request for
-// swarm_request_host_change. Unknown tools need write.
+// or swarm:manage) a tool needs. Unknown tools need write.
 func ToolScope(name string) string { return toolScope(name) }
 
 // SecretStore is the daemon's private secrets store.

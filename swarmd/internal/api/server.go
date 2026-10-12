@@ -100,43 +100,38 @@ const (
 type Server struct {
 	automations *automationHTTPServices
 
-	memory                  *memory.Service
-	auth                    *auth.Service
-	agents                  *agentruntime.Service
-	model                   *model.Service
-	modelProfiles           *modelprofile.Service
-	agentModelSettings      *agentmodelsettings.Service
-	agentModelSettingsStore *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
-	runner                  runService
-	runStreams              *runControlAllocator
-	v3RealtimeOutbox        *v3RealtimeOutboxHub
-	v3LiveHub               *v3LiveHub
-	v3LivePatchEnabled      bool
-	v3SyncCursors           *v3SyncCursorKeyring
-	v3SessionExecutor       *sessionV3Executor
-	planLifecycle           *sessionruntime.PlanLifecycleService
-	sessions                *sessionruntime.Service
-	workspace               *workspace.Service
-	discovery               *discovery.Service
-	worktrees               worktreeService
-	mcp                     mcpService
-	security                *security.Service
-	providers               *registry.Registry
-	codexAccount            codexAccountClient
-	claudeCodeUsage         claudeCodeUsageClient
-	perm                    permissionService
-	notifications           notificationService
-	storageHub              *storagehub.Service
-	secretSlots             *pebblestore.SecretSlotStore
-	signals                 *pebblestore.SignalStore
-	secretsGatewayEnabled   bool
-	signalSinks             *pebblestore.SignalSinkStore
-	secretValues            secretValueSetter
-	hostChanges             *pebblestore.HostChangeStore
-	hostChangeHelper        hostChangeHelper
-	// hostChangeRestartDelay separates the applied record and the HTTP reply
-	// from the daemon restart the helper then performs.
-	hostChangeRestartDelay      time.Duration
+	memory                      *memory.Service
+	auth                        *auth.Service
+	agents                      *agentruntime.Service
+	model                       *model.Service
+	modelProfiles               *modelprofile.Service
+	agentModelSettings          *agentmodelsettings.Service
+	agentModelSettingsStore     *pebblestore.AgentModelSettingsStore // complete-record bootstrap only
+	runner                      runService
+	runStreams                  *runControlAllocator
+	v3RealtimeOutbox            *v3RealtimeOutboxHub
+	v3LiveHub                   *v3LiveHub
+	v3LivePatchEnabled          bool
+	v3SyncCursors               *v3SyncCursorKeyring
+	v3SessionExecutor           *sessionV3Executor
+	planLifecycle               *sessionruntime.PlanLifecycleService
+	sessions                    *sessionruntime.Service
+	workspace                   *workspace.Service
+	discovery                   *discovery.Service
+	worktrees                   worktreeService
+	mcp                         mcpService
+	security                    *security.Service
+	providers                   *registry.Registry
+	codexAccount                codexAccountClient
+	claudeCodeUsage             claudeCodeUsageClient
+	perm                        permissionService
+	notifications               notificationService
+	storageHub                  *storagehub.Service
+	secretSlots                 *pebblestore.SecretSlotStore
+	signals                     *pebblestore.SignalStore
+	secretsGatewayEnabled       bool
+	signalSinks                 *pebblestore.SignalSinkStore
+	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
 	events                      *pebblestore.EventLog
@@ -441,19 +436,6 @@ func (s *Server) SetSecretServices(slots *pebblestore.SecretSlotStore, values se
 	}
 	s.secretSlots = slots
 	s.secretValues = values
-}
-
-// SetHostChangeServices wires the owner-approved host change records and the
-// client of the installer-placed helper that applies them.
-func (s *Server) SetHostChangeServices(changes *pebblestore.HostChangeStore, helper hostChangeHelper) {
-	if s == nil {
-		return
-	}
-	s.hostChanges = changes
-	s.hostChangeHelper = helper
-	if s.hostChangeRestartDelay == 0 {
-		s.hostChangeRestartDelay = defaultHostChangeRestartDelay
-	}
 }
 
 func (s *Server) SetMediaStagingService(service *mediastaging.Service) {
@@ -2241,11 +2223,13 @@ func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "repository": repository})
 }
 
-// writeWorkspaceNotVisible answers a workspace registration whose absolute
-// path the daemon cannot see (it runs as its own user, with the person's
-// folders hidden from it) with the host change that fixes it, instead of a
-// dead "no such directory". Only a missing or unreadable path outside Swarm's
-// own storage qualifies; everything else keeps its usual error.
+// writeWorkspaceNotVisible answers a registration whose absolute path Swarm
+// cannot see (a service install runs as its own user with home folders
+// hidden) with what to do, instead of a dead "no such directory". Swarm never
+// changes its own host: the person, or the AI setting the machine up, makes
+// the folder visible from outside (on a headless install,
+// `install.sh workspace add PATH` as root) and adds it again. Only a missing
+// or unreadable path outside Swarm's own storage qualifies.
 func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bool {
 	path = strings.TrimSpace(path)
 	if !filepath.IsAbs(path) {
@@ -2263,11 +2247,10 @@ func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bo
 		return false
 	}
 	writeJSON(w, http.StatusConflict, map[string]any{
-		"ok":          false,
-		"code":        "workspace_not_visible",
-		"error":       clean + " is not visible to Swarm on this machine.",
-		"host_change": map[string]string{"op": pebblestore.HostChangeOpMountWorkspace, "path": clean},
-		"supported":   s.hostChangesSupported(),
+		"ok":    false,
+		"code":  "workspace_not_visible",
+		"path":  clean,
+		"error": clean + " is not visible to Swarm on this machine: Swarm runs as its own user with home folders hidden, and never changes its host itself. Make the folder visible from outside, as root on that machine (headless install: `install.sh workspace add " + clean + "`), then add it again.",
 	})
 	return true
 }

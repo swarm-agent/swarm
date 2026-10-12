@@ -146,9 +146,9 @@ func TestToolScopesMatchRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	constants := map[string]string{"SCOPE_READ": ScopeRead, "SCOPE_WRITE": ScopeWrite, "SCOPE_APPROVE": ScopeApprove, "SCOPE_MANAGE": ScopeManage, "SCOPE_HOST_REQUEST": ScopeHostRequest}
+	constants := map[string]string{"SCOPE_READ": ScopeRead, "SCOPE_WRITE": ScopeWrite, "SCOPE_APPROVE": ScopeApprove, "SCOPE_MANAGE": ScopeManage}
 	relay := map[string]string{}
-	for _, match := range regexp.MustCompile(`(?m)^\s+(swarm_[a-z_]+):\s+(SCOPE_[A-Z_]+),$`).FindAllStringSubmatch(string(source), -1) {
+	for _, match := range regexp.MustCompile(`(?m)^\s+(swarm_[a-z_]+):\s+(SCOPE_[A-Z]+),$`).FindAllStringSubmatch(string(source), -1) {
 		relay[match[1]] = constants[match[2]]
 	}
 	relayOnly := map[string]bool{"swarm_list_machines": true, "swarm_pair_machine": true, "swarm_remove_machine": true}
@@ -418,10 +418,8 @@ func TestRelayPairingThenReady(t *testing.T) {
 // Requirement: relay clients get only tools the device token can actually
 // run. Owner box-setup tools (define agents, mint client app keys, ChatGPT
 // sign-in) need admin authority, which the device token never carries, so
-// they are neither listed nor forwarded, even for a manage client; the same
-// goes for swarm_request_host_change, whose scope host:request is outside
-// every relay ceiling; read tools that need agents:read (list_agents) or
-// list host changes are listed and forwarded. Threat: a
+// they are neither listed nor forwarded, even for a manage client; read tools
+// that need agents:read (list_agents) are listed and forwarded. Threat: a
 // relay client offered tools that always fail, or a future token change
 // letting a relay client mint keys. Owners: localOnlyTools, filterTools and
 // the tools/call ceiling in Service.handle. Calling handle with a fake Swarm
@@ -440,7 +438,7 @@ func TestRelayOmitsOwnerOnlyTools(t *testing.T) {
 		forwarded = append(forwarded, body.Method+" "+body.Params.Name)
 		w.Header().Set("Content-Type", "application/json")
 		if body.Method == "tools/list" {
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"swarm_list_agents"},{"name":"swarm_set_agent_model"},{"name":"swarm_define_agent"},{"name":"swarm_create_client_key"},{"name":"swarm_connect_chatgpt"},{"name":"swarm_request_host_change"},{"name":"swarm_list_host_changes"}]}}`))
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"swarm_list_agents"},{"name":"swarm_set_agent_model"},{"name":"swarm_define_agent"},{"name":"swarm_create_client_key"},{"name":"swarm_connect_chatgpt"}]}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}],"isError":false}}`))
@@ -459,16 +457,10 @@ func TestRelayOmitsOwnerOnlyTools(t *testing.T) {
 	for _, tool := range call(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)["result"].(map[string]any)["tools"].([]any) {
 		listed = append(listed, tool.(map[string]any)["name"].(string))
 	}
-	if strings.Join(listed, ",") != "swarm_list_agents,swarm_set_agent_model,swarm_list_host_changes" {
+	if strings.Join(listed, ",") != "swarm_list_agents,swarm_set_agent_model" {
 		t.Fatalf("relay listed %v", listed)
 	}
-	// Owner-only tools, and the host:request tool (an API scope outside every
-	// relay ceiling), are refused before reaching Swarm Control.
-	refused := []string{"swarm_request_host_change"}
 	for name := range localOnlyTools {
-		refused = append(refused, name)
-	}
-	for _, name := range refused {
 		out := call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"` + name + `","arguments":{}}}`)
 		if result, _ := out["result"].(map[string]any); result == nil || result["isError"] != true {
 			t.Fatalf("%s was not refused: %v", name, out)

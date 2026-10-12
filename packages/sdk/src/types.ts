@@ -368,47 +368,6 @@ export interface SessionDetail {
   raw?: Record<string, unknown>;
 }
 
-/**
- * A change to the machine that only its owner can approve: `mount-workspace`
- * makes the person's folder visible to a headless Swarm (which runs as its own
- * user and sees only the folders it was given); `unmount-workspace` takes it
- * away again.
- */
-export type HostChangeOp = 'mount-workspace' | 'unmount-workspace';
-
-/**
- * `pending` waits for the owner; `applying` runs the helper; `applied` is done
- * (Swarm restarts for it); `failed` carries `error`; `denied` was refused.
- */
-export type HostChangeStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'denied';
-
-/** The host change that would make a folder visible, as `workspace_not_visible` names it. */
-export interface HostChangeRequest {
-  op: HostChangeOp;
-  path: string;
-}
-
-/** One recorded host change request. */
-export interface HostChange extends HostChangeRequest {
-  id: string;
-  reason?: string;
-  status: HostChangeStatus;
-  /** `token:<key name>` for a scoped key, `owner:<user>` for the owner. */
-  requested_by: string;
-  requested_at: number;
-  decided_at?: number;
-  applied_at?: number;
-  /** The helper's reply, one JSON line. */
-  result?: string;
-  error?: string;
-}
-
-export interface HostChangeList {
-  /** False when this machine has no host-change helper, so no request can be applied. */
-  supported: boolean;
-  changes: HostChange[];
-}
-
 export interface WorkspaceRecord {
   workspace_id: string;
   workspace_name?: string;

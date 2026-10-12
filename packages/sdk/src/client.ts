@@ -11,7 +11,6 @@ import { SwarmAutomationsNamespace } from './automations.js';
 import { SwarmWorkersNamespace } from './workers.js';
 import { SwarmDeliverablesNamespace } from './deliverables.js';
 import { SwarmDeployNamespace } from './deploy/index.js';
-import { SwarmHostNamespace } from './host.js';
 import { SwarmNotificationsNamespace } from './notifications.js';
 import { SwarmSignalsNamespace } from './signals.js';
 import { SwarmBoxNamespace } from './box.js';
@@ -49,8 +48,6 @@ export class SwarmClient {
   /** Convenient alias for deliverables namespace: mailbox */
   readonly mailbox: SwarmDeliverablesNamespace;
   readonly workspaces: SwarmWorkspacesNamespace;
-  /** Owner-approved host changes: making the person's folders visible to a headless Swarm. */
-  readonly host: SwarmHostNamespace;
   readonly projects: SwarmProjectsNamespace;
   readonly sessions: SwarmSessionsNamespace;
   /** High-level interactive chat, response streaming, live tool events, and permission handling */
@@ -105,7 +102,6 @@ export class SwarmClient {
     this.deliverables = new SwarmDeliverablesNamespace(this.transport);
     this.mailbox = this.deliverables;
     this.workspaces = new SwarmWorkspacesNamespace(this.transport);
-    this.host = new SwarmHostNamespace(this.transport);
     this.projects = new SwarmProjectsNamespace(this.transport);
     this.sessions = new SwarmSessionsNamespace(this.transport);
     this.chat = new SwarmChatNamespace(this.transport);

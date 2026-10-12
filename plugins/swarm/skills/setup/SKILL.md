@@ -96,20 +96,15 @@ system permissions, sign-in or secret entry. Do not reset existing state.
   `swarm_create_project`; wait with `swarm_get_project` until its `project.md`
   is ready (see the `using-swarm` skill, section 6). Swarm only sees folders it
   can read: Docker paths are inside the container (e.g. `/project`), and a
-  service install sees what its service account can read. Registration and a
+  service install sees what its service account can read. A headless install
+  hides home folders; when `swarm_add_workspace` answers
+  `workspace_not_visible`, run the command it names as root on that machine
+  (`install.sh workspace add PATH`, which binds exactly that repository into
+  the service and restarts Swarm; Swarm never changes the machine itself),
+  then add the folder again. Registration and a
   familiar name do not prove the person's code is present; verify the requested
   files before assigning a repository task. Use `swarm_create_workspace` (a
   new, empty repository) only when they ask to start a new project from scratch.
-- A headless Swarm sees only the folders it was given. When `swarm_add_workspace`
-  answers `blocked: "not_visible"`, call `swarm_request_host_change` with the
-  `op` and `path` from its `host_change` (and a one-sentence reason), tell the
-  person it waits for their approval in Swarm (`swarmctl host list|approve ID`
-  on the machine, or the app) and that Swarm restarts when applied, follow it
-  with `swarm_list_host_changes`, and call `swarm_add_workspace` again once its
-  status is `applied`. You cannot approve it: there is no such tool. The
-  request tool needs a key with `host:request` (`swarmctl setup sdk-token
-  --host-request`, or a full AI key); if `supported` is false the machine has
-  no host-change helper and the owner runs `install.sh host-helper` first.
 - Reconnect/refresh the plugin's MCP after installation or configuration changes.
   Confirm a real tool call succeeds before saying it is connected.
 

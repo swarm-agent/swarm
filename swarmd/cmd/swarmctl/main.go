@@ -54,8 +54,6 @@ func main() {
 		err = cmdMCP(os.Args[2:])
 	case "secret":
 		err = cmdSecret(os.Args[2:])
-	case "host":
-		err = cmdHost(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -89,8 +87,6 @@ func usage() {
 	fmt.Println("  swarmctl session messages --id SESSION_ID [--after-seq N] [--limit N] [--addr URL]")
 	fmt.Println("  swarmctl session send --id SESSION_ID --role user --content TEXT [--addr URL]")
 	fmt.Println("  swarmctl session run --id SESSION_ID --prompt TEXT [--addr URL]")
-	fmt.Println("  swarmctl secret <list|create|set-value|grant|revoke|grants|uses|delete> --help  # owner, over the private socket")
-	fmt.Println("  swarmctl host <list [--status pending]|approve ID|deny ID> [--reason TEXT] [--socket PATH]  # owner decides host change requests")
 	fmt.Println("")
 	fmt.Println("Auth token for protected APIs can be passed with env: SWARMD_TOKEN=<token>")
 }

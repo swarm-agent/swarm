@@ -122,6 +122,7 @@ func TestControlMCPOnboardsExistingFolders(t *testing.T) {
 		{inProtected, "system or Swarm storage directory"},
 		{nested, "inside the registered workspace"},
 		{"notes", "absolute"},
+		{filepath.Join(docs, "not-there"), "install.sh workspace add"},
 	} {
 		if text, isError := controlMCPToolText(t, write, "swarm_add_workspace", map[string]any{"path": tc.path}); !isError || !strings.Contains(text, tc.want) {
 			t.Fatalf("%s: want %q, got %s", tc.path, tc.want, text)
