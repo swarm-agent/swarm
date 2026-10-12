@@ -504,7 +504,7 @@ async function scenarioTasks(ctx) {
   if (!(await onboard(ctx))) return
   enter(ctx, 'tasks.project')
   const line = 'hello from swarm e2e'
-  const project = await tool(ctx, 'swarm_create_project', { name: 'e2e project', workspace_paths: [ctx.workspace] }, 'tasks.create_project')
+  const project = await tool(ctx, 'swarm_create_project', { name: 'e2e project', workspaces: [{ path: ctx.workspace }] }, 'tasks.create_project')
   const projectId = project.project?.id
   ctx.require('tasks.create_project', typeof projectId === 'string' && projectId !== '', 'project created with the workspace as primary code workspace')
 

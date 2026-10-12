@@ -204,6 +204,18 @@ These exercise real CLI parsing/Unix transport against isolated HTTP fixtures an
 real backend identity handlers against temporary storage. They are not live daemon,
 provider or SDK runs and do not replace the separate live qualification below.
 
+## Workspaces and projects
+
+Headless Swarm runs as an isolated service, so it sees only folders it can
+read: here the repository mounted at `/project`. Register the person's real
+folders (`setup workspace`, `swarm_add_workspace` over Swarm Control, or
+`client.workspaces.add` with `context_only`), group them into a project
+(`swarm_create_project` or `client.projects.create`) so Swarm writes the
+project's `project.md`, and start the project's orchestrator once it is
+`ready`. Never point work at a freshly initialised, empty repository in place
+of the person's code: `swarm_create_workspace` is only for a new project
+started from scratch.
+
 ## Authenticated host SDK connection
 
 Rebuild the current source first. Opt in to the separate listener with

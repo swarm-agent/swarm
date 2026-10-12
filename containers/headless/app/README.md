@@ -63,6 +63,14 @@ it again with the saved `--relay`, `--name` and `--ref`; `install.sh uninstall`
 only removes it. Both keep Docker, gVisor, Tailscale, ufw and the project
 folder (unless `--delete-projects`), and remove the earlier
 Swarm-in-a-container layout if present.
+**Workspaces and projects.** Swarm runs as the `swarm` user and sees only
+folders that user can read (such as `/var/lib/swarm-headless/project`). Put
+or clone the person's real work there, register those folders
+(`swarm_add_workspace`), group them into a project (`swarm_create_project`) so
+Swarm writes its `project.md`, and work through the project's orchestrator once
+it is ready. Never point work at a freshly initialised, empty repository in
+place of their code; `swarm_create_workspace` is only for a new project started
+from scratch.
 
 **Agent sandboxes.** Swarm keeps its keys, login and local socket to itself.
 Agents' commands, and Swarm's own Git on their projects, run in one sandbox

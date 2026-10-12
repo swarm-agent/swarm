@@ -50,10 +50,15 @@ authentication. A service-account socket error is also a connection issue.
 - **Models.** `swarm_list_models` shows each role's default (swarm, coder,
   orchestrator, finder, ...). Change models only when the person asks
   (`swarm_set_agent_model`, `swarm_set_session_model`).
-- **A workspace.** Work happens in a registered workspace (a git folder).
-  `swarm_list_workspaces`; if none fits, `swarm_create_workspace` (it makes a
-  new git repo). Say where it lives. A registered workspace may be empty;
-  verify the requested source files exist before assigning a repository review.
+- **Workspaces and a project** ("make me a swarm"). Ask the person: "What
+  workspaces would you like to add?" — existing folders or git repositories,
+  possibly several. Register each with `swarm_add_workspace` (absolute path as
+  the Swarm machine sees it; it refuses empty, system and nested folders and
+  changes nothing in the folder), then group them with `swarm_create_project`
+  (section 6). Never hand the person an empty repository as their work target:
+  `swarm_create_workspace` makes a new, empty repo and is only for a brand-new
+  project they asked to start from scratch. Verify the requested files exist
+  before assigning a repository review.
 
 ## 3. Hand work to an agent
 
@@ -108,12 +113,21 @@ claim an independent file/diff check from a session summary alone.
 
 ## 6. Bigger work: projects and the orchestrator
 
-1. `swarm_create_project` with one or more workspaces.
-2. `swarm_start_session` with `project_id`: this is the orchestrator. Tell it
-   the goal; it splits work into tasks.
-3. `swarm_list_tasks`. Tasks in `pending_approval` need a go-ahead: show the
+1. `swarm_create_project` with the registered workspaces (`role`:
+   `primary_code`, `auxiliary` or `docs`; the first defaults to
+   `primary_code`). Swarm writes the project's `project.md` from each
+   workspace's AGENTS.md, README and file tree.
+2. `swarm_get_project` with `wait_seconds` until `context_generation.status` is
+   `ready` (`failed`: `swarm_retry_project_context`). Read `project.md` and fix
+   anything wrong with `swarm_update_project_context`; change the workspace list
+   with `swarm_set_project_workspaces` (full list). Both are refused until
+   `project.md` is ready.
+3. `swarm_start_session` with `agent` `system-orchestrator` and the
+   `project_id`: this is the project's orchestrator. Tell it the goal; it splits
+   work into tasks.
+4. `swarm_list_tasks`. Tasks in `pending_approval` need a go-ahead: show the
    person the task list and, with their OK, `swarm_approve_task`.
-4. Finished tasks reach `needs_review`: check them (`swarm_get_changes`,
+5. Finished tasks reach `needs_review`: check them (`swarm_get_changes`,
    `swarm_read_file`), then `swarm_integrate_task` merges the work into the
    workspace's branch.
 

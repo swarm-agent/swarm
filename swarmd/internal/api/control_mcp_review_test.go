@@ -440,7 +440,7 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 		return controlMCPDirectCall(context.Background(), identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}, nil, nil, scopes...).instructions()
 	}
 	readOnly := instructions("sessions:read", "swarm:read")
-	for _, hidden := range []string{"resolve_permission", "create_workspace", "approve_task", "accept_review", "integrate_task", "start_session"} {
+	for _, hidden := range []string{"resolve_permission", "create_workspace", "add_workspace", "create_project", "approve_task", "accept_review", "integrate_task", "start_session"} {
 		if strings.Contains(readOnly, hidden) {
 			t.Fatalf("read-only instructions mention %s: %s", hidden, readOnly)
 		}
@@ -449,10 +449,29 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 		t.Fatalf("read-only instructions: %s", readOnly)
 	}
 	full := instructions("sessions:read", "sessions:write")
-	for _, shown := range []string{"resolve_permission", "approve_task", "accept_review", "refuses some commands outright", "never become pending requests"} {
+	for _, shown := range []string{"resolve_permission", "approve_task", "accept_review", "refuses some commands outright", "never become pending requests",
+		"ask them which workspaces to add", "add_workspace", "create_project", "project.md is ready", "system-orchestrator", "Never hand the person an empty repository"} {
 		if !strings.Contains(full, shown) {
 			t.Fatalf("full instructions miss %s: %s", shown, full)
 		}
+	}
+	// Onboarding order: workspaces are asked for and added before the project,
+	// the project before the orchestrator; empty repositories are never the
+	// suggested first step.
+	order := []string{"ask them which workspaces", "add_workspace", "create_project", "get_project", "system-orchestrator"}
+	for i := 1; i < len(order); i++ {
+		if strings.Index(full, order[i-1]) > strings.Index(full, order[i]) {
+			t.Fatalf("onboarding order: %s before %s: %s", order[i], order[i-1], full)
+		}
+	}
+	if strings.Contains(full, "create one with create_workspace") || strings.Index(full, "create_workspace") < strings.Index(full, "system-orchestrator") {
+		t.Fatalf("instructions suggest an empty workspace first: %s", full)
+	}
+	// A write grant without manage cannot create projects, so it is not told
+	// the project onboarding, but is still warned about empty repositories.
+	writeOnly := instructions("sessions:read", "sessions:write", "swarm:read", "swarm:write")
+	if strings.Contains(writeOnly, "create_project") || !strings.Contains(writeOnly, "empty repository") {
+		t.Fatalf("write-only instructions: %s", writeOnly)
 	}
 }
 
@@ -504,7 +523,8 @@ func TestControlMCPWaitsForProviderKey(t *testing.T) {
 }
 
 // Requirement: a session refused for an unregistered workspace path says so
-// and points at list_workspaces/create_workspace; other refusals and 404s keep
+// and points at list_workspaces/add_workspace (never the empty create_workspace
+// as the default fix); other refusals and 404s keep
 // their meaning, with the id echoed and the list tool named. Owners:
 // controlMCPCall.unregisteredWorkspace and controlMCPNotFound; a fake route
 // table is the narrowest layer for the mapping.
@@ -515,7 +535,7 @@ func TestControlMCPErrorHints(t *testing.T) {
 	})
 	c := controlMCPDirectCall(context.Background(), identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}, mux, nil, "sessions:read", "sessions:write")
 	binding := controlMCPToolError{message: "Swarm rejected the request (HTTP 400): sessions v3 primary workspace is missing its canonical local binding", status: http.StatusBadRequest}
-	if err := c.unregisteredWorkspace(binding, "/etc"); !strings.Contains(err.Error(), `"/etc" is not a registered workspace`) || !strings.Contains(err.Error(), "swarm_create_workspace") {
+	if err := c.unregisteredWorkspace(binding, "/etc"); !strings.Contains(err.Error(), `"/etc" is not a registered workspace`) || !strings.Contains(err.Error(), "swarm_add_workspace") || strings.Contains(err.Error(), "swarm_create_workspace") {
 		t.Fatalf("unregistered: %v", err)
 	}
 	if err := c.unregisteredWorkspace(binding, "/registered"); err != error(binding) {

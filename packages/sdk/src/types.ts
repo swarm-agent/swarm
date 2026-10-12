@@ -555,11 +555,6 @@ export interface ListProjectsParams {
   limit?: number;
 }
 
-export interface SynthesizeProjectContextParams {
-  name: string;
-  workspaces: string[];
-}
-
 export interface DeleteProjectResult {
   status: string;
   id: string;

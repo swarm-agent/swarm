@@ -34,8 +34,13 @@ unsupported protocol versions are rejected.
 | `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
 | `swarm_stop_run` | `swarm:write` | `POST …/run/stop`, then waits up to 10 s and reports the run's final status (`finished`, `failed`, `stopped` or `stopping`), the plan's state (a stopped plan is `paused`: it keeps progress and resumes only with a new message) and a summary |
 | `swarm_resolve_permission` (`allow_once`/`deny_once`, `answer` for `ask_user`) | `swarm:approve` | `POST …/permissions/{pid}/resolve` (one decision; Swarm has no session-scoped allowance, and persistent rules stay owner-only) |
-| `swarm_list_projects` | `swarm:read` | `GET /v3/projects` |
-| `swarm_create_project` | `swarm:manage` | `POST /v3/projects` (workspaces must be registered) |
+| `swarm_add_workspace` | `swarm:write` | `POST /v1/workspace/add` with `context_only` and `require_existing_content` (an existing, non-empty folder outside system/Swarm storage and outside registered workspaces; nothing initialised or committed; an already registered path is returned) (tool requires `sessions:write`) |
+| `swarm_create_workspace` | `swarm:write` | `POST /v1/workspace/repository/setup` then `POST /v1/workspace/add`: a new, empty repository under the daemon's workspace folder, only for a project started from scratch (tool requires `sessions:write`) |
+| `swarm_list_projects` | `swarm:read` | `GET /v3/projects` (workspaces with roles and `context_status`) |
+| `swarm_create_project` | `swarm:manage` | `POST /v3/projects` with registered workspaces (by path or id; role `primary_code`, `auxiliary` or `docs`); Swarm then generates `project.md` |
+| `swarm_get_project` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}`: workspaces, `project.md` and `context_generation`; the wait is woken by committed project updates on the realtime outbox until generation is `ready` or `failed` |
+| `swarm_update_project_context`, `swarm_set_project_workspaces` | `swarm:manage` | `PATCH /v3/projects/{pid}` with only `project_context` or only the full `workspaces` list; refused (with the next step) until generation is `ready` |
+| `swarm_retry_project_context` | `swarm:manage` | `POST /v3/projects/{pid}/context:retry` with the current attempt |
 | `swarm_list_tasks` | `swarm:read` | `GET /v3/projects/{pid}/tasks` (orchestrator tasks and worker runs, with branches and review state) |
 | `swarm_integrate_task` | `swarm:approve` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` with the task's own session, agent branch and captured target branch (real git merge, refused on conflict; nothing is pushed) |
 | `swarm_approve_task` (`approve`/`reject`) | `swarm:manage` | `POST /v3/projects/{pid}/tasks/{tid}/approve` or `…/reject` (the Desktop's buttons) for a `pending_approval` task only, with the task's own session, plan and plan revision as guards; the media `…/accept` alias that publishes deliverables is not reachable |

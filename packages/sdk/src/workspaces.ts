@@ -27,7 +27,14 @@ export class SwarmWorkspacesNamespace {
     await this.setupRepository(path, path);
     return this.add({ path, name: body.name, make_current: body.make_current ?? false });
   }
-  async add(body: { path: string; name?: string; theme_id?: string; make_current?: boolean; confirm_committed_only?: boolean }): Promise<WorkspaceResolution> {
+  /**
+   * Registers an existing folder. A Git repository by default; with
+   * `context_only` any readable folder (a project source, never selected as the
+   * coding workspace), and with `require_existing_content` as well the daemon
+   * refuses empty folders, system/Swarm storage directories and folders inside
+   * an already registered workspace (for folders the person named).
+   */
+  async add(body: { path: string; name?: string; theme_id?: string; make_current?: boolean; confirm_committed_only?: boolean; context_only?: boolean; require_existing_content?: boolean }): Promise<WorkspaceResolution> {
     return (await this.transport.request<{ ok: boolean; workspace: WorkspaceResolution }>('/v1/workspace/add', { method: 'POST', body })).data.workspace;
   }
   async inspectRepository(path: string): Promise<WorkspaceRepository> {

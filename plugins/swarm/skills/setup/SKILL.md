@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install or connect Swarm locally, onboard a model provider and workspace, and verify a first delegated task. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help configure a private tunnel or relay only if they request remote access.
+description: Install or connect Swarm locally, onboard a model provider, the person's workspaces and a project, and verify a first delegated task. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help configure a private tunnel or relay only if they request remote access.
 ---
 
 # Set up Swarm
@@ -90,24 +90,32 @@ system permissions, sign-in or secret entry. Do not reset existing state.
   signs Swarm into a model provider; it does not connect this plugin to ChatGPT.
 - Read the available models and account defaults. Ask for missing model choices;
   preserve existing assignments. Do not choose a hardcoded provider/model.
-- Select a registered workspace, or create one with their authorization. Explain
-  that Docker workspace paths are inside the container, e.g. `/project`.
-  Registration and a familiar name do not prove the person's code is present;
-  verify the requested files before assigning a repository task. An empty
-  workspace can be valid for new work and is not a connection failure.
+- Ask the person: "What workspaces would you like to add?" — existing folders
+  or git repositories, possibly several. Register each with
+  `swarm_add_workspace` and group them into a project with
+  `swarm_create_project`; wait with `swarm_get_project` until its `project.md`
+  is ready (see the `using-swarm` skill, section 6). Swarm only sees folders it
+  can read: Docker paths are inside the container (e.g. `/project`), and a
+  service install sees what its service account can read. Registration and a
+  familiar name do not prove the person's code is present; verify the requested
+  files before assigning a repository task. Use `swarm_create_workspace` (a
+  new, empty repository) only when they ask to start a new project from scratch.
 - Reconnect/refresh the plugin's MCP after installation or configuration changes.
   Confirm a real tool call succeeds before saying it is connected.
 
 ## Prove the first task
 
 Follow the packaged `using-swarm` skill. Use the person's actual task, or agree
-on a small task in their chosen workspace. Start a session, keep its ID, handle
+on a small task in their project. Talk to the project's orchestrator
+(`swarm_start_session` with agent `system-orchestrator` and the `project_id`),
+or for a quick check start a session in one of its workspaces. Keep its ID, handle
 pending decisions, and inspect the result using `swarm_get_changes` and
 `swarm_read_file` when exposed. Otherwise use authorized local file access or
 the owner's Swarm UI, and state what remains unverified. Prefer waits of 20–30
 seconds within the live tool schema's limit. A timeout
 means work may still be running; resume the same session instead of duplicating
-it. Report failures honestly. End with what runs where and what was verified.
+it. Report failures honestly. End with what runs where, which workspaces the
+project holds and what was verified.
 
 For requested remote access later, read [optional remote access](references/remote.md).
 Do not enable it as a workaround for a local setup error. Do not promise dots

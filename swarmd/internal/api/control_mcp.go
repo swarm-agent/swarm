@@ -50,7 +50,8 @@ type controlMCPInstruction struct {
 
 var controlMCPInstructionLines = []controlMCPInstruction{
 	{nil, "Swarm Control drives Swarm, a local AI coding workspace, on one machine."},
-	{[]string{"swarm_list_workspaces", "swarm_create_workspace"}, "Sessions run in a registered workspace: if list_workspaces is empty, create one with create_workspace first."},
+	{[]string{"swarm_add_workspace", "swarm_create_project", "swarm_get_project", "swarm_start_session"}, "To set Swarm up for someone's work, first ask them which workspaces to add: existing folders or git repositories on this machine, possibly several. Register each with add_workspace, group them with create_project, wait with get_project until the project's project.md is ready, then work through the project's orchestrator: start_session with agent system-orchestrator and the project_id."},
+	{[]string{"swarm_create_workspace"}, "Never hand the person an empty repository as their work target: create_workspace makes a new, empty repository and is only for a brand-new project they asked to start from scratch."},
 	{[]string{"swarm_start_session", "swarm_get_session"}, "Work is asynchronous: start_session, send_message and run_plan return at once with the session's current state; pass wait_seconds to start_session, send_message or get_session to wait until the run settles (it ended: finished, failed or stopped; or it waits on a decision in pending_permissions)."},
 	{[]string{"swarm_start_session"}, "Prefer giving a plan (checkpoints with acceptance criteria) for multi-step work; Swarm runs its checkpoints one after another, but agent tool calls still follow the permission policy."},
 	{[]string{"swarm_get_session"}, "Agent tool calls that need approval, and agent questions (ask_user), wait in pending_permissions."},

@@ -285,6 +285,54 @@ func (s *Service) RegisterContextFolderForPrincipal(principal identity.Principal
 	return s.createCatalogEntryForPrincipal(principal, path, name, themeID, false)
 }
 
+// RegisterExistingFolderForPrincipal saves a folder that already holds the
+// owner's work as a context source, for clients that add folders the person
+// named (for example an AI over Swarm Control) rather than one they just
+// created. On top of RegisterContextFolderForPrincipal it applies repository
+// setup's path checks (absolute, outside system and Swarm storage directories,
+// not nested inside a registered workspace) and refuses an empty folder.
+func (s *Service) RegisterExistingFolderForPrincipal(principal identity.Principal, path, name, themeID string) (Resolution, error) {
+	if s == nil || s.store == nil {
+		return Resolution{}, fmt.Errorf("workspace service is not configured")
+	}
+	if err := requirePrincipal(principal); err != nil {
+		return Resolution{}, err
+	}
+	requested, err := absoluteWorkspacePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if err := s.validateRepositorySetupPath(path, requested); err != nil {
+		return Resolution{}, err
+	}
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return Resolution{}, err
+	}
+	if err := s.validateRepositorySetupPath(path, resolved); err != nil {
+		return Resolution{}, err
+	}
+	if err := s.validateRepositorySetupNesting(principal, resolved); err != nil {
+		return Resolution{}, err
+	}
+	if err := ensureWorkspaceDirectory(resolved); err != nil {
+		return Resolution{}, err
+	}
+	dir, err := os.Open(resolved)
+	if err != nil {
+		return Resolution{}, err
+	}
+	_, err = dir.Readdirnames(1)
+	dir.Close()
+	if errors.Is(err, io.EOF) {
+		return Resolution{}, fmt.Errorf("folder %q is empty: add a folder that already holds the work", resolved)
+	}
+	if err != nil {
+		return Resolution{}, err
+	}
+	return s.createCatalogEntryForPrincipal(principal, resolved, name, themeID, false)
+}
+
 func (s *Service) createCatalogEntryForPrincipal(principal identity.Principal, path, name, themeID string, requireGit bool) (Resolution, error) {
 	if s == nil || s.store == nil {
 		return Resolution{}, fmt.Errorf("workspace service is not configured")

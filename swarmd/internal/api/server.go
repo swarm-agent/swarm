@@ -2082,9 +2082,17 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		MakeCurrent          *bool  `json:"make_current"`
 		ConfirmCommittedOnly bool   `json:"confirm_committed_only"`
 		ContextOnly          bool   `json:"context_only"`
+		// RequireExistingContent narrows a context-only registration to a
+		// non-empty folder outside system/Swarm storage and outside any
+		// registered workspace (the person's existing work, not a new folder).
+		RequireExistingContent bool `json:"require_existing_content"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.RequireExistingContent && !req.ContextOnly {
+		writeError(w, http.StatusBadRequest, errors.New("require_existing_content applies only to context_only registration"))
 		return
 	}
 	makeCurrent := true
@@ -2107,7 +2115,11 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, errors.New("context folder registration cannot select a coding workspace"))
 			return
 		}
-		resolution, err := s.workspace.RegisterContextFolderForPrincipal(principal, req.Path, req.Name, req.ThemeID)
+		register := s.workspace.RegisterContextFolderForPrincipal
+		if req.RequireExistingContent {
+			register = s.workspace.RegisterExistingFolderForPrincipal
+		}
+		resolution, err := register(principal, req.Path, req.Name, req.ThemeID)
 		if err != nil {
 			writeError(w, 400, err)
 			return

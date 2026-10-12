@@ -38,7 +38,14 @@ const (
 	controlMCPMaxModels       = 40
 	controlMCPMaxChildren     = 20
 	controlMCPMaxTasks        = 30
+	// project.md as read by get_project and written by update_project_context.
+	// Generated documents are at most 12,000 bytes; edits get headroom.
+	controlMCPMaxProjectContextChars = 50000
+	controlMCPMaxProjectWorkspaces   = 16
 )
+
+// Project workspace roles, as the project record stores them.
+var controlMCPProjectWorkspaceRoles = []string{"primary_code", "auxiliary", "docs"}
 
 // Roles whose default model an AI client may change, mapped to the canonical
 // agent-model-settings patch slot.
@@ -88,6 +95,11 @@ var controlMCPRoutes = []string{
 	"POST v3/sessions/*/plan-mode/plans/*/start-automatic",
 	"GET v3/projects",
 	"POST v3/projects",
+	// Project read, project.md and workspace edits, and project.md retry. The
+	// project tools fix the PATCH body to project_context or workspaces.
+	"GET v3/projects/*",
+	"PATCH v3/projects/*",
+	"POST v3/projects/*/context:retry",
 	"POST v3/projects/*/sessions",
 	"GET v3/projects/*/tasks",
 	"POST v3/projects/*/tasks/*/integrate",
@@ -406,6 +418,21 @@ func controlMCPWaitProp() map[string]any {
 	return map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the run settles, then return the session's latest state. Settled means the run ended (waited.outcome finished, failed or stopped) or it waits on a decision in pending_permissions (waited.reason waiting_on_decision). waited.timed_out means it is still working: call get_session again. Default 0 (return at once)."}
 }
 
+func controlMCPProjectWorkspacesProp() map[string]any {
+	return map[string]any{
+		"type": "array", "minItems": 1, "maxItems": controlMCPMaxProjectWorkspaces,
+		"description": "Registered workspaces (list_workspaces or add_workspace), each by path or workspace_id. Role: primary_code (the main code repository), auxiliary (other sources) or docs; default primary_code for the first and auxiliary for the rest.",
+		"items": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"properties": map[string]any{
+				"path":         map[string]any{"type": "string", "maxLength": 4096},
+				"workspace_id": map[string]any{"type": "string", "maxLength": 200},
+				"role":         map[string]any{"type": "string", "enum": controlMCPProjectWorkspaceRoles},
+			},
+		},
+	}
+}
+
 func controlMCPScheduleSchema() map[string]any {
 	return map[string]any{
 		"type":        "object",
@@ -453,19 +480,28 @@ func controlMCPPlanSchema() map[string]any {
 func controlMCPTools() []controlMCPTool {
 	sessionID := controlMCPStringProp("From list_sessions or start_session.", 1, 200)
 	workerID := controlMCPStringProp("From list_workers.", 1, 200)
-	agentProp := controlMCPStringProp("swarm (default) works in one workspace and delegates to sub-agents; system-orchestrator runs a project (needs project_id), turning work into tasks for agents and workers; system-coder, system-designer and system-finder work alone; or a custom agent from list_agents, which runs on the account default model unless model is given.", 1, 64)
+	agentProp := controlMCPStringProp("swarm (default) works in one workspace and delegates to sub-agents; system-orchestrator runs a project (needs project_id; start it once the project.md is ready), turning work into tasks for agents and workers; system-coder, system-designer and system-finder work alone; or a custom agent from list_agents, which runs on the account default model unless model is given.", 1, 64)
 	providerProp := controlMCPStringProp("Provider id from list_models.", 0, 100)
 	modelProp := controlMCPStringProp("Model from list_models (needs provider).", 0, 200)
 	thinkingProp := controlMCPStringProp("One of the model's thinking options from list_models.", 0, 50)
 	return append([]controlMCPTool{
 		{
 			Name: "swarm_list_workspaces", Title: "List workspaces",
-			Description: "Registered workspaces (repositories) that sessions and workers can use.",
+			Description: "Registered workspaces (folders and git repositories) that projects, sessions and workers can use.",
 			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListWorkspaces,
 		},
 		{
-			Name: "swarm_create_workspace", Title: "Create a workspace",
-			Description: "Create a new, empty Git workspace in this machine's workspace folder and register it, so sessions, projects and workers can use it. Returns its path. Calling it again with the same name returns the existing workspace; a folder that already holds other content is refused.",
+			Name: "swarm_add_workspace", Title: "Add an existing folder as a workspace",
+			Description: "Register a folder that already holds the person's work (a git repository or any folder of files) so a project can include it. Ask the person which folders to add, and use the absolute path as the machine running Swarm sees it (Swarm in a container sees only its mounted folders). Empty folders, system and Swarm storage directories and folders inside an already registered workspace are refused. A folder that is already registered is returned as it is. Nothing in the folder is changed: no git init, no commit.",
+			InputSchema: controlMCPObject([]string{"path"}, map[string]any{
+				"path": controlMCPStringProp("Absolute path of an existing, non-empty folder.", 1, 4096),
+				"name": controlMCPStringProp("Display name; defaults to the folder name.", 0, 100),
+			}),
+			Annotations: controlMCPWrites, call: controlMCPAddWorkspace,
+		},
+		{
+			Name: "swarm_create_workspace", Title: "Create a new, empty project folder",
+			Description: "Create a brand-new, EMPTY git repository in this machine's workspace folder and register it. It holds none of the person's existing work: use it only when the person asked to start a new project from scratch. To work on existing code or documents, ask which folders to use and register them with swarm_add_workspace. Returns its path. Calling it again with the same name returns the existing workspace; a folder that already holds other content is refused.",
 			InputSchema: controlMCPObject([]string{"name"}, map[string]any{
 				"name": map[string]any{"type": "string", "pattern": controlMCPWorkspaceName.String(), "maxLength": 63, "description": "Folder name: lowercase letters, digits, dashes and underscores, e.g. social-bot."},
 			}),
@@ -574,18 +610,53 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_projects", Title: "List projects",
-			Description: "Projects group workspaces; workers run inside a project.",
+			Description: "Projects group workspaces; their orchestrator and workers run inside them. Each shows its workspaces (path and role) and context_status, the state of its project.md: pending or running while Swarm writes it, then ready or failed. Read a project.md with swarm_get_project.",
 			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListProjects,
 		},
 		{
 			Name: "swarm_create_project", Title: "Create a project",
-			Description: "Group one or more registered workspaces into a project so workers can be assigned tasks there.",
-			InputSchema: controlMCPObject([]string{"name", "workspace_paths"}, map[string]any{
-				"name":            controlMCPStringProp("", 1, 200),
-				"description":     controlMCPStringProp("", 0, 1000),
-				"workspace_paths": map[string]any{"type": "array", "minItems": 1, "maxItems": 10, "items": map[string]any{"type": "string", "maxLength": 4096}, "description": "From list_workspaces; the first is the primary code workspace."},
+			Description: "Group registered workspaces (swarm_add_workspace) into a project. Swarm then writes the project's project.md (purpose, architecture, what each workspace is for) from each workspace's AGENTS.md, README and file tree; the project's orchestrator works from it. Returns the project with context_generation.status pending or running: wait with swarm_get_project until it is ready before starting the orchestrator.",
+			InputSchema: controlMCPObject([]string{"name", "workspaces"}, map[string]any{
+				"name":        controlMCPStringProp("", 1, 200),
+				"description": controlMCPStringProp("What the project is and what the person wants from it.", 0, 1000),
+				"workspaces":  controlMCPProjectWorkspacesProp(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPCreateProject,
+		},
+		{
+			Name: "swarm_get_project", Title: "Read a project and its project.md",
+			Description: "A project's workspaces, its project.md (the orchestrator's working context) and context_generation (status pending, running, ready or failed, with the error when it failed). Pass wait_seconds to wait until project.md generation ends.",
+			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
+				"project_id":   controlMCPStringProp("From list_projects or create_project.", 1, 200),
+				"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until project.md generation is ready or failed. waited.timed_out means it is still running: call again. Default 0 (return at once)."},
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPGetProject,
+		},
+		{
+			Name: "swarm_update_project_context", Title: "Edit a project's project.md",
+			Description: "Replace a project's project.md with an edited version. Read it first with swarm_get_project and keep what is still true. Refused until project.md generation is ready.",
+			InputSchema: controlMCPObject([]string{"project_id", "project_md"}, map[string]any{
+				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
+				"project_md": controlMCPStringProp("The complete new project.md (Markdown).", 1, controlMCPMaxProjectContextChars),
+			}),
+			Annotations: controlMCPWrites, call: controlMCPUpdateProjectContext,
+		},
+		{
+			Name: "swarm_set_project_workspaces", Title: "Set a project's workspaces",
+			Description: "Replace a project's workspace list: send the full list, the current workspaces to keep plus any new ones (register new folders with swarm_add_workspace first). A workspace left out leaves the project; its folder is untouched. Refused until project.md generation is ready. project.md is not rewritten: update it with swarm_update_project_context when the sources changed.",
+			InputSchema: controlMCPObject([]string{"project_id", "workspaces"}, map[string]any{
+				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
+				"workspaces": controlMCPProjectWorkspacesProp(),
+			}),
+			Annotations: controlMCPWrites, call: controlMCPSetProjectWorkspaces,
+		},
+		{
+			Name: "swarm_retry_project_context", Title: "Generate a project's project.md again",
+			Description: "Start project.md generation again when swarm_get_project shows it failed (or still running more than five minutes after it started). Then wait with swarm_get_project.",
+			InputSchema: controlMCPObject([]string{"project_id"}, map[string]any{
+				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
+			}),
+			Annotations: controlMCPWrites, call: controlMCPRetryProjectContext,
 		},
 		{
 			Name: "swarm_list_tasks", Title: "List project tasks",
@@ -805,6 +876,47 @@ func controlMCPCreateWorkspace(c *controlMCPCall, args map[string]any) (any, err
 		return nil, controlMCPToolFailure("workspace %s was not registered", path)
 	}
 	return map[string]any{"workspace": summary(created), "created": true}, nil
+}
+
+// controlMCPAddWorkspace registers a folder the person named, through the same
+// context-folder registration the Desktop's project onboarding uses, asking
+// the workspace service for its existing-content checks (non-empty, outside
+// system/Swarm storage, not inside a registered workspace). The folder is
+// never initialised or committed.
+func controlMCPAddWorkspace(c *controlMCPCall, args map[string]any) (any, error) {
+	if err := c.requireTokenScope("sessions:write"); err != nil {
+		return nil, err
+	}
+	path := controlMCPString(args, "path")
+	if !filepath.IsAbs(path) {
+		return nil, controlMCPToolFailure("path must be an absolute folder path on the machine running Swarm")
+	}
+	path = filepath.Clean(path)
+	summary := func(entry map[string]any) map[string]any {
+		return controlMCPPick(entry, "path", "workspace_name", "workspace_id", "is_git_repo")
+	}
+	if existing, err := c.registeredWorkspace(path); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return map[string]any{"workspace": summary(existing), "added": false}, nil
+	}
+	body := map[string]any{"path": path, "context_only": true, "require_existing_content": true, "make_current": false}
+	if name := controlMCPString(args, "name"); name != "" {
+		body["name"] = name
+	}
+	response, err := c.dispatch(http.MethodPost, "/v1/workspace/add", nil, body)
+	if err != nil {
+		return nil, err
+	}
+	resolved, _ := controlMCPMap(response["workspace"])["resolved_path"].(string)
+	added, err := c.registeredWorkspace(resolved)
+	if err != nil {
+		return nil, err
+	}
+	if added == nil {
+		return nil, controlMCPToolFailure("folder %s was not registered", path)
+	}
+	return map[string]any{"workspace": summary(added), "added": true}, nil
 }
 
 func (c *controlMCPCall) registeredWorkspace(path string) (map[string]any, error) {
@@ -1209,7 +1321,7 @@ func (c *controlMCPCall) unregisteredWorkspace(err error, path string) error {
 	if entry, lookupErr := c.registeredWorkspace(path); lookupErr != nil || entry != nil {
 		return err
 	}
-	return controlMCPToolFailure("workspace_path %q is not a registered workspace on this machine; use a path from swarm_list_workspaces, or make one with swarm_create_workspace", path)
+	return controlMCPToolFailure("workspace_path %q is not a registered workspace on this machine; use a path from swarm_list_workspaces, or ask the person which existing folder holds this work and register it with swarm_add_workspace", path)
 }
 
 // currentState returns one coherent view after work was started: the start
@@ -1619,31 +1731,118 @@ func controlMCPListProjects(c *controlMCPCall, _ map[string]any) (any, error) {
 			continue
 		}
 		summary := controlMCPPick(project, "id", "name")
-		paths := []any{}
-		for _, ws := range controlMCPList(project["workspaces"]) {
-			if path, ok := controlMCPMap(ws)["path"]; ok {
-				paths = append(paths, path)
-			}
-		}
-		summary["workspaces"] = paths
+		summary["workspaces"] = controlMCPProjectWorkspaces(project)
+		summary["context_status"] = controlMCPContextStatus(project)
 		projects = append(projects, summary)
 	}
 	return map[string]any{"projects": projects}, nil
 }
 
+func controlMCPProjectWorkspaces(project map[string]any) []map[string]any {
+	workspaces := []map[string]any{}
+	for _, ws := range controlMCPList(project["workspaces"]) {
+		if entry := controlMCPMap(ws); entry != nil {
+			workspaces = append(workspaces, controlMCPPick(entry, "path", "role", "workspace_id"))
+		}
+	}
+	return workspaces
+}
+
+// controlMCPContextStatus is the project.md generation state; a project
+// without a generation record (created before generation existed) reads ready.
+func controlMCPContextStatus(project map[string]any) string {
+	generation := controlMCPMap(project["context_generation"])
+	if generation == nil {
+		return "ready"
+	}
+	status, _ := generation["status"].(string)
+	return status
+}
+
+// controlMCPProjectSummary is one project with its project.md (bounded) and
+// the generation state the orchestrator start waits on.
+func controlMCPProjectSummary(project map[string]any) map[string]any {
+	summary := controlMCPPick(project, "id", "name", "description")
+	summary["workspaces"] = controlMCPProjectWorkspaces(project)
+	generation := controlMCPPick(controlMCPMap(project["context_generation"]), "status", "attempt", "error", "router_alert")
+	generation["status"] = controlMCPContextStatus(project)
+	summary["context_generation"] = generation
+	if text, _ := project["project_context"].(string); text != "" {
+		summary["project_md"] = controlMCPTruncate(text, controlMCPMaxProjectContextChars)
+	}
+	return summary
+}
+
+// projectWorkspaceRefs resolves workspace items (path or workspace_id, role)
+// against the registered-workspace list, read once. Swarm re-authorizes every
+// reference; this only gives the model a precise error first.
+func (c *controlMCPCall) projectWorkspaceRefs(raw any) ([]map[string]any, error) {
+	items := controlMCPList(raw)
+	if len(items) == 0 || len(items) > controlMCPMaxProjectWorkspaces {
+		return nil, controlMCPToolFailure("workspaces must list 1 to %d registered workspaces", controlMCPMaxProjectWorkspaces)
+	}
+	response, err := c.dispatch(http.MethodGet, "/v1/workspace/list", url.Values{"limit": {"500"}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	registered := controlMCPList(response["workspaces"])
+	refs := make([]map[string]any, 0, len(items))
+	for i, rawItem := range items {
+		item := controlMCPMap(rawItem)
+		if item == nil {
+			return nil, controlMCPToolFailure("workspaces[%d] must be an object with path or workspace_id", i)
+		}
+		for key := range item {
+			if key != "path" && key != "workspace_id" && key != "role" {
+				return nil, controlMCPToolFailure("workspaces[%d] has unknown field %q", i, key)
+			}
+		}
+		path, id := controlMCPString(item, "path"), controlMCPString(item, "workspace_id")
+		if path == "" && id == "" {
+			return nil, controlMCPToolFailure("workspaces[%d] needs path or workspace_id", i)
+		}
+		if path != "" {
+			path = filepath.Clean(path)
+		}
+		var match map[string]any
+		for _, rawEntry := range registered {
+			entry := controlMCPMap(rawEntry)
+			if entry == nil {
+				continue
+			}
+			entryPath, _ := entry["path"].(string)
+			entryID, _ := entry["workspace_id"].(string)
+			if entryID != "" && (path == "" || entryPath == path) && (id == "" || entryID == id) {
+				match = entry
+				break
+			}
+		}
+		if match == nil {
+			target := path
+			if target == "" {
+				target = id
+			}
+			return nil, controlMCPToolFailure("no registered workspace %s (see swarm_list_workspaces; register an existing folder with swarm_add_workspace)", target)
+		}
+		role := controlMCPString(item, "role")
+		if role == "" {
+			role = "auxiliary"
+			if i == 0 {
+				role = "primary_code"
+			}
+		}
+		if !slices.Contains(controlMCPProjectWorkspaceRoles, role) {
+			return nil, controlMCPToolFailure("workspaces[%d] role must be one of %s", i, strings.Join(controlMCPProjectWorkspaceRoles, ", "))
+		}
+		refs = append(refs, map[string]any{"workspace_id": match["workspace_id"], "path": match["path"], "role": role})
+	}
+	return refs, nil
+}
+
 func controlMCPCreateProject(c *controlMCPCall, args map[string]any) (any, error) {
-	refs := []map[string]any{}
-	for i, raw := range controlMCPList(args["workspace_paths"]) {
-		path, _ := raw.(string)
-		id, err := c.workspaceID(strings.TrimSpace(path))
-		if err != nil {
-			return nil, err
-		}
-		role := "auxiliary"
-		if i == 0 {
-			role = "primary_code"
-		}
-		refs = append(refs, map[string]any{"workspace_id": id, "path": strings.TrimSpace(path), "role": role})
+	refs, err := c.projectWorkspaceRefs(args["workspaces"])
+	if err != nil {
+		return nil, err
 	}
 	body := map[string]any{"name": controlMCPString(args, "name"), "workspaces": refs, "client_request_id": controlMCPRequestID()}
 	if description := controlMCPString(args, "description"); description != "" {
@@ -1657,7 +1856,181 @@ func controlMCPCreateProject(c *controlMCPCall, args map[string]any) (any, error
 	if project == nil {
 		project = response
 	}
-	return map[string]any{"project": controlMCPPick(project, "id", "name")}, nil
+	return map[string]any{"project": controlMCPProjectSummary(project)}, nil
+}
+
+func (c *controlMCPCall) project(projectID string) (map[string]any, error) {
+	response, err := c.dispatch(http.MethodGet, "/v3/projects/"+projectID, nil, nil)
+	if err != nil {
+		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")
+	}
+	project := controlMCPMap(response["project"])
+	if project == nil {
+		return nil, controlMCPToolFailure("Swarm returned no project %s", projectID)
+	}
+	return project, nil
+}
+
+func controlMCPGetProject(c *controlMCPCall, args map[string]any) (any, error) {
+	projectID, err := controlMCPID(args, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	project, waited, err := c.waitForProjectContext(projectID, controlMCPInt(args, "wait_seconds", 0))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"project": controlMCPProjectSummary(project)}
+	if waited != nil {
+		out["waited"] = waited
+	}
+	return out, nil
+}
+
+// waitForProjectContext returns the project once its project.md generation is
+// no longer pending or running, or at the deadline. Like waitForSession it
+// wakes on committed realtime outbox records (project updates publish there,
+// carrying project_id), never a timer poll, and re-reads through dispatch.
+func (c *controlMCPCall) waitForProjectContext(projectID string, seconds int) (map[string]any, map[string]any, error) {
+	project, err := c.project(projectID)
+	if err != nil || seconds <= 0 {
+		return project, nil, err
+	}
+	if seconds > controlMCPMaxWaitSeconds {
+		seconds = controlMCPMaxWaitSeconds
+	}
+	generating := func(project map[string]any) bool {
+		status := controlMCPContextStatus(project)
+		return status == "pending" || status == "running"
+	}
+	if !generating(project) {
+		return project, map[string]any{"settled": true}, nil
+	}
+	var hub *v3RealtimeOutboxHub
+	if c.server != nil {
+		hub = c.server.v3RealtimeOutbox
+	}
+	sub := hub.subscribe()
+	if sub == nil {
+		return project, map[string]any{"settled": false}, nil
+	}
+	defer hub.unsubscribe(sub)
+	// Re-read once after subscribing so a change committed in between is seen.
+	if project, err = c.project(projectID); err != nil || !generating(project) {
+		return project, map[string]any{"settled": err == nil}, err
+	}
+	timer := time.NewTimer(time.Duration(seconds) * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case record := <-sub.send:
+			var payload struct {
+				ProjectID string `json:"project_id"`
+			}
+			if json.Unmarshal(record.Event.Payload, &payload) != nil || payload.ProjectID != projectID {
+				continue
+			}
+			if project, err = c.project(projectID); err != nil || !generating(project) {
+				return project, map[string]any{"settled": err == nil}, err
+			}
+		case <-sub.slow:
+			project, err = c.project(projectID)
+			return project, map[string]any{"settled": err == nil && !generating(project)}, err
+		case <-timer.C:
+			return project, map[string]any{"settled": false, "timed_out": true, "waited_seconds": seconds}, nil
+		case <-c.request.Context().Done():
+			return project, map[string]any{"settled": false}, nil
+		}
+	}
+}
+
+// readyProject reads a project whose inputs may change: Swarm refuses edits
+// to workspaces and project.md until generation is ready, and this says what
+// to do instead of passing on a bare refusal.
+func (c *controlMCPCall) readyProject(projectID string) error {
+	project, err := c.project(projectID)
+	if err != nil {
+		return err
+	}
+	return controlMCPContextNotReady(projectID, controlMCPContextStatus(project))
+}
+
+func controlMCPContextNotReady(projectID, status string) error {
+	switch status {
+	case "ready":
+		return nil
+	case "failed":
+		return controlMCPToolFailure("project %s: project.md generation failed, so its workspaces and project.md cannot change yet; start it again with swarm_retry_project_context, wait with swarm_get_project until ready, then retry", projectID)
+	default:
+		return controlMCPToolFailure("project %s: project.md is still being generated (%s), so its workspaces and project.md cannot change yet; wait with swarm_get_project (wait_seconds) until context_generation.status is ready, then retry", projectID, status)
+	}
+}
+
+// patchProject sends one fixed-field project PATCH; a refusal because
+// generation is not ready (a race with the pre-read) gets the same guidance.
+func (c *controlMCPCall) patchProject(projectID string, body map[string]any) (any, error) {
+	response, err := c.dispatch(http.MethodPatch, "/v3/projects/"+projectID, nil, body)
+	if err != nil {
+		if strings.Contains(err.Error(), "finish or retry project context") {
+			return nil, controlMCPContextNotReady(projectID, "not ready")
+		}
+		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")
+	}
+	return map[string]any{"project": controlMCPProjectSummary(controlMCPMap(response["project"]))}, nil
+}
+
+func controlMCPUpdateProjectContext(c *controlMCPCall, args map[string]any) (any, error) {
+	projectID, err := controlMCPID(args, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	text, _ := args["project_md"].(string)
+	if strings.TrimSpace(text) == "" {
+		return nil, controlMCPToolFailure("project_md must not be empty")
+	}
+	if err := c.readyProject(projectID); err != nil {
+		return nil, err
+	}
+	return c.patchProject(projectID, map[string]any{"project_context": text})
+}
+
+func controlMCPSetProjectWorkspaces(c *controlMCPCall, args map[string]any) (any, error) {
+	projectID, err := controlMCPID(args, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	if err := c.readyProject(projectID); err != nil {
+		return nil, err
+	}
+	refs, err := c.projectWorkspaceRefs(args["workspaces"])
+	if err != nil {
+		return nil, err
+	}
+	return c.patchProject(projectID, map[string]any{"workspaces": refs})
+}
+
+func controlMCPRetryProjectContext(c *controlMCPCall, args map[string]any) (any, error) {
+	projectID, err := controlMCPID(args, "project_id")
+	if err != nil {
+		return nil, err
+	}
+	project, err := c.project(projectID)
+	if err != nil {
+		return nil, err
+	}
+	if status := controlMCPContextStatus(project); status == "ready" {
+		return nil, controlMCPToolFailure("project %s: project.md is already ready; edit it with swarm_update_project_context", projectID)
+	}
+	attempt, _ := controlMCPMap(project["context_generation"])["attempt"].(float64)
+	response, err := c.dispatch(http.MethodPost, "/v3/projects/"+projectID+"/context:retry", nil, map[string]any{"expected_attempt": int(attempt)})
+	if err != nil {
+		var toolErr controlMCPToolError
+		if errors.As(err, &toolErr) && toolErr.status == http.StatusConflict {
+			return nil, controlMCPToolFailure("project %s: project.md generation is still running or changed meanwhile; check it with swarm_get_project", projectID)
+		}
+		return nil, err
+	}
+	return map[string]any{"project": controlMCPProjectSummary(controlMCPMap(response["project"]))}, nil
 }
 
 // ---- tasks ---------------------------------------------------------------
