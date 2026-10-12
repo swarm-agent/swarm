@@ -69,7 +69,7 @@ def inspect(raw, version, source):
     require(labels['org.opencontainers.image.revision'] == source and labels['org.opencontainers.image.version'] == version, 'image source/version mismatch')
     require(labels['org.opencontainers.image.source'] == 'https://github.com/swarm-agent/swarm', 'image repository mismatch')
     require(config['config'].get('User') == '10001:10001', 'non-root image required')
-    require(config['config'].get('Entrypoint') == ['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project'], 'headless entrypoint required')
+    require(config['config'].get('Entrypoint') == ['/usr/local/bin/swarmd', '--desktop-port=0', '--cwd=/project', '--lock-permission-policy'], 'headless entrypoint required')
     require(manifest['layers'], 'image layers required')
     for layer in manifest['layers']:
         blob(layer, {'application/vnd.oci.image.layer.v1.tar+gzip', 'application/vnd.oci.image.layer.v1.tar'})

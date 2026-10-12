@@ -33,7 +33,11 @@ LABEL org.opencontainers.image.source="https://github.com/swarm-agent/swarm" \
       org.opencontainers.image.revision="${COMMIT}"
 # Refresh inherited packages as well as newly installed dependencies.
 # Ubuntu LTS supplies maintained security backports for the glibc runtime.
+# The Ubuntu base image ships a loose /usr/bin/pebble (no package owns it, so
+# upgrades never patch it); Swarm does not use it and its Go stdlib CVEs fail
+# the release image scan.
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && \
+    rm -f /usr/bin/pebble && test ! -e /usr/bin/pebble && \
     apt-get install -y --no-install-recommends \
       ca-certificates git bash libc-bin libgcc-s1 libstdc++6 libpcre2-8-0 && \
     rm -rf /var/lib/apt/lists/* && \
