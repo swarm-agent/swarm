@@ -183,7 +183,7 @@ start_daemon() {
     "${BIN}" --listen "127.0.0.1:${API_PORT}" --desktop-port "${DESKTOP_PORT}" --data-dir "${DATA_DIR}/swarm" --db-path "${DB_PATH}" --lock-path "${RUNTIME_DIR}/swarmd.lock" \
     >"${DAEMON_LOG}.current" 2>&1 &
   DAEMON_PID="$!"
-  for _ in $(seq 1 150); do
+  for _ in $(seq 1 600); do  # 60 s: CI machines run this beside full builds
     if curl -fsS "${API_URL}/readyz" >/dev/null 2>&1; then
       cat "${DAEMON_LOG}.current" >>"${DAEMON_LOG}" 2>/dev/null || true
       return 0
