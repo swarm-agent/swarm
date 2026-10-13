@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -137,9 +138,14 @@ func (e *Exporter) Run(ctx context.Context) {
 			e.mu.Lock()
 			e.failures++
 			wait = min(time.Duration(1<<min(e.failures, 8))*5*time.Second, maxBackoff)
-			e.status.LastError, e.status.LastErrorAt, e.status.Failing = err.Error(), e.now().UnixMilli(), true
+			waiting := errors.Is(err, ErrNotReady)
+			if !waiting {
+				e.status.LastError, e.status.LastErrorAt, e.status.Failing = err.Error(), e.now().UnixMilli(), true
+			}
 			e.mu.Unlock()
-			log.Printf("swarmd outbox: %v", err)
+			if !waiting {
+				log.Printf("swarmd outbox: %v", err)
+			}
 		}
 		timer := time.NewTimer(wait)
 		select {
@@ -333,3 +339,12 @@ func truncate(text string, limit int) string {
 	}
 	return text[:limit]
 }
+
+// NewBuilder is a Builder for machine outside an exporter (tests, tools).
+func NewBuilder(machine string, maxFileBytes int64) *Builder {
+	return &Builder{MaxFileBytes: maxFileBytes, Machine: machine, key: func(path string) string { return "machines/" + machine + "/" + path }}
+}
+
+// ErrNotReady is a result that is not settled yet: retried with backoff
+// like a failure, but not reported as one.
+var ErrNotReady = errors.New("the job's result is not settled yet")
