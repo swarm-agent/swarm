@@ -158,7 +158,7 @@ func (s *Server) OutboxResultBuilder() outbox.ResultBuilder {
 					continue
 				}
 				paths = append(paths, name)
-				if outbox.MediaType(name) == "" || strings.HasPrefix(status, "D") || status == "untracked" {
+				if outbox.MediaType(name) == "" || status == "deleted" || strings.HasPrefix(status, "D") || status == "untracked" {
 					continue
 				}
 				blob, err := b.File(ctx, repo, head, name)
