@@ -4,7 +4,8 @@ These packages guide setup and delegation to your own Swarm. They do not
 launch one CLI per worker, start another daemon, publish a listener, or require
 a relay. The setup skill guides installation only when Swarm is actually absent.
 
-The local Codex adapter requires Node 22+ on the client computer. Choose native
+The plugin's Node adapter (local Codex, and Claude with a saved connection)
+requires Node 22+ on the client computer. Choose native
 Swarm, an existing Docker container, or an HTTPS Swarm endpoint on your tailnet.
 Run setup and follow
 `skills/setup/references/connection.md`. An AI key stays in a private file outside
@@ -39,7 +40,7 @@ old for AI connections instead of starting it.
 | --- | --- |
 | Local Codex | `swarm` skills plus Node stdio adapter; native, Docker or tailnet mode |
 | ChatGPT Work/dot with private remote Swarm | `swarm-setup` skills plus a separately added per-user OpenAI tunnel MCP connection |
-| Claude Code/Desktop local MCP | Claude manifest/shell wrapper or native stdio configuration |
+| Claude Code/Desktop local MCP | Claude manifest/shell wrapper; native, Docker or tailnet mode (a saved connection goes through the Node adapter) |
 | Claude.ai | Its remote HTTPS connector; OpenAI tunnel IDs do not apply |
 
 The setup skill routes to [ChatGPT private tunnels](skills/setup/references/chatgpt-tunnel.md),

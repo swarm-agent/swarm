@@ -13,9 +13,16 @@ This route is OpenAI-specific; it is not Claude.ai connector configuration.
 ## Claude clients
 
 Claude Code's `.mcp.json` launches this plugin's `bin/swarm-mcp` shell wrapper.
-It accepts `SWARM_MCP_BIN` and `SWARM_MCP_SOCKET` for native mode, or
-`SWARM_MCP_CONTAINER` for `docker exec -i ... swarmctl mcp`. It does not consume
-the OpenAI Node adapter's connection.json. Claude Desktop local MCP can use
+With a saved connection (`connection.json`, written by `bin/connect.mjs` as in
+[connection.md](connection.md)) it starts the Node adapter, which serves that
+connection: a Swarm's HTTPS `/mcp` endpoint on the tailnet (keyless by the
+`swarmagent.dev/cap/swarm` grant, or with a private key file), Docker or a
+chosen binary. This is how Claude on another computer reaches a remote Swarm;
+it needs Node 22+ there. A named `SWARM_MCP_CONFIG` that does not exist is an
+error, not a fallback to a local Swarm. Without a saved connection it uses this
+machine's Swarm: `SWARM_MCP_BIN` and `SWARM_MCP_SOCKET` for native mode, or
+`SWARM_MCP_CONTAINER` for `docker exec -i ... swarmctl mcp` (these environment
+overrides win over a saved connection). Claude Desktop local MCP can use
 the direct Docker command in [local-deployment.md](local-deployment.md).
 Local MCP access does not make a server reachable from Claude.ai.
 

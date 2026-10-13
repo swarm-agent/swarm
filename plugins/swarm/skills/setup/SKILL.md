@@ -44,6 +44,10 @@ Add `--tailnet` only if the person wants to reach Swarm from other devices
   `~/.config/swarm/ai-key` and connects to `http://127.0.0.1:7783/mcp` (it
   needs Node 22+). Restart or reconnect the plugin's MCP server after the
   install.
+- **Claude Code with this plugin, Swarm on another tailnet machine:** from the
+  plugin folder, `node bin/connect.mjs http https://SWARM-HOST.YOUR-TAILNET.ts.net:8444/mcp`
+  once (see [connection modes](references/connection.md)), then reconnect the
+  plugin's MCP server. Keyless with the tailnet grant; needs Node 22+.
 - **Claude Code, tools only:**
   `claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp --header "Authorization: Bearer $(cat ~/.config/swarm/ai-key)"`
 - **Codex:** the line the installer printed (it reads the key from an
