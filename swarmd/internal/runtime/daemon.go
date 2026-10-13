@@ -45,6 +45,7 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
+	"swarm/packages/swarmd/internal/outbox"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/anthropic"
 	"swarm/packages/swarmd/internal/provider/claudecode"
@@ -172,6 +173,7 @@ type Daemon struct {
 	longSessionDiagnostics    *longsessiondiag.Recorder
 	remoteTransport           *remote.Service
 	signalForwarder           *signals.Forwarder
+	resultOutbox              *outbox.Exporter
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -738,6 +740,22 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSignalSinkStore(signalSinks)
 	// Forwards the signal feed to owner-configured sinks; idle until one exists.
 	signalForwarder := signals.NewForwarder(signalStore, signalSinks, func() string { return startupSwarmName(cfg.ConfigPath) })
+	// Exports the feed and finished jobs' results to the owner's storage when
+	// SWARM_OUTBOX_URL is set (docs/checkpoints/outbox.md); off otherwise.
+	var resultOutbox *outbox.Exporter
+	if outboxCfg, on, err := outbox.ConfigFromEnv(os.Getenv, startupSwarmName(cfg.ConfigPath)); err != nil {
+		log.Printf("warning: outbox: %v", err)
+		apiServer.SetOutboxStatus(func() outbox.Status { return outbox.Status{LastError: err.Error(), Failing: true} })
+	} else if on {
+		if dest, err := outboxCfg.Open(); err != nil {
+			log.Printf("warning: outbox: %v", err)
+			apiServer.SetOutboxStatus(func() outbox.Status { return outbox.Status{LastError: err.Error(), Failing: true} })
+		} else {
+			resultOutbox = outbox.NewExporter(outboxCfg, dest, signalStore, store, apiServer.OutboxAccount, apiServer.OutboxResultBuilder())
+			apiServer.SetOutboxStatus(resultOutbox.Status)
+			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
+		}
+	}
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
@@ -907,6 +925,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		localTransportRuntimeName: localTransportRuntimeName,
 		remoteTransport:           remoteSvc,
 		signalForwarder:           signalForwarder,
+		resultOutbox:              resultOutbox,
 	}
 	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -1285,6 +1304,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.signalForwarder != nil && d.bgCtx != nil {
 		go d.signalForwarder.Run(d.bgCtx)
+	}
+	if d.resultOutbox != nil && d.bgCtx != nil {
+		go d.resultOutbox.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

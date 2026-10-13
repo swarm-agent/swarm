@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Workers and jobs: the default way an outside AI (the person's own Claude,
@@ -784,7 +787,37 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 	result := controlMCPMap(out)
 	delete(result, "task")
 	result["job_id"] = controlMCPJobID(kind, a, b)
+	c.signalDelivered(kind, a, b, refs, controlMCPMap(result["integration"]))
 	return result, nil
+}
+
+// signalDelivered records job.delivered in the machine's feed, so monitors
+// and the outbox see that a result was merged, where and at which head.
+func (c *controlMCPCall) signalDelivered(kind, a, b string, refs controlMCPJobRefs, integration map[string]any) {
+	if c.server == nil || c.server.signals == nil {
+		return
+	}
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok {
+		return
+	}
+	sigRefs := map[string]string{"project_id": refs.projectID, "task_id": refs.taskID}
+	if kind == controlMCPJobWorker {
+		sigRefs["worker_id"], sigRefs["run_id"] = a, b
+	}
+	attrs := map[string]string{"job_id": controlMCPJobID(kind, a, b)}
+	for _, key := range []string{"target_branch", "resulting_target_head", "state"} {
+		if value, _ := integration[key].(string); value != "" {
+			attrs[key] = value
+		}
+	}
+	if _, err := c.server.signals.Append(pebblestore.Signal{
+		Kind: "job.delivered", Severity: pebblestore.SignalSeverityInfo, Source: pebblestore.SignalSourceSwarmd,
+		Account: principal.AccountScopeID, Summary: "Job merged into its folder", DedupKey: "job.delivered:" + b,
+		Refs: sigRefs, Attrs: attrs,
+	}); err != nil {
+		log.Printf("swarmd signal job.delivered not recorded: %v", err)
+	}
 }
 
 func controlMCPStopJob(c *controlMCPCall, args map[string]any) (any, error) {

@@ -165,6 +165,11 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	exportState, hasOutbox := s.outboxState()
+	if hasOutbox && exportState.Failing {
+		raise(BoxStatusAttention, "the outbox cannot export: "+exportState.LastError)
+	}
+
 	if reasons == nil {
 		reasons = []string{}
 	}
@@ -181,5 +186,6 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		"workers":         workers,
 		"usage":           usage,
 		"signals":         signalFeed,
+		"outbox":          exportState,
 	})
 }

@@ -43,6 +43,7 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
+	"swarm/packages/swarmd/internal/outbox"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -134,6 +135,7 @@ type Server struct {
 	envBuildMu                  sync.Mutex
 	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore
+	outboxStatus                func() outbox.Status
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
