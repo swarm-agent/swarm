@@ -52,7 +52,9 @@ func (m *Manager) sandboxImage(root string) (EnvironmentImage, string, error) {
 			return EnvironmentImage{}, "", fmt.Errorf("read the folder's environment: %w", err)
 		}
 		if ok && env.Image != "" {
-			return env, "env:" + env.Image, nil
+			// "env2": environment sandboxes set their own entrypoint (runArgsImage);
+			// the new identity replaces containers made before that.
+			return env, "env2:" + env.Image, nil
 		}
 	}
 	return EnvironmentImage{Image: m.cfg.Image, Path: sandboxPath}, defaultID, nil

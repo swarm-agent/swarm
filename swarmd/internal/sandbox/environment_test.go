@@ -44,7 +44,7 @@ func TestEnvironmentChangesOnlyImageAndPath(t *testing.T) {
 	m.SetEnvironmentResolver(fakeResolver{root: "/srv/p", img: env})
 
 	img, id, err := m.sandboxImage("/srv/p")
-	if err != nil || img != env || id != "env:swarm-env:abc" {
+	if err != nil || img != env || id != "env2:swarm-env:abc" {
 		t.Fatalf("folder image = %+v %q %v", img, id, err)
 	}
 	other, otherID, err := m.sandboxImage("/srv/q")
@@ -62,7 +62,7 @@ func TestEnvironmentChangesOnlyImageAndPath(t *testing.T) {
 			t.Errorf("environment run args missing %q:\n%s", want, args)
 		}
 	}
-	if !strings.HasSuffix(args, " swarm-env:abc sleep infinity") {
+	if !strings.HasSuffix(args, " --entrypoint sleep swarm-env:abc infinity") {
 		t.Errorf("environment image not used: %s", args)
 	}
 	for _, forbidden := range []string{"--privileged", "--cap-add", "docker.sock", "--network host", DefaultImage} {

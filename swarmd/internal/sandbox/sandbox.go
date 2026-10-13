@@ -607,6 +607,13 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 			args = append(args, "--mount", "type=bind,src="+f.HostPath+",dst="+f.Dest+",readonly")
 		}
 	}
+	if image.Image != m.cfg.Image {
+		// An environment image may carry any entrypoint (the base image's, or
+		// the build container's sleep, which docker commit keeps): run sleep
+		// directly so the sandbox stays up whatever the image declares.
+		args = append(args, "--entrypoint", "sleep", image.Image, "infinity")
+		return args
+	}
 	args = append(args, image.Image, "sleep", "infinity")
 	return args
 }
