@@ -168,7 +168,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 			}
 			agent = "video"
 			tier = "direct"
-			if opts.VideoType == "single" || opts.ScenesCount == 1 {
+			if !videoRequestIsStory(opts) {
 				outcomeType = "video_clip"
 			} else {
 				outcomeType = "video_story"
@@ -225,7 +225,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 		case "video":
 			agent = "video"
 			tier = "direct"
-			if opts.VideoType == "single" || opts.ScenesCount == 1 {
+			if !videoRequestIsStory(opts) {
 				outcomeType = "video_clip"
 			} else {
 				outcomeType = "video_story"
@@ -375,7 +375,7 @@ func RouteAndPlanProjectTaskWithOptions(opts TaskPlanOptions) (TaskRouteResult, 
 		if aspectRatio == "" {
 			aspectRatio = "16:9"
 		}
-		if opts.VideoType == "single" || opts.ScenesCount == 1 {
+		if !videoRequestIsStory(opts) {
 			outcomeType = "video_clip"
 			stages = []string{"Video Parameter Configuration", "Model Generative Synthesis"}
 			deliverables = []ProjectTaskDeliverable{
@@ -616,4 +616,11 @@ func ValidateImagePrompts(prompts []string, count int) error {
 		}
 	}
 	return nil
+}
+
+// videoRequestIsStory reports whether a video request asked for several
+// scenes: a story or multipart video, or more than one scene. Anything else is
+// one clip, so a plain request never pays for scenes nobody asked for.
+func videoRequestIsStory(opts TaskPlanOptions) bool {
+	return opts.VideoType == "story" || opts.VideoType == "multipart" || opts.ScenesCount > 1
 }
