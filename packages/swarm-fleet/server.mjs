@@ -161,7 +161,7 @@ export function accessLevel(names) {
   if (!names) return 'none';
   // A machine lists its default tools unless asked for all of them, so the
   // worker and job tools count as much as the advanced ones.
-  if (names.includes('swarm_set_agent_model') || names.includes('swarm_create_worker') || names.includes('swarm_manage_worker')) return 'full control';
+  if (names.includes('swarm_request_provider_key') || names.includes('swarm_create_worker') || names.includes('swarm_manage_worker')) return 'full control';
   if (names.includes('swarm_resolve_permission')) return 'read, write and approve';
   return names.includes('swarm_start_session') || names.includes('swarm_give_job') ? 'read and write' : 'read only';
 }
@@ -414,7 +414,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
         if (!want) continue;
         const entry = { machine: machine.name, role, ok: false };
         if (!tools.has(machine.name)) { applied.push({ ...entry, error: errors.get(machine.name) || 'not reached' }); continue; }
-        if (access(machine.name) !== 'full control') { applied.push({ ...entry, error: 'no manage access on this machine (a tailnet grant cannot set models; give it a full AI key in SWARM_FLEET)' }); continue; }
+        if (access(machine.name) === 'read only') { applied.push({ ...entry, error: 'read-only access on this machine: setting models needs a write or full AI key in SWARM_FLEET' }); continue; }
         try {
           const body = await callOn(machine, 'swarm_set_agent_model', { role: FLEET_ROLES[role], provider: want.provider, model: want.model, ...(want.thinking ? { thinking: want.thinking } : {}) });
           if (body?.error) applied.push({ ...entry, error: String(body.error.message || 'error').slice(0, 200) });

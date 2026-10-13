@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Install Swarm (a box the person deploys AI workers to) on their Linux machine, connect their AI to it locally, get a model provider ready, register their folders, and prove a first job. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help with Tailscale or a relay only if they want to reach Swarm from other machines.
+description: Install Swarm (a box the person deploys AI workers to) on their Linux machine, connect their AI to it locally, get a model provider ready, create a project with their folders, and prove a first job. Use when the person asks to set up Swarm, connect their existing Swarm, or get started with the plugin. Help with Tailscale or a relay only if they want to reach Swarm from other machines.
 ---
 
 # Set up Swarm
@@ -55,42 +55,46 @@ and [remote access](references/remote.md).
 
 ## 4. A model provider
 
-`swarm_list_providers` shows which providers are ready. If none is, the person
-adds a key in one of two ways; never ask for a key in chat, and if one is
-pasted, tell them to revoke it:
+`swarm_list_providers` shows which providers are ready. If none is, the
+person adds a key in one of two ways; never ask for a key in chat, and if one
+is pasted, tell them to revoke it:
 
 - the setup page: `http://127.0.0.1:8443` on the machine (on a server, the
   installer printed the `ssh -L` line to open it from their computer);
 - by script on the machine: `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
 
-Workers use Swarm's recommended model for each role on the connected
-providers. Do not change models unless the person asks.
+Call `swarm_list_providers` again to confirm it is ready. Swarm then gives
+every role its recommended model: `swarm_list_models` shows what the coder,
+designer and finder workers will use. Do not change models unless the person
+asks (`swarm_set_agent_model` does it, per role).
 
-## 5. Their folders
+## 5. Their project
 
 Ask: "Which folders is your work in?" — existing folders or git repositories,
-possibly several. Register each with `swarm_add_workspace`.
+possibly several. Create a project with `swarm_create_project`: a name and
+those folders. Swarm registers each folder in place and writes the project's
+`project.md` from them.
 
 - `workspace_not_found`: the path is wrong; check it with the person.
 - `workspace_not_visible`: Swarm (its own user) cannot see inside a home
   folder and never changes its host itself. Run, as root on that machine,
   `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh workspace add PATH`
-  (the command the error names), then add the folder again.
+  (the command the error names), then create the project again.
 
 Use `swarm_create_workspace` (a new, empty repository; advanced tools) only
 when the person asks to start a new project from scratch.
 
 ## 6. Prove a first job
 
-Use the person's real task, or agree on a small one in their folder. Follow
+Use the person's real task, or agree on a small one in their project. Follow
 the `using-swarm` skill: `swarm_give_job` (coder, designer or finder; the
-folder; a brief with acceptance criteria), `swarm_get_job` with
+project and folder; a brief with acceptance criteria), `swarm_get_job` with
 `wait_seconds` until it settles, check the result yourself (diff, files,
 tests), then `swarm_deliver_job` if the person wants it merged. A timeout
 means it is still working: wait again, never start a duplicate.
 
-End with what runs where, which folders are registered, what the job did,
-what it cost, and what you verified.
+End with what runs where, which project and folders are set up, which models
+the workers use, what the job did, what it cost, and what you verified.
 
 ## Secrets
 

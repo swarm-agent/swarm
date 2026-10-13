@@ -22,8 +22,9 @@ unsupported protocol versions are rejected.
 ## Default tools: workers and jobs
 
 By default `tools/list` shows only the worker and job tools, and the server
-instructions tell that story: register the person's folders, give the coder,
-designer or finder a job, wait, read the result, answer questions, merge.
+instructions tell that story: a model provider (the person adds the key), a
+project with the person's folders, then a job for the coder, designer or
+finder, wait, read the result, follow up, answer questions, merge.
 Every other tool below stays callable by name and is listed when the client
 asks for all tools (`/mcp?tools=all`, `swarm mcp --all-tools`). The default set
 is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
@@ -35,17 +36,20 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | `swarm_activity` (`after` cursor, `limit`, `min_severity`) | `swarm:read` | `GET /v3/signals` (requires `signals:read`); worker signals carry a `job_id` |
 | `swarm_list_workers` (`include_jobs`) | `swarm:read` | `GET /v3/workers` (`POST /v3/workers:ensure-presets` when a preset is missing), `GET …/runs` |
 | `swarm_deploy_worker` (preset, or name, role and instructions) | `swarm:write` | `POST /v3/workers:ensure-presets`, or `POST /v3/workers` then `…/activate` with no folder binding |
-| `swarm_give_job` (worker, brief, workspace, files, `wait_seconds`) | `swarm:write` | `GET /v1/workspace/list`, `GET /v3/projects` (`POST /v3/projects` when the folder has no project), `POST /v3/workers/{id}/direct` with `workspace_path`; returns `job_id` `worker/<worker>/<run>` |
-| `swarm_get_job` (`wait_seconds`, `include_diff`) | `swarm:read` | `GET …/runs/{rid}`, the run's session (pending questions) and project task; when settled, the `swarm_task_result` view (branch, commits, files, report, cost, diff) |
+| `swarm_give_job` (worker, brief, project, workspace, files, `wait_seconds`) | `swarm:write` | `GET /v3/projects` (the project and one of its folders; refused when there is no project), `POST /v3/workers/{id}/direct` with `workspace_path` and `input.project_id` (Swarm picks that project when the folder is in several); returns `job_id` `worker/<worker>/<run>` |
+| `swarm_get_job` (`wait_seconds`, `include_diff`, `include_transcript`) | `swarm:read` | `GET …/runs/{rid}`, the run's session (pending questions, an active follow-up run) and project task; when settled, the `swarm_task_result` view (branch, commits, files, report, cost, diff); `project_id`, `session_id`; the transcript is the session's latest messages |
+| `swarm_message_job` (message, `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages` in the job's session (a follow-up on the same branch after its current run); refused while a question is open |
 | `swarm_answer_job` | `swarm:write` | `POST /v3/sessions/{id}/permissions/{pid}/resolve` for an open `ask_user` question only, never a tool-call approval |
 | `swarm_deliver_job` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` (a local git merge) |
 | `swarm_stop_job` | `swarm:write` | `POST /v3/workers/{id}/runs/{rid}/cancel` (or `…/run/stop` for a media job) |
-| `swarm_schedule_job` (worker, brief, schedule, workspace) | `swarm:write` | `POST /v3/workers` with the schedule, `…/activate` bound to the folder, `…/automations/{aid}/enable` |
-| `swarm_request_media` (image, video, sound) | `swarm:write` | `POST /v3/projects/{pid}/tasks` (as `swarm_run_task`); returns `job_id` `media/<project>/<task>` |
+| `swarm_schedule_job` (worker, brief, schedule, project, workspace) | `swarm:write` | `POST /v3/workers` with the schedule, `…/activate` bound to the folder, `…/automations/{aid}/enable` |
+| `swarm_request_media` (image, video, sound, project) | `swarm:write` | `POST /v3/projects/{pid}/tasks` (as `swarm_run_task`); returns `job_id` `media/<project>/<task>` |
 | `swarm_list_secrets` | `swarm:read` | `GET /v3/secrets/status` (requires `secrets:read`): names, allowed websites, whether a value is set, unexpired folder grants; never values |
 
-`swarm_list_workspaces`, `swarm_add_workspace`, `swarm_manage_worker`,
-`swarm_list_providers` and `swarm_get_usage` (below) complete the default list.
+`swarm_list_providers`, `swarm_request_provider_key` (full keys only), `swarm_list_models`,
+`swarm_set_agent_model`, `swarm_get_usage`, `swarm_list_projects`, `swarm_create_project`
+(registers new folders in place), `swarm_get_project`, `swarm_set_project_workspaces` and
+`swarm_manage_worker` (below) complete the default list.
 
 ## All tools
 
@@ -58,7 +62,7 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | `swarm_send_message` (+ `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages`; returns `started` plus the current session state |
 | `swarm_list_models` | `swarm:read` | `GET /v1/providers`, `GET /v1/model/catalog`, `GET /v1/agent-model-settings` (tool requires `sessions:read`) |
 | `swarm_set_session_model` | `swarm:write` | `PUT /v3/sessions/{id}/model-profile` (session-owned selection, validated against the catalog) |
-| `swarm_set_agent_model` | `swarm:manage` | `PATCH /v1/agent-model-settings`, one role (tool requires `settings:write`) |
+| `swarm_set_agent_model` | `swarm:write` | `PATCH /v1/agent-model-settings`, one role (tool requires `settings:write`) |
 | `swarm_set_media_models` | `swarm:manage` | `POST /v1/ui/settings` (tools.image/video/audio default models, media transcription model; requires `settings:write`) |
 | `swarm_run_plan` | `swarm:write` | `POST …/plans` (active), `POST …/plan-mode/plans/{pid}/start-automatic` |
 | `swarm_stop_run` | `swarm:write` | `POST …/run/stop`, then waits up to 10 s and reports the run's final status (`finished`, `failed`, `stopped` or `stopping`), the plan's state (a stopped plan is `paused`: it keeps progress and resumes only with a new message) and a summary |
@@ -66,9 +70,9 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | `swarm_add_workspace` | `swarm:write` | `POST /v1/workspace/add` with `context_only` and `require_existing_content` (an existing, non-empty folder outside system/Swarm storage and outside registered workspaces; nothing initialised or committed; an already registered path is returned) (tool requires `sessions:write`) |
 | `swarm_create_workspace` | `swarm:write` | `POST /v1/workspace/repository/setup` then `POST /v1/workspace/add`: a new, empty repository under the daemon's workspace folder, only for a project started from scratch (tool requires `sessions:write`) |
 | `swarm_list_projects` | `swarm:read` | `GET /v3/projects` (workspaces with roles and `context_status`) |
-| `swarm_create_project` | `swarm:manage` | `POST /v3/projects` with registered workspaces (by path or id; role `primary_code`, `auxiliary` or `docs`); Swarm then generates `project.md` |
+| `swarm_create_project` | `swarm:write` | `POST /v1/workspace/add` for each new folder (as `swarm_add_workspace`), then `POST /v3/projects` with the folders (by path or id; role `primary_code`, `auxiliary` or `docs`); Swarm then generates `project.md` |
 | `swarm_get_project` (+ `wait_seconds`) | `swarm:read` | `GET /v3/projects/{pid}`: workspaces, `project.md` and `context_generation`; the wait is woken by committed project updates on the realtime outbox until generation is `ready` or `failed` |
-| `swarm_update_project_context`, `swarm_set_project_workspaces` | `swarm:manage` | `PATCH /v3/projects/{pid}` with only `project_context` or only the full `workspaces` list; refused (with the next step) until generation is `ready` |
+| `swarm_update_project_context` (`swarm:manage`), `swarm_set_project_workspaces` (`swarm:write`, registers new folders) | | `PATCH /v3/projects/{pid}` with only `project_context` or only the full `workspaces` list; refused (with the next step) until generation is `ready` |
 | `swarm_retry_project_context` | `swarm:manage` | `POST /v3/projects/{pid}/context:retry` with the current attempt |
 | `swarm_list_tasks` | `swarm:read` | `GET /v3/projects/{pid}/tasks` (orchestrator tasks and worker runs, with branches and review state) |
 | `swarm_run_task` (project, role `coder|finder|designer|image|video|sound|swarm`, brief, optional title, workspace, files, model, `wait_seconds`) | `swarm:write` | `POST /v3/projects/{pid}/tasks` with `auto_approve` (the delegating AI is the gate) and a fixed `client_request_id`; coder needs a registered workspace; `files` become a scope paragraph of the brief; `model` is checked against the catalog |
@@ -105,7 +109,8 @@ thinking options, and each role's default. A session's model can be chosen at
 start or changed later (between runs); both set the session's own model
 profile, because Swarm and orchestrator sessions otherwise capture the role
 defaults when created and those decide their model. Role defaults need
-`swarm:manage` (`settings:write`).
+`swarm:write` and `settings:write` (write AI keys and relay devices carry it):
+the coder, designer and finder workers use their role's model on every job.
 Models are validated against the live catalog. The account default model,
 credentials and permission policy (rules, bypass) are not reachable.
 
@@ -158,7 +163,7 @@ status; text is truncated (messages 1,500, tool arguments 800, tool output
 300 characters, raised per call with `get_session` `detail_chars`) and plans
 show only per-checkpoint status. Server instructions name only tools the
 caller's level allows. The full tool list
-is 43 tools.
+is 55 tools; the default list is 23.
 
 **Local tokens.** `swarmctl setup sdk-token` mints session scopes by default;
 add `--workers` (automations read/write), `--usage-limits` (`usage:write`) and

@@ -108,7 +108,7 @@ func TestInitStatusAndReset(t *testing.T) {
 	if err != nil || !st.Configured || st.Enabled || st.PublicKey == "" || !strings.HasPrefix(st.DeviceID, "dev_") {
 		t.Fatalf("init: %+v %v", st, err)
 	}
-	if len(tokens.minted) != 1 || strings.Join(tokens.minted[0], ",") != "sessions:read,automations:read,agents:read" {
+	if len(tokens.minted) != 1 || strings.Join(tokens.minted[0], ",") != "sessions:read,automations:read,agents:read,signals:read,secrets:read" {
 		t.Fatalf("read-only device minted %v", tokens.minted)
 	}
 	encoded, _ := json.Marshal(st)
@@ -124,12 +124,12 @@ func TestInitStatusAndReset(t *testing.T) {
 	if len(tokens.revoked) != 1 || tokens.revoked[0] != "tok_device" {
 		t.Fatalf("device token not revoked: %v", tokens.revoked)
 	}
-	// Manage is the only ceiling that carries account-wide authority: spend
-	// limits and agent role default models.
+	// Manage is the only ceiling that carries spend limits; write and manage
+	// may pick each role's model among the connected providers.
 	if _, err := svc.Init(InitInput{RelayURL: "https://relay.example.com", DeviceName: "box", AllowManage: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(tokens.minted[1], ","); got != "sessions:read,automations:read,agents:read,automations:write,usage:write,settings:write" {
+	if got := strings.Join(tokens.minted[1], ","); got != "sessions:read,automations:read,agents:read,signals:read,secrets:read,automations:write,settings:write,usage:write" {
 		t.Fatalf("manage device minted %s", got)
 	}
 }

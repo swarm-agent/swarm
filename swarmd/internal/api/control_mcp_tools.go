@@ -435,7 +435,7 @@ func controlMCPWaitProp() map[string]any {
 func controlMCPProjectWorkspacesProp() map[string]any {
 	return map[string]any{
 		"type": "array", "minItems": 1, "maxItems": controlMCPMaxProjectWorkspaces,
-		"description": "Registered workspaces (list_workspaces or add_workspace), each by path or workspace_id. Role: primary_code (the main code repository), auxiliary (other sources) or docs; default primary_code for the first and auxiliary for the rest.",
+		"description": "The folders, each by absolute path (a folder Swarm does not know yet is registered in place) or workspace_id. Role: primary_code (the main code repository), auxiliary (other sources) or docs; default primary_code for the first and auxiliary for the rest.",
 		"items": map[string]any{
 			"type": "object", "additionalProperties": false,
 			"properties": map[string]any{
@@ -636,12 +636,12 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_projects", Title: "List projects",
-			Description: "Projects group workspaces; their orchestrator and workers run inside them. Each shows its workspaces (path and role) and context_status, the state of its project.md: pending or running while Swarm writes it, then ready or failed. Read a project.md with swarm_get_project.",
+			Description: "A project is a name and the folders its work is in; every job runs in one of a project's folders. Each shows its workspaces (path and role) and context_status, the state of its project.md: pending or running while Swarm writes it, then ready or failed. Read a project.md with swarm_get_project.",
 			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListProjects,
 		},
 		{
 			Name: "swarm_create_project", Title: "Create a project",
-			Description: "Group registered workspaces (swarm_add_workspace) into a project. Swarm then writes the project's project.md (purpose, architecture, what each workspace is for) from each workspace's AGENTS.md, README and file tree; the project's orchestrator works from it. Returns the project with context_generation.status pending or running: wait with swarm_get_project until it is ready before starting the orchestrator.",
+			Description: "Start here: a project is a name and the person's folders (one or more existing folders or git repositories, by absolute path) that jobs work in. A folder Swarm does not know yet is registered in place; nothing in it changes. workspace_not_found means the path is wrong; workspace_not_visible means Swarm cannot see inside it yet: run the command the error names on that machine, then create the project again. Swarm then writes the project's project.md (its context: purpose, architecture, what each folder is for) from each folder's AGENTS.md, README and file tree; workers and the orchestrator work from it. Returns the project with context_generation.status pending or running; swarm_get_project waits until it is ready.",
 			InputSchema: controlMCPObject([]string{"name", "workspaces"}, map[string]any{
 				"name":        controlMCPStringProp("", 1, 200),
 				"description": controlMCPStringProp("What the project is and what the person wants from it.", 0, 1000),
@@ -669,7 +669,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_set_project_workspaces", Title: "Set a project's workspaces",
-			Description: "Replace a project's workspace list: send the full list, the current workspaces to keep plus any new ones (register new folders with swarm_add_workspace first). A workspace left out leaves the project; its folder is untouched. Refused until project.md generation is ready. project.md is not rewritten: update it with swarm_update_project_context when the sources changed.",
+			Description: "Replace a project's workspace list: send the full list, the current workspaces to keep plus any new ones (a new folder is registered in place). A workspace left out leaves the project; its folder is untouched. Refused until project.md generation is ready. project.md is not rewritten: update it with swarm_update_project_context when the sources changed.",
 			InputSchema: controlMCPObject([]string{"project_id", "workspaces"}, map[string]any{
 				"project_id": controlMCPStringProp("From list_projects.", 1, 200),
 				"workspaces": controlMCPProjectWorkspacesProp(),
@@ -1843,6 +1843,36 @@ func (c *controlMCPCall) projectWorkspaceRefs(raw any) ([]map[string]any, error)
 		return nil, err
 	}
 	registered := controlMCPList(response["workspaces"])
+	// A folder named by path that Swarm does not know yet is registered in
+	// place first (the same checks as swarm_add_workspace), so a project is
+	// one step: its name and its folders.
+	added := false
+	for _, rawItem := range items {
+		path := controlMCPString(controlMCPMap(rawItem), "path")
+		if path == "" || !filepath.IsAbs(path) {
+			continue
+		}
+		path = filepath.Clean(path)
+		known := false
+		for _, rawEntry := range registered {
+			if controlMCPMap(rawEntry)["path"] == path {
+				known = true
+				break
+			}
+		}
+		if !known {
+			if _, err := controlMCPAddWorkspace(c, map[string]any{"path": path}); err != nil {
+				return nil, err
+			}
+			added = true
+		}
+	}
+	if added {
+		if response, err = c.dispatch(http.MethodGet, "/v1/workspace/list", url.Values{"limit": {"500"}}, nil); err != nil {
+			return nil, err
+		}
+		registered = controlMCPList(response["workspaces"])
+	}
 	refs := make([]map[string]any, 0, len(items))
 	for i, rawItem := range items {
 		item := controlMCPMap(rawItem)

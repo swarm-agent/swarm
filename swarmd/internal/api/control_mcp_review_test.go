@@ -419,8 +419,9 @@ func TestControlMCPUsageAndProviderStatus(t *testing.T) {
 	}
 }
 
-// Requirement: by default the server instructions tell one story (folders,
-// then jobs for the coder, designer and finder, then results and merging) and
+// Requirement: by default the server instructions tell one story (a model
+// provider, a project with its folders, then jobs for the coder, designer and
+// finder, then results, follow-ups and merging) and
 // name only default tools; the advanced lines appear only for a client that
 // asked for every tool. Every line names only tools the caller's level can
 // call and every tool it names exists. Threats: an AI steered to sessions or
@@ -457,25 +458,26 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 		return call.instructions()
 	}
 	defaults := instructions(false, "sessions:read", "sessions:write")
-	for _, shown := range []string{"deploy AI workers", "coder", "designer", "finder", "swarm_add_workspace", "swarm_give_job", "swarm_get_job", "swarm_answer_job", "swarm_deliver_job", "nothing is ever pushed", "swarm_status", "swarm_activity", "swarm_list_secrets", "untrusted"} {
+	for _, shown := range []string{"deploy AI workers", "coder", "designer", "finder", "swarm_list_providers", "never ask for a key in chat", "swarm_create_project", "swarm_give_job", "swarm_get_job", "swarm_message_job", "swarm_answer_job", "swarm_deliver_job", "nothing is ever pushed", "swarm_status", "swarm_activity", "swarm_list_secrets", "untrusted"} {
 		if !strings.Contains(defaults, shown) {
 			t.Fatalf("default instructions miss %s: %s", shown, defaults)
 		}
 	}
-	for _, hidden := range []string{"system-orchestrator", "run_task", "start_session", "resolve_permission", "create_project"} {
+	for _, hidden := range []string{"system-orchestrator", "run_task", "start_session", "resolve_permission", "swarm_add_workspace"} {
 		if strings.Contains(defaults, hidden) {
 			t.Fatalf("default instructions mention advanced %s: %s", hidden, defaults)
 		}
 	}
-	// The story's order: folders, then a job, then its result, then merging.
-	order := []string{"swarm_add_workspace", "swarm_give_job", "swarm_get_job", "swarm_deliver_job"}
+	// The story's order: a provider, a project with its folders, then a job,
+	// then its result, then merging.
+	order := []string{"swarm_list_providers", "swarm_create_project", "swarm_give_job", "swarm_get_job", "swarm_deliver_job"}
 	for i := 1; i < len(order); i++ {
 		if strings.Index(defaults, order[i-1]) > strings.Index(defaults, order[i]) {
 			t.Fatalf("story order: %s before %s: %s", order[i], order[i-1], defaults)
 		}
 	}
 	readOnly := instructions(false, "sessions:read", "swarm:read")
-	for _, hidden := range []string{"swarm_add_workspace", "swarm_give_job", "swarm_answer_job", "swarm_deliver_job", "swarm_request_media", "swarm_schedule_job"} {
+	for _, hidden := range []string{"swarm_create_project", "swarm_give_job", "swarm_message_job", "swarm_answer_job", "swarm_deliver_job", "swarm_request_media", "swarm_schedule_job", "swarm_set_agent_model", "swarm_request_provider_key"} {
 		if strings.Contains(readOnly, hidden) {
 			t.Fatalf("read-only instructions mention %s: %s", hidden, readOnly)
 		}
@@ -485,7 +487,7 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 	}
 	// A write key may give and merge jobs.
 	writeOnly := instructions(false, "sessions:read", "sessions:write", "swarm:read", "swarm:write")
-	if !strings.Contains(writeOnly, "swarm_give_job") || !strings.Contains(writeOnly, "swarm_deliver_job") {
+	if !strings.Contains(writeOnly, "swarm_give_job") || !strings.Contains(writeOnly, "swarm_deliver_job") || !strings.Contains(writeOnly, "swarm_create_project") || !strings.Contains(writeOnly, "swarm_set_agent_model") || strings.Contains(writeOnly, "swarm_request_provider_key") {
 		t.Fatalf("write-only instructions: %s", writeOnly)
 	}
 	full := instructions(true, "sessions:read", "sessions:write")

@@ -109,7 +109,13 @@ func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 			t.Fatalf("%s missing for AI keys", name)
 		}
 	}
-	for _, name := range []string{"swarm_resolve_permission", "swarm_create_worker", "swarm_set_usage_limits", "swarm_set_agent_model",
+	// A write key creates projects, follows up on jobs and picks role models.
+	for _, name := range []string{"swarm_create_project", "swarm_set_project_workspaces", "swarm_message_job", "swarm_set_agent_model"} {
+		if readTools[name] || !writeTools[name] {
+			t.Fatalf("%s must be a write tool", name)
+		}
+	}
+	for _, name := range []string{"swarm_resolve_permission", "swarm_create_worker", "swarm_set_usage_limits", "swarm_request_provider_key",
 		"swarm_define_agent", "swarm_create_client_key", "swarm_connect_chatgpt"} {
 		if readTools[name] || writeTools[name] {
 			t.Fatalf("AI key lists %s", name)

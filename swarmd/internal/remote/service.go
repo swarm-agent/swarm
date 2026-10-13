@@ -70,15 +70,15 @@ var toolScopes = map[string]string{
 	"swarm_set_session_model":      ScopeWrite,
 	"swarm_resolve_permission":     ScopeApprove,
 	"swarm_integrate_task":         ScopeWrite,
-	"swarm_create_project":         ScopeManage,
+	"swarm_create_project":         ScopeWrite,
 	"swarm_update_project_context": ScopeManage,
-	"swarm_set_project_workspaces": ScopeManage,
+	"swarm_set_project_workspaces": ScopeWrite,
 	"swarm_retry_project_context":  ScopeManage,
 	"swarm_create_worker":          ScopeManage,
 	"swarm_update_worker":          ScopeManage,
 	"swarm_manage_worker":          ScopeManage,
 	"swarm_set_usage_limits":       ScopeManage,
-	"swarm_set_agent_model":        ScopeManage,
+	"swarm_set_agent_model":        ScopeWrite,
 	"swarm_set_media_models":       ScopeManage,
 	"swarm_list_agents":            ScopeRead,
 	"swarm_define_agent":           ScopeManage,
@@ -101,6 +101,7 @@ var toolScopes = map[string]string{
 	"swarm_deploy_worker": ScopeWrite,
 	"swarm_give_job":      ScopeWrite,
 	"swarm_answer_job":    ScopeWrite,
+	"swarm_message_job":   ScopeWrite,
 	"swarm_deliver_job":   ScopeWrite,
 	"swarm_stop_job":      ScopeWrite,
 	"swarm_schedule_job":  ScopeWrite,
@@ -322,15 +323,16 @@ func (s *Service) Init(in InitInput) (Status, error) {
 	}
 	// API scopes the device token needs for its ceiling. Remote clients are
 	// still limited per tool by the ceiling (toolScopes) on every call.
-	scopes := []string{"sessions:read", "automations:read", "agents:read"}
+	scopes := []string{"sessions:read", "automations:read", "agents:read", "signals:read", "secrets:read"}
 	if in.AllowWrite || in.AllowApprove {
 		scopes = append(scopes, "sessions:write")
 	}
 	if in.AllowWrite || in.AllowManage {
-		scopes = append(scopes, "automations:write")
+		// Write may also pick each role's model among the connected providers.
+		scopes = append(scopes, "automations:write", "settings:write")
 	}
 	if in.AllowManage {
-		scopes = append(scopes, "usage:write", "settings:write")
+		scopes = append(scopes, "usage:write")
 	}
 	token, tokenID, err := s.tokens.Mint("swarm-remote "+name, scopes)
 	if err != nil {

@@ -13,8 +13,8 @@ gives them jobs, waits, reads what they delivered and what it cost, and merges
 it. It can also ask for images, video or sound. It works the same on every
 machine you own, so your AI can work with AI across machines, safely.
 
-- **Workers** work in any folder you register, each job on its own branch, in a
-  sandbox per project (gVisor when available), with no access to the host, your
+- **Workers** work in your projects (a name and your folders), each job on its
+  own branch, in a sandbox per project (gVisor when available), with no access to the host, your
   network or Swarm's keys. Jobs run without permission prompts only while that
   sandbox is active.
 - **Secrets** reach a job only through Swarm's gateway: inside the sandbox an
@@ -72,24 +72,29 @@ claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp --h
 **Codex**: the installer prints the line (it reads the key from an
 environment variable).
 
-**Then tell your AI: "set up Swarm".** It asks which folders your work is in,
-registers them, and gives the coder a first job.
+**Then tell your AI: "set up Swarm".** It checks your model key, asks which
+folders your work is in, creates a project with them, and gives the coder a
+first job.
 
 ## What your AI does with it
 
 | Tool | What it does |
 | --- | --- |
-| `swarm_add_workspace` | register a folder (nothing in it is changed) |
-| `swarm_give_job` | give the coder, designer or finder a job in a folder |
-| `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff |
+| `swarm_list_providers`, `swarm_list_models` | which providers are ready; the model each worker role uses |
+| `swarm_set_agent_model` | change a role's model (only when you ask) |
+| `swarm_create_project` | a project: a name and your folders (nothing in them is changed) |
+| `swarm_give_job` | give the coder, designer or finder a job in a project's folder |
+| `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff, transcript |
+| `swarm_message_job` | a follow-up in the same job: more to do, a correction, a redo |
 | `swarm_answer_job` | reply when a worker asks something |
 | `swarm_deliver_job` | merge the result into the folder (local git merge, never a push) |
 | `swarm_request_media` | an image, video or sound |
+| `swarm_deploy_worker` | your own worker on top of the three: a name, a role, standing instructions |
 | `swarm_schedule_job` | a worker that runs a job on a schedule |
 | `swarm_status`, `swarm_activity` | is the box all right; what happened since last time |
 | `swarm_list_secrets` | which secrets exist and which folders may use them (never values) |
 
-Advanced tools (sessions, plans, project orchestrators, model overrides) stay
+Advanced tools (sessions, plans, project orchestrators, tasks by role) stay
 available: `/mcp?tools=all` or `swarm mcp --all-tools`. The full catalog and
 the trust boundary: `docs/checkpoints/swarm-control.md`.
 

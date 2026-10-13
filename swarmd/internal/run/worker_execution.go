@@ -1962,6 +1962,17 @@ func (s *WorkerExecutionService) resolveWorkerJobProject(db *store.SessionStore,
 			}
 		}
 	}
+	// A folder may belong to several projects; the job's own project_id
+	// chooses among those that hold it, never a project without the folder
+	// (case 1 below still refuses a project_id that does not match).
+	if requested := strings.TrimSpace(mapString(r.Input, "project_id")); requested != "" && len(matched) > 1 {
+		for _, p := range matched {
+			if p.ID == requested {
+				matched = []*store.ProjectRecord{p}
+				break
+			}
+		}
+	}
 	switch len(matched) {
 	case 0:
 		return nil, fmt.Errorf("%w: workspace %q of worker %q's job belongs to no project in account %q", errWorkerProjectNotAssociated, workspaceID, w.ID, accountScopeID)
