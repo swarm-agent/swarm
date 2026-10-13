@@ -2261,7 +2261,7 @@ func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bo
 		"ok":    false,
 		"code":  "workspace_not_visible",
 		"path":  clean,
-		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `install.sh workspace add " + clean + "`, then add it again.",
+		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `install.sh workspace add " + clean + "`, then try again.",
 	})
 	return true
 }

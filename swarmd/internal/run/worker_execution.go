@@ -486,9 +486,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			WorkerRunID:  r.ID,
 			AutomationID: r.AutomationID,
 			Tier:         "complex",
-			OutcomeType:  "general",
-			CreatedAt:    r.CreatedAt,
-			UpdatedAt:    r.CreatedAt,
+			// Empty: the task store gives each role its own outcome (coder
+			// code_pr, finder audit_report, designer artifact, swarm general).
+			OutcomeType: "",
+			CreatedAt:   r.CreatedAt,
+			UpdatedAt:   r.CreatedAt,
 		}
 		if planned {
 			taskRecord.PlanBinding = &store.ProjectTaskPlanBinding{PlanID: r.ID, SessionID: r.SessionID}

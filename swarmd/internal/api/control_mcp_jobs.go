@@ -244,9 +244,13 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 			break
 		}
 	}
+	roleModels := c.roleModels()
 	out := []map[string]any{}
 	for _, worker := range workers {
 		view := controlMCPWorkerView(worker)
+		if model := controlMCPWorkerModel(worker, roleModels); model != nil {
+			view["model"] = model
+		}
 		if include, _ := args["include_jobs"].(bool); include {
 			id, _ := worker["id"].(string)
 			if runs, err := c.dispatch(http.MethodGet, "/v3/workers/"+id+"/runs", url.Values{"limit": {"5"}}, nil); err == nil {
@@ -1000,7 +1004,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workers", Title: "List workers",
-			Description: "The box's workers: the preset coder, designer and finder (created on first use) and any others, with role and state. include_jobs adds each worker's latest jobs.",
+			Description: "The box's workers: the preset coder, designer and finder (created on first use) and any others, with role, state and the model their next job uses (their role's model unless pinned). include_jobs adds each worker's latest jobs.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"include_jobs": map[string]any{"type": "boolean", "description": "Also list each worker's 5 latest jobs with job_id and status."},
 			}),
@@ -1111,4 +1115,51 @@ func controlMCPJobTools() []controlMCPTool {
 			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListSecrets,
 		},
 	}
+}
+
+// controlMCPWorkerRoleSlots maps a worker role to its role model setting.
+var controlMCPWorkerRoleSlots = map[string]string{
+	"coder": "system-coder", "designer": "system-designer", "finder": "system-finder", "swarm": "swarm",
+}
+
+// roleModels reads each agent role's model setting once (nil when unreadable).
+func (c *controlMCPCall) roleModels() map[string]map[string]any {
+	settings, err := c.dispatch(http.MethodGet, "/v1/agent-model-settings", nil, nil)
+	if err != nil {
+		return nil
+	}
+	assignments := controlMCPMap(settings["agent_model_settings"])
+	out := map[string]map[string]any{}
+	for role, slot := range controlMCPAgentModelRoles {
+		if entry := controlMCPPick(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]), "provider", "model", "thinking"); len(entry) > 0 {
+			out[role] = entry
+		}
+	}
+	return out
+}
+
+// controlMCPWorkerModel is the model a worker's next job uses: its own pinned
+// model, or (the default) its role's model setting, which follows changes made
+// with swarm_set_agent_model.
+func controlMCPWorkerModel(worker map[string]any, roleModels map[string]map[string]any) map[string]any {
+	profile := controlMCPMap(worker["model_profile"])
+	if profile != nil {
+		if follows, _ := profile["use_account_default"].(bool); !follows {
+			if pinned := controlMCPPick(controlMCPMap(profile["action"]), "provider", "model", "thinking"); len(pinned) > 0 {
+				pinned["source"] = "worker"
+				return pinned
+			}
+		}
+	}
+	role, _ := worker["role"].(string)
+	if role == "" {
+		role = "swarm"
+	}
+	model := roleModels[controlMCPWorkerRoleSlots[role]]
+	if model == nil {
+		return nil
+	}
+	out := controlMCPPick(model, "provider", "model", "thinking")
+	out["source"] = "role " + controlMCPWorkerRoleSlots[role]
+	return out
 }
