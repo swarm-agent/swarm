@@ -1128,8 +1128,22 @@ func controlMCPJobTools() []controlMCPTool {
 	return []controlMCPTool{
 		{
 			Name: "swarm_status", Title: "Is this box all right?",
-			Description: "One call: status ok, attention (something waits or a job failed today) or degraded (agents unconfined or spending over the limit) with reasons; the sandbox, the secret gateway, jobs waiting on someone, workers with failures today, today's spend against the limit, and activity_cursor for swarm_activity.",
-			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPStatus,
+			Description: "One call: status ok, attention (something waits or a job failed today) or degraded (agents unconfined or spending over the limit) with reasons; the sandbox, the secret gateway, jobs waiting on someone, today's spend against the limit, and activity_cursor for swarm_activity. Exact counts: automations (schedules, how many are active and will run, the next run of each), runs today (total, succeeded, failed, unfinished, by source; the failed runs with job_id; everything running now) and the machine's workspaces and build. Today is the UTC day unless you pass the person's timezone.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"timezone": controlMCPStringProp("IANA timezone for \"today\" (for example Europe/Helsinki). Default UTC.", 0, 64),
+			}), Annotations: controlMCPReadOnly, call: controlMCPStatus,
+		},
+		{
+			Name: "swarm_list_runs", Title: "Runs across all workers",
+			Description: "This machine's worker runs (jobs, scheduled or not) across every worker, newest first, with job_id, worker, status, source and times (swarm_get_job reads a failed one's reason). Filter by status (failed, running, ...), worker and a time window; next_cursor pages back in time.",
+			InputSchema: controlMCPObject(nil, map[string]any{
+				"status": map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"admitted", "running", "succeeded", "failed", "cancelled"}}, "description": "Only these statuses. Default all."},
+				"worker": controlMCPStringProp("Only this worker (id from swarm_list_workers).", 0, 128),
+				"since":  controlMCPStringProp("Only runs started at or after this time (RFC 3339, for example 2026-10-13T00:00:00Z).", 0, 64),
+				"until":  controlMCPStringProp("Only runs started before this time (RFC 3339).", 0, 64),
+				"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "description": "Default 50."},
+				"cursor": controlMCPStringProp("next_cursor of the previous call, for older runs.", 0, 512),
+			}), Annotations: controlMCPReadOnly, call: controlMCPListRuns,
 		},
 		{
 			Name: "swarm_activity", Title: "What happened since last time",
@@ -1332,4 +1346,36 @@ func controlMCPWorkerModel(worker map[string]any, roleModels map[string]map[stri
 	out := controlMCPPick(model, "provider", "model", "thinking")
 	out["source"] = "role " + controlMCPWorkerRoleSlots[role]
 	return out
+}
+
+// controlMCPListRuns lists runs across all workers through GET /v3/runs.
+func controlMCPListRuns(c *controlMCPCall, args map[string]any) (any, error) {
+	query := url.Values{"limit": {strconv.Itoa(controlMCPInt(args, "limit", 50))}}
+	for _, name := range []string{"since", "until"} {
+		raw, _ := args[name].(string)
+		if raw = strings.TrimSpace(raw); raw == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return nil, controlMCPToolFailure("%s must be an RFC 3339 time such as 2026-10-13T00:00:00Z", name)
+		}
+		query.Set(name, strconv.FormatInt(at.UnixMilli(), 10))
+	}
+	statuses := []string{}
+	for _, raw := range controlMCPList(args["status"]) {
+		if status, _ := raw.(string); status != "" {
+			statuses = append(statuses, status)
+		}
+	}
+	if len(statuses) > 0 {
+		query.Set("status", strings.Join(statuses, ","))
+	}
+	if worker, _ := args["worker"].(string); strings.TrimSpace(worker) != "" {
+		query.Set("worker_id", strings.TrimSpace(worker))
+	}
+	if cursor, _ := args["cursor"].(string); strings.TrimSpace(cursor) != "" {
+		query.Set("cursor", strings.TrimSpace(cursor))
+	}
+	return c.dispatch(http.MethodGet, "/v3/runs", query, nil)
 }

@@ -259,8 +259,8 @@ const FLEET_TOOLS = [
   },
   {
     name: 'swarm_fleet_status', title: 'Fleet status',
-    description: 'One view of every Swarm machine: reachable, access, sessions (running and recent), and today\'s usage and limits.',
-    inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+    description: 'One view of every Swarm machine: reachable, access, exact counts per machine (schedules and how many are active, runs today: succeeded, failed, unfinished, running now, with the failed runs\' job ids), workspaces, sessions (running and recent), and today\'s usage and limits. Today is the UTC day unless you pass timezone.',
+    inputSchema: { type: 'object', additionalProperties: false, properties: { timezone: { type: 'string', maxLength: 64, description: 'IANA timezone for "today" (for example Europe/Helsinki). Default UTC.' } } },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
@@ -357,12 +357,24 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
   }
   const callOn = (machine, name, args) => send(machine, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { proxy });
 
-  async function machineStatus(machine) {
+  // A machine's run counts for today, exact (the daemon's run index), with the
+  // failed runs' job ids; their reasons stay on the machine (swarm_get_job).
+  function runsToday(runs, workers) {
+    const failed = Array.isArray(runs.failed_runs) ? runs.failed_runs : [];
+    return {
+      day: workers?.day ?? null, timezone: workers?.timezone ?? null,
+      total: runs.total ?? 0, succeeded: runs.succeeded ?? 0, failed: runs.failed ?? 0, cancelled: runs.cancelled ?? 0,
+      unfinished: runs.unfinished ?? 0, running_now: runs.running_now ?? 0,
+      failed_runs: failed.slice(0, 10).map(r => ({ job_id: `worker/${r.worker_id}/${r.run_id}`, worker: r.worker_name || r.worker_id, at: r.created_at })),
+    };
+  }
+
+  async function machineStatus(machine, timezone = '') {
     const base = { machine: machine.name, found_by: machine.source, reachable: tools.has(machine.name), access: access(machine.name) };
     if (!tools.has(machine.name)) return { ...base, error: errors.get(machine.name) || 'not reached' };
     const has = name => tools.get(machine.name).some(t => t.name === name);
     const [status, sessions, usage] = await Promise.all([
-      has('swarm_status') ? callOn(machine, 'swarm_status', {}).then(b => toolJSON(b?.result), () => null) : null,
+      has('swarm_status') ? callOn(machine, 'swarm_status', timezone ? { timezone } : {}).then(b => toolJSON(b?.result), () => null) : null,
       has('swarm_list_sessions') ? callOn(machine, 'swarm_list_sessions', { limit: 50 }).then(b => toolJSON(b?.result), () => null) : null,
       has('swarm_get_usage') ? callOn(machine, 'swarm_get_usage', { period: 'today' }).then(b => toolJSON(b?.result), () => null) : null,
     ]);
@@ -370,6 +382,10 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     return {
       ...base,
       ...(status ? { status: status.status ?? null, reasons: status.reasons ?? [], attention: status.attention ?? null } : {}),
+      ...(status?.runs ? { runs_today: runsToday(status.runs, status.workers) } : {}),
+      ...(status?.automations ? { automations: { schedules: status.automations.schedules, active: status.automations.active, next_run_at: status.automations.next_run_at || null } } : {}),
+      ...(status?.workspaces?.total !== undefined ? { workspaces: status.workspaces.total } : {}),
+      ...(status?.machine?.version ? { version: status.machine.version } : {}),
       ...(list ? { sessions_recent: list.length, sessions_running: list.filter(s => s?.running).map(s => ({ id: s.id, title: s.title, agent: s.agent })) } : {}),
       ...(usage ? { usage_today: usage.summary ?? null, limits: usage.limits ?? null } : {}),
     };
@@ -462,7 +478,10 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     if (name === 'swarm_list_machines' || name === 'swarm_fleet_status') {
       await refreshAll(true);
       const note = machines.length ? {} : { note: discoveryError || 'No Swarm machines found: tag them (default tag:swarm) in the Tailscale admin console, or set SWARM_FLEET.' };
-      if (name === 'swarm_fleet_status') return toolText({ machines: await Promise.all(machines.map(machineStatus)), ...note });
+      if (name === 'swarm_fleet_status') {
+        const timezone = typeof args.timezone === 'string' ? args.timezone.trim().slice(0, 64) : '';
+        return toolText({ machines: await Promise.all(machines.map(m => machineStatus(m, timezone))), ...note });
+      }
       return toolText({ machines: machines.map(m => ({
         machine: m.name, found_by: m.source, reachable: tools.has(m.name), access: access(m.name),
         ...(errors.has(m.name) ? { error: errors.get(m.name) } : {}),

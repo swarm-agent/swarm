@@ -3057,6 +3057,11 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 				summary.Errors = append(summary.Errors, fmt.Sprintf("batch set run %s: %v", run.ID, err))
 				continue
 			}
+			if err := indexWorkerRunInBatch(batch, account, runBytes); err != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("index run %s: %v", run.ID, err))
+				continue
+			}
 			occLinkBytes, _ := json.Marshal(targetWorkerID + ":" + run.ID)
 			if err := batch.Set([]byte(KeyWorkerRunByOccurrence(account, o.ID)), occLinkBytes, nil); err != nil {
 				summary.FailedCount++

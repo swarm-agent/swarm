@@ -70,6 +70,7 @@ export const TOOL_SCOPES = {
   // giving, answering, merging, stopping and scheduling jobs is write.
   swarm_status: SCOPE_READ,
   swarm_activity: SCOPE_READ,
+  swarm_list_runs: SCOPE_READ,
   swarm_get_job: SCOPE_READ,
   swarm_list_secrets: SCOPE_READ,
   swarm_deploy_worker: SCOPE_WRITE,

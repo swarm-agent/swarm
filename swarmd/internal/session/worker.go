@@ -244,3 +244,20 @@ func (s *Service) MigrateLegacyAutomationsV2(account string) (pebblestore.Worker
 	}
 	return ws.MigrateLegacyAutomationsV2(account)
 }
+
+// CountWorkerRuns counts one account's runs admitted in [sinceMs, untilMs)
+// across all workers, and its unfinished runs, exactly (the run index).
+func (s *Service) CountWorkerRuns(account string, sinceMs, untilMs int64) (pebblestore.WorkerRunCounts, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.WorkerRunCounts{}, errors.New("session service not configured")
+	}
+	return s.store.WorkerStore().CountWorkerRuns(account, sinceMs, untilMs)
+}
+
+// ListWorkerRunsByTime lists one account's runs across all workers, newest first.
+func (s *Service) ListWorkerRunsByTime(account string, query pebblestore.WorkerRunTimeQuery) ([]pebblestore.WorkerRunRecord, string, error) {
+	if s == nil || s.store == nil {
+		return nil, "", errors.New("session service not configured")
+	}
+	return s.store.WorkerStore().ListWorkerRunsByTime(account, query)
+}
