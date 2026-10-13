@@ -199,7 +199,7 @@ export function validateModels(models) {
     if (!FLEET_ROLES[role]) throw new Error(`unknown role ${JSON.stringify(String(role).slice(0, 40))}; roles are ${Object.keys(FLEET_ROLES).join(', ')}`);
     const provider = String(value?.provider ?? '').trim(), model = String(value?.model ?? '').trim(), thinking = String(value?.thinking ?? '').trim();
     if (!provider || !model || provider.length > 64 || model.length > 200 || thinking.length > 32) throw new Error(`role ${role}: provider and model are required`);
-    out[role] = { provider, model, thinking };
+    out[role] = { provider, model, thinking, ...(value?.fast === true ? { fast: true } : {}) };
   }
   return out;
 }
@@ -242,11 +242,11 @@ export function desiredFor(state, machine) {
   return { ...state.models, ...(state.overrides[machine] || {}) };
 }
 
-/** Compares a machine's assignment with the desired one (thinking only when the table names one). */
+/** Compares a machine's assignment with the desired one (thinking only when the table names one; fast always). */
 export function roleState(desired, actual, overridden) {
   if (!desired) return 'unset';
   if (!actual?.provider || !actual?.model) return 'drift';
-  const same = actual.provider === desired.provider && actual.model === desired.model && (!desired.thinking || actual.thinking === desired.thinking);
+  const same = actual.provider === desired.provider && actual.model === desired.model && (!desired.thinking || actual.thinking === desired.thinking) && !!actual.fast === !!desired.fast;
   return same ? (overridden ? 'override' : 'in_sync') : 'drift';
 }
 
@@ -271,13 +271,13 @@ const FLEET_TOOLS = [
   },
   {
     name: 'swarm_fleet_set_models', title: 'Set the fleet\'s model table',
-    description: 'Change the model table for the whole fleet and apply it to every machine, one role at a time. Without `machine`, `models` merges into the table and goes to every machine (a machine keeps its own override for a role). With `machine`, `models` becomes that machine\'s override for those roles only, or `clear_override` removes its override and the table applies again. Overrides are the exception: everything should run the same table unless there is a reason. A machine admitted only by a tailnet read/write grant cannot be managed; it needs a full AI key (`token`) in SWARM_FLEET. Machines that refuse are listed in `applied` with ok:false, nothing is thrown. thinking may be left out: the machine then uses its catalog default.',
+    description: 'Change the model table for the whole fleet and apply it to every machine, one role at a time. Without `machine`, `models` merges into the table and goes to every machine (a machine keeps its own override for a role). With `machine`, `models` becomes that machine\'s override for those roles only, or `clear_override` removes its override and the table applies again. Overrides are the exception: everything should run the same table unless there is a reason. A machine admitted only by a tailnet read/write grant cannot be managed; it needs a full AI key (`token`) in SWARM_FLEET. Machines that refuse are listed in `applied` with ok:false, nothing is thrown. thinking may be left out: the machine then uses its catalog default. fast: true runs a role on priority serving (faster, costs more) where the model offers it.',
     inputSchema: {
       type: 'object', additionalProperties: false,
       properties: {
         models: {
-          type: 'object', description: 'role → {provider, model, thinking?}',
-          additionalProperties: { type: 'object', additionalProperties: false, required: ['provider', 'model'], properties: { provider: { type: 'string', maxLength: 64 }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', maxLength: 32 } } },
+          type: 'object', description: 'role → {provider, model, thinking?, fast?}',
+          additionalProperties: { type: 'object', additionalProperties: false, required: ['provider', 'model'], properties: { provider: { type: 'string', maxLength: 64 }, model: { type: 'string', maxLength: 200 }, thinking: { type: 'string', maxLength: 32 }, fast: { type: 'boolean', description: 'Priority serving (faster, costs more) where the model offers it' } } },
         },
         machine: { type: 'string', maxLength: 64, description: 'Set or clear an override for this machine only' },
         clear_override: { type: 'boolean', description: 'With machine: drop its override and apply the table to it' },
@@ -408,7 +408,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     const actual = {};
     for (const r of Array.isArray(listed?.roles) ? listed.roles : []) {
       const role = ROLE_OF_MACHINE_ROLE[r?.role];
-      if (role) actual[role] = { provider: r.provider || '', model: r.model || '', thinking: r.thinking || '' };
+      if (role) actual[role] = { provider: r.provider || '', model: r.model || '', thinking: r.thinking || '', ...(r.fast === true ? { fast: true } : {}) };
     }
     return {
       ...base,
@@ -432,7 +432,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
         if (!tools.has(machine.name)) { applied.push({ ...entry, error: errors.get(machine.name) || 'not reached' }); continue; }
         if (access(machine.name) === 'read only') { applied.push({ ...entry, error: 'read-only access on this machine: setting models needs a write or full AI key in SWARM_FLEET' }); continue; }
         try {
-          const body = await callOn(machine, 'swarm_set_agent_model', { role: FLEET_ROLES[role], provider: want.provider, model: want.model, ...(want.thinking ? { thinking: want.thinking } : {}) });
+          const body = await callOn(machine, 'swarm_set_agent_model', { role: FLEET_ROLES[role], provider: want.provider, model: want.model, ...(want.thinking ? { thinking: want.thinking } : {}), ...(want.fast ? { fast: true } : {}) });
           if (body?.error) applied.push({ ...entry, error: String(body.error.message || 'error').slice(0, 200) });
           else if (body?.result?.isError) applied.push({ ...entry, error: String(body.result.content?.[0]?.text || 'refused').slice(0, 200) });
           else applied.push({ ...entry, ok: true });

@@ -1142,3 +1142,53 @@ func TestControlMCPCreatesWorkspaceFromZero(t *testing.T) {
 		t.Fatalf("no root: %s", text)
 	}
 }
+
+// Requirement: fast is offered exactly where the catalog maps Swarm's fast
+// setting, and the tier it stores survives model resolution (a tier the
+// catalog does not list is dropped silently, so a wrong name would never run
+// fast).
+func TestControlMCPFastFollowsCatalog(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "models"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	events, err := pebblestore.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := model.NewService(pebblestore.NewModelStore(db), events, model.NewCatalogService(pebblestore.NewModelCatalogStore(db)))
+	if err := svc.EnsureBootDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string]string{}
+	for _, provider := range []string{"codex", "openai", "anthropic", "google"} {
+		records, err := svc.ListCatalog(provider, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range records {
+			encoded, _ := json.Marshal(record)
+			var asJSON map[string]any
+			_ = json.Unmarshal(encoded, &asJSON)
+			tier := controlMCPFastTier(asJSON)
+			if tier == "" {
+				continue
+			}
+			resolved, err := svc.ResolvePreference(pebblestore.ModelPreference{Provider: provider, Model: record.Model, ServiceTier: tier})
+			if err != nil || resolved.Preference.ServiceTier != tier {
+				t.Fatalf("%s/%s: fast tier %q did not survive resolution: %q %v", provider, record.Model, tier, resolved.Preference.ServiceTier, err)
+			}
+			offered[provider+"/"+record.Model] = tier
+		}
+	}
+	if offered["codex/gpt-6-astra"] != "fast" || offered["openai/gpt-6-astra"] == "" {
+		t.Fatalf("fast not offered for gpt-6-astra: %v", offered)
+	}
+	if entry := controlMCPRoleModel(map[string]any{"provider": "codex", "model": "m", "thinking": "medium", "service_tier": "fast"}); entry["fast"] != true {
+		t.Fatalf("a fast role does not read fast: %v", entry)
+	}
+	if entry := controlMCPRoleModel(map[string]any{"provider": "codex", "model": "m"}); entry["fast"] != false {
+		t.Fatalf("a standard role reads fast: %v", entry)
+	}
+}

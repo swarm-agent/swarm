@@ -211,6 +211,31 @@ func (p *AutoPublisher) once(ctx context.Context) error {
 	return ctx.Err()
 }
 
+const (
+	autoPublishSkip = iota
+	autoPublishWait
+	autoPublishDeliver
+)
+
+// autoPublishNext is what a job asks of the auto publisher: skip it when it
+// committed nothing (delivery empty, or settled with its head still at its
+// base even when the delivery assessment could not read its lane), wait while
+// it is not settled or its commits are not assessed yet, else deliver it.
+func autoPublishNext(status string, result map[string]any) int {
+	if state, _ := result["delivery_state"].(string); state == "empty" {
+		return autoPublishSkip
+	}
+	head, _ := result["head"].(string)
+	base, _ := result["base_commit"].(string)
+	if status == "needs_review" && head != "" && head == base {
+		return autoPublishSkip
+	}
+	if status != "needs_review" || !controlMCPJobHasCommits(result) {
+		return autoPublishWait
+	}
+	return autoPublishDeliver
+}
+
 // errAutoPublishWait asks for a retry: the job's commits are not assessed yet.
 var errAutoPublishWait = errors.New("job not settled")
 
@@ -236,11 +261,11 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	if err != nil || !ok || !rule.Auto {
 		return nil
 	}
-	state, _ := result["delivery_state"].(string)
-	if state == "empty" {
-		return nil // committed nothing: the report is the result
-	}
-	if status, _ := view["status"].(string); status != "needs_review" || !controlMCPJobHasCommits(result) {
+	status, _ := view["status"].(string)
+	switch autoPublishNext(status, result) {
+	case autoPublishSkip:
+		return nil
+	case autoPublishWait:
 		return p.retry(sig, errAutoPublishWait)
 	}
 	if _, err := c.publishJob(controlMCPJobWorker, workerID, runID, refs, rule, result); err != nil {

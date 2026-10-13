@@ -56,6 +56,14 @@
 # Tailscale, ufw and (unless --delete-projects) the project folder.
 # Existing installs made before Tailscale was optional keep their tailnet
 # setup on update (install.env records TAILNET=on for them).
+# Run by sh (the launcher's old `curl ... | sh` line): say how to run it
+# instead of failing on the first bash-only line. POSIX on purpose.
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "This is Swarm's box installer; it runs with bash as root:" >&2
+  echo "  curl -fsSL https://swarmagent.dev/install | sudo bash" >&2
+  echo "The desktop and terminal launcher installs with https://swarmagent.dev/install-launcher" >&2
+  exit 1
+fi
 set -euo pipefail
 
 STATE=/var/lib/swarm-headless
@@ -432,7 +440,7 @@ up() {
 running_commit() {
   local target
   target=$(readlink -f "$OPT/current" 2>/dev/null) || return 0
-  [[ -d $target ]] && basename "$target"
+  if [[ -d $target ]]; then basename "$target"; fi
 }
 
 # Build a commit of the checkout into its own release and sandbox image
@@ -653,6 +661,29 @@ swarm_busy() {
   esac
 }
 
+# Restart Swarm for a setting change only when nothing runs: a restart ends
+# agent runs in progress. Waits up to RESTART_WAIT_SECONDS (15 min); still busy
+# then, the change stays saved and takes effect at Swarm's next restart.
+restart_daemon_when_idle() {
+  local work waited=0 limit=${RESTART_WAIT_SECONDS:-900}
+  while work=$(swarm_busy); do
+    ((waited < limit)) || die "Swarm was not restarted: it is still working ($work). The change is saved and takes effect when Swarm next restarts; run the same command again once the work is done."
+    ((waited > 0)) || echo "Swarm is working ($work); waiting until it is idle (up to $((limit / 60)) min) before restarting it."
+    sleep 10
+    waited=$((waited + 10))
+  done
+  systemctl restart "$DAEMON_UNIT"
+}
+
+# Wait until Swarm answers on its private socket (it starts after a restart).
+wait_daemon() {
+  for _ in $(seq 1 90); do
+    "$SWARMCTL" setup status >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  die "Swarm is not answering; check: journalctl -u $DAEMON_UNIT"
+}
+
 # Whether Swarm came up on COMMIT within two minutes: ready on its socket and
 # running that build, its sandbox on when it was on before, the setup page
 # answering.
@@ -841,7 +872,7 @@ daemon_env() {
   # Older installs have no EnvironmentFile line in the unit yet.
   grep -q '^EnvironmentFile=-' "$UNITS/$DAEMON_UNIT" || install_units
   systemctl daemon-reload
-  systemctl restart "$DAEMON_UNIT"
+  restart_daemon_when_idle
   wait_ready
   if [[ $action == set ]]; then echo "Saved $*; Swarm restarted."; else echo "Removed $*; Swarm restarted."; fi
 }
@@ -1107,7 +1138,8 @@ workspace_revoke() {
 workspace_restart() {
   systemctl daemon-reload
   if systemctl is-active -q "$DAEMON_UNIT"; then
-    systemctl restart "$DAEMON_UNIT"
+    restart_daemon_when_idle
+    wait_daemon
     echo "Swarm restarted with the new folder list."
   fi
 }
@@ -1389,7 +1421,7 @@ set_tailnet_identity() {
   sed -i '/^TAILNET_IDENTITY=/d' "$CONF" && echo "TAILNET_IDENTITY=$1" >>"$CONF"
   serve_ai_gateway "$1"
   install_units
-  systemctl restart "$DAEMON_UNIT"
+  restart_daemon_when_idle
   wait_ready
   echo "Tailnet identity is $1. Swarm's log says which mode the gateway runs in:"
   journalctl -u "$DAEMON_UNIT" -n 200 --no-pager 2>/dev/null | grep -E 'tailnet identity (on|off)' | tail -n1 || true
@@ -1468,7 +1500,7 @@ serve_tailnet() {
 
 # Restart Swarm and its setup page and wait until the page answers.
 restart_swarm() {
-  systemctl restart "$DAEMON_UNIT"
+  restart_daemon_when_idle
   systemctl restart "$APP_UNIT"
   wait_ready
 }
@@ -1564,6 +1596,7 @@ CONNECT
 ensure_owner() {
   local who=$1 status
   systemctl is-active -q "$DAEMON_UNIT" || die "Swarm is not running; check: journalctl -u $DAEMON_UNIT"
+  wait_daemon
   status=$("$SWARMCTL" setup status) || die "could not read Swarm's setup status"
   [[ $status == *identity=true* ]] && return 0
   "$SWARMCTL" setup identity --username "$who" --name "$APP_DEVICE_NAME" >/dev/null ||
@@ -1899,7 +1932,7 @@ set_secrets_gateway() {
   install_units
   systemctl daemon-reload
   systemctl restart "$FIREWALL_UNIT"
-  systemctl restart "$DAEMON_UNIT"
+  restart_daemon_when_idle
   wait_ready
   echo "Secret gateway is $1."
 }

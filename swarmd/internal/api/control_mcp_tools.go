@@ -141,6 +141,8 @@ var controlMCPRoutes = []string{
 	// Monitoring: the machine summary and its signal feed (handlers require
 	// signals:read), and which secrets exist where (secrets:read; never values).
 	"GET v3/box/summary",
+	// Runs across every worker (swarm_list_runs; signals:read).
+	"GET v3/runs",
 	"GET v3/signals",
 	"GET v3/secrets/status",
 	// A folder's sandbox environment (sandbox_environments.go): read, define
@@ -599,7 +601,7 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_models", Title: "List models and role defaults",
-			Description: "Connected providers with their models and thinking options, and the default model of each agent role.",
+			Description: "Connected providers with their models, thinking options and whether each offers fast (priority) serving, and the default model of each agent role (fast when it runs on priority serving).",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"provider": controlMCPStringProp("Only this provider.", 0, 100),
 			}),
@@ -618,12 +620,13 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_set_agent_model", Title: "Change an agent role's default model",
-			Description: "Set the account default model for one agent role, or for every role with role all (new sessions, custom agents and delegated work use it).",
+			Description: "Set the account default model for one agent role, or for every role with role all (new sessions, custom agents and delegated work use it). fast runs it on priority serving (faster, costs more) where list_models shows fast: true; without it the role uses standard serving.",
 			InputSchema: controlMCPObject([]string{"role", "provider", "model"}, map[string]any{
 				"role":     map[string]any{"type": "string", "enum": append(slices.Clone(controlMCPAgentModelRoleOrder), "all")},
 				"provider": providerProp,
 				"model":    modelProp,
 				"thinking": thinkingProp,
+				"fast":     map[string]any{"type": "boolean", "description": "Priority serving (faster, costs more). Only for a model whose list_models entry has fast: true."},
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSetAgentModel,
 		},
@@ -1274,7 +1277,36 @@ func (c *controlMCPCall) modelPreference(args map[string]any) (map[string]any, e
 	if thinking != "" {
 		preference["thinking"] = thinking
 	}
+	if fast, _ := args["fast"].(bool); fast {
+		tier := controlMCPFastTier(record)
+		if tier == "" {
+			return nil, controlMCPToolFailure("%s has no fast serving on %s (see list_models)", model, provider)
+		}
+		preference["service_tier"] = tier
+	}
 	return preference, nil
+}
+
+// controlMCPFastTier is the serving tier behind the catalog's fast setting
+// for a model (codex names it fast, other providers priority), or "".
+func controlMCPFastTier(record map[string]any) string {
+	for _, raw := range controlMCPList(record["service_tier_mappings"]) {
+		mapping := controlMCPMap(raw)
+		if setting, _ := mapping["swarm_setting"].(string); strings.EqualFold(setting, "fast") {
+			tier, _ := mapping["tier"].(string)
+			return strings.ToLower(strings.TrimSpace(tier))
+		}
+	}
+	return ""
+}
+
+// controlMCPRoleModel is a role's assignment as the tools show it: fast is
+// the fast serving tier.
+func controlMCPRoleModel(assignment map[string]any) map[string]any {
+	entry := controlMCPPick(assignment, "provider", "model", "thinking")
+	tier, _ := assignment["service_tier"].(string)
+	entry["fast"] = tier == "fast" || tier == "priority"
+	return entry
 }
 
 func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1712,6 +1744,9 @@ func controlMCPListModels(c *controlMCPCall, args map[string]any) (any, error) {
 			models := []map[string]any{}
 			for _, record := range controlMCPList(catalog["records"]) {
 				if m := controlMCPPick(controlMCPMap(record), "model", "thinking_options", "default_thinking", "context_window"); len(m) > 0 {
+					if controlMCPFastTier(controlMCPMap(record)) != "" {
+						m["fast"] = true
+					}
 					models = append(models, m)
 				}
 			}
@@ -1730,7 +1765,7 @@ func controlMCPListModels(c *controlMCPCall, args map[string]any) (any, error) {
 			if !ok {
 				continue
 			}
-			entry := controlMCPPick(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]), "provider", "model", "thinking")
+			entry := controlMCPRoleModel(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]))
 			entry["role"] = id
 			roles = append(roles, entry)
 		}
@@ -1774,7 +1809,7 @@ func controlMCPSetAgentModel(c *controlMCPCall, args map[string]any) (any, error
 			}
 			return nil, controlMCPToolFailure("roles %v changed, then %s failed: %s", roles[:i], name, err.Error())
 		}
-		applied = controlMCPPick(controlMCPMap(controlMCPMap(controlMCPMap(response["agent_model_settings"])[slot[0]])[slot[1]]), "provider", "model", "thinking")
+		applied = controlMCPRoleModel(controlMCPMap(controlMCPMap(controlMCPMap(response["agent_model_settings"])[slot[0]])[slot[1]]))
 	}
 	return map[string]any{"role": role, "model": applied}, nil
 }

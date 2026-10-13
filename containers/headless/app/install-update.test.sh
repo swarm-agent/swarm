@@ -37,6 +37,10 @@ EOF
 
 # A release per commit: node is the real one (json_get), swarmd a stand-in.
 release() { mkdir -p "$OPT/releases/$1/bin"; ln -sf "$(command -v node)" "$OPT/releases/$1/bin/node"; printf '#!/bin/sh\n' >"$OPT/releases/$1/bin/swarmd"; chmod +x "$OPT/releases/$1/bin/swarmd"; touch "$OPT/releases/$1/.complete"; }
+# 0. A first install has no release yet: asking which one runs is no error
+# (under errexit it stopped the first install before Swarm started).
+rc=0; first=$(running_commit) || rc=$?
+[[ $rc == 0 && -z $first ]] || fail "running_commit failed ($rc) or named a release on a machine without one: $first"
 release "$c1"
 ln -sfn "$OPT/releases/$c1" "$OPT/current"
 
@@ -162,7 +166,21 @@ chmod 0777 "$work/hook"
 update_state blocked "test" "other-commit" 2>/dev/null
 [[ ! -s $work/hook-log ]] || fail "a world-writable hook was run"
 
-# 9. The origin's GitHub name, in every form git writes it.
+# 9. A setting change (workspace add, daemon-env, tailnet, secret gateway)
+# restarts Swarm only when nothing runs; still busy at the limit, it does not
+# restart and says the change waits for the next restart.
+systemctl() { [[ $1 == restart ]] && echo "restart $2" >>"$log"; return 0; }
+: >"$log"
+busy=true
+set +e; out=$(RESTART_WAIT_SECONDS=30 restart_daemon_when_idle 2>&1); rc=$?; set -e
+[[ $rc != 0 ]] && ! grep -q '^restart' "$log" || fail "Swarm was restarted while work ran ($rc): $out"
+[[ $out == *"not restarted"*"run the same command again"* ]] || fail "a busy machine did not say what to do: $out"
+busy=false
+(restart_daemon_when_idle) || fail "an idle machine was not restarted"
+grep -qx "restart $DAEMON_UNIT" "$log" || fail "the idle restart did not happen: $(cat "$log")"
+systemctl() { return 0; }
+
+# 10. The origin's GitHub name, in every form git writes it.
 unset -f github_repo
 source <(sed '$d' "$here/install.sh" | sed -n '/^github_repo() {/,/^}/p')
 for url in https://github.com/swarm-agent/swarm.git git@github.com:swarm-agent/swarm.git ssh://git@github.com/swarm-agent/swarm; do

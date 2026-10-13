@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016 # single-quoted snippets run in their own shell
 # Purpose. Requirement: an AI agent (no terminal) can install and start Swarm
-# with `curl -fsSL https://swarmagent.dev/install | sh -s -- --yes`, and every
+# with `curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes`, and every
 # decision a missing terminal affects is made before any host change:
 #   - terminal detection opens /dev/tty instead of trusting its permission bits;
 #   - no terminal + --yes picks --service when systemd runs, --no-service
@@ -223,7 +223,7 @@ echo '# B2: no terminal without --yes fails fast with the rerun line'
 new_case no-yes systemd=yes
 FAKE_SUDO_PASSWORDLESS=1 run_notty --artifact-root "$artifact"
 check 'exit 2' equals "${case_dir}/rc" 2
-check 'prints the exact rerun line' has "${case_dir}/out" 'curl -fsSL https://swarmagent.dev/install | sh -s -- --yes'
+check 'prints the exact rerun line' has "${case_dir}/out" 'curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes'
 check 'prints the --service option' has "${case_dir}/out" 'sh -s -- --yes --service'
 check 'prints the --no-service option' has "${case_dir}/out" 'sh -s -- --yes --no-service'
 check 'not reported as a cancellation' lacks "${case_dir}/out" 'install cancelled'
@@ -234,7 +234,7 @@ echo '# B3: non-root, no terminal, sudo needs a password, Git missing'
 new_case sudo-password git=missing systemd=yes
 run_notty --artifact-root "$artifact" --yes
 check 'exit 1' equals "${case_dir}/rc" 1
-check 'prints the sudo rerun line' has "${case_dir}/out" 'curl -fsSL https://swarmagent.dev/install | sudo sh -s -- --yes'
+check 'prints the sudo rerun line' has "${case_dir}/out" 'curl -fsSL https://swarmagent.dev/install-launcher | sudo sh -s -- --yes'
 check 'explains why' has "${case_dir}/out" "'sudo -n true' failed"
 check 'says nothing changed' has "${case_dir}/out" 'Nothing was changed.'
 check 'only sudo -n true was attempted' equals "${case_dir}/sudo.calls" '-n true'

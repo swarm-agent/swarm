@@ -238,6 +238,10 @@ test('the fleet state file round-trips, is private, and refuses bad tables', () 
   assert.equal(roleState({ provider: 'prov', model: 'm1', thinking: '' }, { provider: 'prov', model: 'm1', thinking: 'high' }), 'in_sync', 'blank thinking in the table accepts any');
   assert.equal(roleState({ provider: 'prov', model: 'm1', thinking: 'low' }, { provider: 'prov', model: 'm1', thinking: 'high' }), 'drift');
   assert.equal(roleState({ provider: 'prov', model: 'm1', thinking: '' }, { provider: 'prov', model: 'm1', thinking: 'low' }, true), 'override');
+  assert.deepEqual(validateModels({ coder: { provider: 'prov', model: 'm1', fast: true } }).coder, { provider: 'prov', model: 'm1', thinking: '', fast: true });
+  assert.equal(roleState({ provider: 'prov', model: 'm1', fast: true }, { provider: 'prov', model: 'm1' }), 'drift', 'a role the table runs fast drifts on standard serving');
+  assert.equal(roleState({ provider: 'prov', model: 'm1' }, { provider: 'prov', model: 'm1', fast: true }), 'drift', 'and the other way round');
+  assert.equal(roleState({ provider: 'prov', model: 'm1', fast: true }, { provider: 'prov', model: 'm1', fast: true }), 'in_sync');
   assert.match(defaultStatePath({ XDG_CONFIG_HOME: '/x' }), /^\/x\/swarm-fleet\/fleet\.json$/);
   assert.equal(defaultStatePath({ SWARM_FLEET_STATE: '/y/f.json' }), '/y/f.json');
 });
