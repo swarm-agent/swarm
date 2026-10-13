@@ -254,6 +254,15 @@ func (s *Service) CountWorkerRuns(account string, sinceMs, untilMs int64) (pebbl
 	return s.store.WorkerStore().CountWorkerRuns(account, sinceMs, untilMs)
 }
 
+// CountUnfinishedWorkerRuns counts every account's unfinished runs on this
+// machine (the run index), for "may Swarm restart now?".
+func (s *Service) CountUnfinishedWorkerRuns() (int, error) {
+	if s == nil || s.store == nil {
+		return 0, errors.New("session service not configured")
+	}
+	return s.store.WorkerStore().CountUnfinishedWorkerRuns()
+}
+
 // ListWorkerRunsByTime lists one account's runs across all workers, newest first.
 func (s *Service) ListWorkerRunsByTime(account string, query pebblestore.WorkerRunTimeQuery) ([]pebblestore.WorkerRunRecord, string, error) {
 	if s == nil || s.store == nil {

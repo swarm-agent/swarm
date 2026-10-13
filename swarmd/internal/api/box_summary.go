@@ -88,6 +88,17 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 	if cfg, err := s.loadStartupConfig(); err == nil && strings.TrimSpace(cfg.SwarmName) != "" {
 		machine["name"] = strings.TrimSpace(cfg.SwarmName)
 	}
+	if update := boxUpdateState(); update != nil {
+		machine["update"] = update
+		if update.State == "rolled_back" {
+			raise(BoxStatusAttention, "an update was rolled back: "+update.Reason)
+		}
+	}
+	busy, err := s.boxBusy()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 
 	sb := sandbox.Default().Status()
 	if !sb.Active {
@@ -209,6 +220,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		"status":          status,
 		"reasons":         reasons,
 		"machine":         machine,
+		"busy":            busy,
 		"sandbox":         map[string]any{"mode": string(sb.Mode), "active": sb.Active, "runtime": sb.Runtime, "reason": sb.Reason},
 		"secrets_gateway": s.secretsGatewayEnabled,
 		"permissions":     map[string]any{"bypass": s.permissionBypassForAccount(account), "bypass_blocked_reason": s.permissionBypassBlockedReason()},

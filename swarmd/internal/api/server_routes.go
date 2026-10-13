@@ -60,6 +60,7 @@ func (s *Server) registerOnboardingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/onboarding/provider/credential", s.ownerOnlyScope(s.handleOnboardingProviderCredential))
 	mux.HandleFunc("/v3/signals", s.handleSignals)
 	mux.HandleFunc("/v3/box/summary", s.handleBoxSummary)
+	mux.HandleFunc("/v3/box/busy", s.handleBoxBusy)
 	mux.HandleFunc("/v3/runs", s.handleRuns)
 	mux.HandleFunc("/v3/outbox", s.handleOutbox)
 	mux.HandleFunc("/v3/signals/sinks", s.handleSignalSinks)

@@ -9,7 +9,25 @@ export interface BoxSummary {
   status: BoxStatus;
   /** Why the status is not `ok`. */
   reasons: string[];
-  machine: { name?: string; uptime_ms: number };
+  machine: {
+    name?: string;
+    uptime_ms: number;
+    version?: string;
+    commit?: string;
+    /** The installer's update state (install.sh update), when it has one. */
+    update?: {
+      auto?: 'on' | 'off';
+      channel?: string;
+      /** current, waiting, waiting_review, blocked, building, waiting_idle, installed, rolled_back or failed. */
+      state?: string;
+      reason?: string;
+      running?: string;
+      candidate?: string;
+      at?: number;
+    };
+  };
+  /** What a restart of Swarm would interrupt now, across the machine. */
+  busy: { busy: boolean; sessions: number; worker_runs: number; environment_builds: number };
   sandbox: { mode: string; active: boolean; runtime?: string; reason?: string };
   secrets_gateway: boolean;
   permissions: { bypass: boolean; bypass_blocked_reason?: string };

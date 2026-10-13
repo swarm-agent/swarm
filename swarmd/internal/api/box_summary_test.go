@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -185,5 +186,70 @@ func TestRunsList(t *testing.T) {
 	}
 	if code, _, _ := get("?status=broken"); code != http.StatusBadRequest {
 		t.Fatalf("unknown status = %d", code)
+	}
+}
+
+// GET /v3/box/busy tells the installer's update whether a restart would cut
+// work short: it counts unfinished runs across the machine and goes quiet once
+// they finish; the summary repeats it and passes on the installer's update
+// state, raising attention when an update was rolled back.
+func TestBoxBusyAndUpdateState(t *testing.T) {
+	s, attachToken, sec, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := s.sessions.CreateWorker(context.Background(), actor.AccountScopeID, actor.UserID, pebblestore.CreateWorkerRequest{Name: "Builder", Instructions: "Build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.sessions.RecordWorkerRun(actor.AccountScopeID, pebblestore.WorkerRunRecord{WorkerID: worker.ID, UserID: actor.UserID, Status: "running", RequestSource: "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(t.TempDir(), "update-state.json")
+	if err := os.WriteFile(state, []byte(`{"auto":"on","channel":"dev","state":"rolled_back","reason":"abc1234 did not start","running":"def5678","candidate":"abc1234","at":5,"extra":"dropped"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SWARM_UPDATE_STATE", state)
+	get := func(path, token string) (int, map[string]any, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555"+path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out, rec.Body.String()
+	}
+	sessionsKey, _, err := sec.CreateScopedToken("app", []string{"sessions:read"}, actor.AccountScopeID, actor.UserID, time.Hour, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := get("/v3/box/busy", sessionsKey); code != http.StatusForbidden {
+		t.Fatalf("sessions key read busy: %d", code)
+	}
+	code, busy, raw := get("/v3/box/busy", attachToken)
+	if code != http.StatusOK || busy["busy"] != true || busy["worker_runs"].(float64) != 1 {
+		t.Fatalf("busy = %d %s", code, raw)
+	}
+	_, summary, raw := get("/v3/box/summary", attachToken)
+	if summary["busy"].(map[string]any)["busy"] != true {
+		t.Fatalf("summary busy = %s", raw)
+	}
+	update := summary["machine"].(map[string]any)["update"].(map[string]any)
+	if update["state"] != "rolled_back" || update["candidate"] != "abc1234" || update["extra"] != nil {
+		t.Fatalf("update = %v", update)
+	}
+	if !strings.Contains(strings.Join(toStrings(summary["reasons"]), "|"), "an update was rolled back") {
+		t.Fatalf("reasons = %v", summary["reasons"])
+	}
+	run.Status = "succeeded"
+	if _, err := s.sessions.RecordWorkerRun(actor.AccountScopeID, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, busy, raw = get("/v3/box/busy", attachToken); busy["busy"] != false || busy["worker_runs"].(float64) != 0 {
+		t.Fatalf("busy after the run finished = %s", raw)
 	}
 }

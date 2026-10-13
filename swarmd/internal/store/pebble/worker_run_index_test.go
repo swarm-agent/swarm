@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -260,5 +261,44 @@ func TestWorkerRunIndexTalliesPerWorker(t *testing.T) {
 	}
 	if fmt.Sprint(counts.ByWorker) != fmt.Sprint(want) {
 		t.Fatalf("by worker = %v, want %v", counts.ByWorker, want)
+	}
+}
+
+// The machine-wide unfinished count spans every account and follows status
+// changes, so an update never restarts Swarm under a run of any account.
+func TestCountUnfinishedWorkerRunsSpansAccounts(t *testing.T) {
+	_, ws := openTestStore(t)
+	runs := map[string]WorkerRunRecord{}
+	for _, account := range []string{"account-a", "Account B"} {
+		w, err := ws.CreateWorker(account, "user", CreateWorkerRequest{Name: "Worker", Instructions: "Do the assigned task"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, status := range []string{"admitted", "running", "succeeded"} {
+			run, err := ws.RecordWorkerRun(account, WorkerRunRecord{WorkerID: w.ID, Status: "running", RequestSource: "direct", CreatedAt: int64(1000 + i)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status == "succeeded" {
+				run.Status = status
+				if run, err = ws.RecordWorkerRun(account, run); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runs[account+fmt.Sprint(i)] = run
+		}
+	}
+	if got, err := ws.CountUnfinishedWorkerRuns(); err != nil || got != 4 {
+		t.Fatalf("unfinished = %d, %v; want 4", got, err)
+	}
+	for _, key := range []string{"account-a0", "Account B1"} {
+		run := runs[key]
+		run.Status = "cancelled"
+		if _, err := ws.RecordWorkerRun(strings.TrimSuffix(strings.TrimSuffix(key, "0"), "1"), run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := ws.CountUnfinishedWorkerRuns(); err != nil || got != 2 {
+		t.Fatalf("unfinished after cancelling two = %d, %v; want 2", got, err)
 	}
 }

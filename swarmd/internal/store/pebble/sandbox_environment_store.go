@@ -283,3 +283,23 @@ func (s *SandboxEnvironmentStore) InterruptBuilds() error {
 	}
 	return nil
 }
+
+// CountBuilding counts the environment builds in progress; a restart of the
+// daemon interrupts them.
+func (s *SandboxEnvironmentStore) CountBuilding() (int, error) {
+	if s == nil || s.store == nil {
+		return 0, nil
+	}
+	count := 0
+	err := s.store.IteratePrefix(KeySandboxEnvironmentPrefix, 10_000, func(_ string, value []byte) error {
+		var env SandboxEnvironment
+		if err := json.Unmarshal(value, &env); err != nil {
+			return err
+		}
+		if env.Status == SandboxEnvironmentBuilding {
+			count++
+		}
+		return nil
+	})
+	return count, err
+}

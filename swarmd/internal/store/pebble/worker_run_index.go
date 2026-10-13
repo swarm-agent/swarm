@@ -344,3 +344,33 @@ func (ws *WorkerStore) CountWorkerRuns(account string, sinceMs, untilMs int64) (
 	}
 	return counts, nil
 }
+
+// CountUnfinishedWorkerRuns counts every account's unfinished runs on this
+// machine, each checked against its run record. A restart of the daemon
+// interrupts them, so an update waits until this is zero.
+func (ws *WorkerStore) CountUnfinishedWorkerRuns() (int, error) {
+	if ws == nil || ws.store == nil {
+		return 0, ErrWorkerInvalid
+	}
+	snap := ws.store.db.NewSnapshot()
+	defer snap.Close()
+	count := 0
+	err := iteratePrefixFromReader(snap, keyWorkerRunActivePrefix, int(^uint(0)>>1), func(key string, value []byte) error {
+		var entry workerRunIndexEntry
+		account, _, ok := strings.Cut(strings.TrimPrefix(key, keyWorkerRunActivePrefix), "/")
+		if !ok || json.Unmarshal(value, &entry) != nil {
+			return nil
+		}
+		// The key holds the account already escaped, as the record key does.
+		var run WorkerRunRecord
+		found, err := getJSONFromReader(snap, KeyWorkerRunAccountPrefix+account+"/"+keyPart(entry.WorkerID)+"/"+keyPart(entry.RunID), &run)
+		if err != nil {
+			return err
+		}
+		if found && !AutomationV2Terminal(run.Status) {
+			count++
+		}
+		return nil
+	})
+	return count, err
+}

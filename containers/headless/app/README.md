@@ -78,10 +78,21 @@ and `swarm-headless-app` (this app on 127.0.0.1:8443). Binaries live in
 `/var/cache/swarmd` and `/var/log/swarmd` (mode 0700, systemd state
 directories); agent worktrees under `/var/lib/swarm`; projects in
 `/var/lib/swarm-headless/project`. `swarmctl` (in `/usr/local/bin`) runs as
-the `swarm` user, e.g. `sudo swarmctl remote approve CODE`. A 5-minute timer
-runs `install.sh update`, which rebuilds only when the branch moves forward:
-a branch that does not contain the running build would be a downgrade, so it
-waits until it does.
+the `swarm` user, e.g. `sudo swarmctl remote approve CODE`.
+**Updates.** Automatic updates are opt-in: `install.sh auto-update on` (or
+`--auto-update` at install) runs `install.sh update` every 5 minutes; it can
+also be run by hand. An update takes the newest commit of the branch only when
+it contains the running build (never a downgrade) and passed its checks on
+GitHub: by default Swarm's AI review (`ai-review`, accepted only from the
+`swarm-go-ai-review` GitHub App); a failed review blocks the commit and a
+missing one waits. It builds the commit next to the running build while work
+goes on and restarts Swarm into it only when nothing runs (no agent run,
+worker run or environment build: `GET /v3/box/busy`). If the new build does
+not come up within two minutes, Swarm goes back to the build before and never
+retries that commit. The machine summary shows the state (`machine.update`)
+and what runs (`busy`); `auto-update on --hook PATH` also tells a root-owned
+command when a commit is installed, blocked or rolled back, and `--checks`
+names other checks (`none` for a fork without them).
 **Channels.** The installer follows `main`, the released build; `--ref dev`
 follows development, which changes several times a day.
 `install.sh channel` shows the branch and `install.sh channel dev` (or `main`)

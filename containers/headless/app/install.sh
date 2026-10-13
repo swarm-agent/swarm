@@ -41,8 +41,11 @@
 #
 # The first visit to the setup page creates your login (username, password
 # and an optional authenticator code).
-# Later: `install.sh update` (also run by a 5-minute timer) rebuilds when the
-# branch moves forward; `install.sh channel BRANCH` switches the branch it
+# Later: `install.sh update` takes the newest commit of the branch that passed
+# Swarm's AI review, builds it while work runs and restarts Swarm into it only
+# when nothing runs, going back to the build before if it does not come up
+# (`install.sh auto-update on`, or --auto-update, runs it every 5 minutes;
+# off by default); `install.sh channel BRANCH` switches the branch it
 # follows and keeps everything else; `install.sh reset-login` deletes the login
 # so you can create a new one (Swarm itself and your work are kept).
 # `install.sh daemon-env` keeps settings for Swarm itself (such as the X
@@ -102,10 +105,11 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'USAGE'
 Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref BRANCH] [--no-ai-access]
-                  [--secrets-gateway on|off] [--ask-permissions] [--tailnet [--tag TAG] [--lock-ssh]]
+                  [--secrets-gateway on|off] [--ask-permissions] [--auto-update] [--tailnet [--tag TAG] [--lock-ssh]]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
+       install.sh auto-update [on|off] [--checks CONTEXT=APP[,...]|none] [--hook PATH]
        install.sh dev-sync /path/to/checkout | off
        install.sh channel [BRANCH]
        install.sh connect-ai [--for-user NAME] [--access write|full]
@@ -131,6 +135,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
   --secrets-gateway on|off
                 inject granted secrets through the egress gateway (default on;
                 see secrets-gateway below)
+  --auto-update update by itself (install.sh auto-update below; off by default)
   --ask-permissions
                 agents ask before commands and file changes; by default they
                 run without prompts, which Swarm allows only inside the sandbox
@@ -171,6 +176,23 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
   --yes              do not ask for confirmation
   --delete-projects  also delete the project folder (your workspaces)
 
+  update           take the newest commit of the branch this machine follows
+                   that passed its checks (UPDATE_CHECKS, by default Swarm's
+                   AI review on GitHub; a failed check blocks the commit),
+                   build it while work runs, restart Swarm into it only when
+                   nothing runs (no agent run, worker run or environment
+                   build), and go back to the build before if it does not
+                   come up within two minutes. The machine summary shows the
+                   update state (machine.update) and what runs (busy).
+  auto-update [on|off] [--checks CONTEXT=APP[,...]|none] [--hook PATH]
+                   show automatic updates, or turn them on or off (off by
+                   default): on runs update every 5 minutes. --checks names
+                   the commit statuses a commit needs and the GitHub App that
+                   must post each (default ai-review=swarm-go-ai-review[bot];
+                   none updates without checks). --hook names a root-owned
+                   command told when a commit is installed, blocked or
+                   rolled back (SWARM_UPDATE_EVENT, _COMMIT, _RUNNING,
+                   _REASON, _CHANNEL, _MACHINE).
   channel [BRANCH] show the branch this machine follows, or switch to BRANCH
                    (main or dev) without reinstalling; the next update builds
                    it once it is ahead of the running build
@@ -248,6 +270,11 @@ conf_migrate() {
     PERMISSIONS=auto
     conf_set PERMISSIONS auto
     echo "swarm: agents now run without permission prompts while the sandbox is active (install.sh permissions ask turns them back on)"
+  fi
+  if [[ -z ${AUTO_UPDATE:-} ]]; then
+    AUTO_UPDATE=off
+    conf_set AUTO_UPDATE off
+    echo "swarm: automatic updates are now opt-in and off for this install; install.sh auto-update on turns them on (they install only commits that passed Swarm's AI review, and restart Swarm only when nothing runs)"
   fi
 }
 
@@ -391,28 +418,60 @@ check_sandbox() {
 
 # Build Swarm and the app from the checkout, install them under $OPT,
 # build the sandbox image and (re)start the services. Restarting stops any
-# agent run in progress.
+# agent run in progress; `update` instead builds first and switches only when
+# nothing runs.
 up() {
   load_conf
-  local commit release
+  local commit
   commit=$(git -C "$SRC" rev-parse HEAD)
-  release=$OPT/releases/$commit
+  build_release "$commit"
+  activate "$commit"
+}
+
+# The commit the services run (the release $OPT/current points at).
+running_commit() {
+  local target
+  target=$(readlink -f "$OPT/current" 2>/dev/null) || return 0
+  [[ -d $target ]] && basename "$target"
+}
+
+# Build a commit of the checkout into its own release and sandbox image
+# (swarm-sandbox:COMMIT) next to the running one; the services keep running
+# and nothing switches yet. A release already built is kept.
+build_release() {
+  local commit=$1 release=$OPT/releases/$1
+  [[ -f $release/.complete ]] && docker image inspect "swarm-sandbox:$commit" >/dev/null 2>&1 && return 0
   say "Building Swarm ${SWARM_REF}@${commit:0:9} (the first build takes several minutes)"
   rm -rf "$STAGE"
   docker build --platform linux/amd64 -f "$SRC/containers/headless/app/Dockerfile.host" \
     --build-arg VERSION="$SWARM_REF" --build-arg COMMIT="$commit" \
     --build-arg BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o "type=local,dest=$STAGE" "$SRC"
-  docker build --platform linux/amd64 -t "$SANDBOX_IMAGE" "$SRC/containers/sandbox"
+  docker build --platform linux/amd64 -t "swarm-sandbox:$commit" "$SRC/containers/sandbox"
   install -d -m 0755 "$OPT/releases"
   rm -rf "$release.new" && mv "$STAGE" "$release.new"
   # The exporter creates its top directory 0700; Swarm runs as its own user.
   chmod -R u=rwX,go=rX "$release.new"
+  touch "$release.new/.complete"
   rm -rf "$release" && mv "$release.new" "$release"
+}
+
+# Switch the services to a built release and restart them (this stops any
+# agent run in progress). The release that ran before stays as
+# $OPT/previous, so an update that does not come up can go back to it.
+activate() {
+  local commit=$1 release=$OPT/releases/$1 old
+  [[ -x $release/bin/swarmd ]] || die "release ${commit:0:9} is not built"
+  old=$(running_commit)
+  if [[ -n $old && $old != "$commit" ]]; then
+    # Installs from before per-commit sandbox images kept only the :local tag.
+    docker image inspect "swarm-sandbox:$old" >/dev/null 2>&1 ||
+      docker tag "$SANDBOX_IMAGE" "swarm-sandbox:$old" 2>/dev/null || true
+    ln -sfn "$OPT/releases/$old" "$OPT/previous.new" && mv -T "$OPT/previous.new" "$OPT/previous"
+  fi
+  docker tag "swarm-sandbox:$commit" "$SANDBOX_IMAGE"
   ln -sfn "$release" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current"
-  # Keep the running release and the one before it.
-  find "$OPT/releases" -mindepth 1 -maxdepth 1 -type d ! -path "$release" -printf '%T@ %p\n' 2>/dev/null |
-    sort -rn | tail -n +2 | cut -d' ' -f2- | xargs -r rm -rf
+  prune_releases
   install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER
 #!/bin/sh
 # swarmctl talks to Swarm's private socket, so it runs as Swarm's own user.
@@ -428,6 +487,23 @@ WRAPPER
   systemctl restart "$DAEMON_UNIT"
   systemctl restart "$APP_UNIT"
   echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
+}
+
+# Keep the running release, the one before it and any built release waiting
+# to start; remove the others and their sandbox images.
+prune_releases() {
+  local keep=() dir commit
+  for dir in "$OPT/current" "$OPT/previous"; do
+    [[ -e $dir ]] && keep+=("$(basename "$(readlink -f "$dir")")")
+  done
+  commit=$(git -C "$SRC" rev-parse HEAD 2>/dev/null) && keep+=("$commit")
+  for dir in "$OPT/releases"/*; do
+    [[ -d $dir ]] || continue
+    commit=$(basename "$dir")
+    [[ " ${keep[*]} " == *" $commit "* ]] && continue
+    rm -rf "$dir"
+    docker image rm "swarm-sandbox:$commit" >/dev/null 2>&1 || true
+  done
 }
 
 # Development: build the committed HEAD of a checkout on this machine instead
@@ -449,39 +525,266 @@ dev_sync() {
   sed -i '/^DEV_SOURCE=/d' "$CONF" && echo "DEV_SOURCE=$repo" >>"$CONF"
   git -C "$SRC" reset -q --hard FETCH_HEAD
   echo "swarm: building $(git -C "$SRC" rev-parse --short HEAD) from $repo"
-  exec bash "$SRC/containers/headless/app/install.sh" apply
+  exec bash "$SRC/containers/headless/app/install.sh" apply-now
 }
 
-# Pull-based updates: rebuild only when the branch moved.
+# ---- Updates ------------------------------------------------------------------
+# Automatic updates are opt-in: `install.sh auto-update on` starts a 5-minute
+# timer that runs `install.sh update`, which can also be run by hand. An update
+# takes the newest commit of the branch this machine follows only when
+#  - it contains the running build (never a downgrade, which Swarm's stored
+#    state may not survive);
+#  - it passed every check in UPDATE_CHECKS on GitHub, each posted by the
+#    named GitHub App (by default Swarm's own AI review: ai-review posted by
+#    swarm-go-ai-review[bot]); a release merge that adds nothing to the commit
+#    it merged (dev into main) counts as that commit. A failed check blocks the
+#    commit; a missing one waits for it;
+# then builds it next to the running build while work goes on, and restarts
+# Swarm into it only when nothing runs (GET /v3/box/busy: agent runs, worker
+# runs, environment builds). If the new build does not come up (ready, its
+# sandbox on as before, the setup page answering) within two minutes, Swarm goes
+# back to the build it ran before and never retries that commit. Each step is
+# written to $UPDATE_STATE, which the machine summary (and its status in the
+# outbox) shows; with UPDATE_HOOK set to a root-owned command, it is also told
+# when a commit is installed, blocked or rolled back.
+UPDATE_STATE=$OPT/update-state.json
+UPDATE_BAD=$STATE/update-bad
+DEFAULT_UPDATE_CHECKS='ai-review=swarm-go-ai-review[bot]'
+LOCAL_API_SOCKET=/var/lib/swarmd/local-transport/api.sock
+
+local_api() { curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" "http://swarm$1"; }
+
+# Print one field (a.b.c) of the JSON on stdin, with the node of the running
+# release; nothing when it is absent.
+json_get() {
+  "$OPT/current/bin/node" -e '
+    let v; try { v = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch { process.exit(1); }
+    for (const k of process.argv[1].split(".")) v = v == null ? undefined : v[k];
+    process.stdout.write(v === undefined || v === null ? "" : String(v));' "$1"
+}
+
+# Record the update state for the machine summary; tell UPDATE_HOOK when the
+# state of a commit changes to installed, blocked, rolled_back or failed.
+update_state() {
+  local state=$1 reason=${2//[\"\\]/} candidate=${3:-} before=''
+  [[ -f $UPDATE_STATE ]] && before=$(json_get state <"$UPDATE_STATE" || true)/$(json_get candidate <"$UPDATE_STATE" || true)
+  printf '{"auto":"%s","channel":"%s","state":"%s","reason":"%s","running":"%s","candidate":"%s","at":%s}\n' \
+    "${AUTO_UPDATE:-off}" "$SWARM_REF" "$state" "$reason" "$(running_commit)" "$candidate" "$(date +%s%3N)" >"$UPDATE_STATE.new"
+  chmod 0644 "$UPDATE_STATE.new" && mv "$UPDATE_STATE.new" "$UPDATE_STATE"
+  echo "swarm: $reason"
+  [[ $before == "$state/$candidate" ]] || update_hook "$state" "$reason" "$candidate"
+}
+
+update_hook() {
+  local hook=${UPDATE_HOOK:-} mode
+  [[ -n $hook ]] || return 0
+  case $1 in installed | blocked | rolled_back | failed) ;; *) return 0 ;; esac
+  mode=$(stat -c '%u %a' "$hook" 2>/dev/null || true)
+  if [[ $hook != /* || ! -f $hook || ${mode%% *} != 0 ]] || ((8#${mode##* } & 8#022)); then
+    echo "swarm: UPDATE_HOOK $hook is not a file only root can change; not run" >&2
+    return 0
+  fi
+  SWARM_UPDATE_EVENT=$1 SWARM_UPDATE_REASON=$2 SWARM_UPDATE_COMMIT=$3 SWARM_UPDATE_RUNNING=$(running_commit) \
+    SWARM_UPDATE_CHANNEL=$SWARM_REF SWARM_UPDATE_MACHINE=${APP_DEVICE_NAME:-} timeout 60 "$hook" </dev/null ||
+    echo "swarm: UPDATE_HOOK $hook failed" >&2
+}
+
+# owner/name of the Swarm checkout's origin on GitHub.
+github_repo() {
+  local url
+  url=$(git -C "$SRC" remote get-url origin) || return 1
+  [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$ ]] || return 1
+  echo "${BASH_REMATCH[2]%.git}"
+}
+
+# The newest state of check CONTEXT that the GitHub App CREATOR posted on
+# COMMIT: success, failure, error, pending, none or unknown (GitHub did not
+# answer). Statuses of a public repository need no sign-in.
+check_state() {
+  local repo=$1 commit=$2 context=$3 creator=$4 body
+  body=$(curl -fsS --max-time 20 -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/$repo/commits/$commit/statuses?per_page=100") || { echo unknown; return 0; }
+  "$OPT/current/bin/node" -e '
+    const [context, creator] = process.argv.slice(1);
+    let list; try { list = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch { list = null; }
+    if (!Array.isArray(list)) { process.stdout.write("unknown"); process.exit(0); }
+    const s = list.find(s => s && s.context === context && s.creator && s.creator.login === creator);
+    process.stdout.write(s ? String(s.state) : "none");' "$context" "$creator" <<<"$body"
+}
+
+# Whether COMMIT passed every check in UPDATE_CHECKS; prints why not and
+# returns 1 when a check failed (blocked), 2 while one is missing.
+checks_passed() {
+  local commit=$1 checks=${UPDATE_CHECKS:-$DEFAULT_UPDATE_CHECKS} repo target spec context creator state
+  local -a specs
+  [[ $checks == none ]] && return 0
+  repo=$(github_repo) || { echo "the Swarm checkout's origin is not on GitHub, so its checks cannot be read (UPDATE_CHECKS=none updates without them)"; return 2; }
+  target=$commit
+  if git -C "$SRC" rev-parse -q --verify "$commit^2" >/dev/null && git -C "$SRC" diff --quiet "$commit^2" "$commit"; then
+    target=$(git -C "$SRC" rev-parse "$commit^2")
+  fi
+  IFS=, read -ra specs <<<"$checks"
+  for spec in "${specs[@]}"; do
+    context=${spec%%=*} creator=${spec#*=}
+    state=$(check_state "$repo" "$target" "$context" "$creator")
+    case $state in
+      success) ;;
+      failure | error) echo "$context failed on ${target:0:9}, so it is not installed"; return 1 ;;
+      *) echo "waiting for $context on ${target:0:9}"; return 2 ;;
+    esac
+  done
+}
+
+# Whether a restart now would interrupt work; prints what runs.
+swarm_busy() {
+  local out
+  systemctl is-active -q "$DAEMON_UNIT" || return 1
+  if out=$(local_api /v3/box/busy 2>/dev/null); then
+    [[ $(json_get busy <<<"$out") == true ]] || return 1
+    echo "$(json_get sessions <<<"$out") agent runs, $(json_get worker_runs <<<"$out") worker runs and $(json_get environment_builds <<<"$out") environment builds are in progress"
+    return 0
+  fi
+  # A build from before /v3/box/busy counts unfinished runs in its summary;
+  # one older still (or one not answering) cannot say, and is restarted.
+  out=$(local_api /v3/box/summary 2>/dev/null) || return 1
+  case $(json_get runs.running_now <<<"$out") in
+    '' | 0) return 1 ;;
+    *) echo "$(json_get runs.running_now <<<"$out") runs are in progress"; return 0 ;;
+  esac
+}
+
+# Whether Swarm came up on COMMIT within two minutes: ready on its socket and
+# running that build, its sandbox on when it was on before, the setup page
+# answering.
+came_up() {
+  local commit=$1 sandboxed=$2 out running
+  for _ in $(seq 1 60); do
+    sleep 2
+    out=$(local_api /v3/box/summary 2>/dev/null) || continue
+    running=$(json_get machine.commit <<<"$out") || continue
+    [[ -z $running || $running == "$commit" ]] || continue
+    [[ $sandboxed == true && $(json_get sandbox.active <<<"$out") != true ]] && continue
+    curl -fsS -o /dev/null --max-time 5 -H "Host: ${APP_ORIGIN#*://}" http://127.0.0.1:8443/ 2>/dev/null || continue
+    return 0
+  done
+  return 1
+}
+
 update() {
   load_conf
   if [[ -n ${DEV_SOURCE:-} ]]; then
     echo "swarm: built from $DEV_SOURCE; not following $SWARM_REF (install.sh dev-sync off to resume)"
+    finish_update
     return 0
   fi
   git -C "$SRC" fetch -q origin "$SWARM_REF"
-  local old new
-  old=$(git -C "$SRC" rev-parse HEAD)
+  local head new why
+  head=$(git -C "$SRC" rev-parse HEAD)
   new=$(git -C "$SRC" rev-parse FETCH_HEAD)
-  [[ $old == "$new" ]] && return 0
-  # Only move forward: a branch that does not contain the running build (after
-  # a channel switch to an older branch, or a rewritten branch) would be a
-  # downgrade, which Swarm's stored state may not survive. Wait until it does.
-  # A release merge (main) that added nothing to the branch it merged is not a
-  # downgrade when that branch's merged commit is in the new build: this is a
-  # switch from main to dev.
-  if ! git -C "$SRC" merge-base --is-ancestor "$old" "$new" &&
-    ! { git -C "$SRC" rev-parse -q --verify "$old^2" >/dev/null &&
-      git -C "$SRC" merge-base --is-ancestor "$old^2" "$new" &&
-      git -C "$SRC" diff --quiet "$old^2" "$old"; }; then
-    echo "swarm: $SWARM_REF (${new:0:9}) does not contain the running build ${old:0:9}; waiting until it does"
+  if [[ $head != "$new" ]]; then
+    # Only move forward: a branch that does not contain the running build (after
+    # a channel switch to an older branch, or a rewritten branch) would be a
+    # downgrade. A release merge (main) that added nothing to the branch it
+    # merged is not a downgrade when that branch's merged commit is in the new
+    # build: this is a switch from main to dev.
+    if ! git -C "$SRC" merge-base --is-ancestor "$head" "$new" &&
+      ! { git -C "$SRC" rev-parse -q --verify "$head^2" >/dev/null &&
+        git -C "$SRC" merge-base --is-ancestor "$head^2" "$new" &&
+        git -C "$SRC" diff --quiet "$head^2" "$head"; }; then
+      update_state waiting "$SWARM_REF (${new:0:9}) does not contain the build ${head:0:9}; waiting until it does" "$new"
+      return 0
+    fi
+    why=$(checks_passed "$new") || {
+      case $? in
+        1) update_state blocked "$why" "$new" ;;
+        *) update_state waiting_review "$why" "$new" ;;
+      esac
+      return 0
+    }
+    git -C "$SRC" reset -q --hard "$new"
+    echo "swarm: ${head:0:9} -> ${new:0:9} passed its checks"
+    # Continue in the installer just fetched, not this already-loaded copy, so
+    # changes to the installer itself (units, firewall, run flags) apply now.
+    exec bash "$INSTALLER" finish-update
+  fi
+  finish_update
+}
+
+# Bring the services to the checkout's commit: build it, wait until nothing
+# runs, switch, and go back if it does not come up.
+finish_update() {
+  load_conf
+  local commit running why sandboxed
+  commit=$(git -C "$SRC" rev-parse HEAD)
+  running=$(running_commit)
+  if [[ $running == "$commit" ]]; then
+    update_state current "running ${commit:0:9}, the newest of $SWARM_REF that passed its checks"
     return 0
   fi
-  git -C "$SRC" reset -q --hard "$new"
-  echo "swarm: ${old:0:9} -> ${new:0:9}"
-  # Continue in the installer just fetched, not this already-loaded copy, so
-  # changes to the installer itself (units, firewall, run flags) apply now.
-  exec bash "$SRC/containers/headless/app/install.sh" apply
+  if [[ -f $UPDATE_BAD && $(cat "$UPDATE_BAD") == "$commit" ]]; then
+    update_state rolled_back "${commit:0:9} did not come up and was rolled back; waiting for a newer commit" "$commit"
+    return 0
+  fi
+  update_state building "building ${commit:0:9}" "$commit"
+  # A separate process, so a failing step stops the build (errexit).
+  if ! bash "$INSTALLER" build-release "$commit"; then
+    update_state failed "building ${commit:0:9} failed; Swarm keeps running ${running:0:9} and tries again at the next update" "$commit"
+    return 1
+  fi
+  if why=$(swarm_busy); then
+    update_state waiting_idle "${commit:0:9} is built and starts once nothing runs: $why" "$commit"
+    return 0
+  fi
+  sandboxed=$(local_api /v3/box/summary 2>/dev/null | json_get sandbox.active || true)
+  activate "$commit"
+  if came_up "$commit" "$sandboxed"; then
+    rm -f "$UPDATE_BAD"
+    update_state installed "${running:0:9} -> ${commit:0:9}" "$commit"
+    return 0
+  fi
+  echo "$commit" >"$UPDATE_BAD"
+  if [[ -n $running && -x $OPT/releases/$running/bin/swarmd ]]; then
+    activate "$running"
+    if came_up "$running" ''; then
+      update_state rolled_back "${commit:0:9} did not come up; back on ${running:0:9}" "$commit"
+      return 0
+    fi
+  fi
+  update_state failed "${commit:0:9} did not come up and the build before it could not be restored; check: journalctl -u $DAEMON_UNIT" "$commit"
+  return 1
+}
+
+# Turn automatic updates on or off, or show them.
+auto_update() {
+  load_conf
+  local mode=${1:-} checks=${UPDATE_CHECKS:-} hook=${UPDATE_HOOK:-}
+  if [[ -z $mode ]]; then
+    echo "Automatic updates: ${AUTO_UPDATE:-off}; branch $SWARM_REF; checks ${UPDATE_CHECKS:-$DEFAULT_UPDATE_CHECKS}${UPDATE_HOOK:+; hook $UPDATE_HOOK}"
+    [[ -f $UPDATE_STATE ]] && cat "$UPDATE_STATE"
+    return 0
+  fi
+  shift
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  while (($#)); do
+    case $1 in
+      --checks) checks=${2:?--checks needs CONTEXT=APP[,...] or none}; shift 2 ;;
+      --hook) hook=${2?--hook needs a path, or '' for none}; shift 2 ;;
+      *) die "usage: install.sh auto-update on|off [--checks CONTEXT=APP[,...]|none] [--hook PATH]" ;;
+    esac
+  done
+  [[ $mode == on || $mode == off ]] || die "usage: install.sh auto-update on|off [--checks CONTEXT=APP[,...]|none] [--hook PATH]"
+  [[ -z $checks || $checks == none || $checks =~ ^[A-Za-z0-9._/-]+=[A-Za-z0-9._-]+(\[bot\])?(,[A-Za-z0-9._/-]+=[A-Za-z0-9._-]+(\[bot\])?)*$ ]] ||
+    die "--checks is CONTEXT=APP[,...] (e.g. ai-review=swarm-go-ai-review[bot]) or none"
+  [[ -z $hook || $hook == /* ]] || die "--hook must be an absolute path"
+  conf_set AUTO_UPDATE "$mode"
+  if [[ -n $checks ]]; then conf_set UPDATE_CHECKS "$checks"; else sed -i '/^UPDATE_CHECKS=/d' "$CONF"; fi
+  if [[ -n $hook ]]; then conf_set UPDATE_HOOK "$hook"; else sed -i '/^UPDATE_HOOK=/d' "$CONF"; fi
+  install_units
+  if [[ $mode == on ]]; then
+    echo "Automatic updates are on: every 5 minutes Swarm takes the newest commit of $SWARM_REF that passed ${checks:-$DEFAULT_UPDATE_CHECKS}, builds it while work runs and restarts into it only when nothing runs."
+  else
+    echo "Automatic updates are off; install.sh update updates by hand (with the same checks)."
+  fi
 }
 
 # The branch this machine follows. Switching keeps the install, its state and
@@ -601,6 +904,8 @@ UMask=0007
 Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
 # Folders whose jobs are delivered as pull requests (install.sh workspace publish).
 Environment=SWARM_PUBLISH_CONFIG=$PUBLISH
+# The installer's update state, shown in the machine summary.
+Environment=SWARM_UPDATE_STATE=$UPDATE_STATE
 Environment=LD_LIBRARY_PATH=$OPT/current/lib
 Environment=PATH=$OPT/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-$DAEMON_ENV
@@ -667,7 +972,7 @@ WantedBy=multi-user.target
 UNIT
   cat > "$UNITS/swarm-headless-update.service" <<UNIT
 [Unit]
-Description=Rebuild headless Swarm when its branch changes
+Description=Update headless Swarm to the newest checked commit of its branch
 After=network-online.target docker.service
 Wants=network-online.target
 
@@ -689,7 +994,12 @@ UNIT
   install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0700 "${DATA_DIRS[0]}" "$APP_CONFIG"
   systemctl daemon-reload
   systemctl enable "$FIREWALL_UNIT" "$DAEMON_UNIT" "$APP_UNIT" >/dev/null
-  systemctl enable --now swarm-headless-update.timer >/dev/null
+  # Automatic updates only when the person turned them on (install.sh auto-update on).
+  if [[ ${AUTO_UPDATE:-off} == on ]]; then
+    systemctl enable --now swarm-headless-update.timer >/dev/null
+  else
+    systemctl disable --now swarm-headless-update.timer >/dev/null 2>&1 || true
+  fi
 }
 
 # ---- Workspaces: the person's own folders, made visible to Swarm -------------
@@ -965,7 +1275,7 @@ uninstall_all() {
     local box
     for box in $(docker ps -aq --filter label=swarm.sandbox=1); do docker rm -f "$box" >/dev/null 2>&1 || true; done
     docker volume ls -q | grep '^swarm-sandbox-.*-home$' | xargs -r docker volume rm >/dev/null 2>&1 || true
-    docker image rm "$SANDBOX_IMAGE" >/dev/null 2>&1 || true
+    docker image ls --format '{{.Repository}}:{{.Tag}}' swarm-sandbox | xargs -r docker image rm >/dev/null 2>&1 || true
     docker network rm "$SANDBOX_NETWORK" >/dev/null 2>&1 || true
   fi
   if command -v iptables >/dev/null; then
@@ -975,7 +1285,7 @@ uninstall_all() {
     iptables -F SWARM-SANDBOX-HOST 2>/dev/null && iptables -X SWARM-SANDBOX-HOST 2>/dev/null || true
   fi
   rm -rf "${DATA_DIRS[@]}" /run/swarmd "$SERVICE_HOME" "$OPT" "$STAGE" "$SWARMCTL" "$AI_KEY_IDS"
-  rm -f "$CONF"
+  rm -f "$CONF" "$UPDATE_BAD"
   if ((delete_projects)); then
     rm -rf "$PROJECT"
   elif [[ -d $PROJECT ]]; then
@@ -996,8 +1306,8 @@ reinstall_all() {
   done
   if [[ -f $CONF ]]; then
     # shellcheck disable=SC1090
-    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}" "${PERMISSIONS:-}")
-    saved+=("$(saved_tailnet)")
+    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}" "${PERMISSIONS:-}" "${AUTO_UPDATE:-}" "${UPDATE_CHECKS:-}" "${UPDATE_HOOK:-}")
+    saved=("${saved[@]:0:6}" "$(saved_tailnet)" "${saved[@]:6}")
   fi
   [[ -n ${saved[0]:-} ]] && args+=(--relay "${saved[0]}")
   [[ -n ${saved[1]:-} ]] && args+=(--name "${saved[1]}")
@@ -1006,6 +1316,9 @@ reinstall_all() {
   [[ ${saved[3]:-} == off ]] && args+=(--no-ai-access)
   [[ -n ${saved[4]:-} ]] && args+=(--secrets-gateway "${saved[4]}")
   [[ ${saved[5]:-} == ask ]] && args+=(--ask-permissions)
+  [[ ${saved[7]:-} == on ]] && args+=(--auto-update)
+  [[ -n ${saved[8]:-} ]] && args+=(--update-checks "${saved[8]}")
+  [[ -n ${saved[9]:-} ]] && args+=(--update-hook "${saved[9]}")
   [[ ${saved[6]:-} == on ]] && args+=(--tailnet)
   # Later options win, so anything passed now overrides the saved settings.
   uninstall_all "${uninstall[@]}"
@@ -1377,7 +1690,7 @@ secret_cmd() {
 }
 
 install_all() {
-  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=on permissions=auto tailnet=off for_user=''
+  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=on permissions=auto tailnet=off for_user='' auto_update=off update_checks='' update_hook=''
   while (($#)); do
     case $1 in
       --for-user) for_user=${2:?--for-user needs a user name}; shift 2 ;;
@@ -1392,6 +1705,9 @@ install_all() {
       --ai-access) ai_access=on; shift ;;
       --secrets-gateway) secrets_gateway=${2:?--secrets-gateway needs on or off}; shift 2 ;;
       --ask-permissions) permissions=ask; shift ;;
+      --auto-update) auto_update=on; shift ;;
+      --update-checks) update_checks=${2:?--update-checks needs CONTEXT=APP[,...] or none}; shift 2 ;;
+      --update-hook) update_hook=${2:?--update-hook needs a path}; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) usage >&2; die "unknown option $1" ;;
     esac
@@ -1486,6 +1802,9 @@ AI_ACCESS=$ai_access
 TAILNET_IDENTITY=$tailnet_identity
 SECRETS_GATEWAY=$secrets_gateway
 PERMISSIONS=$permissions
+AUTO_UPDATE=$auto_update
+UPDATE_CHECKS=$update_checks
+UPDATE_HOOK=$update_hook
 APP_AI_URL=$ai_url
 APP_AI_IP=$ai_ip
 SANDBOX_RUNTIME=default
@@ -1590,6 +1909,7 @@ status_cmd() {
   if [[ -f $CONF ]]; then
     load_conf
     echo "Setup page: $APP_ORIGIN; Swarm MCP: $([[ ${AI_ACCESS:-off} == on ]] && echo "$LOCAL_MCP_URL" || echo off); tailnet: $(saved_tailnet); permissions: ${PERMISSIONS:-auto (after the next update)}; secret gateway: ${SECRETS_GATEWAY:-off}"
+    echo "Automatic updates: ${AUTO_UPDATE:-off} (branch $SWARM_REF)$([[ -f $UPDATE_STATE ]] && printf "; last update: %s" "$(json_get reason <"$UPDATE_STATE" 2>/dev/null || true)")"
   fi
   check_sandbox
   if [[ -f $CONF && $(saved_tailnet) == on ]]; then tailscale serve status; fi
@@ -1602,12 +1922,18 @@ main() {
     reinstall) shift; reinstall_all "$@" ;;
     uninstall) shift; uninstall_all "$@" ;;
     update) update ;;
+    finish-update) finish_update ;;
+    build-release) shift; load_conf; build_release "${1:?build-release needs a commit}" ;;
+    auto-update) shift; auto_update "$@" ;;
     dev-sync) shift; dev_sync "$@" ;;
     channel) shift; channel "$@" ;;
     daemon-env) shift; daemon_env "$@" ;;
     up) up ;;
     reset-login) reset_login ;;
-    apply) remove_legacy_layout; up ;;
+    # Installers before gated updates end their update here: finish it the
+    # new way (build, wait until nothing runs, switch, roll back on failure).
+    apply) remove_legacy_layout; finish_update ;;
+    apply-now) remove_legacy_layout; up ;;
     firewall) firewall ;;
     check-isolation) check_isolation ;;
     check-sandbox) check_sandbox ;;
