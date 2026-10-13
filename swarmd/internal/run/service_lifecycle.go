@@ -59,6 +59,15 @@ func (s *Service) GetActiveRunID(sessionID string) (string, bool) {
 	return "", false
 }
 
+// holdsActiveRun reports whether this service claimed runID as the session's
+// active lifecycle run. V3 executor runs never claim it, so a lifecycle record
+// created for them must not be active: nothing would ever finish it, and
+// worker runs wait on an active lifecycle before they settle.
+func (s *Service) holdsActiveRun(sessionID, runID string) bool {
+	active, ok := s.GetActiveRunID(sessionID)
+	return ok && strings.TrimSpace(runID) != "" && strings.EqualFold(active, strings.TrimSpace(runID))
+}
+
 func (s *Service) SetSessionRunLifecyclePhase(sessionID, runID, phase, reason string) error {
 	if s == nil {
 		return errors.New("run service is not configured")

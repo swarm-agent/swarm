@@ -176,6 +176,11 @@ func TestTaskProgressLifecycleSignalingDone(t *testing.T) {
 	if lifecycle.Phase != "needs_review" {
 		t.Fatalf("lifecycle.Phase = %v, want 'needs_review'", lifecycle.Phase)
 	}
+	// No run of this service claimed the session, so nothing would ever finish
+	// an active record: it must not claim one.
+	if lifecycle.Active {
+		t.Fatalf("lifecycle active without a claimed run: %+v", lifecycle)
+	}
 }
 
 func TestTaskProgressLifecycleSignalingBlocked(t *testing.T) {
@@ -257,6 +262,9 @@ func TestTaskProgressLifecycleSignalingBlocked(t *testing.T) {
 	}
 	if lifecycle.StopReason != "Missing required database migrations" {
 		t.Fatalf("lifecycle.StopReason = %v", lifecycle.StopReason)
+	}
+	if lifecycle.Active {
+		t.Fatalf("lifecycle active without a claimed run: %+v", lifecycle)
 	}
 }
 

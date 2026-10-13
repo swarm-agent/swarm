@@ -10,6 +10,7 @@ import (
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/model"
+	"swarm/packages/swarmd/internal/tool"
 	"swarm/packages/swarmd/internal/workspace"
 	"swarm/packages/swarmd/internal/worktree"
 	"testing"
@@ -609,5 +610,64 @@ func TestWorkerSocialPostDeliverableOnCompletion(t *testing.T) {
 	}
 	if none, err := repo.ListDeliverables("account", store.DeliverableFilter{WorkerID: bad.ID}); err != nil || len(none) != 0 {
 		t.Fatalf("invalid result persisted a deliverable: %+v %v", none, err)
+	}
+}
+
+// Requirement: a direct-role worker run (Coder, Designer, Finder) settles once
+// its V3 run intent completes, also after the agent hands over with
+// task_progress done. Threat: task_progress created an active session
+// lifecycle record for a V3 executor run that never claims one, so nothing
+// finished it; observeRun waited on it forever and the job's receipt stayed
+// running (a phantom active job in status and box summaries) after its task
+// went to review and was merged. Run.executeTaskProgressTool and
+// WorkerExecutionService.ReconcileWorker own this boundary; real Pebble, Git and
+// session mutations without a provider are the narrowest proof.
+func TestWorkerDirectRunSettlesAfterTaskProgressDone(t *testing.T) {
+	runs, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	ws := ss.Store().WorkerStore()
+	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "coder", Role: store.WorkerRoleCoder, WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = execution.Activate("account", "owner", w.ID, w.Revision, map[string]string{"primary": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := execution.Dispatch(context.Background(), "account", "owner", store.WorkerRunAdmission{WorkerID: w.ID, RequestSource: "direct", Input: map[string]any{"prompt": "Add a script"}, IdempotencyKey: "direct-done"})
+	if err != nil || r.Status != "running" || workerRunPlanID(r) != "" {
+		t.Fatalf("dispatch: %+v %v", r, err)
+	}
+	done := tool.Call{CallID: "done", Name: "task_progress", Arguments: `{"action":"done","summary":"Script added and committed"}`}
+	if _, err = runs.executeTaskProgressTool(r.SessionID, done, ss.ApplySessionMutation, planLifecycleRunContext{RunID: r.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle, ok, err := ss.GetLifecycle(r.SessionID); err != nil || (ok && lifecycle.Active) {
+		t.Fatalf("task_progress claimed an active lifecycle for an executor run: %+v %v", lifecycle, err)
+	}
+	// While the intent is still running the receipt must stay running.
+	if err = execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
+		t.Fatal(err)
+	}
+	if receipt, _, err := ws.GetWorkerRun("account", w.ID, r.ID); err != nil || receipt.Status != "running" {
+		t.Fatalf("settled before its intent: %+v %v", receipt, err)
+	}
+	intent, _, err := ss.GetSessionRunIntent(r.SessionID, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent.Status = sessions.RunIntentCompleted
+	if _, err = ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: "owner", AccountScopeID: "account", Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: "completed", IdempotencyKey: "completed", PayloadHash: "completed", RequestHash: "completed", EventType: "session.run_intent.updated", RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
+	if err != nil || receipt.Status != "succeeded" || receipt.CompletedAt == 0 {
+		t.Fatalf("direct run did not settle: %+v %v", receipt, err)
+	}
+	task, _, err := ss.Store().GetProjectTask("account", "proj_fixture", "task_"+r.ID)
+	if err != nil || task == nil || task.Status != "needs_review" {
+		t.Fatalf("task: %+v %v", task, err)
 	}
 }
