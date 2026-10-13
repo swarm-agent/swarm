@@ -55,7 +55,7 @@ export const TOOL_SCOPES = {
   swarm_manage_worker: SCOPE_MANAGE,
   swarm_set_usage_limits: SCOPE_MANAGE,
   swarm_set_agent_model: SCOPE_WRITE,
-  swarm_set_media_models: SCOPE_MANAGE,
+  swarm_set_media_models: SCOPE_WRITE,
   swarm_list_agents: SCOPE_READ,
   swarm_define_agent: SCOPE_MANAGE,
   swarm_create_client_key: SCOPE_MANAGE,
@@ -82,6 +82,8 @@ export const TOOL_SCOPES = {
   swarm_stop_job: SCOPE_WRITE,
   swarm_schedule_job: SCOPE_WRITE,
   swarm_request_media: SCOPE_WRITE,
+  swarm_media_models: SCOPE_READ,
+  swarm_save_media: SCOPE_WRITE,
   // Relay tools: trust a machine waiting to pair, or remove a paired one.
   swarm_pair_machine: SCOPE_MANAGE,
   swarm_remove_machine: SCOPE_MANAGE,

@@ -79,7 +79,7 @@ var toolScopes = map[string]string{
 	"swarm_manage_worker":          ScopeManage,
 	"swarm_set_usage_limits":       ScopeManage,
 	"swarm_set_agent_model":        ScopeWrite,
-	"swarm_set_media_models":       ScopeManage,
+	"swarm_set_media_models":       ScopeWrite,
 	"swarm_list_agents":            ScopeRead,
 	"swarm_define_agent":           ScopeManage,
 	"swarm_create_client_key":      ScopeManage,
@@ -108,6 +108,8 @@ var toolScopes = map[string]string{
 	"swarm_stop_job":        ScopeWrite,
 	"swarm_schedule_job":    ScopeWrite,
 	"swarm_request_media":   ScopeWrite,
+	"swarm_media_models":    ScopeRead,
+	"swarm_save_media":      ScopeWrite,
 }
 
 // localOnlyTools need the owner's admin authority, which the device token

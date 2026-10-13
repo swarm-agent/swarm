@@ -3079,6 +3079,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if isDirectMediaTask(&task) {
+				s.fillMediaTaskModel(r.Context(), p, &task)
 				if err := validateProjectMediaTaskSettings(s, &task, p); err != nil {
 					writeError(w, http.StatusBadRequest, err)
 					return

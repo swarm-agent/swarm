@@ -114,77 +114,30 @@ func (s *Server) handleMediaSettingsCatalog(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, errors.New("media catalog services are not configured"))
 		return
 	}
-	caps, err := s.imageGen.Capabilities(identity.ContextWithPrincipal(r.Context(), principal))
+	response, err := s.mediaCatalogFor(r.Context(), principal)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	openRouterStatus := imagegen.ProviderStatus{ID: "openrouter", Label: "OpenRouter"}
-	if s.auth != nil && strings.TrimSpace(principal.AccountScopeID) != "" {
-		if creds, err := s.auth.ListCredentialsForAccount(principal.AccountScopeID, "openrouter", "", 1); err == nil && creds.Total > 0 {
-			openRouterStatus.Ready = true
-		} else {
-			openRouterStatus.Ready = false
-			openRouterStatus.Reason = "connect an OpenRouter API key to enable OpenRouter video models"
-		}
-	}
-	response, err := s.mediaCatalogResponse(caps, openRouterStatus)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	var defaultImage, defaultVideo, defaultAudio string
-	if s.uiSettings != nil && strings.TrimSpace(principal.AccountScopeID) != "" {
-		if uiSet, err := s.uiSettings.GetForAccount(principal.AccountScopeID); err == nil {
-			defaultImage = strings.TrimSpace(uiSet.Tools.Image.DefaultModel)
-			defaultVideo = strings.TrimSpace(uiSet.Tools.Video.DefaultModel)
-			defaultAudio = strings.TrimSpace(uiSet.Tools.Audio.DefaultModel)
-		}
-	}
-	if defaultImage == "" {
-		for _, m := range response.ImageModels {
-			if m.Ready && m.Provider == "google" {
-				defaultImage = m.ID
-				break
-			}
-		}
-		if defaultImage == "" {
-			for _, m := range response.ImageModels {
-				if m.Ready {
-					defaultImage = m.ID
-					break
-				}
-			}
-		}
-		if defaultImage == "" && len(response.ImageModels) > 0 {
-			defaultImage = response.ImageModels[0].ID
-		}
-	}
-	// Video defaults are persisted account choices, never catalog suggestions.
-	// Keep an absent default empty, matching videogen's fail-closed resolution.
-	if defaultAudio == "" {
-		for _, m := range response.AudioModels {
-			if m.ID == DefaultAudioGenerationModel && m.Ready {
-				defaultAudio = m.ID
-				break
-			}
-		}
-		if defaultAudio == "" {
-			for _, m := range response.AudioModels {
-				if m.Ready {
-					defaultAudio = m.ID
-					break
-				}
-			}
-		}
-		if defaultAudio == "" {
-			defaultAudio = DefaultAudioGenerationModel
-		}
-	}
-	response.DefaultImageModel = defaultImage
-	response.DefaultVideoModel = defaultVideo
-	response.DefaultAudioModel = defaultAudio
+	response.DefaultImageModel, response.DefaultVideoModel, response.DefaultAudioModel = s.mediaDefaults(principal, response)
 	writeJSON(w, http.StatusOK, response)
+}
+
+// mediaDefaults are the models a request without a model uses: the account's
+// choice, else Swarm's recommendation. Sound without a choice is picked by
+// length (a clip up to 30 seconds, a song beyond), shown as its song model.
+func (s *Server) mediaDefaults(principal identity.Principal, catalog mediaCatalogResponse) (image, video, audio string) {
+	image, video, audio = s.mediaAccountDefault(principal, "image"), s.mediaAccountDefault(principal, "video"), s.mediaAccountDefault(principal, "sound")
+	if image == "" {
+		image = recommendedMediaModel(catalog, "image")
+	}
+	if video == "" {
+		video = recommendedMediaModel(catalog, "video")
+	}
+	if audio == "" {
+		audio = DefaultAudioGenerationModel
+	}
+	return image, video, audio
 }
 
 func (s *Server) mediaCatalogResponse(caps imagegen.Capabilities, extraStatuses ...imagegen.ProviderStatus) (mediaCatalogResponse, error) {

@@ -133,6 +133,12 @@ func controlMCPRunTask(c *controlMCPCall, args map[string]any) (any, error) {
 			body[key] = value
 		}
 	}
+	// Internal callers (swarm_request_media) add task fields of their own.
+	if extra, ok := args["_body"].(map[string]any); ok {
+		for key, value := range extra {
+			body[key] = value
+		}
+	}
 	created, err := c.dispatch(http.MethodPost, "/v3/projects/"+projectID+"/tasks", nil, body)
 	if err != nil {
 		return nil, controlMCPNotFound(err, "project", projectID, "swarm_list_projects")

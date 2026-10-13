@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -988,6 +989,8 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	if s.sessions == nil || s.sessions.Store() == nil || task == nil {
 		return
 	}
+	// Declared first so it runs last, after a recovered panic too.
+	defer s.signalMediaSettled(p, task.ProjectID, task.ID)
 	defer func() {
 		_ = recover() // Gracefully recover if store is closed during daemon shutdown or test teardown
 	}()
@@ -1776,16 +1779,11 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 	} else if task.Agent == "sound" || task.Agent == "audio" {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
+		// The requested model, else the account's default; without either,
+		// audiogen picks the clip or the song model from the length.
 		soundModel := strings.TrimSpace(task.Model)
-		if soundModel == "" && s.uiSettings != nil && strings.TrimSpace(p.AccountScopeID) != "" {
-			if uiSet, err := s.uiSettings.GetForAccount(p.AccountScopeID); err == nil {
-				if def := strings.TrimSpace(uiSet.Tools.Audio.DefaultModel); def != "" {
-					soundModel = def
-				}
-			}
-		}
 		if soundModel == "" {
-			soundModel = "lyria-3.5"
+			soundModel = s.mediaAccountDefault(p, "sound")
 		}
 		durSeconds := task.DurationSeconds
 		if durSeconds <= 0 {
@@ -1802,10 +1800,17 @@ func (s *Server) executeDirectMediaTask(p identity.Principal, proj *pebblestore.
 				Prompt:          prompt,
 				DurationSeconds: durSeconds,
 				Principal:       p,
+				Model:           soundModel,
 			})
 			if err != nil {
 				genErr = err
 			} else if len(res.Bytes) > 0 {
+				if res.Model != "" {
+					soundModel = res.Model
+				}
+				if res.DurationMs > 0 {
+					durSeconds = (res.DurationMs + 500) / 1000
+				}
 				mime := res.MediaType
 				if mime == "" {
 					mime = "audio/mp3"
@@ -1951,4 +1956,46 @@ func videoExecutionIdentity(provider, modelID string) string {
 		return modelID
 	}
 	return provider + ":" + modelID
+}
+
+// signalMediaSettled records a media job's end on the activity feed
+// (media.job.succeeded or media.job.failed), where AIs waiting on activity
+// and the outbox see it.
+func (s *Server) signalMediaSettled(p identity.Principal, projectID, taskID string) {
+	if s.signals == nil || s.sessions == nil || s.sessions.Store() == nil {
+		return
+	}
+	defer func() {
+		_ = recover() // the store closes under it during shutdown
+	}()
+	task, found, err := s.sessions.Store().GetProjectTask(p.AccountScopeID, projectID, taskID)
+	if err != nil || !found || task == nil {
+		return
+	}
+	kind, severity, summary := "", pebblestore.SignalSeverityInfo, ""
+	ready := 0
+	for _, d := range task.Deliverables {
+		if d.Status == "ready" || d.Status == "accepted" {
+			ready++
+		}
+	}
+	switch task.Status {
+	case "needs_review", "completed":
+		kind, summary = "media.job.succeeded", fmt.Sprintf("Media job made %d %s file(s)", ready, task.Agent)
+	case "failed":
+		kind, severity, summary = "media.job.failed", pebblestore.SignalSeverityWarning, "Media job failed: "+controlMCPTruncate(task.LastError, 160)
+	default:
+		return
+	}
+	attrs := map[string]string{"job_id": controlMCPJobID(controlMCPJobMedia, projectID, taskID), "kind": task.Agent, "files": strconv.Itoa(ready)}
+	if task.Model != "" {
+		attrs["model"] = task.Model
+	}
+	if _, err := s.signals.Append(pebblestore.Signal{
+		Kind: kind, Severity: severity, Source: pebblestore.SignalSourceSwarmd, Account: p.AccountScopeID,
+		Summary: summary, DedupKey: kind + ":" + taskID,
+		Refs: map[string]string{"project_id": projectID, "task_id": taskID}, Attrs: attrs,
+	}); err != nil {
+		log.Printf("swarmd signal %s not recorded: %v", kind, err)
+	}
 }

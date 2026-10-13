@@ -153,3 +153,25 @@ func (w *limitedBuffer) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// Bytes stores data a job produced in memory (a media job's files) as a blob.
+func (b *Builder) Bytes(data []byte, contentType string) (Blob, error) {
+	if b.MaxFileBytes > 0 && int64(len(data)) > b.MaxFileBytes {
+		return Blob{}, ErrTooLarge
+	}
+	tmp, err := os.CreateTemp("", "swarm-outbox-*")
+	if err != nil {
+		return Blob{}, err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return Blob{}, err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return Blob{}, err
+	}
+	sum := sha256.Sum256(data)
+	return Blob{Path: tmp.Name(), SHA256: hex.EncodeToString(sum[:]), Size: int64(len(data)), Type: contentType}, nil
+}

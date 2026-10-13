@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -63,7 +64,8 @@ var controlMCPCoreTools = map[string]bool{
 	"swarm_list_workers": true, "swarm_deploy_worker": true, "swarm_manage_worker": true,
 	"swarm_give_job": true, "swarm_get_job": true, "swarm_message_job": true, "swarm_answer_job": true,
 	"swarm_deliver_job": true, "swarm_stop_job": true, "swarm_schedule_job": true,
-	"swarm_request_media": true, "swarm_list_secrets": true,
+	"swarm_request_media": true, "swarm_media_models": true, "swarm_save_media": true, "swarm_set_media_models": true,
+	"swarm_list_secrets": true,
 }
 
 // controlMCPCoreInstructionLines tell the default story; a line is shown only
@@ -81,7 +83,7 @@ var controlMCPCoreInstructionLines = []controlMCPInstruction{
 	{[]string{"swarm_answer_job"}, "When a worker asks something, swarm_get_job shows the question (status needs_input) and swarm_answer_job replies."},
 	{[]string{"swarm_deliver_job"}, "swarm_deliver_job merges a finished job into its folder (a local git merge; nothing is ever pushed)."},
 	{[]string{"swarm_deploy_worker"}, "Deploy more workers on top of the three with swarm_deploy_worker: a name, a role (coder, designer or finder) and standing instructions for every job."},
-	{[]string{"swarm_request_media"}, "swarm_request_media makes images, video or sound."},
+	{[]string{"swarm_request_media", "swarm_media_models"}, "swarm_request_media makes images, video or sound: swarm_media_models lists the models and the options each takes (length, resolution, aspect ratio, input images); swarm_get_job lists the files and shows images, swarm_save_media writes them into a workspace."},
 	{[]string{"swarm_schedule_job"}, "swarm_schedule_job deploys a worker that runs a job on a schedule in a project's folder."},
 	{[]string{"swarm_status", "swarm_activity"}, "swarm_status says whether the box is all right and what needs attention; swarm_activity lists what happened since your last cursor (jobs finished or failed, workers blocked, sandbox changes)."},
 	{[]string{"swarm_list_secrets"}, "swarm_list_secrets shows which secrets exist, the websites they may go to and the folders that may use them; the person sets values and grants on the setup page or by script, never through you."},
@@ -409,11 +411,31 @@ func controlMCPToolResult(value any, err error) map[string]any {
 		}
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": message}}, "isError": true}
 	}
+	var images []controlMCPImage
+	if rich, ok := value.(controlMCPRichResult); ok {
+		value, images = rich.value, rich.images
+	}
 	encoded, marshalErr := json.Marshal(value)
 	if marshalErr != nil {
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": "tool result could not be encoded"}}, "isError": true}
 	}
-	return map[string]any{"content": []map[string]any{{"type": "text", "text": string(encoded)}}, "isError": false}
+	content := []map[string]any{{"type": "text", "text": string(encoded)}}
+	for _, image := range images {
+		content = append(content, map[string]any{"type": "image", "mimeType": image.mediaType, "data": base64.StdEncoding.EncodeToString(image.data)})
+	}
+	return map[string]any{"content": content, "isError": false}
+}
+
+// controlMCPRichResult is a tool result with images the calling AI can see:
+// the JSON text first, then one image content block per image.
+type controlMCPRichResult struct {
+	value  any
+	images []controlMCPImage
+}
+
+type controlMCPImage struct {
+	mediaType string
+	data      []byte
 }
 
 // controlMCPValidateArgs enforces the declared schema subset: required keys,

@@ -131,6 +131,14 @@ record of kind `outbox.gap` says so (`attrs.from`, `attrs.to`).
   the job's head commit (never from the working folder). Thumbnails are the
   worker's own: a committed image next to a video. Swarm never decodes media.
 
+A media job (`swarm_request_media`, job id `media/<project>/<task>`) ends with
+`media.job.succeeded` or `media.job.failed` in the feed and exports a result
+the same way: `run_id` is its task id, `outcome` is `media`, `kind` is
+`image`, `video` or `sound`, and `model`, `aspect_ratio`, `resolution`,
+`duration_seconds` and the `brief` say what was asked. `files` are the
+generated files (each with the model and settings that made it); a file that
+failed is listed in `skipped` with the provider's reason. There is no `git`.
+
 ### Decisions (written by consumers)
 
 Swarm defines the place and shape so every consumer agrees; Swarm itself does

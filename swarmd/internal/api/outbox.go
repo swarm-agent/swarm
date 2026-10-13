@@ -88,11 +88,17 @@ func (s *Server) outboxCall(ctx context.Context) (*controlMCPCall, error) {
 // outboxJobSignals are the signals that end a worker job.
 var outboxJobSignals = map[string]bool{"worker.run.succeeded": true, "worker.run.failed": true, "worker.run.cancelled": true}
 
+// outboxMediaSignals are the signals that end a media job.
+var outboxMediaSignals = map[string]bool{"media.job.succeeded": true, "media.job.failed": true}
+
 // OutboxResultBuilder builds a finished worker job's result: the job as
 // swarm_get_job reports it, a Git bundle of its commits, and the media files
 // its commits added or changed (read from its head commit).
 func (s *Server) OutboxResultBuilder() outbox.ResultBuilder {
 	return func(ctx context.Context, sig pebblestore.Signal, b *outbox.Builder) (*outbox.Export, error) {
+		if outboxMediaSignals[sig.Kind] {
+			return s.outboxMediaResult(sig, b)
+		}
 		if !outboxJobSignals[sig.Kind] {
 			return nil, nil
 		}
@@ -227,4 +233,71 @@ func outboxReason(err error) string {
 		return "larger than the outbox file limit"
 	}
 	return controlMCPTruncate(err.Error(), 200)
+}
+
+// outboxMediaResult builds a media job's result: its files, as stored on the
+// job, and what was asked for. Its run id is the job's task id.
+func (s *Server) outboxMediaResult(sig pebblestore.Signal, b *outbox.Builder) (*outbox.Export, error) {
+	projectID, taskID := sig.Refs["project_id"], sig.Refs["task_id"]
+	if !controlMCPSafeID.MatchString(projectID) || !controlMCPSafeID.MatchString(taskID) || s.sessions == nil || s.sessions.Store() == nil {
+		return nil, nil
+	}
+	task, found, err := s.sessions.Store().GetProjectTask(sig.Account, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || task == nil {
+		return nil, nil // the job was deleted: the record still says it ended
+	}
+	return outboxMediaExport(task, b), nil
+}
+
+// outboxMediaExport is a media job's export: its manifest and its files.
+func outboxMediaExport(task *pebblestore.ProjectTaskRecord, b *outbox.Builder) *outbox.Export {
+	projectID, taskID := task.ProjectID, task.ID
+	jobID := controlMCPJobID(controlMCPJobMedia, projectID, taskID)
+	manifest := map[string]any{"job_id": jobID, "run_id": taskID, "status": task.Status, "outcome": "media",
+		"kind": task.Agent, "project_id": projectID, "title": task.Title, "brief": controlMCPTruncate(task.Description, 4000)}
+	for key, value := range map[string]string{"model": task.Model, "aspect_ratio": task.AspectRatio, "resolution": task.Resolution, "error": task.LastError, "workspace_path": task.WorkspacePath} {
+		if value != "" {
+			manifest[key] = value
+		}
+	}
+	if task.DurationSeconds > 0 {
+		manifest["duration_seconds"] = task.DurationSeconds
+	}
+	export := &outbox.Export{JobID: jobID, RunID: taskID, Manifest: manifest}
+	files, skipped := []map[string]any{}, []map[string]string{}
+	for i, file := range mediaTaskFiles(task) {
+		name := file.filename(task.Title, i+1)
+		if len(file.data) == 0 {
+			if file.record.Status == "failed" {
+				skipped = append(skipped, map[string]string{"path": name, "reason": controlMCPTruncate(file.record.Description, 200)})
+			}
+			continue
+		}
+		blob, err := b.Bytes(file.data, file.mediaType)
+		if err != nil {
+			skipped = append(skipped, map[string]string{"path": name, "reason": outboxReason(err)})
+			continue
+		}
+		export.Blobs = append(export.Blobs, blob)
+		entry := map[string]any{"path": name, "sha256": blob.SHA256, "size": blob.Size, "type": file.mediaType, "role": "primary", "key": b.BlobKey(blob.SHA256)}
+		for key, value := range map[string]string{"model": file.record.Model, "aspect_ratio": file.record.AspectRatio, "resolution": file.record.Resolution} {
+			if value != "" {
+				entry[key] = value
+			}
+		}
+		if file.record.DurationSeconds > 0 {
+			entry["duration_seconds"] = file.record.DurationSeconds
+		}
+		files = append(files, entry)
+	}
+	if len(files) > 0 {
+		manifest["files"] = files
+	}
+	if len(skipped) > 0 {
+		manifest["skipped"] = skipped
+	}
+	return export
 }
