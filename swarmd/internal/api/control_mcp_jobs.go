@@ -792,8 +792,7 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 			return nil, err
 		}
 		result := controlMCPJobResultJSON(view)
-		folder, _ := result["workspace_path"].(string)
-		rule, ok, err := c.server.publishRule(folder)
+		rule, ok, err := c.server.publishRule(c.jobFolder(refs, result))
 		if err != nil {
 			return nil, controlMCPToolFailure("this folder's publish setting cannot be read: %s", controlMCPTruncate(err.Error(), 200))
 		}

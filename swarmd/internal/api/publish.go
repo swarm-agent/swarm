@@ -228,8 +228,11 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		return p.retry(sig, err)
 	}
 	result := controlMCPJobResultJSON(view)
-	folder, _ := result["workspace_path"].(string)
-	rule, ok, err := p.server.publishRule(folder)
+	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
+	if err != nil {
+		return p.retry(sig, err)
+	}
+	rule, ok, err := p.server.publishRule(c.jobFolder(refs, result))
 	if err != nil || !ok || !rule.Auto {
 		return nil
 	}
@@ -237,12 +240,8 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	if state == "empty" {
 		return nil // committed nothing: the report is the result
 	}
-	if status, _ := view["status"].(string); status != "needs_review" || state == "" || state == "unavailable" {
+	if status, _ := view["status"].(string); status != "needs_review" || !controlMCPJobHasCommits(result) {
 		return p.retry(sig, errAutoPublishWait)
-	}
-	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
-	if err != nil {
-		return p.retry(sig, err)
 	}
 	if _, err := c.publishJob(controlMCPJobWorker, workerID, runID, refs, rule, result); err != nil {
 		return p.retry(sig, err)
@@ -298,4 +297,27 @@ func (s *Server) internalCall(ctx context.Context, scopes ...string) (*controlMC
 		AccountScopeID: actor.AccountScopeID, UserID: actor.UserID,
 	})
 	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}, nil
+}
+
+// jobFolder is the registered folder a job ran in: its task's source
+// workspace. The job's result names the worktree it worked in, which is not
+// the folder a publish rule is set for.
+func (c *controlMCPCall) jobFolder(refs controlMCPJobRefs, result map[string]any) string {
+	if refs.projectID != "" && refs.taskID != "" {
+		if task, err := c.task(refs.projectID, refs.taskID); err == nil {
+			if path, _ := controlMCPMap(task["source_workspace"])["path"].(string); strings.TrimSpace(path) != "" {
+				return path
+			}
+		}
+	}
+	path, _ := result["workspace_path"].(string)
+	return path
+}
+
+// controlMCPJobHasCommits reports a job result with a head commit and at
+// least one commit on its branch: enough to publish, whether or not Swarm's
+// delivery assessment has settled.
+func controlMCPJobHasCommits(result map[string]any) bool {
+	head, _ := result["head"].(string)
+	return strings.TrimSpace(head) != "" && len(controlMCPList(result["commits"])) > 0
 }
