@@ -464,7 +464,13 @@ update() {
   # Only move forward: a branch that does not contain the running build (after
   # a channel switch to an older branch, or a rewritten branch) would be a
   # downgrade, which Swarm's stored state may not survive. Wait until it does.
-  if ! git -C "$SRC" merge-base --is-ancestor "$old" "$new"; then
+  # A release merge (main) that added nothing to the branch it merged is not a
+  # downgrade when that branch's merged commit is in the new build: this is a
+  # switch from main to dev.
+  if ! git -C "$SRC" merge-base --is-ancestor "$old" "$new" &&
+    ! { git -C "$SRC" rev-parse -q --verify "$old^2" >/dev/null &&
+      git -C "$SRC" merge-base --is-ancestor "$old^2" "$new" &&
+      git -C "$SRC" diff --quiet "$old^2" "$old"; }; then
     echo "swarm: $SWARM_REF (${new:0:9}) does not contain the running build ${old:0:9}; waiting until it does"
     return 0
   fi
