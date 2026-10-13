@@ -972,6 +972,9 @@ func controlMCPStatus(c *controlMCPCall, _ map[string]any) (any, error) {
 		return nil, err
 	}
 	out := controlMCPPick(summary, "status", "reasons", "machine", "sandbox", "secrets_gateway", "permissions", "attention", "workers", "usage")
+	if export := controlMCPMap(summary["outbox"]); export != nil && (export["enabled"] == true || export["failing"] == true) {
+		out["outbox"] = export
+	}
 	if feed := controlMCPMap(summary["signals"]); feed != nil {
 		if latest, ok := feed["latest_seq"].(float64); ok {
 			out["activity_cursor"] = strconv.FormatUint(uint64(latest), 10)

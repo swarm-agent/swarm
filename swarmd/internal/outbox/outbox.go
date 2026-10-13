@@ -20,7 +20,10 @@ const (
 	pageSize         = 100
 	idleTick         = 30 * time.Second
 	maxBackoff       = 5 * time.Minute
-	maxResultRetries = 5
+	// About two hours of retries with backoff: long enough to fix a setting
+	// or wait out an outage, short enough that one broken job cannot hold
+	// the log back for good.
+	maxResultRetries = 30
 	keyCursorPrefix  = "outbox_meta/cursor/"
 )
 

@@ -78,7 +78,7 @@ func (s *Server) outboxCall(ctx context.Context) (*controlMCPCall, error) {
 	req = requestWithActorContext(req, actor)
 	req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{
 		ID: "outbox", Name: "Swarm outbox (internal, read only)",
-		Scopes:         []string{"swarm:read", "sessions:read", "agents:read", "signals:read"},
+		Scopes:         []string{"swarm:read", "sessions:read", "automations:read", "agents:read", "signals:read"},
 		AccountScopeID: actor.AccountScopeID, UserID: actor.UserID,
 	})
 	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}, nil
