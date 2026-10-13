@@ -142,11 +142,12 @@ func (e *Exporter) Status() Status {
 // Run exports until ctx ends: promptly after new signals, on a slow tick
 // otherwise, and with growing backoff after a failure.
 func (e *Exporter) Run(ctx context.Context) {
+	if e.snapshot != nil {
+		go e.statusLoop(ctx)
+	}
 	for {
 		wait := idleTick
-		err := e.ExportOnce(ctx)
-		e.writeStatusIfDue(ctx)
-		if err != nil && ctx.Err() == nil {
+		if err := e.ExportOnce(ctx); err != nil && ctx.Err() == nil {
 			e.mu.Lock()
 			e.failures++
 			wait = min(time.Duration(1<<min(e.failures, 8))*5*time.Second, maxBackoff)
@@ -362,7 +363,8 @@ func NewBuilder(machine string, maxFileBytes int64) *Builder {
 var ErrNotReady = errors.New("the job's result is not settled yet")
 
 // Status snapshots: the machine's box summary, written as a new object about
-// once a minute (the exporter wakes at least every 30 seconds).
+// once a minute on its own timer, so an export that waits or backs off (a
+// job's result still settling) never makes a busy machine look silent.
 // Like everything the outbox writes they are create-only, so a machine never
 // overwrites one: a reader takes the newest under machines/<machine>/status/,
 // and its age says when the machine was last heard from.
@@ -424,4 +426,18 @@ func (e *Exporter) WriteStatus(ctx context.Context) error {
 	e.statusAt, e.status.LastStatusAt = at, at.UnixMilli()
 	e.mu.Unlock()
 	return nil
+}
+
+func (e *Exporter) statusLoop(ctx context.Context) {
+	e.writeStatusIfDue(ctx)
+	ticker := time.NewTicker(statusEvery / 4)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.writeStatusIfDue(ctx)
+		}
+	}
 }
