@@ -56,6 +56,14 @@ run() {
     bash "$here/publish-github.sh"
 }
 
+# The folder's own pre-push hook runs by default; PUSH_HOOKS=off skips it.
+mkdir -p "$work/folder/.git/hooks"
+printf '#!/bin/sh\necho "pre-push gate refused" >&2\nexit 1\n' > "$work/folder/.git/hooks/pre-push"
+chmod +x "$work/folder/.git/hooks/pre-push"
+if out=$(run 2>&1); then fail "pushed past a failing pre-push hook with PUSH_HOOKS on: $out"; fi
+grep -q "pre-push gate refused" <<<"$out" || fail "the pre-push hook did not run: $out"
+echo PUSH_HOOKS=off >> "$work/publish-github.conf"
+
 out=$(run) || fail "first run failed: $out"
 [[ $(tail -n1 <<<"$out") == https://github.com/example/models/pull/5 ]] || fail "last line is not the pull request URL: $out"
 grep -q "opened pull request #5" <<<"$out" || fail "did not open a pull request: $out"

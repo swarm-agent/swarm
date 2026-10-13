@@ -17,6 +17,10 @@
 #     BRANCH_PREFIX=ai/swarm-          (optional; default ai/swarm-)
 #     AUTO_MERGE=off                   (optional: on|off)
 #     MERGE_METHOD=squash              (optional: merge|squash|rebase)
+#     PUSH_HOOKS=on                    (optional: on|off; off skips the folder's own
+#                                       git hooks for this push only, for a repository
+#                                       whose pre-push hook runs a gate its base branch
+#                                       already requires as a check)
 #     BASE_BRANCH=main                 (optional: the branch pull requests target;
 #                                       default: the branch the job started from)
 # The App needs Contents read/write and Pull requests read/write on the
@@ -29,10 +33,10 @@ git_base="${PUBLISH_GITHUB_GIT:-https://github.com}"
 die() { echo "publish-github: $*" >&2; exit 1; }
 
 [[ -r $conf ]] || die "settings file $conf is missing"
-REPO='' APP_ID='' INSTALLATION_ID='' KEY_FILE='' BRANCH_PREFIX='ai/swarm-' AUTO_MERGE=off MERGE_METHOD=squash BASE_BRANCH=''
+REPO='' APP_ID='' INSTALLATION_ID='' KEY_FILE='' BRANCH_PREFIX='ai/swarm-' AUTO_MERGE=off MERGE_METHOD=squash BASE_BRANCH='' PUSH_HOOKS=on
 while IFS='=' read -r key value; do
   case $key in
-    REPO|APP_ID|INSTALLATION_ID|KEY_FILE|BRANCH_PREFIX|AUTO_MERGE|MERGE_METHOD|BASE_BRANCH) printf -v "$key" '%s' "$value" ;;
+    REPO|APP_ID|INSTALLATION_ID|KEY_FILE|BRANCH_PREFIX|AUTO_MERGE|MERGE_METHOD|BASE_BRANCH|PUSH_HOOKS) printf -v "$key" '%s' "$value" ;;
     ''|'#'*) ;;
     *) die "unknown setting $key in $conf" ;;
   esac
@@ -42,9 +46,12 @@ done <"$conf"
 [[ -r $KEY_FILE ]] || die "KEY_FILE is not readable"
 [[ $BRANCH_PREFIX =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "BRANCH_PREFIX is not a branch name prefix"
 [[ $AUTO_MERGE == on || $AUTO_MERGE == off ]] || die "AUTO_MERGE must be on or off"
+[[ $PUSH_HOOKS == on || $PUSH_HOOKS == off ]] || die "PUSH_HOOKS must be on or off"
 [[ $MERGE_METHOD =~ ^(merge|squash|rebase)$ ]] || die "MERGE_METHOD must be merge, squash or rebase"
 [[ -z $BASE_BRANCH || $BASE_BRANCH =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "BASE_BRANCH is not a branch name"
 
+# Repository hooks (a pre-push release gate) need a scratch folder.
+if [[ -z ${TMPDIR:-} ]]; then TMPDIR=$(mktemp -d) && export TMPDIR && trap 'rm -rf "$TMPDIR"' EXIT; fi
 folder="${SWARM_PUBLISH_FOLDER:?}" head="${SWARM_PUBLISH_HEAD:?}" job="${SWARM_PUBLISH_JOB_ID:?}"
 base="${BASE_BRANCH:-${SWARM_PUBLISH_BASE_BRANCH:-main}}" title="${SWARM_PUBLISH_TITLE:-Swarm job}" body_file="${SWARM_PUBLISH_BODY_FILE:-/dev/null}"
 [[ $head =~ ^[0-9a-f]{40}$ ]] || die "SWARM_PUBLISH_HEAD is not a commit id"
@@ -68,9 +75,11 @@ TOKEN=$(github POST "/app/installations/$INSTALLATION_ID/access_tokens" \
   '{"permissions":{"contents":"write","pull_requests":"write","metadata":"read"}}' | jq -er .token) || die "the App could not get a token for $REPO"
 
 # Push with the token in the environment only, never on a command line.
+# PUSH_HOOKS=off: the base branch's required checks run the gate the hook would.
+hooks=(); [[ $PUSH_HOOKS == on ]] || hooks=(-c core.hooksPath=/dev/null)
 basic=$(printf 'x-access-token:%s' "$TOKEN" | openssl base64 -A)
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
-  GIT_TERMINAL_PROMPT=0 git_folder -c credential.helper= push --force --quiet "$git_base/$REPO.git" "$head:refs/heads/$branch" \
+  GIT_TERMINAL_PROMPT=0 git_folder -c credential.helper= "${hooks[@]}" push --force --quiet "$git_base/$REPO.git" "$head:refs/heads/$branch" \
   || die "push of $head to $branch failed"
 echo "pushed $head to $branch"
 
