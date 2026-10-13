@@ -759,6 +759,7 @@ func New(cfg config.Config) (*Daemon, error) {
 			apiServer.SetOutboxStatus(func() outbox.Status { return outbox.Status{LastError: err.Error(), Failing: true} })
 		} else {
 			resultOutbox = outbox.NewExporter(outboxCfg, dest, signalStore, store, apiServer.OutboxAccount, apiServer.OutboxResultBuilder())
+			resultOutbox.SetStatusBuilder(apiServer.OutboxStatusBuilder())
 			apiServer.SetOutboxStatus(resultOutbox.Status)
 			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
 		}

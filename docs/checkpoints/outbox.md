@@ -34,6 +34,7 @@ own view.
 <prefix>/machines/<machine>/log/000000000412.json     one record per signal
 <prefix>/machines/<machine>/results/<run_id>.json     one manifest per job result
 <prefix>/machines/<machine>/blobs/sha256/<hex>        files and Git bundles
+<prefix>/machines/<machine>/status/<ms>.json          the machine's status, about once a minute
 <prefix>/deciders/<name>/log/<...>.json               written by consumers, never by Swarm
 ```
 
@@ -50,6 +51,19 @@ points to existing. Every object is created only if absent (`If-None-Match: *`
 on S3, `x-goog-if-generation-match: 0` on Google Cloud Storage, a hard link on
 a folder); "already exists" counts as written, so a retry after a crash never
 duplicates or changes anything. Delivery is at least once and in order.
+
+### Machine status
+
+About once a minute each machine writes its box summary (`GET /v3/box/summary`,
+today in UTC: schedules, runs today by status with the failed and running
+runs, workspaces, build, sandbox, attention, usage) as a new object
+`machines/<machine>/status/<milliseconds>.json`: `{v, machine, at, summary}`.
+Like every other object it is created once, never overwritten, so a reader
+lists the prefix from a few minutes back (`startOffset` / `start-after`) and
+takes the last name; its `at` is when the machine was last heard from. It
+holds ids, names, counts and times only, never a run's error text. A bucket
+lifecycle rule that deletes `status/` objects after a day or two keeps the
+prefix small; nothing else depends on old snapshots.
 
 ### Reading with a cursor
 

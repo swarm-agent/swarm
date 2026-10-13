@@ -301,3 +301,16 @@ func outboxMediaExport(task *pebblestore.ProjectTaskRecord, b *outbox.Builder) *
 	}
 	return export
 }
+
+// OutboxStatusBuilder builds the outbox's status snapshot: the box summary
+// (GET /v3/box/summary, today in UTC) read as the machine owner, exactly as
+// swarm_status gives it to an AI. It holds ids, names, counts and times only.
+func (s *Server) OutboxStatusBuilder() outbox.StatusBuilder {
+	return func(ctx context.Context) (map[string]any, error) {
+		c, err := s.outboxCall(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return c.dispatch(http.MethodGet, "/v3/box/summary", nil, nil)
+	}
+}

@@ -88,22 +88,32 @@ type Status struct {
 	LastError    string `json:"last_error,omitempty"`
 	LastErrorAt  int64  `json:"last_error_at,omitempty"`
 	Failing      bool   `json:"failing"`
+	// LastStatusAt is when the machine last wrote its status snapshot;
+	// StatusError is why the last attempt failed, if it did.
+	LastStatusAt int64  `json:"last_status_at,omitempty"`
+	StatusError  string `json:"status_error,omitempty"`
 }
+
+// StatusBuilder builds the machine's status snapshot (its box summary).
+type StatusBuilder func(ctx context.Context) (map[string]any, error)
 
 // Exporter appends the feed to the destination, in order, at least once.
 type Exporter struct {
-	cfg     Config
-	dest    Destination
-	feed    Feed
-	state   *pebblestore.Store
-	account func() string
-	build   ResultBuilder
-	now     func() time.Time
+	cfg      Config
+	dest     Destination
+	feed     Feed
+	state    *pebblestore.Store
+	account  func() string
+	build    ResultBuilder
+	now      func() time.Time
+	snapshot StatusBuilder
 
 	mu       sync.Mutex
 	status   Status
 	failures int
 	attempts map[uint64]int
+	// statusAt is when the last status snapshot was written.
+	statusAt time.Time
 }
 
 func NewExporter(cfg Config, dest Destination, feed Feed, state *pebblestore.Store, account func() string, build ResultBuilder) *Exporter {
@@ -134,7 +144,9 @@ func (e *Exporter) Status() Status {
 func (e *Exporter) Run(ctx context.Context) {
 	for {
 		wait := idleTick
-		if err := e.ExportOnce(ctx); err != nil && ctx.Err() == nil {
+		err := e.ExportOnce(ctx)
+		e.writeStatusIfDue(ctx)
+		if err != nil && ctx.Err() == nil {
 			e.mu.Lock()
 			e.failures++
 			wait = min(time.Duration(1<<min(e.failures, 8))*5*time.Second, maxBackoff)
@@ -348,3 +360,68 @@ func NewBuilder(machine string, maxFileBytes int64) *Builder {
 // ErrNotReady is a result that is not settled yet: retried with backoff
 // like a failure, but not reported as one.
 var ErrNotReady = errors.New("the job's result is not settled yet")
+
+// Status snapshots: the machine's box summary, written as a new object about
+// once a minute (the exporter wakes at least every 30 seconds).
+// Like everything the outbox writes they are create-only, so a machine never
+// overwrites one: a reader takes the newest under machines/<machine>/status/,
+// and its age says when the machine was last heard from.
+const statusEvery = time.Minute
+
+// SetStatusBuilder turns on status snapshots.
+func (e *Exporter) SetStatusBuilder(build StatusBuilder) {
+	if e != nil {
+		e.snapshot = build
+	}
+}
+
+// StatusKey is the layout key of a snapshot taken at at.
+func StatusKey(machine string, at time.Time) string {
+	return fmt.Sprintf("machines/%s/status/%020d.json", machine, at.UnixMilli())
+}
+
+func (e *Exporter) writeStatusIfDue(ctx context.Context) {
+	if e.snapshot == nil || ctx.Err() != nil {
+		return
+	}
+	now := e.now()
+	e.mu.Lock()
+	since := now.Sub(e.statusAt)
+	due := e.statusAt.IsZero() || since >= statusEvery
+	e.mu.Unlock()
+	if !due {
+		return
+	}
+	err := e.WriteStatus(ctx)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err != nil {
+		e.status.StatusError = truncate(err.Error(), 300)
+		log.Printf("swarmd outbox: status snapshot: %v", err)
+		return
+	}
+	e.status.StatusError = ""
+}
+
+// WriteStatus writes one status snapshot now.
+func (e *Exporter) WriteStatus(ctx context.Context) error {
+	if e.snapshot == nil {
+		return errors.New("no status builder")
+	}
+	summary, err := e.snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	at := e.now()
+	data, err := json.Marshal(map[string]any{"v": Version, "machine": e.cfg.Machine, "at": at.UnixMilli(), "summary": summary})
+	if err != nil {
+		return err
+	}
+	if err := e.dest.PutBytes(ctx, e.cfg.key(StatusKey(e.cfg.Machine, at)), data, "application/json"); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	e.statusAt, e.status.LastStatusAt = at, at.UnixMilli()
+	e.mu.Unlock()
+	return nil
+}

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -263,5 +264,56 @@ func TestS3BucketUsesAWSSignatureAndIfNoneMatch(t *testing.T) {
 	}
 	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKID/") || !strings.Contains(auth, "/eu-west-1/s3/aws4_request") || !strings.Contains(auth, "if-none-match") || condition != "*" || google != "" {
 		t.Fatalf("s3 request: auth %q if-none-match %q goog %q", auth, condition, google)
+	}
+}
+
+// Status snapshots are new objects under machines/<machine>/status/, about one
+// a minute, never an overwrite; a failing builder is reported, not fatal.
+func TestStatusSnapshots(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{Scheme: "file", Dir: root, Machine: "pc", MaxFileBytes: 1 << 20}
+	dest, err := cfg.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, feed := newFeed(t)
+	e := NewExporter(cfg, dest, feed, store, nil, nil)
+	clock := time.UnixMilli(1_790_000_000_000)
+	e.now = func() time.Time { return clock }
+	calls := 0
+	e.SetStatusBuilder(func(context.Context) (map[string]any, error) {
+		calls++
+		if calls == 3 {
+			return nil, errors.New("summary unavailable")
+		}
+		return map[string]any{"status": "ok", "runs": map[string]any{"total": calls}}, nil
+	})
+	ctx := context.Background()
+	e.writeStatusIfDue(ctx) // first: written
+	clock = clock.Add(30 * time.Second)
+	e.writeStatusIfDue(ctx) // not due yet
+	clock = clock.Add(31 * time.Second)
+	e.writeStatusIfDue(ctx) // due: written
+	clock = clock.Add(61 * time.Second)
+	e.writeStatusIfDue(ctx) // due, builder fails
+	if got := e.Status(); got.StatusError != "summary unavailable" || got.LastStatusAt != clock.Add(-61*time.Second).UnixMilli() {
+		t.Fatalf("status after a failed snapshot: %+v", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "machines", "pc", "status"))
+	if err != nil || len(entries) != 2 || calls != 3 {
+		t.Fatalf("snapshots = %v (calls %d), %v", entries, calls, err)
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "machines", "pc", "status", entries[1].Name()))
+	var snap map[string]any
+	if json.Unmarshal(data, &snap) != nil || snap["machine"] != "pc" || snap["summary"].(map[string]any)["runs"].(map[string]any)["total"] != float64(2) {
+		t.Fatalf("snapshot = %s", data)
+	}
+	if entries[1].Name() != filepath.Base(StatusKey("pc", time.UnixMilli(int64(snap["at"].(float64))))) {
+		t.Fatalf("snapshot name %s does not match its time", entries[1].Name())
+	}
+	clock = clock.Add(61 * time.Second)
+	e.writeStatusIfDue(ctx)
+	if got := e.Status(); got.StatusError != "" {
+		t.Fatalf("a good snapshot did not clear the error: %+v", got)
 	}
 }
