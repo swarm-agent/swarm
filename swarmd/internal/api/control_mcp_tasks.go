@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -340,6 +341,7 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 			for key, value := range controlMCPPick(controlMCPMap(changes), keys...) {
 				out[key] = value
 			}
+			controlMCPFillWorktreeHead(out, controlMCPMap(changes))
 		} else {
 			out["changes_error"] = controlMCPTruncate(err.Error(), 300)
 		}
@@ -349,3 +351,23 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	return out, nil
 }
+
+// controlMCPFillWorktreeHead gives a result the head of the job's own worktree
+// when the delivery assessment could not read it. The assessment reads a job's
+// head only while its folder has the job's base branch checked out; a job that
+// started from the forge's latest base (publish --sync) has a base branch the
+// folder does not have checked out, and publishing needs its head all the same.
+// A session working directly in its folder (no worktree, a "note") has none.
+func controlMCPFillWorktreeHead(out, changes map[string]any) {
+	if head, _ := out["head"].(string); head != "" {
+		return
+	}
+	if _, direct := changes["note"]; direct {
+		return
+	}
+	if head, _ := changes["head"].(string); controlMCPCommitID.MatchString(head) {
+		out["head"] = head
+	}
+}
+
+var controlMCPCommitID = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)

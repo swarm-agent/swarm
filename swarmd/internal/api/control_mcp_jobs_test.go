@@ -44,3 +44,25 @@ func TestControlMCPJobNextForReportOnlyJobs(t *testing.T) {
 		t.Fatalf("other statuses changed: %q", next)
 	}
 }
+
+func TestControlMCPFillWorktreeHead(t *testing.T) {
+	head := strings.Repeat("c", 40)
+	assessed := strings.Repeat("d", 40)
+	cases := []struct {
+		name    string
+		out     map[string]any
+		changes map[string]any
+		want    any
+	}{
+		{"assessment head wins", map[string]any{"head": assessed}, map[string]any{"head": head}, assessed},
+		{"worktree head when the assessment has none (sync)", map[string]any{}, map[string]any{"head": head, "base": strings.Repeat("e", 40)}, head},
+		{"no worktree: no head", map[string]any{}, map[string]any{"head": head, "note": "works directly in its folder"}, nil},
+		{"not a commit id", map[string]any{}, map[string]any{"head": "HEAD"}, nil},
+	}
+	for _, tc := range cases {
+		controlMCPFillWorktreeHead(tc.out, tc.changes)
+		if tc.out["head"] != tc.want {
+			t.Errorf("%s: head = %v, want %v", tc.name, tc.out["head"], tc.want)
+		}
+	}
+}
