@@ -33,7 +33,8 @@ filter_allowed_runtime_paths() {
   # Fresh-root detection checks the complete fixed installation layout and must
   # not bootstrap over existing state. Allow only this exact presence-check list.
   # The headless installer and the sandbox image name the fixed server and
-  # container layout they create; each is one exact declaration.
+  # container layout they create; each is one exact declaration. The
+  # installer refuses publish commands under home folders by naming them.
   filter_guest_image_paths | grep -Ev \
     -e '^(\./)?scripts/rebuild\.sh:[0-9]+:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm\.service; do$' \
     -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
@@ -44,6 +45,7 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:DATA_DIRS=\(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd\)$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:APP_CONFIG=/etc/swarmd/headless-app$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:GVISOR_LIST=/etc/apt/sources\.list\.d/gvisor\.list$' \
+    -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:[[:space:]]*\[\[ \$command != /home/\* && \$command != /root/\* \]\] \|\| \{ rm -f "\$PUBLISH\.new"; die "COMMAND must be outside home folders' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*sandboxHome[[:space:]]*=[[:space:]]*"/home/sandbox"$' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:.*dst=/etc/resolv\.conf' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*//.*/etc/resolv\.conf' \
