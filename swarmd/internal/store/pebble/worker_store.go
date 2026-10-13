@@ -256,6 +256,9 @@ type UpdateWorkerRequest struct {
 	Automations           []WorkerAutomationDefinition `json:"automations,omitempty"`
 	Metadata              map[string]any               `json:"metadata,omitempty"`
 	ChangeSummary         string                       `json:"change_summary,omitempty"`
+	// RemoveAutomationIDs drops these automations (store callers only: a
+	// staged change merges automations by id, so removal is explicit).
+	RemoveAutomationIDs []string `json:"-"`
 }
 
 type WorkerMigrationSummary struct {
@@ -1329,6 +1332,24 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 		}
 		updated.Automations = automations
 	}
+	if len(req.RemoveAutomationIDs) > 0 {
+		remove := make(map[string]bool, len(req.RemoveAutomationIDs))
+		for _, id := range req.RemoveAutomationIDs {
+			remove[strings.TrimSpace(id)] = true
+		}
+		kept := make([]WorkerAutomationDefinition, 0, len(updated.Automations))
+		for _, a := range updated.Automations {
+			if remove[a.ID] {
+				delete(remove, a.ID)
+				continue
+			}
+			kept = append(kept, a)
+		}
+		if len(remove) > 0 {
+			return WorkerRecord{}, ErrWorkerNotFound
+		}
+		updated.Automations = kept
+	}
 
 	updated.Revision = approved.Revision + 1
 	updated.UpdatedAt = now
@@ -1708,6 +1729,17 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 }
 
 func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automationID string, expectedWorkerRevision uint64, auto WorkerAutomationDefinition, validate func(*SessionPlanDocument) error) (WorkerRecord, error) {
+	if w, found, err := ws.GetWorker(account, workerID); err != nil {
+		return WorkerRecord{}, err
+	} else if found && w.LifecycleState != WorkerLifecycleStatePending {
+		// An approved worker's job changes are staged for review, like
+		// attaching one; the approved job keeps running unchanged.
+		if !workerProposalHasAutomation(w, automationID) {
+			return WorkerRecord{}, ErrWorkerNotFound
+		}
+		auto.ID = strings.TrimSpace(automationID)
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{Automations: []WorkerAutomationDefinition{auto}, ChangeSummary: "proposed job change"}, validate)
+	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
 	}
@@ -1827,6 +1859,15 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 }
 
 func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automationID string, expectedWorkerRevision uint64) (WorkerRecord, error) {
+	if w, found, err := ws.GetWorker(account, workerID); err != nil {
+		return WorkerRecord{}, err
+	} else if found && w.LifecycleState != WorkerLifecycleStatePending {
+		// Removing an approved worker's job is staged for review too.
+		if !workerProposalHasAutomation(w, automationID) {
+			return WorkerRecord{}, ErrWorkerNotFound
+		}
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{RemoveAutomationIDs: []string{strings.TrimSpace(automationID)}, ChangeSummary: "proposed job removal"}, nil)
+	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
 	}
@@ -3117,4 +3158,19 @@ func legacyWorkerSnapshot(account string, rec AutomationV2Record, now int64) (Wo
 		w.WorkspaceRequirements = append(w.WorkspaceRequirements, WorkerWorkspaceRequirement{Role: role, Description: "Workspace grant"})
 	}
 	return w, nil
+}
+
+// workerProposalHasAutomation reports whether the worker's pending proposal
+// (or, without one, the approved worker) has the automation.
+func workerProposalHasAutomation(w WorkerRecord, automationID string) bool {
+	effective := w
+	if w.PendingReview != nil {
+		effective = *w.PendingReview
+	}
+	for _, a := range effective.Automations {
+		if a.ID == strings.TrimSpace(automationID) {
+			return true
+		}
+	}
+	return false
 }

@@ -407,8 +407,11 @@ func TestWorkerAPI_CRUDLifecycleAndOptimisticConcurrency(t *testing.T) {
 	if updatedWorker["revision"].(float64) != 2 {
 		t.Fatalf("expected revision 2 after update, got %v", updatedWorker["revision"])
 	}
-	if updatedWorker["name"].(string) != "Updated Pipeline Worker" {
-		t.Fatalf("expected updated name, got %v", updatedWorker["name"])
+	// The worker is idle (approved), so the change is staged for review: the
+	// proposal carries the new name and the approved name stays until then.
+	proposal, _ := updatedWorker["pending_review"].(map[string]any)
+	if proposal == nil || proposal["name"] != "Updated Pipeline Worker" || updatedWorker["name"] != "Data Pipeline Worker" {
+		t.Fatalf("expected the new name staged for review, got %v (proposal %v)", updatedWorker["name"], proposal)
 	}
 
 	// 7. List workers with pagination and state filtering (no total_count in canonical wire)
@@ -1011,7 +1014,12 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 	if workerAfterAttach["revision"].(float64) != 2 {
 		t.Fatalf("expected revision 2 after attach, got %v", workerAfterAttach["revision"])
 	}
-	autos := workerAfterAttach["automations"].([]any)
+	// The worker is approved (idle), so the attach is staged for review: the
+	// automation is in the proposal, and the approved worker has none yet.
+	if approved, _ := workerAfterAttach["automations"].([]any); len(approved) != 0 {
+		t.Fatalf("attach changed the approved worker before review: %v", approved)
+	}
+	autos, _ := workerProposalView(workerAfterAttach)["automations"].([]any)
 	if len(autos) != 1 {
 		t.Fatalf("expected 1 automation attached, got %d", len(autos))
 	}
@@ -1103,7 +1111,7 @@ func TestWorkerAPI_AutomationAttachmentManagement(t *testing.T) {
 		t.Fatalf("expected revision 4 after delete, got %v", workerAfterDelete["revision"])
 	}
 	// Empty automations omitted by omitempty, tests shouldn't panic
-	if autosVal, ok := workerAfterDelete["automations"]; ok && autosVal != nil {
+	if autosVal, ok := workerProposalView(workerAfterDelete)["automations"]; ok && autosVal != nil {
 		autosAfterDel := autosVal.([]any)
 		if len(autosAfterDel) != 0 {
 			t.Fatalf("expected 0 automations after delete, got %d", len(autosAfterDel))
@@ -1415,8 +1423,10 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &runResp)
 	runID := runResp["run"].(map[string]any)["id"].(string)
 
-	// Pause worker with expected_revision=1
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/pause", `{"expected_revision":2}`, workerAPICallOptions{
+	// Pause at the current revision: the first dispatch recorded the worker's
+	// resolved model (one revision after activation).
+	beforePause, _, _ := ws.GetWorker("acct-test", workerID)
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/pause", fmt.Sprintf(`{"expected_revision":%d}`, beforePause.Revision), workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -1428,8 +1438,8 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	if workerRec.LifecycleState != store.WorkerLifecycleStatePaused {
 		t.Fatalf("expected paused, got %s", workerRec.LifecycleState)
 	}
-	if workerRec.Revision != 4 {
-		t.Fatalf("expected activation and stop-barrier revisions, got %d", workerRec.Revision)
+	if workerRec.Revision != beforePause.Revision+2 {
+		t.Fatalf("expected the stop-barrier revisions after %d, got %d", beforePause.Revision, workerRec.Revision)
 	}
 
 	// Verify the admitted run was cancelled with reason "worker paused"
@@ -1457,8 +1467,8 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 		t.Fatalf("trigger while paused expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// Resume worker with expected_revision=2
-	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/resume", `{"expected_revision":4}`, workerAPICallOptions{
+	// Resume at the paused revision.
+	w = executeWorkerAPI(h, http.MethodPost, "/"+workerID+"/resume", fmt.Sprintf(`{"expected_revision":%d}`, beforePause.Revision+2), workerAPICallOptions{
 		scopes: []string{"automations:write"},
 	})
 	if w.Code != http.StatusOK {
@@ -1469,8 +1479,8 @@ func TestWorkerAPI_Lifecycle_Pause_Resume_SafeStopBarrier(t *testing.T) {
 	if workerRec.LifecycleState != store.WorkerLifecycleStateActive {
 		t.Fatalf("expected active, got %s", workerRec.LifecycleState)
 	}
-	if workerRec.Revision != 5 {
-		t.Fatalf("expected resume revision 5, got %d", workerRec.Revision)
+	if workerRec.Revision != beforePause.Revision+3 {
+		t.Fatalf("expected resume revision %d, got %d", beforePause.Revision+3, workerRec.Revision)
 	}
 
 	// Verify previously cancelled run is STILL cancelled (not resurrected)
@@ -2034,3 +2044,12 @@ func TestWorkerAPI_Lifecycle_RunInspectionAndCancellation(t *testing.T) {
 
 // Ensure unused import bytes compiles cleanly if needed
 var _ = bytes.NewReader
+
+// workerProposalView is the worker an API response proposes: its
+// pending_review when a change to an approved worker is staged, else itself.
+func workerProposalView(worker map[string]any) map[string]any {
+	if proposal, ok := worker["pending_review"].(map[string]any); ok && proposal != nil {
+		return proposal
+	}
+	return worker
+}

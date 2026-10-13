@@ -58,6 +58,9 @@ func TestWorkerExistingModelReviewHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	invalid := store.CloneSessionModelProfileSnapshot(profile)
+	// An explicit choice: with use_account_default the given model is
+	// replaced by the account default instead of being validated.
+	invalid.UseAccountDefault = false
 	invalid.Action.Model = "invalid-worker-model"
 	body, err := json.Marshal(map[string]any{"expected_revision": w.Revision, "model_profile": invalid})
 	if err != nil {

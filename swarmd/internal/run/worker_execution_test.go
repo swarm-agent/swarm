@@ -286,7 +286,11 @@ func TestWorkerIdleTestAndPreparationRecovery(t *testing.T) {
 		t.Fatalf("recovery: %+v %v", recovered, err)
 	}
 	current, _, err := ws.GetWorker("account", w.ID)
-	if err != nil || current.LifecycleState != store.WorkerLifecycleStateIdle || current.Revision != w.Revision {
+	// A test run must not enable or change the worker. The one change allowed
+	// is the first dispatch recording the worker's resolved model (a single
+	// revision, only when it had none).
+	modelRecorded := w.ModelProfile == nil && current.ModelProfile != nil && current.Revision == w.Revision+1
+	if err != nil || current.LifecycleState != store.WorkerLifecycleStateIdle || (current.Revision != w.Revision && !modelRecorded) || current.Name != w.Name || len(current.Automations) != len(w.Automations) {
 		t.Fatalf("test enabled worker: %+v %v", current, err)
 	}
 	req.RequestSource, req.IdempotencyKey = "direct", "idle-direct"

@@ -356,7 +356,9 @@ func TestWorkerGeneratedTaskDispatchToProjectAPI(t *testing.T) {
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("runs: %+v %v", runs, err)
 	}
-	if task.ProjectID != "project_workers" || task.WorkerID != w.ID || task.WorkerName != w.Name || task.WorkerRunID != runs[0].ID || task.SessionID != runs[0].SessionID || task.Status != "in_progress" {
+	if task.ProjectID != "project_workers" || task.WorkerID != w.ID || task.WorkerName != w.Name || task.WorkerRunID != runs[0].ID || task.SessionID != runs[0].SessionID || task.Status != "queued" {
+		// The executor is stubbed, so the run waits for it (pending_executor),
+		// which the listing shows as queued until the run is actually running.
 		t.Fatalf("disconnected task: %+v run=%+v", task, runs[0])
 	}
 	session, found, err := s.sessions.GetSession(task.SessionID)

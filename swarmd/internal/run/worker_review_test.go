@@ -96,10 +96,16 @@ func TestWorkerReviewedRolePersistsThroughDispatchPreparation(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("catalog: %v", err)
 	}
+	// An explicit reviewed choice (not "use the account default", which
+	// would replace the plan model with the default): codex acts, google plans.
+	profile.UseAccountDefault = false
 	profile.Plan = &store.ModelProfileSelection{Provider: "google", Model: catalog.Model, Thinking: catalog.DefaultThinking}
 	profile, err = svc.ResolveWorkerModelProfile("account", profile)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if profile.UseAccountDefault || profile.Plan == nil || profile.Plan.Provider != "google" {
+		t.Fatalf("reviewed profile is not the explicit choice: %+v", profile)
 	}
 	ws := ss.Store().WorkerStore()
 	w, err := ws.CreateWorker("account", "owner", store.CreateWorkerRequest{Name: "Reviewed", Instructions: "Inspect only", ModelProfile: profile, InitialLifecycleState: store.WorkerLifecycleStatePending, ProposedBindings: map[string]string{"primary": workspaceID}, WorkspaceRequirements: []store.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
