@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -216,8 +217,20 @@ func (b *secretBroker) proxyURLPlaceholder() string {
 	return "http://swarm:TOKEN@" + strings.TrimPrefix(b.gateway, "http://")
 }
 
+// gatewayEpoch is unique to this daemon process. A sandbox's gateway token is
+// registered in memory, so a sandbox started by an earlier process (before a
+// restart or update) holds a token this one never issued and every request it
+// makes would be refused (HTTP 407). Part of the fingerprint, it makes such a
+// sandbox look changed, so it is rebuilt with a fresh token.
+var gatewayEpoch = func() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}()
+
 func grantFingerprint(grants []pebblestore.ActiveGrant) string {
-	parts := make([]string, 0, len(grants))
+	parts := make([]string, 0, len(grants)+1)
+	parts = append(parts, "epoch|"+gatewayEpoch)
 	for _, g := range grants {
 		parts = append(parts, fmt.Sprintf("%s|%s|%d|%s", g.Account, g.Slot.Name, g.Grant.ExpiresAt, strings.Join(g.Slot.Hosts, ",")))
 	}
