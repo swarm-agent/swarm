@@ -58,6 +58,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
+	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/remote"
 	"swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/sandbox"
@@ -174,6 +175,7 @@ type Daemon struct {
 	remoteTransport           *remote.Service
 	signalForwarder           *signals.Forwarder
 	resultOutbox              *outbox.Exporter
+	autoPublisher             *api.AutoPublisher
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -756,6 +758,10 @@ func New(cfg config.Config) (*Daemon, error) {
 			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
 		}
 	}
+	// Jobs in folders whose owner set a publish command (install.sh workspace
+	// publish) are delivered as pull requests; auto rules deliver them unasked.
+	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
+	autoPublisher := apiServer.NewAutoPublisher(signalStore, store)
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
@@ -926,6 +932,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		remoteTransport:           remoteSvc,
 		signalForwarder:           signalForwarder,
 		resultOutbox:              resultOutbox,
+		autoPublisher:             autoPublisher,
 	}
 	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -1307,6 +1314,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.resultOutbox != nil && d.bgCtx != nil {
 		go d.resultOutbox.Run(d.bgCtx)
+	}
+	if d.autoPublisher != nil && d.bgCtx != nil {
+		go d.autoPublisher.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

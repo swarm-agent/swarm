@@ -118,6 +118,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
        install.sh workspace add PATH [--for-user NAME] | remove PATH | list
+       install.sh workspace publish PATH COMMAND [--auto] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
                 ran sudo); used for the AI connection and workspace folders
@@ -198,6 +199,14 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    the machine up runs this as root; Swarm never changes the
                    machine itself. Then register the folder in place with
                    swarm_add_workspace. remove reverses it.
+  workspace publish PATH COMMAND [--auto]
+                   deliver jobs in PATH as pull requests instead of merging
+                   them into the folder: Swarm runs COMMAND (root-owned,
+                   outside home folders) on this machine with the job in
+                   SWARM_PUBLISH_FOLDER, _JOB_ID, _BRANCH, _HEAD, _BASE_BRANCH,
+                   _TITLE and _BODY_FILE; its last output line is the pull
+                   request URL. --auto delivers each finished job with commits
+                   without asking. publish PATH --off goes back to merging.
 USAGE
 }
 
@@ -581,6 +590,8 @@ SupplementaryGroups=docker
 # state directories are 0700 and nobody else is in its group).
 UMask=0007
 Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
+# Folders whose jobs are delivered as pull requests (install.sh workspace publish).
+Environment=SWARM_PUBLISH_CONFIG=$PUBLISH
 Environment=LD_LIBRARY_PATH=$OPT/current/lib
 Environment=PATH=$OPT/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-$DAEMON_ENV
@@ -684,6 +695,8 @@ UNIT
 # folder is registered in place with swarm_add_workspace (or
 # `swarmctl workspace add`); nothing is copied.
 WORKSPACES=$STATE/workspaces
+# Root-owned: FOLDER<TAB>COMMAND[<TAB>auto] per line; Swarm only reads it.
+PUBLISH=$STATE/publish
 WORKSPACES_DROPIN=$UNITS/$DAEMON_UNIT.d/50-workspaces.conf
 
 # A folder Swarm may work in: absolute, no "..", an existing directory with no
@@ -817,8 +830,36 @@ workspace() {
     list)
       [[ $# == 1 ]] || die "usage: install.sh workspace list"
       workspace_listed
+      [[ ! -s $PUBLISH ]] || { echo "Delivered as pull requests:"; sed 's/^/  /' "$PUBLISH"; }
       ;;
-    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list" ;;
+    publish)
+      # Jobs in PATH are delivered as pull requests by COMMAND instead of a
+      # local merge; --auto delivers each finished job with commits unasked.
+      # COMMAND runs on this machine as Swarm's user, never in a sandbox.
+      local usage="usage: install.sh workspace publish PATH COMMAND [--auto] | publish PATH --off"
+      [[ $# == 3 || $# == 4 ]] || die "$usage"
+      local path=$2 command=$3 auto=${4:-} line
+      workspace_listed | grep -qxF "$path" || die "$path is not a Swarm workspace folder on this machine (install.sh workspace add $path)"
+      install -d -m 0755 "$STATE"
+      install -m 0644 -o root -g root /dev/null "$PUBLISH.new"
+      if [[ -f $PUBLISH ]]; then
+        while IFS= read -r line; do [[ ${line%%$'\t'*} == "$path" ]] || printf '%s\n' "$line" >>"$PUBLISH.new"; done <"$PUBLISH"
+      fi
+      if [[ $command == --off ]]; then
+        [[ -z $auto ]] || { rm -f "$PUBLISH.new"; die "$usage"; }
+        mv -f "$PUBLISH.new" "$PUBLISH"
+        echo "Jobs in $path are merged into the folder again."
+        return
+      fi
+      [[ -z $auto || $auto == --auto ]] || { rm -f "$PUBLISH.new"; die "$usage"; }
+      [[ $command == /* && $command != *..* && -f $command && -x $command ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be an absolute path to an executable file"; }
+      [[ $command != /home/* && $command != /root/* ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be outside home folders (Swarm cannot see them); /usr/local/lib is a good place"; }
+      [[ $(stat -c %u "$command") == 0 && $(( 8#$(stat -c %a "$command") & 8#022 )) == 0 ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be owned by root and writable only by root"; }
+      printf '%s\t%s%s\n' "$path" "$command" "${auto:+$'\t'auto}" >>"$PUBLISH.new"
+      mv -f "$PUBLISH.new" "$PUBLISH"
+      echo "Jobs in $path are delivered as pull requests by $command${auto:+, each finished job with commits without asking}."
+      ;;
+    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--auto] | publish PATH --off" ;;
   esac
 }
 

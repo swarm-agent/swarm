@@ -784,6 +784,23 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if refs.projectID == "" {
 		return nil, controlMCPToolFailure("this job has no result to merge yet (see swarm_get_job)")
 	}
+	// A folder whose owner set a publish command gets a pull request, never
+	// a local merge.
+	if c.server != nil && c.server.publishConfig != "" {
+		view, err := c.jobView(kind, a, b, 0, false, 0)
+		if err != nil {
+			return nil, err
+		}
+		result := controlMCPJobResultJSON(view)
+		folder, _ := result["workspace_path"].(string)
+		rule, ok, err := c.server.publishRule(folder)
+		if err != nil {
+			return nil, controlMCPToolFailure("this folder's publish setting cannot be read: %s", controlMCPTruncate(err.Error(), 200))
+		}
+		if ok {
+			return c.publishJob(kind, a, b, refs, rule, result)
+		}
+	}
 	out, err := controlMCPIntegrateTask(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID})
 	if err != nil {
 		return nil, err

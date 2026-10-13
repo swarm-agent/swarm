@@ -136,6 +136,7 @@ type Server struct {
 	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore
 	outboxStatus                func() outbox.Status
+	publishConfig               string
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
