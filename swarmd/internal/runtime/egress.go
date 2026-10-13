@@ -140,6 +140,9 @@ func (b *secretBroker) PrepareSandbox(root string) (sandbox.SecretSetup, error) 
 		"NO_PROXY=localhost,127.0.0.1,::1",
 		"no_proxy=localhost,127.0.0.1,::1",
 		"NODE_EXTRA_CA_CERTS=" + sandboxCADest,
+		// Node's built-in fetch ignores the proxy variables unless told (Node 22.21+,
+		// 24); without it a stand-in reaches the website unswapped.
+		"NODE_USE_ENV_PROXY=1",
 		"SSL_CERT_FILE=" + sandboxBundleDest,
 		"REQUESTS_CA_BUNDLE=" + sandboxBundleDest,
 		"CURL_CA_BUNDLE=" + sandboxBundleDest,
