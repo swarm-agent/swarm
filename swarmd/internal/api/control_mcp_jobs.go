@@ -784,6 +784,14 @@ func controlMCPStopJob(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	response, err := c.dispatch(http.MethodPost, "/v3/workers/"+a+"/runs/"+b+"/cancel", nil, map[string]any{})
 	if err != nil {
+		// A job that already ended has nothing to cancel: say so instead of
+		// the run's bare revision or state conflict.
+		if state, _, stateErr := c.jobState(kind, a, b); stateErr == nil {
+			switch status, _ := state["status"].(string); status {
+			case "needs_review", "completed", "failed", "blocked", "cancelled", "rejected", "superseded":
+				return map[string]any{"job_id": controlMCPJobID(kind, a, b), "status": status, "stopped": false, "note": "the job already ended; nothing to stop"}, nil
+			}
+		}
 		return nil, controlMCPNotFound(err, "job", controlMCPJobID(kind, a, b), "swarm_list_workers with include_jobs")
 	}
 	status, _ := controlMCPMap(response["run"])["status"].(string)

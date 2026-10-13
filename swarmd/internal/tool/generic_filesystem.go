@@ -106,7 +106,42 @@ func (p *rootedWorkspacePath) mkdirParent() error {
 	if parent == "." || parent == "" {
 		return nil
 	}
-	return p.root.MkdirAll(parent, 0o755)
+	missing := []string{}
+	for dir := parent; dir != "." && dir != "" && dir != string(filepath.Separator); dir = filepath.Dir(dir) {
+		if _, err := p.root.Lstat(dir); err == nil {
+			break
+		}
+		missing = append(missing, dir)
+	}
+	if err := p.root.MkdirAll(parent, sharedDirMode); err != nil {
+		return err
+	}
+	// New directories are group-writable (see sharedFileMode).
+	for _, dir := range missing {
+		if err := p.root.Chmod(dir, sharedDirMode); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// A project sandbox may run as the folder's owner in Swarm's group while
+// these file tools run as Swarm's own user. Files and directories the tools
+// create are group-writable so the agent's own commands (formatters, package
+// managers) can change them; the group holds only Swarm's user and the
+// folder's owner. The modes are applied explicitly, past the daemon's umask.
+const (
+	sharedDirMode  fs.FileMode = 0o775
+	groupWriteMode fs.FileMode = 0o020
+)
+
+// sharedFileMode adds group write to a new file's mode when the group may
+// read it.
+func sharedFileMode(perm fs.FileMode) fs.FileMode {
+	if perm&0o040 != 0 {
+		return perm | groupWriteMode
+	}
+	return perm
 }
 
 func (p *rootedWorkspacePath) writeFile(data []byte, perm fs.FileMode) error {
@@ -132,9 +167,21 @@ func (p *rootedWorkspacePath) openMutable(flags int, perm fs.FileMode) (*os.File
 	if !p.mutable {
 		return nil, errors.New("mutation rejected: path is outside the Coder owned scope")
 	}
+	created := false
+	if flags&os.O_CREATE != 0 {
+		if _, err := p.root.Lstat(p.relative); errors.Is(err, fs.ErrNotExist) {
+			created = true
+		}
+	}
 	file, err := p.root.OpenFile(p.relative, flags, perm)
 	if err != nil {
 		return nil, err
+	}
+	if created {
+		if err := file.Chmod(sharedFileMode(perm)); err != nil {
+			file.Close()
+			return nil, err
+		}
 	}
 	info, statErr := file.Stat()
 	if statErr != nil {

@@ -135,7 +135,7 @@ func buildManager(t *testing.T, runtimes string, answer func(cmd string) (string
 	return m, runner
 }
 
-const gvisorRuntimes = `{"runc":{},"runsc":{"path":"/usr/local/bin/runsc"}}`
+const gvisorRuntimes = `{"runc":{},"runsc":{"path":"/usr/local/bin/runsc"},"runsc-build":{"path":"/usr/local/bin/runsc"}}`
 
 var testBuild = EnvironmentBuild{Hash: "0123456789abcdef0123", Image: "swarm-env:0123456789abcdef0123", BaseImage: "golang:1.24", Setup: []string{"apt-get install -y jq"}, Env: map[string]string{"GOFLAGS": "-mod=mod"}}
 
@@ -154,6 +154,8 @@ func TestBuildEnvironmentRunsSetupUnderGVisorWithoutHostFolders(t *testing.T) {
 	committed := false
 	runner.answer = func(cmd string) (string, error) {
 		switch {
+		case strings.HasPrefix(cmd, "info --format"):
+			return gvisorRuntimes, nil
 		case strings.HasPrefix(cmd, "image inspect --format {{json .Config.Env}} "+testBuild.Image):
 			if !committed {
 				return "", errors.New("no such image")
@@ -175,7 +177,7 @@ func TestBuildEnvironmentRunsSetupUnderGVisorWithoutHostFolders(t *testing.T) {
 	if len(runs) != 1 {
 		t.Fatalf("build container runs: %v", runs)
 	}
-	for _, want := range []string{"--runtime runsc", "--user 0:0", "--security-opt no-new-privileges", "--network swarm-sandbox", "--env GOFLAGS=-mod=mod", "--entrypoint sleep golang:1.24 infinity"} {
+	for _, want := range []string{"--runtime runsc-build ", "--user 0:0", "--security-opt no-new-privileges", "--network swarm-sandbox", "--env GOFLAGS=-mod=mod", "--entrypoint sleep golang:1.24 infinity"} {
 		if !strings.Contains(runs[0], want) {
 			t.Errorf("build container missing %q: %s", want, runs[0])
 		}
@@ -200,10 +202,16 @@ func TestBuildEnvironmentRunsSetupUnderGVisorWithoutHostFolders(t *testing.T) {
 		t.Fatal("the build container must be removed before and after the build")
 	}
 
-	// The same definition again reuses its image and runs nothing.
-	before := len(runner.find("run "))
+	// The saved image was checked in a new container (gVisor, no network,
+	// the sandbox user) for what the build wrote.
+	if checks := runner.find("run --rm --runtime runsc --network none --user 10001:10001 --entrypoint test " + testBuild.Image + " -r /etc/profile.d/"); len(checks) != 1 {
+		t.Fatalf("saved image check: %v", runner.find("run --rm"))
+	}
+
+	// The same definition again reuses its (checked) image and builds nothing.
+	before := len(runner.find("run -d"))
 	again, err := m.BuildEnvironment(context.Background(), testBuild)
-	if err != nil || !again.Reused || len(runner.find("run ")) != before {
+	if err != nil || !again.Reused || len(runner.find("run -d")) != before {
 		t.Fatalf("rebuild of an existing definition: %+v %v", again, err)
 	}
 }
@@ -227,5 +235,36 @@ func TestBuildEnvironmentFailedSetupSavesNothing(t *testing.T) {
 	}
 	if len(runner.find("rm -f swarm-envbuild-")) < 2 {
 		t.Fatal("a failed build must still remove its container")
+	}
+}
+
+// Requirement: a build needs the runsc-build runtime (gVisor without its
+// in-sandbox root overlay), or docker commit saves none of what the setup
+// wrote; and an image that does not hold the build's writes is never used.
+// Threat: an environment silently missing its setup (observed: gVisor's
+// default overlay kept every write inside the sandbox).
+func TestBuildEnvironmentNeedsBuildRuntimeAndCompleteImage(t *testing.T) {
+	m, runner := buildManager(t, `{"runc":{},"runsc":{"path":"/usr/local/bin/runsc"}}`, func(string) (string, error) { return "", nil })
+	if _, err := m.BuildEnvironment(context.Background(), testBuild); !errors.Is(err, ErrEnvironmentBuildRuntimeMissing) {
+		t.Fatalf("build without runsc-build: %v", err)
+	}
+	if len(runner.find("run ")) != 0 || len(runner.find("exec ")) != 0 {
+		t.Fatal("a refused build must not start a container or run a command")
+	}
+
+	m, runner = buildManager(t, gvisorRuntimes, func(cmd string) (string, error) {
+		switch {
+		case strings.HasPrefix(cmd, "image inspect --format {{json .Config.Env}}"):
+			return "", errors.New("no such image")
+		case strings.HasPrefix(cmd, "run --rm"):
+			return "", errors.New("exit status 1")
+		}
+		return "", nil
+	})
+	if _, err := m.BuildEnvironment(context.Background(), testBuild); err == nil || !strings.Contains(err.Error(), "does not contain what the build wrote") {
+		t.Fatalf("incomplete saved image accepted: %v", err)
+	}
+	if len(runner.find("image rm "+testBuild.Image)) != 1 {
+		t.Fatal("an incomplete saved image must be removed")
 	}
 }

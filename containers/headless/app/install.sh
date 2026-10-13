@@ -409,6 +409,7 @@ exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/cur
 WRAPPER
 
   firewall
+  register_gvisor
   choose_runtime
   sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" && echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF"
   install_units
@@ -968,8 +969,18 @@ install_gvisor() {
 
 register_gvisor() {
   command -v runsc >/dev/null || return 0
-  docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"runsc"' && return 0
-  runsc install >/dev/null && systemctl restart docker
+  local runtimes restart=0
+  runtimes=$(docker info --format '{{json .Runtimes}}' 2>/dev/null)
+  if ! grep -q '"runsc"' <<<"$runtimes"; then
+    runsc install >/dev/null && restart=1
+  fi
+  # Swarm builds folders' environments with docker commit, which sees only
+  # writes outside gVisor's in-sandbox overlay: builds run on this runtime.
+  if ! grep -q '"runsc-build"' <<<"$runtimes"; then
+    runsc install --runtime=runsc-build -- --overlay2=none >/dev/null && restart=1
+  fi
+  if ((restart)); then systemctl restart docker; fi
+  return 0
 }
 
 tailscale_new_enough() {

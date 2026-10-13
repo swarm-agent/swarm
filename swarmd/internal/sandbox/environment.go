@@ -88,9 +88,20 @@ const (
 // run under gVisor.
 // envProfileScript restores the PATH the image declares (the build
 // container's PATH) for login shells, after /etc/profile reset it.
-const envProfileScript = `mkdir -p /etc/profile.d && printf 'export PATH="%s"\n' "$PATH" > /etc/profile.d/zz-swarm-environment-path.sh && chmod 0644 /etc/profile.d/zz-swarm-environment-path.sh`
+const envProfilePath = "/etc/profile.d/zz-swarm-environment-path.sh"
+
+const envProfileScript = `mkdir -p /etc/profile.d && printf 'export PATH="%s"\n' "$PATH" > ` + envProfilePath + ` && chmod 0644 ` + envProfilePath
 
 var ErrEnvironmentBuildUnsafe = errors.New("environment builds run setup commands as root and need the gVisor runtime, which this machine's sandbox does not use")
+
+// envBuildRuntime is gVisor registered without its in-sandbox root overlay
+// (--overlay2=none), so a build's writes reach the container's layer that
+// docker commit saves. The installer registers it.
+const envBuildRuntime = "runsc-build"
+
+// ErrEnvironmentBuildRuntimeMissing asks for the installer update that
+// registers envBuildRuntime.
+var ErrEnvironmentBuildRuntimeMissing = errors.New("this machine has no runsc-build runtime, so an environment build could not save what its setup commands write; update Swarm with its installer (install.sh), which registers it")
 
 type envLog struct{ b strings.Builder }
 
@@ -130,14 +141,24 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	if runtime != gvisorRuntime {
 		return result(ErrEnvironmentBuildUnsafe)
 	}
+	// Setup commands' writes must reach the image docker commit saves; on
+	// the default gVisor runtime they stay in its in-sandbox overlay.
+	if out, err := m.runner.Run(ctx, m.cfg.Engine, "info", "--format", "{{json .Runtimes}}"); err != nil || !strings.Contains(string(out), `"`+envBuildRuntime+`"`) {
+		return result(ErrEnvironmentBuildRuntimeMissing)
+	}
 	if b.Image == "" || b.BaseImage == "" || len(b.Hash) < 12 {
 		return result(errors.New("environment build is missing its image, base image or hash"))
 	}
 	engine := m.cfg.Engine
 
 	if path, err := m.imagePath(ctx, b.Image); err == nil {
-		log.add("Image %s already exists for this definition; reusing it.\n", b.Image)
-		return EnvironmentBuildResult{Image: b.Image, Path: path, Log: log.b.String(), Reused: true}, nil
+		if m.savedImageComplete(ctx, runtime, b.Image) == nil {
+			log.add("Image %s already exists for this definition; reusing it.\n", b.Image)
+			return EnvironmentBuildResult{Image: b.Image, Path: path, Log: log.b.String(), Reused: true}, nil
+		}
+		// An image saved without the build's writes is rebuilt.
+		log.add("Image %s exists but lacks what its build wrote; rebuilding it.\n", b.Image)
+		_, _ = m.runner.Run(ctx, engine, "image", "rm", b.Image)
 	}
 
 	if _, err := m.runner.Run(ctx, engine, "image", "inspect", "--format", "{{.Id}}", b.BaseImage); err != nil {
@@ -160,7 +181,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 
 	args := []string{"run", "-d", "--name", name,
 		"--label", envBuildLabel + "=1",
-		"--runtime", runtime,
+		"--runtime", envBuildRuntime,
 		"--user", "0:0",
 		"--security-opt", "no-new-privileges",
 		"--memory", m.cfg.Memory, "--memory-swap", m.cfg.Memory,
@@ -235,6 +256,13 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	if err != nil {
 		return result(fmt.Errorf("could not save the environment image: %w", err))
 	}
+	// Prove the saved image holds what the build wrote: a fresh container
+	// from it must see the PATH script written above.
+	log.add("$ check the saved image in a new container\n")
+	if err := m.savedImageComplete(ctx, runtime, b.Image); err != nil {
+		_, _ = m.runner.Run(context.WithoutCancel(ctx), engine, "image", "rm", b.Image)
+		return result(fmt.Errorf("the saved environment image does not contain what the build wrote (%s missing); the build runtime keeps writes inside gVisor: %w", envProfilePath, err))
+	}
 	path, err := m.imagePath(ctx, b.Image)
 	if err != nil {
 		return result(fmt.Errorf("the saved environment image cannot be read: %w", err))
@@ -267,4 +295,12 @@ func truncateCommand(command string) string {
 		return command[:120] + "…"
 	}
 	return command
+}
+
+// savedImageComplete checks, in a new container from image (no network, the
+// sandbox user), that it holds what its build wrote.
+func (m *Manager) savedImageComplete(ctx context.Context, runtime, image string) error {
+	_, err := m.runner.RunCombined(ctx, m.cfg.Engine, "run", "--rm", "--runtime", runtime, "--network", "none",
+		"--user", strconv.Itoa(m.cfg.UID)+":"+strconv.Itoa(m.cfg.GID), "--entrypoint", "test", image, "-r", envProfilePath)
+	return err
 }
