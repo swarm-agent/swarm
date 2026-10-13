@@ -2415,6 +2415,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					Resolution:          req.Resolution,
 					VariantCount:        req.VariantCount,
 					DurationSeconds:     req.DurationSeconds,
+					VideoType:           req.VideoType,
 					Model:               req.Model,
 					Provider:            req.Provider,
 					Thinking:            req.Thinking,

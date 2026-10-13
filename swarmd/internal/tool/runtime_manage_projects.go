@@ -50,6 +50,7 @@ type ProjectTaskCreateInput struct {
 	VariantCount        int                                      `json:"variant_count,omitempty"`
 	EnhancePrompt       bool                                     `json:"enhance_prompt,omitempty"`
 	DurationSeconds     int                                      `json:"duration_seconds,omitempty"`
+	VideoType           string                                   `json:"video_type,omitempty"` // "single": one clip; unset: a story of scenes
 	Model               string                                   `json:"model,omitempty"`
 	Provider            string                                   `json:"provider,omitempty"`
 	Thinking            string                                   `json:"thinking,omitempty"`
