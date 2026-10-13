@@ -107,20 +107,25 @@ func (s *Server) fillMediaTaskModel(ctx context.Context, principal identity.Prin
 	if task == nil || strings.TrimSpace(task.Model) != "" {
 		return
 	}
-	kind := task.Agent
+	task.Model = s.defaultMediaModel(ctx, principal, task.Agent)
+}
+
+// defaultMediaModel is the model an image or video request without one uses:
+// the account's default, else the recommended ready model; empty for other
+// kinds or when nothing is ready.
+func (s *Server) defaultMediaModel(ctx context.Context, principal identity.Principal, kind string) string {
 	if kind != "image" && kind != "video" {
-		return
+		return ""
 	}
 	if model := s.mediaAccountDefault(principal, kind); model != "" {
-		task.Model = model
-		return
+		return model
 	}
 	if s.imageGen == nil || s.model == nil {
-		return
+		return ""
 	}
 	catalog, err := s.mediaCatalogFor(ctx, principal)
 	if err != nil {
-		return
+		return ""
 	}
-	task.Model = recommendedMediaModel(catalog, kind)
+	return recommendedMediaModel(catalog, kind)
 }

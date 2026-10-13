@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/videogen"
 )
 
 // Media jobs over Swarm Control: an AI asks for an image, a video or a sound
@@ -402,6 +403,11 @@ func controlMCPListMediaModels(c *controlMCPCall, args map[string]any) (any, err
 				hidden++
 				continue
 			}
+			// Speech and live models are listed by the catalog as sound but
+			// carry no generation settings: Swarm cannot make sound with them.
+			if kind == "sound" && option.GenerationOptions == nil {
+				continue
+			}
 			models = append(models, controlMCPMediaModelView(option))
 		}
 		entry := map[string]any{"default": def, "models": models}
@@ -460,8 +466,8 @@ func controlMCPMediaModelView(option mediaCatalogOption) map[string]any {
 	if opts.InitialImage != nil {
 		view["image_input"] = opts.InitialImage.Supported
 	}
-	if opts.Constraints != nil {
-		view["operations"] = opts.Constraints
+	if c := opts.Constraints; c != nil {
+		view["operations"] = controlMCPVideoOperations(c)
 	}
 	if len(option.Pricing) > 0 && len(option.Pricing) <= 400 {
 		view["pricing"] = option.Pricing
@@ -492,4 +498,43 @@ func controlMCPSaveMedia(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, controlMCPToolFailure("job %s has no ready files yet (swarm_get_job)", controlMCPString(args, "job_id"))
 	}
 	return map[string]any{"job_id": controlMCPJobID(kind, projectID, taskID), "saved": saved}, nil
+}
+
+// controlMCPVideoOperations is what a video model can do, in a line each.
+func controlMCPVideoOperations(c *videogen.VideoOperationConstraints) map[string]any {
+	op := func(supported bool, reason, detail string) any {
+		if !supported {
+			if reason == "" {
+				return false
+			}
+			return "no: " + reason
+		}
+		if detail == "" {
+			return true
+		}
+		return detail
+	}
+	create := ""
+	if c.Create.InitialImageSupported {
+		create = "yes; inputs may give one image as the first frame"
+	}
+	extend := ""
+	if c.Extend.Supported {
+		parts := []string{"yes; inputs give the video to extend"}
+		if c.Extend.LockedDurationSeconds > 0 {
+			parts = append(parts, fmt.Sprintf("adds %ds", c.Extend.LockedDurationSeconds))
+		}
+		if c.Extend.LockedResolution != "" {
+			parts = append(parts, "at "+c.Extend.LockedResolution)
+		}
+		if c.Extend.MaxTotalDurationSec > 0 {
+			parts = append(parts, fmt.Sprintf("up to %.0fs in total", c.Extend.MaxTotalDurationSec))
+		}
+		extend = strings.Join(parts, ", ")
+	}
+	return map[string]any{
+		"create": op(c.Create.Supported, c.Create.Reason, create),
+		"extend": op(c.Extend.Supported, c.Extend.Reason, extend),
+		"edit":   op(c.Edit.Supported, c.Edit.Reason, ""),
+	}
 }
