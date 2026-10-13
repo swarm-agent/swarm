@@ -154,7 +154,9 @@ func workerRunPlanID(r store.WorkerRunRecord) string {
 func workerRoleAgentID(role string) string {
 	switch strings.TrimSpace(role) {
 	case store.WorkerRoleCoder:
-		return agentruntime.CoderAgentID
+		// No parent agent builds or tests for a worker job: its Coder runs
+		// its own commands in the project sandbox.
+		return agentruntime.WorkerCoderAgentID
 	case store.WorkerRoleDesigner:
 		return agentruntime.DesignerAgentID
 	case store.WorkerRoleFinder:
