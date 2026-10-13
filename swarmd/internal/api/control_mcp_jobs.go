@@ -333,6 +333,9 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := c.environmentBlocksJob(place); err != nil {
+		return nil, err
+	}
 	files := []string{}
 	for _, raw := range controlMCPList(args["files"]) {
 		if path, _ := raw.(string); strings.TrimSpace(path) != "" {

@@ -497,10 +497,10 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 			t.Fatalf("all-tools instructions miss %s: %s", shown, full)
 		}
 	}
-	// With every tool, a write grant without manage is still not told the
-	// project steps, but is warned about empty repositories.
+	// With every tool, a write grant creates projects (projects come first)
+	// and is warned about empty repositories, but is never told to approve.
 	writeAll := instructions(true, "sessions:read", "sessions:write", "swarm:read", "swarm:write")
-	if strings.Contains(writeAll, "create_project") || !strings.Contains(writeAll, "empty repository") {
+	if !strings.Contains(writeAll, "swarm_create_project") || !strings.Contains(writeAll, "empty repository") || strings.Contains(writeAll, "approve_task") {
 		t.Fatalf("write-only all-tools instructions: %s", writeAll)
 	}
 }

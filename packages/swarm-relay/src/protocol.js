@@ -76,6 +76,8 @@ export const TOOL_SCOPES = {
   swarm_give_job: SCOPE_WRITE,
   swarm_answer_job: SCOPE_WRITE,
   swarm_message_job: SCOPE_WRITE,
+  swarm_set_environment: SCOPE_WRITE,
+  swarm_get_environment: SCOPE_READ,
   swarm_deliver_job: SCOPE_WRITE,
   swarm_stop_job: SCOPE_WRITE,
   swarm_schedule_job: SCOPE_WRITE,

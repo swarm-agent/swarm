@@ -61,6 +61,27 @@ changed) and writes the project's `project.md`, its context, from the folders'
 `swarm_set_project_workspaces` changes a project's folders (send the full
 list).
 
+## 3b. The folder's environment
+
+Every folder's jobs run in a sandbox on Swarm's default environment (Ubuntu
+with git, Python 3, Node.js, build-essential, curl and jq). When the work
+needs something else (a language version, a toolchain, system packages, or an
+image the person already uses), define the folder's environment with
+`swarm_set_environment`: a `base_image` (for example `golang:1.24`, `node:22`,
+`ubuntu:24.04` or their own image) plus `setup` commands run once as root
+(for example `apt-get update && apt-get install -y ...`) and `env` variables
+(never secrets; those go through the secret system).
+
+Swarm builds it in an isolated gVisor container (internet, no host folders),
+checks that `bash` and `git` work, and saves it as an image named after the
+definition, so the same definition is built once and can be rebuilt on any
+machine. `swarm_get_environment` with `wait_seconds` follows the build
+(`building`, `ready` or `failed` with the error and log). Jobs in the folder
+are refused while it builds or after it failed; fix the definition, or pass
+`reset` to go back to the default. Dockerfiles are not supported: point at an
+image that was already built, or turn the Dockerfile into a base image and
+setup commands.
+
 ## 4. Give a job
 
 `swarm_give_job` with:

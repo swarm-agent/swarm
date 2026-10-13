@@ -130,6 +130,9 @@ type Server struct {
 	secretSlots                 *pebblestore.SecretSlotStore
 	signals                     *pebblestore.SignalStore
 	secretsGatewayEnabled       bool
+	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
+	envBuildMu                  sync.Mutex
+	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service

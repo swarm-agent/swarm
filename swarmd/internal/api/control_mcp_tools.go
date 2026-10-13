@@ -143,6 +143,11 @@ var controlMCPRoutes = []string{
 	"GET v3/box/summary",
 	"GET v3/signals",
 	"GET v3/secrets/status",
+	// A folder's sandbox environment (sandbox_environments.go): read, define
+	// (Swarm builds it under gVisor) or clear.
+	"GET v3/sandbox-environments",
+	"PUT v3/sandbox-environments",
+	"DELETE v3/sandbox-environments",
 	// Box setup (control_mcp_builders.go). Each tool fixes its body: custom
 	// sub-agents only, client keys with sessions scopes only, ChatGPT device
 	// sign-in only (no callback completion, no credential reads).
@@ -862,7 +867,7 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
-	}, append(controlMCPReviewTools(sessionID), controlMCPJobTools()...)...)
+	}, append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...)...)
 }
 
 // ---- sessions ------------------------------------------------------------

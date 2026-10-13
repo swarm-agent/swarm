@@ -94,18 +94,20 @@ var toolScopes = map[string]string{
 	// state is read; deploying workers, giving, answering, merging, stopping
 	// and scheduling jobs is write. Answering covers a worker's questions only,
 	// never a tool-call approval; merging is a local git merge, never a push.
-	"swarm_status":        ScopeRead,
-	"swarm_activity":      ScopeRead,
-	"swarm_get_job":       ScopeRead,
-	"swarm_list_secrets":  ScopeRead,
-	"swarm_deploy_worker": ScopeWrite,
-	"swarm_give_job":      ScopeWrite,
-	"swarm_answer_job":    ScopeWrite,
-	"swarm_message_job":   ScopeWrite,
-	"swarm_deliver_job":   ScopeWrite,
-	"swarm_stop_job":      ScopeWrite,
-	"swarm_schedule_job":  ScopeWrite,
-	"swarm_request_media": ScopeWrite,
+	"swarm_status":          ScopeRead,
+	"swarm_activity":        ScopeRead,
+	"swarm_get_job":         ScopeRead,
+	"swarm_list_secrets":    ScopeRead,
+	"swarm_deploy_worker":   ScopeWrite,
+	"swarm_give_job":        ScopeWrite,
+	"swarm_answer_job":      ScopeWrite,
+	"swarm_message_job":     ScopeWrite,
+	"swarm_set_environment": ScopeWrite,
+	"swarm_get_environment": ScopeRead,
+	"swarm_deliver_job":     ScopeWrite,
+	"swarm_stop_job":        ScopeWrite,
+	"swarm_schedule_job":    ScopeWrite,
+	"swarm_request_media":   ScopeWrite,
 }
 
 // localOnlyTools need the owner's admin authority, which the device token

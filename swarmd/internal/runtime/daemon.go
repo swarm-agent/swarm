@@ -722,6 +722,14 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
+	// Folders' sandbox environments: the sandbox runs each folder on its last
+	// ready environment image; a build a restart cut short is marked failed.
+	sandboxEnvironments := pebblestore.NewSandboxEnvironmentStore(store)
+	if err := sandboxEnvironments.InterruptBuilds(); err != nil {
+		log.Printf("warning: sandbox environments: %v", err)
+	}
+	sandboxMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
+	apiServer.SetSandboxEnvironmentStore(sandboxEnvironments)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
 	apiServer.SetSignalStore(signalStore)

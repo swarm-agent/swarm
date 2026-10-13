@@ -45,6 +45,8 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | `swarm_schedule_job` (worker, brief, schedule, project, workspace) | `swarm:write` | `POST /v3/workers` with the schedule, `…/activate` bound to the folder, `…/automations/{aid}/enable` |
 | `swarm_request_media` (image, video, sound, project) | `swarm:write` | `POST /v3/projects/{pid}/tasks` (as `swarm_run_task`); returns `job_id` `media/<project>/<task>` |
 | `swarm_list_secrets` | `swarm:read` | `GET /v3/secrets/status` (requires `secrets:read`): names, allowed websites, whether a value is set, unexpired folder grants; never values |
+| `swarm_set_environment` (project, workspace, base_image, setup, env, reset, `wait_seconds`) | `swarm:write` | `PUT /v3/sandbox-environments` (or `DELETE` with reset): stores the folder's definition and builds it in the background (setup as root in a temporary gVisor container on the sandbox network, no host folders; bash and git checked as the sandbox user; image `swarm-env:<hash>`, reused for the same definition); the folder's sandbox runs on its last ready image |
+| `swarm_get_environment` (`wait_seconds`, `include_log`) | `swarm:read` | `GET /v3/sandbox-environments`: definition, status, what the folder runs on, build log |
 
 `swarm_list_providers`, `swarm_request_provider_key` (full keys only), `swarm_list_models`,
 `swarm_set_agent_model`, `swarm_get_usage`, `swarm_list_projects`, `swarm_create_project`
@@ -163,7 +165,7 @@ status; text is truncated (messages 1,500, tool arguments 800, tool output
 300 characters, raised per call with `get_session` `detail_chars`) and plans
 show only per-checkpoint status. Server instructions name only tools the
 caller's level allows. The full tool list
-is 55 tools; the default list is 23.
+is 57 tools; the default list is 25.
 
 **Local tokens.** `swarmctl setup sdk-token` mints session scopes by default;
 add `--workers` (automations read/write), `--usage-limits` (`usage:write`) and

@@ -83,6 +83,7 @@ first job.
 | `swarm_list_providers`, `swarm_list_models` | which providers are ready; the model each worker role uses |
 | `swarm_set_agent_model` | change a role's model (only when you ask) |
 | `swarm_create_project` | a project: a name and your folders (nothing in them is changed) |
+| `swarm_set_environment`, `swarm_get_environment` | what a folder's jobs run in: a base image plus setup commands, built by Swarm |
 | `swarm_give_job` | give the coder, designer or finder a job in a project's folder |
 | `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff, transcript |
 | `swarm_message_job` | a follow-up in the same job: more to do, a correction, a redo |

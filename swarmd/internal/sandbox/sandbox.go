@@ -146,10 +146,12 @@ type Manager struct {
 	status  Status
 	imageID string
 	runtime string
-	boxes   map[string]*box
-	used    map[string]struct{}
-	layout  *layoutCache
-	stop    chan struct{}
+	// envResolver names folders' environment images (environment.go).
+	envResolver EnvironmentResolver
+	boxes       map[string]*box
+	used        map[string]struct{}
+	layout      *layoutCache
+	stop        chan struct{}
 	// resolvConf is the sandbox's own /etc/resolv.conf (public resolvers, no
 	// search domain). Docker's embedded resolver (127.0.0.11) does not
 	// answer under gVisor, and the host's search domain names the tailnet.
@@ -520,10 +522,18 @@ func (m *Manager) RunsAsOwner(root string) bool {
 }
 
 func (m *Manager) specHash(root string, mounts []string, secretFingerprint string) string {
+	m.mu.Lock()
+	imageID := m.imageID
+	m.mu.Unlock()
+	return m.specHashImage(root, mounts, secretFingerprint, imageID)
+}
+
+// specHashImage is specHash for the image identity a folder runs on.
+func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint, imageID string) string {
 	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v3", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
+		"v3", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
 		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
@@ -536,6 +546,12 @@ func (m *Manager) specHash(root string, mounts []string, secretFingerprint strin
 // RunArgs builds the hardened `docker run` arguments for a sandbox. It is
 // exported for the negative test suite, which asserts every hardening flag.
 func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret SecretSetup) []string {
+	return m.runArgsImage(name, root, spec, mounts, secret, EnvironmentImage{Image: m.cfg.Image, Path: sandboxPath})
+}
+
+// runArgsImage is RunArgs for the image a folder runs on; only the image and
+// its PATH differ, never the hardening.
+func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) []string {
 	m.mu.Lock()
 	runtime := m.runtime
 	m.mu.Unlock()
@@ -562,7 +578,7 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
 		"--mount", "type=volume,src="+name+"-home,dst="+sandboxHome,
 		"--env", "HOME="+sandboxHome,
-		"--env", "PATH="+sandboxPath,
+		"--env", "PATH="+image.Path,
 		"--env", "LANG=C.UTF-8",
 		"--workdir", root,
 	)
@@ -591,7 +607,7 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 			args = append(args, "--mount", "type=bind,src="+f.HostPath+",dst="+f.Dest+",readonly")
 		}
 	}
-	args = append(args, m.cfg.Image, "sleep", "infinity")
+	args = append(args, image.Image, "sleep", "infinity")
 	return args
 }
 
@@ -616,7 +632,11 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 			return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
 		}
 	}
-	spec := m.specHash(root, mounts, secret.Fingerprint)
+	image, imageID, err := m.sandboxImage(root)
+	if err != nil {
+		return nil, err
+	}
+	spec := m.specHashImage(root, mounts, secret.Fingerprint, imageID)
 
 	m.mu.Lock()
 	b := m.boxes[name]
@@ -646,7 +666,7 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 	// deadline: a short command budget must not abort a container start
 	// halfway, and the next command then finds the sandbox ready.
 	ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
-	err = m.ensure(ensureCtx, name, root, spec, mounts, secret)
+	err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image)
 	cancel()
 	if err == nil {
 		b.spec = spec
@@ -673,7 +693,7 @@ func (m *Manager) release(b *box) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup) error {
+func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) error {
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}}", name)
 	if err == nil {
 		fields := strings.Fields(string(out))
@@ -692,7 +712,7 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 			return fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
-	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.RunArgs(name, root, spec, mounts, secret)...); err != nil {
+	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.runArgsImage(name, root, spec, mounts, secret, image)...); err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 	return m.configureGitIdentity(ctx, name)

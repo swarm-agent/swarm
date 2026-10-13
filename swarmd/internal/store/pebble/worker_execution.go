@@ -212,7 +212,10 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 		if err != nil {
 			return WorkerRunRecord{}, fmt.Errorf("%w: %w", ErrWorkerConflict, err)
 		}
-		if strings.TrimSpace(req.ResolvedWorkspaceID) != workspaceID {
+		// A caller that resolved (and checked) the workspace first must see the
+		// same one here, under the worker lock; one that did not lets admission
+		// resolve it, as before per-job workspaces.
+		if resolved := strings.TrimSpace(req.ResolvedWorkspaceID); resolved != "" && resolved != workspaceID {
 			return WorkerRunRecord{}, fmt.Errorf("%w: job workspace changed before admission", ErrWorkerConflict)
 		}
 	}
