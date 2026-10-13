@@ -494,9 +494,15 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	return state, refs, nil
 }
 
-func controlMCPJobNext(status string) string {
+// controlMCPJobNext says what to do with a job in this status. committed is
+// false for a job that settled with no commits (a finder's report, for
+// example): there is nothing to merge.
+func controlMCPJobNext(status string, committed bool) string {
 	switch status {
 	case "needs_review":
+		if !committed {
+			return "the work is done and committed no changes, so there is nothing to merge: the result is the report (read it here or with swarm_get_job)"
+		}
 		return "the work is done: read it here (include_diff for the patch), then swarm_deliver_job merges it into the folder"
 	case "completed":
 		return "the job is finished and merged"
@@ -586,6 +592,7 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 		out["waited"] = waited
 	}
 	status, _ := state["status"].(string)
+	committed := true
 	if refs.projectID != "" && (status == "needs_review" || status == "completed" || status == "failed") {
 		resultArgs := map[string]any{"project_id": refs.projectID, "task_id": refs.taskID, "include_diff": includeDiff}
 		if diffChars > 0 {
@@ -597,6 +604,7 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 				delete(res, key)
 			}
 			out["result"] = res
+			committed = controlMCPResultCommitted(res)
 		} else {
 			out["result_error"] = controlMCPTruncate(err.Error(), 300)
 		}
@@ -612,10 +620,25 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	if refs.sessionID != "" {
 		out["session_id"] = refs.sessionID
 	}
-	if next := controlMCPJobNext(status); next != "" {
+	if next := controlMCPJobNext(status, committed); next != "" {
 		out["next"] = next
 	}
 	return out, nil
+}
+
+// controlMCPResultCommitted reports whether a job's result has commits to
+// merge. The delivery assessment is the authority ("empty": no commits or no
+// net change since the job's base); without one, an empty commit list read
+// from the job's branch says the same. Anything unknown counts as committed,
+// so a merge is never hidden.
+func controlMCPResultCommitted(result map[string]any) bool {
+	if state, _ := result["delivery_state"].(string); state != "" {
+		return state != "empty"
+	}
+	if commits, ok := result["commits"].([]string); ok {
+		return len(commits) > 0
+	}
+	return true
 }
 
 // controlMCPMaxTranscriptMessages bounds get_job's transcript.
