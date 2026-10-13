@@ -951,11 +951,21 @@ func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error)
 	// The model and its options go to the media task as given; Swarm checks
 	// them against the model before anything is spent.
 	body := map[string]any{}
-	for arg, field := range map[string]string{"model": "model", "aspect_ratio": "aspect_ratio", "resolution": "resolution", "operation": "operation"} {
+	for _, arg := range []string{"model", "aspect_ratio", "resolution"} {
 		if value := strings.TrimSpace(controlMCPString(args, arg)); value != "" {
-			body[field] = value
+			body[arg] = value
 		}
 	}
+	if kind == "video" {
+		// One clip, as asked. Without this the task router plans a two-scene
+		// story: two paid generations joined into one file of twice the length.
+		body["video_type"], body["scenes_count"] = "single", 1
+		if operation := strings.TrimSpace(controlMCPString(args, "operation")); operation != "" {
+			body["operation"] = operation
+		}
+	}
+	// An image edit is an image request with an input image: the task's
+	// operation field is the video one.
 	for arg, field := range map[string]string{"duration_seconds": "duration_seconds", "count": "variant_count"} {
 		if value := controlMCPInt(args, arg, 0); value > 0 {
 			body[field] = value
@@ -1222,7 +1232,7 @@ func controlMCPJobTools() []controlMCPTool {
 				"resolution":       controlMCPStringProp("Image size (e.g. 1K, 2K, 4K) or video resolution (e.g. 720p, 1080p, 4k) the model takes.", 0, 20),
 				"duration_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 300, "description": "Video or sound length in seconds, one the model takes."},
 				"count":            map[string]any{"type": "integer", "minimum": 0, "maximum": 8, "description": "How many results (variants). Default 1."},
-				"operation":        map[string]any{"type": "string", "enum": []string{"create", "extend", "edit"}, "description": "Video: extend or edit the video given in inputs. Image: edit the image given in inputs. Default create."},
+				"operation":        map[string]any{"type": "string", "enum": []string{"create", "extend", "edit"}, "description": "Video only: extend or edit the video given in inputs (see the model's operations). An image with an input image is an edit of it. Default create."},
 				"inputs": map[string]any{"type": "array", "maxItems": 14, "description": "Files to start from.", "items": map[string]any{"type": "object", "properties": map[string]any{
 					"job_id": map[string]any{"type": "string", "description": "An earlier media job (media/…)."},
 					"file":   map[string]any{"type": "integer", "minimum": 1, "description": "Its file number (swarm_get_job lists them). Default 1."},

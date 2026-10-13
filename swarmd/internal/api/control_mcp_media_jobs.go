@@ -151,6 +151,9 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 	if task.Model != "" {
 		out["model"] = task.Model
 	}
+	if status, _ := out["status"].(string); status == "needs_review" || status == "completed" {
+		out["next"] = "the files are ready: include_media shows the images, swarm_save_media writes the files into a workspace; there is nothing to merge"
+	}
 	show, _ := args["include_media"].(bool)
 	if !show {
 		return out, nil
@@ -232,7 +235,10 @@ func (c *controlMCPCall) mediaSaveDir(task *pebblestore.ProjectTaskRecord, saveT
 	if !filepath.IsAbs(target) {
 		base := strings.TrimSpace(task.WorkspacePath)
 		if base == "" {
-			return "", errors.New("folder must be an absolute path inside a registered workspace: this job has no workspace")
+			base = c.projectFolder(task.ProjectID)
+		}
+		if base == "" {
+			return "", errors.New("folder must be an absolute path inside a registered workspace: this job's project has no folder")
 		}
 		target = filepath.Join(base, target)
 	}
@@ -537,4 +543,23 @@ func controlMCPVideoOperations(c *videogen.VideoOperationConstraints) map[string
 		"extend": op(c.Extend.Supported, c.Extend.Reason, extend),
 		"edit":   op(c.Edit.Supported, c.Edit.Reason, ""),
 	}
+}
+
+// projectFolder is a project's first folder: where a media job without a
+// folder of its own saves relative paths.
+func (c *controlMCPCall) projectFolder(projectID string) string {
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok || c.server == nil || c.server.sessions == nil || c.server.sessions.Store() == nil {
+		return ""
+	}
+	project, found, err := c.server.sessions.Store().GetProject(principal.AccountScopeID, projectID)
+	if err != nil || !found || project == nil {
+		return ""
+	}
+	for _, workspace := range project.Workspaces {
+		if path := strings.TrimSpace(workspace.Path); filepath.IsAbs(path) {
+			return path
+		}
+	}
+	return ""
 }
