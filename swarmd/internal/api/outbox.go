@@ -138,6 +138,22 @@ func (s *Server) OutboxResultBuilder() outbox.ResultBuilder {
 		base, _ := result["base_commit"].(string)
 		head, _ := result["head"].(string)
 		commits := controlMCPList(result["commits"])
+		if head == "" && repo != "" && controlMCPGitRevision.MatchString(branch) {
+			if resolved, err := b.GitOutput(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}"); err == nil {
+				head = strings.TrimSpace(resolved)
+			}
+		}
+		// A job's run ends a moment before Swarm has assessed its commits: a
+		// job with work whose commits are not readable yet is retried, and
+		// exported as it is on the last attempt.
+		state, _ := result["delivery_state"].(string)
+		pending := state == "" || state == "unavailable" || (state == "candidate_work" && (head == "" || len(commits) == 0))
+		if view["status"] == "needs_review" && pending && !b.LastAttempt {
+			return nil, errors.New("the job's result is not settled yet")
+		}
+		if text, _ := result["changes_error"].(string); text != "" {
+			manifest["changes_error"] = text
+		}
 		if repo != "" && head != "" && len(commits) > 0 {
 			outcome = "code"
 			git := map[string]any{"branch": branch, "base_branch": result["base_branch"], "base_commit": base, "head": head}

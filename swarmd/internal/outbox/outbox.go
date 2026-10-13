@@ -228,7 +228,10 @@ func (e *Exporter) exportSignal(ctx context.Context, sig pebblestore.Signal) err
 	rec := Record{V: Version, Machine: e.cfg.Machine, Seq: sig.Seq, ID: sig.ID, At: sig.At, Kind: sig.Kind, Severity: sig.Severity,
 		Source: sig.Source, Summary: sig.Summary, Refs: sig.Refs, Attrs: sig.Attrs}
 	if e.build != nil {
-		export, err := e.build(ctx, sig, &Builder{MaxFileBytes: e.cfg.MaxFileBytes, Machine: e.cfg.Machine, key: e.layoutKey})
+		e.mu.Lock()
+		last := e.attempts[sig.Seq] >= maxResultRetries-1
+		e.mu.Unlock()
+		export, err := e.build(ctx, sig, &Builder{MaxFileBytes: e.cfg.MaxFileBytes, Machine: e.cfg.Machine, LastAttempt: last, key: e.layoutKey})
 		if err != nil {
 			e.mu.Lock()
 			e.attempts[sig.Seq]++
@@ -303,7 +306,10 @@ func (x *Export) cleanup() {
 type Builder struct {
 	MaxFileBytes int64
 	Machine      string
-	key          func(string) string
+	// LastAttempt is set on the final try: a builder waiting for a result to
+	// settle exports what it has instead of asking to be retried.
+	LastAttempt bool
+	key         func(string) string
 }
 
 // BlobKey is the layout key a blob with this hash is stored under.
