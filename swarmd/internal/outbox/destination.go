@@ -196,14 +196,20 @@ func storageErrorCode(reply []byte) string {
 	return text[start+6 : end]
 }
 
-// sign adds an AWS Signature Version 4 (HMAC) authorization; Google Cloud
-// Storage accepts it with an HMAC key, region "auto" and service "s3".
+// sign adds a Signature Version 4 (HMAC) authorization: AWS's for S3, and
+// Google's own form of it (GOOG4, x-goog- headers) for Cloud Storage, which
+// refuses x-goog- preconditions next to x-amz- headers and ignores
+// If-None-Match.
 func (b *bucket) sign(req *http.Request, payloadHash string) {
+	algorithm, vendor, service, request := "AWS4-HMAC-SHA256", "amz", "s3", "aws4_request"
+	if b.gcs {
+		algorithm, vendor, service, request = "GOOG4-HMAC-SHA256", "goog", "storage", "goog4_request"
+	}
 	now := b.now().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	day := now.Format("20060102")
-	req.Header.Set("x-amz-date", amzDate)
-	req.Header.Set("x-amz-content-sha256", payloadHash)
+	req.Header.Set("x-"+vendor+"-date", amzDate)
+	req.Header.Set("x-"+vendor+"-content-sha256", payloadHash)
 
 	names := []string{"host"}
 	for name := range req.Header {
@@ -220,15 +226,15 @@ func (b *bucket) sign(req *http.Request, payloadHash string) {
 	}
 	signed := strings.Join(names, ";")
 	canonical := strings.Join([]string{req.Method, req.URL.EscapedPath(), req.URL.RawQuery, canonicalHeaders.String(), signed, payloadHash}, "\n")
-	scope := day + "/" + b.cfg.Region + "/s3/aws4_request"
+	scope := day + "/" + b.cfg.Region + "/" + service + "/" + request
 	digest := sha256.Sum256([]byte(canonical))
-	toSign := strings.Join([]string{"AWS4-HMAC-SHA256", amzDate, scope, hex.EncodeToString(digest[:])}, "\n")
-	key := hmacSHA256([]byte("AWS4"+b.cfg.SecretAccessKey), day)
+	toSign := strings.Join([]string{algorithm, amzDate, scope, hex.EncodeToString(digest[:])}, "\n")
+	key := hmacSHA256([]byte(strings.SplitN(algorithm, "-", 2)[0]+b.cfg.SecretAccessKey), day)
 	key = hmacSHA256(key, b.cfg.Region)
-	key = hmacSHA256(key, "s3")
-	key = hmacSHA256(key, "aws4_request")
+	key = hmacSHA256(key, service)
+	key = hmacSHA256(key, request)
 	signature := hex.EncodeToString(hmacSHA256(key, toSign))
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+b.cfg.AccessKeyID+"/"+scope+", SignedHeaders="+signed+", Signature="+signature)
+	req.Header.Set("Authorization", algorithm+" Credential="+b.cfg.AccessKeyID+"/"+scope+", SignedHeaders="+signed+", Signature="+signature)
 }
 
 func hmacSHA256(key []byte, data string) []byte {

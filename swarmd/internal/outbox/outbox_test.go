@@ -200,7 +200,7 @@ func TestBucketSignsAndCreatesOnly(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		auth := r.Header.Get("Authorization")
-		if r.Method != http.MethodPut || !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=KEYID/") || !strings.Contains(auth, "/auto/s3/aws4_request") ||
+		if r.Method != http.MethodPut || !strings.HasPrefix(auth, "GOOG4-HMAC-SHA256 Credential=KEYID/") || !strings.Contains(auth, "/auto/storage/goog4_request") || r.Header.Get("x-amz-date") != "" ||
 			!strings.Contains(auth, "x-goog-if-generation-match") || strings.Contains(auth, "secret-value") {
 			http.Error(w, "<Error><Code>AccessDenied</Code><Message>no</Message></Error>", http.StatusForbidden)
 			return
@@ -211,7 +211,7 @@ func TestBucketSignsAndCreatesOnly(t *testing.T) {
 		}
 		body, _ := io.ReadAll(r.Body)
 		sum := sha256.Sum256(body)
-		if r.Header.Get("x-amz-content-sha256") != hex.EncodeToString(sum[:]) {
+		if r.Header.Get("x-goog-content-sha256") != hex.EncodeToString(sum[:]) {
 			http.Error(w, "<Error><Code>BadDigest</Code></Error>", http.StatusBadRequest)
 			return
 		}
@@ -247,5 +247,21 @@ func TestBucketSignsAndCreatesOnly(t *testing.T) {
 	}
 	if err := dest.PutBytes(ctx, "machines/../etc/x", []byte("{}"), ""); err == nil {
 		t.Fatal("a key with .. was accepted")
+	}
+}
+
+func TestS3BucketUsesAWSSignatureAndIfNoneMatch(t *testing.T) {
+	var auth, condition, google string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth, condition, google = r.Header.Get("Authorization"), r.Header.Get("If-None-Match"), r.Header.Get("x-goog-if-generation-match")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	dest, _ := Config{Scheme: "s3", Bucket: "my-bucket", Endpoint: server.URL, Region: "eu-west-1", AccessKeyID: "AKID", SecretAccessKey: "s"}.Open()
+	if err := dest.PutBytes(context.Background(), "machines/pc/log/000000000001.json", []byte("{}"), "application/json"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKID/") || !strings.Contains(auth, "/eu-west-1/s3/aws4_request") || !strings.Contains(auth, "if-none-match") || condition != "*" || google != "" {
+		t.Fatalf("s3 request: auth %q if-none-match %q goog %q", auth, condition, google)
 	}
 }
