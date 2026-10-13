@@ -48,7 +48,9 @@ done <"$conf"
 folder="${SWARM_PUBLISH_FOLDER:?}" head="${SWARM_PUBLISH_HEAD:?}" job="${SWARM_PUBLISH_JOB_ID:?}"
 base="${BASE_BRANCH:-${SWARM_PUBLISH_BASE_BRANCH:-main}}" title="${SWARM_PUBLISH_TITLE:-Swarm job}" body_file="${SWARM_PUBLISH_BODY_FILE:-/dev/null}"
 [[ $head =~ ^[0-9a-f]{40}$ ]] || die "SWARM_PUBLISH_HEAD is not a commit id"
-git -C "$folder" cat-file -e "$head^{commit}" || die "commit $head is not in $folder"
+# The folder belongs to its owner, not Swarm's user: trust it for these commands only.
+git_folder() { git -c safe.directory="$folder" -C "$folder" "$@"; }
+git_folder cat-file -e "$head^{commit}" || die "commit $head is not in $folder"
 # One branch per job: a follow-up of the same job updates the same pull request.
 branch="$BRANCH_PREFIX$(printf '%s' "$job" | sha256sum | cut -c1-12)"
 
@@ -68,7 +70,7 @@ TOKEN=$(github POST "/app/installations/$INSTALLATION_ID/access_tokens" \
 # Push with the token in the environment only, never on a command line.
 basic=$(printf 'x-access-token:%s' "$TOKEN" | openssl base64 -A)
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
-  GIT_TERMINAL_PROMPT=0 git -C "$folder" -c credential.helper= push --force --quiet "$git_base/$REPO.git" "$head:refs/heads/$branch" \
+  GIT_TERMINAL_PROMPT=0 git_folder -c credential.helper= push --force --quiet "$git_base/$REPO.git" "$head:refs/heads/$branch" \
   || die "push of $head to $branch failed"
 echo "pushed $head to $branch"
 
