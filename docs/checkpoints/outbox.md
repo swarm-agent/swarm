@@ -101,7 +101,7 @@ record of kind `outbox.gap` says so (`attrs.from`, `attrs.to`).
   "status": "needs_review",
   "outcome": "media",
   "project_id": "…",
-  "workspace_path": "/home/me/site",
+  "workspace_path": "/srv/site",
   "report": "…",
   "what_did_do": ["…"],
   "what_not_done": ["…"],

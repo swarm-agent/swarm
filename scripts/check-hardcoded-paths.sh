@@ -47,6 +47,8 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*sandboxHome[[:space:]]*=[[:space:]]*"/home/sandbox"$' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:.*dst=/etc/resolv\.conf' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*//.*/etc/resolv\.conf' \
+    -e '^(\./)?swarmd/internal/sandbox/environment\.go:[0-9]+:const envProfilePath = "/etc/profile\.d/zz-swarm-environment-path\.sh"$' \
+    -e '^(\./)?swarmd/internal/sandbox/environment\.go:[0-9]+:[[:space:]]*args = append\(args, "--mount", "type=bind,src="\+m\.resolvConf\+",dst=/etc/resolv\.conf,readonly"\)$' \
     -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:[[:space:]]*sandboxCADest[[:space:]]*=[[:space:]]*"/etc/swarm/egress-ca\.pem"$' \
     -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:[[:space:]]*sandboxBundleDest[[:space:]]*=[[:space:]]*"/etc/swarm/ca-bundle\.pem"$' \
     -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:.*"/etc/ssl/certs/ca-certificates\.crt", "/etc/pki/tls/certs/ca-bundle\.crt"' \

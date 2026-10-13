@@ -457,20 +457,20 @@ func TestSandboxRunsAsTheFolderOwner(t *testing.T) {
 	m := newTestManager(t, ModeRequired, readyRunner(), Config{})
 	m.owner = func(path string) (int, bool) {
 		switch path {
-		case "/home/person/app":
+		case "/srv/person-app":
 			return 4242, true
 		case "/srv/root-owned":
 			return 0, true
 		}
 		return m.cfg.UID, true
 	}
-	own := strings.Join(m.RunArgs("n", "/home/person/app", "s", []string{"/home/person/app"}, SecretSetup{}), " ")
+	own := strings.Join(m.RunArgs("n", "/srv/person-app", "s", []string{"/srv/person-app"}, SecretSetup{}), " ")
 	for _, want := range []string{"--user 4242:10001", "uid=4242,gid=10001,mode=0700"} {
 		if !strings.Contains(own, want) {
 			t.Errorf("owner-run args missing %q:\n%s", want, own)
 		}
 	}
-	if !m.RunsAsOwner("/home/person/app") {
+	if !m.RunsAsOwner("/srv/person-app") {
 		t.Error("RunsAsOwner false for a person's folder")
 	}
 	for _, root := range []string{"/srv/root-owned", "/srv/mine"} {
@@ -479,7 +479,7 @@ func TestSandboxRunsAsTheFolderOwner(t *testing.T) {
 			t.Errorf("%s: sandbox must run as the daemon:\n%s", root, args)
 		}
 	}
-	if m.specHash("/home/person/app", []string{"/home/person/app"}, "") == m.specHash("/srv/mine", []string{"/home/person/app"}, "") {
+	if m.specHash("/srv/person-app", []string{"/srv/person-app"}, "") == m.specHash("/srv/mine", []string{"/srv/person-app"}, "") {
 		t.Error("spec hash ignores the sandbox user")
 	}
 }

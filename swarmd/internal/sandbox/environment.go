@@ -84,14 +84,15 @@ const (
 	envCommandMaxBytes = 16 * 1024
 )
 
-// ErrEnvironmentBuildUnsafe refuses a build where setup commands would not
-// run under gVisor.
-// envProfileScript restores the PATH the image declares (the build
-// container's PATH) for login shells, after /etc/profile reset it.
+// envProfilePath is where a build puts the PATH the image declares (the build
+// container's PATH), so login shells keep it after the distribution's
+// profile resets PATH.
 const envProfilePath = "/etc/profile.d/zz-swarm-environment-path.sh"
 
-const envProfileScript = `mkdir -p /etc/profile.d && printf 'export PATH="%s"\n' "$PATH" > ` + envProfilePath + ` && chmod 0644 ` + envProfilePath
+const envProfileScript = `mkdir -p "$(dirname ` + envProfilePath + `)" && printf 'export PATH="%s"\n' "$PATH" > ` + envProfilePath + ` && chmod 0644 ` + envProfilePath
 
+// ErrEnvironmentBuildUnsafe refuses a build where setup commands would not
+// run under gVisor.
 var ErrEnvironmentBuildUnsafe = errors.New("environment builds run setup commands as root and need the gVisor runtime, which this machine's sandbox does not use")
 
 // envBuildRuntime is gVisor registered without its in-sandbox root overlay
@@ -225,7 +226,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	}
 
 	// Agents' commands run in a login shell (bash -lc), and a distribution's
-	// /etc/profile resets PATH (Debian drops /usr/local/go/bin, for one).
+	// login profile resets PATH (Debian drops Go's bin folder, for one).
 	// Put the image's own PATH back for login shells.
 	log.add("$ keep the image's PATH for login shells\n")
 	out, err := m.runner.RunCombined(ctx, engine, "exec", "-u", "0", "-w", "/", name, "/bin/sh", "-c", envProfileScript)
