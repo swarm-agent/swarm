@@ -2,10 +2,12 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -131,5 +133,109 @@ func TestSignalsAPI(t *testing.T) {
 		if code, _ := call(reader, http.MethodGet, path, ""); code != http.StatusBadRequest {
 			t.Fatalf("%s = %d, want 400", path, code)
 		}
+	}
+}
+
+// Purpose: a reader can follow the feed in real time without polling: with
+// wait, GET /v3/signals blocks while nothing it may see follows the cursor
+// and returns, in the usual shape, as soon as a signal it may see is stored.
+// Threats: a wait that returns early on another account's signal (an empty
+// page that tells the reader to poll again), a wait that never ends after a
+// signal it may see, one that ignores the client going away, or a malformed
+// or unbounded wait. Owner: listSignals over the real Handler and
+// SignalStore.Changed, the narrowest layer where the broadcast and the
+// account filter meet.
+func TestSignalsAPIWait(t *testing.T) {
+	s, attachToken, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "signals"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	signals := pebblestore.NewSignalStore(store)
+	s.SetSignalStore(signals)
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(ctx context.Context, path string) (int, map[string]any) {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555"+path, nil).WithContext(ctx)
+		req.Header.Set("Authorization", "Bearer "+attachToken)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+	for _, bad := range []string{"-1", "soon"} {
+		if code, out := request(context.Background(), "/v3/signals?wait="+bad); code != http.StatusBadRequest {
+			t.Fatalf("wait=%s = %d %v", bad, code, out)
+		}
+	}
+	first, err := signals.Append(pebblestore.Signal{Kind: "agent.blocked", Account: actor.AccountScopeID, Summary: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := strconv.FormatUint(first.Seq, 10)
+
+	// Without wait, or with something to return, the read answers at once.
+	if code, out := request(context.Background(), "/v3/signals?after=0&wait=30"); code != http.StatusOK || len(out["signals"].([]any)) != 1 {
+		t.Fatalf("read with signals waiting = %d %v", code, out)
+	}
+
+	type result struct {
+		code int
+		out  map[string]any
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, out := request(context.Background(), "/v3/signals?after="+cursor+"&wait=30")
+		done <- result{code, out}
+	}()
+	// Another account's signal is invisible to this reader: it must not end
+	// the wait with an empty page.
+	if _, err := signals.Append(pebblestore.Signal{Kind: "agent.blocked", Account: "acct_other", Summary: "not yours"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case got := <-done:
+		t.Fatalf("wait returned before a visible signal: %d %v", got.code, got.out)
+	default:
+	}
+	visible, err := signals.Append(pebblestore.Signal{Kind: "run.failed", Account: actor.AccountScopeID, Summary: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-done:
+		list, _ := got.out["signals"].([]any)
+		if got.code != http.StatusOK || len(list) != 1 || list[0].(map[string]any)["summary"] != "second" || got.out["next_after"] != float64(visible.Seq) || got.out["latest_seq"] != float64(visible.Seq) {
+			t.Fatalf("woken read = %d %v", got.code, got.out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("waiting read did not return after a signal was stored")
+	}
+
+	// The wait ends when the client goes away.
+	ctx, cancel := context.WithCancel(context.Background())
+	gone := make(chan struct{})
+	go func() {
+		request(ctx, "/v3/signals?after="+strconv.FormatUint(visible.Seq, 10)+"&wait=30")
+		close(gone)
+	}()
+	cancel()
+	select {
+	case <-gone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiting read ignored request cancellation")
+	}
+
+	// A wait that sees nothing ends with the usual, empty page.
+	started := time.Now()
+	code, out := request(context.Background(), "/v3/signals?after="+strconv.FormatUint(visible.Seq, 10)+"&wait=1")
+	if list, _ := out["signals"].([]any); code != http.StatusOK || out["ok"] != true || len(list) != 0 || out["next_after"] != float64(visible.Seq) || time.Since(started) < 900*time.Millisecond {
+		t.Fatalf("expired wait = %d %v after %v", code, out, time.Since(started))
 	}
 }

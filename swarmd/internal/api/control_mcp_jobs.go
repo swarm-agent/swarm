@@ -963,6 +963,9 @@ func controlMCPActivity(c *controlMCPCall, args map[string]any) (any, error) {
 	if severity := controlMCPString(args, "min_severity"); severity != "" {
 		query.Set("min_severity", severity)
 	}
+	if wait := controlMCPInt(args, "wait_seconds", 0); wait > 0 {
+		query.Set("wait", strconv.Itoa(min(wait, maxSignalWaitSeconds)))
+	}
 	page, err := c.dispatch(http.MethodGet, "/v3/signals", query, nil)
 	if err != nil {
 		return nil, err
@@ -1033,6 +1036,7 @@ func controlMCPJobTools() []controlMCPTool {
 				"after":        controlMCPStringProp("Cursor from swarm_status or a previous swarm_activity; empty for the oldest kept.", 0, 32),
 				"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "description": "Default 30."},
 				"min_severity": map[string]any{"type": "string", "enum": []string{"info", "warning", "critical"}},
+				"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": maxSignalWaitSeconds, "description": "When nothing is new after the cursor, wait up to this many seconds (at most 30) for the next event instead of returning empty. Default 0."},
 			}),
 			Annotations: controlMCPReadOnly, call: controlMCPActivity,
 		},
