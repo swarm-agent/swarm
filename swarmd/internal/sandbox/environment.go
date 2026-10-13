@@ -86,6 +86,10 @@ const (
 
 // ErrEnvironmentBuildUnsafe refuses a build where setup commands would not
 // run under gVisor.
+// envProfileScript restores the PATH the image declares (the build
+// container's PATH) for login shells, after /etc/profile reset it.
+const envProfileScript = `mkdir -p /etc/profile.d && printf 'export PATH="%s"\n' "$PATH" > /etc/profile.d/zz-swarm-environment-path.sh && chmod 0644 /etc/profile.d/zz-swarm-environment-path.sh`
+
 var ErrEnvironmentBuildUnsafe = errors.New("environment builds run setup commands as root and need the gVisor runtime, which this machine's sandbox does not use")
 
 type envLog struct{ b strings.Builder }
@@ -199,11 +203,22 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 		}
 	}
 
+	// Agents' commands run in a login shell (bash -lc), and a distribution's
+	// /etc/profile resets PATH (Debian drops /usr/local/go/bin, for one).
+	// Put the image's own PATH back for login shells.
+	log.add("$ keep the image's PATH for login shells\n")
+	out, err := m.runner.RunCombined(ctx, engine, "exec", "-u", "0", "-w", "/", name, "/bin/sh", "-c", envProfileScript)
+	log.output(out)
+	if err != nil {
+		return result(fmt.Errorf("could not keep the image's PATH for login shells: %w", err))
+	}
+
 	// The sandbox runs as an unprivileged user that has no account in the
-	// image; Swarm's own Git and the agents' commands need bash and git.
+	// image; Swarm's own Git and the agents' commands (a login shell) need
+	// bash and git.
 	check := "git --version && bash --version | head -n 1"
-	log.add("$ %s (as an unprivileged user)\n", check)
-	out, err := m.runner.RunCombined(ctx, engine, "exec", "-u", strconv.Itoa(m.cfg.UID)+":"+strconv.Itoa(m.cfg.GID), "-e", "HOME=/tmp", "-w", "/tmp", name, "bash", "-c", check)
+	log.add("$ %s (as an unprivileged user, in a login shell)\n", check)
+	out, err = m.runner.RunCombined(ctx, engine, "exec", "-u", strconv.Itoa(m.cfg.UID)+":"+strconv.Itoa(m.cfg.GID), "-e", "HOME=/tmp", "-w", "/tmp", name, "bash", "-lc", check)
 	log.output(out)
 	if err != nil {
 		return result(fmt.Errorf("the environment must provide bash and git for an unprivileged user (add them in setup, for example apt-get install -y bash git): %w", err))

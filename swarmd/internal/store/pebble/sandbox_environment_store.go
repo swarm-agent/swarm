@@ -32,7 +32,7 @@ const (
 	MaxSandboxEnvironmentEnvValue  = 4096
 	MaxSandboxEnvironmentLogBytes  = 8000
 	SandboxEnvironmentImagePrefix  = "swarm-env:"
-	sandboxEnvironmentHashVersion  = "v1"
+	sandboxEnvironmentHashVersion  = "v2"
 	sandboxEnvironmentMaxImageName = 255
 )
 

@@ -185,10 +185,12 @@ func TestBuildEnvironmentRunsSetupUnderGVisorWithoutHostFolders(t *testing.T) {
 			t.Errorf("build container has %q: %s", forbidden, runs[0])
 		}
 	}
-	if setup := runner.find("exec -u 0 -w / swarm-envbuild-"); len(setup) != 1 || !strings.HasSuffix(setup[0], "/bin/sh -c apt-get install -y jq") {
+	// The setup command, then the PATH kept for login shells (agents'
+	// commands run in bash -lc, and /etc/profile resets PATH).
+	if setup := runner.find("exec -u 0 -w / swarm-envbuild-"); len(setup) != 2 || !strings.HasSuffix(setup[0], "/bin/sh -c apt-get install -y jq") || !strings.Contains(setup[1], "/etc/profile.d/") {
 		t.Fatalf("setup commands: %v", setup)
 	}
-	if check := runner.find("exec -u 10001:10001"); len(check) != 1 || !strings.Contains(check[0], "git --version") {
+	if check := runner.find("exec -u 10001:10001"); len(check) != 1 || !strings.Contains(check[0], "bash -lc git --version") {
 		t.Fatalf("bash and git check as the sandbox user: %v", check)
 	}
 	if commits := runner.find("commit "); len(commits) != 1 || !strings.Contains(commits[0], "ENTRYPOINT []") || !strings.HasSuffix(commits[0], testBuild.Image) {
