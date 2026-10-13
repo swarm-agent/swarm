@@ -31,6 +31,17 @@ type Rule struct {
 	// Auto delivers a scheduled job that finished with commits without
 	// waiting for an AI to call swarm_deliver_job.
 	Auto bool `json:"auto"`
+	// Sync starts each worker job from the forge's latest base branch (the
+	// command's update step) instead of the folder's checked-out branch, so a
+	// pull request merged on the forge is the next job's starting point.
+	Sync bool `json:"sync"`
+}
+
+// Base is where the command says a job should start: a commit it fetched into
+// the folder and the forge branch it is the tip of.
+type Base struct {
+	Commit string `json:"commit"`
+	Branch string `json:"branch"`
 }
 
 // Request is what the command is told, as SWARM_PUBLISH_* variables.
@@ -56,8 +67,9 @@ var (
 	branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
 )
 
-// Load reads the rules: one per line, `FOLDER<TAB>COMMAND[<TAB>auto]`, blank
-// lines and #comments ignored. A missing file is no rules. The file must be
+// Load reads the rules: one per line, `FOLDER<TAB>COMMAND[<TAB>OPTIONS]`, where
+// OPTIONS is a comma-separated list of auto and sync; blank lines and
+// #comments are ignored. A missing file is no rules. The file must be
 // owned by root and not writable by anyone else, like the commands it names:
 // only the machine's administrator decides what runs.
 func Load(path string) ([]Rule, error) {
@@ -83,14 +95,20 @@ func Load(path string) ([]Rule, error) {
 		}
 		fields := strings.Split(text, "\t")
 		if len(fields) < 2 || len(fields) > 3 {
-			return nil, fmt.Errorf("publish config line %d: want FOLDER<TAB>COMMAND[<TAB>auto]", line)
+			return nil, fmt.Errorf("publish config line %d: want FOLDER<TAB>COMMAND[<TAB>OPTIONS]", line)
 		}
 		rule := Rule{Folder: filepath.Clean(strings.TrimSpace(fields[0])), Command: strings.TrimSpace(fields[1])}
 		if len(fields) == 3 {
-			if strings.TrimSpace(fields[2]) != "auto" {
-				return nil, fmt.Errorf("publish config line %d: third field must be auto", line)
+			for _, option := range strings.Split(fields[2], ",") {
+				switch strings.TrimSpace(option) {
+				case "auto":
+					rule.Auto = true
+				case "sync":
+					rule.Sync = true
+				default:
+					return nil, fmt.Errorf("publish config line %d: options are auto and sync, comma-separated", line)
+				}
 			}
-			rule.Auto = true
 		}
 		if !filepath.IsAbs(rule.Folder) || !filepath.IsAbs(rule.Command) {
 			return nil, fmt.Errorf("publish config line %d: folder and command must be absolute paths", line)
@@ -121,33 +139,77 @@ func Run(ctx context.Context, rule Rule, req Request) (Result, error) {
 	if !commitPattern.MatchString(req.Head) || !branchPattern.MatchString(req.Branch) || (req.BaseBranch != "" && !branchPattern.MatchString(req.BaseBranch)) {
 		return Result{}, errors.New("publish: the job has no valid branch and head commit")
 	}
-	body, err := os.CreateTemp("", "swarm-publish-body-*")
+	scratch, err := os.MkdirTemp("", "swarm-publish-*")
 	if err != nil {
 		return Result{}, err
 	}
-	defer os.Remove(body.Name())
-	if _, err := body.WriteString(req.Body); err != nil {
-		body.Close()
+	defer os.RemoveAll(scratch)
+	body := filepath.Join(scratch, "body")
+	if err := os.WriteFile(body, []byte(req.Body), 0o600); err != nil {
 		return Result{}, err
 	}
-	if err := body.Close(); err != nil {
-		return Result{}, err
+	output, err := command(ctx, rule, scratch, 5*time.Minute, "publish",
+		"SWARM_PUBLISH_JOB_ID="+req.JobID,
+		"SWARM_PUBLISH_BRANCH="+req.Branch,
+		"SWARM_PUBLISH_HEAD="+req.Head,
+		"SWARM_PUBLISH_BASE_BRANCH="+req.BaseBranch,
+		"SWARM_PUBLISH_TITLE="+oneLine(req.Title, 200),
+		"SWARM_PUBLISH_BODY_FILE="+body,
+	)
+	if err != nil {
+		return Result{Output: tail(output, 600)}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	url := lastLine(output)
+	if !urlPattern.MatchString(url) {
+		return Result{Output: tail(output, 600)}, errors.New("publish command did not print the pull request URL on its last line")
+	}
+	return Result{URL: url, Output: tail(output, 600)}, nil
+}
+
+// Update runs the rule's command's update step before a job starts: it brings
+// the forge's base branch into the folder and prints `COMMIT BRANCH` on its
+// last line, the commit the job starts from and the branch its pull request
+// targets. current is the folder's checked-out branch, the base when the
+// command has none of its own. A failure stops the job from starting: a job
+// on a stale base would open a pull request that cannot merge.
+func Update(ctx context.Context, rule Rule, current string) (Base, error) {
+	if err := ownedByRoot(rule.Command, true); err != nil {
+		return Base{}, fmt.Errorf("publish command %s: %w", rule.Command, err)
+	}
+	if current != "" && !branchPattern.MatchString(current) {
+		return Base{}, errors.New("publish: the folder's branch is not a branch name")
+	}
+	scratch, err := os.MkdirTemp("", "swarm-publish-*")
+	if err != nil {
+		return Base{}, err
+	}
+	defer os.RemoveAll(scratch)
+	output, err := command(ctx, rule, scratch, 2*time.Minute, "update", "SWARM_PUBLISH_BASE_BRANCH="+current)
+	if err != nil {
+		return Base{}, err
+	}
+	fields := strings.Fields(lastLine(output))
+	if len(fields) != 2 || !commitPattern.MatchString(fields[0]) || !branchPattern.MatchString(fields[1]) {
+		return Base{}, errors.New("publish command's update step did not print COMMIT BRANCH on its last line")
+	}
+	return Base{Commit: fields[0], Branch: fields[1]}, nil
+}
+
+// command runs the rule's command on the host as the daemon's user, in the
+// folder, with a minimal environment, its own scratch folder and a time limit,
+// and returns what it printed.
+func command(ctx context.Context, rule Rule, scratch string, limit time.Duration, action string, env ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, rule.Command)
 	cmd.Dir = rule.Folder
-	cmd.Env = []string{
+	cmd.Env = append([]string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
 		"HOME=" + os.Getenv("HOME"),
+		"TMPDIR=" + scratch,
+		"SWARM_PUBLISH_ACTION=" + action,
 		"SWARM_PUBLISH_FOLDER=" + rule.Folder,
-		"SWARM_PUBLISH_JOB_ID=" + req.JobID,
-		"SWARM_PUBLISH_BRANCH=" + req.Branch,
-		"SWARM_PUBLISH_HEAD=" + req.Head,
-		"SWARM_PUBLISH_BASE_BRANCH=" + req.BaseBranch,
-		"SWARM_PUBLISH_TITLE=" + oneLine(req.Title, 200),
-		"SWARM_PUBLISH_BODY_FILE=" + body.Name(),
-	}
+	}, env...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	var stdout, stderr bytes.Buffer
@@ -159,14 +221,14 @@ func Run(ctx context.Context, rule Rule, req Request) (Result, error) {
 		if reason == "" {
 			reason = output
 		}
-		return Result{Output: tail(reason, 600)}, fmt.Errorf("publish command failed: %v: %s", runErr, tail(reason, 300))
+		return reason, fmt.Errorf("publish command failed: %v: %s", runErr, tail(reason, 300))
 	}
+	return output, nil
+}
+
+func lastLine(output string) string {
 	lines := strings.Split(output, "\n")
-	url := strings.TrimSpace(lines[len(lines)-1])
-	if !urlPattern.MatchString(url) {
-		return Result{Output: tail(output, 600)}, errors.New("publish command did not print the pull request URL on its last line")
-	}
-	return Result{URL: url, Output: tail(output, 600)}, nil
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // ownedByRoot refuses a file another user could change. Tests may set

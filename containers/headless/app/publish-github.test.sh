@@ -26,7 +26,7 @@ EOF
 cat > "$work/api.mjs" <<'EOF'
 import http from 'node:http';
 import fs from 'node:fs';
-const [log, portFile] = process.argv.slice(2);
+const [log, portFile, conflictFile] = process.argv.slice(2);
 let pr = null;
 http.createServer((req, res) => {
   let body = '';
@@ -39,12 +39,13 @@ http.createServer((req, res) => {
     if (req.method === 'GET' && req.url.startsWith('/repos/example/models/pulls?')) return send(200, pr ? [pr] : []);
     if (req.method === 'POST' && req.url === '/repos/example/models/pulls') { pr = { number: 5, html_url: 'https://github.com/example/models/pull/5', node_id: 'PR_5' }; return send(201, pr); }
     if (req.method === 'PATCH' && req.url === '/repos/example/models/pulls/5') return send(200, pr);
+    if (req.method === 'GET' && req.url === '/repos/example/models/pulls/5') return send(200, { ...pr, mergeable: !fs.existsSync(conflictFile) });
     if (req.method === 'POST' && req.url === '/graphql') return send(200, { data: { enablePullRequestAutoMerge: { clientMutationId: null } } });
     send(404, { message: 'not found' });
   });
 }).listen(0, '127.0.0.1', function () { fs.writeFileSync(portFile, String(this.address().port)); });
 EOF
-node "$work/api.mjs" "$work/requests.log" "$work/port" & api_pid=$!
+node "$work/api.mjs" "$work/requests.log" "$work/port" "$work/conflict" & api_pid=$!
 for _ in $(seq 50); do [[ -s $work/port ]] && break; sleep 0.1; done
 [[ -s $work/port ]] || fail "fake API did not start"
 
@@ -79,6 +80,24 @@ jq -e 'select(.url == "/app/installations/7/access_tokens") | .auth | startswith
 out=$(run) || fail "second run failed: $out"
 grep -q "updated pull request #5" <<<"$out" || fail "a second delivery did not update the pull request: $out"
 [[ $(grep -c '"url":"/repos/example/models/pulls"' "$work/requests.log") == 1 ]] || fail "opened a second pull request"
+
+# A pull request that conflicts with its base fails the delivery, naming it.
+touch "$work/conflict"
+if out=$(run 2>&1); then fail "a conflicting pull request was reported as delivered: $out"; fi
+grep -q "pull request #5 (https://github.com/example/models/pull/5) conflicts with main" <<<"$out" || fail "the conflict is not named: $out"
+rm "$work/conflict"
+
+# Update (sync): the forge's main moved on; the folder gets it and is told where to start.
+git --git-dir="$work/git/example/models.git" fetch -q "$work/folder" "$head:refs/heads/main"
+merged=$(git --git-dir="$work/git/example/models.git" -c user.name=t -c user.email=t@example.invalid commit-tree "$head^{tree}" -p "$head" -m "merged on the forge")
+git --git-dir="$work/git/example/models.git" update-ref refs/heads/main "$merged"
+out=$(PUBLISH_GITHUB_CONF="$work/publish-github.conf" PUBLISH_GITHUB_API="http://127.0.0.1:$(cat "$work/port")" PUBLISH_GITHUB_GIT="file://$work/git" \
+  SWARM_PUBLISH_ACTION=update SWARM_PUBLISH_FOLDER="$work/folder" SWARM_PUBLISH_BASE_BRANCH=dev bash "$here/publish-github.sh") || fail "update failed: $out"
+[[ $(tail -n1 <<<"$out") == "$merged main" ]] || fail "update did not print the forge's main: $out"
+[[ $(git -C "$work/folder" rev-parse refs/swarm/publish/main) == "$merged" ]] || fail "the forge's main is not in the folder"
+[[ $(git -C "$work/folder" rev-parse HEAD) == "$head" ]] || fail "update moved the owner's checkout"
+jq -e 'select(.url == "/app/installations/7/access_tokens") | .body | fromjson | .permissions == {"contents":"read","metadata":"read"}' "$work/requests.log" >/dev/null \
+  || fail "update asked for more than read access"
 
 # The token only goes to curl on stdin and to git in the environment, never on a
 # command line: its only uses are those two.

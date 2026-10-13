@@ -589,12 +589,29 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		// A detached HEAD has no branch to integrate into: fork from the HEAD
 		// commit as before.
 		base := ""
-		if branch, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath); branchErr == nil && branch == "" {
+		current, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath)
+		if branchErr == nil && current == "" {
 			base = "HEAD"
+		}
+		// A folder that publishes as pull requests and keeps up with its forge
+		// starts from the forge's latest base, so yesterday's merged pull
+		// request is today's starting point and the next one can merge.
+		forgeBranch := ""
+		if h.runs.publishBase != nil {
+			commit, branch, ok, err := h.runs.publishBase(ctx, canonical.SourceWorkspacePath, current)
+			if err != nil {
+				return fmt.Errorf("the folder's publish rule could not bring its forge's base branch: %w", err)
+			}
+			if ok {
+				base, forgeBranch = commit, branch
+			}
 		}
 		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		if err != nil {
 			return err
+		}
+		if forgeBranch != "" {
+			allocation.BaseBranch = forgeBranch
 		}
 		available := true
 		grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}

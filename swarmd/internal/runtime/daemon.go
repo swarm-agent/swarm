@@ -761,6 +761,22 @@ func New(cfg config.Config) (*Daemon, error) {
 	// Jobs in folders whose owner set a publish command (install.sh workspace
 	// publish) are delivered as pull requests; auto rules deliver them unasked.
 	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
+	// A sync rule starts each worker job from the forge's latest base branch.
+	runSvc.SetPublishBaseResolver(func(ctx context.Context, folder, current string) (string, string, bool, error) {
+		rules, err := publish.Load(os.Getenv(publish.ConfigEnv))
+		if err != nil {
+			return "", "", false, err
+		}
+		rule, ok := publish.For(rules, folder)
+		if !ok || !rule.Sync {
+			return "", "", false, nil
+		}
+		base, err := publish.Update(ctx, rule, current)
+		if err != nil {
+			return "", "", false, err
+		}
+		return base.Commit, base.Branch, true, nil
+	})
 	autoPublisher := apiServer.NewAutoPublisher(signalStore, store)
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {

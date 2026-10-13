@@ -84,3 +84,44 @@ func TestRunPassesTheJobAndReadsTheURL(t *testing.T) {
 		t.Fatal("a command others can change is refused")
 	}
 }
+
+func TestLoadOptions(t *testing.T) {
+	allowOwner = os.Getuid()
+	t.Cleanup(func() { allowOwner = -1 })
+	config := filepath.Join(t.TempDir(), "publish")
+	writeFile(t, config, "/srv/models\t/usr/local/bin/models-pr\tauto,sync\n/srv/site\t/usr/local/bin/site-pr\tsync\n", 0o644)
+	rules, err := Load(config)
+	if err != nil || len(rules) != 2 || !rules[0].Auto || !rules[0].Sync || rules[1].Auto || !rules[1].Sync {
+		t.Fatalf("rules = %+v, %v", rules, err)
+	}
+	writeFile(t, config, "/srv/models\t/usr/local/bin/models-pr\tauto,later\n", 0o644)
+	if _, err := Load(config); err == nil {
+		t.Fatal("an unknown option is refused")
+	}
+}
+
+func TestUpdateReadsTheBase(t *testing.T) {
+	allowOwner = os.Getuid()
+	t.Cleanup(func() { allowOwner = -1 })
+	dir := t.TempDir()
+	out := filepath.Join(dir, "seen")
+	command := filepath.Join(dir, "pr")
+	commit := strings.Repeat("b", 40)
+	writeFile(t, command, "#!/bin/sh\nset -e\necho \"$SWARM_PUBLISH_ACTION $SWARM_PUBLISH_BASE_BRANCH $SWARM_PUBLISH_FOLDER\" > "+out+"\ntest -d \"$TMPDIR\"\necho fetched\necho "+commit+" main\n", 0o755)
+	rule := Rule{Folder: dir, Command: command, Sync: true}
+	base, err := Update(context.Background(), rule, "dev")
+	if err != nil || base != (Base{Commit: commit, Branch: "main"}) {
+		t.Fatalf("base = %+v, %v", base, err)
+	}
+	if seen, _ := os.ReadFile(out); string(seen) != "update dev "+dir+"\n" {
+		t.Fatalf("command saw %q", seen)
+	}
+	writeFile(t, command, "#!/bin/sh\necho "+commit+"\n", 0o755)
+	if _, err := Update(context.Background(), rule, "dev"); err == nil || !strings.Contains(err.Error(), "COMMIT BRANCH") {
+		t.Fatalf("a last line without the branch is refused: %v", err)
+	}
+	writeFile(t, command, "#!/bin/sh\necho 'fetch refused' >&2\nexit 1\n", 0o755)
+	if _, err := Update(context.Background(), rule, "dev"); err == nil || !strings.Contains(err.Error(), "fetch refused") {
+		t.Fatalf("a failing update reports its reason: %v", err)
+	}
+}

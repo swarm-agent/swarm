@@ -4,7 +4,11 @@
 # job's head commit to a branch and opens or updates the pull request, as a
 # GitHub App installed on that one repository, and prints the pull request URL
 # on its last line. Merging stays with GitHub: with AUTO_MERGE=on it turns on
-# GitHub's auto-merge, so the repository's own required checks decide.
+# GitHub's auto-merge, so the repository's own required checks decide. A pull
+# request that conflicts with its base fails the delivery, so Swarm reports it.
+# With SWARM_PUBLISH_ACTION=update (a folder published with --sync, before each
+# job) it fetches the base branch into refs/swarm/publish/BRANCH in the folder
+# and prints `COMMIT BRANCH`: the job starts from the forge's latest base.
 #
 # Install it root-owned outside home folders, e.g.
 #   install -m 0755 -o root -g root publish-github.sh /usr/local/lib/swarm/publish-github
@@ -52,14 +56,23 @@ done <"$conf"
 
 # Repository hooks (a pre-push release gate) need a scratch folder.
 if [[ -z ${TMPDIR:-} ]]; then TMPDIR=$(mktemp -d) && export TMPDIR && trap 'rm -rf "$TMPDIR"' EXIT; fi
-folder="${SWARM_PUBLISH_FOLDER:?}" head="${SWARM_PUBLISH_HEAD:?}" job="${SWARM_PUBLISH_JOB_ID:?}"
-base="${BASE_BRANCH:-${SWARM_PUBLISH_BASE_BRANCH:-main}}" title="${SWARM_PUBLISH_TITLE:-Swarm job}" body_file="${SWARM_PUBLISH_BODY_FILE:-/dev/null}"
-[[ $head =~ ^[0-9a-f]{40}$ ]] || die "SWARM_PUBLISH_HEAD is not a commit id"
+action="${SWARM_PUBLISH_ACTION:-publish}"
+[[ $action == publish || $action == update ]] || die "SWARM_PUBLISH_ACTION must be publish or update"
+folder="${SWARM_PUBLISH_FOLDER:?}"
+base="${BASE_BRANCH:-${SWARM_PUBLISH_BASE_BRANCH:-main}}"
+[[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "the base branch is not a branch name"
 # The folder belongs to its owner, not Swarm's user: trust it for these commands only.
 git_folder() { git -c safe.directory="$folder" -C "$folder" "$@"; }
-git_folder cat-file -e "$head^{commit}" || die "commit $head is not in $folder"
-# One branch per job: a follow-up of the same job updates the same pull request.
-branch="$BRANCH_PREFIX$(printf '%s' "$job" | sha256sum | cut -c1-12)"
+permissions='{"contents":"read","metadata":"read"}'
+if [[ $action == publish ]]; then
+  head="${SWARM_PUBLISH_HEAD:?}" job="${SWARM_PUBLISH_JOB_ID:?}"
+  title="${SWARM_PUBLISH_TITLE:-Swarm job}" body_file="${SWARM_PUBLISH_BODY_FILE:-/dev/null}"
+  [[ $head =~ ^[0-9a-f]{40}$ ]] || die "SWARM_PUBLISH_HEAD is not a commit id"
+  git_folder cat-file -e "$head^{commit}" || die "commit $head is not in $folder"
+  # One branch per job: a follow-up of the same job updates the same pull request.
+  branch="$BRANCH_PREFIX$(printf '%s' "$job" | sha256sum | cut -c1-12)"
+  permissions='{"contents":"write","pull_requests":"write","metadata":"read"}'
+fi
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 now=$(date +%s)
@@ -71,16 +84,29 @@ github() { # github METHOD PATH [JSON] with the installation token (or the app J
   curl -sS --fail-with-body --max-time 60 -X "$method" -K - "$api$path" ${3:+--data-binary "$3"} \
     -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' <<<"header = \"Authorization: Bearer $auth\""
 }
-TOKEN=$(github POST "/app/installations/$INSTALLATION_ID/access_tokens" \
-  '{"permissions":{"contents":"write","pull_requests":"write","metadata":"read"}}' | jq -er .token) || die "the App could not get a token for $REPO"
+TOKEN=$(github POST "/app/installations/$INSTALLATION_ID/access_tokens" "{\"permissions\":$permissions}" | jq -er .token) \
+  || die "the App could not get a token for $REPO"
 
-# Push with the token in the environment only, never on a command line.
-# PUSH_HOOKS=off: the base branch's required checks run the gate the hook would.
+# Git talks to the forge with the token in the environment only, never on a
+# command line. PUSH_HOOKS=off: the base branch's required checks run the gate
+# the hook would.
 hooks=(); [[ $PUSH_HOOKS == on ]] || hooks=(-c core.hooksPath=/dev/null)
 basic=$(printf 'x-access-token:%s' "$TOKEN" | openssl base64 -A)
-GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
-  GIT_TERMINAL_PROMPT=0 git_folder -c credential.helper= "${hooks[@]}" push --force --quiet "$git_base/$REPO.git" "$head:refs/heads/$branch" \
-  || die "push of $head to $branch failed"
+git_forge() {
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
+    GIT_TERMINAL_PROMPT=0 git -c safe.directory="$folder" -C "$folder" -c credential.helper= "${hooks[@]}" "$@"
+}
+
+# Update (before a job starts, for a folder publishing with sync): bring the
+# forge's base branch into the folder and print where the job starts.
+if [[ $action == update ]]; then
+  ref="refs/swarm/publish/$base"
+  git_forge fetch --quiet --no-tags "$git_base/$REPO.git" "+refs/heads/$base:$ref" || die "fetch of $base from $REPO failed"
+  echo "$(git_folder rev-parse --verify "$ref^{commit}") $base"
+  exit 0
+fi
+
+git_forge push --force --quiet "$git_base/$REPO.git" "$head:refs/heads/$branch" || die "push of $head to $branch failed"
 echo "pushed $head to $branch"
 
 owner=${REPO%%/*}
@@ -95,6 +121,15 @@ else
   number=$(jq -r .number <<<"$created") url=$(jq -r .html_url <<<"$created") node=$(jq -r .node_id <<<"$created")
   echo "opened pull request #$number"
 fi
+# A pull request that conflicts with its base would wait forever: fail the
+# delivery so Swarm reports it. GitHub computes mergeability shortly after.
+mergeable=null
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  mergeable=$(github GET "/repos/$REPO/pulls/$number" | jq -r '.mergeable') || mergeable=unknown
+  [[ $mergeable == null ]] || break
+  sleep 3
+done
+[[ $mergeable != false ]] || die "pull request #$number ($url) conflicts with $base and cannot merge"
 if [[ $AUTO_MERGE == on ]]; then
   query='mutation($id:ID!,$m:PullRequestMergeMethod!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$m}){clientMutationId}}'
   if github POST /graphql "$(jq -n --arg q "$query" --arg id "$node" --arg m "${MERGE_METHOD^^}" '{query: $q, variables: {id: $id, m: $m}}')" | jq -e '.errors | not' >/dev/null; then
