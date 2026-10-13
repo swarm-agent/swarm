@@ -20,6 +20,7 @@ APP_ID=42
 INSTALLATION_ID=7
 KEY_FILE=$work/app.pem
 AUTO_MERGE=on
+BASE_BRANCH=main
 EOF
 
 cat > "$work/api.mjs" <<'EOF'
@@ -51,7 +52,7 @@ run() {
   printf 'models changed\n' > "$work/body"
   PUBLISH_GITHUB_CONF="$work/publish-github.conf" PUBLISH_GITHUB_API="http://127.0.0.1:$(cat "$work/port")" PUBLISH_GITHUB_GIT="file://$work/git" \
     SWARM_PUBLISH_FOLDER="$work/folder" SWARM_PUBLISH_JOB_ID="worker/w1/r1" SWARM_PUBLISH_BRANCH=agent/worker-r1 \
-    SWARM_PUBLISH_HEAD="$head" SWARM_PUBLISH_BASE_BRANCH=main SWARM_PUBLISH_TITLE="Refresh models" SWARM_PUBLISH_BODY_FILE="$work/body" \
+    SWARM_PUBLISH_HEAD="$head" SWARM_PUBLISH_BASE_BRANCH=dev SWARM_PUBLISH_TITLE="Refresh models" SWARM_PUBLISH_BODY_FILE="$work/body" \
     bash "$here/publish-github.sh"
 }
 

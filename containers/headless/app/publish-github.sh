@@ -17,6 +17,8 @@
 #     BRANCH_PREFIX=ai/swarm-          (optional; default ai/swarm-)
 #     AUTO_MERGE=off                   (optional: on|off)
 #     MERGE_METHOD=squash              (optional: merge|squash|rebase)
+#     BASE_BRANCH=main                 (optional: the branch pull requests target;
+#                                       default: the branch the job started from)
 # The App needs Contents read/write and Pull requests read/write on the
 # repository only; branch rules on the base branch keep it from pushing there.
 set -euo pipefail
@@ -27,10 +29,10 @@ git_base="${PUBLISH_GITHUB_GIT:-https://github.com}"
 die() { echo "publish-github: $*" >&2; exit 1; }
 
 [[ -r $conf ]] || die "settings file $conf is missing"
-REPO='' APP_ID='' INSTALLATION_ID='' KEY_FILE='' BRANCH_PREFIX='ai/swarm-' AUTO_MERGE=off MERGE_METHOD=squash
+REPO='' APP_ID='' INSTALLATION_ID='' KEY_FILE='' BRANCH_PREFIX='ai/swarm-' AUTO_MERGE=off MERGE_METHOD=squash BASE_BRANCH=''
 while IFS='=' read -r key value; do
   case $key in
-    REPO|APP_ID|INSTALLATION_ID|KEY_FILE|BRANCH_PREFIX|AUTO_MERGE|MERGE_METHOD) printf -v "$key" '%s' "$value" ;;
+    REPO|APP_ID|INSTALLATION_ID|KEY_FILE|BRANCH_PREFIX|AUTO_MERGE|MERGE_METHOD|BASE_BRANCH) printf -v "$key" '%s' "$value" ;;
     ''|'#'*) ;;
     *) die "unknown setting $key in $conf" ;;
   esac
@@ -41,9 +43,10 @@ done <"$conf"
 [[ $BRANCH_PREFIX =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "BRANCH_PREFIX is not a branch name prefix"
 [[ $AUTO_MERGE == on || $AUTO_MERGE == off ]] || die "AUTO_MERGE must be on or off"
 [[ $MERGE_METHOD =~ ^(merge|squash|rebase)$ ]] || die "MERGE_METHOD must be merge, squash or rebase"
+[[ -z $BASE_BRANCH || $BASE_BRANCH =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "BASE_BRANCH is not a branch name"
 
 folder="${SWARM_PUBLISH_FOLDER:?}" head="${SWARM_PUBLISH_HEAD:?}" job="${SWARM_PUBLISH_JOB_ID:?}"
-base="${SWARM_PUBLISH_BASE_BRANCH:-main}" title="${SWARM_PUBLISH_TITLE:-Swarm job}" body_file="${SWARM_PUBLISH_BODY_FILE:-/dev/null}"
+base="${BASE_BRANCH:-${SWARM_PUBLISH_BASE_BRANCH:-main}}" title="${SWARM_PUBLISH_TITLE:-Swarm job}" body_file="${SWARM_PUBLISH_BODY_FILE:-/dev/null}"
 [[ $head =~ ^[0-9a-f]{40}$ ]] || die "SWARM_PUBLISH_HEAD is not a commit id"
 git -C "$folder" cat-file -e "$head^{commit}" || die "commit $head is not in $folder"
 # One branch per job: a follow-up of the same job updates the same pull request.
