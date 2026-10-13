@@ -901,6 +901,15 @@ func controlMCPScheduleJob(c *controlMCPCall, args map[string]any) (any, error) 
 		name = templateName + ": " + controlMCPTruncate(strings.SplitN(brief, "\n", 2)[0], 60)
 	}
 	instructions, _ := template["instructions"].(string)
+	// The worker listing shortens instructions for display; the scheduled
+	// worker needs them whole.
+	if id, _ := template["id"].(string); controlMCPSafeID.MatchString(id) {
+		if full, err := c.worker(id); err == nil {
+			if text, _ := full["instructions"].(string); strings.TrimSpace(text) != "" {
+				instructions = text
+			}
+		}
+	}
 	role, _ := template["role"].(string)
 	plan := map[string]any{"title": controlMCPTruncate(name, 120), "goal": brief, "checkpoints": []any{map[string]any{"title": "Scheduled job", "objective": brief, "acceptance_criteria": []any{"Complete the job as briefed"}}}}
 	createArgs := map[string]any{"name": name, "instructions": firstNonEmptyString(instructions, brief), "project_id": projectID, "schedule": args["schedule"], "scheduled_plan": plan}
