@@ -1323,7 +1323,7 @@ func reasoningPayloadForRequest(req Request) map[string]any {
 	return map[string]any{"effort": providerValue, "summary": "auto"}
 }
 
-func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (decoded map[string]any, status int, err error) {
+func (c *Client) sendRequestOnce(ctx context.Context, record pebblestore.CodexAuthRecord, req Request, onEvent func(StreamEvent)) (decoded map[string]any, status int, err error) {
 	started := time.Now()
 	defer func() {
 		if c.diagnostics == nil {
@@ -1415,7 +1415,7 @@ func (c *Client) sendRequest(ctx context.Context, record pebblestore.CodexAuthRe
 			}
 			continue
 		}
-		if record.Type == pebblestore.CodexAuthTypeOAuth && !streamEmitter.sawEvent && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
+		if record.Type == pebblestore.CodexAuthTypeOAuth && !streamEmitter.sawEvent && !providerTurnAlreadyStreamed(ctx) && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
 			payload, _, buildErr := buildRequestPayloadWithOptions(req)
 			if buildErr != nil {
 				return nil, 0, buildErr
@@ -1519,7 +1519,7 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 			}
 			continue
 		}
-		if !streamEmitter.sawEvent && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
+		if !streamEmitter.sawEvent && !providerTurnAlreadyStreamed(ctx) && codexHandshakeShouldFallbackHTTP(wsStatus, wsDecoded) {
 			return c.sendCodexResponsesHTTP(ctx, record, payload, streamEmitter.emit)
 		}
 		return annotateRetryAttempts(annotateCodexTransportMetadata(wsDecoded, codexTransportWebsocket, true), attempt), wsStatus, nil
@@ -1531,15 +1531,7 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 }
 
 func shouldRetryTransportStatus(statusCode int, decoded map[string]any) bool {
-	switch statusCode {
-	case http.StatusForbidden:
-		if len(decoded) == 0 {
-			return true
-		}
-		return strings.TrimSpace(asString(decoded["raw_body"])) == ""
-	default:
-		return statusCode >= http.StatusInternalServerError && statusCode <= 599
-	}
+	return transientProviderFailure(statusCode, nil)
 }
 
 func openAIWebsocketShouldFallbackHTTP(statusCode int) bool {
@@ -1602,7 +1594,8 @@ func (c *Client) sendOpenAIResponses(ctx context.Context, record pebblestore.Cod
 	}
 	if resp.StatusCode >= 400 {
 		return annotateCodexTransportMetadata(map[string]any{
-			"raw_body": sanitizeDiagnosticText(string(body)),
+			"raw_body":            sanitizeDiagnosticText(string(body)),
+			providerRetryAfterKey: resp.Header.Get("Retry-After"),
 		}, codexTransportResponsesHTTP, false), resp.StatusCode, nil
 	}
 
@@ -1672,7 +1665,7 @@ func shouldRetryWebsocketTransportError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	return !errors.Is(err, errWebsocketStreamStarted)
+	return !errors.Is(err, errWebsocketStreamStarted) && transientProviderFailure(0, err)
 }
 
 func annotateRetryAttempts(decoded map[string]any, attempts int) map[string]any {
@@ -2313,6 +2306,7 @@ func dialCodexWebsocket(ctx context.Context, wsURL string, headers http.Header) 
 			return nil, map[string]any{
 				"raw_body":                          sanitizeDiagnosticText(string(body)),
 				"_swarm_websocket_handshake_failed": true,
+				providerRetryAfterKey:               resp.Header.Get("Retry-After"),
 			}, resp.StatusCode, nil
 		}
 		return nil, nil, 0, err
@@ -3953,7 +3947,7 @@ func finalizeStreamDecodeState(state *streamDecodeState) (map[string]any, error)
 		return nil, state.decodeErr
 	}
 	if state.completedResponse == nil {
-		return nil, errors.New("codex response stream ended before response.completed")
+		return nil, errResponseStreamIncomplete
 	}
 	reasoningSummary := aggregateReasoningStateText(state)
 	if state.completedResponse != nil {

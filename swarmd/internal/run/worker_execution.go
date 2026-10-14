@@ -1192,7 +1192,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		}
 	case sessions.RunIntentFailed, sessions.RunIntentExpired, sessions.RunIntentInterrupted, sessions.RunIntentDispatchBlocked:
 		current.Status = "failed"
-		current.Error = "execution did not complete"
+		current.Error = workerExecutionFailureReason(intent)
 	case sessions.RunIntentCancelled:
 		lifecycle, ok, err := s.host.runs.sessions.GetLifecycle(r.SessionID)
 		if err != nil {
