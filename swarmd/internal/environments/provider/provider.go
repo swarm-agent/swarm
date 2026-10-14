@@ -819,14 +819,35 @@ func commandDiagnostic(out string) string {
 	return sanitizeOutput(out)
 }
 
+// secretExecEnv recognizes credential-labelled env and gateway stand-ins; it
+// never treats Swarm's command-routing configuration as a secret.
+func secretExecEnv(key, value string) bool {
+	key = strings.ToUpper(key)
+	if strings.HasPrefix(key, "GIT_") || key == "HOME" || key == "PATH" || strings.Contains(key, "UMASK") {
+		return false
+	}
+	if strings.HasPrefix(value, "swarm-secret://") {
+		return true
+	}
+	for _, part := range strings.Split(key, "_") {
+		switch part {
+		case "SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "AUTHORIZATION", "COOKIE":
+			return true
+		}
+	}
+	return false
+}
+
 // SafeExecOutput redacts complete captured output before applying the per-stream
 // byte limit. It is shared by durable lifecycle results and tool receipt views.
 func SafeExecOutput(out string, maxOutput int, env map[string]string) (string, bool) {
-	for _, value := range env {
-		if value != "" {
+	for key, value := range env {
+		// Command routing/configuration is not credential material. In particular,
+		// replacing GIT_CONFIG_COUNT corrupts commit IDs containing that digit.
+		if len(value) >= 8 && secretExecEnv(key, value) {
 			out = strings.ReplaceAll(out, value, "[REDACTED]")
 			// Capture may have ended mid-value; do not persist that prefix.
-			for n := len(value) - 1; n > 0; n-- {
+			for n := len(value) - 1; n >= 8; n-- {
 				if strings.HasSuffix(out, value[:n]) {
 					out = out[:len(out)-n] + "[REDACTED]"
 					break
