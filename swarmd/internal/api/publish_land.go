@@ -228,7 +228,7 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 		if abortErr != nil || abortCode != 0 {
 			return errors.New("cannot abort conflicted rebase")
 		}
-		return &publish.SendBackError{Reason: "Rebase conflict: " + files}
+		return publish.RebaseConflictSendBack(base, files)
 	}
 	head, code, err := git("rev-parse", "HEAD")
 	if err != nil || code != 0 {
@@ -248,7 +248,7 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	for _, command := range checks {
+	for i, command := range checks {
 		var tail string
 		res, err := exec(checkCtx, sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: 4096, OnOutput: func(data []byte) {
 			tail += string(data)
@@ -259,13 +259,13 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 		if err != nil {
 			if checkCtx.Err() != nil && ctx.Err() == nil {
 				e.Checks = append(e.Checks, publish.CheckResult{ExitCode: -1, Output: tail})
-				return &publish.SendBackError{Reason: "Checks timed out: " + tail}
+				return publish.ChecksSendBack(base, checks[:i+1], true, tail)
 			}
 			return err
 		}
 		e.Checks = append(e.Checks, publish.CheckResult{ExitCode: res.ExitCode, Output: tail})
 		if res.ExitCode != 0 {
-			return &publish.SendBackError{Reason: "Checks failed: " + tail}
+			return publish.ChecksSendBack(base, checks[:i+1], false, tail)
 		}
 	}
 	finalHead, code, err := git("rev-parse", "HEAD")
