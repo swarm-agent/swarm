@@ -39,3 +39,27 @@ review record plus job-event signal on the reviewed job. The pure
 verdicts and missing report sections. `CurrentJobReview` returns evidence only
 for an identical head, providing the future landing-policy hook; neither helper
 is currently wired to durable job state. The queue does not enforce reviews.
+
+## Docker mount enforcement proof
+
+Run as a non-root user on a Docker host with the configured sandbox image
+already installed (it must contain Git and Go):
+
+```sh
+cd swarmd
+go test ./internal/sandbox -run '^TestReviewerDockerReadOnlyGit$' -count=1 -v -timeout=4m
+```
+
+`SWARM_REVIEW_TEST_IMAGE` optionally selects another locally installed Git/Go
+image. The test skips when Docker is absent/unreachable; a reachable Docker
+host missing the requested image fails rather than fetching an image silently.
+It creates only an isolated fixture repository/container, exercises the real
+reviewer mount builder, and checks failed commit/ref/direct metadata writes,
+successful diff/log/Go test, and unchanged host Git state. All exec commands use
+`withSandboxUmask`. The separate reviewer container continues using the existing
+supervised execution and routed Git paths, which also use that helper.
+
+The MCP `swarm_deliver_job` boundary now explicitly refuses reviewer receipts
+before publication/integration. This is a defense-in-depth check, not proof of
+report-only lifecycle completion; direct task delivery still needs its own
+role-aware gate when admission is wired.

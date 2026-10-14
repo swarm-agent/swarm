@@ -45,6 +45,12 @@ func TestReviewerMounts(t *testing.T) {
 	if strings.Contains(strings.Join(coder, "\n"), "dst="+root+",readonly") {
 		t.Fatal("coder changed")
 	}
+	customImage := EnvironmentImage{Image: "folder-environment", Path: sandboxPath}
+	custom := m.scopeRunArgs(scopeContainerName(scope), root, "spec", scope.Mounts, SecretSetup{}, customImage, checkout)
+	wantTail := append([]string{"--entrypoint", "sh", "folder-environment"}, withSandboxUmask("sleep", "infinity")[1:]...)
+	if tail := strings.Join(custom[len(custom)-len(wantTail):], " "); tail != strings.Join(wantTail, " ") {
+		t.Fatalf("environment entrypoint/umask corrupted: %s", tail)
+	}
 	if scopeContainerName(scope) == ContainerName(root) {
 		t.Fatal("reviewer shares coder container")
 	}

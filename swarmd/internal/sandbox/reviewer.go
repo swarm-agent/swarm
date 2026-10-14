@@ -104,10 +104,15 @@ func (m *Manager) scopeRunArgs(name, root, spec string, mounts []string, secret 
 	for _, guard := range guards {
 		extra = append(extra, "--mount", "type=bind,src="+guard.HostPath+",dst="+guard.Dest+",readonly")
 	}
-	// Existing runArgs always ends in image sleep infinity (or entrypoint sleep).
+	// Insert before the image/entrypoint tail, never between --entrypoint
+	// and its value for folder-specific environment images.
 	at := len(args) - 3
 	if image.Image != m.cfg.Image {
 		at = len(args) - 4
 	}
-	return append(append(append([]string{}, args[:at]...), extra...), args[at:]...)
+	// Reviewer container startup also inherits the same group-write umask as
+	// supervised commands and routed Git. Explicit entrypoint avoids inheriting
+	// arbitrary folder image startup behavior.
+	tail := append([]string{"--entrypoint", "sh", image.Image}, withSandboxUmask("sleep", "infinity")[1:]...)
+	return append(append(append([]string{}, args[:at]...), extra...), tail...)
 }

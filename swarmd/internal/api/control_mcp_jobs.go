@@ -897,6 +897,9 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if refs.projectID == "" {
 		return nil, controlMCPToolFailure("this job has no result to merge yet (see swarm_get_job)")
 	}
+	if refs.run["role"] == pebblestore.WorkerRoleReviewer {
+		return nil, controlMCPToolFailure("reviewer jobs are report-only; there is no branch or file delivery to publish or merge")
+	}
 	// A folder whose owner set a publish command gets a pull request, never
 	// a local merge.
 	if c.server != nil && c.server.publishConfig != "" {

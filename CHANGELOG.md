@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add a Docker-gated reviewer read-only Git enforcement proof, preserve folder-image entrypoints in reviewer mount specs, and refuse reviewer MCP deliveries explicitly. Reviewer execution remains fail-closed pending lifecycle integration. Docs impact: docs/reviewer-worker.md.
+
 - Add a fail-closed reviewer worker foundation with a compiled read/run tool allowlist, isolated read-only shared Git mount specs, and exact-head verdict helpers; reviewer job execution and public review_job surfaces remain unavailable. Docs impact: docs/reviewer-worker.md.
 
 - Keep both jobs' changelog entries when Git merges or rebases overlapping additions. Docs impact: none
