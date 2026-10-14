@@ -165,13 +165,16 @@ type Manager struct {
 }
 
 type box struct {
-	mu       sync.RWMutex // exec holds read; recreate holds write
+	// All state is guarded by Manager.mu. changing reserves lifecycle work;
+	// commands hold only an inflight lease, never a mutex.
+	changing chan struct{}
 	name     string
 	root     string
 	spec     string
 	mounts   []string
 	lastUsed time.Time
 	verified time.Time
+	invalid  bool // explicit execution failure, not merely periodic staleness
 	inflight int
 	secret   SecretSetup
 }
@@ -368,17 +371,25 @@ func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
 	}
 	m.mu.Unlock()
 	for _, b := range idle {
-		if !b.mu.TryLock() {
+		m.mu.Lock()
+		// Re-check after the snapshot, atomically with acquire's lease.
+		if b.inflight != 0 || b.changing != nil || now.Sub(b.lastUsed) <= m.cfg.IdleTimeout {
+			m.mu.Unlock()
 			continue
 		}
+		b.changing = make(chan struct{})
+		m.mu.Unlock()
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "stop", "--time", "5", b.name)
 		cancel()
-		b.spec = "" // next use re-verifies and restarts it
 		if broker := m.secretBroker(); broker != nil && b.root != "" {
 			broker.ReleaseSandbox(b.root)
 		}
-		b.mu.Unlock()
+		m.mu.Lock()
+		b.spec = "" // next use re-verifies and restarts it
+		close(b.changing)
+		b.changing = nil
+		m.mu.Unlock()
 	}
 }
 
@@ -619,8 +630,14 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 }
 
 // acquire makes sure the project's sandbox is running with the given mounts
-// and returns it read-locked; the caller must call release.
-func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
+// and returns an inflight lease; the caller must call release.
+func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (*box, error) {
+	nameOnly := "acquire"
+	if len(command) > 0 && command[0] != "" {
+		nameOnly = filepath.Base(command[0])
+	}
+	stopLog := logSlowSandboxWait(nameOnly)
+	defer stopLog()
 	if !m.Active() {
 		return nil, fmt.Errorf("%w: %s", ErrInactive, m.Status().Reason)
 	}
@@ -645,55 +662,72 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 	}
 	spec := m.specHashImage(root, mounts, secret.Fingerprint, imageID)
 
-	m.mu.Lock()
-	b := m.boxes[name]
-	if b == nil {
-		b = &box{name: name, root: root}
-		m.boxes[name] = b
-	}
-	b.inflight++
-	m.mu.Unlock()
-	release := func() {
+	for {
 		m.mu.Lock()
-		b.inflight--
-		b.lastUsed = time.Now()
+		b := m.boxes[name]
+		if b == nil {
+			b = &box{name: name, root: root}
+			m.boxes[name] = b
+		}
+		if changing := b.changing; changing != nil {
+			m.mu.Unlock()
+			select {
+			case <-changing:
+				continue
+			case <-ctx.Done():
+				return nil, fmt.Errorf("wait for sandbox lifecycle: %w", ctx.Err())
+			}
+		}
+		// A matching container already in use needs no periodic inspection.
+		// Reserving a lease here also prevents the idle reaper from stopping it.
+		if b.spec == spec && !b.invalid && (b.inflight > 0 || time.Since(b.verified) < verifyInterval) {
+			b.inflight++
+			m.mu.Unlock()
+			return b, nil
+		}
+		if b.inflight > 0 {
+			m.mu.Unlock()
+			// Fail promptly rather than starving reads of the current spec or
+			// destroying the container underneath running commands.
+			return nil, errors.New("sandbox requires recreation or recovery while commands are running; retry after they finish")
+		}
+		b.changing = make(chan struct{})
 		m.mu.Unlock()
-	}
 
-	// Fast path: this process created or verified the container with this
-	// spec and the idle reaper has not stopped it since.
-	b.mu.RLock()
-	if b.spec == spec && time.Since(b.verified) < verifyInterval {
+		// Starting has its own bounded budget, including for Warm callers
+		// whose command deadline has already expired.
+		ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
+		err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image)
+		cancel()
+		m.mu.Lock()
+		if err == nil {
+			b.spec, b.mounts, b.secret = spec, mounts, secret
+			b.verified = time.Now()
+			b.invalid = false
+			b.inflight++
+		} else {
+			b.spec = ""
+		}
+		close(b.changing)
+		b.changing = nil
+		m.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
 		return b, nil
 	}
-	b.mu.RUnlock()
+}
 
-	b.mu.Lock()
-	// Starting a sandbox is bounded by its own budget, not by the caller's
-	// deadline: a short command budget must not abort a container start
-	// halfway, and the next command then finds the sandbox ready.
-	ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
-	err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image)
-	cancel()
-	if err == nil {
-		b.spec = spec
-		b.mounts = mounts
-		b.secret = secret
-		b.verified = time.Now()
-	} else {
-		b.spec = ""
-	}
-	b.mu.Unlock()
-	if err != nil {
-		release()
-		return nil, err
-	}
-	b.mu.RLock()
-	return b, nil
+// logSlowSandboxWait reports a blocked acquisition once, without arguments,
+// paths, environment or output (all may contain private command data).
+func logSlowSandboxWait(command string) func() {
+	timer := time.AfterFunc(2*time.Second, func() {
+		slog.Warn("sandbox acquisition waiting longer than 2s", "command", command)
+	})
+	return func() { timer.Stop() }
 }
 
 func (m *Manager) release(b *box) {
-	b.mu.RUnlock()
 	m.mu.Lock()
 	b.inflight--
 	b.lastUsed = time.Now()
@@ -753,7 +787,7 @@ func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*prov
 }
 
 func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
-	b, err := m.acquire(ctx, scope)
+	b, err := m.acquire(ctx, scope, req.Command...)
 	if err != nil {
 		return nil, err
 	}
@@ -781,13 +815,11 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 func (m *Manager) invalidate(name string) {
 	m.mu.Lock()
 	b := m.boxes[name]
-	m.mu.Unlock()
-	if b == nil {
-		return
+	if b != nil {
+		b.verified = time.Time{}
+		b.invalid = true
 	}
-	b.mu.Lock()
-	b.verified = time.Time{}
-	b.mu.Unlock()
+	m.mu.Unlock()
 }
 
 func (m *Manager) requireMounted(b *box, paths ...string) error {

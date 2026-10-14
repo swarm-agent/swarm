@@ -146,7 +146,7 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		}
 		return nil
 	}
-	b, err := m.acquire(ctx, scope)
+	b, err := m.acquire(ctx, scope, "git")
 	if err != nil {
 		return err
 	}
