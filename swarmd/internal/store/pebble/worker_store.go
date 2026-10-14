@@ -98,12 +98,18 @@ type WorkerAutomationDefinition struct {
 	PlanDocument            SessionPlanDocument            `json:"plan_document"`
 	InputRequirements       []WorkerInputRequirement       `json:"input_requirements,omitempty"`
 	DeliverableRequirements []WorkerDeliverableRequirement `json:"deliverable_requirements,omitempty"`
-	Revision                uint64                         `json:"revision"`
-	CreatedAt               int64                          `json:"created_at"`
-	UpdatedAt               int64                          `json:"updated_at"`
+	// WorkspaceID names the registered workspace this automation's runs work
+	// in. Empty means the worker's approved primary binding.
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	Revision    uint64 `json:"revision"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
 }
 
 type WorkerRecord struct {
+	// Role is the code-owned system agent that runs this worker's jobs
+	// (WorkerRoles). Empty behaves as WorkerRoleSwarm.
+	Role                  string                       `json:"role,omitempty"`
 	ExecutionMode         string                       `json:"execution_mode,omitempty"`
 	PendingReview         *WorkerRecord                `json:"pending_review,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
@@ -137,26 +143,35 @@ type WorkerRevisionRecord struct {
 }
 
 type WorkerRunRecord struct {
-	Placement          *WorkerRunPlacement            `json:"placement,omitempty"`
-	ModelProfile       *SessionModelProfileSnapshot   `json:"model_profile,omitempty"`
-	CancelRequested    bool                           `json:"cancel_requested,omitempty"`
-	UserID             string                         `json:"user_id,omitempty"`
-	ID                 string                         `json:"id"`
-	AccountScopeID     string                         `json:"account_scope_id"`
-	WorkerID           string                         `json:"worker_id"`
-	WorkerRevision     uint64                         `json:"worker_revision"`
-	AutomationID       string                         `json:"automation_id,omitempty"`
-	AutomationRevision uint64                         `json:"automation_revision,omitempty"`
-	OccurrenceID       string                         `json:"occurrence_id,omitempty"`
-	SessionID          string                         `json:"session_id,omitempty"`
-	RequestSource      string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator"
-	Input              map[string]any                 `json:"input,omitempty"`
-	Status             string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
-	Error              string                         `json:"error,omitempty"`
-	Deliverables       []SessionPlanArtifactReference `json:"deliverables,omitempty"`
-	StartedAt          int64                          `json:"started_at,omitempty"`
-	CompletedAt        int64                          `json:"completed_at,omitempty"`
-	CreatedAt          int64                          `json:"created_at"`
+	Placement          *WorkerRunPlacement          `json:"placement,omitempty"`
+	ModelProfile       *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
+	CancelRequested    bool                         `json:"cancel_requested,omitempty"`
+	UserID             string                       `json:"user_id,omitempty"`
+	ID                 string                       `json:"id"`
+	AccountScopeID     string                       `json:"account_scope_id"`
+	WorkerID           string                       `json:"worker_id"`
+	WorkerRevision     uint64                       `json:"worker_revision"`
+	AutomationID       string                       `json:"automation_id,omitempty"`
+	AutomationRevision uint64                       `json:"automation_revision,omitempty"`
+	OccurrenceID       string                       `json:"occurrence_id,omitempty"`
+	// WorkspaceID is the workspace pinned at admission; WorkspaceSource is
+	// WorkerRunWorkspaceSourceJob when the request or automation named it and
+	// WorkerRunWorkspaceSourceBinding when it came from the worker's primary
+	// binding. Receipts admitted before per-job workspaces leave both empty and
+	// use the pinned revision's primary binding.
+	WorkspaceID     string `json:"workspace_id,omitempty"`
+	WorkspaceSource string `json:"workspace_source,omitempty"`
+	// Role is the worker role pinned at admission (empty means swarm).
+	Role          string                         `json:"role,omitempty"`
+	SessionID     string                         `json:"session_id,omitempty"`
+	RequestSource string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator"
+	Input         map[string]any                 `json:"input,omitempty"`
+	Status        string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
+	Error         string                         `json:"error,omitempty"`
+	Deliverables  []SessionPlanArtifactReference `json:"deliverables,omitempty"`
+	StartedAt     int64                          `json:"started_at,omitempty"`
+	CompletedAt   int64                          `json:"completed_at,omitempty"`
+	CreatedAt     int64                          `json:"created_at"`
 }
 
 type WorkerIdempotencyRecord struct {
@@ -211,6 +226,7 @@ type ListWorkersResult struct {
 }
 
 type CreateWorkerRequest struct {
+	Role                  string                       `json:"role,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	ID                    string                       `json:"id,omitempty"`
 	Name                  string                       `json:"name"`
@@ -227,6 +243,7 @@ type CreateWorkerRequest struct {
 }
 
 type UpdateWorkerRequest struct {
+	Role                  *string                      `json:"role,omitempty"`
 	ExecutionMode         *string                      `json:"execution_mode,omitempty"`
 	ModelProfile          *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	Name                  *string                      `json:"name,omitempty"`
@@ -239,6 +256,9 @@ type UpdateWorkerRequest struct {
 	Automations           []WorkerAutomationDefinition `json:"automations,omitempty"`
 	Metadata              map[string]any               `json:"metadata,omitempty"`
 	ChangeSummary         string                       `json:"change_summary,omitempty"`
+	// RemoveAutomationIDs drops these automations (store callers only: a
+	// staged change merges automations by id, so removal is explicit).
+	RemoveAutomationIDs []string `json:"-"`
 }
 
 type WorkerMigrationSummary struct {
@@ -410,6 +430,9 @@ func ValidateWorkerRecord(w *WorkerRecord, validate func(*SessionPlanDocument) e
 	}
 	if len(w.Automations) > 64 {
 		return errors.New("automations exceed maximum of 64")
+	}
+	if err := validateWorkerRoleRecord(w); err != nil {
+		return err
 	}
 	seenAutoIDs := make(map[string]struct{}, len(w.Automations))
 	seenAutoNames := make(map[string]struct{}, len(w.Automations))
@@ -944,7 +967,12 @@ func (ws *WorkerStore) CreateWorker(account, user string, req CreateWorkerReques
 		state = req.InitialLifecycleState
 	}
 
+	role, err := NormalizeWorkerRole(req.Role)
+	if err != nil {
+		return WorkerRecord{}, err
+	}
 	w := WorkerRecord{
+		Role:                  role,
 		ID:                    workerID,
 		AccountScopeID:        account,
 		Name:                  strings.TrimSpace(req.Name),
@@ -1186,6 +1214,13 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 
 	now := time.Now().UnixMilli()
 	updated := current
+	if req.Role != nil {
+		role, err := NormalizeWorkerRole(*req.Role)
+		if err != nil {
+			return WorkerRecord{}, err
+		}
+		updated.Role = role
+	}
 	if req.ExecutionMode != nil {
 		if *req.ExecutionMode != "auto" && *req.ExecutionMode != "plan" {
 			return WorkerRecord{}, errors.New("execution_mode must be auto or plan")
@@ -1296,6 +1331,24 @@ func (ws *WorkerStore) UpdateWorker(account, user, workerID string, expectedRevi
 			automations = merged
 		}
 		updated.Automations = automations
+	}
+	if len(req.RemoveAutomationIDs) > 0 {
+		remove := make(map[string]bool, len(req.RemoveAutomationIDs))
+		for _, id := range req.RemoveAutomationIDs {
+			remove[strings.TrimSpace(id)] = true
+		}
+		kept := make([]WorkerAutomationDefinition, 0, len(updated.Automations))
+		for _, a := range updated.Automations {
+			if remove[a.ID] {
+				delete(remove, a.ID)
+				continue
+			}
+			kept = append(kept, a)
+		}
+		if len(remove) > 0 {
+			return WorkerRecord{}, ErrWorkerNotFound
+		}
+		updated.Automations = kept
 	}
 
 	updated.Revision = approved.Revision + 1
@@ -1676,6 +1729,17 @@ func (ws *WorkerStore) AttachWorkerAutomation(account, user, workerID string, ex
 }
 
 func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automationID string, expectedWorkerRevision uint64, auto WorkerAutomationDefinition, validate func(*SessionPlanDocument) error) (WorkerRecord, error) {
+	if w, found, err := ws.GetWorker(account, workerID); err != nil {
+		return WorkerRecord{}, err
+	} else if found && w.LifecycleState != WorkerLifecycleStatePending {
+		// An approved worker's job changes are staged for review, like
+		// attaching one; the approved job keeps running unchanged.
+		if !workerProposalHasAutomation(w, automationID) {
+			return WorkerRecord{}, ErrWorkerNotFound
+		}
+		auto.ID = strings.TrimSpace(automationID)
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{Automations: []WorkerAutomationDefinition{auto}, ChangeSummary: "proposed job change"}, validate)
+	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
 	}
@@ -1795,6 +1859,15 @@ func (ws *WorkerStore) UpdateWorkerAutomation(account, user, workerID, automatio
 }
 
 func (ws *WorkerStore) RemoveWorkerAutomation(account, user, workerID, automationID string, expectedWorkerRevision uint64) (WorkerRecord, error) {
+	if w, found, err := ws.GetWorker(account, workerID); err != nil {
+		return WorkerRecord{}, err
+	} else if found && w.LifecycleState != WorkerLifecycleStatePending {
+		// Removing an approved worker's job is staged for review too.
+		if !workerProposalHasAutomation(w, automationID) {
+			return WorkerRecord{}, ErrWorkerNotFound
+		}
+		return ws.UpdateWorker(account, user, workerID, expectedWorkerRevision, UpdateWorkerRequest{RemoveAutomationIDs: []string{strings.TrimSpace(automationID)}, ChangeSummary: "proposed job removal"}, nil)
+	}
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRecord{}, errors.New("store is not open")
 	}
@@ -2239,6 +2312,7 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 	}
 
 	updated := WorkerRecord{
+		Role:                  current.Role,
 		ID:                    workerID,
 		AccountScopeID:        account,
 		Name:                  def.Name,
@@ -2983,6 +3057,11 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 				summary.Errors = append(summary.Errors, fmt.Sprintf("batch set run %s: %v", run.ID, err))
 				continue
 			}
+			if err := indexWorkerRunInBatch(batch, account, runBytes); err != nil {
+				summary.FailedCount++
+				summary.Errors = append(summary.Errors, fmt.Sprintf("index run %s: %v", run.ID, err))
+				continue
+			}
 			occLinkBytes, _ := json.Marshal(targetWorkerID + ":" + run.ID)
 			if err := batch.Set([]byte(KeyWorkerRunByOccurrence(account, o.ID)), occLinkBytes, nil); err != nil {
 				summary.FailedCount++
@@ -3084,4 +3163,19 @@ func legacyWorkerSnapshot(account string, rec AutomationV2Record, now int64) (Wo
 		w.WorkspaceRequirements = append(w.WorkspaceRequirements, WorkerWorkspaceRequirement{Role: role, Description: "Workspace grant"})
 	}
 	return w, nil
+}
+
+// workerProposalHasAutomation reports whether the worker's pending proposal
+// (or, without one, the approved worker) has the automation.
+func workerProposalHasAutomation(w WorkerRecord, automationID string) bool {
+	effective := w
+	if w.PendingReview != nil {
+		effective = *w.PendingReview
+	}
+	for _, a := range effective.Automations {
+		if a.ID == strings.TrimSpace(automationID) {
+			return true
+		}
+	}
+	return false
 }

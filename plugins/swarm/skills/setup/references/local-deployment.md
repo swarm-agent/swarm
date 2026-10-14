@@ -14,7 +14,7 @@ stdout and diagnostics on stderr. The launcher uses `swarm mcp` only when
 `swarm help` lists it, otherwise `swarmctl mcp` from PATH or the release
 install's `/usr/local/share/swarm/bin`. If neither has the bridge it exits with
 "too old for AI connections": update with
-`curl -fsSL https://swarmagent.dev/install | sh -s -- --yes`, then reconnect.
+`curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes`, then reconnect.
 `SWARM_MCP_BIN` selects an explicit swarmctl
 binary and `SWARM_MCP_SOCKET` selects an explicit private socket. These are paths,
 not credentials. A service-user mismatch needs the installation's supported
@@ -29,12 +29,12 @@ binary are different failures. Preserve existing configuration and work.
 Run the maintained installer after authorization for its system changes:
 
 ```sh
-curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes
 ```
 
 It installs under `/usr/local` and, on a systemd host, installs and starts the
 service (`--no-service` installs files only). To inspect it first, download
-https://swarmagent.dev/install (the repository's `install.sh`) to a selected
+https://swarmagent.dev/install-launcher (the repository's `install.sh`) to a selected
 temporary directory and read it. Without a terminal a non-root run needs
 passwordless sudo; otherwise the person runs it with `| sudo sh -s -- --yes` in
 their own terminal. Do not silently accept sudo or reinstall an existing

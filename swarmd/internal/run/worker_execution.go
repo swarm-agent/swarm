@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
 	sessions "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -22,6 +23,7 @@ type WorkerExecutionService struct {
 	host          *AutomationV2ExecutionHost
 	dispatchMu    sync.Mutex
 	scheduleMu    sync.Mutex
+	presetMu      sync.Mutex
 	lastScheduled time.Time
 }
 
@@ -84,19 +86,18 @@ func (s *WorkerExecutionService) ConfigureBindings(account, user, id string, rev
 	if len(w.RequestedCapabilities) != 0 {
 		return store.WorkerRecord{}, errors.New("worker capability grants require explicit approval; unsupported activation")
 	}
-	if len(w.WorkspaceRequirements) != 1 || w.WorkspaceRequirements[0].Role != "primary" || !w.WorkspaceRequirements[0].Required || len(bindings) != 1 || strings.TrimSpace(bindings["primary"]) == "" {
-		return store.WorkerRecord{}, errors.New("exactly one required primary workspace role must be bound")
-	}
-	if s.host.runs.workspace == nil {
-		return store.WorkerRecord{}, errors.New("workspace authority unavailable")
-	}
-	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: user, AccountScopeID: account, AccountScopeSource: identity.AccountScopeSourceServerState}
-	entry, found, err := s.host.runs.workspace.GetByWorkspaceIDForPrincipal(p, bindings["primary"])
+	// A box-level worker has no workspace roles and takes no bindings: each of
+	// its jobs names the workspace it works in.
+	primary, err := store.WorkerPrimaryBinding(w.WorkspaceRequirements, bindings)
 	if err != nil {
 		return store.WorkerRecord{}, err
 	}
-	if !found || !strings.EqualFold(entry.State, "active") {
-		return store.WorkerRecord{}, store.ErrWorkerConflict
+	if primary == "" {
+		return ws.ConfigureWorkerBindings(account, user, id, revision, nil, activate)
+	}
+	entry, err := s.activeWorkspace(account, user, primary)
+	if err != nil {
+		return store.WorkerRecord{}, err
 	}
 	if activate {
 		// Every worker run executes as a project task. Refuse activation now
@@ -108,6 +109,61 @@ func (s *WorkerExecutionService) ConfigureBindings(account, user, id string, rev
 		}
 	}
 	return ws.ConfigureWorkerBindings(account, user, id, revision, bindings, activate)
+}
+
+// activeWorkspace resolves a workspace ID to a registered, active catalog entry
+// visible to this account owner.
+func (s *WorkerExecutionService) activeWorkspace(account, user, workspaceID string) (store.WorkspaceEntry, error) {
+	workspaceID = strings.TrimSpace(workspaceID)
+	if workspaceID == "" {
+		return store.WorkspaceEntry{}, store.ErrWorkerWorkspaceRequired
+	}
+	if s.host.runs.workspace == nil {
+		return store.WorkspaceEntry{}, errors.New("workspace authority unavailable")
+	}
+	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: user, AccountScopeID: account, AccountScopeSource: identity.AccountScopeSourceServerState}
+	entry, found, err := s.host.runs.workspace.GetByWorkspaceIDForPrincipal(p, workspaceID)
+	if err != nil {
+		return store.WorkspaceEntry{}, err
+	}
+	if !found || !strings.EqualFold(entry.State, "active") {
+		return store.WorkspaceEntry{}, fmt.Errorf("%w: workspace %q is not a registered active workspace", store.ErrWorkerConflict, workspaceID)
+	}
+	return entry, nil
+}
+
+// workerRunRole is the role pinned on the run, or the pinned revision's role
+// for receipts admitted before roles existed.
+func workerRunRole(r store.WorkerRunRecord, pinned store.WorkerRecord) string {
+	if role := strings.TrimSpace(r.Role); role != "" {
+		return role
+	}
+	return strings.TrimSpace(pinned.Role)
+}
+
+// workerRunPlanID is the plan a run's intents belong to: the run's own plan
+// for plan-executed roles, none for roles that run a direct auto session.
+func workerRunPlanID(r store.WorkerRunRecord) string {
+	if store.WorkerRoleRunsPlan(r.Role) {
+		return r.ID
+	}
+	return ""
+}
+
+// workerRoleAgentID maps a worker role to its code-owned system agent.
+func workerRoleAgentID(role string) string {
+	switch strings.TrimSpace(role) {
+	case store.WorkerRoleCoder:
+		// No parent agent builds or tests for a worker job: its Coder runs
+		// its own commands in the project sandbox.
+		return agentruntime.WorkerCoderAgentID
+	case store.WorkerRoleDesigner:
+		return agentruntime.DesignerAgentID
+	case store.WorkerRoleFinder:
+		return agentruntime.FinderAgentID
+	default:
+		return agentruntime.SwarmAgentID
+	}
 }
 
 // workerProjectRequiredError names the fix for a worker whose primary
@@ -144,23 +200,18 @@ func (s *WorkerExecutionService) Accept(account, user, id string, revision uint6
 	if w.LifecycleState != store.WorkerLifecycleStatePending {
 		return store.WorkerRecord{}, fmt.Errorf("%w: worker is not pending review", store.ErrWorkerConflict)
 	}
-	primaryWS := ""
-	if w.ProposedBindings != nil {
-		primaryWS = strings.TrimSpace(w.ProposedBindings["primary"])
-	}
-	if primaryWS == "" {
-		return store.WorkerRecord{}, fmt.Errorf("%w: proposed primary workspace binding is required", store.ErrWorkerConflict)
-	}
-	if s.host.runs.workspace == nil {
-		return store.WorkerRecord{}, errors.New("workspace authority unavailable")
-	}
-	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: user, AccountScopeID: account, AccountScopeSource: identity.AccountScopeSourceServerState}
-	entry, found, err := s.host.runs.workspace.GetByWorkspaceIDForPrincipal(p, primaryWS)
+	// A box-level proposal has no workspace roles; otherwise its one proposed
+	// primary workspace must be registered and active for this principal.
+	primaryWS, err := store.WorkerPrimaryBinding(w.WorkspaceRequirements, w.ProposedBindings)
 	if err != nil {
-		return store.WorkerRecord{}, err
+		return store.WorkerRecord{}, fmt.Errorf("%w: %v", store.ErrWorkerConflict, err)
 	}
-	if !found || !strings.EqualFold(entry.State, "active") {
-		return store.WorkerRecord{}, store.ErrWorkerConflict
+	bindings := map[string]string{}
+	if primaryWS != "" {
+		if _, err := s.activeWorkspace(account, user, primaryWS); err != nil {
+			return store.WorkerRecord{}, err
+		}
+		bindings["primary"] = primaryWS
 	}
 	model := w.ModelProfile
 	if len(models) > 1 {
@@ -171,11 +222,11 @@ func (s *WorkerExecutionService) Accept(account, user, id string, revision uint6
 	}
 	// Revalidate the saved candidate too: catalog support may have changed since
 	// proposal. Resolve inherited slots without replacing explicit slot policies.
-	model, err = s.ResolveModelProfile(account, model)
+	model, err = s.ResolveRoleModelProfile(account, w.Role, model)
 	if err != nil {
 		return store.WorkerRecord{}, err
 	}
-	return ws.AcceptWorker(account, user, id, revision, map[string]string{"primary": primaryWS}, model)
+	return ws.AcceptWorker(account, user, id, revision, bindings, model)
 }
 
 // Dispatch admits once. The pinned receipt survives wake failure and can be
@@ -211,25 +262,24 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if len(w.RequestedCapabilities) != 0 {
 		return store.WorkerRunRecord{}, errors.New("worker capability grant is not approved")
 	}
-	if len(w.WorkspaceRequirements) != 1 || w.WorkspaceRequirements[0].Role != "primary" || !w.WorkspaceRequirements[0].Required || len(w.LocalBindings) != 1 || w.LocalBindings["primary"] == "" {
-		return store.WorkerRunRecord{}, errors.New("exactly one approved primary workspace binding required")
-	}
-	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: user, AccountScopeID: account, AccountScopeSource: identity.AccountScopeSourceServerState}
-	if s.host.runs.workspace == nil {
-		return store.WorkerRunRecord{}, errors.New("workspace authority unavailable")
-	}
-	entry, found, err := s.host.runs.workspace.GetByWorkspaceIDForPrincipal(p, w.LocalBindings["primary"])
+	// Per-job workspace: the request's workspace, else the automation's, else
+	// the worker's approved primary binding. Admission re-applies the same rule
+	// under the worker lock and pins the result on the receipt.
+	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
+	workspaceID, workspaceSource, err := store.ResolveWorkerRunWorkspace(w, req.AutomationID, req.WorkspaceID)
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
-	if !found || !strings.EqualFold(entry.State, "active") {
-		return store.WorkerRunRecord{}, store.ErrWorkerConflict
+	entry, err := s.activeWorkspace(account, user, workspaceID)
+	if err != nil {
+		return store.WorkerRunRecord{}, err
 	}
+	req.ResolvedWorkspaceID = workspaceID
 	w, err = s.initializeWorkerModel(w, user)
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
-	req.ResolvedModelProfile, err = s.ResolveModelProfile(account, w.ModelProfile)
+	req.ResolvedModelProfile, err = s.ResolveRoleModelProfile(account, w.Role, w.ModelProfile)
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
@@ -247,8 +297,13 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 		return store.WorkerRunRecord{}, err
 	}
 	if !replay {
-		if _, err := s.resolveWorkerProject(store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, Input: req.Input}, w); errors.Is(err, errWorkerProjectNotAssociated) {
+		candidate := store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, Input: req.Input, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource}
+		if _, err := s.resolveWorkerProject(candidate, w); errors.Is(err, errWorkerProjectNotAssociated) {
 			return store.WorkerRunRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
+		} else if err != nil && workspaceSource == store.WorkerRunWorkspaceSourceJob {
+			// A named job workspace must resolve to exactly one project now,
+			// not fail on every same-key retry after admission.
+			return store.WorkerRunRecord{}, err
 		}
 	}
 	rec, err := ws.AdmitWorkerRun(account, req)
@@ -320,8 +375,11 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if current.Provenance != nil && (current.Provenance.MigratedAt != 0 || current.Provenance.SourceProposalID != "") {
 		return store.ErrWorkerConflict
 	}
-	if len(current.RequestedCapabilities) != 0 || len(current.LocalBindings) != 1 || current.LocalBindings["primary"] == "" {
+	if len(current.RequestedCapabilities) != 0 {
 		return store.ErrWorkerConflict
+	}
+	if _, err := store.WorkerPrimaryBinding(current.WorkspaceRequirements, current.LocalBindings); err != nil {
+		return fmt.Errorf("%w: %v", store.ErrWorkerConflict, err)
 	}
 	if actual.AutomationID != "" {
 		enabled := false
@@ -343,6 +401,9 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 		return store.ErrWorkerConflict
 	}
 	w := history.Worker
+	if store.WorkerRunWorkspace(actual, w) == "" {
+		return fmt.Errorf("%w: %w", store.ErrWorkerConflict, store.ErrWorkerWorkspaceRequired)
+	}
 	if actual.ModelProfile != nil {
 		w.ModelProfile = store.CloneSessionModelProfileSnapshot(actual.ModelProfile)
 	}
@@ -387,6 +448,13 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err != nil {
 		return err
 	}
+	// The role picks the code-owned system agent. Swarm executes the accepted
+	// plan (plan_manage owns checkpoint outcomes); Coder, Designer and Finder
+	// have no plan_manage and run their compiled profile in an auto session,
+	// the way project tasks assigned to them run.
+	role := firstNonEmptyString(workerRunRole(r, w), store.WorkerRoleSwarm)
+	planned := store.WorkerRoleRunsPlan(role)
+	workspaceID := store.WorkerRunWorkspace(r, w)
 	taskID := "task_" + r.ID
 	taskRecord, taskFound, err := h.runs.sessions.Store().GetProjectTask(r.AccountScopeID, proj.ID, taskID)
 	if err != nil {
@@ -413,17 +481,21 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			Description:  taskDesc,
 			Status:       "queued",
 			SessionID:    "", // Do not set SessionID before session exists in pebble
-			Agent:        "swarm",
+			Agent:        role,
 			RouterAlert:  w.ModelProfile.ResolutionWarning,
 			WorkerID:     w.ID,
 			WorkerName:   w.Name,
 			WorkerRunID:  r.ID,
 			AutomationID: r.AutomationID,
 			Tier:         "complex",
-			OutcomeType:  "general",
-			PlanBinding:  &store.ProjectTaskPlanBinding{PlanID: r.ID, SessionID: r.SessionID},
-			CreatedAt:    r.CreatedAt,
-			UpdatedAt:    r.CreatedAt,
+			// Empty: the task store gives each role its own outcome (coder
+			// code_pr, finder audit_report, designer artifact, swarm general).
+			OutcomeType: "",
+			CreatedAt:   r.CreatedAt,
+			UpdatedAt:   r.CreatedAt,
+		}
+		if planned {
+			taskRecord.PlanBinding = &store.ProjectTaskPlanBinding{PlanID: r.ID, SessionID: r.SessionID}
 		}
 		if err := h.runs.sessions.Store().PutProjectTask(r.AccountScopeID, taskRecord); err != nil {
 			return err
@@ -433,7 +505,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			taskRecord.WorkerName != w.Name ||
 			taskRecord.WorkerRunID != r.ID ||
 			taskRecord.AutomationID != r.AutomationID ||
-			taskRecord.PlanBinding == nil
+			(planned && taskRecord.PlanBinding == nil)
 		if needsUpdate {
 			taskRecord, err = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
 				if t.AccountID != r.AccountScopeID ||
@@ -448,7 +520,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 				t.WorkerName = w.Name
 				t.WorkerRunID = r.ID
 				t.AutomationID = r.AutomationID
-				if t.PlanBinding == nil {
+				if planned && t.PlanBinding == nil {
 					t.PlanBinding = &store.ProjectTaskPlanBinding{PlanID: r.ID, SessionID: r.SessionID}
 				}
 				return nil
@@ -479,7 +551,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			return errors.New("worker execution preparation authorities unavailable")
 		}
 		p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: r.UserID, AccountScopeID: r.AccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
-		entry, found, err := h.runs.workspace.GetByWorkspaceIDForPrincipal(p, w.LocalBindings["primary"])
+		entry, found, err := h.runs.workspace.GetByWorkspaceIDForPrincipal(p, workspaceID)
 		if err != nil {
 			return err
 		}
@@ -490,7 +562,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if w.ExecutionMode == "plan" {
 			selection = *w.ModelProfile.Plan
 		}
-		profile, err := h.runs.agents.ResolveSystemAgent("swarm", store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode})
+		profile, err := h.runs.agents.ResolveSystemAgent(workerRoleAgentID(role), store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode})
 		if err != nil {
 			return err
 		}
@@ -501,7 +573,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if err := store.ValidateWorkerModelProfile(model); err != nil {
 			return fmt.Errorf("worker revision has no pinned model: %w", err)
 		}
-		canonical, err := h.runs.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: p, WorkspacePath: entry.Path, AgentProfile: profile, ModelProfile: model, RuntimeMode: store.AgentRuntimeModePlanAuto, Metadata: map[string]any{}})
+		runtimeMode, sessionMode := store.AgentRuntimeModePlanAuto, sessions.ModePlan
+		if !planned {
+			runtimeMode, sessionMode = store.AgentProfileRuntimeMode(profile), sessions.ModeAuto
+		}
+		canonical, err := h.runs.sessionDeployCanonicalize(SessionDeployCanonicalizeInput{Principal: p, WorkspacePath: entry.Path, AgentProfile: profile, ModelProfile: model, RuntimeMode: runtimeMode, Metadata: map[string]any{}})
 		if err != nil {
 			return err
 		}
@@ -513,12 +589,29 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		// A detached HEAD has no branch to integrate into: fork from the HEAD
 		// commit as before.
 		base := ""
-		if branch, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath); branchErr == nil && branch == "" {
+		current, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath)
+		if branchErr == nil && current == "" {
 			base = "HEAD"
+		}
+		// A folder that publishes as pull requests and keeps up with its forge
+		// starts from the forge's latest base, so yesterday's merged pull
+		// request is today's starting point and the next one can merge.
+		forgeBranch := ""
+		if h.runs.publishBase != nil {
+			commit, branch, ok, err := h.runs.publishBase(ctx, canonical.SourceWorkspacePath, current)
+			if err != nil {
+				return fmt.Errorf("the folder's publish rule could not bring its forge's base branch: %w", err)
+			}
+			if ok {
+				base, forgeBranch = commit, branch
+			}
 		}
 		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		if err != nil {
 			return err
+		}
+		if forgeBranch != "" {
+			allocation.BaseBranch = forgeBranch
 		}
 		available := true
 		grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}
@@ -530,6 +623,8 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["worker_job_title"] = doc.Title
 		meta["worker_revision"] = r.WorkerRevision
 		meta["worker_execution_mode"] = firstNonEmptyString(w.ExecutionMode, "auto")
+		meta["worker_role"] = role
+		meta["worker_workspace_id"] = canonical.SourceWorkspaceID
 		meta["navigation_hidden"] = true
 		meta[store.SessionPurposeMetadataKey] = store.SessionPurposeAutomationExecution
 		meta[store.SessionPurposeWorkspaceMetadataKey] = canonical.SourceWorkspaceID
@@ -548,9 +643,13 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["project_task_id"] = taskID
 		meta["worker_run_id"] = r.ID
 		meta["automation_id"] = r.AutomationID
-		snapshot = store.SessionSnapshot{ID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: w.Name, Mode: sessions.ModePlan, Preference: pref, ModelProfile: model, Metadata: meta, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: r.CreatedAt, UpdatedAt: r.CreatedAt}
+		snapshot = store.SessionSnapshot{ID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: w.Name, Mode: sessionMode, Preference: pref, ModelProfile: model, Metadata: meta, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: r.CreatedAt, UpdatedAt: r.CreatedAt}
 		if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, snapshot.WorktreeBranch); err != nil {
 			return err
+		}
+		provenance := store.WorkerRunWorkspaceSourceBinding
+		if r.WorkspaceSource == store.WorkerRunWorkspaceSourceJob {
+			provenance = store.WorkerRunWorkspaceSourceJob
 		}
 		_, err = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
 			t.WorkspacePath = allocation.WorkspacePath
@@ -558,7 +657,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			t.WorktreeName = allocation.BranchName
 			t.BaseBranch = allocation.BaseBranch
 			t.BaseCommit = allocation.BaseCommit
-			t.SourceWorkspace = store.ProjectTaskSource{WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Provenance: "worker_binding"}
+			t.SourceWorkspace = store.ProjectTaskSource{WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Provenance: provenance}
 			return nil
 		})
 		if err != nil {
@@ -652,6 +751,12 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if !workerRunAutomationEnabled(current, r) {
 		return store.ErrWorkerConflict
 	}
+	if !planned {
+		if err = s.startWorkerDirectRun(snapshot, r, w, doc); err != nil {
+			return err
+		}
+		return s.markWorkerRunRunning(r, proj.ID, taskID, taskRecord)
+	}
 	planRecord, found, err := h.runs.sessions.GetActivePlan(r.SessionID)
 	if err != nil {
 		return err
@@ -712,6 +817,13 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err = h.startCheckpoint(snapshot, o); err != nil {
 		return err
 	}
+	return s.markWorkerRunRunning(r, proj.ID, taskID, taskRecord)
+}
+
+// markWorkerRunRunning records the started receipt and its task after the
+// executor intent exists.
+func (s *WorkerExecutionService) markWorkerRunRunning(r store.WorkerRunRecord, projectID, taskID string, taskRecord *store.ProjectTaskRecord) error {
+	h := s.host
 	if latest, found, err := h.runs.sessions.Store().WorkerStore().GetWorkerRun(r.AccountScopeID, r.WorkerID, r.ID); err != nil {
 		return err
 	} else if !found || latest.Status != "admitted" {
@@ -719,12 +831,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	}
 	r.Status = "running"
 	r.StartedAt = time.Now().UnixMilli()
-	_, err = h.runs.sessions.RecordWorkerRun(r.AccountScopeID, r)
-	if err != nil {
+	if _, err := h.runs.sessions.RecordWorkerRun(r.AccountScopeID, r); err != nil {
 		return err
 	}
-	if taskRecord.Status == "queued" {
-		_, err = h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, proj.ID, taskID, func(t *store.ProjectTaskRecord) error {
+	if taskRecord != nil && taskRecord.Status == "queued" {
+		_, err := h.runs.sessions.Store().UpdateProjectTask(r.AccountScopeID, projectID, taskID, func(t *store.ProjectTaskRecord) error {
 			if t.Status == "queued" {
 				t.Status = "in_progress"
 			}
@@ -735,6 +846,95 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		}
 	}
 	return nil
+}
+
+// startWorkerDirectRun starts a job for a role without plan_manage (Coder,
+// Designer, Finder): one user message carrying the job and one pending run
+// intent, owned by the run ID, through the canonical V3 message mutation. The
+// run's terminal intent status is the job's outcome.
+func (s *WorkerExecutionService) startWorkerDirectRun(snapshot store.SessionSnapshot, r store.WorkerRunRecord, w store.WorkerRecord, doc store.SessionPlanDocument) error {
+	h := s.host
+	intent, exists, err := h.runs.sessions.GetSessionRunIntent(r.SessionID, r.ID)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		content, err := workerDirectRunMessage(r, w, doc)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UnixMilli()
+		message := store.MessageSnapshot{ID: deterministicDeployID(r.ID, r.SessionID, "worker-message"), SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, Role: "user", Content: content, Metadata: map[string]any{"source": "worker_job", "worker_run_id": r.ID}, CreatedAt: now}
+		pending := sessionDeployRunIntent(r.SessionID, r.ID, r.SessionID, r.UserID, r.AccountScopeID)
+		key := "worker-message:" + r.ID
+		appended, err := h.apply(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessions.SessionMutationAppendMessage, Message: &message, RunIntent: &pending, NowUnixMs: now})
+		if err != nil {
+			return err
+		}
+		if appended.RunIntent == nil {
+			return errors.New("worker job message did not persist a run intent")
+		}
+		intent = *appended.RunIntent
+	}
+	if intent.SessionID != r.SessionID || intent.RunID != r.ID || intent.PlanID != "" {
+		return store.ErrWorkerConflict
+	}
+	if intent.Status == sessions.RunIntentPendingExecutor {
+		p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, AccountScopeSource: identity.AccountScopeSourceServerState}
+		if !h.enqueue(p, intent) {
+			return errors.New("worker executor wake unavailable; intent retained")
+		}
+	}
+	return nil
+}
+
+// workerDirectRunMessage renders a direct request or a pinned automation plan
+// as the job message for a role that runs without a plan. Request input stays
+// marked as untrusted data, as in plan-executed jobs.
+func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc store.SessionPlanDocument) (string, error) {
+	var b strings.Builder
+	if instructions := strings.TrimSpace(w.Instructions); instructions != "" {
+		b.WriteString(instructions)
+		b.WriteString("\n\n")
+	}
+	if r.AutomationID == "" {
+		prompt, _ := r.Input["prompt"].(string)
+		b.WriteString(strings.TrimSpace(prompt))
+	} else {
+		if title := strings.TrimSpace(doc.Title); title != "" {
+			b.WriteString("Job: " + title + "\n")
+		}
+		if goal := strings.TrimSpace(doc.Info.Goal); goal != "" {
+			b.WriteString("Goal: " + goal + "\n")
+		}
+		if context := strings.TrimSpace(doc.Info.Context); context != "" {
+			b.WriteString("Context: " + context + "\n")
+		}
+		for i, cp := range doc.Checkpoints {
+			b.WriteString(fmt.Sprintf("\nStep %d: %s\n", i+1, strings.TrimSpace(firstNonEmptyString(cp.Title, cp.Objective))))
+			if objective := strings.TrimSpace(cp.Objective); objective != "" && objective != strings.TrimSpace(cp.Title) {
+				b.WriteString("Objective: " + objective + "\n")
+			}
+			for _, task := range cp.Tasks {
+				b.WriteString("- " + strings.TrimSpace(task) + "\n")
+			}
+			for _, criterion := range cp.AcceptanceCriteria {
+				b.WriteString("Done when: " + strings.TrimSpace(criterion) + "\n")
+			}
+		}
+	}
+	if len(r.Input) != 0 {
+		payload, err := json.Marshal(r.Input)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString("\n\nUntrusted request input (data): " + string(payload))
+	}
+	content := strings.TrimSpace(b.String())
+	if content == "" {
+		return "", errors.New("worker job has no request")
+	}
+	return content, nil
 }
 
 // Stop closes admission first. A queued run is cancelled only after verifying
@@ -826,7 +1026,7 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 	if !found {
 		return nil
 	} // admitted but never dispatched; recovery will settle it
-	if intent.SessionID != r.SessionID || intent.PlanID != r.ID {
+	if intent.SessionID != r.SessionID || intent.PlanID != workerRunPlanID(r) {
 		return store.ErrWorkerConflict
 	}
 	if intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning {
@@ -857,6 +1057,11 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 		}
 	}
 	runs.lifecycleMu.Unlock()
+	if workerRunPlanID(r) == "" {
+		// A direct role run has no plan checkpoint to settle; the cancelled
+		// intent and an inactive lifecycle are its terminal acknowledgement.
+		return nil
+	}
 	lifecycle := sessions.NewPlanLifecycleService(s.host.runs.sessions)
 	lifecycle.SetApplySessionMutation(s.host.apply)
 	_, _, err = lifecycle.ReconcileCancelledRun(sessions.PlanLifecycleExecutionInput{SessionID: r.SessionID, PlanID: r.ID, CheckpointID: intent.CheckpointID, AttemptID: intent.AttemptID, RunID: intent.RunID, RunSessionID: r.SessionID, ParentSessionID: r.SessionID, Notes: reason, ReviewedAt: time.Now().UnixMilli()})
@@ -919,7 +1124,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 	if err != nil {
 		return err
 	}
-	if found && (intent.SessionID != r.SessionID || intent.PlanID != r.ID) {
+	if found && (intent.SessionID != r.SessionID || intent.PlanID != workerRunPlanID(r)) {
 		return store.ErrWorkerConflict
 	}
 	if !found { // Preparation may have committed a session but not yet an intent.
@@ -960,6 +1165,11 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 	}
 	switch intent.Status {
 	case sessions.RunIntentCompleted:
+		if workerRunPlanID(r) == "" {
+			// Direct role runs (no plan_manage) succeed when their run completes.
+			current.Status = "succeeded"
+			break
+		}
 		plan, found, err := s.host.runs.sessions.GetActivePlan(r.SessionID)
 		if err != nil {
 			return err
@@ -1160,7 +1370,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			failures = append(failures, e)
 			continue
 		}
-		if exists && (intent.SessionID != r.SessionID || intent.PlanID != r.ID) {
+		if exists && (intent.SessionID != r.SessionID || intent.PlanID != workerRunPlanID(r)) {
 			failures = append(failures, store.ErrWorkerConflict)
 			continue
 		}
@@ -1400,7 +1610,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if !reflect.DeepEqual(current.WorkspaceGrants, pinned.WorkspaceGrants) {
 		return store.ErrWorkerConflict
 	}
-	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
+	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
 		if !reflect.DeepEqual(current.Metadata[key], pinned.Metadata[key]) {
 			return store.ErrWorkerConflict
 		}
@@ -1432,7 +1642,15 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if !found || !workerRunAdmissionOpen(w, r) || len(w.RequestedCapabilities) != 0 || r.SessionID != "worker-execution-"+r.ID || (w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "")) {
 		return store.ErrWorkerConflict
 	}
-	if len(current.WorkspaceGrants) != 2 || len(pinned.WorkspaceGrants) != 2 || current.WorkspaceGrants[0].WorkspaceID != w.LocalBindings["primary"] || pinned.WorkspaceGrants[0].WorkspaceID != w.LocalBindings["primary"] || current.WorkspaceGrants[1].Path != pinned.WorkspaceGrants[1].Path {
+	// The job's workspace is the one pinned on its receipt at admission; older
+	// receipts keep the worker's live primary binding as their authority.
+	workspaceID := strings.TrimSpace(r.WorkspaceID)
+	if workspaceID == "" {
+		workspaceID = strings.TrimSpace(w.LocalBindings["primary"])
+	} else if pinnedWorkspace, ok := pinned.Metadata["worker_workspace_id"]; ok && pinnedWorkspace != workspaceID {
+		return store.ErrWorkerConflict
+	}
+	if workspaceID == "" || len(current.WorkspaceGrants) != 2 || len(pinned.WorkspaceGrants) != 2 || current.WorkspaceGrants[0].WorkspaceID != workspaceID || pinned.WorkspaceGrants[0].WorkspaceID != workspaceID || current.WorkspaceGrants[1].Path != pinned.WorkspaceGrants[1].Path {
 		return store.ErrWorkerConflict
 	}
 	if r.AutomationID != "" {
@@ -1575,6 +1793,12 @@ func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w
 		}
 	}
 
+	// A job that names its workspace belongs to the project holding that
+	// workspace, so a box-level worker's tasks land where the work happens.
+	if r.WorkspaceSource == store.WorkerRunWorkspaceSourceJob && strings.TrimSpace(r.WorkspaceID) != "" {
+		return s.resolveWorkerJobProject(db, accountScopeID, r, w)
+	}
+
 	// 1. Inspect explicit project_id in worker metadata or automation plan.
 	// Untrusted run Input project_id must not override accepted worker/project association.
 	explicitPID := strings.TrimSpace(mapString(w.Metadata, "project_id"))
@@ -1690,8 +1914,9 @@ func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w
 		}
 	}
 
-	// 3c. Workspace association: worker's primary workspace binding
-	primaryWS := strings.TrimSpace(w.LocalBindings["primary"])
+	// 3c. Workspace association: the run's pinned workspace, else the worker's
+	// primary workspace binding
+	primaryWS := strings.TrimSpace(firstNonEmptyString(r.WorkspaceID, w.LocalBindings["primary"]))
 	if primaryWS == "" {
 		primaryWS = strings.TrimSpace(w.ProposedBindings["primary"])
 	}
@@ -1722,6 +1947,69 @@ func (s *WorkerExecutionService) resolveWorkerProject(r store.WorkerRunRecord, w
 	}
 
 	return nil, fmt.Errorf("%w: worker %q has no associated project in account %q", errWorkerProjectNotAssociated, w.ID, accountScopeID)
+}
+
+// resolveWorkerJobProject resolves the project of a job that named its
+// workspace: exactly one project must include that workspace. The worker's
+// explicit project_id breaks a tie only among projects that include it, and
+// untrusted run input never selects the project.
+func (s *WorkerExecutionService) resolveWorkerJobProject(db *store.SessionStore, accountScopeID string, r store.WorkerRunRecord, w store.WorkerRecord) (*store.ProjectRecord, error) {
+	workspaceID := strings.TrimSpace(r.WorkspaceID)
+	projects, err := db.ListProjects(accountScopeID, 200)
+	if err != nil {
+		return nil, err
+	}
+	if len(projects) >= 200 {
+		return nil, fmt.Errorf("project association failed: account %q has %d or more projects (truncated list)", accountScopeID, len(projects))
+	}
+	var matched []*store.ProjectRecord
+	for i := range projects {
+		p := &projects[i]
+		if p.AccountID != "" && p.AccountID != accountScopeID {
+			continue
+		}
+		for _, pws := range p.Workspaces {
+			if strings.TrimSpace(pws.WorkspaceID) == workspaceID {
+				matched = append(matched, p)
+				break
+			}
+		}
+	}
+	if explicit := strings.TrimSpace(mapString(w.Metadata, "project_id")); explicit != "" && len(matched) > 1 {
+		for _, p := range matched {
+			if p.ID == explicit {
+				matched = []*store.ProjectRecord{p}
+				break
+			}
+		}
+	}
+	// A folder may belong to several projects; the job's own project_id
+	// chooses among those that hold it, never a project without the folder
+	// (case 1 below still refuses a project_id that does not match).
+	if requested := strings.TrimSpace(mapString(r.Input, "project_id")); requested != "" && len(matched) > 1 {
+		for _, p := range matched {
+			if p.ID == requested {
+				matched = []*store.ProjectRecord{p}
+				break
+			}
+		}
+	}
+	switch len(matched) {
+	case 0:
+		return nil, fmt.Errorf("%w: workspace %q of worker %q's job belongs to no project in account %q", errWorkerProjectNotAssociated, workspaceID, w.ID, accountScopeID)
+	case 1:
+		proj := matched[0]
+		if inputPID := strings.TrimSpace(mapString(r.Input, "project_id")); inputPID != "" && inputPID != proj.ID {
+			return nil, fmt.Errorf("%w: untrusted run input project_id %q conflicts with the job workspace's project %q", store.ErrWorkerConflict, inputPID, proj.ID)
+		}
+		return proj, nil
+	default:
+		var pids []string
+		for _, p := range matched {
+			pids = append(pids, p.ID)
+		}
+		return nil, fmt.Errorf("ambiguous project association: workspace %q belongs to multiple projects (%s); set the worker's metadata.project_id to one of them", workspaceID, strings.Join(pids, ", "))
+	}
 }
 
 func (s *WorkerExecutionService) reconcileRunTask(r store.WorkerRunRecord, status, reason string) error {

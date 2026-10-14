@@ -11,6 +11,9 @@ import {validateConnection,readToken} from '../bin/lib/connection.mjs';
 
 test('connection choices reject credential URLs and malformed targets',()=>{
   assert.deepEqual(validateConnection({mode:'http',url:'https://swarm.example/mcp'}),{mode:'http',url:'https://swarm.example/mcp'});
+  // Plain HTTP only to this machine's loopback (the Swarm box's local MCP).
+  assert.deepEqual(validateConnection({mode:'http',url:'http://127.0.0.1:7783/mcp'}),{mode:'http',url:'http://127.0.0.1:7783/mcp'});
+  for(const url of ['http://10.0.0.5:7783/mcp','http://127.0.0.1.example/mcp']) assert.throws(()=>validateConnection({mode:'http',url}));
   for(const url of ['http://swarm.example/mcp','https://user:secret@swarm.example/mcp','https://swarm.example/mcp?key=secret','https://swarm.example/mcp#secret','https://swarm.example/']) assert.throws(()=>validateConnection({mode:'http',url}));
   assert.throws(()=>validateConnection({mode:'http',url:'https://swarm.example/mcp',tokenFile:'relative'}));
   assert.throws(()=>validateConnection({mode:'docker',container:'--privileged'}));

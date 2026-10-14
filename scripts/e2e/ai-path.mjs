@@ -172,7 +172,9 @@ async function connectMcp(ctx, label = 'mcp') {
   if (ctx.mcp) await ctx.mcp.close()
   const mcp = new McpClient({
     command: path.join(ctx.opts.binDir, 'swarmctl'),
-    args: ['mcp', '--socket', ctx.daemon.socket],
+    // The advanced session and task tools this test drives are listed only
+    // with --all-tools since tools/list tells the worker story by default.
+    args: ['mcp', '--all-tools', '--socket', ctx.daemon.socket],
     env: baseEnv(ctx.runDir, ctx.opts.binDir),
     cwd: path.join(ctx.runDir, 'home'),
     log: ctx.log,
@@ -504,7 +506,7 @@ async function scenarioTasks(ctx) {
   if (!(await onboard(ctx))) return
   enter(ctx, 'tasks.project')
   const line = 'hello from swarm e2e'
-  const project = await tool(ctx, 'swarm_create_project', { name: 'e2e project', workspace_paths: [ctx.workspace] }, 'tasks.create_project')
+  const project = await tool(ctx, 'swarm_create_project', { name: 'e2e project', workspaces: [{ path: ctx.workspace }] }, 'tasks.create_project')
   const projectId = project.project?.id
   ctx.require('tasks.create_project', typeof projectId === 'string' && projectId !== '', 'project created with the workspace as primary code workspace')
 

@@ -69,9 +69,9 @@ When a user opens Orchestrate with no projects, or clicks `+ New Project`, Swarm
    - Non-blocking: no modal dialogs that lock interaction.
    - The user can simply chat with the Orchestrator: *"Group my backend in ~/swarm-go and frontend in ~/web into a project called Main App"*.
    - The AI uses `manage_projects` to select or add the workspaces.
-3. **Context Synthesis (`project.md`)**:
-   - The AI inspects `AGENTS.md` and `README.md` across selected workspaces **once**.
-   - It synthesizes a concise, high-level `project.md` (~300–400 tokens):
+3. **Context Generation (`project.md`)**:
+   - Creating the project (`POST /v3/projects`) makes Swarm read `AGENTS.md`, `README.md` and the file tree of each selected workspace **once** (bounded, untrusted input) and generate `project.md` with the configured Router model; `context_generation.status` goes `pending`/`running` → `ready` or `failed` (retry: `POST /v3/projects/{id}/context:retry`). Workspaces and `project.md` can be edited only once it is `ready`.
+   - The generated document is a concise, high-level `project.md`:
      - High-level architecture and responsibilities of each workspace.
      - Build/test entrypoints.
      - Shared design or coding principles.
@@ -134,39 +134,18 @@ Stored under Pebble key prefix `project:v3:`:
 ## 4. The Lean `swarm-orchestrator` System Agent
 
 ### Agent Registration (`system_agent_registry.go`)
-* **ID**: `system/swarm-orchestrator`
+* **ID**: `system-orchestrator`
 * **Display Name**: `Swarm Orchestrator`
-* **Model**: Default account model (`gemini-3.8-flash`, thinking: `low` or `high`)
-* **Prompt Isolation**: Loads **only `project.md`** into context. Repository `AGENTS.md` files are strictly withheld from the orchestrator and delivered only to spawned Coder/Designer subagents within their respective workspaces.
+* **Model**: the account's configured orchestrator role model (agent-model settings); never a hardcoded model.
+* **Context**: works from the project's `project.md`. Project chats have no ambient checkout; the orchestrator discovers sources with `manage_projects action=list_sources` / `inspect_source`.
 
-### Toolset Definition (Pruned & Focused)
+### Toolset (code-owned: `SwarmOrchestratorAgentToolContract`)
 
-#### ❌ Excluded Tools (Eliminating 15,000+ Tokens of Bloat)
-1. `manage_video`: Low-level timeline/track assembly. Video work is delegated to Video Swarms or Designers.
-2. `manage_artifact`: Raw byte/HTML/SVG authoring. Delegated to Designers.
-3. `manage_environments` & `manage_connections`: Docker/SSH execution containers are delegated to test runners or Coders.
-4. `manage_actions` & `manage_theme`: Pure admin settings.
+The checked-in tool contract is the authority; this section summarizes it.
 
-#### ✅ Included Executive Toolset (6 Tools)
-1. **`task`**:
-   - The primary delegation mechanism.
-   - Spawns `coder`, `designer`, `finder`, or parallel `swarm` waves (e.g. `agent_type="video"`, `count=3`).
-   - Supports **Asynchronous Task Dispatch**: When a heavy task is launched, the Orchestrator confirms dispatch (*"Dispatched Task #42: Generating 3 video variations. Standing by..."*) and completes its current turn. The daemon automatically resumes the Orchestrator when child sessions emit completion handoffs.
-2. **`manage_projects`** *(New)*:
-   - `action="create"`: creates a project with bound workspaces.
-   - `action="list"` / `action="get"`: inspects project boundaries.
-   - `action="synthesize_context"`: reads repo docs and drafts `project.md`.
-   - `action="update_context"`: updates `project.md` when project requirements evolve.
-   - `action="archive_task"`: merges changes and archives finished task sessions cleanly.
-3. **`manage_workers`**:
-   - Manages cron and trigger Automations (`/v3/automations/v2`).
-   - Surfaces active automations at the top of the middle canvas.
-4. **`plan_manage`**:
-   - Drives structured checkpoint lifecycle and steppers on the middle canvas.
-5. **`read`, `search`, `find`, `list`**:
-   - Allows high-level repository mapping and project inspection without running code.
-6. **`bash`**:
-   - Bounded host inspection commands (e.g. `git status`, test runner execution).
+* **Delegation is `manage_projects`**, not a `task` tool (the orchestrator has none): `propose_task` (Coder for small work, `coder_assignments` for parallel Coders, Swarm with a structured `plan_document` for big work, `task_program` for dependent stages), `wait_tasks` to durably wait for linked task outcomes, `get_task` / `refine_task` / `edit_requirements` for plan revision, plus `list`, `get`, `create`, `update`, `list_sources`, `inspect_source`. Task cards need the user's approval before launch. `synthesize_context` is retired: Swarm generates `project.md` when a project is created (`POST /v3/projects`), and `POST /v3/projects/{id}/context:retry` reruns a failed generation.
+* **`plan_manage` and `exit_plan_mode` are disabled**: the orchestrator plans on project task cards, not session plans.
+* **Enabled**: `read`, `search`, `find`, `list`, `bash`, `websearch`, `webfetch`, `media_inspect`, `ask_user`, `manage_projects`, `manage_workspace` (register existing folders; never creates directories or runs `git init`), `manage_workers`, `manage_automation`, `manage_sessions`, `manage_worktree`, `manage_memory`, `manage_design`, `manage_artifact`, `manage_video`, `manage_environments`, `manage_connections`, `manage-theme`.
 
 ---
 
@@ -179,16 +158,14 @@ Stored under Pebble key prefix `project:v3:`:
      - User clicks `＋ Add another folder` to include `~/swarm-social`.
    - In parallel, Orchestrator on the right greets the user:
      *"I see ~/swarm-go and ~/swarm-social. Shall I analyze both and build your project architecture?"*
-2. **Context Synthesis & Confirmation**:
-   - AI reads `swarm-go/AGENTS.md` and `swarm-social/README.md`.
-   - AI drafts `project.md` showing high-level roles.
-   - User reviews the draft in the middle card and clicks **[ Create & Activate Project ]**.
+2. **Project Creation & Context**:
+   - User clicks **[ Create & Activate Project ]**; Swarm generates `project.md` from `swarm-go/AGENTS.md`, `swarm-social/README.md` and the file trees, showing high-level roles.
+   - Once it is ready, the user reviews it and edits anything wrong; the orchestrator conversation opens.
 3. **Daily Work**:
    - Middle canvas shows active Automations on top (e.g., Nightly E2E Test).
    - User types in chat: *"Create 3 video variants showcasing our new CLI release."*
-   - Orchestrator creates Task Card in middle canvas with 4-stage stepper.
-   - Orchestrator invokes `task(mode="swarm", agent_type="video", count=3)`.
-   - Orchestrator confirms: *"Task #1 dispatched. Generating 3 videos. Standing by."*
+   - Orchestrator proposes a Task Card (`manage_projects action=propose_task`); the user approves it.
+   - Orchestrator waits on the launched task with `manage_projects action=wait_tasks`.
    - Subagents complete video generation.
    - Daemon resumes Orchestrator ➔ Orchestrator verifies videos and renders 3 video cards with `Download` and `View` actions in the Deliverables area.
    - User accepts deliverables ➔ Task moves to completed, and underlying sessions are archived automatically.

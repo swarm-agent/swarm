@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { resolve, isAbsolute, join } from 'node:path';
-import { readFile, open } from 'node:fs/promises';
+import { readFile, open, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 
 export function configPath() {
@@ -11,13 +11,25 @@ export function configPath() {
   return join(root, 'swarm-mcp', 'connection.json');
 }
 
+// The Swarm box on this machine: its installer writes the person's AI key here
+// and serves Swarm's MCP on loopback (containers/headless/app/install.sh).
+export const BOX_MCP_URL = 'http://127.0.0.1:7783/mcp';
+export function boxKeyPath() {
+  return process.env.SWARM_AI_KEY_FILE ? resolve(process.env.SWARM_AI_KEY_FILE) : join(homedir(), '.config', 'swarm', 'ai-key');
+}
+
+// Plain HTTP only to this machine's loopback: the key never crosses a network
+// unencrypted.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
 export function validateConnection(value) {
   if (!value || !['native', 'docker', 'http'].includes(value.mode)) throw Error('Choose native, docker or http mode.');
   if (value.mode === 'http') {
     let url;
     try { url = new URL(value.url); } catch { throw Error('Supply the HTTPS Swarm /mcp URL.'); }
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/mcp') {
-      throw Error('Use an HTTPS /mcp URL without credentials, query parameters or fragment.');
+    const secure = url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
+    if (!secure || url.username || url.password || url.search || url.hash || url.pathname !== '/mcp') {
+      throw Error('Use an HTTPS /mcp URL (or http://127.0.0.1 on this machine) without credentials, query parameters or fragment.');
     }
     if (value.tokenFile && (!isAbsolute(value.tokenFile) || typeof value.tokenFile !== 'string')) throw Error('tokenFile must be an absolute private-file path.');
     return {mode:'http', url:url.href, ...(value.tokenFile ? {tokenFile:value.tokenFile} : {})};
@@ -34,7 +46,11 @@ export function validateConnection(value) {
 export async function loadConnection() {
   try { return validateConnection(JSON.parse(await readFile(configPath(), 'utf8'))); }
   catch (error) {
-    if (error.code === 'ENOENT' && !process.env.SWARM_MCP_CONFIG) return {mode:'native'};
+    if (error.code === 'ENOENT' && !process.env.SWARM_MCP_CONFIG) {
+      // No saved connection: the Swarm box's key on this machine, else native.
+      try { await access(boxKeyPath(), constants.R_OK); return {mode:'http', url:BOX_MCP_URL, tokenFile:boxKeyPath()}; }
+      catch { return {mode:'native'}; }
+    }
     throw Error('Cannot load Swarm MCP connection. Run the plugin setup; check connection.json.');
   }
 }

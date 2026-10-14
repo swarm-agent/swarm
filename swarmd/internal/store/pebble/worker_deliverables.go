@@ -216,7 +216,7 @@ func BuildWorkerSocialPostDeliverable(w WorkerRecord, auto WorkerAutomationDefin
 	return DeliverableRecord{
 		ID:             id,
 		AccountID:      w.AccountScopeID,
-		WorkspaceID:    w.LocalBindings["primary"],
+		WorkspaceID:    WorkerRunWorkspace(run, w),
 		WorkerID:       w.ID,
 		OccurrenceID:   run.ID,
 		SessionID:      run.SessionID,

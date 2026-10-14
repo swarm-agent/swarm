@@ -81,9 +81,20 @@ var providerDefaultsByProvider = map[string]ProviderDefaults{
 	},
 }
 
+// providerDefaultsAliases names providers that serve another provider's model
+// catalog and therefore share its onboarding defaults instead of duplicating
+// model identifiers. Claude Code runs Anthropic models through the local CLI.
+var providerDefaultsAliases = map[string]string{
+	"claudecode": "anthropic",
+}
+
 func Lookup(providerID string) (ProviderDefaults, bool) {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	defaults, ok := providerDefaultsByProvider[providerID]
+	source := providerID
+	if alias, ok := providerDefaultsAliases[providerID]; ok {
+		source = alias
+	}
+	defaults, ok := providerDefaultsByProvider[source]
 	if !ok {
 		return ProviderDefaults{}, false
 	}
@@ -128,6 +139,9 @@ func SupportedProviders() []string {
 			// provider option lists until paid-plan validation is possible.
 			continue
 		}
+		providers = append(providers, providerID)
+	}
+	for providerID := range providerDefaultsAliases {
 		providers = append(providers, providerID)
 	}
 	sort.Strings(providers)

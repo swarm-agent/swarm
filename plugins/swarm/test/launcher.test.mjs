@@ -7,15 +7,16 @@
 // PATH; this does not start or contact a real Swarm.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const launcher = fileURLToPath(new URL('../bin/swarm-mcp', import.meta.url));
-const update = 'curl -fsSL https://swarmagent.dev/install | sh -s -- --yes';
+const update = 'curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes';
 
 const newSwarm = `case "$1" in
   help) echo "  swarm mcp [--access full|write|read]   connect a local AI client" ;;
@@ -53,7 +54,7 @@ async function fixture(t) {
     });
     return { ...result, calls: existsSync(log) ? readFile(log, 'utf8') : Promise.resolve('') };
   };
-  return { put, run, system };
+  return { put, run, system, log };
 }
 
 test('a launcher with the bridge is used directly', async t => {
@@ -125,4 +126,95 @@ test('no Swarm at all says how to install it, with nothing on stdout', async t =
   assert.equal(r.stdout, '');
   assert.match(r.stderr, /no Swarm found/);
   assert.ok(r.stderr.includes(update));
+});
+
+// Requirement: Claude starts this launcher, so a connection saved with
+// connect.mjs (a Swarm's HTTPS endpoint on the tailnet, Docker or a chosen
+// binary) must reach the Node adapter that honors it, not be ignored for a
+// local Swarm. Threats: a remote connection silently replaced by whatever local
+// Swarm is on PATH; a launcher <-> adapter loop in native mode; a named but
+// missing SWARM_MCP_CONFIG falling back to native instead of failing.
+// Authority: bin/swarm-mcp (saved-connection hand-off) and bin/swarm-mcp.mjs
+// (SWARM_MCP_NATIVE on native hand-back). Real launcher, real adapter on this
+// test's Node and a loopback HTTP stand-in for Swarm's /mcp endpoint (plain
+// HTTP is accepted only on loopback); no real Swarm is started or contacted.
+
+async function saved(t, connection) {
+  const f = await fixture(t);
+  const home = await mkdtemp(join(tmpdir(), 'swarm-mcp-home-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  if (connection) {
+    await mkdir(join(home, 'swarm-mcp'), { recursive: true });
+    await writeFile(join(home, 'swarm-mcp', 'connection.json'), JSON.stringify(connection), { mode: 0o600 });
+  }
+  return { ...f, env: { HOME: home, XDG_CONFIG_HOME: home }, home };
+}
+
+async function withNode(f) {
+  await symlink(process.execPath, join(dirname(f.system), 'bin', 'node'));
+  // The adapter hands native mode back through `sh`, as on any POSIX host.
+  await symlink('/bin/sh', join(dirname(f.system), 'bin', 'sh'));
+}
+
+test('a saved tailnet-style HTTP connection is served by the adapter, not a local Swarm', async t => {
+  const seen = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      seen.push({ method: req.method, url: req.url, auth: req.headers.authorization ?? null, body });
+      const id = JSON.parse(body).id;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id, result: { serverInfo: { name: 'stand-in' } } }));
+    });
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  t.after(() => server.close());
+  const f = await saved(t, { mode: 'http', url: `http://127.0.0.1:${server.address().port}/mcp` });
+  await withNode(f);
+  await f.put('bin', 'swarm', newSwarm);
+  await f.put('bin', 'swarmctl', newCtl);
+  const child = spawn('/bin/sh', [launcher], { env: { PATH: join(dirname(f.system), 'bin'), SWARM_SYSTEM_BINARY_DIR: f.system, ...f.env } });
+  const out = [];
+  child.stdout.on('data', c => out.push(c));
+  child.stdin.write('{"jsonrpc":"2.0","id":7,"method":"initialize"}\n');
+  const deadline = Date.now() + 20000;
+  while (!Buffer.concat(out).toString().includes('\n') && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+  child.stdin.end();
+  await new Promise(r => child.on('close', r));
+  assert.deepEqual(JSON.parse(Buffer.concat(out).toString()), { jsonrpc: '2.0', id: 7, result: { serverInfo: { name: 'stand-in' } } });
+  assert.equal(seen.length, 1);
+  assert.deepEqual({ method: seen[0].method, url: seen[0].url, auth: seen[0].auth }, { method: 'POST', url: '/mcp', auth: null }, 'keyless: no Authorization header without a token file');
+  assert.equal(existsSync(f.log) ? await readFile(f.log, 'utf8') : '', '', 'no local swarm or swarmctl was probed or started');
+});
+
+test('a saved native connection hands back to the launcher once, without looping', async t => {
+  const f = await saved(t, { mode: 'native' });
+  await withNode(f);
+  await f.put('bin', 'swarm', newSwarm);
+  const r = f.run({ ...f.env, PATH: join(dirname(f.system), 'bin') });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'swarm-bridge mcp\n{"jsonrpc":"2.0","id":1,"method":"initialize"}\n');
+  assert.equal(await r.calls, 'swarm help\nswarm mcp\n');
+});
+
+test('a named connection file that is missing fails instead of using a local Swarm', async t => {
+  const f = await saved(t, null);
+  await withNode(f);
+  await f.put('bin', 'swarm', newSwarm);
+  const r = f.run({ ...f.env, PATH: join(dirname(f.system), 'bin'), SWARM_MCP_CONFIG: join(f.home, 'missing.json') });
+  assert.notEqual(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /configuration\/key file is missing or invalid/);
+  assert.equal(await r.calls, '', 'the local Swarm was not probed');
+});
+
+test('a saved connection without Node says so on stderr and probes nothing', async t => {
+  const f = await saved(t, { mode: 'http', url: 'https://swarm.example/mcp' });
+  await f.put('bin', 'swarm', newSwarm);
+  const r = f.run(f.env);
+  assert.notEqual(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /saved Swarm connection .* needs Node 22\+/);
+  assert.equal(await r.calls, '');
 });

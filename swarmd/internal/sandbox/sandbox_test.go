@@ -306,7 +306,216 @@ func TestRunArgsIncludeSecretWiring(t *testing.T) {
 		t.Fatalf("plain sandbox leaked secret wiring:\n%s", plain)
 	}
 	// A changed grant fingerprint changes the spec.
-	if m.specHash([]string{"/p"}, "fp1") == m.specHash([]string{"/p"}, "fp2") {
+	if m.specHash("/p", []string{"/p"}, "fp1") == m.specHash("/p", []string{"/p"}, "fp2") {
 		t.Fatal("spec hash did not change with the grant fingerprint")
+	}
+}
+
+// Purpose: a project root is mounted read-write so agents can commit, but an
+// agent must not be able to plant a hook or Git configuration that runs a
+// program later (on the host, when the owner's own Git opens the repository).
+// Manager.RunArgs bind-mounts .git/hooks and .git/config read-only on top of
+// the root mount, only when they exist, and specHash includes them so a
+// repository initialised after the sandbox was created recreates it with the
+// guards. Objects, refs, index and worktrees stay writable.
+func TestRunArgsGuardGitHooksAndConfigReadOnly(t *testing.T) {
+	m := newTestManager(t, ModeRequired, readyRunner(), Config{})
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	root := filepath.Join(base, "p")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plain := strings.Join(m.RunArgs("n", root, "s", []string{root}, SecretSetup{}), " ")
+	if strings.Contains(plain, ".git/hooks") || strings.Contains(plain, ".git/config") {
+		t.Fatalf("guards mounted for a folder without a repository:\n%s", plain)
+	}
+	before := m.specHash(root, []string{root}, "")
+
+	if err := os.MkdirAll(filepath.Join(root, ".git", "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git", "config"), []byte("[core]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	argv := m.RunArgs("n", root, "s", []string{root}, SecretSetup{})
+	args := strings.Join(argv, " ")
+	rw := "--mount type=bind,src=" + root + ",dst=" + root + " "
+	hooks := "--mount type=bind,src=" + filepath.Join(root, ".git", "hooks") + ",dst=" + filepath.Join(root, ".git", "hooks") + ",readonly"
+	config := "--mount type=bind,src=" + filepath.Join(root, ".git", "config") + ",dst=" + filepath.Join(root, ".git", "config") + ",readonly"
+	for _, want := range []string{rw, hooks, config} {
+		if !strings.Contains(args, want) {
+			t.Errorf("run args missing %q:\n%s", want, args)
+		}
+	}
+	// Guards come after the read-write root so they sit on top of it.
+	if strings.Index(args, hooks) < strings.Index(args, rw) || strings.Index(args, config) < strings.Index(args, rw) {
+		t.Fatalf("guards must follow the root mount:\n%s", args)
+	}
+	// The root itself is never read-only: commits must keep working.
+	if strings.Contains(args, "src="+root+",dst="+root+",readonly") {
+		t.Fatalf("project root mounted read-only:\n%s", args)
+	}
+	if before == m.specHash(root, []string{root}, "") {
+		t.Fatal("spec hash did not change when hooks and config appeared")
+	}
+	// A symlinked hooks directory is not followed: nothing outside the root
+	// is mounted because of it.
+	if err := os.RemoveAll(filepath.Join(root, ".git", "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(base, filepath.Join(root, ".git", "hooks")); err != nil {
+		t.Fatal(err)
+	}
+	if linked := strings.Join(m.RunArgs("n", root, "s", []string{root}, SecretSetup{}), " "); strings.Contains(linked, ".git/hooks") {
+		t.Fatalf("symlinked hooks directory was mounted:\n%s", linked)
+	}
+}
+
+// Purpose: folders the owner made visible through a host change belong to
+// another uid, and Git refuses them ("dubious ownership") without
+// safe.directory. The daemon's Git (Manager.RouteGit, routed or not) and agent
+// commands in the sandbox (Manager.Exec env) must carry safe.directory as
+// GIT_CONFIG_* environment for exactly the registered roots and worktree
+// buckets owned by another uid, continuing a GIT_CONFIG_COUNT already present,
+// and nothing for folders the daemon owns. The owner lookup is injected: a
+// test cannot chown.
+func TestGitSafeDirectoryForForeignOwnedProjects(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	foreign := filepath.Join(base, "home", "person", "app")
+	own := filepath.Join(base, "srv", "mine")
+	worktrees := filepath.Join(base, "wt")
+	for _, d := range []string{foreign, own, worktrees} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := newTestManager(t, ModeOff, readyRunner(), Config{})
+	m.SetLayout(Layout{
+		Projects:      func() ([]string, error) { return []string{foreign, own}, nil },
+		WorktreesRoot: worktrees,
+		Bucket:        func(root string) (string, error) { return filepath.Base(root) + "-bucket", nil },
+	})
+	m.owner = func(path string) (int, bool) {
+		if path == foreign {
+			return 4242, true
+		}
+		return m.cfg.UID, true
+	}
+
+	cmd := exec.Command("git", "-C", foreign, "status")
+	if err := m.RouteGit(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	for _, want := range []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory", "GIT_CONFIG_VALUE_0=" + foreign} {
+		if !strings.Contains(env, want) {
+			t.Errorf("daemon git env missing %q:\n%s", want, env)
+		}
+	}
+	if strings.Contains(env, own) || strings.Contains(env, worktrees) {
+		t.Fatalf("safe.directory for a folder the daemon owns:\n%s", env)
+	}
+
+	// An existing count is continued, not overwritten.
+	cmd = exec.Command("git", "-C", own, "status")
+	cmd.Env = []string{"PATH=/usr/bin", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=user.name", "GIT_CONFIG_VALUE_0=swarm"}
+	if err := m.RouteGit(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	env = strings.Join(cmd.Env, "\n")
+	for _, want := range []string{"GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=user.name", "GIT_CONFIG_KEY_1=safe.directory", "GIT_CONFIG_VALUE_1=" + foreign} {
+		if !strings.Contains(env, want) {
+			t.Errorf("merged git env missing %q:\n%s", want, env)
+		}
+	}
+	if strings.Count(env, "GIT_CONFIG_COUNT=") != 1 {
+		t.Fatalf("duplicate GIT_CONFIG_COUNT:\n%s", env)
+	}
+
+	// Agent command environment gets the same entries.
+	got := safeDirectoryEnvMap(map[string]string{"TERM": "dumb"}, m.safeDirectories())
+	if got["GIT_CONFIG_COUNT"] != "1" || got["GIT_CONFIG_KEY_0"] != "safe.directory" || got["GIT_CONFIG_VALUE_0"] != foreign || got["TERM"] != "dumb" {
+		t.Fatalf("exec env: %v", got)
+	}
+
+	// Nothing foreign: no Git configuration is injected at all.
+	m.owner = func(string) (int, bool) { return m.cfg.UID, true }
+	m.safeDirs = nil
+	cmd = exec.Command("git", "-C", foreign, "status")
+	if err := m.RouteGit(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Env != nil {
+		t.Fatalf("environment set although nothing is foreign-owned: %v", cmd.Env)
+	}
+	if got := safeDirectoryEnvMap(nil, m.safeDirectories()); got != nil {
+		t.Fatalf("exec env set although nothing is foreign-owned: %v", got)
+	}
+}
+
+func TestSandboxRunsAsTheFolderOwner(t *testing.T) {
+	m := newTestManager(t, ModeRequired, readyRunner(), Config{})
+	m.owner = func(path string) (int, bool) {
+		switch path {
+		case "/srv/person-app":
+			return 4242, true
+		case "/srv/root-owned":
+			return 0, true
+		}
+		return m.cfg.UID, true
+	}
+	own := strings.Join(m.RunArgs("n", "/srv/person-app", "s", []string{"/srv/person-app"}, SecretSetup{}), " ")
+	for _, want := range []string{"--user 4242:10001", "uid=4242,gid=10001,mode=0700"} {
+		if !strings.Contains(own, want) {
+			t.Errorf("owner-run args missing %q:\n%s", want, own)
+		}
+	}
+	if !m.RunsAsOwner("/srv/person-app") {
+		t.Error("RunsAsOwner false for a person's folder")
+	}
+	for _, root := range []string{"/srv/root-owned", "/srv/mine"} {
+		args := strings.Join(m.RunArgs("n", root, "s", []string{root}, SecretSetup{}), " ")
+		if !strings.Contains(args, "--user 10001:10001") || m.RunsAsOwner(root) {
+			t.Errorf("%s: sandbox must run as the daemon:\n%s", root, args)
+		}
+	}
+	if m.specHash("/srv/person-app", []string{"/srv/person-app"}, "") == m.specHash("/srv/mine", []string{"/srv/person-app"}, "") {
+		t.Error("spec hash ignores the sandbox user")
+	}
+}
+
+func TestWarmStartsTheSandboxUnderItsOwnBudget(t *testing.T) {
+	base, _ := filepath.EvalSymlinks(t.TempDir())
+	project := filepath.Join(base, "p")
+	_ = os.MkdirAll(project, 0o700)
+	runner := readyRunner()
+	m := newTestManager(t, ModeRequired, runner, Config{})
+	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{project}, nil }})
+
+	// A caller whose own deadline is already gone still gets the sandbox
+	// started: the start is bounded by the sandbox's budget, not the caller's.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.Warm(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if !runner.ran("run -d --init") {
+		t.Fatal("warm did not start the sandbox")
+	}
+	before := len(runner.calls)
+	if err := m.Warm(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range runner.calls[before:] {
+		if strings.HasPrefix(strings.Join(c, " "), "run ") {
+			t.Fatal("a warm sandbox was started again")
+		}
+	}
+	// Outside every project: nothing happens.
+	if err := m.Warm(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	if (&Manager{}).Warm(context.Background(), project) != nil || Warm(context.Background(), project) != nil {
+		t.Fatal("warm without a manager must be a no-op")
 	}
 }

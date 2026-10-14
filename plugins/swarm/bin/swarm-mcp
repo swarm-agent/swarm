@@ -8,7 +8,7 @@
 # to stdout and is time-bounded. An installed `swarm` too old to know `mcp`
 # would treat the word as a terminal UI launch, so it is only run with `help`
 # (pure usage output on every release) until it is known to support `mcp`.
-UPDATE_HINT='update: curl -fsSL https://swarmagent.dev/install | sh -s -- --yes'
+UPDATE_HINT='update: curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes'
 SYSTEM_BINARY_DIR=${SWARM_SYSTEM_BINARY_DIR:-/usr/local/share/swarm/bin}
 
 if [ -n "${SWARM_MCP_CONTAINER:-}" ]; then
@@ -17,6 +17,35 @@ if [ -n "${SWARM_MCP_CONTAINER:-}" ]; then
     exit 2
   fi
   exec docker exec -i "$SWARM_MCP_CONTAINER" swarmctl mcp
+fi
+
+# A saved connection (connection.json, written by connect.mjs: a Swarm's HTTPS
+# endpoint on your tailnet, a Docker container or a chosen binary) belongs to
+# the Node adapter next to this script, which honors it. A named
+# SWARM_MCP_CONFIG goes there too, so a missing file is an error rather than
+# a silent native fallback. SWARM_MCP_NATIVE marks the adapter handing native
+# mode back to this script; native overrides also skip the saved connection.
+CONNECTION=${SWARM_MCP_CONFIG:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/swarm-mcp/connection.json}
+case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac
+if [ -z "${SWARM_MCP_SOCKET:-}${SWARM_MCP_BIN:-}${SWARM_MCP_NATIVE:-}" ] && { [ -n "${SWARM_MCP_CONFIG:-}" ] || [ -e "$CONNECTION" ]; }; then
+  if command -v node >/dev/null 2>&1; then
+    exec node "$HERE/swarm-mcp.mjs"
+  fi
+  echo "swarm-mcp: a saved Swarm connection ($CONNECTION) needs Node 22+ to use it; install Node 22+." >&2
+  exit 1
+fi
+
+# The Swarm box on this machine: its installer gave this person an AI key
+# (~/.config/swarm/ai-key) for Swarm's MCP on loopback. That speaks HTTP, which
+# the Node adapter next to this script does. Only without a saved connection
+# (connection.json) and without native overrides.
+BOX_KEY=${SWARM_AI_KEY_FILE:-${HOME:-}/.config/swarm/ai-key}
+if [ -z "${SWARM_MCP_SOCKET:-}${SWARM_MCP_BIN:-}" ] && [ ! -e "$CONNECTION" ] && [ -r "$BOX_KEY" ]; then
+  if command -v node >/dev/null 2>&1; then
+    exec node "$HERE/swarm-mcp.mjs"
+  fi
+  echo "swarm-mcp: this machine's Swarm box gave you an AI key ($BOX_KEY), but Node is needed to use it; install Node 22+, or connect directly: claude mcp add --transport http swarm http://127.0.0.1:7783/mcp --header \"Authorization: Bearer \$(cat ~/.config/swarm/ai-key)\"" >&2
+  exit 1
 fi
 
 bounded() {
@@ -76,5 +105,5 @@ fi
 if [ -n "$(command -v swarm 2>/dev/null)$(command -v swarmctl 2>/dev/null)" ] || [ -x "$SYSTEM_BINARY_DIR/swarmctl" ]; then
   too_old
 fi
-echo "swarm-mcp: no Swarm found on PATH or in $SYSTEM_BINARY_DIR. Install it (Linux x86_64): curl -fsSL https://swarmagent.dev/install | sh -s -- --yes, or run this plugin's setup skill." >&2
+echo "swarm-mcp: no Swarm found on PATH or in $SYSTEM_BINARY_DIR. Install it (Linux x86_64): curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes, or run this plugin's setup skill." >&2
 exit 1

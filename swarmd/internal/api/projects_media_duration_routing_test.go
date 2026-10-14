@@ -12,7 +12,8 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: project proposal routing must not invent per-scene duration before
+// Purpose: a plain video request is one clip, and routing must not invent a
+// duration (for the clip or the scenes of a requested story) before
 // validateProjectMediaTaskSettings checks the configured model. This HTTP/store
 // layer catches the router default that service-only omission tests cannot see.
 // Explicit unsupported duration must still reject without creating a task.
@@ -56,13 +57,20 @@ func TestProjectVideoProposalPreservesOmittedSceneDuration(t *testing.T) {
 			t.Fatal(err)
 		}
 		stored, found, err := db.GetProjectTask(principal.AccountScopeID, project.ID, response.Task.ID)
-		if err != nil || !found || stored.DurationSeconds != 0 || len(stored.Scenes) < 2 {
-			t.Fatalf("lost omitted story settings: %+v, %v", stored, err)
+		// A plain request is one clip (a story is asked for with video_type or
+		// scenes_count), its omitted duration left to the model.
+		if err != nil || !found || stored.DurationSeconds != 0 || len(stored.Scenes) != 0 || stored.OutcomeType != "video_clip" {
+			t.Fatalf("plain video request: want one clip with omitted duration: %+v, %v", stored, err)
 		}
-		for _, scene := range stored.Scenes {
-			if scene.DurationSec != 0 {
-				t.Fatalf("router invented scene duration: %+v", scene)
-			}
+	}
+	// A requested story's scenes leave their duration to the model too.
+	routed, err := pebblestore.RouteAndPlanProjectTaskWithOptions(pebblestore.TaskPlanOptions{Prompt: "A quiet landscape", Agent: "video", VideoType: "story"})
+	if err != nil || len(routed.Scenes) < 2 {
+		t.Fatalf("story request: %+v, %v", routed, err)
+	}
+	for _, scene := range routed.Scenes {
+		if scene.DurationSec != 0 {
+			t.Fatalf("router invented scene duration: %+v", scene)
 		}
 	}
 }

@@ -246,3 +246,27 @@ func hasGenerateEventType(events []GenerateStreamEvent, eventType string) bool {
 	}
 	return false
 }
+
+func TestGeminiImageRefusal(t *testing.T) {
+	blocked := geminiGenerateContentResponse{}
+	if err := json.Unmarshal([]byte(`{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"}}`), &blocked); err != nil {
+		t.Fatal(err)
+	}
+	if got := geminiImageRefusal(blocked); got != "Google blocked the prompt (PROHIBITED_CONTENT)" {
+		t.Fatalf("blocked prompt: %q", got)
+	}
+	stopped := geminiGenerateContentResponse{}
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"IMAGE_SAFETY","finishMessage":"person filter","content":{"parts":[{"text":"no"}]}}]}`), &stopped); err != nil {
+		t.Fatal(err)
+	}
+	if got := geminiImageRefusal(stopped); got != "Google returned no image (IMAGE_SAFETY person filter)" {
+		t.Fatalf("stopped answer: %q", got)
+	}
+	ok := geminiGenerateContentResponse{}
+	if err := json.Unmarshal([]byte(`{"candidates":[{"finishReason":"STOP","content":{"parts":[{"inlineData":{"mimeType":"image/png","data":"iVBORw=="}}]}}]}`), &ok); err != nil {
+		t.Fatal(err)
+	}
+	if got := geminiImageRefusal(ok); got != "" {
+		t.Fatalf("an image came back: %q", got)
+	}
+}

@@ -1,10 +1,11 @@
 # Choose the existing MCP connection
 
-This reference configures the local Codex Node adapter. ChatGPT cloud/dot
-connections use [chatgpt-tunnel.md](chatgpt-tunnel.md). Claude's local wrapper
-has different configuration; see [remote.md](remote.md#claude-clients).
+This reference configures the plugin's Node adapter, for local Codex and for
+Claude Code/Desktop (Claude starts `bin/swarm-mcp`, which hands a saved
+connection to the adapter; see [remote.md](remote.md#claude-clients)). ChatGPT
+cloud/dot connections use [chatgpt-tunnel.md](chatgpt-tunnel.md).
 
-The OpenAI package uses Node 22+ and `bin/swarm-mcp.mjs`. Check `node --version`
+The adapter uses Node 22+ and `bin/swarm-mcp.mjs`. Check `node --version`
 on the execution computer. The adapter forwards Swarm's existing tools; it does
 not start agents, install the daemon, expose ports, or provide its own tools.
 

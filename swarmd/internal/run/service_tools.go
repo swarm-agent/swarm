@@ -2940,7 +2940,7 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 				UserID:         session.UserID,
 				AccountScopeID: session.AccountScopeID,
 				RunID:          activeRunID,
-				Active:         activeRunID != "",
+				Active:         s.holdsActiveRun(sessionID, activeRunID),
 				Phase:          lifecyclePhaseNeedsReview,
 				UpdatedAt:      time.Now().UnixMilli(),
 			})
@@ -2975,7 +2975,7 @@ func (s *Service) executeTaskProgressTool(sessionID string, call tool.Call, appl
 				UserID:         session.UserID,
 				AccountScopeID: session.AccountScopeID,
 				RunID:          activeRunID,
-				Active:         activeRunID != "",
+				Active:         s.holdsActiveRun(sessionID, activeRunID),
 				Phase:          lifecyclePhaseBlocked,
 				StopReason:     blockerReason,
 				UpdatedAt:      time.Now().UnixMilli(),

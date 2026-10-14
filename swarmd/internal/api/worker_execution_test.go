@@ -69,7 +69,9 @@ func TestWorkerAPIIdleTestApproval(t *testing.T) {
 		t.Fatalf("test: %d %s", result.Code, result.Body.String())
 	}
 	current, _, err := ws.GetWorker("acct-test", w.ID)
-	if err != nil || current.LifecycleState != store.WorkerLifecycleStateIdle || current.Revision != 2 {
+	// The test run must not activate or change the worker; the one allowed
+	// change is recording its resolved model on first dispatch (revision 3).
+	if err != nil || current.LifecycleState != store.WorkerLifecycleStateIdle || !(current.Revision == 2 || (current.Revision == 3 && current.ModelProfile != nil)) {
 		t.Fatalf("test activated worker: %+v %v", current, err)
 	}
 	result = executeWorkerAPI(h, http.MethodPost, "/"+w.ID+"/direct", `{"prompt":"Review","idempotency_key":"idle-direct"}`, opts)

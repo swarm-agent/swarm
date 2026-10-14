@@ -4,7 +4,8 @@ These packages guide setup and delegation to your own Swarm. They do not
 launch one CLI per worker, start another daemon, publish a listener, or require
 a relay. The setup skill guides installation only when Swarm is actually absent.
 
-The local Codex adapter requires Node 22+ on the client computer. Choose native
+The plugin's Node adapter (local Codex, and Claude with a saved connection)
+requires Node 22+ on the client computer. Choose native
 Swarm, an existing Docker container, or an HTTPS Swarm endpoint on your tailnet.
 Run setup and follow
 `skills/setup/references/connection.md`. An AI key stays in a private file outside
@@ -16,18 +17,22 @@ short-lived write key after approval using `bin/authorize.mjs`. The person does
 not copy a key. Service-account installations may require one OS password prompt
 in their terminal. See `skills/setup/references/authorization.md`.
 
-## Quick start (Claude Code, Linux x86_64)
+## Quick start (Claude Code, Ubuntu 24.04 x86_64)
 
 ```sh
-curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
 claude plugin marketplace add swarm-agent/swarm
 claude plugin install swarm@swarm
 ```
 
-Then ask Claude to set up Swarm; you type your model key on Swarm's local key
-page, never in chat. The plugin's `bin/swarm-mcp` uses `swarm mcp`, or
-`swarmctl mcp` from the install, and reports a Swarm too old for AI
-connections instead of starting it.
+The installer gives you an AI key in `~/.config/swarm/ai-key`; with no
+`connection.json`, the plugin's `bin/swarm-mcp` finds it and connects to the
+box's MCP on `http://127.0.0.1:7783/mcp` through the Node adapter (Node 22+;
+plain HTTP is accepted only for loopback). Then ask Claude to set up Swarm;
+you type your model key on the setup page or set it by script, never in chat.
+Without the box key, `bin/swarm-mcp` uses `swarm mcp` (the desktop and
+terminal launcher install), or `swarmctl mcp` from it, and reports a Swarm too
+old for AI connections instead of starting it.
 
 ## Choose the package and client
 
@@ -35,7 +40,7 @@ connections instead of starting it.
 | --- | --- |
 | Local Codex | `swarm` skills plus Node stdio adapter; native, Docker or tailnet mode |
 | ChatGPT Work/dot with private remote Swarm | `swarm-setup` skills plus a separately added per-user OpenAI tunnel MCP connection |
-| Claude Code/Desktop local MCP | Claude manifest/shell wrapper or native stdio configuration |
+| Claude Code/Desktop local MCP | Claude manifest/shell wrapper; native, Docker or tailnet mode (a saved connection goes through the Node adapter) |
 | Claude.ai | Its remote HTTPS connector; OpenAI tunnel IDs do not apply |
 
 The setup skill routes to [ChatGPT private tunnels](skills/setup/references/chatgpt-tunnel.md),

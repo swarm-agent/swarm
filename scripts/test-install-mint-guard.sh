@@ -81,13 +81,24 @@ mint_guard_verify() {
   printf 'mint_suppression=verified\n'
 }
 
+# A restart or reinstall returns before the launcher has started the daemon:
+# retry the whole check for up to 30 s, and report only the last attempt.
+mint_guard_wait_verify() {
+  local proc_root=$1 deadline=$((SECONDS + ${MINT_GUARD_WAIT_SECONDS:-30}))
+  while (( SECONDS < deadline )); do
+    mint_guard_verify "$proc_root" 2>/dev/null && return 0
+    sleep 0.5
+  done
+  mint_guard_verify "$proc_root"
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   [[ $# == 1 && $(id -u) == 0 && -d /run/systemd/system ]] || {
     mint_guard_fail 'requires root inside the disposable systemd test environment'; exit 1;
   }
   case "$1" in
     prepare) mint_guard_prepare /etc/systemd/system/swarm.service.d ;;
-    verify) mint_guard_verify /proc ;;
+    verify) mint_guard_wait_verify /proc ;;
     *) mint_guard_fail 'expected prepare or verify'; exit 1 ;;
   esac
 fi

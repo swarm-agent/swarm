@@ -308,6 +308,9 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		VariantCount:       input.VariantCount,
 		Soundtrack:         input.Soundtrack,
 		AttachedMedia:      input.AttachedMedia,
+		// "single" is one clip; unset, the router plans a story of two
+		// scenes (two generations joined into one file).
+		VideoType: input.VideoType,
 	})
 	if rErr != nil {
 		return nil, fmt.Errorf("task configuration invalid: %w", rErr)

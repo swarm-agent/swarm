@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+// proposedWorker is what an update of an approved (idle, active or paused)
+// worker proposes: since workers stage changes for review (pending_review),
+// the change lives there and the approved record stays in force. A draft
+// (pending) worker is edited directly and has no proposal.
+func proposedWorker(w WorkerRecord) WorkerRecord {
+	if w.PendingReview != nil {
+		return *w.PendingReview
+	}
+	return w
+}
+
 func openTestStore(t *testing.T) (*Store, *WorkerStore) {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "worker_test.pebble")
@@ -215,7 +226,9 @@ func TestWorkerStaleUpdateConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateWorker rev 2: %v", err)
 	}
-	if u2.Revision != 3 || u2.Name != name2 {
+	// The idle worker's approved name stays until review; the proposal
+	// carries the newest change.
+	if u2.Revision != 3 || proposedWorker(u2).Name != name2 || u2.Name != created.Name {
 		t.Fatalf("expected rev 3 with %s, got %+v", name2, u2)
 	}
 }
@@ -266,7 +279,7 @@ func TestWorkerHistoryAndRevisions(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("GetWorkerRevision 2: ok=%v, err=%v", ok, err)
 	}
-	if rev2.Worker.Name != "Worker V2" || rev2.Revision != 2 || rev2.ChangeSummary != "changed to V2" {
+	if proposedWorker(rev2.Worker).Name != "Worker V2" || rev2.Worker.Name != "Worker V1" || rev2.Revision != 2 || rev2.ChangeSummary != "changed to V2" {
 		t.Fatalf("mismatched rev2: %+v", rev2)
 	}
 
@@ -275,7 +288,7 @@ func TestWorkerHistoryAndRevisions(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("GetWorkerRevision 3: ok=%v, err=%v", ok, err)
 	}
-	if rev3.Worker.Name != "Worker V3" || rev3.Revision != 3 {
+	if proposedWorker(rev3.Worker).Name != "Worker V3" || rev3.Revision != 3 {
 		t.Fatalf("mismatched rev3: %+v", rev3)
 	}
 
@@ -470,7 +483,9 @@ func TestWorkerSemanticRoundtrip(t *testing.T) {
 	}
 }
 
-// Invariant: Updating an existing worker with an active schedule is rejected until Checkpoint 2 controls exist.
+// Invariant: an update never changes an active worker's running schedule in
+// place: it is staged for review (pending_review) while the approved worker
+// and its schedule stay in force, and an import over it is rejected.
 // Threat: Mutating an active schedule creates desync with running daemon scheduler.
 // Boundary: WorkerStore UpdateWorker, ImportWorkerUpdate.
 func TestWorkerActiveScheduleUpdateRejection(t *testing.T) {
@@ -501,18 +516,25 @@ func TestWorkerActiveScheduleUpdateRejection(t *testing.T) {
 	wBytes, _ := json.Marshal(w)
 	_ = ws.store.PutBytes(KeyWorker("acct-1", w.ID), wBytes)
 
-	// Attempting to update the active worker with enabled interval schedule must be rejected
+	// An update of the active worker with an enabled interval schedule is
+	// staged: the approved worker and its schedule are unchanged.
 	newName := "Renamed Worker"
-	_, err = ws.UpdateWorker("acct-1", "user-1", w.ID, 1, UpdateWorkerRequest{
+	staged, err := ws.UpdateWorker("acct-1", "user-1", w.ID, 1, UpdateWorkerRequest{
 		Name: &newName,
 	}, nil)
-	if !errors.Is(err, ErrActiveScheduleUpdateRejected) {
-		t.Fatalf("expected ErrActiveScheduleUpdateRejected, got %v", err)
+	if err != nil {
+		t.Fatalf("update of an active worker must be staged, got %v", err)
+	}
+	if staged.Name != w.Name || staged.LifecycleState != WorkerLifecycleStateActive || len(staged.Automations) != 1 || !staged.Automations[0].Enabled || staged.Automations[0].Revision != w.Automations[0].Revision {
+		t.Fatalf("active worker changed in place: %+v", staged)
+	}
+	if proposal := proposedWorker(staged); staged.PendingReview == nil || proposal.Name != newName || proposal.LifecycleState != WorkerLifecycleStatePending {
+		t.Fatalf("update not staged for review: %+v", staged.PendingReview)
 	}
 
 	// Attempting import update must also be rejected
 	_, expJSON, _ := ws.ExportWorker("acct-1", w.ID)
-	_, err = ws.ImportWorkerUpdate("acct-1", "user-1", w.ID, 1, expJSON, nil)
+	_, err = ws.ImportWorkerUpdate("acct-1", "user-1", w.ID, staged.Revision, expJSON, nil)
 	if !errors.Is(err, ErrActiveScheduleUpdateRejected) {
 		t.Fatalf("expected ErrActiveScheduleUpdateRejected on import update, got %v", err)
 	}
@@ -521,12 +543,16 @@ func TestWorkerActiveScheduleUpdateRejection(t *testing.T) {
 // Invariant: Automation attachment, update, and detachment must update worker revision and lookup index.
 // Threat: Orphaned automations or broken reverse lookup.
 // Boundary: WorkerStore AttachWorkerAutomation, UpdateWorkerAutomation, RemoveWorkerAutomation.
+// The worker is a draft (pending): attach, update and remove edit it in
+// place there; on an approved worker they are staged for review (covered by
+// worker_review_test.go).
 func TestWorkerAttachedAutomations(t *testing.T) {
 	_, ws := openTestStore(t)
 
 	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
-		Name:         "Modular Worker",
-		Instructions: "Modular instructions",
+		Name:                  "Modular Worker",
+		Instructions:          "Modular instructions",
+		InitialLifecycleState: WorkerLifecycleStatePending,
 	}, nil)
 	if err != nil {
 		t.Fatalf("CreateWorker: %v", err)
@@ -964,10 +990,16 @@ func TestWorkerBulkUpdateRevisionProtectionAndCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateWorker A: %v", err)
 	}
-	// Revisions must have incremented, not reset
-	if updatedA.Automations[0].Revision != 2 || updatedA.Automations[1].Revision != 2 {
-		t.Fatalf("expected automation revisions to increment to 2, got %d and %d",
-			updatedA.Automations[0].Revision, updatedA.Automations[1].Revision)
+	// Revisions are never reset by the caller: the changed automation moves
+	// to 2, and the unchanged one keeps its revision (a staged proposal shows
+	// only real changes). The approved automations stay at 1 until review.
+	proposedA := proposedWorker(updatedA)
+	if proposedA.Automations[0].Revision != 2 || proposedA.Automations[1].Revision != auto2.Revision {
+		t.Fatalf("expected revisions 2 (changed) and %d (unchanged), got %d and %d", auto2.Revision,
+			proposedA.Automations[0].Revision, proposedA.Automations[1].Revision)
+	}
+	if updatedA.Automations[0].Revision != 1 || updatedA.Automations[0].Name != auto1.Name {
+		t.Fatalf("approved automations changed before review: %+v", updatedA.Automations[0])
 	}
 
 	// 2. Cross-worker automation collision: Worker A tries to claim autoB.ID
@@ -1106,7 +1138,9 @@ func TestWorkerMigratedLegacyReadOnly(t *testing.T) {
 	}
 }
 
-// Invariant: Non-idle workers and workers with active trigger automations must reject mutations.
+// Invariant: an approved worker with an active trigger, or a paused one, is
+// never changed in place: an update is staged for review while the approved
+// worker keeps its trigger; a non-idle worker cannot be deleted.
 // Threat: Modifying workers during active event handling or execution.
 // Boundary: WorkerStore UpdateWorker, DeleteWorker.
 func TestWorkerNonIdleAndActiveTriggerRejection(t *testing.T) {
@@ -1130,11 +1164,15 @@ func TestWorkerNonIdleAndActiveTriggerRejection(t *testing.T) {
 		t.Fatalf("CreateWorker trigger: %v", err)
 	}
 
-	// Mutating worker with active trigger automation must be rejected
+	// An update of the worker with an active trigger is staged; the approved
+	// worker keeps its enabled trigger unchanged.
 	newName := "Renamed"
-	_, err = ws.UpdateWorker("acct-1", "user-1", wTrigger.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
-	if !errors.Is(err, ErrActiveScheduleUpdateRejected) {
-		t.Fatalf("expected ErrActiveScheduleUpdateRejected on active trigger worker, got %v", err)
+	stagedTrigger, err := ws.UpdateWorker("acct-1", "user-1", wTrigger.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
+	if err != nil {
+		t.Fatalf("update of an active trigger worker must be staged, got %v", err)
+	}
+	if stagedTrigger.Name != wTrigger.Name || len(stagedTrigger.Automations) != 1 || !stagedTrigger.Automations[0].Enabled || stagedTrigger.Automations[0].Revision != wTrigger.Automations[0].Revision || proposedWorker(stagedTrigger).Name != newName {
+		t.Fatalf("active trigger worker changed in place or not staged: %+v", stagedTrigger)
 	}
 
 	// 2. Paused/Active worker mutation rejection
@@ -1149,13 +1187,16 @@ func TestWorkerNonIdleAndActiveTriggerRejection(t *testing.T) {
 	wBytes, _ := json.Marshal(wIdle)
 	_ = ws.store.PutBytes(KeyWorker("acct-1", wIdle.ID), wBytes)
 
-	_, err = ws.UpdateWorker("acct-1", "user-1", wIdle.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
-	if !errors.Is(err, ErrActiveScheduleUpdateRejected) {
-		t.Fatalf("expected ErrActiveScheduleUpdateRejected on paused worker, got %v", err)
+	stagedPaused, err := ws.UpdateWorker("acct-1", "user-1", wIdle.ID, 1, UpdateWorkerRequest{Name: &newName}, nil)
+	if err != nil {
+		t.Fatalf("update of a paused worker must be staged, got %v", err)
+	}
+	if stagedPaused.Name != wIdle.Name || stagedPaused.LifecycleState != WorkerLifecycleStatePaused || proposedWorker(stagedPaused).Name != newName {
+		t.Fatalf("paused worker changed in place or not staged: %+v", stagedPaused)
 	}
 
 	// Deleting non-idle worker must be rejected
-	err = ws.DeleteWorker("acct-1", "user-1", wIdle.ID, 1)
+	err = ws.DeleteWorker("acct-1", "user-1", wIdle.ID, stagedPaused.Revision)
 	if err == nil || !strings.Contains(err.Error(), "cannot delete non-idle worker") {
 		t.Fatalf("expected non-idle delete rejection, got %v", err)
 	}
@@ -1867,11 +1908,14 @@ func TestWorkerAutomationIDIntegrityAndNoMutation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateWorker legitimate: %v", err)
 	}
-	if updatedB.Automations[0].CreatedAt != origCreatedAt {
-		t.Fatalf("expected CreatedAt preserved on bulk update: %d vs %d", updatedB.Automations[0].CreatedAt, origCreatedAt)
+	// The change is staged for review: the proposal keeps the automation's
+	// identity and CreatedAt and moves its revision forward.
+	proposedB := proposedWorker(updatedB)
+	if proposedB.Automations[0].ID != autoB1ID || proposedB.Automations[0].CreatedAt != origCreatedAt {
+		t.Fatalf("expected ID and CreatedAt preserved on bulk update: %+v vs %d", proposedB.Automations[0], origCreatedAt)
 	}
-	if updatedB.Automations[0].Revision != 2 {
-		t.Fatalf("expected automation revision incremented to 2, got %d", updatedB.Automations[0].Revision)
+	if proposedB.Automations[0].Revision != 2 {
+		t.Fatalf("expected automation revision incremented to 2, got %d", proposedB.Automations[0].Revision)
 	}
 }
 
@@ -1947,8 +1991,10 @@ func TestWorkerPortableProvenanceSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateWorker on imported worker should succeed, got %v", err)
 	}
-	if updated.Name != newName {
-		t.Fatalf("expected updated name %q, got %q", newName, updated.Name)
+	// Not locked: the update is accepted like any approved worker's (staged
+	// for review), rather than refused as a migration mirror.
+	if proposedWorker(updated).Name != newName {
+		t.Fatalf("expected updated name %q, got %q", newName, proposedWorker(updated).Name)
 	}
 }
 
@@ -2242,6 +2288,9 @@ func TestRecordWorkerRunSnapshotAndImmutableFields(t *testing.T) {
 	w, err := ws.CreateWorker("acct-run", "user-1", CreateWorkerRequest{
 		Name:         "Run Test Worker",
 		Instructions: "Instructions",
+		// A draft: its job is edited in place, so revision 2 really carries
+		// the changed job (an approved worker would stage it for review).
+		InitialLifecycleState: WorkerLifecycleStatePending,
 		Automations: []WorkerAutomationDefinition{
 			{Name: "Auto 1", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Plan 1")},
 		},
@@ -2517,5 +2566,70 @@ func TestWorkerSocialPostActionContractValidation(t *testing.T) {
 		if _, err := ValidatePortableWorkerDefinition([]byte(portable(bad)), nil); err == nil {
 			t.Fatalf("portable accepted %s", bad)
 		}
+	}
+}
+
+// Requirement: on an approved (idle or active) worker, changing or removing a
+// job is staged for review exactly like attaching one: the approved job keeps
+// running unchanged until the change is accepted. A draft worker is edited in
+// place. Threat: PUT/DELETE of an automation bypassing worker review (attach
+// was staged, update and remove were not). Boundary: WorkerStore
+// UpdateWorkerAutomation and RemoveWorkerAutomation over a real store.
+func TestWorkerAutomationChangesOnApprovedWorkerAreStaged(t *testing.T) {
+	_, ws := openTestStore(t)
+	w, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name:         "Approved Worker",
+		Instructions: "Instructions",
+		Automations:  []WorkerAutomationDefinition{{Name: "Job", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Job Plan")}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := w.Automations[0]
+
+	changed := job
+	changed.Name = "Job Renamed"
+	staged, err := ws.UpdateWorkerAutomation("acct-1", "user-1", w.ID, job.ID, w.Revision, changed, nil)
+	if err != nil {
+		t.Fatalf("update approved job: %v", err)
+	}
+	if len(staged.Automations) != 1 || staged.Automations[0].Name != "Job" || staged.Automations[0].Revision != job.Revision {
+		t.Fatalf("approved job changed in place: %+v", staged.Automations)
+	}
+	if p := proposedWorker(staged); staged.PendingReview == nil || len(p.Automations) != 1 || p.Automations[0].ID != job.ID || p.Automations[0].Name != "Job Renamed" {
+		t.Fatalf("job change not staged: %+v", staged.PendingReview)
+	}
+	if _, err := ws.UpdateWorkerAutomation("acct-1", "user-1", w.ID, job.ID, w.Revision, changed, nil); !errors.Is(err, ErrWorkerConflict) {
+		t.Fatalf("stale revision: %v", err)
+	}
+	if _, err := ws.UpdateWorkerAutomation("acct-1", "user-1", w.ID, "wauto_missing", staged.Revision, changed, nil); !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("unknown job: %v", err)
+	}
+
+	removed, err := ws.RemoveWorkerAutomation("acct-1", "user-1", w.ID, job.ID, staged.Revision)
+	if err != nil {
+		t.Fatalf("remove approved job: %v", err)
+	}
+	if len(removed.Automations) != 1 || removed.Automations[0].Name != "Job" {
+		t.Fatalf("approved job removed in place: %+v", removed.Automations)
+	}
+	if p := proposedWorker(removed); removed.PendingReview == nil || len(p.Automations) != 0 {
+		t.Fatalf("job removal not staged: %+v", removed.PendingReview)
+	}
+	if _, err := ws.RemoveWorkerAutomation("acct-1", "user-1", w.ID, "wauto_missing", removed.Revision); !errors.Is(err, ErrWorkerNotFound) {
+		t.Fatalf("unknown job removal: %v", err)
+	}
+
+	// A draft worker is still edited in place.
+	draft, err := ws.CreateWorker("acct-1", "user-1", CreateWorkerRequest{
+		Name: "Draft Worker", Instructions: "Instructions", InitialLifecycleState: WorkerLifecycleStatePending,
+		Automations: []WorkerAutomationDefinition{{Name: "Draft Job", ActivationMode: "manual", Enabled: true, PlanDocument: testPlanDoc("Draft Plan")}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := ws.RemoveWorkerAutomation("acct-1", "user-1", draft.ID, draft.Automations[0].ID, draft.Revision)
+	if err != nil || len(direct.Automations) != 0 || direct.PendingReview != nil {
+		t.Fatalf("draft job removal: %+v %v", direct, err)
 	}
 }

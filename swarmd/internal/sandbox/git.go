@@ -116,6 +116,16 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 	if len(cmd.Args) == 0 || filepath.Base(cmd.Args[0]) != "git" {
 		return fmt.Errorf("sandbox git routing expects a git command, got %q", cmd.Args)
 	}
+	// Every daemon Git command, routed or not, gets safe.directory for the
+	// folders the owner made visible (owned by another uid); the sandbox
+	// path forwards GIT_* below.
+	if safe := m.safeDirectories(); len(safe) > 0 {
+		env := cmd.Env
+		if env == nil {
+			env = os.Environ()
+		}
+		cmd.Env = AppendSafeDirectoryEnv(env, safe)
+	}
 	target, err := gitTarget(cmd)
 	if err != nil {
 		return err
@@ -141,6 +151,13 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		return err
 	}
 	name, mounts := b.name, append([]string(nil), b.mounts...)
+	// Files Git writes in a person's folder (the sandbox runs as its owner)
+	// stay writable for the daemon through its group; otherwise as the
+	// daemon would have written them.
+	umask := "022"
+	if m.RunsAsOwner(b.root) {
+		umask = "002"
+	}
 	m.release(b)
 
 	env := cmd.Env
@@ -169,9 +186,8 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		}
 		execArgs = append(execArgs, "timeout", "--kill-after=2", fmt.Sprintf("%d", secs))
 	}
-	// Container exec starts with umask 0; keep files Git writes in the host
-	// project as the daemon would have written them.
-	execArgs = append(execArgs, "sh", "-c", `umask 022 && exec "$@"`, "swarm-git", "git")
+	// Container exec starts with umask 0.
+	execArgs = append(execArgs, "sh", "-c", "umask "+umask+` && exec "$@"`, "swarm-git", "git")
 	execArgs = append(execArgs, cmd.Args[1:]...)
 
 	enginePath, err := exec.LookPath(m.cfg.Engine)
@@ -288,4 +304,31 @@ func engineEnv(env []string) []string {
 		}
 	}
 	return out
+}
+
+// Warm starts the sandbox of the project dir belongs to, if it needs one,
+// so a command that follows under its own short budget does not spend it on
+// container start-up (a cold gVisor sandbox takes seconds). It is a no-op
+// for directories outside any sandboxed project, when no sandbox is needed,
+// or when no manager is installed; a sandbox that cannot start is reported
+// by the command itself, so errors here are only informational.
+func Warm(ctx context.Context, dir string) error {
+	return Default().Warm(ctx, dir)
+}
+
+// Warm is the package-level Warm for this manager.
+func (m *Manager) Warm(ctx context.Context, dir string) error {
+	if m == nil || !m.Active() {
+		return nil
+	}
+	scope, ok, err := m.ScopeFor(dir)
+	if err != nil || !ok {
+		return err
+	}
+	b, err := m.acquire(ctx, scope)
+	if err != nil {
+		return err
+	}
+	m.release(b)
+	return nil
 }

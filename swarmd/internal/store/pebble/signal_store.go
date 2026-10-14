@@ -92,6 +92,9 @@ type SignalStore struct {
 	keep  uint64
 	mu    sync.Mutex
 	wake  chan struct{}
+	// appended is closed and cleared by the next Append: every reader waiting
+	// on it wakes (see Changed). Guarded by mu.
+	appended chan struct{}
 }
 
 func NewSignalStore(store *Store) *SignalStore {
@@ -235,6 +238,10 @@ func (s *SignalStore) Append(sig Signal) (Signal, error) {
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return Signal{}, fmt.Errorf("commit signal: %w", err)
 	}
+	if s.appended != nil {
+		close(s.appended)
+		s.appended = nil
+	}
 	select {
 	case s.wake <- struct{}{}:
 	default:
@@ -344,4 +351,19 @@ func (s *SignalStore) Appended() <-chan struct{} {
 		return nil
 	}
 	return s.wake
+}
+
+// Changed returns a channel that is closed once a signal is stored after this
+// call. Any number of readers may wait on it, unlike Appended; take it before
+// reading the feed so a signal stored in between is not missed.
+func (s *SignalStore) Changed() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.appended == nil {
+		s.appended = make(chan struct{})
+	}
+	return s.appended
 }

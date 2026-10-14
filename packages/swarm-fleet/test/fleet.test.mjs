@@ -4,11 +4,11 @@ import { createServer as createHTTP, request } from 'node:http';
 import { createServer as createHTTPS } from 'node:https';
 import { connect } from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { accessLevel, createFleet, machinesFromStatus, parseFleet } from '../server.mjs';
+import { accessLevel, createFleet, defaultStatePath, desiredFor, fleetState, machinesFromStatus, parseFleet, roleState, validateModels } from '../server.mjs';
 
 const KEY_A = 'swk_aaaaaaaaaaaaaaaaaaaa', KEY_B = 'swk_bbbbbbbbbbbbbbbbbbbb';
 const READ_TOOLS = [{ name: 'swarm_list_sessions', inputSchema: { type: 'object', properties: {} } }, { name: 'swarm_get_session', inputSchema: { type: 'object', properties: { session_id: { type: 'string' } } } }];
@@ -60,8 +60,8 @@ test('one server lists every machine and routes each call with that machine\'s k
     const init = await fleet.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
     assert.equal(init.result.protocolVersion, '2025-06-18');
     const listed = (await fleet.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' })).result.tools;
-    assert.deepEqual(listed.map(t => t.name), ['swarm_list_machines', 'swarm_fleet_status', 'swarm_list_sessions', 'swarm_get_session', 'swarm_start_session']);
-    assert.ok(listed.slice(2).every(t => t.inputSchema.properties.machine), 'every forwarded tool takes `machine`');
+    assert.deepEqual(listed.map(t => t.name), ['swarm_list_machines', 'swarm_fleet_status', 'swarm_fleet_models', 'swarm_fleet_set_models', 'swarm_list_sessions', 'swarm_get_session', 'swarm_start_session']);
+    assert.ok(listed.slice(4).every(t => t.inputSchema.properties.machine), 'every forwarded tool takes `machine`');
 
     const machines = JSON.parse((await fleet.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'swarm_list_machines' } })).result.content[0].text).machines;
     assert.deepEqual(machines.map(m => [m.machine, m.reachable, m.access]), [['builder', true, 'read and write'], ['prod', true, 'read only'], ['gone', false, 'none']]);
@@ -113,7 +113,7 @@ test('stdio server reaches an https machine through a CONNECT proxy', async () =
   try {
     assert.equal((await ask({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })).result.serverInfo.name, 'swarm-fleet');
     const tools = (await ask({ jsonrpc: '2.0', id: 2, method: 'tools/list' })).result.tools.map(t => t.name);
-    assert.deepEqual(tools, ['swarm_list_machines', 'swarm_fleet_status', 'swarm_list_sessions', 'swarm_get_session']);
+    assert.deepEqual(tools, ['swarm_list_machines', 'swarm_fleet_status', 'swarm_fleet_models', 'swarm_fleet_set_models', 'swarm_list_sessions', 'swarm_get_session']);
     const result = (await ask({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'swarm_list_sessions', arguments: {} } })).result;
     assert.equal(result.content[0].text, 'ok from a');
     assert.ok(tunnels.length >= 2 && tunnels.every(t => t === `box.tail1.ts.net:${port}`), 'every request went through the proxy by name');
@@ -194,4 +194,127 @@ test('access labels follow the listed tools', () => {
   assert.equal(accessLevel(['swarm_list_sessions', 'swarm_start_session']), 'read and write');
   assert.equal(accessLevel(['swarm_list_sessions', 'swarm_start_session', 'swarm_resolve_permission']), 'read, write and approve');
   assert.equal(accessLevel(['swarm_list_sessions', 'swarm_start_session', 'swarm_resolve_permission', 'swarm_set_agent_model', 'swarm_create_worker']), 'full control');
+});
+
+// ---- One model table for the fleet -----------------------------------------
+const MODEL_TOOLS = [...WRITE_TOOLS,
+  { name: 'swarm_list_models', inputSchema: { type: 'object', properties: {} } },
+  { name: 'swarm_set_agent_model', inputSchema: { type: 'object', properties: { role: { type: 'string' } } } }];
+const READ_MODEL_TOOLS = [...READ_TOOLS, { name: 'swarm_list_models', inputSchema: { type: 'object', properties: {} } }];
+
+// A machine that reports its roles and records set_agent_model calls.
+function modelMachine(key, tools, roles, calls) {
+  const current = { ...roles };
+  const handler = (msg, headers) => {
+    if (headers.authorization !== `Bearer ${key}`) return { status: 401, body: { error: 'invalid scoped bearer token' } };
+    if (msg.method === 'tools/list') return { jsonrpc: '2.0', id: msg.id, result: { tools } };
+    calls.push(msg.params);
+    if (!tools.some(t => t.name === msg.params.name)) return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'this key is limited to swarm:write' }], isError: true } };
+    if (msg.params.name === 'swarm_list_models') {
+      const list = Object.entries(current).map(([role, v]) => ({ role, ...v }));
+      return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: JSON.stringify({ providers: [], roles: list }) }] } };
+    }
+    const { role, provider, model, thinking = 'low' } = msg.params.arguments;
+    current[role] = { provider, model, thinking };
+    return { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: JSON.stringify({ role, model: current[role] }) }] } };
+  };
+  return { handler, current };
+}
+const statePathFor = () => join(mkdtempSync(join(tmpdir(), 'fleet-state-')), 'nested', 'fleet.json');
+
+test('the fleet state file round-trips, is private, and refuses bad tables', () => {
+  const path = statePathFor();
+  const store = fleetState(path);
+  assert.deepEqual(store.read(), { models: {}, overrides: {} }, 'no file yet means an empty table');
+  store.write({ models: { coder: { provider: 'prov', model: 'm1', thinking: 'low' } }, overrides: { box: { coder: { provider: 'prov', model: 'm2' } } } });
+  assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.deepEqual(store.read(), { models: { coder: { provider: 'prov', model: 'm1', thinking: 'low' } }, overrides: { box: { coder: { provider: 'prov', model: 'm2', thinking: '' } } } });
+  assert.throws(() => validateModels({ pilot: { provider: 'prov', model: 'm1' } }), /unknown role/);
+  assert.throws(() => validateModels({ coder: { provider: '', model: 'm1' } }), /required/);
+  assert.throws(() => validateModels([]), /object/);
+  assert.deepEqual(desiredFor(store.read(), 'box').coder.model, 'm2', 'the override wins on its machine');
+  assert.deepEqual(desiredFor(store.read(), 'other').coder.model, 'm1');
+  assert.equal(roleState(undefined, { provider: 'prov', model: 'x' }), 'unset');
+  assert.equal(roleState({ provider: 'prov', model: 'm1', thinking: '' }, { provider: 'prov', model: 'm1', thinking: 'high' }), 'in_sync', 'blank thinking in the table accepts any');
+  assert.equal(roleState({ provider: 'prov', model: 'm1', thinking: 'low' }, { provider: 'prov', model: 'm1', thinking: 'high' }), 'drift');
+  assert.equal(roleState({ provider: 'prov', model: 'm1', thinking: '' }, { provider: 'prov', model: 'm1', thinking: 'low' }, true), 'override');
+  assert.deepEqual(validateModels({ coder: { provider: 'prov', model: 'm1', fast: true } }).coder, { provider: 'prov', model: 'm1', thinking: '', fast: true });
+  assert.equal(roleState({ provider: 'prov', model: 'm1', fast: true }, { provider: 'prov', model: 'm1' }), 'drift', 'a role the table runs fast drifts on standard serving');
+  assert.equal(roleState({ provider: 'prov', model: 'm1' }, { provider: 'prov', model: 'm1', fast: true }), 'drift', 'and the other way round');
+  assert.equal(roleState({ provider: 'prov', model: 'm1', fast: true }, { provider: 'prov', model: 'm1', fast: true }), 'in_sync');
+  assert.match(defaultStatePath({ XDG_CONFIG_HOME: '/x' }), /^\/x\/swarm-fleet\/fleet\.json$/);
+  assert.equal(defaultStatePath({ SWARM_FLEET_STATE: '/y/f.json' }), '/y/f.json');
+});
+
+test('the model table is one view across machines and applies one call per role per machine', async () => {
+  const callsA = [], callsB = [], callsC = [];
+  const a = modelMachine(KEY_A, MODEL_TOOLS, { 'system-coder': { provider: 'prov', model: 'old', thinking: 'low' }, 'system-finder': { provider: 'prov', model: 'f1', thinking: 'low' } }, callsA);
+  const b = modelMachine(KEY_B, MODEL_TOOLS, { 'system-coder': { provider: 'prov', model: 'm1', thinking: 'low' } }, callsB);
+  const c = modelMachine(KEY_A, READ_MODEL_TOOLS, { 'system-coder': { provider: 'prov', model: 'm1', thinking: 'low' } }, callsC);
+  const [sa, sb, sc] = await Promise.all([fakeMachine(a.handler), fakeMachine(b.handler), fakeMachine(c.handler)]);
+  const statePath = statePathFor();
+  const fleet = createFleet(parseFleet(JSON.stringify([
+    { name: 'builder', url: sa.url, token: KEY_A }, { name: 'prod', url: sb.url, token: KEY_B }, { name: 'reader', url: sc.url, token: KEY_A },
+    { name: 'gone', url: 'http://127.0.0.1:9/mcp', token: KEY_A },
+  ])), { statePath });
+  const call = (name, args = {}) => fleet.handle({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name, arguments: args } }).then(r => r.result);
+  const text = r => JSON.parse(r.content[0].text);
+  try {
+    // Nothing in the table yet: every role is unset, the machine's own values are shown.
+    let view = text(await call('swarm_fleet_models'));
+    assert.deepEqual(view.models, {});
+    const coder = m => view.machines.find(x => x.machine === m).roles.find(r => r.role === 'coder');
+    assert.deepEqual(coder('builder'), { role: 'coder', provider: 'prov', model: 'old', thinking: 'low', state: 'unset' });
+    assert.equal(view.machines.find(x => x.machine === 'gone').roles[0].state, 'unknown');
+    assert.ok(!JSON.stringify(view).includes(KEY_A));
+
+    // Set the table: builder (drifting) and prod (already there) get one call per role; reader cannot be managed; gone is unreachable.
+    const set = text(await call('swarm_fleet_set_models', { models: { coder: { provider: 'prov', model: 'm1' }, finder: { provider: 'prov', model: 'f1', thinking: 'high' } } }));
+    assert.deepEqual(set.models, { coder: { provider: 'prov', model: 'm1', thinking: '' }, finder: { provider: 'prov', model: 'f1', thinking: 'high' } });
+    assert.deepEqual(set.applied.map(x => [x.machine, x.role, x.ok]), [
+      ['builder', 'coder', true], ['builder', 'finder', true], ['gone', 'coder', false], ['gone', 'finder', false],
+      ['prod', 'coder', true], ['prod', 'finder', true], ['reader', 'coder', false], ['reader', 'finder', false],
+    ]);
+    assert.match(set.applied.find(x => x.machine === 'reader').error, /full AI key/);
+    const sets = calls => calls.filter(p => p.name === 'swarm_set_agent_model').map(p => [p.arguments.role, p.arguments.model, p.arguments.thinking]);
+    assert.deepEqual(sets(callsA), [['system-coder', 'm1', undefined], ['system-finder', 'f1', 'high']], 'daemon role names, thinking only when the table names one');
+    assert.deepEqual(sets(callsB), [['system-coder', 'm1', undefined], ['system-finder', 'f1', 'high']]);
+    assert.deepEqual(sets(callsC), [], 'a machine without set_agent_model is never asked');
+    assert.deepEqual(JSON.parse(readFileSync(statePath, 'utf8')).models.coder, { provider: 'prov', model: 'm1', thinking: '' });
+
+    view = text(await call('swarm_fleet_models'));
+    assert.equal(coder('builder').state, 'in_sync');
+    assert.equal(coder('prod').state, 'in_sync');
+    assert.equal(coder('reader').state, 'in_sync', 'reader happened to match already');
+    assert.equal(view.machines.find(x => x.machine === 'reader').roles.find(r => r.role === 'finder').state, 'drift');
+
+    // An override on one machine beats the table there and only there.
+    const over = text(await call('swarm_fleet_set_models', { machine: 'prod', models: { coder: { provider: 'prov', model: 'big', thinking: 'high' } } }));
+    assert.deepEqual(over.overrides, { prod: { coder: { provider: 'prov', model: 'big', thinking: 'high' } } });
+    assert.deepEqual(over.applied, [{ machine: 'prod', role: 'coder', ok: true }]);
+    assert.deepEqual(sets(callsB).at(-1), ['system-coder', 'big', 'high']);
+    view = text(await call('swarm_fleet_models'));
+    assert.deepEqual(coder('prod'), { role: 'coder', provider: 'prov', model: 'big', thinking: 'high', state: 'override' });
+    assert.equal(coder('builder').state, 'in_sync');
+
+    // Changing the table's coder skips the overridden machine.
+    const again = text(await call('swarm_fleet_set_models', { models: { coder: { provider: 'prov', model: 'm3' } } }));
+    assert.ok(!again.applied.some(x => x.machine === 'prod'), 'prod keeps its override');
+    assert.equal(a.current['system-coder'].model, 'm3');
+    assert.equal(b.current['system-coder'].model, 'big');
+
+    // Clearing the override applies the table to that machine again.
+    const cleared = text(await call('swarm_fleet_set_models', { machine: 'prod', clear_override: true }));
+    assert.deepEqual(cleared.overrides, {});
+    assert.deepEqual(cleared.applied, [{ machine: 'prod', role: 'coder', ok: true }]);
+    assert.equal(b.current['system-coder'].model, 'm3');
+
+    // Records only, no calls.
+    const before = callsA.length;
+    const quiet = text(await call('swarm_fleet_set_models', { models: { designer: { provider: 'prov', model: 'd1' } }, apply: false }));
+    assert.deepEqual(quiet.applied, []);
+    assert.equal(callsA.length, before);
+    assert.match((await call('swarm_fleet_set_models', { models: { pilot: { provider: 'prov', model: 'x' } } })).content[0].text, /unknown role/);
+    assert.match((await call('swarm_fleet_set_models', { machine: 'nowhere', models: { coder: { provider: 'prov', model: 'x' } } })).content[0].text, /Unknown machine/);
+  } finally { fleet.stop(); sa.server.close(); sb.server.close(); sc.server.close(); }
 });

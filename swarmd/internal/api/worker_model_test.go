@@ -200,7 +200,10 @@ func TestWorkerModelSavedCandidateAcceptanceValidation(t *testing.T) {
 			expected = http.StatusConflict
 		}
 		response = executeWorkerAPI(handler, http.MethodPost, "/"+w.ID+"/accept", fmt.Sprintf(`{"expected_revision":%d}`, revision), options)
-		if response.Code != expected {
+		// A foreign account is refused by the account membership check (403)
+		// before the worker lookup would answer 404; either is a refusal.
+		foreignRefused := options.account != "" && response.Code == http.StatusForbidden
+		if response.Code != expected && !foreignRefused {
 			t.Fatalf("guard: %d %s", response.Code, response.Body.String())
 		}
 		unchanged, _, err = ws.GetWorker("acct-test", w.ID)

@@ -50,16 +50,17 @@ func (s *Service) SetProtectedRoots(roots ...string) {
 // validateRepositorySetupPath runs before setup resolves, creates or
 // initialises anything. The owner must name an absolute path that is not a
 // system or Swarm storage directory. It is applied to the requested path and
-// again to the canonical (symlink-resolved) path.
+// again to the canonical (symlink-resolved) path. Registering an existing
+// folder (RegisterExistingFolderForPrincipal) applies the same checks.
 func (s *Service) validateRepositorySetupPath(input string, paths ...string) error {
 	if !filepath.IsAbs(expandHomePath(strings.TrimSpace(input))) {
-		return errors.New("repository setup requires an absolute path chosen by the owner")
+		return errors.New("Swarm requires an absolute path chosen by the owner")
 	}
 	roots := append(append([]string(nil), systemRepositorySetupRoots...), s.protectedRoots...)
 	for _, path := range paths {
 		for _, root := range roots {
 			if pathWithinRoot(root, path) {
-				return fmt.Errorf("repository setup refuses %q: it is inside the system or Swarm storage directory %q; choose a folder in your home or project directory", path, root)
+				return fmt.Errorf("Swarm refuses %q: it is inside the system or Swarm storage directory %q; choose a folder in your home or project directory", path, root)
 			}
 		}
 	}
@@ -75,7 +76,7 @@ func (s *Service) validateRepositorySetupNesting(principal identity.Principal, r
 	}
 	for _, entry := range entries {
 		if entry.Path != resolved && pathWithinRoot(entry.Path, resolved) {
-			return fmt.Errorf("repository setup refuses %q: it is inside the registered workspace %q; choose a folder outside it", resolved, entry.Path)
+			return fmt.Errorf("Swarm refuses %q: it is inside the registered workspace %q; choose a folder outside it", resolved, entry.Path)
 		}
 	}
 	return nil

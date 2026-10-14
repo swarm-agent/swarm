@@ -45,8 +45,10 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
+	"swarm/packages/swarmd/internal/outbox"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/anthropic"
+	"swarm/packages/swarmd/internal/provider/claudecode"
 	"swarm/packages/swarmd/internal/provider/codex"
 	"swarm/packages/swarmd/internal/provider/copilot"
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
@@ -56,6 +58,7 @@ import (
 	"swarm/packages/swarmd/internal/provider/openai"
 	"swarm/packages/swarmd/internal/provider/openrouter"
 	"swarm/packages/swarmd/internal/provider/registry"
+	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/remote"
 	"swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/sandbox"
@@ -171,6 +174,8 @@ type Daemon struct {
 	longSessionDiagnostics    *longsessiondiag.Recorder
 	remoteTransport           *remote.Service
 	signalForwarder           *signals.Forwarder
+	resultOutbox              *outbox.Exporter
+	autoPublisher             *api.AutoPublisher
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -283,6 +288,11 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = store.Close()
 		_ = lk.Release()
 		return nil, fmt.Errorf("backfill account usage rollups: %w", err)
+	}
+	if _, err := pebblestore.RunWorkerRunIndexMigration(store); err != nil {
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("index worker runs: %w", err)
 	}
 	secretStore, err := pebblestore.Open(filepath.Join(cfg.DataDir, "swarmd-secrets.pebble"))
 	if err != nil {
@@ -626,8 +636,12 @@ func New(cfg config.Config) (*Daemon, error) {
 	// sidecar flow while the required paid Copilot plan is unavailable, so keep
 	// the implementation dormant until it can be tested end-to-end.
 	var copilotManager *copilot.Manager
+	// Claude Code drives the person's own locally signed-in, unmodified CLI;
+	// Swarm never handles Claude credentials (see provider/claudecode).
+	claudeCodeCLI := claudecode.NewCLI()
 	providers := registry.New(
 		anthropic.NewAdapter(authStore),
+		claudecode.NewAdapter(authStore, claudeCodeCLI),
 		codex.NewAdapter(authStore),
 		fireworks.NewAdapter(authStore),
 		google.NewAdapter(authStore),
@@ -636,6 +650,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		exaprovider.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
+	providers.RegisterRunner(claudecode.NewRunner(authStore, claudeCodeCLI))
 	// Copilot runner registration is disabled with the adapter above; leave the
 	// code in place for re-enablement after paid-plan validation is possible.
 	providers.RegisterRunner(codex.NewRunner(codexClient))
@@ -716,6 +731,14 @@ func New(cfg config.Config) (*Daemon, error) {
 
 	apiServer.SetMemoryService(memorySvc)
 	apiServer.SetEnvironmentServices(connStore, envStore, deploymentMgr, workspaceStore, providerReg)
+	// Folders' sandbox environments: the sandbox runs each folder on its last
+	// ready environment image; a build a restart cut short is marked failed.
+	sandboxEnvironments := pebblestore.NewSandboxEnvironmentStore(store)
+	if err := sandboxEnvironments.InterruptBuilds(); err != nil {
+		log.Printf("warning: sandbox environments: %v", err)
+	}
+	sandboxMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
+	apiServer.SetSandboxEnvironmentStore(sandboxEnvironments)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
 	apiServer.SetSignalStore(signalStore)
@@ -724,6 +747,43 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSignalSinkStore(signalSinks)
 	// Forwards the signal feed to owner-configured sinks; idle until one exists.
 	signalForwarder := signals.NewForwarder(signalStore, signalSinks, func() string { return startupSwarmName(cfg.ConfigPath) })
+	// Exports the feed and finished jobs' results to the owner's storage when
+	// SWARM_OUTBOX_URL is set (docs/checkpoints/outbox.md); off otherwise.
+	var resultOutbox *outbox.Exporter
+	if outboxCfg, on, err := outbox.ConfigFromEnv(os.Getenv, startupSwarmName(cfg.ConfigPath)); err != nil {
+		log.Printf("warning: outbox: %v", err)
+		apiServer.SetOutboxStatus(func() outbox.Status { return outbox.Status{LastError: err.Error(), Failing: true} })
+	} else if on {
+		if dest, err := outboxCfg.Open(); err != nil {
+			log.Printf("warning: outbox: %v", err)
+			apiServer.SetOutboxStatus(func() outbox.Status { return outbox.Status{LastError: err.Error(), Failing: true} })
+		} else {
+			resultOutbox = outbox.NewExporter(outboxCfg, dest, signalStore, store, apiServer.OutboxAccount, apiServer.OutboxResultBuilder())
+			resultOutbox.SetStatusBuilder(apiServer.OutboxStatusBuilder())
+			apiServer.SetOutboxStatus(resultOutbox.Status)
+			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
+		}
+	}
+	// Jobs in folders whose owner set a publish command (install.sh workspace
+	// publish) are delivered as pull requests; auto rules deliver them unasked.
+	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
+	// A sync rule starts each worker job from the forge's latest base branch.
+	runSvc.SetPublishBaseResolver(func(ctx context.Context, folder, current string) (string, string, bool, error) {
+		rules, err := publish.Load(os.Getenv(publish.ConfigEnv))
+		if err != nil {
+			return "", "", false, err
+		}
+		rule, ok := publish.For(rules, folder)
+		if !ok || !rule.Sync {
+			return "", "", false, nil
+		}
+		base, err := publish.Update(ctx, rule, current)
+		if err != nil {
+			return "", "", false, err
+		}
+		return base.Commit, base.Branch, true, nil
+	})
+	autoPublisher := apiServer.NewAutoPublisher(signalStore, store)
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
@@ -799,6 +859,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	toolRuntime.SetManageSessionController(apiServer)
 	artifactMetadata.SetPublisher(apiServer.PublishCommittedV3RealtimeOutbox)
 	apiServer.SetCodexAccountClient(codexClient)
+	apiServer.SetClaudeCodeUsageClient(claudeCodeCLI)
 	apiServer.SetWebPushService(webPushSvc)
 	apiServer.SetModelProfileService(modelProfileSvc)
 	apiServer.SetAgentModelSettingsService(agentModelSettingsSvc, agentModelSettingsStore)
@@ -892,6 +953,8 @@ func New(cfg config.Config) (*Daemon, error) {
 		localTransportRuntimeName: localTransportRuntimeName,
 		remoteTransport:           remoteSvc,
 		signalForwarder:           signalForwarder,
+		resultOutbox:              resultOutbox,
+		autoPublisher:             autoPublisher,
 	}
 	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -1270,6 +1333,12 @@ func (d *Daemon) Run() error {
 	}
 	if d.signalForwarder != nil && d.bgCtx != nil {
 		go d.signalForwarder.Run(d.bgCtx)
+	}
+	if d.resultOutbox != nil && d.bgCtx != nil {
+		go d.resultOutbox.Run(d.bgCtx)
+	}
+	if d.autoPublisher != nil && d.bgCtx != nil {
+		go d.autoPublisher.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

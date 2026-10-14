@@ -87,14 +87,47 @@ type geminiRESTImageConfig struct {
 }
 
 type geminiGenerateContentResponse struct {
-	ResponseID    string                `json:"responseId,omitempty"`
-	ModelVersion  string                `json:"modelVersion,omitempty"`
-	Candidates    []geminiRESTCandidate `json:"candidates,omitempty"`
-	UsageMetadata map[string]any        `json:"usageMetadata,omitempty"`
+	ResponseID     string                `json:"responseId,omitempty"`
+	ModelVersion   string                `json:"modelVersion,omitempty"`
+	Candidates     []geminiRESTCandidate `json:"candidates,omitempty"`
+	UsageMetadata  map[string]any        `json:"usageMetadata,omitempty"`
+	PromptFeedback *struct {
+		BlockReason        string `json:"blockReason,omitempty"`
+		BlockReasonMessage string `json:"blockReasonMessage,omitempty"`
+	} `json:"promptFeedback,omitempty"`
 }
 
 type geminiRESTCandidate struct {
-	Content *geminiRESTContent `json:"content,omitempty"`
+	Content       *geminiRESTContent `json:"content,omitempty"`
+	FinishReason  string             `json:"finishReason,omitempty"`
+	FinishMessage string             `json:"finishMessage,omitempty"`
+}
+
+// geminiImageRefusal says why Google returned no image: the prompt was
+// blocked, or every answer stopped for a reason other than finishing (a
+// safety filter, a prohibited request). Empty when an image came back or no
+// reason was given.
+func geminiImageRefusal(decoded geminiGenerateContentResponse) string {
+	if feedback := decoded.PromptFeedback; feedback != nil && feedback.BlockReason != "" {
+		return strings.TrimSpace("Google blocked the prompt (" + feedback.BlockReason + ") " + feedback.BlockReasonMessage)
+	}
+	reasons := []string{}
+	for _, candidate := range decoded.Candidates {
+		if candidate.Content != nil {
+			for _, part := range candidate.Content.Parts {
+				if part.InlineData != nil && part.InlineData.Data != "" {
+					return ""
+				}
+			}
+		}
+		if candidate.FinishReason != "" && candidate.FinishReason != "STOP" {
+			reasons = append(reasons, strings.TrimSpace(candidate.FinishReason+" "+candidate.FinishMessage))
+		}
+	}
+	if len(reasons) == 0 {
+		return ""
+	}
+	return "Google returned no image (" + strings.Join(reasons, "; ") + ")"
 }
 
 type geminiRESTErrorResponse struct {
@@ -194,6 +227,9 @@ func (c googleGeminiImageClient) GenerateImage(ctx context.Context, req GeminiIm
 	var decoded geminiGenerateContentResponse
 	if err := json.Unmarshal(responseBody, &decoded); err != nil {
 		return GeminiImageGenerationResult{}, fmt.Errorf("decode Gemini REST generateContent response: %w", err)
+	}
+	if refusal := geminiImageRefusal(decoded); refusal != "" {
+		return GeminiImageGenerationResult{}, errors.New(refusal)
 	}
 	mergeGeminiImageResponse(&result, decoded, req.OutputIndex, 1, req.OnEvent)
 	if result.ChunkCount == 0 {

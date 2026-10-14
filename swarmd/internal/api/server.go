@@ -9,10 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"swarm/packages/swarmd/internal/memory"
@@ -40,6 +43,7 @@ import (
 	"swarm/packages/swarmd/internal/model"
 	"swarm/packages/swarmd/internal/modelprofile"
 	"swarm/packages/swarmd/internal/notification"
+	"swarm/packages/swarmd/internal/outbox"
 	"swarm/packages/swarmd/internal/permission"
 	"swarm/packages/swarmd/internal/provider/codex"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
@@ -120,13 +124,19 @@ type Server struct {
 	security                    *security.Service
 	providers                   *registry.Registry
 	codexAccount                codexAccountClient
+	claudeCodeUsage             claudeCodeUsageClient
 	perm                        permissionService
 	notifications               notificationService
 	storageHub                  *storagehub.Service
 	secretSlots                 *pebblestore.SecretSlotStore
 	signals                     *pebblestore.SignalStore
 	secretsGatewayEnabled       bool
+	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
+	envBuildMu                  sync.Mutex
+	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore
+	outboxStatus                func() outbox.Status
+	publishConfig               string
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
@@ -2081,9 +2091,17 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 		MakeCurrent          *bool  `json:"make_current"`
 		ConfirmCommittedOnly bool   `json:"confirm_committed_only"`
 		ContextOnly          bool   `json:"context_only"`
+		// RequireExistingContent narrows a context-only registration to a
+		// non-empty folder outside system/Swarm storage and outside any
+		// registered workspace (the person's existing work, not a new folder).
+		RequireExistingContent bool `json:"require_existing_content"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.RequireExistingContent && !req.ContextOnly {
+		writeError(w, http.StatusBadRequest, errors.New("require_existing_content applies only to context_only registration"))
 		return
 	}
 	makeCurrent := true
@@ -2106,12 +2124,22 @@ func (s *Server) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 400, errors.New("context folder registration cannot select a coding workspace"))
 			return
 		}
-		resolution, err := s.workspace.RegisterContextFolderForPrincipal(principal, req.Path, req.Name, req.ThemeID)
+		if s.writeWorkspaceNotVisible(w, req.Path) {
+			return
+		}
+		register := s.workspace.RegisterContextFolderForPrincipal
+		if req.RequireExistingContent {
+			register = s.workspace.RegisterExistingFolderForPrincipal
+		}
+		resolution, err := register(principal, req.Path, req.Name, req.ThemeID)
 		if err != nil {
 			writeError(w, 400, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": resolution, "workspace_id": resolution.WorkspaceID})
+		return
+	}
+	if s.writeWorkspaceNotVisible(w, req.Path) {
 		return
 	}
 	// Repository readiness is a filesystem prerequisite. Check it before any
@@ -2199,6 +2227,62 @@ func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "repository": repository})
+}
+
+// writeWorkspaceNotVisible answers a registration whose absolute path Swarm
+// cannot see (a service install runs as its own user with home folders
+// hidden) with what to do, instead of a dead "no such directory". Swarm never
+// changes its own host: the person, or the AI setting the machine up, makes
+// the folder visible from outside (on a headless install,
+// `install.sh workspace add PATH` as root) and adds it again. Only a missing
+// or unreadable path outside Swarm's own storage qualifies. A path whose
+// parent Swarm can see and that simply is not there is answered as
+// workspace_not_found, so a typo never sends anyone to change the host.
+func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bool {
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) {
+		return false
+	}
+	clean := filepath.Clean(path)
+	_, err := os.Stat(clean)
+	if err == nil {
+		_, err = filepath.EvalSymlinks(clean)
+	}
+	if err == nil || !(errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission)) {
+		return false
+	}
+	if tool.RefuseProtectedPath(clean) != nil {
+		return false
+	}
+	if errors.Is(err, fs.ErrNotExist) && !workspaceUnderHiddenRoot(clean) {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"ok":    false,
+			"code":  "workspace_not_found",
+			"path":  clean,
+			"error": clean + " does not exist on this machine. Check the path with the person (it is the absolute path as this machine sees it) and add it again.",
+		})
+		return true
+	}
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"ok":    false,
+		"code":  "workspace_not_visible",
+		"path":  clean,
+		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `install.sh workspace add " + clean + "`, then try again.",
+	})
+	return true
+}
+
+// workspaceHiddenRoots are the folders a service install hides from Swarm
+// (systemd ProtectHome): a missing path under one may exist but be hidden.
+var workspaceHiddenRoots = []string{"/home", "/root", "/run/user"}
+
+func workspaceUnderHiddenRoot(path string) bool {
+	for _, root := range workspaceHiddenRoots {
+		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func writeWorkspaceRepositoryError(w http.ResponseWriter, err error) {

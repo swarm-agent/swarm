@@ -3,6 +3,7 @@ package appstorage
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,7 +93,19 @@ func WorktreeDataDir(repoRoot string, parts ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ensurePrivateAppDir(root, path)
+	dir, err := ensurePrivateAppDir(root, path)
+	if err != nil {
+		return "", err
+	}
+	// The sandbox of a folder that belongs to a person runs as that person
+	// with the daemon's group; the bucket must admit the group so Git can
+	// create worktrees in it (the daemon's own state stays private).
+	if OwnedByAnother(repoRoot) {
+		if err := os.Chmod(filepath.Join(root, WorktreesDir, bucket), 0o770); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 // WorktreesRoot returns the directory holding every repository's worktree
@@ -312,4 +325,16 @@ func workspaceSlug(identity string) string {
 		return workspaceSlugFallback
 	}
 	return base
+}
+
+// SetPrivateDirPerm makes dir private (PrivateDirPerm). A directory the
+// sandbox created as a person's folder's owner belongs to that person and
+// cannot be chmodded by the daemon; it stays as its owner's umask made it,
+// behind the daemon-private directories above it.
+func SetPrivateDirPerm(dir string) error {
+	err := os.Chmod(dir, PrivateDirPerm)
+	if err != nil && errors.Is(err, os.ErrPermission) && OwnedByAnother(dir) {
+		return nil
+	}
+	return err
 }

@@ -583,6 +583,15 @@ func TestWorkerProjectTask_AdversarialExistingTaskCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// startPlan runs a revision with a pinned model, as admission pins it;
+	// pin one here so the identity check below is what is tested.
+	pinned, err := execution.ResolveRoleModelProfile("account", w.Role, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned.UseAccountDefault, pinned.ActionUseAccountDefault, pinned.PlanUseAccountDefault = false, false, false
+	w.ModelProfile = pinned
+
 	// Calling startPlan directly with mismatched worker/task identity must return ErrWorkerConflict
 	err = execution.startPlan(context.Background(), admitted, w, doc)
 	if err == nil || !errors.Is(err, store.ErrWorkerConflict) {

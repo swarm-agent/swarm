@@ -114,6 +114,11 @@ func setWorkerRealtimeMutationInBatch(batch *pebble.Batch, account string, m *wo
 		if err := batch.Set([]byte(key), data, nil); err != nil {
 			return err
 		}
+		if isWorkerRunRecordKey(account, key) {
+			if err := indexWorkerRunInBatch(batch, account, data); err != nil {
+				return err
+			}
+		}
 	}
 	for _, key := range m.deletes {
 		if !isAllowedWorkerKey(account, key) {

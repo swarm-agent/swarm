@@ -92,6 +92,10 @@ func writableDaemonHome(account *user.User, uid string) (string, error) {
 
 const repositoryCommandTimeout = 12 * time.Second
 
+// repositoryWarmTimeout bounds starting a project's sandbox before a Git
+// inspection; it matches the sandbox's own start budget.
+const repositoryWarmTimeout = 2 * time.Minute
+
 const (
 	RepositoryStateReady              = "ready"
 	RepositoryStateGitUnavailable     = "git_unavailable"
@@ -598,6 +602,11 @@ func runRepositoryGitWithEnv(path string, env []string, args ...string) (string,
 }
 
 func runRepositoryGitInput(path string, env []string, input io.Reader, args ...string) (string, error) {
+	// The sandbox start (seconds, when cold) is not part of the command's
+	// budget; a failure to start is reported by the command below.
+	warmCtx, cancelWarm := context.WithTimeout(context.Background(), repositoryWarmTimeout)
+	_ = sandbox.Warm(warmCtx, path)
+	cancelWarm()
 	ctx, cancel := context.WithTimeout(context.Background(), repositoryCommandTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path, "-c", "core.fsmonitor=false"}, args...)...)

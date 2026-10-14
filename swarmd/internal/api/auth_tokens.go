@@ -32,18 +32,21 @@ const (
 )
 
 // aiKeyScopes are the API scopes plus Swarm Control levels for an AI key.
-// Read keys see and call only read tools; write keys may also start sessions,
-// send messages and stop runs. Full keys are for the AI that runs this box:
-// every Swarm Control tool, including approving tool calls, models, workers,
+// Read keys see and call only read tools, including the machine's status, its
+// activity feed and which secrets exist where (never their values); write keys
+// may also create projects, deploy workers, give them jobs, follow up and
+// answer their questions, merge their results, stop runs and pick each
+// role's model among the connected providers. Full keys are for the AI that
+// runs this box: every Swarm Control tool, including approving tool calls, models, workers,
 // limits, custom agents, client keys and ChatGPT sign-in. Any key with a
 // Swarm Control level reaches only /mcp (gateAIKey), so admin here widens
 // what the allowlisted tools may do, never the rest of the API.
 func aiKeyScopes(level string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "read":
-		return []string{"swarm:read", "sessions:read", "automations:read", "agents:read"}, nil
+		return []string{"swarm:read", "sessions:read", "automations:read", "agents:read", "signals:read", "secrets:read"}, nil
 	case "write":
-		return []string{"swarm:read", "swarm:write", "sessions:read", "sessions:write", "automations:read", "automations:write", "agents:read"}, nil
+		return []string{"swarm:read", "swarm:write", "sessions:read", "sessions:write", "automations:read", "automations:write", "agents:read", "settings:write", "signals:read", "secrets:read"}, nil
 	case "full":
 		return []string{"swarm:read", "swarm:write", "swarm:approve", "swarm:manage", "admin"}, nil
 	default:

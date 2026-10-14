@@ -54,5 +54,7 @@ try {
   else if(connection.mode==='docker') run('docker',['exec','-i',connection.container,'swarmctl','mcp']);
   else if(connection.binary) run(connection.binary,['mcp',...(connection.socket ? ['--socket',connection.socket] : [])]);
   else if(process.platform==='win32') { throw Error('Configure Docker mode with the setup skill; native Windows Swarm is not supported.'); }
-  else run('sh',[fileURLToPath(new URL('./swarm-mcp',import.meta.url))],connection.socket ? {...process.env,SWARM_MCP_SOCKET:connection.socket} : process.env);
+  // Native mode is the shell launcher's; SWARM_MCP_NATIVE keeps it from handing
+  // a saved connection back here.
+  else run('sh',[fileURLToPath(new URL('./swarm-mcp',import.meta.url))],{...process.env,SWARM_MCP_NATIVE:'1',...(connection.socket ? {SWARM_MCP_SOCKET:connection.socket} : {})});
 } catch {console.error('Swarm MCP configuration/key file is missing or invalid. Run plugin setup; keep keys in private files, never chat.');process.exitCode=1;}

@@ -813,6 +813,8 @@ func formatProviderDisplayName(prov string) string {
 		return "OpenRouter"
 	case "copilot":
 		return "GitHub Copilot"
+	case "claudecode":
+		return "Claude Code (local CLI)"
 	default:
 		if prov == "" {
 			return "Unknown"

@@ -42,7 +42,7 @@ Decide what is missing from Swarm's state, not from
 | Name | `(await client.onboarding.get()).identity.bootstrapped` | ask name + Swarm name, `client.onboarding.ensureBootstrapped({ username, swarm_name })` |
 | Model access | `heuristics.credential_count > 0` | API key or ChatGPT sign-in (below) |
 | Models | `(await client.settings.agentModels())` has a swarm action model | usually already done: Swarm sets recommended models when the first key or sign-in is saved; otherwise `client.settings.applyProviderFleet(provider)` |
-| Workspace | your app's workspace is registered (`client.workspaces.list()`) | ask where work should live (suggest a folder), make sure the parent folder exists, then `client.workspaces.create({ parent_path, name })` (`name`: letters, digits, `-` and `_`, at most 63); store its `path` and find it again by that path or its name |
+| Workspace | your app's workspaces are registered (`client.workspaces.list()`) | ask which existing folders or repositories the work is in and register each with `client.workspaces.add({ path, context_only: true, require_existing_content: true, make_current: false })` (refuses empty, system and nested folders; changes nothing in the folder). Only for a new project from scratch: `client.workspaces.create({ parent_path, name })` (an empty repository; `name`: letters, digits, `-` and `_`, at most 63). Store each `path` and find it again by that path |
 | Finish | all above | `client.onboarding.update({ desktop_onboarding_complete: true })` |
 
 Re-check `onboarding.get()` every few seconds while onboarding is open: a key
@@ -80,6 +80,12 @@ Swarms answer a 404 "agent model settings not found" instead; treat it the same.
 Use a project with your workspace; its conversations are orchestrator sessions
 and support clearing context. Without a workspace the orchestrator cannot run
 commands or hand out work.
+
+Creating a project makes Swarm write its `project.md` (the orchestrator's
+context) from the workspaces' AGENTS.md, README and file tree. Open
+conversations once `project.context_generation.status` is `ready`: re-read with
+`client.projects.get(id)` (or follow realtime project updates); on `failed`,
+`client.projects.retryContext(id, project.context_generation.attempt)`.
 
 ```js
 const project = await client.projects.ensureProject('My app', { workspacePath });

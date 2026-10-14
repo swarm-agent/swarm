@@ -1,5 +1,13 @@
 # Headless distribution image (Linux amd64)
 
+To run Swarm on a machine (a server or your own PC) with its setup page, use
+the one-line installer in [app/README.md](app/README.md): no Tailscale needed,
+everything listens on 127.0.0.1, and your AI on that machine connects to
+`http://127.0.0.1:7783/mcp` with the AI key the installer puts in
+`~/.config/swarm/ai-key`. Tailscale (`--tailnet`) is optional, only for
+reaching the machine from your other devices. This page covers the container
+image.
+
 This packages the existing daemon, not a workspace container runner. It builds
 `swarmd`, `swarmctl`, and `swarm-fff-search` with CGO using the daemon targets and
 shared buildinfo fields from `scripts/build-main-dist.sh`. The build stage uses
@@ -203,6 +211,18 @@ GOMAXPROCS=2 go test -p 2 ./internal/api -run '^TestHeadlessSetupLocalIdentityBo
 These exercise real CLI parsing/Unix transport against isolated HTTP fixtures and
 real backend identity handlers against temporary storage. They are not live daemon,
 provider or SDK runs and do not replace the separate live qualification below.
+
+## Workspaces and projects
+
+Headless Swarm runs as an isolated service, so it sees only folders it can
+read: here the repository mounted at `/project`. Register the person's real
+folders (`setup workspace`, `swarm_add_workspace` over Swarm Control, or
+`client.workspaces.add` with `context_only`), group them into a project
+(`swarm_create_project` or `client.projects.create`) so Swarm writes the
+project's `project.md`, and start the project's orchestrator once it is
+`ready`. Never point work at a freshly initialised, empty repository in place
+of the person's code: `swarm_create_workspace` is only for a new project
+started from scratch.
 
 ## Authenticated host SDK connection
 

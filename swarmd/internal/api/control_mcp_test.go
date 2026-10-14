@@ -142,7 +142,18 @@ func TestControlMCPAuthenticationAndAuthority(t *testing.T) {
 	if got := rpc(read, "initialize", map[string]any{"protocolVersion": "2025-06-18"}); got.Result.ProtocolVersion != "2025-06-18" {
 		t.Fatalf("protocol negotiation: %q", got.Result.ProtocolVersion)
 	}
-	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != len(controlMCPTools()) {
+	// By default only the worker and job tools are listed; the rest stay
+	// callable by name (/mcp?tools=all lists them).
+	core := 0
+	for _, tool := range controlMCPTools() {
+		if controlMCPCoreTools[tool.Name] {
+			core++
+		}
+	}
+	if core != len(controlMCPCoreTools) {
+		t.Fatalf("default tool list names %d tools, %d exist", len(controlMCPCoreTools), core)
+	}
+	if got := rpc(read, "tools/list", nil); len(got.Result.Tools) != core {
 		t.Fatalf("tool surface changed: %d tools", len(got.Result.Tools))
 	}
 	if got := rpc(read, "no/such", nil); got.Error == nil || got.Error.Code != -32601 {
@@ -313,6 +324,12 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		want         bool
 	}{
 		{"GET", "/v3/sessions/abc", true},
+		{"POST", "/v3/projects/proj_1/tasks", true},
+		{"GET", "/v3/projects/proj_1/tasks/task_1", true},
+		{"PATCH", "/v3/projects/proj_1/tasks/task_1", false},
+		{"POST", "/v3/projects/proj_1/tasks/task_1/complete", false},
+		{"POST", "/v3/projects/proj_1/tasks/task_1/accept", false},
+		{"POST", "/v3/projects/proj_1/tasks:preview", false},
 		{"POST", "/v3/sessions/abc/plan-mode/plans/plan_1/start-automatic", true},
 		{"POST", "/v3/workers/wkr_1/direct", true},
 		{"POST", "/v3/workers/wkr_1/runs/run_1/cancel", true},
@@ -331,6 +348,9 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"GET", "/v1/model/catalog", true},
 		{"POST", "/v1/model/catalog", false},
 		{"PATCH", "/v1/agent-model-settings", true},
+		{"GET", "/v1/ui/settings", true},
+		{"POST", "/v1/ui/settings", true},
+		{"DELETE", "/v1/ui/settings", false},
 		{"POST", "/v1/agent-model-settings/restore-defaults", false},
 		{"POST", "/v1/model", false},
 		{"POST", "/v1/permissions/bypass", false},
@@ -343,9 +363,16 @@ func TestControlMCPRouteAllowlist(t *testing.T) {
 		{"DELETE", "/v3/sessions/abc/model-profile", false},
 		{"POST", "/v3/sessions/abc/permissions/resolve_all", false},
 		{"POST", "/v3/projects/prj_1/sessions", true},
+		{"GET", "/v3/projects/prj_1", true},
+		{"PATCH", "/v3/projects/prj_1", true},
+		{"DELETE", "/v3/projects/prj_1", false},
+		{"POST", "/v3/projects/prj_1/context:retry", true},
+		{"POST", "/v3/projects/synthesize-context", false},
+		{"GET", "/v3/projects/active", false},
+		{"POST", "/v3/projects/prj_1/orchestrator:clear-context", false},
 		{"GET", "/v3/projects/prj_1/tasks", true},
-		{"POST", "/v3/projects/prj_1/tasks", false},
-		{"GET", "/v3/projects/prj_1/tasks/task_1", false},
+		{"POST", "/v3/projects/prj_1/tasks", true},       // one-hop delegation (run_task)
+		{"GET", "/v3/projects/prj_1/tasks/task_1", true}, // one task with fresh git state (wait_task, task_result)
 		{"POST", "/v3/projects/prj_1/tasks/task_1/integrate", true},
 		{"POST", "/v3/projects/prj_1/tasks/task_1/recover-integrate", false},
 		{"POST", "/v3/projects/prj_1/tasks/task_1/approve", true},
@@ -1113,5 +1140,55 @@ func TestControlMCPCreatesWorkspaceFromZero(t *testing.T) {
 	s.SetWorkspaceRoot("")
 	if text, isError := write("swarm_create_workspace", map[string]any{"name": "other"}); !isError || !strings.Contains(text, "no workspace folder") {
 		t.Fatalf("no root: %s", text)
+	}
+}
+
+// Requirement: fast is offered exactly where the catalog maps Swarm's fast
+// setting, and the tier it stores survives model resolution (a tier the
+// catalog does not list is dropped silently, so a wrong name would never run
+// fast).
+func TestControlMCPFastFollowsCatalog(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "models"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	events, err := pebblestore.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := model.NewService(pebblestore.NewModelStore(db), events, model.NewCatalogService(pebblestore.NewModelCatalogStore(db)))
+	if err := svc.EnsureBootDefaults(); err != nil {
+		t.Fatal(err)
+	}
+	offered := map[string]string{}
+	for _, provider := range []string{"codex", "openai", "anthropic", "google"} {
+		records, err := svc.ListCatalog(provider, 500)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range records {
+			encoded, _ := json.Marshal(record)
+			var asJSON map[string]any
+			_ = json.Unmarshal(encoded, &asJSON)
+			tier := controlMCPFastTier(asJSON)
+			if tier == "" {
+				continue
+			}
+			resolved, err := svc.ResolvePreference(pebblestore.ModelPreference{Provider: provider, Model: record.Model, ServiceTier: tier})
+			if err != nil || resolved.Preference.ServiceTier != tier {
+				t.Fatalf("%s/%s: fast tier %q did not survive resolution: %q %v", provider, record.Model, tier, resolved.Preference.ServiceTier, err)
+			}
+			offered[provider+"/"+record.Model] = tier
+		}
+	}
+	if offered["codex/gpt-6-astra"] != "fast" || offered["openai/gpt-6-astra"] == "" {
+		t.Fatalf("fast not offered for gpt-6-astra: %v", offered)
+	}
+	if entry := controlMCPRoleModel(map[string]any{"provider": "codex", "model": "m", "thinking": "medium", "service_tier": "fast"}); entry["fast"] != true {
+		t.Fatalf("a fast role does not read fast: %v", entry)
+	}
+	if entry := controlMCPRoleModel(map[string]any{"provider": "codex", "model": "m"}); entry["fast"] != false {
+		t.Fatalf("a standard role reads fast: %v", entry)
 	}
 }

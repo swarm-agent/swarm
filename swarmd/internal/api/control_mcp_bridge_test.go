@@ -72,9 +72,14 @@ func TestControlMCPLocalBridgeKey(t *testing.T) {
 	}
 
 	list := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
-	w = send(socket, "POST", "/mcp", issued.Token, list)
+	w = send(socket, "POST", "/mcp?tools=all", issued.Token, list)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"swarm_request_provider_key"`) || !strings.Contains(w.Body.String(), `"swarm_resolve_permission"`) {
 		t.Fatalf("bridge key must see the full tool set: %d %s", w.Code, w.Body.String())
+	}
+	// By default the same key lists the worker and job tools only.
+	w = send(socket, "POST", "/mcp", issued.Token, list)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"swarm_give_job"`) || strings.Contains(w.Body.String(), `"swarm_resolve_permission"`) {
+		t.Fatalf("default tool list must be the worker and job tools: %d %s", w.Code, w.Body.String())
 	}
 	if w := send(socket, "POST", "/mcp", "", list); w.Code != http.StatusUnauthorized {
 		t.Fatalf("token-less socket calls to /mcp must stay refused: %d", w.Code)

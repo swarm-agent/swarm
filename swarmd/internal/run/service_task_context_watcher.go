@@ -197,7 +197,7 @@ func taskProviderUsagePathAccepted(source, path string) bool {
 		return path == "usageMetadata"
 	case "copilot_session_usage":
 		return path == "session.usage_info"
-	case "anthropic_api_usage", "fireworks_api_usage", "openrouter_api_usage":
+	case "anthropic_api_usage", "fireworks_api_usage", "openrouter_api_usage", "claudecode_cli_usage":
 		return path == "usage"
 	default:
 		return false
@@ -210,6 +210,7 @@ func taskProviderUsageSourceAccepted(provider, source string) bool {
 	accepted := map[string]string{
 		"codex": "codex_api_usage", "google": "google_api_usage", "copilot": "copilot_session_usage",
 		"anthropic": "anthropic_api_usage", "fireworks": "fireworks_api_usage", "openrouter": "openrouter_api_usage",
+		"claudecode": "claudecode_cli_usage",
 	}
 	return accepted[provider] != "" && source == accepted[provider]
 }

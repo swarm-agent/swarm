@@ -133,6 +133,7 @@ type Service struct {
 	events                       *pebblestore.EventLog
 	eventPublish                 func(pebblestore.EventEnvelope)
 	sessionDeployCanonicalize    SessionDeployCanonicalizer
+	publishBase                  PublishBaseResolver
 	sessionDeployEnqueue         SessionDeployEnqueuer
 	sessionWorkspaceCanonicalize SessionWorkspaceCanonicalizer
 	aiTaskBinder                 AITaskBinder
@@ -172,6 +173,12 @@ type SessionDeployCanonicalization struct {
 }
 
 type SessionDeployCanonicalizer func(SessionDeployCanonicalizeInput) (SessionDeployCanonicalization, error)
+
+// PublishBaseResolver says where a worker job in folder should start when the
+// folder publishes its jobs as pull requests and keeps up with its forge: a
+// commit just fetched from the forge and the branch it is the tip of. ok is
+// false for a folder without such a rule; an error stops the job from starting.
+type PublishBaseResolver func(ctx context.Context, folder, current string) (commit, branch string, ok bool, err error)
 type SessionDeployEnqueuer func(identity.Principal, string, string, string) bool
 
 type SessionWorkspaceCanonicalizeInput struct {
@@ -904,6 +911,13 @@ func (s *Service) SetSessionDeployCanonicalizer(canonicalize SessionDeployCanoni
 		return
 	}
 	s.sessionDeployCanonicalize = canonicalize
+}
+
+// SetPublishBaseResolver sets how worker jobs find their forge base.
+func (s *Service) SetPublishBaseResolver(resolve PublishBaseResolver) {
+	if s != nil {
+		s.publishBase = resolve
+	}
 }
 
 func (s *Service) SetAITaskBinder(binder AITaskBinder) {

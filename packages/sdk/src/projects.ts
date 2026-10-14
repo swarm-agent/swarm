@@ -39,7 +39,6 @@ import type {
   SessionRecord,
   SyncStreamParams,
   SyncStreamResult,
-  SynthesizeProjectContextParams,
   UpdateProjectParams,
   UpdateProjectTaskParams,
 } from './types.js';
@@ -275,21 +274,6 @@ export class SwarmProjectsNamespace {
       { method: 'DELETE', ...options }
     );
     return res.data ?? { status: 'deleted', id: projectId.trim() };
-  }
-
-  /**
-   * Synthesizes Markdown project context from project name and linked workspaces.
-   */
-  async synthesizeContext(params: SynthesizeProjectContextParams, options?: RequestOptions): Promise<string> {
-    const res = await this.transport.request<{ project_context?: string }>(
-      '/v3/projects/synthesize-context',
-      {
-        method: 'POST',
-        body: params,
-        ...options,
-      }
-    );
-    return res.data?.project_context ?? '';
   }
 
   /**

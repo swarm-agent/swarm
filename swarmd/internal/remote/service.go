@@ -47,40 +47,70 @@ const (
 
 // toolScopes mirrors the relay's mapping; unknown tools need write.
 var toolScopes = map[string]string{
-	"swarm_list_workspaces":      ScopeRead,
-	"swarm_list_sessions":        ScopeRead,
-	"swarm_get_session":          ScopeRead,
-	"swarm_list_projects":        ScopeRead,
-	"swarm_list_workers":         ScopeRead,
-	"swarm_get_worker":           ScopeRead,
-	"swarm_get_usage":            ScopeRead,
-	"swarm_list_models":          ScopeRead,
-	"swarm_list_tasks":           ScopeRead,
-	"swarm_create_workspace":     ScopeWrite,
-	"swarm_start_session":        ScopeWrite,
-	"swarm_send_message":         ScopeWrite,
-	"swarm_run_plan":             ScopeWrite,
-	"swarm_stop_run":             ScopeWrite,
-	"swarm_assign_worker_task":   ScopeWrite,
-	"swarm_set_session_model":    ScopeWrite,
-	"swarm_resolve_permission":   ScopeApprove,
-	"swarm_integrate_task":       ScopeApprove,
-	"swarm_create_project":       ScopeManage,
-	"swarm_create_worker":        ScopeManage,
-	"swarm_update_worker":        ScopeManage,
-	"swarm_manage_worker":        ScopeManage,
-	"swarm_set_usage_limits":     ScopeManage,
-	"swarm_set_agent_model":      ScopeManage,
-	"swarm_list_agents":          ScopeRead,
-	"swarm_define_agent":         ScopeManage,
-	"swarm_create_client_key":    ScopeManage,
-	"swarm_connect_chatgpt":      ScopeManage,
-	"swarm_list_providers":       ScopeRead,
-	"swarm_request_provider_key": ScopeManage,
-	"swarm_read_file":            ScopeRead,
-	"swarm_get_changes":          ScopeRead,
-	"swarm_accept_review":        ScopeApprove,
-	"swarm_approve_task":         ScopeManage,
+	"swarm_list_workspaces":        ScopeRead,
+	"swarm_list_sessions":          ScopeRead,
+	"swarm_get_session":            ScopeRead,
+	"swarm_list_projects":          ScopeRead,
+	"swarm_get_project":            ScopeRead,
+	"swarm_list_workers":           ScopeRead,
+	"swarm_get_worker":             ScopeRead,
+	"swarm_get_usage":              ScopeRead,
+	"swarm_list_models":            ScopeRead,
+	"swarm_list_tasks":             ScopeRead,
+	"swarm_wait_task":              ScopeRead,
+	"swarm_task_result":            ScopeRead,
+	"swarm_run_task":               ScopeWrite,
+	"swarm_create_workspace":       ScopeWrite,
+	"swarm_add_workspace":          ScopeWrite,
+	"swarm_start_session":          ScopeWrite,
+	"swarm_send_message":           ScopeWrite,
+	"swarm_run_plan":               ScopeWrite,
+	"swarm_stop_run":               ScopeWrite,
+	"swarm_assign_worker_task":     ScopeWrite,
+	"swarm_set_session_model":      ScopeWrite,
+	"swarm_resolve_permission":     ScopeApprove,
+	"swarm_integrate_task":         ScopeWrite,
+	"swarm_create_project":         ScopeWrite,
+	"swarm_update_project_context": ScopeManage,
+	"swarm_set_project_workspaces": ScopeWrite,
+	"swarm_retry_project_context":  ScopeManage,
+	"swarm_create_worker":          ScopeManage,
+	"swarm_update_worker":          ScopeManage,
+	"swarm_manage_worker":          ScopeManage,
+	"swarm_set_usage_limits":       ScopeManage,
+	"swarm_set_agent_model":        ScopeWrite,
+	"swarm_set_media_models":       ScopeWrite,
+	"swarm_list_agents":            ScopeRead,
+	"swarm_define_agent":           ScopeManage,
+	"swarm_create_client_key":      ScopeManage,
+	"swarm_connect_chatgpt":        ScopeManage,
+	"swarm_list_providers":         ScopeRead,
+	"swarm_request_provider_key":   ScopeManage,
+	"swarm_read_file":              ScopeRead,
+	"swarm_get_changes":            ScopeRead,
+	"swarm_accept_review":          ScopeApprove,
+	"swarm_approve_task":           ScopeManage,
+	// Workers and jobs, the default surface: reading them and the machine's
+	// state is read; deploying workers, giving, answering, merging, stopping
+	// and scheduling jobs is write. Answering covers a worker's questions only,
+	// never a tool-call approval; merging is a local git merge, never a push.
+	"swarm_status":          ScopeRead,
+	"swarm_activity":        ScopeRead,
+	"swarm_list_runs":       ScopeRead,
+	"swarm_get_job":         ScopeRead,
+	"swarm_list_secrets":    ScopeRead,
+	"swarm_deploy_worker":   ScopeWrite,
+	"swarm_give_job":        ScopeWrite,
+	"swarm_answer_job":      ScopeWrite,
+	"swarm_message_job":     ScopeWrite,
+	"swarm_set_environment": ScopeWrite,
+	"swarm_get_environment": ScopeRead,
+	"swarm_deliver_job":     ScopeWrite,
+	"swarm_stop_job":        ScopeWrite,
+	"swarm_schedule_job":    ScopeWrite,
+	"swarm_request_media":   ScopeWrite,
+	"swarm_media_models":    ScopeRead,
+	"swarm_save_media":      ScopeWrite,
 }
 
 // localOnlyTools need the owner's admin authority, which the device token
@@ -298,15 +328,16 @@ func (s *Service) Init(in InitInput) (Status, error) {
 	}
 	// API scopes the device token needs for its ceiling. Remote clients are
 	// still limited per tool by the ceiling (toolScopes) on every call.
-	scopes := []string{"sessions:read", "automations:read", "agents:read"}
+	scopes := []string{"sessions:read", "automations:read", "agents:read", "signals:read", "secrets:read"}
 	if in.AllowWrite || in.AllowApprove {
 		scopes = append(scopes, "sessions:write")
 	}
 	if in.AllowWrite || in.AllowManage {
-		scopes = append(scopes, "automations:write")
+		// Write may also pick each role's model among the connected providers.
+		scopes = append(scopes, "automations:write", "settings:write")
 	}
 	if in.AllowManage {
-		scopes = append(scopes, "usage:write", "settings:write")
+		scopes = append(scopes, "usage:write")
 	}
 	token, tokenID, err := s.tokens.Mint("swarm-remote "+name, scopes)
 	if err != nil {

@@ -360,6 +360,9 @@ type ProjectTaskIntegration struct {
 	RecoveryBase  string `json:"recovery_base,omitempty"`
 	RecoveredHead string `json:"recovered_head,omitempty"`
 	RecoveryRef   string `json:"recovery_ref,omitempty"`
+	// PullRequestURL is set when the folder publishes jobs as pull requests
+	// (State pull_request) instead of merging them locally.
+	PullRequestURL string `json:"pull_request_url,omitempty"`
 }
 
 // ProjectTaskCoderAssignment is one independent, source-bound Coder launch in a

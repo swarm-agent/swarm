@@ -14,13 +14,13 @@ ACCOUNT_NAME=""
 TERMINAL_MODE=""
 TTY_DEVICE="/dev/tty"
 SYSTEMD_RUN_DIR="/run/systemd/system"
-PUBLIC_INSTALL_COMMAND="curl -fsSL https://swarmagent.dev/install"
+PUBLIC_INSTALL_COMMAND="curl -fsSL https://swarmagent.dev/install-launcher"
 
 usage() {
   cat <<'EOF'
 Usage:
   sh install.sh [--yes] [--service|--no-service] [--verify-only] [--version <tag>] [--artifact-root <path>]
-  curl -fsSL https://swarmagent.dev/install | sh -s -- --yes
+  curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes
 
 Options:
   --yes, -y              Run without the confirmation prompt. Without a terminal and
@@ -40,7 +40,7 @@ Options:
 
 Without a terminal (an AI agent, CI, cron), pass --yes; a non-root run then also
 needs passwordless sudo, otherwise rerun it as root:
-  curl -fsSL https://swarmagent.dev/install | sudo sh -s -- --yes
+  curl -fsSL https://swarmagent.dev/install-launcher | sudo sh -s -- --yes
 
 EOF
 }

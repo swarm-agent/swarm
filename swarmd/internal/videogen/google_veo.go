@@ -60,6 +60,8 @@ type veoResult struct {
 				URI string `json:"uri"`
 			} `json:"video"`
 		} `json:"generatedSamples"`
+		RAIMediaFilteredCount   int      `json:"raiMediaFilteredCount,omitempty"`
+		RAIMediaFilteredReasons []string `json:"raiMediaFilteredReasons,omitempty"`
 	} `json:"generateVideoResponse,omitempty"`
 	GeneratedVideos []struct {
 		Video struct {
@@ -198,6 +200,9 @@ func (s *Service) pollGoogleVeoOperation(ctx context.Context, apiKey string, mod
 		if opResp.Done {
 			videoURI := extractVeoVideoURI(opResp)
 			if videoURI == "" {
+				if response := opResp.Response; response != nil && response.GenerateVideoResponse != nil && len(response.GenerateVideoResponse.RAIMediaFilteredReasons) > 0 {
+					return ManagedVideoResult{}, fmt.Errorf("Google's safety filter blocked the video (not charged): %s", strings.Join(response.GenerateVideoResponse.RAIMediaFilteredReasons, "; "))
+				}
 				return ManagedVideoResult{}, errors.New("google veo operation finished but returned no video URI")
 			}
 			videoBytes, err := s.downloadGoogleFile(ctx, apiKey, videoURI)

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -17,11 +18,13 @@ const (
 	signalsReadScope  = "signals:read"
 	signalsWriteScope = "signals:write"
 	maxSignalBody     = 16 << 10
+	// maxSignalWaitSeconds caps how long a read waits for a new signal.
+	maxSignalWaitSeconds = 30
 )
 
 // handleSignals serves the machine signal feed.
 //
-//	GET  /v3/signals?after=N&limit=N&kind=agent,run.failed&min_severity=warning
+//	GET  /v3/signals?after=N&limit=N&kind=agent,run.failed&min_severity=warning&wait=S
 //	POST /v3/signals  {kind:"external.…", severity, summary, source, dedup_key, refs, attrs}
 //
 // Readers see their account's signals and machine-wide ones. Outside sources
@@ -81,10 +84,46 @@ func (s *Server) listSignals(w http.ResponseWriter, r *http.Request, account str
 			filter.KindPrefixes = append(filter.KindPrefixes, kind)
 		}
 	}
-	page, err := s.signals.ListAfter(after, limit, filter)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
+	wait := 0
+	if raw := strings.TrimSpace(query.Get("wait")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, errors.New("wait must be a number of seconds"))
+			return
+		}
+		wait = min(parsed, maxSignalWaitSeconds)
+	}
+	// With wait, a read that finds nothing after the cursor blocks until a
+	// signal is stored or the wait ends. It wakes on the store's append
+	// broadcast, never on a timer, and re-reads from where it got to, so
+	// signals this reader may not see do not end the wait.
+	var deadline <-chan time.Time
+	if wait > 0 {
+		timer := time.NewTimer(time.Duration(wait) * time.Second)
+		defer timer.Stop()
+		deadline = timer.C
+	}
+	var page pebblestore.SignalPage
+	for {
+		changed := s.signals.Changed()
+		var err error
+		page, err = s.signals.ListAfter(after, limit, filter)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if deadline == nil || len(page.Signals) > 0 || page.Gap || page.NextAfter < page.LatestSeq {
+			break
+		}
+		after = page.NextAfter
+		select {
+		case <-changed:
+			continue
+		case <-deadline:
+		case <-r.Context().Done():
+			return
+		}
+		break
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "signals": page.Signals, "next_after": page.NextAfter, "oldest_seq": page.OldestSeq, "latest_seq": page.LatestSeq, "gap": page.Gap})
 }

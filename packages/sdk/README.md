@@ -22,7 +22,7 @@ npm install @swarm-agent/sdk
 </copy>
 
 You need a running Swarm on Linux x86_64. Install one with
-`curl -fsSL https://swarmagent.dev/install | sh -s -- --yes`.
+`curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes`.
 
 ## Connect to your Swarm
 
@@ -451,13 +451,28 @@ for (const ws of workspaces) {
 
 Manage multi-workspace projects, autonomous tasks, route previews, plan review lifecycles, and opaque event sync streams:
 
+A project groups registered workspaces: the existing folders or repositories the
+work lives in (`client.workspaces.add({ path, context_only: true,
+require_existing_content: true, make_current: false })`), not an empty
+repository created for it. Creating it makes Swarm write the project's
+`project.md` (the orchestrator's context) from the workspaces' AGENTS.md, README
+and file tree; `context_generation.status` moves from `pending`/`running` to
+`ready` or `failed` (`retryContext(id, attempt)`). Open orchestrator
+conversations once it is `ready`. Workspace and `project_context` edits through
+`update` are refused until then.
+
 ```typescript
-// Create a new project aggregating workspaces
-const project = await client.projects.create({
+// Create a new project aggregating the person's existing workspaces
+let project = await client.projects.create({
   name: 'Mobile Core Redesign',
   description: 'Refactor mobile navigation and auth screens',
   workspaces: [{ path: '/workspaces/mobile-app', role: 'primary_code' }],
 });
+// Re-read until project.md is generated (or follow realtime project updates)
+project = await client.projects.get(project.id);
+if (project.context_generation?.status === 'failed') {
+  project = await client.projects.retryContext(project.id, project.context_generation.attempt);
+}
 
 // Create an autonomous task with agent routing
 const { task, model_preview } = await client.projects.createTask(project.id, {

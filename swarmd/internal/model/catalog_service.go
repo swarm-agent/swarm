@@ -41,6 +41,29 @@ var catalogProviderCanonicalIDs = map[string]string{
 	"chatgpt_codex":  "codex",
 }
 
+// catalogProviderModelSources names runtime providers that serve another
+// provider's model catalog. Lookups read the source provider's records and
+// recommendations and return them keyed to the requesting provider. Claude Code
+// runs Anthropic models through the local CLI.
+var catalogProviderModelSources = map[string]string{
+	"claudecode": "anthropic",
+}
+
+// catalogModelSource returns the provider whose records serve providerID and
+// the provider ID returned records must carry.
+func catalogModelSource(providerID string) (string, string) {
+	requested := canonicalCatalogProviderID(providerID)
+	if source, ok := catalogProviderModelSources[requested]; ok {
+		return source, requested
+	}
+	return requested, requested
+}
+
+func rekeyCatalogRecord(record pebblestore.ModelCatalogRecord, providerID string) pebblestore.ModelCatalogRecord {
+	record.Provider = providerID
+	return record
+}
+
 type CatalogService struct {
 	store      *pebblestore.ModelCatalogStore
 	client     *http.Client
@@ -299,7 +322,7 @@ func (s *CatalogService) seedPinnedSnapshotIfNeeded() error {
 }
 
 func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) {
-	normalizedProvider := canonicalCatalogProviderID(providerID)
+	normalizedProvider, requestedProvider := catalogModelSource(providerID)
 	normalizedModel := canonicalCatalogModelID(normalizedProvider, modelID)
 	record, ok, err := s.store.GetRecord(normalizedProvider, normalizedModel)
 	if err != nil {
@@ -323,6 +346,9 @@ func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) 
 		matchedMeta = &meta
 	}
 
+	if normalizedProvider != requestedProvider {
+		record = rekeyCatalogRecord(record, requestedProvider)
+	}
 	stale := record.ExpiresAt > 0 && record.ExpiresAt < s.now().UnixMilli()
 	return CatalogLookup{
 		Record: record,
@@ -333,14 +359,21 @@ func (s *CatalogService) Get(providerID, modelID string) (CatalogLookup, error) 
 }
 
 func (s *CatalogService) List(providerID string, limit int) ([]pebblestore.ModelCatalogRecord, error) {
-	providerID = canonicalCatalogProviderID(providerID)
-	if providerID == "" {
+	sourceProvider, requestedProvider := catalogModelSource(providerID)
+	if sourceProvider == "" {
 		return nil, fmt.Errorf("provider is required")
 	}
 	if limit <= 0 {
 		limit = 1000
 	}
-	return s.store.ListProvider(providerID, limit)
+	records, err := s.store.ListProvider(sourceProvider, limit)
+	if err != nil || sourceProvider == requestedProvider {
+		return records, err
+	}
+	for i := range records {
+		records[i] = rekeyCatalogRecord(records[i], requestedProvider)
+	}
+	return records, nil
 }
 
 func (s *CatalogService) RecommendedDefaults(providerID string) (pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, pebblestore.ModelCatalogRecord, bool, error) {
@@ -364,8 +397,8 @@ func (s *CatalogService) RecommendedRoleDefaults(providerID string, roles ...str
 	if !found || meta.MaterializationVersion != catalogMaterializationVersion {
 		return nil, false, fmt.Errorf("catalog recommendations require a verified refresh")
 	}
-	providerID = canonicalCatalogProviderID(providerID)
-	if providerID == "" || len(roles) == 0 {
+	sourceProvider, requestedProvider := catalogModelSource(providerID)
+	if sourceProvider == "" || len(roles) == 0 {
 		return nil, false, nil
 	}
 	wanted := make(map[string]struct{}, len(roles))
@@ -381,7 +414,7 @@ func (s *CatalogService) RecommendedRoleDefaults(providerID string, roles ...str
 	if len(wanted) == 0 {
 		return nil, false, nil
 	}
-	records, err := s.store.ListProvider(providerID, 2000)
+	records, err := s.store.ListProvider(sourceProvider, 2000)
 	if err != nil {
 		return nil, false, err
 	}
@@ -394,6 +427,9 @@ func (s *CatalogService) RecommendedRoleDefaults(providerID string, roles ...str
 			}
 			if _, needed := wanted[role]; !needed || strings.TrimSpace(out[role].Model) != "" {
 				continue
+			}
+			if sourceProvider != requestedProvider {
+				record = rekeyCatalogRecord(record, requestedProvider)
 			}
 			out[role] = record
 		}

@@ -2385,6 +2385,13 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			isDirectSimpleMedia := (req.Agent == "image" || req.Intent == "image" || req.Agent == "sound" || req.Intent == "sound" || req.Agent == "audio" || req.Intent == "audio" || req.Agent == "video" || req.Intent == "video") &&
 				(req.Operation == "" || req.Operation == pebblestore.VideoOperationCreate) &&
 				req.VideoType != "multipart" && req.VideoType != "story" && req.ScenesCount <= 1 && len(req.Scenes) <= 1
+			if isDirectSimpleMedia && strings.TrimSpace(req.Model) == "" {
+				kind := req.Agent
+				if kind == "" {
+					kind = req.Intent
+				}
+				req.Model = s.defaultMediaModel(r.Context(), p, kind)
+			}
 			if !isMediaRequest || isDirectSimpleMedia {
 				input := tool.ProjectTaskCreateInput{
 					ID:                  req.ID,
@@ -2408,6 +2415,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 					Resolution:          req.Resolution,
 					VariantCount:        req.VariantCount,
 					DurationSeconds:     req.DurationSeconds,
+					VideoType:           req.VideoType,
 					Model:               req.Model,
 					Provider:            req.Provider,
 					Thinking:            req.Thinking,
@@ -3079,6 +3087,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if isDirectMediaTask(&task) {
+				s.fillMediaTaskModel(r.Context(), p, &task)
 				if err := validateProjectMediaTaskSettings(s, &task, p); err != nil {
 					writeError(w, http.StatusBadRequest, err)
 					return

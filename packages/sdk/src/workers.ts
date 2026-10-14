@@ -75,6 +75,7 @@ export class SwarmWorkersNamespace {
       instructions: params.instructions,
       idempotency_key: params.idempotency_key.trim(),
     };
+    if (params.role !== undefined) body.role = params.role;
     if (params.description !== undefined) body.description = params.description;
     if (params.requested_capabilities !== undefined) body.requested_capabilities = params.requested_capabilities;
     if (params.workspace_requirements !== undefined) body.workspace_requirements = params.workspace_requirements;
@@ -177,6 +178,22 @@ export class SwarmWorkersNamespace {
   }
 
   /**
+   * Creates and activates the box's missing premade workers (Coder, Designer,
+   * Finder) and returns all three. Existing presets are returned unchanged.
+   * Presets are box-level: every job names its workspace.
+   */
+  async ensurePresets(): Promise<WorkerRecord[]> {
+    const res = await this.transport.request<{ workers?: WorkerRecord[] }>('/v3/workers:ensure-presets', {
+      method: 'POST',
+      body: {},
+    });
+    if (!res.data || typeof res.data !== 'object' || !Array.isArray(res.data.workers)) {
+      throw new SwarmValidationError('Malformed response envelope: expected workers array');
+    }
+    return res.data.workers;
+  }
+
+  /**
    * Updates a worker's definition with an explicit expected revision for optimistic concurrency.
    * Body carries expected_revision only (no query params, no local_bindings).
    */
@@ -195,6 +212,7 @@ export class SwarmWorkersNamespace {
     const body: Record<string, unknown> = {
       expected_revision: expectedRevision,
     };
+    if (params.role !== undefined) body.role = params.role;
     if (params.name !== undefined) body.name = params.name;
     if (params.description !== undefined) body.description = params.description;
     if (params.instructions !== undefined) body.instructions = params.instructions;
@@ -712,6 +730,8 @@ export class SwarmWorkersNamespace {
     if (hasPrompt) body.prompt = params.prompt!.trim();
     if (params.input) body.input = params.input;
     if (params.idempotency_key) body.idempotency_key = params.idempotency_key.trim();
+    if (params.workspace_id && params.workspace_id.trim() !== '') body.workspace_id = params.workspace_id.trim();
+    if (params.workspace_path && params.workspace_path.trim() !== '') body.workspace_path = params.workspace_path.trim();
 
     const res = await this.transport.request<{ ok?: boolean; run?: WorkerRunRecord }>(
       `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/direct`,
@@ -753,6 +773,8 @@ export class SwarmWorkersNamespace {
       body.input = params.input;
     }
     if (params.idempotency_key) body.idempotency_key = params.idempotency_key.trim();
+    if (params.workspace_id && params.workspace_id.trim() !== '') body.workspace_id = params.workspace_id.trim();
+    if (params.workspace_path && params.workspace_path.trim() !== '') body.workspace_path = params.workspace_path.trim();
 
     const res = await this.transport.request<{ ok?: boolean; run?: WorkerRunRecord }>(
       `/v3/workers/${encodeURIComponent(params.worker_id.trim())}/test`,

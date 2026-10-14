@@ -419,40 +419,89 @@ func TestControlMCPUsageAndProviderStatus(t *testing.T) {
 	}
 }
 
-// Requirement: server instructions name only tools the caller's level can
-// call, every tool they name exists, and they say that policy-refused commands
-// never become pending requests. Threat: a read-only client told to approve or
-// create things it cannot, or instructions drifting from the tool list.
-// Owner: controlMCPCall.instructions; pure layer over the level check.
+// Requirement: by default the server instructions tell one story (a model
+// provider, a project with its folders, then jobs for the coder, designer and
+// finder, then results, follow-ups and merging) and
+// name only default tools; the advanced lines appear only for a client that
+// asked for every tool. Every line names only tools the caller's level can
+// call and every tool it names exists. Threats: an AI steered to sessions or
+// the orchestrator first, a read-only client told to give or merge jobs, or
+// instructions drifting from the tool list. Owner: controlMCPCall.instructions
+// and allTools; pure layer over the level check and the request URL.
 func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 	names := map[string]bool{}
 	for _, tool := range controlMCPTools() {
 		names[tool.Name] = true
 	}
-	for _, line := range controlMCPInstructionLines {
-		for _, name := range line.tools {
-			if !names[name] {
-				t.Fatalf("instruction names unknown tool %s", name)
+	for _, set := range [][]controlMCPInstruction{controlMCPCoreInstructionLines, controlMCPInstructionLines} {
+		for _, line := range set {
+			for _, name := range line.tools {
+				if !names[name] {
+					t.Fatalf("instruction names unknown tool %s", name)
+				}
 			}
 		}
 	}
-	instructions := func(scopes ...string) string {
-		return controlMCPDirectCall(context.Background(), identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}, nil, nil, scopes...).instructions()
+	for _, line := range controlMCPCoreInstructionLines {
+		for _, name := range line.tools {
+			if !controlMCPCoreTools[name] {
+				t.Fatalf("default instructions name advanced tool %s", name)
+			}
+		}
 	}
-	readOnly := instructions("sessions:read", "swarm:read")
-	for _, hidden := range []string{"resolve_permission", "create_workspace", "approve_task", "accept_review", "integrate_task", "start_session"} {
+	principal := identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}
+	instructions := func(all bool, scopes ...string) string {
+		call := controlMCPDirectCall(context.Background(), principal, nil, nil, scopes...)
+		if all {
+			call.request.URL.RawQuery = "tools=all"
+		}
+		return call.instructions()
+	}
+	defaults := instructions(false, "sessions:read", "sessions:write")
+	for _, shown := range []string{"deploy AI workers", "coder", "designer", "finder", "swarm_list_providers", "never ask for a key in chat", "swarm_create_project", "swarm_give_job", "swarm_get_job", "swarm_message_job", "swarm_answer_job", "swarm_deliver_job", "nothing is ever pushed", "swarm_status", "swarm_activity", "swarm_list_secrets", "untrusted"} {
+		if !strings.Contains(defaults, shown) {
+			t.Fatalf("default instructions miss %s: %s", shown, defaults)
+		}
+	}
+	for _, hidden := range []string{"system-orchestrator", "run_task", "start_session", "resolve_permission", "swarm_add_workspace"} {
+		if strings.Contains(defaults, hidden) {
+			t.Fatalf("default instructions mention advanced %s: %s", hidden, defaults)
+		}
+	}
+	// The story's order: a provider, a project with its folders, then a job,
+	// then its result, then merging.
+	order := []string{"swarm_list_providers", "swarm_create_project", "swarm_give_job", "swarm_get_job", "swarm_deliver_job"}
+	for i := 1; i < len(order); i++ {
+		if strings.Index(defaults, order[i-1]) > strings.Index(defaults, order[i]) {
+			t.Fatalf("story order: %s before %s: %s", order[i], order[i-1], defaults)
+		}
+	}
+	readOnly := instructions(false, "sessions:read", "swarm:read")
+	for _, hidden := range []string{"swarm_create_project", "swarm_give_job", "swarm_message_job", "swarm_answer_job", "swarm_deliver_job", "swarm_request_media", "swarm_schedule_job", "swarm_set_agent_model", "swarm_request_provider_key"} {
 		if strings.Contains(readOnly, hidden) {
 			t.Fatalf("read-only instructions mention %s: %s", hidden, readOnly)
 		}
 	}
-	if !strings.Contains(readOnly, "get_changes") || !strings.Contains(readOnly, "untrusted") {
+	if !strings.Contains(readOnly, "swarm_status") || !strings.Contains(readOnly, "untrusted") {
 		t.Fatalf("read-only instructions: %s", readOnly)
 	}
-	full := instructions("sessions:read", "sessions:write")
-	for _, shown := range []string{"resolve_permission", "approve_task", "accept_review", "refuses some commands outright", "never become pending requests"} {
+	// A write key may give and merge jobs.
+	writeOnly := instructions(false, "sessions:read", "sessions:write", "swarm:read", "swarm:write")
+	if !strings.Contains(writeOnly, "swarm_give_job") || !strings.Contains(writeOnly, "swarm_deliver_job") || !strings.Contains(writeOnly, "swarm_create_project") || !strings.Contains(writeOnly, "swarm_set_agent_model") || strings.Contains(writeOnly, "swarm_request_provider_key") {
+		t.Fatalf("write-only instructions: %s", writeOnly)
+	}
+	full := instructions(true, "sessions:read", "sessions:write")
+	for _, shown := range []string{"swarm_give_job", "resolve_permission", "approve_task", "accept_review", "refuses some commands outright", "never become pending requests",
+		"create_project", "run_task", "system-orchestrator", "Never hand the person an empty repository"} {
 		if !strings.Contains(full, shown) {
-			t.Fatalf("full instructions miss %s: %s", shown, full)
+			t.Fatalf("all-tools instructions miss %s: %s", shown, full)
 		}
+	}
+	// With every tool, a write grant creates projects (projects come first)
+	// and is warned about empty repositories, but is never told to approve.
+	writeAll := instructions(true, "sessions:read", "sessions:write", "swarm:read", "swarm:write")
+	if !strings.Contains(writeAll, "swarm_create_project") || !strings.Contains(writeAll, "empty repository") || strings.Contains(writeAll, "approve_task") {
+		t.Fatalf("write-only all-tools instructions: %s", writeAll)
 	}
 }
 
@@ -504,7 +553,8 @@ func TestControlMCPWaitsForProviderKey(t *testing.T) {
 }
 
 // Requirement: a session refused for an unregistered workspace path says so
-// and points at list_workspaces/create_workspace; other refusals and 404s keep
+// and points at list_workspaces/add_workspace (never the empty create_workspace
+// as the default fix); other refusals and 404s keep
 // their meaning, with the id echoed and the list tool named. Owners:
 // controlMCPCall.unregisteredWorkspace and controlMCPNotFound; a fake route
 // table is the narrowest layer for the mapping.
@@ -515,7 +565,7 @@ func TestControlMCPErrorHints(t *testing.T) {
 	})
 	c := controlMCPDirectCall(context.Background(), identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}, mux, nil, "sessions:read", "sessions:write")
 	binding := controlMCPToolError{message: "Swarm rejected the request (HTTP 400): sessions v3 primary workspace is missing its canonical local binding", status: http.StatusBadRequest}
-	if err := c.unregisteredWorkspace(binding, "/etc"); !strings.Contains(err.Error(), `"/etc" is not a registered workspace`) || !strings.Contains(err.Error(), "swarm_create_workspace") {
+	if err := c.unregisteredWorkspace(binding, "/etc"); !strings.Contains(err.Error(), `"/etc" is not a registered workspace`) || !strings.Contains(err.Error(), "swarm_add_workspace") || strings.Contains(err.Error(), "swarm_create_workspace") {
 		t.Fatalf("unregistered: %v", err)
 	}
 	if err := c.unregisteredWorkspace(binding, "/registered"); err != error(binding) {

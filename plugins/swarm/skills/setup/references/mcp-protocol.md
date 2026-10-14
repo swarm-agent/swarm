@@ -110,7 +110,9 @@ metadata or remove authentication as a workaround.
    relay: do not invent `machine` arguments if the tools don't accept them.
 2. `swarm_start_session` takes a workspace and prompt or plan, not both. Finder
    can do a read-only smoke test. Project orchestration instead needs a project
-   and the orchestrator agent. Preserve the returned `session.id`.
+   (folders the person named, registered with `swarm_add_workspace`, grouped by
+   `swarm_create_project`, `project.md` ready per `swarm_get_project`) and the
+   orchestrator agent. Preserve the returned `session.id`.
 3. Inspect `started`, current session state, `messages`, `pending_permissions`
    and `waited`. The observed reply did not have a top-level `run` result; do not
    require one. Prefer waits of 20–30 seconds, under client timeout and live limit.

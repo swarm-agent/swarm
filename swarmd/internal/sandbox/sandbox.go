@@ -146,14 +146,22 @@ type Manager struct {
 	status  Status
 	imageID string
 	runtime string
-	boxes   map[string]*box
-	used    map[string]struct{}
-	layout  *layoutCache
-	stop    chan struct{}
+	// envResolver names folders' environment images (environment.go).
+	envResolver EnvironmentResolver
+	boxes       map[string]*box
+	used        map[string]struct{}
+	layout      *layoutCache
+	stop        chan struct{}
 	// resolvConf is the sandbox's own /etc/resolv.conf (public resolvers, no
 	// search domain). Docker's embedded resolver (127.0.0.11) does not
 	// answer under gVisor, and the host's search domain names the tailnet.
 	resolvConf string
+	// owner reports a path's owning uid (tests inject it); safeDirs caches the
+	// foreign-owned project directories Git needs safe.directory for.
+	owner      func(path string) (int, bool)
+	safeMu     sync.Mutex
+	safeDirs   []string
+	safeDirsAt time.Time
 }
 
 type box struct {
@@ -489,14 +497,48 @@ func within(root, path string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
-func (m *Manager) specHash(mounts []string, secretFingerprint string) string {
+// sandboxUser returns the uid:gid a project's sandbox runs as. A folder a
+// person made visible to Swarm belongs to that person, and gVisor decides
+// file access from plain ownership and mode bits (it does not see POSIX
+// ACLs), so such a sandbox runs as the folder's owner with the daemon's
+// group: agent commands and Git see the repository as its owner does, and
+// what they create stays the person's. Everything else runs as the daemon.
+func (m *Manager) sandboxUser(root string) (int, int) {
+	owner := m.owner
+	if owner == nil {
+		owner = fileOwnerUID
+	}
+	if uid, ok := owner(root); ok && uid != 0 && uid != m.cfg.UID {
+		return uid, m.cfg.GID
+	}
+	return m.cfg.UID, m.cfg.GID
+}
+
+// RunsAsOwner reports whether root's sandbox runs as the folder's owner
+// rather than the daemon.
+func (m *Manager) RunsAsOwner(root string) bool {
+	uid, _ := m.sandboxUser(filepath.Clean(root))
+	return uid != m.cfg.UID
+}
+
+func (m *Manager) specHash(root string, mounts []string, secretFingerprint string) string {
+	m.mu.Lock()
+	imageID := m.imageID
+	m.mu.Unlock()
+	return m.specHashImage(root, mounts, secretFingerprint, imageID)
+}
+
+// specHashImage is specHash for the image identity a folder runs on.
+func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint, imageID string) string {
+	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v3", m.imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
-		strconv.Itoa(m.cfg.UID), strconv.Itoa(m.cfg.GID), strings.Join(m.cfg.DNS, ","), secretFingerprint,
+		"v3", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
+		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
 	parts = append(parts, mounts...)
+	parts = append(parts, gitGuardSpec(gitGuardMounts(root))...)
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:12])
 }
@@ -504,10 +546,17 @@ func (m *Manager) specHash(mounts []string, secretFingerprint string) string {
 // RunArgs builds the hardened `docker run` arguments for a sandbox. It is
 // exported for the negative test suite, which asserts every hardening flag.
 func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret SecretSetup) []string {
+	return m.runArgsImage(name, root, spec, mounts, secret, EnvironmentImage{Image: m.cfg.Image, Path: sandboxPath})
+}
+
+// runArgsImage is RunArgs for the image a folder runs on; only the image and
+// its PATH differ, never the hardening.
+func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) []string {
 	m.mu.Lock()
 	runtime := m.runtime
 	m.mu.Unlock()
-	user := fmt.Sprintf("%d:%d", m.cfg.UID, m.cfg.GID)
+	uid, gid := m.sandboxUser(root)
+	user := fmt.Sprintf("%d:%d", uid, gid)
 	args := []string{"run", "-d", "--init", "--name", name,
 		"--label", labelSandbox + "=1",
 		"--label", labelRoot + "=" + root,
@@ -526,10 +575,10 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 		"--hostname", "sandbox",
 		"--ipc", "private",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
-		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", m.cfg.UID, m.cfg.GID),
+		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
 		"--mount", "type=volume,src="+name+"-home,dst="+sandboxHome,
 		"--env", "HOME="+sandboxHome,
-		"--env", "PATH="+sandboxPath,
+		"--env", "PATH="+image.Path,
 		"--env", "LANG=C.UTF-8",
 		"--workdir", root,
 	)
@@ -546,6 +595,10 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 	for _, mount := range mounts {
 		args = append(args, "--mount", "type=bind,src="+mount+",dst="+mount)
 	}
+	// Read-only guards over the project's hooks and config (gitguard.go).
+	for _, g := range gitGuardMounts(root) {
+		args = append(args, "--mount", "type=bind,src="+g.HostPath+",dst="+g.Dest+",readonly")
+	}
 	for _, kv := range secret.Env {
 		args = append(args, "--env", kv)
 	}
@@ -554,7 +607,14 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 			args = append(args, "--mount", "type=bind,src="+f.HostPath+",dst="+f.Dest+",readonly")
 		}
 	}
-	args = append(args, m.cfg.Image, "sleep", "infinity")
+	if image.Image != m.cfg.Image {
+		// An environment image may carry any entrypoint (the base image's, or
+		// the build container's sleep, which docker commit keeps): run sleep
+		// directly so the sandbox stays up whatever the image declares.
+		args = append(args, "--entrypoint", "sleep", image.Image, "infinity")
+		return args
+	}
+	args = append(args, image.Image, "sleep", "infinity")
 	return args
 }
 
@@ -579,7 +639,11 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 			return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
 		}
 	}
-	spec := m.specHash(mounts, secret.Fingerprint)
+	image, imageID, err := m.sandboxImage(root)
+	if err != nil {
+		return nil, err
+	}
+	spec := m.specHashImage(root, mounts, secret.Fingerprint, imageID)
 
 	m.mu.Lock()
 	b := m.boxes[name]
@@ -605,8 +669,11 @@ func (m *Manager) acquire(ctx context.Context, scope Scope) (*box, error) {
 	b.mu.RUnlock()
 
 	b.mu.Lock()
-	ensureCtx, cancel := context.WithTimeout(ctx, ensureTimeout)
-	err = m.ensure(ensureCtx, name, root, spec, mounts, secret)
+	// Starting a sandbox is bounded by its own budget, not by the caller's
+	// deadline: a short command budget must not abort a container start
+	// halfway, and the next command then finds the sandbox ready.
+	ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
+	err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image)
 	cancel()
 	if err == nil {
 		b.spec = spec
@@ -633,7 +700,7 @@ func (m *Manager) release(b *box) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup) error {
+func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) error {
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}}", name)
 	if err == nil {
 		fields := strings.Fields(string(out))
@@ -652,7 +719,7 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 			return fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
-	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.RunArgs(name, root, spec, mounts, secret)...); err != nil {
+	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.runArgsImage(name, root, spec, mounts, secret, image)...); err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 	return m.configureGitIdentity(ctx, name)
@@ -707,6 +774,9 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	if err := m.requireMounted(b, req.WorkingDir); err != nil {
 		return nil, err
 	}
+	// Agent Git inside the sandbox needs safe.directory for folders the owner
+	// made visible, which belong to another uid.
+	req.Env = safeDirectoryEnvMap(req.Env, m.safeDirectories())
 	var progress provider.ExecProgressCallback
 	if req.OnOutput != nil {
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }

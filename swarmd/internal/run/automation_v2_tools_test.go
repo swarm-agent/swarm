@@ -311,6 +311,7 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 	permissions := permission.NewService(ps, events, nil)
 	permissions.SetBypassPermissions(true)
 	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	attachWorkerModels(t, svc, db, "account")
 	profile := agent.SwarmOrchestratorAgentProfileForContext(store.AgentProfile{})
 	_, policy, disabled, err := svc.compileResolvedAgentToolContract("account", profile)
 	if err != nil {
@@ -357,7 +358,10 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 			oldArgs, _ = json.Marshal(map[string]any{"document": doc})
 		}
 		oldResult, callErr := invoker.ExecuteTool(ctx, provideriface.ToolInvocation{Name: oldTool, CallID: "legacy-" + oldTool, Arguments: string(oldArgs)})
-		if callErr != nil || !strings.Contains(oldResult.Error, "manage_workers action=propose") {
+		// Refused either by the worker-authoring gate or, first for an
+		// orchestrator, by the gate confining its planning to task cards.
+		refused := strings.Contains(oldResult.Error, "manage_workers action=propose") || strings.Contains(oldResult.Error, "Orchestrator session planning is disabled")
+		if callErr != nil || !refused {
 			t.Fatalf("%s should reject worker authoring: %s %v", oldTool, oldResult.Error, callErr)
 		}
 	}
@@ -371,26 +375,36 @@ func TestWorkerV2ProviderDispatch(t *testing.T) {
 	if !res.RestartTurn {
 		t.Fatal("worker proposal did not stop turn")
 	}
-	p, found, err := sessions.GetAutomationV2Proposal("account", "owner", w.WorkspaceID, "author")
-	if err != nil || !found {
-		t.Fatalf("proposal not found: %v", err)
+	// Since durable pending workers, propose saves a pending worker for
+	// review (not a legacy session proposal): linked to the project and the
+	// authoring session, with its job, and nothing approved or running.
+	var proposed struct {
+		Status   string `json:"status"`
+		WorkerID string `json:"worker_id"`
 	}
-	if p.Document.WorkerV2 == nil || p.Document.AutomationV2 == nil {
-		t.Fatal("expected mirrored worker_v2 and automation_v2 in proposal document")
+	if err := json.Unmarshal([]byte(res.Output), &proposed); err != nil || proposed.Status != "pending_review" || proposed.WorkerID == "" {
+		t.Fatalf("worker proposal output: %s %v", res.Output, err)
 	}
-	if pending, err := ps.ListPendingPermissions("author", 10); err != nil || len(pending) != 1 || pending[0].Requirement != "automation_v2_acceptance" || pending[0].ToolName != "manage_workers" {
-		t.Fatalf("dedicated worker review card missing: %v %v", pending, err)
+	pendingWorker, found, err := sessions.GetWorker("account", proposed.WorkerID)
+	if err != nil || !found || pendingWorker.LifecycleState != store.WorkerLifecycleStatePending || len(pendingWorker.Automations) != 1 {
+		t.Fatalf("pending worker not saved: %+v %v %v", pendingWorker, found, err)
+	}
+	if pendingWorker.Metadata["project_id"] != "worker-project" || pendingWorker.Metadata["source_session_id"] != "author" {
+		t.Fatalf("pending worker not linked to its project and session: %+v", pendingWorker.Metadata)
+	}
+	if _, found, _ := sessions.GetAutomationV2Proposal("account", "owner", w.WorkspaceID, "author"); found {
+		t.Fatal("worker proposal also wrote a legacy session proposal")
 	}
 	if _, found, err := sessions.GetActivePlan("author"); err != nil || found {
 		t.Fatalf("worker proposal created an active session plan: %v %v", found, err)
 	}
 	// Verify manage_workers review in a fresh turn
 	invoker2 := svc.newProviderToolInvoker(providerToolInvokerConfig{sessionID: "author", principal: identity.Principal{Type: identity.PrincipalTypeUser, UserID: "owner", AccountScopeID: "account"}, sessionMode: "auto", runID: "authoring-2", providerManagedV3: true, applySessionMutation: sessions.ApplySessionMutation, agentProfile: profile, policy: policy, terminalPlanState: &terminalPlanToolState{}})
-	workersRes, err := invoker2.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "manage_workers", CallID: "call-2", Arguments: `{"action":"review"}`})
+	workersRes, err := invoker2.ExecuteTool(ctx, provideriface.ToolInvocation{Name: "manage_workers", CallID: "call-2", Arguments: `{"action":"review","worker_id":"` + proposed.WorkerID + `"}`})
 	if err != nil || workersRes.Error != "" {
 		t.Fatalf("manage_workers review failed: %s %v", workersRes.Error, err)
 	}
-	if !strings.Contains(workersRes.Output, "worker_review") {
+	if !strings.Contains(workersRes.Output, proposed.WorkerID) {
 		t.Fatalf("missing worker_review in output: %s", workersRes.Output)
 	}
 }
@@ -523,6 +537,7 @@ func TestProjectScopedWorkerProposalAndChatRejection(t *testing.T) {
 	permissions := permission.NewService(ps, events, nil)
 	permissions.SetBypassPermissions(true)
 	svc := NewService(sessions, nil, nil, tool.NewRuntime(1), permissions, nil, nil, events)
+	attachWorkerModels(t, svc, db, "account")
 
 	projID := "proj_scoped_123"
 	if err := ss.PutProject("account", &store.ProjectRecord{
