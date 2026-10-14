@@ -15,8 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -533,7 +533,7 @@ func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint,
 	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v3", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
+		"v4", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
 		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
@@ -722,22 +722,9 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.runArgsImage(name, root, spec, mounts, secret, image)...); err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
-	return m.configureGitIdentity(ctx, name)
-}
-
-// configureGitIdentity copies the daemon user's global Git author identity
-// into the sandbox home, so commits keep the identity they had on the host
-// while repository configuration still takes precedence.
-func (m *Manager) configureGitIdentity(ctx context.Context, name string) error {
-	for _, key := range []string{"user.name", "user.email"} {
-		value, err := exec.CommandContext(ctx, "git", "config", "--global", "--get", key).Output()
-		v := strings.TrimSpace(string(value))
-		if err != nil || v == "" {
-			continue
-		}
-		if _, err := m.runner.Run(ctx, m.cfg.Engine, "exec", name, "git", "config", "--global", key, v); err != nil {
-			return fmt.Errorf("configure sandbox git identity: %w", err)
-		}
+	m.initializeHome(ctx, name, root, image)
+	if err := m.configureGitIdentity(ctx, name); err != nil {
+		slog.Warn("configure sandbox Git identity failed", "error", err)
 	}
 	return nil
 }
@@ -782,7 +769,7 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }
 	}
 	return provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
-		Command:    req.Command,
+		Command:    append([]string{"sh", "-c", sandboxUmaskScript, "swarm-exec"}, req.Command...),
 		WorkingDir: req.WorkingDir,
 		Env:        req.Env,
 		Timeout:    req.Timeout,

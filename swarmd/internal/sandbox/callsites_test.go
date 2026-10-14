@@ -22,7 +22,7 @@ import (
 
 var unroutedGitAllowed = map[string]string{
 	// Reads the daemon user's own global identity; no repository involved.
-	"sandbox/sandbox.go:configureGitIdentity": "global config only",
+	"sandbox/git_identity.go:configureGitIdentity": "global config only",
 	// Builds the command that RoutedArgv itself routes.
 	"sandbox/git.go:RoutedArgv": "is the router",
 	"sandbox/git.go:Command":    "is the router",
