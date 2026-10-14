@@ -100,7 +100,8 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	hash, err := hashWorkerPayload(struct {
 		Worker, Automation, User, Source, Occurrence string
 		Input                                        json.RawMessage
-	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes})
+		ModelOverride                                *SessionModelProfileSnapshot `json:",omitempty"`
+	}{req.WorkerID, req.AutomationID, req.UserID, req.RequestSource, req.OccurrenceID, inputBytes, req.ModelOverride})
 	if err != nil {
 		return WorkerRunRecord{}, err
 	}

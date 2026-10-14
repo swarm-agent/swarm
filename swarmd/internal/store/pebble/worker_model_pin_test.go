@@ -19,7 +19,9 @@ func TestWorkerModelPinReceipt(t *testing.T) {
 		t.Fatal(err)
 	}
 	w, err = ws.ActivateWorker("account", "owner", w.ID, w.Revision, map[string]string{"primary": "workspace"})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, account := range []string{"foreign", "account"} {
 		revision := w.Revision
 		if account == "account" {

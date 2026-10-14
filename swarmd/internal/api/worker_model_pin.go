@@ -61,7 +61,7 @@ func (c *controlMCPCall) workerModel(raw any) (*store.SessionModelProfileSnapsho
 		return fail()
 	}
 	preference, err := c.modelPreference(args)
-	if err != nil || preference == nil {
+	if err != nil || preference == nil || controlMCPString(preference, "thinking") != args["thinking"] {
 		return fail()
 	}
 	selection := store.ModelProfileSelection{Provider: controlMCPString(preference, "provider"), Model: controlMCPString(preference, "model"), Thinking: controlMCPString(preference, "thinking"), ServiceTier: controlMCPString(preference, "service_tier")}
