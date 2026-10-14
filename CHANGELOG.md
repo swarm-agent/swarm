@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Keep both jobs' changelog entries when Git merges or rebases overlapping additions. Docs impact: none
 - Outside AIs can pin a worker's model or choose a model for one job, clear pins without staged review, and see the model and its source preserved on job receipts. Docs impact: none
 - Fix automatic landing rejecting valid commits when sandbox output redaction mistook Git configuration for secrets, and make invalid landing evidence report the failing field. Docs impact: none
 - Codex jobs replace idle connections before continuing after long tool calls and reconnect once when a reused connection has closed, preserving full conversation input and tool replay safeguards. Docs impact: none
