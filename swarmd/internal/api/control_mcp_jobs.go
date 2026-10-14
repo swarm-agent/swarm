@@ -508,8 +508,17 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 			}
 		}
 	}
+	// A task's review state must not mask a still-running worker run.
+	if runStatus, _ := refs.run["status"].(string); runStatus == "admitted" || runStatus == "running" {
+		status = "in_progress"
+		state["run_active"] = true
+	}
 	if refs.sessionID != "" {
 		if detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(refs.sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil); err == nil {
+			switch intent, _ := controlMCPMap(detail["active_run_intent"])["status"].(string); intent {
+			case "pending_executor", "running", "waiting_tasks":
+				state["run_active"] = true
+			}
 			questions, approvals := []map[string]any{}, 0
 			for _, raw := range controlMCPList(detail["pending_permissions"]) {
 				summary := controlMCPPermissionSummary(controlMCPMap(raw))
@@ -534,6 +543,9 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 					status = "in_progress"
 				}
 			}
+		} else {
+			// Readiness cannot be proven when the follow-up session is unreadable.
+			state["run_active"] = true
 		}
 	}
 	switch status {
@@ -898,7 +910,7 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 			return nil, controlMCPToolFailure("this folder's publish setting cannot be read: %s", controlMCPTruncate(err.Error(), 200))
 		}
 		if ok {
-			return c.publishJob(kind, a, b, refs, rule, result)
+			return c.publishJob(kind, a, b, refs, rule, result, true)
 		}
 	}
 	out, err := controlMCPIntegrate(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID}, "swarm_deliver_job", "swarm_get_job")

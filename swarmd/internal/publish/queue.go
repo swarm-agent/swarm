@@ -26,7 +26,11 @@ type Entry struct {
 	Reason    string        `json:"reason,omitempty"`
 	Checks    []CheckResult `json:"checks,omitempty"`
 	SendBacks int           `json:"send_backs"`
+	Attempt   int           `json:"attempt,omitempty"`
 }
+
+// ErrNotSettled defers landing until the job and any follow-up have settled.
+var ErrNotSettled = errors.New("job not settled")
 
 // SendBackError denotes correctable source failures, not infrastructure errors.
 type SendBackError struct{ Reason string }
@@ -75,32 +79,45 @@ func position(entries []Entry, id string) int {
 	return 0
 }
 func (q *Queue) Enqueue(e Entry) (int, error) {
+	_, pos, err := q.EnqueueDelivery(e, true)
+	return pos, err
+}
+
+// EnqueueDelivery returns the actual durable receipt under the queue mutex.
+// Only explicit delivery may restart a stopped attempt; automatic replay may not.
+func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if e.Account == "" || e.Request.JobID == "" || e.Request.Folder == "" {
-		return 0, errors.New("queue requires account, job and folder")
+		return Entry{}, 0, errors.New("queue requires account, job and folder")
 	}
 	entries, err := q.load(e.Account)
 	if err != nil {
-		return 0, err
+		return Entry{}, 0, err
 	}
 	for i, old := range entries {
 		if old.Request.JobID != e.Request.JobID {
 			continue
 		}
-		if active(old) || old.State == "landed" || old.State == "landing_stopped" {
-			return position(entries, e.Request.JobID), nil
+		if active(old) || old.State == "landed" || (old.State == "landing_stopped" && !retryStopped) {
+			return old, position(entries, e.Request.JobID), nil
 		}
 		e.SendBacks = old.SendBacks
+		e.Attempt = old.Attempt
+		if old.State == "landing_stopped" {
+			e.SendBacks = 0
+			e.Attempt++
+		}
 		entries = append(entries[:i], entries[i+1:]...)
 		break
 	}
 	e.State = "queued"
+	e.Reason, e.Commit, e.Checks = "", "", nil
 	entries = append(entries, e)
 	if err = q.store.PutJSON(queueKey(e.Account), entries); err != nil {
-		return 0, err
+		return Entry{}, 0, err
 	}
-	return position(entries, e.Request.JobID), nil
+	return e, position(entries, e.Request.JobID), nil
 }
 func (q *Queue) Get(account, id string) (Entry, int, error) {
 	q.mu.Lock()
@@ -171,6 +188,12 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 		}
 		for attempt := 0; attempt < 3; attempt++ {
 			err = h.Prepare(ctx, &e)
+			if errors.Is(err, ErrNotSettled) {
+				e.State = "queued"
+				// Keep FIFO order and retry on the next scheduler round, without
+				// checks, landing, send-backs or terminal notifications.
+				return q.save(e)
+			}
 			if err == nil {
 				var receipt LandResult
 				receipt, err = h.Land(ctx, e)

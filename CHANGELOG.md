@@ -8,6 +8,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Keep both jobs' changelog entries when Git merges or rebases overlapping additions. Docs impact: none
 - Outside AIs can pin a worker's model or choose a model for one job, clear pins without staged review, and see the model and its source preserved on job receipts. Docs impact: none
+- Delivering a stopped landing job starts a fresh attempt, delivery reports the real queue state or landed commit, and jobs still running a follow-up wait in the queue instead of failing. Docs impact: none
 - Fix automatic landing rejecting valid commits when sandbox output redaction mistook Git configuration for secrets, and make invalid landing evidence report the failing field. Docs impact: none
 - Codex jobs replace idle connections before continuing after long tool calls and reconnect once when a reused connection has closed, preserving full conversation input and tool replay safeguards. Docs impact: none
 - Folders can queue finished jobs for fast-forward landing after a sandbox rebase and folder checks, with durable queue state, bounded send-backs and delivery signals. Docs impact: headless README and Swarm Control checkpoint contract.

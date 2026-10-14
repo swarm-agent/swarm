@@ -25,7 +25,7 @@ func (s *Server) landingQueue() (*publish.Queue, error) {
 	}
 	return s.landQueue, nil
 }
-func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request) (map[string]any, error) {
+func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, retryStopped bool) (map[string]any, error) {
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok {
 		return nil, errors.New("principal required")
@@ -34,13 +34,21 @@ func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request) (ma
 	if err != nil {
 		return nil, err
 	}
-	pos, err := q.Enqueue(publish.Entry{Account: principal.AccountScopeID, Request: req})
+	entry, pos, err := q.EnqueueDelivery(publish.Entry{Account: principal.AccountScopeID, Request: req}, retryStopped)
 	if err != nil {
 		return nil, err
 	}
 	// The durable entry, not this request goroutine, owns recovery.
-	return map[string]any{"job_id": req.JobID, "delivery_state": "queued", "queue_position": pos}, nil
+	return landDeliveryReceipt(entry, pos), nil
 }
+func landDeliveryReceipt(entry publish.Entry, pos int) map[string]any {
+	out := map[string]any{"job_id": entry.Request.JobID, "delivery_state": entry.State, "queue_position": pos}
+	if entry.Commit != "" {
+		out["commit"] = entry.Commit
+	}
+	return out
+}
+
 func (p *AutoPublisher) landPending(ctx context.Context) error {
 	q, err := p.server.landingQueue()
 	if err != nil {
@@ -97,7 +105,11 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			return publish.Land(ctx, rule, e.Request)
 		},
 		SendBack: func(ctx context.Context, e publish.Entry) error {
-			_, err := controlMCPMessageJob(c, map[string]any{"job_id": e.Request.JobID, "message": "Landing rejected this job: " + e.Reason, "client_request_id": fmt.Sprintf("land-back-%s-%d", e.Request.JobID, e.SendBacks)})
+			requestID := fmt.Sprintf("land-back-%s-%d", e.Request.JobID, e.SendBacks)
+			if e.Attempt > 0 {
+				requestID = fmt.Sprintf("land-back-%s-attempt-%d-%d", e.Request.JobID, e.Attempt, e.SendBacks)
+			}
+			_, err := controlMCPMessageJob(c, map[string]any{"job_id": e.Request.JobID, "message": "Landing rejected this job: " + e.Reason, "client_request_id": requestID})
 			return err
 		},
 		Finished: func(ctx context.Context, e publish.Entry) error {
@@ -127,10 +139,6 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 	})
 }
 func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *publish.Entry) error {
-	m := sandbox.Default()
-	if m == nil || !m.Active() {
-		return errors.New("landing requires an active sandbox")
-	}
 	kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
 	if err != nil {
 		return err
@@ -138,6 +146,17 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	view, err := c.jobView(kind, a, b, 0, false, 0)
 	if err != nil {
 		return err
+	}
+	// jobView uses jobState, which includes the session's active follow-up.
+	// Check readiness before reading a result that does not exist yet or
+	// touching the sandbox/worktree while the worker is still writing it.
+	status, _ := view["status"].(string)
+	if running, _ := view["run_active"].(bool); running || !controlMCPJobSettled[status] {
+		return publish.ErrNotSettled
+	}
+	m := sandbox.Default()
+	if m == nil || !m.Active() {
+		return errors.New("landing requires an active sandbox")
 	}
 	result := controlMCPJobResultJSON(view)
 	path, _ := result["workspace_path"].(string)

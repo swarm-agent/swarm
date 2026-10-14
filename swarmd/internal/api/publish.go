@@ -58,8 +58,25 @@ func controlMCPJobResultJSON(view map[string]any) map[string]any {
 // publishJob opens or updates the job's pull request with the folder's
 // command. It refuses a job without commits and records the pull request on
 // the job's task and in the activity feed.
-func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, rule publish.Rule, result map[string]any) (map[string]any, error) {
+func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, rule publish.Rule, result map[string]any, explicit bool) (map[string]any, error) {
 	jobID := controlMCPJobID(kind, a, b)
+	if rule.Mode == "land" {
+		principal, ok := PrincipalFromRequest(c.request)
+		if !ok {
+			return nil, errors.New("principal required")
+		}
+		q, err := c.server.landingQueue()
+		if err != nil {
+			return nil, err
+		}
+		entry, pos, err := q.Get(principal.AccountScopeID, jobID)
+		if err != nil {
+			return nil, err
+		}
+		if entry.State == "landed" || entry.State == "landing" || entry.State == "queued" || (entry.State == "landing_stopped" && !explicit) {
+			return landDeliveryReceipt(entry, pos), nil
+		}
+	}
 	if state, _ := result["delivery_state"].(string); state == "empty" {
 		return nil, controlMCPToolFailure("job %s committed nothing: there is no pull request to open (its report is the result)", jobID)
 	}
@@ -78,7 +95,7 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 		title = "Swarm job " + jobID
 	}
 	if rule.Mode == "land" {
-		return c.enqueueLand(rule, publish.Request{Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report})
+		return c.enqueueLand(rule, publish.Request{Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report}, explicit)
 	}
 	res, err := publish.Run(c.request.Context(), rule, publish.Request{
 		Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report,
@@ -289,7 +306,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	case autoPublishWait:
 		return p.retry(sig, errAutoPublishWait)
 	}
-	if _, err := c.publishJob(controlMCPJobWorker, workerID, runID, refs, rule, result); err != nil {
+	if _, err := c.publishJob(controlMCPJobWorker, workerID, runID, refs, rule, result, false); err != nil {
 		return p.retry(sig, err)
 	}
 	p.mu.Lock()
