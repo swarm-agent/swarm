@@ -268,3 +268,46 @@ func TestBuildEnvironmentNeedsBuildRuntimeAndCompleteImage(t *testing.T) {
 		t.Fatal("an incomplete saved image must be removed")
 	}
 }
+
+// Purpose: BuildEnvironment installs root-owned tools, caches and login profiles
+// for unrelated unprivileged UIDs. Its root setup/profile execs must explicitly
+// use 022, not the worker-only 0007 mask that hides these files from those UIDs.
+// This hermetic runner test is the narrowest layer proving the actual build
+// exec arguments; the unprivileged validation must retain the worker mask.
+func TestBuildEnvironmentUsesPublicImageUmask(t *testing.T) {
+	m, runner := buildManager(t, gvisorRuntimes, func(cmd string) (string, error) {
+		if strings.HasPrefix(cmd, "image inspect --format {{json .Config.Env}} "+testBuild.Image) {
+			return "", errors.New("no such image")
+		}
+		return "", nil
+	})
+	// Stop after validation so no saved-image fixture can hide a skipped build.
+	stop := errors.New("validation reached")
+	answer := runner.answer
+	runner.answer = func(cmd string) (string, error) {
+		if strings.HasPrefix(cmd, "exec -u 10001:10001") {
+			return "", stop
+		}
+		return answer(cmd)
+	}
+	_, err := m.BuildEnvironment(context.Background(), testBuild)
+	if !errors.Is(err, stop) {
+		t.Fatalf("build did not reach validation: %v", err)
+	}
+	setup := runner.find("exec -u 0 -w / swarm-envbuild-")
+	if len(setup) != 2 {
+		t.Fatalf("expected setup and profile execs: %v", setup)
+	}
+	for i, cmd := range setup {
+		if !strings.Contains(cmd, `sh -c umask 022 && exec "$@" swarm-image-build /bin/sh -c`) || strings.Contains(cmd, "umask 0007") {
+			t.Errorf("root image exec %d must use 022, not 0007: %s", i, cmd)
+		}
+	}
+	check := runner.find("exec -u 10001:10001")
+	if len(check) != 1 || !strings.Contains(check[0], `umask 0007 && exec "$@"`) {
+		t.Fatalf("unprivileged check mask: %v", check)
+	}
+	if len(runner.find("commit ")) != 0 {
+		t.Fatal("failed validation must not commit an image")
+	}
+}

@@ -1,7 +1,8 @@
 package sandbox
 
-// Purpose: Manager.execOnce, RouteGit and sandbox setup must use the one umask
-// helper; tool scripts must not reset its inherited mask. This AST guard is the
+// Purpose: Manager.execOnce and RouteGit must use the worker umask helper;
+// only root image build steps may use the public image mask. Tool scripts must
+// not reset their inherited mask. This AST guard is the
 // narrowest registration-layer check against new raw engine exec paths. The
 // tool's behavioral regression separately proves actual file modes.
 import (
@@ -22,6 +23,10 @@ func umaskViolations(file *ast.File, rel string) []string {
 		if !ok || fn.Body == nil {
 			continue
 		}
+		key := rel + ":" + fn.Name.Name
+		// Root image setup/profile steps install tools for unrelated UIDs and
+		// need 022. This exception cannot authorize worker or routed commands.
+		imageBuild := key == "sandbox/environment.go:BuildEnvironment"
 		rawExec, supervised, wrapped := false, false, false
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
 			switch node := n.(type) {
@@ -33,8 +38,13 @@ func umaskViolations(file *ast.File, rel string) []string {
 					}
 				}
 			case *ast.CallExpr:
-				if id, ok := node.Fun.(*ast.Ident); ok && id.Name == "withSandboxUmask" {
-					wrapped = true
+				if id, ok := node.Fun.(*ast.Ident); ok {
+					if id.Name == "withSandboxUmask" || (id.Name == "withImageBuildUmask" && imageBuild) {
+						wrapped = true
+					}
+					if id.Name == "withImageBuildUmask" && !imageBuild {
+						violations = append(violations, key+":image mask outside image build")
+					}
 				}
 				if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "ExecSupervised" {
 					supervised = true
@@ -42,7 +52,6 @@ func umaskViolations(file *ast.File, rel string) []string {
 			}
 			return true
 		})
-		key := rel + ":" + fn.Name.Name
 		// Transport only carries provider supervisor/probe/cleanup argv; it cannot
 		// construct worker payloads. initializeHome's exec is read-only stat; its
 		// root helper has no project mount and only repairs volume ownership.
@@ -74,7 +83,7 @@ func umaskViolations(file *ast.File, rel string) []string {
 						hasExec = hasExec || v == "exec"
 					}
 					if c, ok := child.(*ast.CallExpr); ok {
-						if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "withSandboxUmask" {
+						if id, ok := c.Fun.(*ast.Ident); ok && (id.Name == "withSandboxUmask" || (id.Name == "withImageBuildUmask" && imageBuild)) {
 							hasWrapper = true
 						}
 					}
@@ -146,6 +155,10 @@ func TestSandboxUmaskGuardRejectsBypasses(t *testing.T) {
 		{"package tool; const script = `umask 022`", "tool/new.go", true},
 		{`package sandbox; func mixed(){ runner.Run(ctx, engine, "exec", name, withSandboxUmask(command)); runner.Run(ctx, engine, "exec", name, "bash") }`, "sandbox/new.go", true},
 		{`package sandbox; func safe(){ runner.Run(ctx, engine, "exec", name, withSandboxUmask(command)) }`, "sandbox/new.go", false},
+		{`package sandbox; func BuildEnvironment(){ runner.Run(ctx, engine, "exec", name, withImageBuildUmask(command)) }`, "sandbox/environment.go", false},
+		{`package sandbox; func BuildEnvironment(){ runner.Run(ctx, engine, "exec", name, withImageBuildUmask(command)); runner.Run(ctx, engine, "exec", name, "bash") }`, "sandbox/environment.go", true},
+		{`package sandbox; func worker(){ runner.Run(ctx, engine, "exec", name, withImageBuildUmask(command)) }`, "sandbox/environment.go", true},
+		{`package tool; func worker(){ withImageBuildUmask(command) }`, "tool/new.go", true},
 	} {
 		file, err := parser.ParseFile(token.NewFileSet(), "fixture.go", tc.src, 0)
 		if err != nil {
