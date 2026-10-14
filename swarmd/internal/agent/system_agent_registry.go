@@ -17,6 +17,7 @@ const (
 	AISidechatAgentName          = "AI"
 	CompactAgentID               = "system-compact"
 	CompactAgentName             = "Compact"
+	ReviewerAgentID              = "system-reviewer"
 	FinderAgentID                = "system-finder"
 	FinderAgentName              = "Finder"
 	CoderAgentID                 = "system-coder"
@@ -301,6 +302,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		SidechatKind: SystemSidechatKindCoder,
 		Materialize:  CoderAgentProfileForParent,
 		Reconcile:    reconcileCoderAgentProfile,
+	},
+	{
+		ID:          ReviewerAgentID,
+		DisplayName: "Reviewer",
+		Materialize: ReviewerAgentProfileForParent,
+		Reconcile:   reconcileReviewerAgentProfile,
 	},
 	{
 		ID:          WorkerCoderAgentID,

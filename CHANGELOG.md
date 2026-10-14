@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add a fail-closed reviewer worker foundation with a compiled read/run tool allowlist, isolated read-only shared Git mount specs, and exact-head verdict helpers; reviewer job execution and public review_job surfaces remain unavailable. Docs impact: docs/reviewer-worker.md.
+
 - Keep both jobs' changelog entries when Git merges or rebases overlapping additions. Docs impact: none
 - Jobs sent back from landing now name the exact rebase target and commit, and include the commands needed to reproduce failed checks. Docs impact: none
 - Worker shell commands now keep new files writable by Swarm's shared group, including Git operations and background commands, without exposing them to other users. Docs impact: none

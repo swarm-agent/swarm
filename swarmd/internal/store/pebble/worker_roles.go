@@ -14,10 +14,11 @@ const (
 	WorkerRoleCoder    = "coder"
 	WorkerRoleDesigner = "designer"
 	WorkerRoleFinder   = "finder"
+	WorkerRoleReviewer = "reviewer"
 )
 
 // WorkerRoles lists every accepted role. Empty is accepted and means swarm.
-var WorkerRoles = []string{WorkerRoleSwarm, WorkerRoleCoder, WorkerRoleDesigner, WorkerRoleFinder}
+var WorkerRoles = []string{WorkerRoleSwarm, WorkerRoleCoder, WorkerRoleDesigner, WorkerRoleFinder, WorkerRoleReviewer}
 
 const (
 	// WorkerRunWorkspaceSourceJob: the request or its automation named the workspace.

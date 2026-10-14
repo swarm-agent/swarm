@@ -161,6 +161,8 @@ func workerRoleAgentID(role string) string {
 		return agentruntime.DesignerAgentID
 	case store.WorkerRoleFinder:
 		return agentruntime.FinderAgentID
+	case store.WorkerRoleReviewer:
+		return agentruntime.ReviewerAgentID
 	default:
 		return agentruntime.SwarmAgentID
 	}
@@ -255,6 +257,14 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	}
 	if w.LifecycleState == store.WorkerLifecycleStatePending {
 		return store.WorkerRunRecord{}, fmt.Errorf("%w: pending worker cannot be dispatched before human acceptance", store.ErrWorkerConflict)
+	}
+	if err := validateReviewRequest(w.Role, req.Input); err != nil {
+		return store.WorkerRunRecord{}, err
+	}
+	// Reviewer execution is fail-closed until its detached admission and durable
+	// result transaction are wired; never run it in the writable coder scope.
+	if w.Role == store.WorkerRoleReviewer {
+		return store.WorkerRunRecord{}, errors.New("reviewer execution is not yet available: detached review admission required")
 	}
 	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {
 		return store.WorkerRunRecord{}, store.ErrWorkerConflict
@@ -410,6 +420,9 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 		return store.ErrWorkerConflict
 	}
 	w := history.Worker
+	if workerRunRole(actual, w) == store.WorkerRoleReviewer {
+		return errors.New("reviewer execution is not yet available: detached review admission required")
+	}
 	if store.WorkerRunWorkspace(actual, w) == "" {
 		return fmt.Errorf("%w: %w", store.ErrWorkerConflict, store.ErrWorkerWorkspaceRequired)
 	}

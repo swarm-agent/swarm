@@ -135,6 +135,9 @@ type Status struct {
 type Scope struct {
 	Root   string
 	Mounts []string
+	// ReviewCheckout selects a separate container with read-only project mounts
+	// and only this disposable checkout writable.
+	ReviewCheckout string
 }
 
 // Manager owns the per-project sandbox containers.
@@ -148,6 +151,7 @@ type Manager struct {
 	runtime string
 	// envResolver names folders' environment images (environment.go).
 	envResolver EnvironmentResolver
+	reviews     map[string]string // checkout -> project root; daemon-owned admission only
 	boxes       map[string]*box
 	used        map[string]struct{}
 	layout      *layoutCache
@@ -642,6 +646,11 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 		return nil, fmt.Errorf("%w: %s", ErrInactive, m.Status().Reason)
 	}
 	root := filepath.Clean(scope.Root)
+	if scope.ReviewCheckout != "" {
+		if _, err := reviewGitMounts(scope.ReviewCheckout, root); err != nil {
+			return nil, err
+		}
+	}
 	mounts, err := m.validateMounts(append([]string{root}, scope.Mounts...))
 	if err != nil {
 		return nil, err
@@ -649,7 +658,7 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 	if err := m.markUsed(root); err != nil {
 		return nil, err
 	}
-	name := ContainerName(root)
+	name := scopeContainerName(scope)
 	secret := SecretSetup{}
 	if broker := m.secretBroker(); broker != nil {
 		if secret, err = broker.PrepareSandbox(root); err != nil {
@@ -661,6 +670,9 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 		return nil, err
 	}
 	spec := m.specHashImage(root, mounts, secret.Fingerprint, imageID)
+	if scope.ReviewCheckout != "" {
+		spec += "-review-" + ContainerName(scope.ReviewCheckout)
+	}
 
 	for {
 		m.mu.Lock()
@@ -697,7 +709,7 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 		// Starting has its own bounded budget, including for Warm callers
 		// whose command deadline has already expired.
 		ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
-		err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image)
+		err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image, scope.ReviewCheckout)
 		cancel()
 		m.mu.Lock()
 		if err == nil {
@@ -734,7 +746,11 @@ func (m *Manager) release(b *box) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) error {
+func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage, reviewCheckouts ...string) error {
+	reviewCheckout := ""
+	if len(reviewCheckouts) > 0 {
+		reviewCheckout = reviewCheckouts[0]
+	}
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}}", name)
 	if err == nil {
 		fields := strings.Fields(string(out))
@@ -753,7 +769,7 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 			return fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
-	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.runArgsImage(name, root, spec, mounts, secret, image)...); err != nil {
+	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.scopeRunArgs(name, root, spec, mounts, secret, image, reviewCheckout)...); err != nil {
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 	m.initializeHome(ctx, name, root, image)
@@ -781,7 +797,7 @@ func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*prov
 	if errors.Is(err, provider.ErrSupervisorUnavailable) && ctx.Err() == nil {
 		// The container went away underneath us (stopped or removed outside
 		// Swarm); nothing ran. Re-verify it and try once more.
-		m.invalidate(ContainerName(filepath.Clean(scope.Root)))
+		m.invalidate(scopeContainerName(scope))
 		return m.execOnce(ctx, scope, req)
 	}
 	return result, err
@@ -799,6 +815,10 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	// Agent Git inside the sandbox needs safe.directory for folders the owner
 	// made visible, which belong to another uid.
 	req.Env = safeDirectoryEnvMap(req.Env, m.safeDirectories())
+	if scope.ReviewCheckout != "" {
+		req.Env = safeDirectoryEnvMap(req.Env, []string{scope.ReviewCheckout})
+		req.Env["GIT_OPTIONAL_LOCKS"] = "0"
+	}
 	var progress provider.ExecProgressCallback
 	if req.OnOutput != nil {
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }

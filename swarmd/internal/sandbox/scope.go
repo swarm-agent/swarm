@@ -108,7 +108,8 @@ func (m *Manager) ScopeFor(path string) (Scope, bool, error) {
 		bucket := strings.Split(rel, string(filepath.Separator))[0]
 		for _, root := range roots {
 			if b, err := layout.Bucket(root); err == nil && b == bucket {
-				return m.scopeForRoot(root, layout)
+				scope, ok, err := m.scopeForRoot(root, layout)
+				return m.reviewScope(scope, target), ok, err
 			}
 		}
 		return Scope{}, false, fmt.Errorf("%w: %s", errUnknownWorktree, target)
@@ -122,7 +123,8 @@ func (m *Manager) ScopeFor(path string) (Scope, bool, error) {
 	if best == "" {
 		return Scope{}, false, nil
 	}
-	return m.scopeForRoot(best, layout)
+	scope, ok, err := m.scopeForRoot(best, layout)
+	return m.reviewScope(scope, target), ok, err
 }
 
 // CommandScope is ScopeFor for agent commands: a working directory outside

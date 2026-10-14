@@ -141,7 +141,7 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		return nil
 	}
 	if !m.Active() {
-		if m.Enforced() || m.WasSandboxed(scope.Root) {
+		if scope.ReviewCheckout != "" || m.Enforced() || m.WasSandboxed(scope.Root) {
 			return fmt.Errorf("%w (%s): %s", ErrSandboxRequired, scope.Root, m.Status().Reason)
 		}
 		return nil
@@ -167,7 +167,13 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		return err
 	}
 	for _, kv := range forwarded {
+		if scope.ReviewCheckout != "" && strings.HasPrefix(kv, "GIT_OPTIONAL_LOCKS=") {
+			continue
+		}
 		execArgs = append(execArgs, "-e", kv)
+	}
+	if scope.ReviewCheckout != "" {
+		execArgs = append(execArgs, "-e", "GIT_OPTIONAL_LOCKS=0")
 	}
 	execArgs = append(execArgs, name)
 	if deadline, ok := ctx.Deadline(); ok {

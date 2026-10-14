@@ -30,6 +30,10 @@ func workerRoleAssignment(settings store.AgentModelSettingsRecord, role string) 
 	switch strings.TrimSpace(role) {
 	case store.WorkerRoleCoder:
 		return settings.SystemAgents.Coder, true
+	case store.WorkerRoleReviewer:
+		// Until the catalog exposes a review assignment, inherit the canonical
+		// coder setting rather than inventing a model/provider fallback.
+		return settings.SystemAgents.Coder, true
 	case store.WorkerRoleDesigner:
 		return settings.SystemAgents.Designer, true
 	case store.WorkerRoleFinder:
