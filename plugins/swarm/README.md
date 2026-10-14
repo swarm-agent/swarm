@@ -20,7 +20,7 @@ in their terminal. See `skills/setup/references/authorization.md`.
 ## Quick start (Claude Code, Ubuntu 24.04 x86_64)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
+curl -fsSL https://swarmagent.dev/install | sudo bash
 claude plugin marketplace add swarm-agent/swarm
 claude plugin install swarm@swarm
 ```
@@ -28,11 +28,12 @@ claude plugin install swarm@swarm
 The installer gives you an AI key in `~/.config/swarm/ai-key`; with no
 `connection.json`, the plugin's `bin/swarm-mcp` finds it and connects to the
 box's MCP on `http://127.0.0.1:7783/mcp` through the Node adapter (Node 22+;
-plain HTTP is accepted only for loopback). Then ask Claude to set up Swarm;
-you type your model key on the setup page or set it by script, never in chat.
-Without the box key, `bin/swarm-mcp` uses `swarm mcp` (the desktop and
-terminal launcher install), or `swarmctl mcp` from it, and reports a Swarm too
-old for AI connections instead of starting it.
+plain HTTP is accepted only for loopback). Then ask Claude to set up Swarm: it
+offers ChatGPT sign-in with your plan first (you get a link and a code), or you
+add an API key on the setup page or by script, never in chat. Without the box
+key, `bin/swarm-mcp` uses an older `swarm mcp` install only if it has the
+bridge; otherwise it says how to install the box or get your key
+(`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`).
 
 ## Choose the package and client
 

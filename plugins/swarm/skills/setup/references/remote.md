@@ -20,10 +20,12 @@ connection: a Swarm's HTTPS `/mcp` endpoint on the tailnet (keyless by the
 chosen binary. This is how Claude on another computer reaches a remote Swarm;
 it needs Node 22+ there. A named `SWARM_MCP_CONFIG` that does not exist is an
 error, not a fallback to a local Swarm. Without a saved connection it uses this
-machine's Swarm: `SWARM_MCP_BIN` and `SWARM_MCP_SOCKET` for native mode, or
-`SWARM_MCP_CONTAINER` for `docker exec -i ... swarmctl mcp` (these environment
-overrides win over a saved connection). Claude Desktop local MCP can use
-the direct Docker command in [local-deployment.md](local-deployment.md).
+machine's Swarm box: the AI key in `~/.config/swarm/ai-key` for
+`http://127.0.0.1:7783/mcp` (see [local-deployment.md](local-deployment.md)).
+`SWARM_MCP_BIN` and `SWARM_MCP_SOCKET` select native mode and
+`SWARM_MCP_CONTAINER` an existing container (`docker exec -i ... swarmctl mcp`);
+these environment overrides win over a saved connection. Claude Desktop can run
+`bin/swarm-mcp` as a local stdio MCP server the same way.
 Local MCP access does not make a server reachable from Claude.ai.
 
 For Claude.ai, use its remote custom connector with a reachable authenticated

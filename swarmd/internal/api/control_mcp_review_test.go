@@ -436,6 +436,7 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 	for _, set := range [][]controlMCPInstruction{controlMCPCoreInstructionLines, controlMCPInstructionLines} {
 		for _, line := range set {
 			for _, name := range line.tools {
+				name = strings.TrimPrefix(name, "!")
 				if !names[name] {
 					t.Fatalf("instruction names unknown tool %s", name)
 				}
@@ -444,7 +445,7 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 	}
 	for _, line := range controlMCPCoreInstructionLines {
 		for _, name := range line.tools {
-			if !controlMCPCoreTools[name] {
+			if name = strings.TrimPrefix(name, "!"); !controlMCPCoreTools[name] {
 				t.Fatalf("default instructions name advanced tool %s", name)
 			}
 		}
@@ -458,7 +459,7 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 		return call.instructions()
 	}
 	defaults := instructions(false, "sessions:read", "sessions:write")
-	for _, shown := range []string{"deploy AI workers", "coder", "designer", "finder", "swarm_list_providers", "never ask for a key in chat", "swarm_create_project", "swarm_give_job", "swarm_get_job", "swarm_message_job", "swarm_answer_job", "swarm_deliver_job", "nothing is ever pushed", "swarm_status", "swarm_activity", "swarm_list_secrets", "untrusted"} {
+	for _, shown := range []string{"deploy AI workers", "coder", "designer", "finder", "swarm_list_providers", "never ask for a key in chat", "swarm_create_project", "swarm_give_job", "swarm_get_job", "swarm_message_job", "swarm_answer_job", "swarm_deliver_job", "Swarm never pushes otherwise", "swarm_status", "swarm_activity", "swarm_list_secrets", "untrusted"} {
 		if !strings.Contains(defaults, shown) {
 			t.Fatalf("default instructions miss %s: %s", shown, defaults)
 		}
@@ -484,6 +485,18 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 	}
 	if !strings.Contains(readOnly, "swarm_status") || !strings.Contains(readOnly, "untrusted") {
 		t.Fatalf("read-only instructions: %s", readOnly)
+	}
+	// A key that can call swarm_connect_chatgpt is told to offer ChatGPT sign-in
+	// first and API keys only as the alternative; one that cannot gets the key
+	// line alone. Exactly one provider line is shown.
+	for _, tc := range []struct {
+		text    string
+		chatGPT bool
+	}{{defaults, true}, {readOnly, false}, {instructions(false, "sessions:read", "sessions:write", "swarm:read", "swarm:write"), true}} {
+		if strings.Count(tc.text, "Workers need a model provider") != 1 || !strings.Contains(tc.text, "never ask for a key in chat") ||
+			strings.Contains(tc.text, "swarm_connect_chatgpt") != tc.chatGPT || strings.Contains(tc.text, "first offer the person to sign in with their ChatGPT plan") != tc.chatGPT {
+			t.Fatalf("provider instructions (ChatGPT %v): %s", tc.chatGPT, tc.text)
+		}
 	}
 	// A write key may give and merge jobs.
 	writeOnly := instructions(false, "sessions:read", "sessions:write", "swarm:read", "swarm:write")

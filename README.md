@@ -36,7 +36,7 @@ current code does.
 Ubuntu 24.04, x86_64. From your own account:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
+curl -fsSL https://swarmagent.dev/install | sudo bash
 ```
 
 It installs Docker (unless a working one is there) and gVisor, and runs Swarm
@@ -72,7 +72,8 @@ claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp --h
 **Codex**: the installer prints the line (it reads the key from an
 environment variable).
 
-**Then tell your AI: "set up Swarm".** It checks your model key, asks which
+**Then tell your AI: "set up Swarm".** It checks for a model provider (offering
+ChatGPT sign-in with your plan first, an API key as the alternative), asks which
 folders your work is in, creates a project with them, and gives the coder a
 first job.
 
@@ -81,6 +82,7 @@ first job.
 | Tool | What it does |
 | --- | --- |
 | `swarm_list_providers`, `swarm_list_models` | which providers are ready; the model each worker role uses |
+| `swarm_connect_chatgpt` | sign in with your ChatGPT plan: you get a link and a code, and finish in your browser |
 | `swarm_set_agent_model` | change a role's model (only when you ask) |
 | `swarm_create_project` | a project: a name and your folders (nothing in them is changed) |
 | `swarm_set_environment`, `swarm_get_environment` | what a folder's jobs run in: a base image plus setup commands, built by Swarm |
@@ -88,7 +90,7 @@ first job.
 | `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff, transcript |
 | `swarm_message_job` | a follow-up in the same job: more to do, a correction, a redo |
 | `swarm_answer_job` | reply when a worker asks something |
-| `swarm_deliver_job` | merge the result into the folder (local git merge, never a push) |
+| `swarm_deliver_job` | deliver the result: a local git merge into the folder, or a pull request when you set up publishing for it (`install.sh workspace publish`); Swarm never pushes otherwise |
 | `swarm_request_media` | an image, video or sound |
 | `swarm_deploy_worker` | your own worker on top of the three: a name, a role, standing instructions |
 | `swarm_schedule_job` | a worker that runs a job on a schedule |
@@ -108,7 +110,7 @@ working with it by hand. They are not needed for the box above.
 Linux x86_64 only. One line, no confirmation prompt:
 
 ```bash
-curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes
 ```
 
 It installs Swarm and, on a systemd host, starts the `swarm` service. Without a terminal (an AI agent, CI) a non-root run needs passwordless sudo; otherwise run it as root with `| sudo sh -s -- --yes`. Then [connect your AI](#connect-your-ai-to-the-launcher-install).
@@ -116,8 +118,8 @@ It installs Swarm and, on a systemd host, starts the `swarm` service. Without a 
 To choose the service behavior explicitly:
 
 ```bash
-curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes --service
-curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes --no-service
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes --service
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes --no-service
 ```
 
 The installer fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm. The release archive contains Swarm itself; Git is supplied as a mandatory system package rather than a private bundled executable. The installer provisions the mandatory Git and Bash system packages when they are missing through the detected supported Linux package manager, verifies them before changing Swarm files, and leaves existing installations unchanged. Git is required because every saved or selected workspace must be a repository root with an initial commit and Swarm isolates agent sessions in managed worktrees; direct-session worktree opt-out is not supported. If a selected folder is not ready, Desktop explains the requirement: an empty folder can be initialized with an explicit setup action. For a non-empty folder, a provider-connected user can open the dedicated Onboarding Swarm without first admitting another workspace; it is bound to that exact unsaved folder, keeps dedicated shell-free Git initialization, ignore-file edits, staging, and the first commit permission-gated, uses existing Git identity or a user-supplied one-time identity without persisting it, and returns to onboarding for a readiness recheck before the workspace is saved. The alternative is to fix the repository manually and retry. Deterministic video analysis requires `ffmpeg` and `ffprobe` on `PATH`; those remain feature-local prerequisites rather than startup requirements.

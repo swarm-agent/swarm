@@ -35,10 +35,11 @@ const (
 // Read keys see and call only read tools, including the machine's status, its
 // activity feed and which secrets exist where (never their values); write keys
 // may also create projects, deploy workers, give them jobs, follow up and
-// answer their questions, merge their results, stop runs and pick each
-// role's model among the connected providers. Full keys are for the AI that
+// answer their questions, merge their results, stop runs, pick each role's
+// model among the connected providers and start the person's ChatGPT
+// sign-in (they finish it in their own browser). Full keys are for the AI that
 // runs this box: every Swarm Control tool, including approving tool calls, models, workers,
-// limits, custom agents, client keys and ChatGPT sign-in. Any key with a
+// limits, custom agents and client keys. Any key with a
 // Swarm Control level reaches only /mcp (gateAIKey), so admin here widens
 // what the allowlisted tools may do, never the rest of the API.
 func aiKeyScopes(level string) ([]string, error) {

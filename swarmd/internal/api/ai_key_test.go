@@ -12,8 +12,9 @@ import (
 // Purpose: an AI key reached over a tunnel is the only credential between an
 // AI client and this machine, so its level must hold on the gateway itself.
 // A read key sees and calls only read tools; a write key may also start and
-// steer sessions; neither may approve tool calls or manage workers, limits,
-// models, custom agents, client keys or ChatGPT sign-in. A full key (the owner
+// steer sessions and start the person's ChatGPT sign-in (they finish it in
+// their own browser); neither may approve tool calls or manage workers, limits,
+// models, custom agents or client keys. A full key (the owner
 // chose to let an AI run the box) sees every tool but, like every AI key,
 // reaches nothing outside /mcp even though it carries admin. Ordinary scoped
 // tokens are unchanged.
@@ -110,13 +111,13 @@ func TestAIKeysLimitSwarmControlTools(t *testing.T) {
 		}
 	}
 	// A write key creates projects, follows up on jobs and picks role models.
-	for _, name := range []string{"swarm_create_project", "swarm_set_project_workspaces", "swarm_message_job", "swarm_set_agent_model"} {
+	for _, name := range []string{"swarm_create_project", "swarm_set_project_workspaces", "swarm_message_job", "swarm_set_agent_model", "swarm_connect_chatgpt"} {
 		if readTools[name] || !writeTools[name] {
 			t.Fatalf("%s must be a write tool", name)
 		}
 	}
 	for _, name := range []string{"swarm_resolve_permission", "swarm_create_worker", "swarm_set_usage_limits", "swarm_request_provider_key",
-		"swarm_define_agent", "swarm_create_client_key", "swarm_connect_chatgpt"} {
+		"swarm_define_agent", "swarm_create_client_key"} {
 		if readTools[name] || writeTools[name] {
 			t.Fatalf("AI key lists %s", name)
 		}

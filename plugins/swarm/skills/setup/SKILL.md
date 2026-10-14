@@ -26,7 +26,7 @@ working one is there, gVisor, and Swarm as a service), run on that machine, as
 the person, with sudo:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
+curl -fsSL https://swarmagent.dev/install | sudo bash
 ```
 
 Everything it starts listens on 127.0.0.1 only. At the end it creates Swarm's
@@ -59,9 +59,14 @@ and [remote access](references/remote.md).
 
 ## 4. A model provider
 
-`swarm_list_providers` shows which providers are ready. If none is, the
-person adds a key in one of two ways; never ask for a key in chat, and if one
-is pasted, tell them to revoke it:
+`swarm_list_providers` shows which providers are ready. If none is, first
+offer the person to sign in with their ChatGPT plan: `swarm_connect_chatgpt`
+with action `start` returns a link and a code. Give both to the person at
+once; they finish sign-in in their own browser. Then call it with action
+`status`, the `login_id` and `wait_seconds` until it reports `success`.
+
+The alternative is an API key, which the person adds in one of two ways;
+never ask for a key in chat, and if one is pasted, tell them to revoke it:
 
 - the setup page: `http://127.0.0.1:8443` on the machine (on a server, the
   installer printed the `ssh -L` line to open it from their computer);

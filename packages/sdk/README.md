@@ -21,8 +21,8 @@ Requires Node 22 or newer (ESM). The package is public on npm:
 npm install @swarm-agent/sdk
 </copy>
 
-You need a running Swarm on Linux x86_64. Install one with
-`curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes`.
+You need a running Swarm. Install the Swarm box (Ubuntu 24.04 x86_64) with
+`curl -fsSL https://swarmagent.dev/install | sudo bash`.
 
 ## Connect to your Swarm
 
@@ -58,10 +58,14 @@ example, not source tests or node_modules. `prepack` builds locally; there are n
 install/prepare hooks. TypeScript/tsx are build/test tools, not runtime dependencies.
 CommonJS `require` and non-Node runtimes are not validated by this packaging step.
 
-For the headless container, use the matching `@swarm-agent/cli` package and explicitly
-export a scoped token through `swarm-headless setup -- sdk-token`. Connect to
-`http://127.0.0.1:7783`; **do not** use Desktop bootstrap or a privileged socket.
-The headless listener allows session operations only, not the complete API below.
+On the Swarm box, `http://127.0.0.1:7783` is the scoped-token listener. The AI
+key the installer wrote to `~/.config/swarm/ai-key` (a new one:
+`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`)
+works only through its MCP, `http://127.0.0.1:7783/mcp`, with any MCP client;
+it reaches no SDK route. For the session routes there, use a client key (a full
+AI key's `swarm_create_client_key` mints one); **do not** use Desktop bootstrap
+or a privileged socket. A client key reaches session operations only, not the
+complete API below.
 The packaged `examples/headless-session.ts` imports `@swarm-agent/sdk` and can be copied
 into your consumer and run with an explicitly installed `tsx` runner. Protect its
 `SWARM_SDK_TOKEN_FILE` (0600); the example asks before each tool approval and uses

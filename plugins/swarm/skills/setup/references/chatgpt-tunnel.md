@@ -16,38 +16,24 @@ requested; establish the account, location, size and recurring cost, preserve
 the resource IDs privately, and verify the new host's SSH identity. A stale SSH
 alias or changed host key is not permission to bypass host verification.
 
-Our live qualification used a dedicated Linux amd64 VM, Docker, persistent
-Swarm volumes and one disposable Git project. A 2-vCPU/4-GB VM handled this
-small test; that is not a capacity recommendation for arbitrary swarms.
-Only SSH needed inbound access, restricted to the operator. The tunnel needs
-outbound HTTPS and local access to Swarm. No public Swarm port is needed.
+Install or reuse the Swarm box ([local-deployment.md](local-deployment.md)).
+On the box, Swarm's MCP already listens on `http://127.0.0.1:7783/mcp`
+(loopback only, unless it was installed with `--no-ai-access`) and answers to
+AI keys: no port needs publishing and no daemon
+flag needs changing. The tunnel needs outbound HTTPS and local access to that
+address; only SSH needs inbound access, restricted to the operator. No public
+Swarm port is needed. Never give the tunnel process Swarm's private socket or
+the Docker socket.
 
-Follow [local-deployment.md](local-deployment.md) for the headless image, mounts
-and onboarding. If building source, use a reviewed revision and the repository's
-required fast build gate. Record the commit and image ID. The qualified daemon
-includes commit `0dfbc4c1d` (OAuth discovery absence on the scoped listener).
-Select unique container/volume names. Keep config, data, cache and log volumes;
-only the selected project is mounted at /project. Do not mount the Docker socket
-or the owner's private socket into a tunnel process.
+The live test of this path (section 5) ran Swarm in a Docker container, the
+deployment the box replaced, on a 2-vCPU/4-GB Linux amd64 VM with one
+disposable Git project. That is not a capacity recommendation, and the box has
+not had the same live test yet.
 
-For host-side tunnel-client HTTP access, add BOTH options to the Docker example:
-
-```sh
-# Before the image name:
---publish 127.0.0.1:7783:7783
-# After the image name (daemon argument):
---container-sdk-port=7783
-```
-
-The normal daemon's container-loopback listener is insufficient: Docker port
-publishing alone does not enable this scoped listener. Retain the image's
-permission-policy lock, dropped capabilities and no-new-privileges setting.
-Use `--restart unless-stopped` for an authorized persistent deployment. If
-replacing an existing container, stop the old writer before reusing its volumes.
-
-Complete only missing owner, provider and workspace setup. For a ChatGPT plan,
-use the [headless Codex device login](local-deployment.md#chatgptcodex-provider-sign-in-on-a-headless-host).
-Preserve catalog-derived role defaults. Check `setup complete` and `setup status`.
+Complete only missing provider and workspace setup (`sudo swarmctl setup
+status` shows what is there). For a ChatGPT plan, use the
+[ChatGPT sign-in](local-deployment.md#a-model-provider). Preserve
+catalog-derived role defaults.
 
 ## 2. Keep the three credentials separate
 
@@ -55,7 +41,7 @@ Preserve catalog-derived role defaults. Check `setup complete` and `setup status
 | --- | --- | --- |
 | Swarm provider sign-in/key | Runs the delegated model | Device sign-in or private stdin on the Swarm host |
 | OpenAI tunnel runtime API key | Connects tunnel-client to OpenAI | User creates it in the intended Platform organization; hidden local entry, private transfer |
-| Swarm scoped AI key | Lets the tunnel invoke Swarm tools | Owner CLI on the Swarm host; save output privately |
+| Swarm scoped AI key | Lets the tunnel invoke Swarm tools | `sudo swarmctl setup sdk-token` on the box; save output privately |
 
 The operator creates a tunnel at [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels)
 and associates the intended ChatGPT workspace and Platform organization. Creating
@@ -72,18 +58,18 @@ selected binary's help before applying these flags to another version.
 
 Prepare a dedicated tunnel service account with an owned 0700 configuration
 directory outside the project. Keep key/header files at 0600 and private across
-transfer. It does not need Docker membership or access to daemon data. The
+transfer. It does not need Docker membership, sudo or access to daemon data. The
 owner/operator, not the service account, performs key issuance.
 
-Bash example on the daemon host, with variables set to the selected container and a
-new private staging directory, shell tracing disabled:
+Bash example on the box, run by the person with sudo, with `PRIVATE_STAGING` set to a
+new private staging directory they own, shell tracing disabled:
 
 ```sh
 (
 set -euo pipefail
 umask 077
 set -o noclobber
-docker exec "$SWARM_CONTAINER" swarmctl setup sdk-token \
+sudo swarmctl setup sdk-token \
   --name chatgpt-tunnel --ai-access write --expires-in-seconds 86400 \
   > "$PRIVATE_STAGING/grant-secret.json"
 jq -er '.token | "Bearer " + .' "$PRIVATE_STAGING/grant-secret.json" \
@@ -143,7 +129,7 @@ On a Linux server, create a systemd unit with these resolved arguments, its
 dedicated User/Group, network-online ordering, Restart=on-failure, UMask=0077,
 NoNewPrivileges=yes, PrivateTmp=yes, ProtectSystem=strict and ProtectHome=yes.
 Grant writes only to its chosen service working directory; keep secrets readable
-by that user. Order after Docker when Docker owns Swarm. Enable boot startup
+by that user. Order after `swarm-headless.service`. Enable boot startup
 when the person requested persistent operation. Record the service name and
 grant expiry; a background terminal alone is not a persistent deployment.
 
@@ -191,7 +177,7 @@ macOS/Windows, automatic wakeups, multi-user isolation, or large-agent scale.
   Through owner execution, create a replacement with the approved scope/lifetime,
   install its header atomically with the service owner/mode preserved, restart,
   verify a real call, then revoke the previous grant by its recorded ID using
-  `swarmctl setup revoke-sdk-token --id ...`. Keep the old grant until the new
+  `sudo swarmctl setup revoke-sdk-token --id ...`. Keep the old grant until the new
   connection works; don't print either secret.
 - Tunnel invisible: check target ChatGPT workspace association and Tunnels Use
   permission. Platform organization access alone isn't workspace association.
@@ -202,7 +188,7 @@ macOS/Windows, automatic wakeups, multi-user isolation, or large-agent scale.
 - OAuth discovery degraded or “missing resource”: with the same upstream key,
   probe both protected-resource metadata paths in [mcp-protocol.md](mcp-protocol.md).
   They must report absent metadata as 404. Older Swarm's 403 caused readiness
-  failure. Deploy the fix preserving volumes; don't publish a port or remove auth.
+  failure. Update the box (`install.sh update`); don't publish a port or remove auth.
 - Some optional discovery probes (including server/discover) were unsupported in
   the live test. Judge standard initialization, tools/list, tools/call and the
   actual task, not isolated warning counts. Persistent failures remain failures.
@@ -210,7 +196,7 @@ macOS/Windows, automatic wakeups, multi-user isolation, or large-agent scale.
   controls; keep the existing permission policy and report the pending decision.
 - Report whether the host is left running and billed. On requested teardown,
   preserve needed work, stop/revoke this connection, remove only its dedicated
-  resources and confirm any residual IP/storage charges. Don't delete volumes
+  resources and confirm any residual IP/storage charges. Don't delete Swarm's state
   merely to troubleshoot or automatically remove an active testbench.
 
 Official transport/UI reference: [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels).

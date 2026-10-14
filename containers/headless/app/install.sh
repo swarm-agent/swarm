@@ -2,8 +2,7 @@
 # One-line installer for Swarm on this machine: headless, with its setup page.
 #
 # On Ubuntu 24.04 x86_64 (a server or your own PC), from your own account:
-#   curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh \
-#     | sudo bash
+#   curl -fsSL https://swarmagent.dev/install | sudo bash
 #
 # It installs Docker (unless a working one with buildx is already there) and
 # gVisor, builds Swarm and the setup page from source and runs both as
@@ -61,7 +60,7 @@
 if [ -z "${BASH_VERSION:-}" ]; then
   echo "This is Swarm's box installer; it runs with bash as root:" >&2
   echo "  curl -fsSL https://swarmagent.dev/install | sudo bash" >&2
-  echo "The desktop and terminal launcher installs with https://swarmagent.dev/install-launcher" >&2
+  echo "The desktop and terminal launcher installs with https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh" >&2
   exit 1
 fi
 set -euo pipefail

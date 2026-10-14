@@ -43,7 +43,9 @@ var controlMCPProtocolVersions = map[string]bool{
 
 // controlMCPInstruction is one sentence of the server instructions, shown
 // only when the caller's level allows every tool it names, so a read-only or
-// write-only client is never told to call a tool it cannot see.
+// write-only client is never told to call a tool it cannot see. A tool named
+// with a leading "!" must not be callable: the line is the fallback for
+// callers without that tool.
 type controlMCPInstruction struct {
 	tools []string
 	text  string
@@ -57,7 +59,7 @@ type controlMCPInstruction struct {
 // level does not allow is never listed.
 var controlMCPCoreTools = map[string]bool{
 	"swarm_status": true, "swarm_activity": true, "swarm_list_runs": true,
-	"swarm_list_providers": true, "swarm_request_provider_key": true,
+	"swarm_list_providers": true, "swarm_connect_chatgpt": true, "swarm_request_provider_key": true,
 	"swarm_list_models": true, "swarm_set_agent_model": true, "swarm_get_usage": true,
 	"swarm_list_projects": true, "swarm_create_project": true, "swarm_get_project": true, "swarm_set_project_workspaces": true,
 	"swarm_set_environment": true, "swarm_get_environment": true,
@@ -72,7 +74,8 @@ var controlMCPCoreTools = map[string]bool{
 // when the caller's level allows every tool it names.
 var controlMCPCoreInstructionLines = []controlMCPInstruction{
 	{nil, "Swarm is a box you deploy AI workers to, on this machine. It comes with three workers: a coder (code changes), a designer (UI and design work) and a finder (research and audits)."},
-	{[]string{"swarm_list_providers"}, "Workers need a model provider: swarm_list_providers shows which are ready. The person adds a provider key themselves, on Swarm's setup page or by script on the machine (install.sh key PROVIDER); never ask for a key in chat."},
+	{[]string{"swarm_list_providers", "!swarm_connect_chatgpt"}, "Workers need a model provider: swarm_list_providers shows which are ready. The person adds a provider key themselves, on Swarm's setup page or by script on the machine (install.sh key PROVIDER); never ask for a key in chat."},
+	{[]string{"swarm_list_providers", "swarm_connect_chatgpt"}, "Workers need a model provider: swarm_list_providers shows which are ready. When none is connected, first offer the person to sign in with their ChatGPT plan: swarm_connect_chatgpt action start returns a link and a code; give them both at once, then call action status with login_id and wait_seconds until it reports success. Only as the alternative, the person adds a provider API key themselves, on Swarm's setup page or by script on the machine (install.sh key PROVIDER); never ask for a key in chat."},
 	{[]string{"swarm_request_provider_key"}, "swarm_request_provider_key gives a one-time link where the person pastes a provider key."},
 	{[]string{"swarm_list_models"}, "When a provider is connected, Swarm gives every role its recommended model: the coder, designer and finder workers use their role's model (swarm_list_models shows them)."},
 	{[]string{"swarm_set_agent_model"}, "Change a role's model with swarm_set_agent_model (role system-coder, system-designer or system-finder) only when the person asks."},
@@ -81,7 +84,7 @@ var controlMCPCoreInstructionLines = []controlMCPInstruction{
 	{[]string{"swarm_give_job", "swarm_get_job"}, "Give a worker a job with swarm_give_job (worker coder, designer, finder or a worker id; the project, and which of its folders when it has several; a brief that says what to do and how to know it is done). Each job runs in Swarm's sandbox on its own branch with only that folder's secrets, and never waits on a person. swarm_get_job waits until it settles and returns the result: branch, commits, changed files, report, cost and, on request, the diff and the worker's transcript."},
 	{[]string{"swarm_message_job"}, "swarm_message_job sends the worker a follow-up in the same job (more to do, a correction, a redo) on the same branch."},
 	{[]string{"swarm_answer_job"}, "When a worker asks something, swarm_get_job shows the question (status needs_input) and swarm_answer_job replies."},
-	{[]string{"swarm_deliver_job"}, "swarm_deliver_job merges a finished job into its folder (a local git merge; nothing is ever pushed)."},
+	{[]string{"swarm_deliver_job"}, "swarm_deliver_job delivers a finished job to its folder: a local git merge by default, or a pull request when the folder's owner set up publishing for it; Swarm never pushes otherwise."},
 	{[]string{"swarm_deploy_worker"}, "Deploy more workers on top of the three with swarm_deploy_worker: a name, a role (coder, designer or finder) and standing instructions for every job."},
 	{[]string{"swarm_request_media", "swarm_media_models"}, "swarm_request_media makes images, video or sound: swarm_media_models lists the models and the options each takes (length, resolution, aspect ratio, input images); swarm_get_job lists the files and shows images, swarm_save_media writes them into a workspace."},
 	{[]string{"swarm_schedule_job"}, "swarm_schedule_job deploys a worker that runs a job on a schedule in a project's folder."},
@@ -121,7 +124,11 @@ func (c *controlMCPCall) instructions() string {
 		for _, line := range set {
 			allowed := true
 			for _, tool := range line.tools {
-				allowed = allowed && c.levelAllows(tool)
+				if name, unless := strings.CutPrefix(tool, "!"); unless {
+					allowed = allowed && !c.levelAllows(name)
+				} else {
+					allowed = allowed && c.levelAllows(tool)
+				}
 			}
 			if allowed {
 				lines = append(lines, line.text)
@@ -524,6 +531,13 @@ func controlMCPInt(args map[string]any, key string, fallback int) int {
 // the API handler chain, carrying the original authenticated context (actor +
 // scoped token), so canonical handler checks still decide.
 func (c *controlMCPCall) dispatch(method, path string, query url.Values, body any) (map[string]any, error) {
+	return c.dispatchTo(c.next, method, path, query, body)
+}
+
+// dispatchTo is dispatch with the route's handler named directly, for a tool
+// that deliberately skips that route's own scope wrapper and authorizes the
+// call itself (swarm_connect_chatgpt). The route allowlist still applies.
+func (c *controlMCPCall) dispatchTo(handler http.Handler, method, path string, query url.Values, body any) (map[string]any, error) {
 	var reader io.Reader = http.NoBody
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -548,7 +562,7 @@ func (c *controlMCPCall) dispatch(method, path string, query url.Values, body an
 		return nil, controlMCPToolFailure("route unavailable to Swarm Control")
 	}
 	recorder := &controlMCPRecorder{header: http.Header{}, status: http.StatusOK}
-	c.next.ServeHTTP(recorder, sub)
+	handler.ServeHTTP(recorder, sub)
 	if recorder.overflow {
 		return nil, controlMCPToolFailure("response too large")
 	}
