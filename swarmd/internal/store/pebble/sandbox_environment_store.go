@@ -54,9 +54,11 @@ var (
 
 // SandboxEnvironmentDefinition is the portable part: what to build.
 type SandboxEnvironmentDefinition struct {
-	BaseImage string            `json:"base_image"`
-	Setup     []string          `json:"setup,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
+	Checks              []string          `json:"checks,omitempty"`
+	CheckTimeoutMinutes int               `json:"check_timeout_minutes,omitempty"`
+	BaseImage           string            `json:"base_image"`
+	Setup               []string          `json:"setup,omitempty"`
+	Env                 map[string]string `json:"env,omitempty"`
 }
 
 // SandboxEnvironment is one folder's environment and its build state.
@@ -80,6 +82,17 @@ type SandboxEnvironment struct {
 
 // NormalizeSandboxEnvironmentDefinition trims and checks a definition.
 func NormalizeSandboxEnvironmentDefinition(def SandboxEnvironmentDefinition) (SandboxEnvironmentDefinition, error) {
+	if len(def.Checks) > 10 {
+		return def, errors.New("at most 10 checks")
+	}
+	for _, command := range def.Checks {
+		if len(command) > 4000 || strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
+			return def, errors.New("checks must be nonempty shell commands of at most 4000 characters, without secrets or NUL")
+		}
+	}
+	if def.CheckTimeoutMinutes < 0 || def.CheckTimeoutMinutes > 60 {
+		return def, errors.New("check_timeout_minutes must be between 0 and 60")
+	}
 	def.BaseImage = strings.TrimSpace(def.BaseImage)
 	if def.BaseImage == "" {
 		return def, errors.New("base_image is required (for example ubuntu:24.04, node:22 or an image you already use)")
@@ -201,6 +214,11 @@ func (s *SandboxEnvironmentStore) Define(account, workspacePath string, def Sand
 	}
 	hash := SandboxEnvironmentHash(def)
 	if found && current.Hash == hash && (current.Status == SandboxEnvironmentBuilding || current.Status == SandboxEnvironmentReady) {
+		current.Definition = def
+		current.UpdatedAt = s.now().UnixMilli()
+		if err := s.store.PutJSON(sandboxEnvironmentKey(workspacePath), current); err != nil {
+			return SandboxEnvironment{}, false, err
+		}
 		return current, false, nil
 	}
 	env := current

@@ -85,6 +85,12 @@ func controlMCPSetEnvironment(c *controlMCPCall, args map[string]any) (any, erro
 		env[name] = value
 	}
 	body := map[string]any{"workspace_path": place.path, "base_image": controlMCPString(args, "base_image"), "setup": setup, "env": env}
+	if checks, ok := args["checks"]; ok {
+		body["checks"] = checks
+	}
+	if timeout, ok := args["check_timeout_minutes"]; ok {
+		body["check_timeout_minutes"] = timeout
+	}
 	response, err := c.dispatch(http.MethodPut, SandboxEnvironmentsPath, nil, body)
 	if err != nil {
 		return nil, err
@@ -143,13 +149,15 @@ func controlMCPEnvironmentTools() []controlMCPTool {
 			Name: "swarm_set_environment", Title: "Define the environment a folder's jobs run in",
 			Description: "Define what a project folder's sandbox starts from: base_image (an image name such as ubuntu:24.04, node:22, golang:1.24 or one the person already uses) plus setup commands (run once as root while Swarm builds it, for example apt-get install -y ...) and environment variables (not secrets: those go through the secret system). Swarm builds it in an isolated gVisor container with internet access but no host folders, saves it as an image named after the definition (the same definition is reused, never rebuilt), and checks that bash and git run in it. Jobs in that folder then run on it, with the same sandbox protections. While it builds, and if it fails, jobs in the folder are refused; reset goes back to Swarm's default environment (Ubuntu with git, Python 3, Node.js, build-essential, curl and jq).",
 			InputSchema: controlMCPObject(nil, map[string]any{
-				"project":      project,
-				"workspace":    workspace,
-				"base_image":   controlMCPStringProp("The image to start from.", 0, 255),
-				"setup":        map[string]any{"type": "array", "maxItems": 40, "items": map[string]any{"type": "string", "maxLength": 4000}, "description": "Shell commands run in order as root while building; each must succeed."},
-				"env":          map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Environment variables for every command in the folder (not secrets)."},
-				"reset":        map[string]any{"type": "boolean", "description": "Remove the folder's environment: it runs on Swarm's default again."},
-				"wait_seconds": waitProp,
+				"project":               project,
+				"workspace":             workspace,
+				"base_image":            controlMCPStringProp("The image to start from.", 0, 255),
+				"checks":                map[string]any{"type": "array", "maxItems": 10, "items": map[string]any{"type": "string", "maxLength": 4000}, "description": "Shell checks on the rebased head, as the sandbox user; never include secrets. Not part of image identity."},
+				"check_timeout_minutes": map[string]any{"type": "integer", "minimum": 0, "maximum": 60, "description": "Total check time limit; 0 means 20 minutes."},
+				"setup":                 map[string]any{"type": "array", "maxItems": 40, "items": map[string]any{"type": "string", "maxLength": 4000}, "description": "Shell commands run in order as root while building; each must succeed."},
+				"env":                   map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "Environment variables for every command in the folder (not secrets)."},
+				"reset":                 map[string]any{"type": "boolean", "description": "Remove the folder's environment: it runs on Swarm's default again."},
+				"wait_seconds":          waitProp,
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSetEnvironment,
 		},
