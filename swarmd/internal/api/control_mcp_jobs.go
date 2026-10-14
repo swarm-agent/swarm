@@ -627,6 +627,16 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	if next := controlMCPJobNext(status, committed); next != "" {
 		out["next"] = next
 	}
+	result := controlMCPMap(out["result"])
+	integration := controlMCPMap(result["integration"])
+	if delivered := taskDeliveredState(controlMCPString(integration, "state"), controlMCPString(integration, "pull_request_url")); delivered != "" {
+		delete(out, "action_needed")
+		if delivered == "pull_request" {
+			out["next"] = "the job was delivered as a pull request: " + controlMCPString(integration, "pull_request_url")
+		} else {
+			out["next"] = "the job is finished and merged"
+		}
+	}
 	return out, nil
 }
 

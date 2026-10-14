@@ -319,8 +319,11 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	if len(deliverables) > 0 {
 		out["deliverables"] = deliverables
 	}
-	if integration := controlMCPPick(controlMCPMap(task["integration"]), "state", "error", "resulting_target_head", "target_branch"); len(integration) > 0 {
+	if integration := controlMCPPick(controlMCPMap(task["integration"]), "state", "error", "resulting_target_head", "target_branch", "pull_request_url"); len(integration) > 0 {
 		out["integration"] = integration
+		if state := taskDeliveredState(controlMCPString(integration, "state"), controlMCPString(integration, "pull_request_url")); state != "" {
+			out["delivery_state"] = state
+		}
 	}
 	if text, ok := task["last_error"].(string); ok && strings.TrimSpace(text) != "" {
 		out["last_error"] = controlMCPTruncate(text, 400)

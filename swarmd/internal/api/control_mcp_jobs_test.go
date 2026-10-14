@@ -149,3 +149,77 @@ func TestControlMCPDeliverJobRetriesUnobservedDelivery(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: swarm_get_job must preserve delivered integration receipts and their
+// PR URL instead of reporting a local-lane failure or inviting duplicate delivery.
+// Owners: controlMCPGetJob, jobView and controlMCPTaskResult. A stub task route
+// is the narrowest layer proving the tool's complete observable view; the stale
+// assessment deliberately conflicts with the receipt, and a URL-less PR is a
+// negative case that must not claim delivery.
+func TestControlMCPGetJobDeliveredReceipt(t *testing.T) {
+	for _, state := range []string{"pull_request", "merged", "integrated", "pr_without_url"} {
+		t.Run(state, func(t *testing.T) {
+			integration := map[string]any{"state": state, "target_branch": "main"}
+			const prURL = "https://example.invalid/repo/pull/1"
+			if state == "pull_request" {
+				integration["pull_request_url"] = prURL
+			}
+			if state == "pr_without_url" {
+				integration["state"] = "pull_request"
+			}
+			task := map[string]any{"id": "t1", "project_id": "p1", "status": "needs_review", "integration": integration,
+				"action_needed": "Captured Git lane is unavailable", "delivery_assessment": map[string]any{"state": "unavailable"}}
+			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet && r.URL.Path == "/v3/workers/w1/runs/r1" {
+					_ = json.NewEncoder(w).Encode(map[string]any{"run": map[string]any{"status": "succeeded", "review": map[string]any{"project_id": "p1", "task_id": "t1"}}})
+					return
+				}
+				if r.Method != http.MethodGet || r.URL.Path != "/v3/projects/p1/tasks/t1" {
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"task": task})
+			})
+			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			r = r.WithContext(context.WithValue(r.Context(), productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: "acct", UserID: "user", Scopes: []string{"sessions:read"}}))
+			raw, err := controlMCPGetJob(&controlMCPCall{request: r, next: h}, map[string]any{"job_id": "worker/w1/r1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := controlMCPMap(raw)
+			result := controlMCPMap(out["result"])
+			next, _ := out["next"].(string)
+			if state == "pr_without_url" {
+				if result["delivery_state"] != "unavailable" || !strings.Contains(next, "swarm_deliver_job") || out["action_needed"] == nil {
+					t.Fatalf("URL-less PR claimed delivered: %+v", out)
+				}
+				return
+			}
+			if result["delivery_state"] != state || out["action_needed"] != nil || strings.Contains(next, "swarm_deliver_job") {
+				t.Fatalf("delivered job invites redelivery: %+v", out)
+			}
+			if state == "pull_request" && (controlMCPMap(result["integration"])["pull_request_url"] != prURL || !strings.Contains(next, "delivered as a pull request") || !strings.Contains(next, prURL)) {
+				t.Fatalf("PR delivery lost URL or guidance: %+v", out)
+			}
+		})
+	}
+}
+
+// Purpose: inspectTaskGitStateContext must use completed delivery receipts before
+// consulting a local lane, even when its session/store is no longer available.
+// Threat: a delivered PR becomes unavailable after cleanup or a branch switch.
+// This unit boundary is the narrowest proof of the early return; it does not
+// claim fresh ancestry or authorize another integration from a historical receipt.
+func TestTaskGitDeliveredReceiptSkipsLane(t *testing.T) {
+	for _, state := range []string{"pull_request", "merged", "integrated", "already_integrated"} {
+		t.Run(state, func(t *testing.T) {
+			task := pebblestore.ProjectTaskRecord{Integration: &pebblestore.ProjectTaskIntegration{State: state, PullRequestURL: "https://example.invalid/repo/pull/1"}}
+			got := inspectTaskGitStateContext(context.Background(), task, nil)
+			if got.deliveryAssessment.State != state || got.deliveryAssessment.ReasonCode != "delivery_receipt" || got.actionNeeded != "" || len(got.deliveryAssessment.AllowedActions) != 0 || got.isIntegrated {
+				t.Fatalf("receipt replaced by lane readiness or fabricated ancestry: %+v", got)
+			}
+		})
+	}
+}

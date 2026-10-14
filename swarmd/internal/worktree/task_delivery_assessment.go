@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -79,6 +80,16 @@ func (d *deliveryInspector) run(path string, args ...string) (string, error) {
 // root or branch (including a detached HEAD): real movement, not a failure.
 var errLaneMoved = errors.New("captured lane moved")
 
+// A branch mismatch on the initial read is distinct from an unreadable lane.
+// It still unwraps to movement when encountered during the final re-read.
+type laneBranchMismatch struct{ actual, target string }
+
+func (e *laneBranchMismatch) Error() string {
+	return fmt.Sprintf("The folder is checked out on %s, not %s", e.actual, e.target)
+}
+
+func (e *laneBranchMismatch) Unwrap() error { return errLaneMoved }
+
 // lane reads the root, common directory, HEAD commit and HEAD's symbolic name
 // in one Git process: every Git call may be a sandbox exec, so one read per
 // lane keeps the assessment inside its time budget.
@@ -91,8 +102,11 @@ func (d *deliveryInspector) lane(path, branch string) (head, common string, err 
 	if len(lines) != 4 || len(lines[2]) < 40 {
 		return "", "", errors.New("unexpected lane read output")
 	}
-	if gitstatus.NormalizePath(lines[0]) != gitstatus.NormalizePath(path) || lines[3] != "refs/heads/"+branch {
+	if gitstatus.NormalizePath(lines[0]) != gitstatus.NormalizePath(path) {
 		return "", "", errLaneMoved
+	}
+	if lines[3] != "refs/heads/"+branch {
+		return "", "", &laneBranchMismatch{actual: strings.TrimPrefix(lines[3], "refs/heads/"), target: branch}
 	}
 	return lines[2], gitstatus.NormalizePath(lines[1]), nil
 }
@@ -108,6 +122,14 @@ func (d *deliveryInspector) inspectionFailure(a pebblestore.TaskDeliveryAssessme
 		return deliveryUnknown(a, "inspection_cancelled", "Assessment cancelled", "unknown")
 	}
 	return deliveryUnknown(a, code, reason, "unknown")
+}
+
+func (d *deliveryInspector) initialLaneFailure(a pebblestore.TaskDeliveryAssessment, err error) pebblestore.TaskDeliveryAssessment {
+	var mismatch *laneBranchMismatch
+	if errors.As(err, &mismatch) {
+		return d.inspectionFailure(a, "lane_branch_mismatch", mismatch.Error())
+	}
+	return d.inspectionFailure(a, a.ReasonCode, a.Reason)
 }
 
 func deliveryUnknown(a pebblestore.TaskDeliveryAssessment, code, reason, freshness string) pebblestore.TaskDeliveryAssessment {
@@ -168,10 +190,13 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	}
 	source, repo, err := d.lane(in.SourcePath, a.SourceBranch)
 	if err != nil {
-		return d.inspectionFailure(a, a.ReasonCode, a.Reason)
+		return d.initialLaneFailure(a, err)
 	}
 	target, targetRepo, err := d.lane(in.TargetPath, a.TargetBranch)
-	if err != nil || repo != targetRepo {
+	if err != nil {
+		return d.initialLaneFailure(a, err)
+	}
+	if repo != targetRepo {
 		return d.inspectionFailure(a, a.ReasonCode, a.Reason)
 	}
 	a.SourceOID, a.TargetOID = source, target

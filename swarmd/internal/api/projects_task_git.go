@@ -8,6 +8,20 @@ import (
 	"swarm/packages/swarmd/internal/worktree"
 )
 
+// taskDeliveredState reads the durable delivery receipt, not current local Git
+// readiness. A PR without its URL is not a completed delivery.
+func taskDeliveredState(state, prURL string) string {
+	switch state {
+	case "pull_request":
+		if strings.TrimSpace(prURL) != "" {
+			return state
+		}
+	case "merged", "integrated", "already_integrated":
+		return state
+	}
+	return ""
+}
+
 func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
 	return inspectTaskGitStateContext(context.Background(), task, db)
 }
@@ -21,6 +35,12 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		State: "unavailable", ReasonCode: "lane_unavailable", Reason: "Authenticated captured task lane is unavailable", Freshness: "unknown", AllowedActions: []string{},
 	}
 	res := taskGitState{worktreeBranch: task.WorktreeBranch, worktreeName: task.WorktreeName, gitStatus: "unknown", deliveryAssessment: a}
+	if receipt := task.Integration; receipt != nil && taskDeliveredState(receipt.State, receipt.PullRequestURL) != "" {
+		// The receipt describes delivery already performed. Do not inspect a
+		// possibly moved or removed checkout as if delivery were still pending.
+		a.State, a.ReasonCode, a.Reason = receipt.State, "delivery_receipt", "Job delivery recorded"
+		return res
+	}
 	if db == nil || task.SessionID == "" || task.Archived || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" || task.Agent == "image" || task.Agent == "video" || task.Agent == "sound" || task.Agent == "audio" {
 		return res
 	}

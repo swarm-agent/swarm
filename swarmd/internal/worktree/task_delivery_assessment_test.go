@@ -498,3 +498,32 @@ func TestPrepareTaskIntegrationUntrackedParentFiles(t *testing.T) {
 		}
 	})
 }
+
+// Purpose: AssessTaskDelivery must distinguish a readable folder on another
+// branch from an unreadable lane, without authorizing writes or changing Git.
+// Threat: publish --sync's forge target is misreported as a generic read failure.
+// Owners: deliveryInspector.lane and assessDeliveryWithHook; isolated real Git
+// is the narrowest layer proving the branch observation and unchanged refs.
+func TestTaskDeliveryBranchMismatch(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			in, git := deliveryFixture(t)
+			in.Identity.TargetBranch = "main"
+			if missing {
+				in.TargetPath = filepath.Join(t.TempDir(), "missing")
+			}
+			refs := git(in.SourcePath, "show-ref")
+			got := AssessTaskDelivery(context.Background(), in)
+			wantCode, wantReason := "lane_branch_mismatch", "The folder is checked out on dev, not main"
+			if missing {
+				wantCode, wantReason = "lane_unavailable", "Captured Git lane is unavailable"
+			}
+			if got.State != "unavailable" || got.ReasonCode != wantCode || got.Reason != wantReason || len(got.AllowedActions) != 0 || got.ObservedAt != 0 {
+				t.Fatalf("wrong lane diagnosis: %+v", got)
+			}
+			if refs != git(in.SourcePath, "show-ref") {
+				t.Fatal("assessment mutated refs")
+			}
+		})
+	}
+}
