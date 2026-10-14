@@ -218,7 +218,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 
 	for i, command := range b.Setup {
 		log.add("$ %s\n", command)
-		out, err := m.runner.RunCombined(ctx, engine, "exec", "-u", "0", "-w", "/", name, "/bin/sh", "-c", command)
+		out, err := m.runner.RunCombined(ctx, engine, append([]string{"exec", "-u", "0", "-w", "/", name}, withSandboxUmask("/bin/sh", "-c", command)...)...)
 		log.output(out)
 		if err != nil {
 			return result(fmt.Errorf("setup command %d failed (%s): %w", i+1, truncateCommand(command), err))
@@ -229,7 +229,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	// login profile resets PATH (Debian drops Go's bin folder, for one).
 	// Put the image's own PATH back for login shells.
 	log.add("$ keep the image's PATH for login shells\n")
-	out, err := m.runner.RunCombined(ctx, engine, "exec", "-u", "0", "-w", "/", name, "/bin/sh", "-c", envProfileScript)
+	out, err := m.runner.RunCombined(ctx, engine, append([]string{"exec", "-u", "0", "-w", "/", name}, withSandboxUmask("/bin/sh", "-c", envProfileScript)...)...)
 	log.output(out)
 	if err != nil {
 		return result(fmt.Errorf("could not keep the image's PATH for login shells: %w", err))
@@ -240,7 +240,7 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 	// bash and git.
 	check := "git --version && bash --version | head -n 1"
 	log.add("$ %s (as an unprivileged user, in a login shell)\n", check)
-	out, err = m.runner.RunCombined(ctx, engine, "exec", "-u", strconv.Itoa(m.cfg.UID)+":"+strconv.Itoa(m.cfg.GID), "-e", "HOME=/tmp", "-w", "/tmp", name, "bash", "-lc", check)
+	out, err = m.runner.RunCombined(ctx, engine, append([]string{"exec", "-u", strconv.Itoa(m.cfg.UID) + ":" + strconv.Itoa(m.cfg.GID), "-e", "HOME=/tmp", "-w", "/tmp", name}, withSandboxUmask("bash", "-lc", check)...)...)
 	log.output(out)
 	if err != nil {
 		return result(fmt.Errorf("the environment must provide bash and git for an unprivileged user (add them in setup, for example apt-get install -y bash git): %w", err))

@@ -12,8 +12,6 @@ import (
 	"unicode"
 )
 
-const sandboxUmaskScript = `umask 0007 && exec "$@"`
-
 // initializeHome repairs Docker's root-owned volume root without giving agent
 // processes capabilities. Only the dedicated home volume reaches the helper;
 // no project, daemon storage, network, or image entrypoint is exposed to it.
@@ -65,15 +63,14 @@ func (m *Manager) configureGitIdentity(ctx context.Context, name string) error {
 	}
 	// One engine call checks and fills both components, with explicit HOME and
 	// positional arguments (identity text is never interpreted as shell code).
-	const script = `umask 0007
-for key in user.name user.email; do
+	const script = `for key in user.name user.email; do
  value=$(git config --global --get "$key")
  status=$?
  if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then exit "$status"; fi
  if [ -z "$value" ]; then git config --global "$key" "$1" || exit "$?"; fi
  shift
 done`
-	if _, err := m.runner.Run(ctx, m.cfg.Engine, "exec", "-e", "HOME="+sandboxHome, "-w", sandboxHome, name, "sh", "-c", script, "swarm-identity", values[0], values[1]); err != nil {
+	if _, err := m.runner.Run(ctx, m.cfg.Engine, append([]string{"exec", "-e", "HOME=" + sandboxHome, "-w", sandboxHome, name}, withSandboxUmask("sh", "-c", script, "swarm-identity", values[0], values[1])...)...); err != nil {
 		return fmt.Errorf("configure sandbox Git identity: %w", err)
 	}
 	return nil

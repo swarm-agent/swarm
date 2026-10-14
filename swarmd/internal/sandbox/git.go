@@ -180,8 +180,7 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		execArgs = append(execArgs, "timeout", "--kill-after=2", fmt.Sprintf("%d", secs))
 	}
 	// Keep new files writable by the daemon's shared group, never by others.
-	execArgs = append(execArgs, "sh", "-c", sandboxUmaskScript, "swarm-git", "git")
-	execArgs = append(execArgs, cmd.Args[1:]...)
+	execArgs = append(execArgs, withSandboxUmask(append([]string{"git"}, cmd.Args[1:]...)...)...)
 
 	enginePath, err := exec.LookPath(m.cfg.Engine)
 	if err != nil {

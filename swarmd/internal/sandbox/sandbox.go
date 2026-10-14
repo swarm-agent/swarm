@@ -804,7 +804,7 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }
 	}
 	return provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
-		Command:      append([]string{"sh", "-c", sandboxUmaskScript, "swarm-exec"}, req.Command...),
+		Command:      withSandboxUmask(req.Command...),
 		WorkingDir:   req.WorkingDir,
 		Env:          req.Env,
 		SecretValues: req.SecretValues,

@@ -8,6 +8,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Keep both jobs' changelog entries when Git merges or rebases overlapping additions. Docs impact: none
 - Jobs sent back from landing now name the exact rebase target and commit, and include the commands needed to reproduce failed checks. Docs impact: none
+- Worker shell commands now keep new files writable by Swarm's shared group, including Git operations and background commands, without exposing them to other users. Docs impact: none
 - Outside AIs can pin a worker's model or choose a model for one job, clear pins without staged review, and see the model and its source preserved on job receipts. Docs impact: none
 - Delivering a stopped landing job starts a fresh attempt, delivery reports the real queue state or landed commit, and jobs still running a follow-up wait in the queue instead of failing. Docs impact: none
 - Fix automatic landing rejecting valid commits when sandbox output redaction mistook Git configuration for secrets, and make invalid landing evidence report the failing field. Docs impact: none

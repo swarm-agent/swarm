@@ -84,11 +84,9 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 }
 
 // sandboxBashScript merges stderr into stdout (preserving order, as the host
-// path does), applies the usual umask (container exec starts with 0, which
-// would leave files in the host project world-writable) and gives the command
-// private disposable scratch.
+// path does) and gives the command private disposable scratch. It must preserve
+// the shared-group umask established by Manager.Exec for shells and descendants.
 const sandboxBashScript = `exec 2>&1
-umask 022
 d=$(mktemp -d "${TMPDIR:-/tmp}/swarm-command-XXXXXX") || exit 1
 export TMPDIR="$d" TMP="$d" TEMP="$d"
 bash -lc "$1"
