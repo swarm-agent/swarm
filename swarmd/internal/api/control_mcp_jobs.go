@@ -640,6 +640,24 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 			out["next"] = "the job is finished and merged"
 		}
 	}
+	if principal, ok := PrincipalFromRequest(c.request); ok && c.server != nil {
+		if q, err := c.server.landingQueue(); err == nil {
+			entry, pos, err := q.Get(principal.AccountScopeID, controlMCPJobID(kind, a, b))
+			if err != nil {
+				return nil, err
+			}
+			if entry.State != "" {
+				out["delivery_state"] = entry.State
+				out["queue_position"] = pos
+				out["landed_commit"] = entry.Commit
+				out["delivery_reason"] = entry.Reason
+				out["checks"] = entry.Checks
+				if len(entry.Checks) == 0 && entry.State == "landed" {
+					out["checks_note"] = "checks: none defined"
+				}
+			}
+		}
+	}
 	return out, nil
 }
 

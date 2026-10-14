@@ -364,3 +364,22 @@ settings, repository preparation, sessions and SDK V3 streaming. The session-onl
 `ContainerSDKHandler` is not widened. Follow that guide for build, generated-secret
 login, persistence and focused validation; source availability is not evidence
 of a tested image or live provider run.
+
+### Serialized landing
+
+An administrator may select `install.sh workspace publish PATH COMMAND --land --auto`.
+The command's `update` receipt is `COMMIT BRANCH`; its `land` receipt is
+`LANDED COMMIT` or `MOVED`. Landing uses a regular fast-forward push, never force.
+PR mode remains the default for existing rules. `--auto` applies to every
+successful worker job with commits, including manually started jobs, not just
+scheduled jobs.
+
+Folder environments accept `checks` (up to ten shell commands, 4000 characters
+per command; never embed secrets) and `check_timeout_minutes` (default 20,
+maximum 60). Checks do not change image identity. Each folder's durable FIFO
+updates its base, rebases the job in its sandbox, runs checks as the sandbox
+user, then lands. Different folders may run concurrently. Three MOVED receipts
+stop that delivery with `base kept moving`. Conflicts and failing checks send
+worker follow-ups; the second rejection records `landing_stopped`. Job views
+include delivery state, queue position, landed commit, reason and check exit
+codes/output tails (4096 bytes). No defined checks are labelled explicitly.

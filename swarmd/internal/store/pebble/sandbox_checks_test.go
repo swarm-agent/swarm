@@ -31,3 +31,37 @@ func TestSandboxChecksDefinition(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: SandboxEnvironmentStore.Define must persist checks-only changes
+// without rebuilding or losing ready-image state, and reject foreign accounts
+// without mutation. A real temporary Pebble store proves durable postconditions.
+func TestSandboxChecksPersistWithoutBuild(t *testing.T) {
+	s := newSandboxEnvironmentStore(t)
+	folder := t.TempDir()
+	def := SandboxEnvironmentDefinition{BaseImage: "ubuntu:24.04"}
+	first, _, err := s.Define("a", folder, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Finish(folder, first.Hash, "image", "/usr/bin", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	def.Checks = []string{"false"}
+	def.CheckTimeoutMinutes = 60
+	updated, build, err := s.Define("a", folder, def)
+	if err != nil || build || updated.Status != SandboxEnvironmentReady || updated.ReadyImage != "image" {
+		t.Fatalf("%+v build=%v err=%v", updated, build, err)
+	}
+	got, found, err := s.Get(folder)
+	if err != nil || !found || len(got.Definition.Checks) != 1 || got.Definition.Checks[0] != "false" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	def.Checks = []string{"true"}
+	if _, _, err = s.Define("foreign", folder, def); err == nil {
+		t.Fatal("foreign update accepted")
+	}
+	got, _, _ = s.Get(folder)
+	if got.Definition.Checks[0] != "false" {
+		t.Fatal("foreign mutation")
+	}
+}

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"swarm/packages/swarmd/internal/memory"
+	"swarm/packages/swarmd/internal/publish"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,6 +138,8 @@ type Server struct {
 	signalSinks                 *pebblestore.SignalSinkStore
 	outboxStatus                func() outbox.Status
 	publishConfig               string
+	landQueueMu                 sync.Mutex
+	landQueue                   *publish.Queue
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub

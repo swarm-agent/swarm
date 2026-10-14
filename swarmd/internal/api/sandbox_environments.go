@@ -86,6 +86,20 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusConflict, errors.New("this machine's sandbox is not active, so no environment can be built or used"))
 			return
 		}
+		if req.BaseImage == "" {
+			current, found, err := s.sandboxEnvironments.Get(root)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
+			if !found || current.Account != principal.AccountScopeID {
+				writeError(w, http.StatusBadRequest, errors.New("base_image required for a new environment"))
+				return
+			}
+			req.BaseImage = current.Definition.BaseImage
+			req.Setup = current.Definition.Setup
+			req.Env = current.Definition.Env
+		}
 		env, build, err := s.sandboxEnvironments.Define(principal.AccountScopeID, root, pebblestore.SandboxEnvironmentDefinition{BaseImage: req.BaseImage, Setup: req.Setup, Env: req.Env, Checks: req.Checks, CheckTimeoutMinutes: req.CheckTimeoutMinutes})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

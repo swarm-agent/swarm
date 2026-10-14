@@ -34,6 +34,7 @@ type SendBackError struct{ Reason string }
 func (e *SendBackError) Error() string { return e.Reason }
 
 type QueueHooks struct {
+	Finished func(context.Context, Entry) error
 	Prepare  func(context.Context, *Entry) error // update, sandbox rebase and checks
 	Land     func(context.Context, Entry) (LandResult, error)
 	SendBack func(context.Context, Entry) error // canonical worker follow-up
@@ -215,5 +216,29 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 		if err = q.save(e); err != nil {
 			return err
 		}
+		if h.Finished != nil {
+			if err = h.Finished(ctx, e); err != nil {
+				return err
+			}
+		}
 	}
+}
+
+// Pending returns one active entry per folder for bounded daemon scheduling.
+func (q *Queue) Pending(account string) ([]Entry, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	entries, err := q.load(account)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var out []Entry
+	for _, e := range entries {
+		if active(e) && !seen[e.Request.Folder] {
+			seen[e.Request.Folder] = true
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }

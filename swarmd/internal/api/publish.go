@@ -77,6 +77,9 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 	if strings.TrimSpace(title) == "" {
 		title = "Swarm job " + jobID
 	}
+	if rule.Mode == "land" {
+		return c.enqueueLand(rule, publish.Request{Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report})
+	}
 	res, err := publish.Run(c.request.Context(), rule, publish.Request{
 		Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report,
 	})
@@ -143,6 +146,24 @@ func (s *Server) NewAutoPublisher(feed outbox.Feed, state *pebblestore.Store) *A
 
 // Run delivers until ctx ends. It is idle on machines without publish rules.
 func (p *AutoPublisher) Run(ctx context.Context) {
+	// Landing can take minutes; never block ingestion of other finished jobs.
+	landingDone := make(chan struct{})
+	go func() {
+		defer close(landingDone)
+		for ctx.Err() == nil {
+			if err := p.landPending(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("landing queue: %v", err)
+			}
+			timer := time.NewTimer(30 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+	}()
+	defer func() { <-landingDone }()
 	failures := 0
 	for {
 		wait := 30 * time.Second
