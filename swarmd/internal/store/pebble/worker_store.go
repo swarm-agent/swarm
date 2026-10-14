@@ -143,6 +143,7 @@ type WorkerRevisionRecord struct {
 }
 
 type WorkerRunRecord struct {
+	ModelSource        string                       `json:"model_source,omitempty"`
 	Placement          *WorkerRunPlacement          `json:"placement,omitempty"`
 	ModelProfile       *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	CancelRequested    bool                         `json:"cancel_requested,omitempty"`

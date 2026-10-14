@@ -125,6 +125,7 @@ var controlMCPRoutes = []string{
 	"PUT v3/workers/*",
 	"GET v3/workers/*/summary",
 	"POST v3/workers/*/activate",
+	"PUT v3/workers/*/model",
 	"POST v3/workers/*/automations/*/enable",
 	"POST v3/workers/*/automations/*/disable",
 	"POST v3/workers/*/pause",

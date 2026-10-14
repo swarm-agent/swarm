@@ -279,7 +279,16 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
-	req.ResolvedModelProfile, err = s.ResolveRoleModelProfile(account, w.Role, w.ModelProfile)
+	selected := w.ModelProfile
+	req.ModelSource = "pinned"
+	if selected == nil || selected.UseAccountDefault || selected.ActionUseAccountDefault {
+		req.ModelSource = "role default"
+	}
+	if req.ModelOverride != nil {
+		selected = req.ModelOverride
+		req.ModelSource = "job override"
+	}
+	req.ResolvedModelProfile, err = s.ResolveRoleModelProfile(account, w.Role, selected)
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}

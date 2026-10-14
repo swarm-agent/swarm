@@ -263,6 +263,7 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 					if run := controlMCPMap(raw); run != nil {
 						runID, _ := run["id"].(string)
 						job := controlMCPPick(run, "status", "request_source")
+						job["model"] = controlMCPRunModel(run)
 						job["job_id"] = controlMCPJobID(controlMCPJobWorker, id, runID)
 						jobs = append(jobs, job)
 					}
@@ -276,6 +277,36 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 }
 
 func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error) {
+	if raw, exists := args["model"]; exists && raw != nil {
+		if _, err := c.workerModel(raw); err != nil {
+			return nil, err
+		}
+	}
+	if ref := controlMCPString(args, "worker"); ref != "" {
+		worker, err := c.resolveWorker(ref)
+		if err != nil {
+			return nil, err
+		}
+		return c.deployWorkerModel(worker, args)
+	}
+	if name := controlMCPString(args, "name"); name != "" {
+		workers, err := c.listWorkers()
+		if err != nil {
+			return nil, err
+		}
+		var match map[string]any
+		for _, worker := range workers {
+			if worker["name"] == name {
+				if match != nil {
+					return nil, controlMCPToolFailure("several workers have that name; pass worker id")
+				}
+				match = worker
+			}
+		}
+		if match != nil {
+			return c.deployWorkerModel(match, args)
+		}
+	}
 	if preset := strings.ToLower(controlMCPString(args, "preset")); preset != "" {
 		if controlMCPString(args, "name") != "" || controlMCPString(args, "instructions") != "" {
 			return nil, controlMCPToolFailure("give either preset, or name, role and instructions for a custom worker")
@@ -284,7 +315,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"worker": controlMCPWorkerView(worker), "deployed": true}, nil
+		return c.deployWorkerModel(worker, args)
 	}
 	name, instructions, role := controlMCPString(args, "name"), controlMCPString(args, "instructions"), controlMCPString(args, "role")
 	if name == "" || instructions == "" || role == "" {
@@ -298,6 +329,13 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	}
 	if description := controlMCPString(args, "description"); description != "" {
 		body["description"] = description
+	}
+	if raw := args["model"]; raw != nil {
+		profile, err := c.workerModel(raw)
+		if err != nil {
+			return nil, err
+		}
+		body["model_profile"] = profile
 	}
 	created, err := c.dispatch(http.MethodPost, "/v3/workers", nil, body)
 	if err != nil {
@@ -315,7 +353,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	if err != nil {
 		return nil, controlMCPToolFailure("worker %s created but not activated: %s", workerID, err.Error())
 	}
-	return map[string]any{"worker": controlMCPWorkerView(controlMCPMap(activated["worker"])), "deployed": true}, nil
+	return c.deployWorkerModel(controlMCPMap(activated["worker"]), map[string]any{})
 }
 
 // ---- jobs -----------------------------------------------------------------
@@ -323,6 +361,14 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err := c.requireTokenScope("sessions:write"); err != nil {
 		return nil, err
+	}
+	var override *pebblestore.SessionModelProfileSnapshot
+	if raw, exists := args["model"]; exists {
+		var err error
+		override, err = c.workerModel(raw)
+		if err != nil {
+			return nil, err
+		}
 	}
 	brief := strings.TrimSpace(controlMCPString(args, "brief"))
 	if brief == "" {
@@ -360,6 +406,7 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 		"input":           map[string]any{"project_id": place.projectID},
 		"idempotency_key": key,
 		"workspace_path":  place.path,
+		"model_profile":   override,
 	})
 	if err != nil {
 		return nil, err
@@ -440,6 +487,7 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	state := map[string]any{}
 	status := ""
 	if refs.run != nil {
+		state["model"] = controlMCPRunModel(refs.run)
 		status, _ = refs.run["status"].(string)
 		if errText, _ := refs.run["error"].(string); strings.TrimSpace(errText) != "" {
 			state["error"] = controlMCPTruncate(errText, 400)
@@ -1219,9 +1267,11 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deploy_worker", Title: "Deploy a worker",
-			Description: "Make a worker ready on this box: preset coder, designer or finder (already there on most boxes), or a custom worker with a name, a role (coder, designer or finder: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder.",
+			Description: "Make a worker ready on this box: preset coder, designer or finder (already there on most boxes), or a custom worker with a name, a role (coder, designer or finder: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to update only the pin, or model: null to clear it (no staged review).",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"preset":       map[string]any{"type": "string", "enum": controlMCPPresetWorkers},
+				"worker":       workerRef,
+				"model":        controlMCPWorkerModelSchema(true),
 				"name":         controlMCPStringProp("Custom worker name.", 0, 256),
 				"role":         map[string]any{"type": "string", "enum": controlMCPPresetWorkers, "description": "Custom worker's role."},
 				"instructions": controlMCPStringProp("Custom worker's standing instructions.", 0, 20000),
@@ -1235,6 +1285,7 @@ func controlMCPJobTools() []controlMCPTool {
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),
+				"model":           controlMCPWorkerModelSchema(false),
 				"project":         project,
 				"workspace":       workspace,
 				"files":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Path prefixes the job may change (relative to the folder); written into the brief as its scope."},
@@ -1368,7 +1419,7 @@ func (c *controlMCPCall) roleModels() map[string]map[string]any {
 	assignments := controlMCPMap(settings["agent_model_settings"])
 	out := map[string]map[string]any{}
 	for role, slot := range controlMCPAgentModelRoles {
-		if entry := controlMCPPick(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]), "provider", "model", "thinking"); len(entry) > 0 {
+		if entry := controlMCPPick(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]), "provider", "model", "thinking", "service_tier"); len(entry) > 0 {
 			out[role] = entry
 		}
 	}
@@ -1381,9 +1432,10 @@ func (c *controlMCPCall) roleModels() map[string]map[string]any {
 func controlMCPWorkerModel(worker map[string]any, roleModels map[string]map[string]any) map[string]any {
 	profile := controlMCPMap(worker["model_profile"])
 	if profile != nil {
-		if follows, _ := profile["use_account_default"].(bool); !follows {
+		if follows, _ := profile["use_account_default"].(bool); !follows && profile["action_use_account_default"] != true {
 			if pinned := controlMCPPick(controlMCPMap(profile["action"]), "provider", "model", "thinking"); len(pinned) > 0 {
-				pinned["source"] = "worker"
+				pinned = controlMCPRoleModel(controlMCPMap(profile["action"]))
+				pinned["source"] = "pinned"
 				return pinned
 			}
 		}
@@ -1396,8 +1448,8 @@ func controlMCPWorkerModel(worker map[string]any, roleModels map[string]map[stri
 	if model == nil {
 		return nil
 	}
-	out := controlMCPPick(model, "provider", "model", "thinking")
-	out["source"] = "role " + controlMCPWorkerRoleSlots[role]
+	out := controlMCPRoleModel(model)
+	out["source"] = "role default"
 	return out
 }
 

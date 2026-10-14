@@ -274,6 +274,12 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleWorkerDelete(w, r, p, workerID)
+	case "model":
+		if len(parts) != 2 {
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+		s.handleWorkerModelPin(w, r, p, workerID)
 	case "direct", "request":
 		if len(parts) != 2 {
 			writeError(w, http.StatusNotFound, errors.New("not found"))
@@ -1296,11 +1302,12 @@ type setAutomationEnabledRequestBody struct {
 // workspace this job works in; without either, the job uses its automation's
 // workspace or the worker's primary binding.
 type directWorkerRequestBody struct {
-	Prompt         string         `json:"prompt,omitempty"`
-	Input          map[string]any `json:"input,omitempty"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	WorkspaceID    string         `json:"workspace_id,omitempty"`
-	WorkspacePath  string         `json:"workspace_path,omitempty"`
+	ModelProfile   *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
+	Prompt         string                                   `json:"prompt,omitempty"`
+	Input          map[string]any                           `json:"input,omitempty"`
+	IdempotencyKey string                                   `json:"idempotency_key,omitempty"`
+	WorkspaceID    string                                   `json:"workspace_id,omitempty"`
+	WorkspacePath  string                                   `json:"workspace_path,omitempty"`
 }
 
 type testWorkerRunRequestBody struct {
@@ -1745,7 +1752,7 @@ func (s *Server) handleWorkerDirectRequest(w http.ResponseWriter, r *http.Reques
 		workerHTTPError(w, err)
 		return
 	}
-	recorded, err := execution.Dispatch(r.Context(), p.AccountScopeID, p.UserID, pebblestore.WorkerRunAdmission{WorkerID: workerID, RequestSource: "direct", Input: inputMap, IdempotencyKey: idempKey, WorkspaceID: workspaceID})
+	recorded, err := execution.Dispatch(r.Context(), p.AccountScopeID, p.UserID, pebblestore.WorkerRunAdmission{WorkerID: workerID, RequestSource: "direct", Input: inputMap, IdempotencyKey: idempKey, WorkspaceID: workspaceID, ModelOverride: req.ModelProfile})
 	if err != nil {
 		workerHTTPError(w, err)
 		return
