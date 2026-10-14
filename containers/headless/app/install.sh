@@ -129,7 +129,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
        install.sh workspace add PATH [--for-user NAME] | remove PATH | list
-       install.sh workspace publish PATH COMMAND [--auto] [--sync] | publish PATH --off
+       install.sh workspace publish PATH COMMAND [--land] [--auto] [--sync] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
                 ran sudo); used for the AI connection and workspace folders
@@ -228,7 +228,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    the machine up runs this as root; Swarm never changes the
                    machine itself. Then register the folder in place with
                    swarm_add_workspace. remove reverses it.
-  workspace publish PATH COMMAND [--auto] [--sync]
+  workspace publish PATH COMMAND [--land] [--auto] [--sync]
                    deliver jobs in PATH as pull requests instead of merging
                    them into the folder: Swarm runs COMMAND (root-owned,
                    outside home folders) on this machine with the job in
@@ -1186,9 +1186,10 @@ workspace() {
       # Jobs in PATH are delivered as pull requests by COMMAND instead of a
       # local merge; --auto delivers each finished job with commits unasked;
       # --sync starts each job from the forge's latest base branch.
+      # --land selects fast-forward landing instead of pull requests.
       # COMMAND runs on this machine as Swarm's user, never in a sandbox.
-      local usage="usage: install.sh workspace publish PATH COMMAND [--auto] [--sync] | publish PATH --off"
-      (( $# >= 3 && $# <= 5 )) || die "$usage"
+      local usage="usage: install.sh workspace publish PATH COMMAND [--land] [--auto] [--sync] | publish PATH --off"
+      (( $# >= 3 && $# <= 6 )) || die "$usage"
       local path=$2 command=$3 options='' flag line
       shift 3
       workspace_listed | grep -qxF "$path" || die "$path is not a Swarm workspace folder on this machine (install.sh workspace add $path)"
@@ -1205,6 +1206,7 @@ workspace() {
       fi
       for flag; do
         case $flag in
+          --land) options+=${options:+,}land ;;
           --auto) options+=${options:+,}auto ;;
           --sync) options+=${options:+,}sync ;;
           *) rm -f "$PUBLISH.new"; die "$usage" ;;
@@ -1215,9 +1217,9 @@ workspace() {
       [[ $(stat -c %u "$command") == 0 && $(( 8#$(stat -c %a "$command") & 8#022 )) == 0 ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be owned by root and writable only by root"; }
       printf '%s\t%s%s\n' "$path" "$command" "${options:+$'\t'$options}" >>"$PUBLISH.new"
       mv -f "$PUBLISH.new" "$PUBLISH"
-      echo "Jobs in $path are delivered as pull requests by $command${options:+ ($options)}."
+      echo "Jobs in $path use publish command $command${options:+ ($options)}."
       ;;
-    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--auto] [--sync] | publish PATH --off" ;;
+    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--land] [--auto] [--sync] | publish PATH --off" ;;
   esac
 }
 

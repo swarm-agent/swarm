@@ -28,7 +28,8 @@ const ConfigEnv = "SWARM_PUBLISH_CONFIG"
 type Rule struct {
 	Folder  string `json:"folder"`
 	Command string `json:"command"`
-	// Auto delivers a scheduled job that finished with commits without
+	Mode    string `json:"mode"`
+	// Auto delivers a worker job that finished with commits without
 	// waiting for an AI to call swarm_deliver_job.
 	Auto bool `json:"auto"`
 	// Sync starts each worker job from the forge's latest base branch (the
@@ -50,6 +51,7 @@ type Request struct {
 	JobID      string
 	Branch     string // the job's branch in Folder
 	Head       string // the commit to publish
+	BaseCommit string // the exact base used for landing
 	BaseBranch string // the branch the job started from
 	Title      string
 	Body       string // the job's report
@@ -68,7 +70,7 @@ var (
 )
 
 // Load reads the rules: one per line, `FOLDER<TAB>COMMAND[<TAB>OPTIONS]`, where
-// OPTIONS is a comma-separated list of auto and sync; blank lines and
+// OPTIONS is a comma-separated list of land, auto and sync; blank lines and
 // #comments are ignored. A missing file is no rules. The file must be
 // owned by root and not writable by anyone else, like the commands it names:
 // only the machine's administrator decides what runs.
@@ -97,16 +99,18 @@ func Load(path string) ([]Rule, error) {
 		if len(fields) < 2 || len(fields) > 3 {
 			return nil, fmt.Errorf("publish config line %d: want FOLDER<TAB>COMMAND[<TAB>OPTIONS]", line)
 		}
-		rule := Rule{Folder: filepath.Clean(strings.TrimSpace(fields[0])), Command: strings.TrimSpace(fields[1])}
+		rule := Rule{Folder: filepath.Clean(strings.TrimSpace(fields[0])), Command: strings.TrimSpace(fields[1]), Mode: "pr"}
 		if len(fields) == 3 {
 			for _, option := range strings.Split(fields[2], ",") {
 				switch strings.TrimSpace(option) {
+				case "land":
+					rule.Mode = "land"
 				case "auto":
 					rule.Auto = true
 				case "sync":
 					rule.Sync = true
 				default:
-					return nil, fmt.Errorf("publish config line %d: options are auto and sync, comma-separated", line)
+					return nil, fmt.Errorf("publish config line %d: options are land, auto and sync, comma-separated", line)
 				}
 			}
 		}
