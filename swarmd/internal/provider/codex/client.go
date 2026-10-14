@@ -1531,7 +1531,15 @@ func (c *Client) send(ctx context.Context, record pebblestore.CodexAuthRecord, p
 }
 
 func shouldRetryTransportStatus(statusCode int, decoded map[string]any) bool {
-	return transientProviderFailure(statusCode, nil)
+	switch statusCode {
+	case http.StatusForbidden:
+		if len(decoded) == 0 {
+			return true
+		}
+		return strings.TrimSpace(asString(decoded["raw_body"])) == ""
+	default:
+		return statusCode >= http.StatusInternalServerError && statusCode <= 599
+	}
 }
 
 func openAIWebsocketShouldFallbackHTTP(statusCode int) bool {
