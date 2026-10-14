@@ -183,6 +183,9 @@ type Server struct {
 
 	codexOAuthMu       sync.Mutex
 	codexOAuthSessions map[string]*codexOAuthSession
+	// codexOAuthChanged is closed (and replaced) whenever a sign-in changes,
+	// so swarm_connect_chatgpt status wait_seconds wakes without polling.
+	codexOAuthChanged chan struct{}
 
 	shuttingDown           atomic.Bool
 	activeRunMu            sync.Mutex

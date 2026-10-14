@@ -30,12 +30,13 @@ const (
 type providerKeyTestAdapter struct {
 	id       string
 	takesKey bool
+	notReady bool
 }
 
 func (a providerKeyTestAdapter) ID() string { return a.id }
 
 func (a providerKeyTestAdapter) Status(context.Context) (provideriface.Status, error) {
-	status := provideriface.Status{ID: a.id, Ready: true}
+	status := provideriface.Status{ID: a.id, Ready: !a.notReady}
 	if a.takesKey {
 		status.AuthMethods = []provideriface.AuthMethod{{ID: "api", Label: "API key", CredentialType: "api"}}
 	} else {
@@ -218,7 +219,10 @@ func assertNoKeyInResponse(t *testing.T, w *httptest.ResponseRecorder, keys ...s
 // Requirement: an AI on Swarm Control can list providers (read) and ask for a
 // provider key link (manage, owner-only like other credential tools); read and
 // write AI keys never see the link tool, a connection without admin cannot get
-// a link, and relay clients are never offered it. Threat: a lower grant
+// a link, and relay clients are never offered it. With no provider ready,
+// list_providers says what to do next: ChatGPT sign-in first for a key that
+// can call swarm_connect_chatgpt (write), the setup page or install.sh key
+// otherwise. Threat: a lower grant
 // steering which provider account every agent runs on. Owners: controlMCPTools,
 // remote.ToolScope/localOnlyTools, controlMCPRequestProviderKey. In-process MCP
 // through ContainerSDKHandler with real token stores is the narrowest layer
@@ -250,15 +254,28 @@ func TestControlMCPProviderKeyToolScopes(t *testing.T) {
 		}
 		return token
 	}
+	// No provider can run yet, so list_providers adds its next step.
+	ready := s.providers
+	s.providers = registry.New(providerKeyTestAdapter{id: "fakeai", takesKey: true, notReady: true})
 	for _, level := range []string{"read", "write"} {
 		scopes, _ := aiKeyScopes(level)
 		call := controlMCPTestCaller(t, s, mint(scopes))
 		if text, isErr := call("swarm_request_provider_key", map[string]any{"provider": "fakeai"}); !isErr || !strings.Contains(text, "swarm:manage") {
 			t.Fatalf("%s key got a link: %s", level, text)
 		}
-		if text, isErr := call("swarm_list_providers", map[string]any{}); isErr {
+		text, isErr := call("swarm_list_providers", map[string]any{})
+		if isErr {
 			t.Fatalf("%s key cannot list providers: %s", level, text)
 		}
+		if !strings.Contains(text, "No provider is connected yet") || !strings.Contains(text, "install.sh key PROVIDER") ||
+			strings.Contains(text, "swarm_connect_chatgpt") != (level == "write") {
+			t.Fatalf("%s key next step without a provider: %s", level, text)
+		}
+	}
+	s.providers = ready
+	writeScopes, _ := aiKeyScopes("write")
+	if text, isErr := controlMCPTestCaller(t, s, mint(writeScopes))("swarm_list_providers", map[string]any{}); isErr || strings.Contains(text, `"next"`) {
+		t.Fatalf("next step with a ready provider: %s", text)
 	}
 	// A plain sessions token (no Swarm Control levels) lacks admin.
 	call := controlMCPTestCaller(t, s, mint([]string{"sessions:read", "sessions:write"}))

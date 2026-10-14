@@ -75,10 +75,11 @@ export class SwarmAuthNamespace {
   /**
    * Creates an AI key for Swarm Control (`/mcp` on the scoped-token gateway).
    * `read` keys see and call only read tools; `write` keys may also start and
-   * steer sessions; neither may approve tool calls or manage anything. `full`
+   * steer sessions and start the person's ChatGPT sign-in (they finish it in
+   * their own browser); neither may approve tool calls or manage anything. `full`
    * keys are for an AI the owner trusts to run the box: they also approve
-   * tool calls and manage models, workers, limits, custom agents, client app
-   * keys and ChatGPT sign-in. Every level reaches only `/mcp`. Lifetime
+   * tool calls and manage models, workers, limits, custom agents and client app
+   * keys. Every level reaches only `/mcp`. Lifetime
    * defaults to 30 days (at most 365). Owner only.
    */
   async createAIKey(params: { name: string; access: 'read' | 'write' | 'full'; expires_in_seconds?: number }): Promise<CreateScopedTokenResult> {

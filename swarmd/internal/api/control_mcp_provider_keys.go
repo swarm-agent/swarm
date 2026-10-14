@@ -131,6 +131,7 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 	}
 	sort.Strings(ids)
 	out := make([]map[string]any, 0, len(ids))
+	anyReady := false
 	for _, id := range ids {
 		entry := providers[id]
 		if _, ok := entry["stored_credentials"]; !ok {
@@ -139,9 +140,19 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 		if outcome := c.server.providerKeys.outcome(principal.AccountScopeID, id); outcome != nil {
 			entry["key_request"] = outcome
 		}
+		if ready, _ := entry["ready"].(bool); ready {
+			anyReady = true
+		}
 		out = append(out, entry)
 	}
-	return map[string]any{"providers": out}, nil
+	result := map[string]any{"providers": out}
+	if only == "" && !anyReady {
+		result["next"] = "No provider is connected yet: the person adds one on Swarm's setup page or by script on the machine (install.sh key PROVIDER)."
+		if c.levelAllows("swarm_connect_chatgpt") {
+			result["next"] = "No provider is connected yet: first offer the person to sign in with their ChatGPT plan (swarm_connect_chatgpt action start; give them the link and code at once, then action status until success); an API key, on Swarm's setup page or by script on the machine (install.sh key PROVIDER), is the alternative."
+		}
+	}
+	return result, nil
 }
 
 // waitForKeyRequest blocks up to seconds while the latest key link for this

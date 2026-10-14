@@ -72,7 +72,8 @@ claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp --h
 **Codex**: the installer prints the line (it reads the key from an
 environment variable).
 
-**Then tell your AI: "set up Swarm".** It checks your model key, asks which
+**Then tell your AI: "set up Swarm".** It checks for a model provider (offering
+ChatGPT sign-in with your plan first, an API key as the alternative), asks which
 folders your work is in, creates a project with them, and gives the coder a
 first job.
 
@@ -81,6 +82,7 @@ first job.
 | Tool | What it does |
 | --- | --- |
 | `swarm_list_providers`, `swarm_list_models` | which providers are ready; the model each worker role uses |
+| `swarm_connect_chatgpt` | sign in with your ChatGPT plan: you get a link and a code, and finish in your browser |
 | `swarm_set_agent_model` | change a role's model (only when you ask) |
 | `swarm_create_project` | a project: a name and your folders (nothing in them is changed) |
 | `swarm_set_environment`, `swarm_get_environment` | what a folder's jobs run in: a base image plus setup commands, built by Swarm |
@@ -88,7 +90,7 @@ first job.
 | `swarm_get_job` | wait for it; the result: branch, commits, files, report, cost, diff, transcript |
 | `swarm_message_job` | a follow-up in the same job: more to do, a correction, a redo |
 | `swarm_answer_job` | reply when a worker asks something |
-| `swarm_deliver_job` | merge the result into the folder (local git merge, never a push) |
+| `swarm_deliver_job` | deliver the result: a local git merge into the folder, or a pull request when you set up publishing for it (`install.sh workspace publish`); Swarm never pushes otherwise |
 | `swarm_request_media` | an image, video or sound |
 | `swarm_deploy_worker` | your own worker on top of the three: a name, a role, standing instructions |
 | `swarm_schedule_job` | a worker that runs a job on a schedule |

@@ -59,7 +59,8 @@ export const TOOL_SCOPES = {
   swarm_list_agents: SCOPE_READ,
   swarm_define_agent: SCOPE_MANAGE,
   swarm_create_client_key: SCOPE_MANAGE,
-  swarm_connect_chatgpt: SCOPE_MANAGE,
+  // ChatGPT sign-in is local only: the device never lists or forwards it.
+  swarm_connect_chatgpt: SCOPE_WRITE,
   swarm_list_providers: SCOPE_READ,
   swarm_request_provider_key: SCOPE_MANAGE,
   swarm_read_file: SCOPE_READ,

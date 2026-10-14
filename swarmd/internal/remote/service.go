@@ -83,7 +83,7 @@ var toolScopes = map[string]string{
 	"swarm_list_agents":            ScopeRead,
 	"swarm_define_agent":           ScopeManage,
 	"swarm_create_client_key":      ScopeManage,
-	"swarm_connect_chatgpt":        ScopeManage,
+	"swarm_connect_chatgpt":        ScopeWrite, // the person signs in in their own browser; local only
 	"swarm_list_providers":         ScopeRead,
 	"swarm_request_provider_key":   ScopeManage,
 	"swarm_read_file":              ScopeRead,
@@ -93,7 +93,8 @@ var toolScopes = map[string]string{
 	// Workers and jobs, the default surface: reading them and the machine's
 	// state is read; deploying workers, giving, answering, merging, stopping
 	// and scheduling jobs is write. Answering covers a worker's questions only,
-	// never a tool-call approval; merging is a local git merge, never a push.
+	// never a tool-call approval; delivering is a local git merge, or a pull
+	// request where the folder's owner set up publishing; Swarm itself never pushes.
 	"swarm_status":          ScopeRead,
 	"swarm_activity":        ScopeRead,
 	"swarm_list_runs":       ScopeRead,
@@ -113,9 +114,10 @@ var toolScopes = map[string]string{
 	"swarm_save_media":      ScopeWrite,
 }
 
-// localOnlyTools need the owner's admin authority, which the device token
-// never carries: they are neither listed nor forwarded for relay clients. A
-// full AI key on the machine itself uses them.
+// localOnlyTools are box setup that only a key on the machine itself may do
+// (the device token never carries the owner's admin): they are neither listed
+// nor forwarded for relay clients. On the machine, ChatGPT sign-in takes a
+// write AI key, the rest a full one.
 var localOnlyTools = map[string]bool{
 	"swarm_define_agent":         true,
 	"swarm_create_client_key":    true,

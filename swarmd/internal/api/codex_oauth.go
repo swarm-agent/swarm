@@ -383,6 +383,26 @@ func (s *Server) codexOAuthSet(sessionID string, session *codexOAuthSession) {
 	defer s.codexOAuthMu.Unlock()
 	s.codexOAuthPruneLocked()
 	s.codexOAuthSessions[sessionID] = session
+	s.codexOAuthNotifyLocked()
+}
+
+// codexOAuthChanges returns a channel closed at the next sign-in change.
+func (s *Server) codexOAuthChanges() <-chan struct{} {
+	s.codexOAuthMu.Lock()
+	defer s.codexOAuthMu.Unlock()
+	if s.codexOAuthChanged == nil {
+		s.codexOAuthChanged = make(chan struct{})
+	}
+	return s.codexOAuthChanged
+}
+
+// codexOAuthNotifyLocked wakes waiters on codexOAuthChanges. Callers hold
+// codexOAuthMu.
+func (s *Server) codexOAuthNotifyLocked() {
+	if s.codexOAuthChanged != nil {
+		close(s.codexOAuthChanged)
+		s.codexOAuthChanged = nil
+	}
 }
 
 func (s *Server) codexOAuthUpdate(sessionID string, update func(*codexOAuthSession)) {
@@ -398,6 +418,7 @@ func (s *Server) codexOAuthUpdate(sessionID string, update func(*codexOAuthSessi
 	}
 	update(session)
 	session.UpdatedAt = time.Now()
+	s.codexOAuthNotifyLocked()
 }
 
 func (s *Server) codexOAuthPruneLocked() {

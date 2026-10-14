@@ -844,16 +844,18 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_connect_chatgpt", Title: "Connect a ChatGPT account",
-			Description: "Connect a ChatGPT account as this box's model provider. action start returns a link and a code: give both to the person, who finishes sign-in in their own browser. Then call action status with login_id until status is success.",
+			Description: "Connect the person's ChatGPT plan as this box's model provider. action start returns a link and a code: give both to the person at once; they finish sign-in in their own browser. Then call action status with login_id (and wait_seconds) until status is success.",
 			InputSchema: controlMCPObject([]string{"action"}, map[string]any{
 				"action":   map[string]any{"type": "string", "enum": []string{"start", "status"}},
 				"login_id": controlMCPStringProp("From action start; required for status.", 0, 200),
+				"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPChatGPTMaxWaitSeconds,
+					"description": "With status: wait up to this many seconds while the person has not finished sign-in, returning as soon as it succeeds or fails."},
 			}),
 			Annotations: controlMCPWrites, call: controlMCPConnectChatGPT,
 		},
 		{
 			Name: "swarm_list_providers", Title: "List model providers and their keys",
-			Description: "Each provider: ready (it can run models now), whether it takes an API key, how many credentials are stored, the active credential's auth_type and status (signed in for a sign-in such as ChatGPT; verified, failed with a reason, or saved but not yet verified for an API key) and the latest key link from request_provider_key (waiting, saved, failed or expired). With provider and wait_seconds, waits while that link is still waiting for the person. Never key material.",
+			Description: "Each provider: ready (it can run models now), whether it takes an API key, how many credentials are stored, the active credential's auth_type and status (signed in for a sign-in such as ChatGPT; verified, failed with a reason, or saved but not yet verified for an API key) and the latest key link from request_provider_key (waiting, saved, failed or expired). With provider and wait_seconds, waits while that link is still waiting for the person. When none is ready, next says how to connect one. Never key material.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"provider": controlMCPStringProp("Only this provider.", 0, 100),
 				"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds,

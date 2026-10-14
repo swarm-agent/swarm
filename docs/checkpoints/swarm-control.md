@@ -40,7 +40,7 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | `swarm_get_job` (`wait_seconds`, `include_diff`, `include_transcript`) | `swarm:read` | `GET …/runs/{rid}`, the run's session (pending questions, an active follow-up run) and project task; when settled, the `swarm_task_result` view (branch, commits, files, report, cost, diff); `project_id`, `session_id`; the transcript is the session's latest messages |
 | `swarm_message_job` (message, `wait_seconds`) | `swarm:write` | `POST /v3/sessions/{id}/messages` in the job's session (a follow-up on the same branch after its current run); refused while a question is open |
 | `swarm_answer_job` | `swarm:write` | `POST /v3/sessions/{id}/permissions/{pid}/resolve` for an open `ask_user` question only, never a tool-call approval |
-| `swarm_deliver_job` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` (a local git merge) |
+| `swarm_deliver_job` | `swarm:write` | `POST /v3/projects/{pid}/tasks/{tid}/integrate` (a local git merge); when the folder has a publish rule (`install.sh workspace publish`), the owner's command opens a pull request instead; Swarm never pushes otherwise |
 | `swarm_stop_job` | `swarm:write` | `POST /v3/workers/{id}/runs/{rid}/cancel` (or `…/run/stop` for a media job) |
 | `swarm_schedule_job` (worker, brief, schedule, project, workspace) | `swarm:write` | `POST /v3/workers` with the schedule, `…/activate` bound to the folder, `…/automations/{aid}/enable` |
 | `swarm_request_media` (image, video, sound, project) | `swarm:write` | `POST /v3/projects/{pid}/tasks` (as `swarm_run_task`); returns `job_id` `media/<project>/<task>` |
@@ -48,10 +48,11 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | `swarm_set_environment` (project, workspace, base_image, setup, env, reset, `wait_seconds`) | `swarm:write` | `PUT /v3/sandbox-environments` (or `DELETE` with reset): stores the folder's definition and builds it in the background (setup as root in a temporary gVisor container on the sandbox network, no host folders; bash and git checked as the sandbox user; image `swarm-env:<hash>`, reused for the same definition); the folder's sandbox runs on its last ready image |
 | `swarm_get_environment` (`wait_seconds`, `include_log`) | `swarm:read` | `GET /v3/sandbox-environments`: definition, status, what the folder runs on, build log |
 
-`swarm_list_providers`, `swarm_request_provider_key` (full keys only), `swarm_list_models`,
+`swarm_list_providers`, `swarm_connect_chatgpt`, `swarm_request_provider_key` (full keys only), `swarm_list_models`,
 `swarm_set_agent_model`, `swarm_get_usage`, `swarm_list_projects`, `swarm_create_project`
 (registers new folders in place), `swarm_get_project`, `swarm_set_project_workspaces` and
-`swarm_manage_worker` (below) complete the default list.
+`swarm_manage_worker` (below; full keys only) complete the default list. A key lists only
+the tools its level allows.
 
 ## All tools
 
@@ -94,6 +95,7 @@ is `controlMCPCoreTools` in `control_mcp.go`; the job tools are in
 | `swarm_set_usage_limits` | `swarm:manage` | `POST /v3/usage/limits` (tool requires `usage:write`) |
 | `swarm_list_providers` (+ `wait_seconds` with `provider`) | `swarm:read` | `GET /v1/providers` plus credential metadata from the auth service (count, active `auth_type` and `status`: `signed in` for a sign-in, `verified`/`failed`/`saved, not verified yet` for an API key; latest key link outcome; never key material, last four or labels; tool requires `sessions:read`); `wait_seconds` waits, woken by the key registry, while that provider's link is waiting |
 | `swarm_request_provider_key` (local only, not offered over the relay) | `swarm:manage` | none: returns a one-time link to the key page on the loopback API listener (tool requires `admin`); the page saves through `POST /v1/auth/credentials` |
+| `swarm_connect_chatgpt` (`start`, or `status` with `login_id` and `wait_seconds` up to 25; local only, not offered over the relay) | `swarm:write` | `POST /v1/auth/codex/oauth/start` with the device method only, `GET /v1/auth/codex/oauth/status` for the caller's own sign-in; the tool calls these handlers itself (a write AI key, or `admin` for a token without levels), the person finishes sign-in in their own browser, and results never carry tokens |
 
 **Sessions.** `swarm` (default) works in one workspace and delegates to
 sub-agents; `system-orchestrator` runs a project and turns work into tasks for

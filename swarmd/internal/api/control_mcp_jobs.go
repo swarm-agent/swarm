@@ -1228,7 +1228,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deliver_job", Title: "Merge a job's result into its folder",
-			Description: "Merge a needs_review job's commits from its branch into the folder's branch (a real local git merge; nothing is pushed anywhere). Read the result with swarm_get_job first. Refused on conflicts or when the job committed nothing.",
+			Description: "Deliver a needs_review job's commits: by default a real local git merge from its branch into the folder's branch; when the folder's owner set up publishing for it on the machine, a pull request instead (the result names it). Swarm never pushes otherwise. Read the result with swarm_get_job first. Refused when the job committed nothing; a merge is also refused on conflicts.",
 			InputSchema: controlMCPObject([]string{"job_id"}, map[string]any{"job_id": jobID}),
 			Annotations: controlMCPDestructive, call: controlMCPDeliverJob,
 		},

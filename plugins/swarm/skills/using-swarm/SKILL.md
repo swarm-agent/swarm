@@ -23,10 +23,15 @@ For connecting a client, use the `setup` skill. For raw MCP probes, see the
 - `swarm_status` says whether the box is all right (`ok`, `attention`,
   `degraded` with reasons) and what needs attention, and gives an
   `activity_cursor`.
-- `swarm_list_providers` shows which model providers are ready. With none, the
-  person adds a key: on Swarm's setup page, or by script on the machine
-  (`install.sh key PROVIDER`). With a full key, `swarm_request_provider_key`
-  gives them a one-time link instead. Never ask for a key in chat.
+- `swarm_list_providers` shows which model providers are ready. With none,
+  first offer the person to sign in with their ChatGPT plan:
+  `swarm_connect_chatgpt` (on the machine's own MCP, not over a relay),
+  action `start`, gives a link and a code for them at once; then action
+  `status` with `login_id` and `wait_seconds` until `success`. The
+  alternative is an API key the person adds: on Swarm's setup page, or by
+  script on the machine (`install.sh key PROVIDER`). With a full key,
+  `swarm_request_provider_key` gives them a one-time link instead. Never ask
+  for a key in chat.
 - Tell the person in one or two lines what is ready and what is missing.
 
 A 401/403 is a connection or key problem (see the `setup` skill), not a broken
@@ -126,9 +131,13 @@ worker's summary alone.
 
 ## 6. Deliver
 
-`swarm_deliver_job` merges a `needs_review` job into its folder's branch: a
-real local git merge, never a push. It is refused on conflicts or when the job
-committed nothing. Pushing, publishing or deploying stays with the person.
+`swarm_deliver_job` delivers a `needs_review` job. By default it is a real
+local git merge into the folder's branch, refused on conflicts. When the
+folder's owner set up publishing for it on the machine (`install.sh workspace
+publish`), delivery opens a pull request instead and the result names it.
+Swarm never pushes otherwise. Delivery is refused when the job committed
+nothing. A pull request merges under the forge's own rules; pushing anything
+else and deploying stay with the person.
 `swarm_stop_job` cancels a running job; its branch stays for reading.
 
 ## 7. Media

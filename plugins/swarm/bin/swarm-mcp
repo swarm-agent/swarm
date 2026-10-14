@@ -8,7 +8,7 @@
 # to stdout and is time-bounded. An installed `swarm` too old to know `mcp`
 # would treat the word as a terminal UI launch, so it is only run with `help`
 # (pure usage output on every release) until it is known to support `mcp`.
-UPDATE_HINT='update: curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes'
+UPDATE_HINT='install the Swarm box (Ubuntu 24.04 x86_64): curl -fsSL https://swarmagent.dev/install | sudo bash; if it is installed, get your AI key: sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai'
 SYSTEM_BINARY_DIR=${SWARM_SYSTEM_BINARY_DIR:-/usr/local/share/swarm/bin}
 
 if [ -n "${SWARM_MCP_CONTAINER:-}" ]; then
@@ -105,5 +105,5 @@ fi
 if [ -n "$(command -v swarm 2>/dev/null)$(command -v swarmctl 2>/dev/null)" ] || [ -x "$SYSTEM_BINARY_DIR/swarmctl" ]; then
   too_old
 fi
-echo "swarm-mcp: no Swarm found on PATH or in $SYSTEM_BINARY_DIR. Install it (Linux x86_64): curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes, or run this plugin's setup skill." >&2
+echo "swarm-mcp: no Swarm found (no AI key in $BOX_KEY, no swarm on PATH or in $SYSTEM_BINARY_DIR). To $UPDATE_HINT. Or run this plugin's setup skill." >&2
 exit 1

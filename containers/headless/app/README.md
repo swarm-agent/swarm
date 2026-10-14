@@ -175,11 +175,12 @@ Swarm's **AI gateway** (Swarm Control MCP on the scoped-token listener) is
 `https://NAME.TAILNET.ts.net:8444/mcp` through `tailscale serve`.
 It answers only to **AI keys** (from `connect-ai`, or created in the app
 under **AI access**; none exist at first): read only, or read and write (start
-sessions, send messages, stop runs); those never approve tool calls or
+sessions, send messages, stop runs, and start the person's ChatGPT sign-in,
+which they finish in their own browser); those never approve tool calls or
 manage workers, limits or models. A **full** key, minted only by the owner
 (`connect-ai --access full`, `swarmctl setup sdk-token --ai-access full` or the
 SDK), also approves tool calls and manages the box (models, workers, limits, custom
-agents, client app keys, ChatGPT sign-in). No AI key reaches any route but
+agents, client app keys). No AI key reaches any route but
 `/mcp`. The page shows the
 key once, lists keys with last use, revokes them, and shows the Tailscale
 access rule and client settings. `--no-ai-access` skips the gateway. Clients:
