@@ -820,23 +820,22 @@ func commandDiagnostic(out string) string {
 	return sanitizeOutput(out)
 }
 
-// secretExecEnv recognizes credential-labelled env and gateway stand-ins; it
-// never treats Swarm's command-routing configuration as a secret.
+// secretExecEnv defaults to redacting long env values regardless of key name.
+// Only Swarm's explicit non-secret routing/configuration keys are exempt;
+// caller-marked SecretValues still override these exemptions in SafeExecOutput.
 func secretExecEnv(key, value string) bool {
-	key = strings.ToUpper(key)
-	if strings.HasPrefix(key, "GIT_CONFIG_") || key == "GIT_DIR" || key == "GIT_WORK_TREE" || key == "GIT_INDEX_FILE" || key == "HOME" || key == "PATH" || strings.Contains(key, "UMASK") {
+	if len(value) < 8 {
 		return false
 	}
-	if strings.HasPrefix(value, "swarm-secret://") {
-		return true
+	switch key {
+	case "GIT_CONFIG_COUNT", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE",
+		"HOME", "PATH", "UMASK", "GOCACHE", "GOMODCACHE", "GOPATH", "npm_config_store_dir":
+		return false
 	}
-	for _, part := range strings.Split(key, "_") {
-		switch part {
-		case "SECRET", "TOKEN", "PASSWORD", "PASSWD", "KEY", "AUTHORIZATION", "COOKIE":
-			return true
-		}
+	if strings.HasPrefix(key, "GIT_CONFIG_KEY_") || strings.HasPrefix(key, "GIT_CONFIG_VALUE_") {
+		return false
 	}
-	return false
+	return true
 }
 
 // SafeExecOutput redacts complete captured output before applying the per-stream
