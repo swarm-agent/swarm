@@ -2,9 +2,11 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -59,11 +61,62 @@ func TestReviewerDockerReadOnlyGit(t *testing.T) {
 	git("commit", "-m", "fixture")
 	head := git("rev-parse", "HEAD")
 	git("worktree", "add", "--detach", checkout, head)
+	sibling := filepath.Join(dir, "sibling")
+	git("worktree", "add", "--detach", sibling, head)
+	snapshot := func(base string) map[string][32]byte {
+		t.Helper()
+		files := map[string][32]byte{}
+		if err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			var data []byte
+			if info.Mode()&os.ModeSymlink != 0 {
+				target, err := os.Readlink(path)
+				if err != nil {
+					return err
+				}
+				data = []byte(target)
+			} else {
+				var err error
+				data, err = os.ReadFile(path)
+				if err != nil {
+					return err
+				}
+			}
+			rel, _ := filepath.Rel(base, path)
+			files[rel] = sha256.Sum256(data)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return files
+	}
+	beforeSource, beforeSibling := snapshot(root), snapshot(sibling)
 	uid, gid := os.Getuid(), os.Getgid()
 	if uid == 0 {
 		t.Skip("run as a non-root user to match sandbox policy")
 	}
-	m := &Manager{cfg: Config{UID: uid, GID: gid, Image: image, Network: "none", Memory: "1g", PidsLimit: 128}}
+	m, err := NewManager(ctx, Config{Mode: ModeRequired, Engine: docker, UID: uid, GID: gid, Image: image, Network: "none", Memory: "1g", PidsLimit: 128, StateDir: t.TempDir()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{root}, nil }, WorktreesRoot: filepath.Dir(dir), Bucket: func(string) (string, error) { return filepath.Base(dir), nil }})
+	if err := m.RegisterReviewCheckout(checkout); err != nil {
+		t.Fatal(err)
+	}
+	session := "docker-review-" + filepath.Base(dir)
+	defer reviewSessions.Delete(session)
+	if err := m.BindReviewSession(session, checkout); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err = WithReviewSession(ctx, session, checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
 	scope := Scope{Root: root, Mounts: []string{dir}, ReviewCheckout: checkout}
 	name := scopeContainerName(scope)
 	// Cleanup is bounded and names only resources created by this test.
@@ -73,19 +126,20 @@ func TestReviewerDockerReadOnlyGit(t *testing.T) {
 		exec.CommandContext(cleanup, docker, "rm", "-f", name).Run()
 		exec.CommandContext(cleanup, docker, "volume", "rm", name+"-home").Run()
 	}()
-	args := m.scopeRunArgs(name, root, "review-proof", scope.Mounts, SecretSetup{}, EnvironmentImage{Image: image, Path: sandboxPath}, checkout)
-	if out, err := exec.CommandContext(ctx, docker, args...).CombinedOutput(); err != nil {
-		t.Fatalf("review container: %v %s", err, out)
-	}
 	run := func(command string, success bool) string {
 		t.Helper()
-		argv := []string{"exec", "-w", checkout, "-e", "HOME=/tmp", "-e", "GOCACHE=/tmp/go-build", "-e", "GOPATH=/tmp/go", "-e", "GOTOOLCHAIN=local", "-e", "GIT_CONFIG_COUNT=1", "-e", "GIT_CONFIG_KEY_0=safe.directory", "-e", "GIT_CONFIG_VALUE_0=" + checkout, name}
-		argv = append(argv, withSandboxUmask("sh", "-c", command)...)
-		out, err := exec.CommandContext(ctx, docker, argv...).CombinedOutput()
-		if (err == nil) != success {
+		result, err := m.Exec(ctx, scope, ExecRequest{Command: []string{"sh", "-c", command}, WorkingDir: checkout, Env: map[string]string{"GOCACHE": "/home/sandbox/go-build", "GOPATH": "/home/sandbox/go", "GOTOOLCHAIN": "local"}, Timeout: time.Minute, MaxTimeout: time.Minute, MaxOutput: 8192})
+		if err != nil {
+			t.Fatalf("execution infrastructure: %v", err)
+		}
+		out := result.CombinedOutput()
+		if (result.ExitCode == 0) != success {
 			t.Fatalf("%s: success=%v err=%v output=%s", command, success, err, out)
 		}
 		return string(out)
+	}
+	if _, err := m.Exec(ctx, scope, ExecRequest{Command: []string{"sh", "-c", "touch forbidden"}, WorkingDir: root}); err == nil {
+		t.Fatal("source cwd override accepted")
 	}
 	run("git diff HEAD...HEAD", true)
 	run("git log -1 --format=%H", true)
@@ -99,6 +153,25 @@ func TestReviewerDockerReadOnlyGit(t *testing.T) {
 			t.Fatalf("failure was not mount enforcement: %s: %s", command, out)
 		}
 	}
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+	run("ln -s "+quote(root)+" outside", true)
+	for _, command := range []string{
+		"cd " + quote(root) + " && printf attack >> go.mod",
+		"printf attack >> outside/go.mod",
+		"printf attack >> " + quote(filepath.Join(sibling, "go.mod")),
+		"git -C " + quote(root) + " update-ref refs/heads/x HEAD",
+		"git --git-dir=" + quote(filepath.Join(root, ".git")) + " --work-tree=" + quote(root) + " update-ref refs/heads/x HEAD",
+		"git --work-tree=" + quote(root) + " checkout HEAD -- go.mod",
+		"GIT_DIR=" + quote(filepath.Join(root, ".git")) + " git update-ref refs/heads/x HEAD",
+	} {
+		run(command, false)
+	}
+	if !reflect.DeepEqual(beforeSource, snapshot(root)) || !reflect.DeepEqual(beforeSibling, snapshot(sibling)) {
+		t.Fatal("source, sibling or Git metadata changed")
+	}
+	if out, err := exec.CommandContext(ctx, "git", "-C", sibling, "status", "--porcelain").CombinedOutput(); err != nil || len(out) != 0 {
+		t.Fatalf("sibling changed: %v %s", err, out)
+	}
 	if git("rev-parse", "HEAD") != head {
 		t.Fatal("host HEAD changed")
 	}
@@ -108,6 +181,14 @@ func TestReviewerDockerReadOnlyGit(t *testing.T) {
 	c := exec.CommandContext(ctx, "git", "-C", root, "show-ref", "--verify", "refs/heads/x")
 	if c.Run() == nil {
 		t.Fatal("forbidden ref created")
+	}
+	if err := m.CleanupReview(ctx, checkout, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"container", "inspect", name}, {"volume", "inspect", name + "-home"}} {
+		if out, err := exec.CommandContext(ctx, docker, args...).CombinedOutput(); err == nil {
+			t.Fatalf("review resource survived: %v %s", args, out)
+		}
 	}
 	for _, path := range []string{filepath.Join(root, ".git", "x"), filepath.Join(root, ".git", "worktrees", "checkout", "x")} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {

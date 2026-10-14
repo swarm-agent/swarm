@@ -150,12 +150,13 @@ type Manager struct {
 	imageID string
 	runtime string
 	// envResolver names folders' environment images (environment.go).
-	envResolver EnvironmentResolver
-	reviews     map[string]string // checkout -> project root; daemon-owned admission only
-	boxes       map[string]*box
-	used        map[string]struct{}
-	layout      *layoutCache
-	stop        chan struct{}
+	envResolver   EnvironmentResolver
+	reviewClosing map[string]bool   // terminal tombstones; never reacquire
+	reviews       map[string]string // checkout -> project root; daemon-owned admission only
+	boxes         map[string]*box
+	used          map[string]struct{}
+	layout        *layoutCache
+	stop          chan struct{}
 	// resolvConf is the sandbox's own /etc/resolv.conf (public resolvers, no
 	// search domain). Docker's embedded resolver (127.0.0.11) does not
 	// answer under gVisor, and the host's search domain names the tailnet.
@@ -645,6 +646,12 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 	if !m.Active() {
 		return nil, fmt.Errorf("%w: %s", ErrInactive, m.Status().Reason)
 	}
+	m.mu.Lock()
+	closing := scope.ReviewCheckout != "" && m.reviewClosing[scope.ReviewCheckout]
+	m.mu.Unlock()
+	if closing {
+		return nil, errors.New("review sandbox is closing")
+	}
 	root := filepath.Clean(scope.Root)
 	if scope.ReviewCheckout != "" {
 		if _, err := reviewGitMounts(scope.ReviewCheckout, root); err != nil {
@@ -676,6 +683,10 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 
 	for {
 		m.mu.Lock()
+		if scope.ReviewCheckout != "" && m.reviewClosing[scope.ReviewCheckout] {
+			m.mu.Unlock()
+			return nil, errors.New("review sandbox is closing")
+		}
 		b := m.boxes[name]
 		if b == nil {
 			b = &box{name: name, root: root}

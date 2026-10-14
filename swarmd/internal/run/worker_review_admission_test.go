@@ -75,6 +75,7 @@ case "$1" in
  network) echo fixture;;
  container) exit 1;;
  run|rm|start) exit 0;;
+ volume) exit 0;;
  exec)
  shift
  while [ "$#" -gt 0 ]; do

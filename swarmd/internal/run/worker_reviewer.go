@@ -142,13 +142,19 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if head == "" {
 		return fmt.Errorf("review cleanup missing captured head")
 	}
+	validate := func() error {
+		return s.host.trees.ValidateReviewWorkspaceRemoval(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, head)
+	}
 	remove := func() error {
-		return s.host.trees.RemoveReviewWorkspace(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, head)
+		return s.host.trees.RemoveValidatedReviewWorkspace(snapshot.WorkspacePath, snapshot.WorktreeRootPath)
 	}
 	if m := sandbox.Default(); m != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		return m.CleanupReview(ctx, snapshot.WorktreeRootPath, remove)
+		return m.CleanupReviewValidated(ctx, snapshot.WorktreeRootPath, validate, remove)
+	}
+	if err := validate(); err != nil {
+		return err
 	}
 	return remove()
 }

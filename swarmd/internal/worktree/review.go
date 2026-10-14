@@ -49,6 +49,14 @@ func (s *Service) allocateReviewWorkspace(source, owner, head string) (Allocatio
 // RemoveReviewWorkspace discards build outputs only in the verified managed
 // detached lane. No branch or commit is promoted or delivered.
 func (s *Service) RemoveReviewWorkspace(source, path, owner, head string) error {
+	if err := s.ValidateReviewWorkspaceRemoval(source, path, owner, head); err != nil {
+		return err
+	}
+	return s.RemoveValidatedReviewWorkspace(source, path)
+}
+
+// ValidateReviewWorkspaceRemoval runs before terminal sandbox shutdown.
+func (s *Service) ValidateReviewWorkspaceRemoval(source, path, owner, head string) error {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -62,6 +70,15 @@ func (s *Service) RemoveReviewWorkspace(source, path, owner, head string) error 
 	if strings.TrimSpace(actual) != head {
 		return errors.New("review head changed")
 	}
-	_, err = runGit(source, "worktree", "remove", "--force", path)
+	return nil
+}
+
+// RemoveValidatedReviewWorkspace is daemon-only; no Git runs in the closing
+// checkout. Caller must validate before shutdown and retain restrictive scope.
+func (s *Service) RemoveValidatedReviewWorkspace(source, path string) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	_, err := runGit(source, "worktree", "remove", "--force", path)
 	return err
 }

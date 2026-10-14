@@ -155,8 +155,12 @@ func (m *Manager) EndReview(ctx context.Context, checkout string) error {
 		m.mu.Unlock()
 		return fmt.Errorf("review sandbox still has active commands")
 	}
+	if m.reviewClosing == nil {
+		m.reviewClosing = map[string]bool{}
+	}
+	m.reviewClosing[checkout] = true
 	m.mu.Unlock()
-	if b != nil {
+	if m.runner != nil {
 		if _, err := m.runner.Run(ctx, m.cfg.Engine, "rm", "-f", name); err != nil {
 			return err
 		}
