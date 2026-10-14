@@ -14,6 +14,8 @@ import (
 // SessionID is allocated by the store with the run identity and never supplied
 // by callers. Dispatch must use the returned receipt only.
 type WorkerRunAdmission struct {
+	// CapturedReviewTarget is trusted daemon evidence, excluded from request identity.
+	CapturedReviewTarget   map[string]any
 	Placement              *WorkerPlacementAdmission
 	ExpectedWorkerRevision uint64
 	ModelOverride          *SessionModelProfileSnapshot
@@ -93,9 +95,15 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if err != nil || len(inputBytes) > 64*1024 {
 		return WorkerRunRecord{}, fmt.Errorf("%w: invalid or oversized input: %v", ErrWorkerConflict, err)
 	}
+	if _, exists := req.Input["captured_review_target"]; exists {
+		return WorkerRunRecord{}, fmt.Errorf("%w: review target is daemon-owned", ErrWorkerConflict)
+	}
 	var acceptedInput map[string]any
 	if err := json.Unmarshal(inputBytes, &acceptedInput); err != nil {
 		return WorkerRunRecord{}, err
+	}
+	if req.CapturedReviewTarget != nil {
+		acceptedInput["captured_review_target"] = req.CapturedReviewTarget
 	}
 	hash, err := hashWorkerPayload(struct {
 		Worker, Automation, User, Source, Occurrence string

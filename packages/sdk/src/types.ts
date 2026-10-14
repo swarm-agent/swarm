@@ -1321,6 +1321,8 @@ export interface SetWorkerAutomationEnabledParams {
 }
 
 export interface DirectWorkerRequestParams {
+  /** Required for reviewer workers: worker/<worker>/<run> in the same project, with commits. */
+  review_job?: string;
   worker_id: string;
   prompt?: string;
   input?: Record<string, unknown>;

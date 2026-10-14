@@ -830,6 +830,13 @@ func (s *Service) validateRepositoryLanePath(root, lane, expected, branch string
 		return errors.New("task repository lane Git repository mismatch")
 	}
 	if !requireClean {
+		if branch == "HEAD" {
+			if _, err := runGit(lane, "symbolic-ref", "--quiet", "HEAD"); err == nil {
+				return errors.New("review lane is not detached")
+			}
+			_, err := resolveRepositoryHeadCommit(lane)
+			return err
+		}
 		actualBranch, err := runGit(lane, "symbolic-ref", "--quiet", "--short", "HEAD")
 		if err != nil {
 			return err

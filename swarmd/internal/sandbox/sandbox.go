@@ -818,6 +818,11 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	if scope.ReviewCheckout != "" {
 		req.Env = safeDirectoryEnvMap(req.Env, []string{scope.ReviewCheckout})
 		req.Env["GIT_OPTIONAL_LOCKS"] = "0"
+		if values, ok := reviewEnvironments.Load(scope.ReviewCheckout); ok {
+			for key, value := range values.(map[string]string) {
+				req.Env[key] = value
+			}
+		}
 	}
 	var progress provider.ExecProgressCallback
 	if req.OnOutput != nil {

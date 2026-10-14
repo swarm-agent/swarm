@@ -1,65 +1,61 @@
-# Reviewer worker foundation (not yet executable)
+# Reviewer jobs
 
-The compiled `system-reviewer` profile uses read runtime mode and an explicit
-allowlist: read, search, find, list, websearch, webfetch and bash. It has no file
-mutation, Git mutation, delegation or publication tools. The `reviewer` worker
-role and Reviewer preset are registered; inherited model policy currently uses
-the account's coder assignment. No model is hardcoded.
+Use the box's `reviewer` worker to independently review another worker job.
+Give a brief and `review_job: "worker/<worker>/<run>"`. The referenced job must
+exist in the same account, project and workspace and have commits beyond its
+captured base. Other roles reject `review_job`; reviewers require it.
 
-## Sandbox design
+Public surfaces:
+- `POST /v3/workers/{worker_id}/direct`: optional top-level `review_job` string.
+- SDK `client.workers.directRequest`: `DirectWorkerRequestParams.review_job`.
+- MCP `swarm_give_job`: `review_job` string, required for reviewer workers.
 
-`RegisterReviewCheckout` registers a daemon-owned disposable linked checkout.
-Commands and routed Git calls targeting that checkout select a separate
-container name/spec, leaving the coder's shared container unchanged. Project
-and worktree-bucket binds are read-only; only the disposable checkout is mounted
-writable. Its `.git` pointer and the project's complete `.git` directory are
-then overmounted read-only, including objects, refs, packed refs, config, hooks
-and linked-worktree metadata. `GIT_OPTIONAL_LOCKS=0` permits observational Git
-commands without optional index refreshes. Environment image and secret broker
-resolution still use the original project root. The existing exec umask helper
-is unchanged. Reviewer containers have their own home volume/cache namespace.
+Admission captures the reviewed job's immutable current head and creates a
+**detached** disposable linked worktree at that commit, without a branch.
+Retries preserve the original captured head. The job message includes the
+reviewed brief and latest attempt report, labeled untrusted evidence (bounded
+to 24 KB each). Commands receive `SWARM_REVIEW_HEAD`, `SWARM_REVIEW_BASE` and
+`SWARM_REVIEW_JOB`. The base is `refs/swarm/publish/<base>` if that commit ref
+exists, otherwise the captured landing branch. Reviews do not fetch or advance
+the landing target. A later source commit does not change an existing review.
 
-The foundation currently supports project roots whose `.git` is a directory;
-foreign Git directories are rejected. Docker-backed enforcement has not been
-verified by this change's hermetic mount-spec test.
+## Sandbox boundary
 
-## Pending integration
+The compiled `system-reviewer` profile uses read runtime mode and only read,
+search, find, list, websearch, webfetch and bash. Shared project and worktree
+bucket mounts are read-only in a separate reviewer container/spec. Only its
+checkout is writable for build outputs; its `.git` pointer and the full common
+Git directory are overmounted read-only. Objects, refs, packed refs, config,
+hooks and worktree metadata are protected. `GIT_OPTIONAL_LOCKS=0` supports
+observational Git. The original project selects the environment image and
+secret broker policy; the coder container is unchanged. Exec and container
+startup preserve `withSandboxUmask`. Reviewer home/cache volumes are separate.
+Project roots with a directory `.git` are supported; foreign common Git dirs
+are rejected. Sandbox registration is restored from immutable session evidence
+before execution after restart. No sandbox means refusal, never host fallback.
 
-Reviewer dispatch deliberately fails closed: it must not execute in the coder's
-writable sandbox. There is **no public API, MCP or SDK `review_job` field yet**.
-The internal request validator recognizes `review_job` (a
-`worker/<worker>/<run>` ID) or `review_ref` (branch/commit), only for reviewer
-workers, and rejects missing or ambiguous targets.
+Reviewer results are report-only. MCP delivery and the direct V3 task
+integration/recovery-integration routes refuse reviewer tasks. Task detail shows
+`delivery_assessment.state: "report_only"` and no delivery actions. Once the
+executor acknowledges termination, the reviewer container is closed and dirty
+checkout/build outputs are removed; no commits/files are delivered.
 
-Completion requires authorized exact-head resolution, detached checkout
-allocation, restart-safe sandbox registration, review context/environment
-injection, report-only delivery refusal, terminal checkout cleanup, and an atomic
-review record plus job-event signal on the reviewed job. The pure
-`ParseJobReview` helper fails closed for BLOCK, missing/malformed or duplicate
-verdicts and missing report sections. `CurrentJobReview` returns evidence only
-for an identical head, providing the future landing-policy hook; neither helper
-is currently wired to durable job state. The queue does not enforce reviews.
+Verdict recording, review events, stale-head evidence and the dedicated role
+model setting are a separate follow-up. No landing review gate is imposed.
 
-## Docker mount enforcement proof
+## Docker enforcement proof
 
-Run as a non-root user on a Docker host with the configured sandbox image
-already installed (it must contain Git and Go):
+Run as non-root with the configured Git/Go sandbox image installed:
 
 ```sh
 cd swarmd
 go test ./internal/sandbox -run '^TestReviewerDockerReadOnlyGit$' -count=1 -v -timeout=4m
 ```
 
-`SWARM_REVIEW_TEST_IMAGE` optionally selects another locally installed Git/Go
-image. The test skips when Docker is absent/unreachable; a reachable Docker
-host missing the requested image fails rather than fetching an image silently.
-It creates only an isolated fixture repository/container, exercises the real
-reviewer mount builder, and checks failed commit/ref/direct metadata writes,
-successful diff/log/Go test, and unchanged host Git state. All exec commands use
-`withSandboxUmask`. The separate reviewer container continues using the existing
-supervised execution and routed Git paths, which also use that helper.
-
-The MCP `swarm_deliver_job` boundary now explicitly refuses reviewer receipts
-before publication/integration. This is a defense-in-depth check, not proof of
-report-only lifecycle completion; direct task delivery still needs its own
-role-aware gate when admission is wired.
+`SWARM_REVIEW_TEST_IMAGE` optionally selects a locally installed Git/Go image.
+The test skips if Docker is absent/unreachable and does not fetch an image.
+It proves commit/update-ref/direct metadata writes fail while diff/log and
+Go tests succeed, then verifies unchanged host state. Hermetic admission tests
+use a deterministic engine fixture with real Git and prove source identity,
+exact-head checkout, retry, context and cleanup, not kernel mount enforcement
+or provider-backed review quality.

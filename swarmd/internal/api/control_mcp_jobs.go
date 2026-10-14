@@ -181,7 +181,7 @@ func (c *controlMCPCall) ensurePresets() ([]map[string]any, error) {
 func (c *controlMCPCall) resolveWorker(ref string) (map[string]any, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return nil, controlMCPToolFailure("worker is required: coder, designer, finder, or a worker id from swarm_list_workers")
+		return nil, controlMCPToolFailure("worker is required: coder, designer, finder, reviewer, or a worker id from swarm_list_workers")
 	}
 	match := func(workers []map[string]any) map[string]any {
 		for _, worker := range workers {
@@ -212,7 +212,7 @@ func (c *controlMCPCall) resolveWorker(ref string) (map[string]any, error) {
 			return worker, nil
 		}
 	}
-	return nil, controlMCPToolFailure("no worker %q: use coder, designer, finder, or an id from swarm_list_workers", ref)
+	return nil, controlMCPToolFailure("no worker %q: use coder, designer, finder, reviewer, or an id from swarm_list_workers", ref)
 }
 
 func controlMCPWorkerView(worker map[string]any) map[string]any {
@@ -403,6 +403,7 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	// project's task, and refuses it when the folder is not the project's.
 	response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/direct", nil, map[string]any{
 		"prompt":          brief,
+		"review_job":      controlMCPString(args, "review_job"),
 		"input":           map[string]any{"project_id": place.projectID},
 		"idempotency_key": key,
 		"workspace_path":  place.path,
@@ -1237,7 +1238,7 @@ func controlMCPListSecrets(c *controlMCPCall, _ map[string]any) (any, error) {
 
 func controlMCPJobTools() []controlMCPTool {
 	jobID := controlMCPStringProp("From swarm_give_job, swarm_request_media, swarm_list_workers (include_jobs) or swarm_activity.", 1, 700)
-	workerRef := controlMCPStringProp("coder, designer, finder, or a worker id from swarm_list_workers.", 1, 200)
+	workerRef := controlMCPStringProp("coder, designer, finder, reviewer, or a worker id from swarm_list_workers.", 1, 200)
 	project := controlMCPStringProp("The project (id or name from swarm_list_projects) the job belongs to. May be left out when there is only one project.", 0, 256)
 	workspace := controlMCPStringProp("Which of the project's folders to work in (an absolute path from swarm_list_projects). May be left out when the project has one folder.", 0, 4096)
 	waitProp := map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the job settles: needs_review (done, ready to merge), completed, failed, needs_input (the worker asked something) or cancelled. waited.timed_out means it is still working: call swarm_get_job again. Default 0."}
@@ -1296,10 +1297,11 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_give_job", Title: "Give a worker a job",
-			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders, in Swarm's sandbox, on its own branch, with only that folder's secrets, and never waits on a person (a question comes back to you through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge.",
+			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders, in Swarm's sandbox, on its own branch, with only that folder's secrets, and never waits on a person (a question comes back to you through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge. Reviewer workers require review_job, review an exact head in a detached disposable checkout, and return reports only; never deliver them.",
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),
+				"review_job":      controlMCPStringProp("Required only for reviewer workers: worker/<worker>/<run> of a job in the same project with commits. Reviews its exact head in a disposable detached checkout; report-only, never delivered.", 1, 700),
 				"model":           controlMCPWorkerModelSchema(false),
 				"project":         project,
 				"workspace":       workspace,

@@ -1,10 +1,12 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 func scopeContainerName(scope Scope) string {
@@ -101,6 +103,11 @@ func (m *Manager) scopeRunArgs(name, root, spec string, mounts []string, secret 
 	}
 	guards, _ := reviewGitMounts(checkout, root) // validated by acquire
 	extra := []string{"--env", "GIT_OPTIONAL_LOCKS=0", "--mount", "type=bind,src=" + checkout + ",dst=" + checkout}
+	if values, ok := reviewEnvironments.Load(checkout); ok {
+		for _, name := range []string{"SWARM_REVIEW_HEAD", "SWARM_REVIEW_BASE", "SWARM_REVIEW_JOB"} {
+			extra = append(extra, "--env", name+"="+values.(map[string]string)[name])
+		}
+	}
 	for _, guard := range guards {
 		extra = append(extra, "--mount", "type=bind,src="+guard.HostPath+",dst="+guard.Dest+",readonly")
 	}
@@ -115,4 +122,54 @@ func (m *Manager) scopeRunArgs(name, root, spec string, mounts []string, secret 
 	// arbitrary folder image startup behavior.
 	tail := append([]string{"--entrypoint", "sh", image.Image}, withSandboxUmask("sleep", "infinity")[1:]...)
 	return append(append(append([]string{}, args[:at]...), extra...), tail...)
+}
+
+var reviewEnvironments sync.Map
+
+// SetReviewEnvironment accepts only daemon-captured immutable review context.
+func (m *Manager) SetReviewEnvironment(checkout string, env map[string]string) error {
+	m.mu.Lock()
+	_, ok := m.reviews[checkout]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("review checkout is not registered")
+	}
+	values := map[string]string{}
+	for _, name := range []string{"SWARM_REVIEW_HEAD", "SWARM_REVIEW_BASE", "SWARM_REVIEW_JOB"} {
+		if env[name] == "" {
+			return fmt.Errorf("missing %s", name)
+		}
+		values[name] = env[name]
+	}
+	reviewEnvironments.Store(checkout, values)
+	return nil
+}
+
+// EndReview closes the container before removing its checkout mount. Registration
+// remains fail-closed until the daemon has removed the managed worktree.
+func (m *Manager) EndReview(ctx context.Context, checkout string) error {
+	m.mu.Lock()
+	name := scopeContainerName(Scope{Root: m.reviews[checkout], ReviewCheckout: checkout})
+	b := m.boxes[name]
+	if b != nil && (b.inflight != 0 || b.changing != nil) {
+		m.mu.Unlock()
+		return fmt.Errorf("review sandbox still has active commands")
+	}
+	m.mu.Unlock()
+	if b != nil {
+		if _, err := m.runner.Run(ctx, m.cfg.Engine, "rm", "-f", name); err != nil {
+			return err
+		}
+	}
+	m.mu.Lock()
+	delete(m.boxes, name)
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) ForgetReview(checkout string) {
+	m.mu.Lock()
+	delete(m.reviews, checkout)
+	m.mu.Unlock()
+	reviewEnvironments.Delete(checkout)
 }

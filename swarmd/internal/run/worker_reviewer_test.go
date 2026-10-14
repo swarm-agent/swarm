@@ -15,7 +15,7 @@ func TestReviewerRequestValidation(t *testing.T) {
 		valid bool
 	}{
 		{store.WorkerRoleReviewer, map[string]any{"review_job": "worker/w/r"}, true},
-		{store.WorkerRoleReviewer, map[string]any{"review_ref": "dev"}, true},
+		{store.WorkerRoleReviewer, map[string]any{"review_ref": "dev"}, false},
 		{store.WorkerRoleReviewer, nil, false},
 		{store.WorkerRoleCoder, map[string]any{"review_job": "worker/w/r"}, false},
 		{store.WorkerRoleReviewer, map[string]any{"review_job": "bad"}, false},

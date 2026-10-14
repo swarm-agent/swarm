@@ -1302,6 +1302,7 @@ type setAutomationEnabledRequestBody struct {
 // workspace this job works in; without either, the job uses its automation's
 // workspace or the worker's primary binding.
 type directWorkerRequestBody struct {
+	ReviewJob      string                                   `json:"review_job,omitempty"`
 	ModelProfile   *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	Prompt         string                                   `json:"prompt,omitempty"`
 	Input          map[string]any                           `json:"input,omitempty"`
@@ -1751,6 +1752,9 @@ func (s *Server) handleWorkerDirectRequest(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		workerHTTPError(w, err)
 		return
+	}
+	if req.ReviewJob != "" {
+		inputMap["review_job"] = req.ReviewJob
 	}
 	recorded, err := execution.Dispatch(r.Context(), p.AccountScopeID, p.UserID, pebblestore.WorkerRunAdmission{WorkerID: workerID, RequestSource: "direct", Input: inputMap, IdempotencyKey: idempKey, WorkspaceID: workspaceID, ModelOverride: req.ModelProfile})
 	if err != nil {

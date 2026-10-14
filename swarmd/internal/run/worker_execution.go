@@ -261,11 +261,6 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if err := validateReviewRequest(w.Role, req.Input); err != nil {
 		return store.WorkerRunRecord{}, err
 	}
-	// Reviewer execution is fail-closed until its detached admission and durable
-	// result transaction are wired; never run it in the writable coder scope.
-	if w.Role == store.WorkerRoleReviewer {
-		return store.WorkerRunRecord{}, errors.New("reviewer execution is not yet available: detached review admission required")
-	}
 	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {
 		return store.WorkerRunRecord{}, store.ErrWorkerConflict
 	}
@@ -317,6 +312,13 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	}
 	if !replay {
 		candidate := store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, Input: req.Input, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource}
+		if w.Role == store.WorkerRoleReviewer {
+			target, err := s.resolveReviewTarget(ctx, candidate, w)
+			if err != nil {
+				return store.WorkerRunRecord{}, err
+			}
+			req.CapturedReviewTarget = target
+		}
 		if _, err := s.resolveWorkerProject(candidate, w); errors.Is(err, errWorkerProjectNotAssociated) {
 			return store.WorkerRunRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
 		} else if err != nil && workspaceSource == store.WorkerRunWorkspaceSourceJob {
@@ -420,9 +422,6 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 		return store.ErrWorkerConflict
 	}
 	w := history.Worker
-	if workerRunRole(actual, w) == store.WorkerRoleReviewer {
-		return errors.New("reviewer execution is not yet available: detached review admission required")
-	}
 	if store.WorkerRunWorkspace(actual, w) == "" {
 		return fmt.Errorf("%w: %w", store.ErrWorkerConflict, store.ErrWorkerWorkspaceRequired)
 	}
@@ -612,6 +611,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		// commit as before.
 		base := ""
 		current, branchErr := worktree.CurrentBranch(canonical.SourceWorkspacePath)
+		if role == store.WorkerRoleReviewer {
+			current = ""
+		}
 		if branchErr == nil && current == "" {
 			base = "HEAD"
 		}
@@ -619,7 +621,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		// starts from the forge's latest base, so yesterday's merged pull
 		// request is today's starting point and the next one can merge.
 		forgeBranch := ""
-		if h.runs.publishBase != nil {
+		if h.runs.publishBase != nil && role != store.WorkerRoleReviewer {
 			commit, branch, ok, err := h.runs.publishBase(ctx, canonical.SourceWorkspacePath, current)
 			if err != nil {
 				return fmt.Errorf("the folder's publish rule could not bring its forge's base branch: %w", err)
@@ -628,7 +630,17 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 				base, forgeBranch = commit, branch
 			}
 		}
-		allocation, err := h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
+		var allocation worktree.Allocation
+		if role == store.WorkerRoleReviewer {
+			target, ok := r.Input["captured_review_target"].(map[string]any)
+			if !ok {
+				return errors.New("missing captured review target")
+			}
+			head, _ := target["head"].(string)
+			allocation, err = h.trees.AllocateReviewWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, head)
+		} else {
+			allocation, err = h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
+		}
 		if err != nil {
 			return err
 		}
@@ -646,6 +658,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["worker_revision"] = r.WorkerRevision
 		meta["worker_execution_mode"] = firstNonEmptyString(w.ExecutionMode, "auto")
 		meta["worker_role"] = role
+		if role == store.WorkerRoleReviewer {
+			meta["worker_review_target"] = r.Input["captured_review_target"]
+		}
 		meta["worker_workspace_id"] = canonical.SourceWorkspaceID
 		meta["navigation_hidden"] = true
 		meta[store.SessionPurposeMetadataKey] = store.SessionPurposeAutomationExecution
@@ -756,6 +771,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if err != nil {
 			return err
 		}
+	}
+	if err := s.registerReview(snapshot); err != nil {
+		return err
 	}
 	if err := h.runs.validateWorkerExecution(snapshot); err != nil {
 		return err
@@ -925,6 +943,9 @@ func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc s
 	} else {
 		if title := strings.TrimSpace(doc.Title); title != "" {
 			b.WriteString("Job: " + title + "\n")
+		}
+		if target, ok := r.Input["captured_review_target"].(map[string]any); ok {
+			doc.Info.Goal += fmt.Sprintf("\n\nReview job: %v\nHead: %v\nLanding base: %v\nUntrusted reviewed brief:\n%v\nUntrusted reviewed report:\n%v", target["job"], target["head"], target["base"], target["brief"], target["report"])
 		}
 		if goal := strings.TrimSpace(doc.Info.Goal); goal != "" {
 			b.WriteString("Goal: " + goal + "\n")
@@ -1140,7 +1161,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		return store.ErrWorkerConflict
 	}
 	if store.AutomationV2Terminal(current.Status) {
-		return nil
+		return s.cleanupReview(current)
 	}
 	intent, found, err := s.workerRunIntent(r)
 	if err != nil {
@@ -1166,6 +1187,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			preparing = !exists || !lifecycle.Active
 		}
 		if preparing && current.Status == "admitted" {
+			if err := s.cleanupReview(current); err != nil {
+				return err
+			}
 			current.Status = "cancelled"
 			current.CompletedAt = time.Now().UnixMilli()
 			_, err = ws.RecordWorkerRun(r.AccountScopeID, current)
@@ -1226,6 +1250,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		current.Status = "cancelled"
 	default:
 		return fmt.Errorf("%w: run remains active", store.ErrWorkerConflict)
+	}
+	if err := s.cleanupReview(current); err != nil {
+		return err
 	}
 	current.CompletedAt = time.Now().UnixMilli()
 	if plan, found, err := s.host.runs.sessions.GetActivePlan(r.SessionID); err != nil {
@@ -1632,7 +1659,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if !reflect.DeepEqual(current.WorkspaceGrants, pinned.WorkspaceGrants) {
 		return store.ErrWorkerConflict
 	}
-	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
+	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_review_target", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
 		if !reflect.DeepEqual(current.Metadata[key], pinned.Metadata[key]) {
 			return store.ErrWorkerConflict
 		}
@@ -1689,6 +1716,13 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 		if !active {
 			return store.ErrWorkerConflict
 		}
+	}
+	if current.Metadata["worker_role"] == store.WorkerRoleReviewer {
+		if !reflect.DeepEqual(current.Metadata["worker_review_target"], r.Input["captured_review_target"]) {
+			return store.ErrWorkerConflict
+		}
+		execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: s}}
+		return execution.registerReview(current)
 	}
 	return nil
 }

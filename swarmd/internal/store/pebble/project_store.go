@@ -544,7 +544,7 @@ func (t *ProjectTaskRecord) Validate() error {
 	t.Agent = agent
 
 	switch agent {
-	case "coder", "finder", "plan", "image", "video", "sound", "audio", "designer", "swarm":
+	case "coder", "finder", "reviewer", "plan", "image", "video", "sound", "audio", "designer", "swarm":
 		// valid
 	default:
 		return fmt.Errorf("unknown task agent: %q", agent)
@@ -565,7 +565,7 @@ func (t *ProjectTaskRecord) Validate() error {
 		switch agent {
 		case "coder":
 			t.OutcomeType = "code_pr"
-		case "finder":
+		case "finder", "reviewer":
 			t.OutcomeType = "audit_report"
 		case "plan":
 			t.OutcomeType = "plan_spec"
@@ -605,7 +605,7 @@ func (t *ProjectTaskRecord) Validate() error {
 				return errors.New("incoherent task contract: coder agent cannot have media deliverables")
 			}
 		}
-	case "finder":
+	case "finder", "reviewer":
 		if outcome != "audit_report" && outcome != "audit" && outcome != "report" {
 			return fmt.Errorf("incoherent task contract: finder agent cannot have outcome %q", t.OutcomeType)
 		}

@@ -35,6 +35,10 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 		State: "unavailable", ReasonCode: "lane_unavailable", Reason: "Authenticated captured task lane is unavailable", Freshness: "unknown", AllowedActions: []string{},
 	}
 	res := taskGitState{worktreeBranch: task.WorktreeBranch, worktreeName: task.WorktreeName, gitStatus: "unknown", deliveryAssessment: a}
+	if task.Agent == pebblestore.WorkerRoleReviewer {
+		a.State, a.ReasonCode, a.Reason, a.Freshness = "report_only", "reviewer_report", "Reviewer jobs return reports; nothing can be delivered", "observed"
+		return res
+	}
 	if receipt := task.Integration; receipt != nil && taskDeliveredState(receipt.State, receipt.PullRequestURL) != "" {
 		// The receipt describes delivery already performed. Do not inspect a
 		// possibly moved or removed checkout as if delivery were still pending.

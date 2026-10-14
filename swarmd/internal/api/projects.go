@@ -3596,6 +3596,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if task.Agent == pebblestore.WorkerRoleReviewer {
+			writeError(w, http.StatusConflict, errors.New("reviewer jobs are report-only; delivery and integration are refused"))
+			return
+		}
 		// Mutation requests must identify the exact selected session and captured lane.
 		var selection struct {
 			SessionID    string `json:"session_id"`
