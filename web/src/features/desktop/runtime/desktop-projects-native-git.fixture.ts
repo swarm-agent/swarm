@@ -82,6 +82,12 @@ async function main() {
     // Requirement 1: With an already hydrated board, repeatedly select/expand/switch
     // tasks (100 interactions) and assert ZERO additional Git assessment requests,
     // ZERO additional Git commands, and NO subscription churn.
+    // "Already hydrated" means the stream's catch-up reads have finished too:
+    // a fast assessment can mark both tasks observed before they land.
+    for (let last = -1, end = Date.now() + 10_000; detailReads !== last; await settle()) {
+      assert.ok(Date.now() < end, 'board detail reads did not settle')
+      last = detailReads
+    }
     const preInteractionsReads = detailReads
     const preInteractionsGitCount = (await mutate('count')).count
     for (let i = 0; i < 100; i++) {

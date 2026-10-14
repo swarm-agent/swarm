@@ -2231,6 +2231,33 @@ func controlMCPListTasks(c *controlMCPCall, args map[string]any) (any, error) {
 // captured target branch, so the integrate route's lineage checks decide; it
 // never picks branches itself.
 func controlMCPIntegrateTask(c *controlMCPCall, args map[string]any) (any, error) {
+	return controlMCPIntegrate(c, args, "swarm_integrate_task", "swarm_list_tasks")
+}
+
+// controlMCPUnobservedDelivery reports a 409 whose delivery assessment could
+// not observe the task's Git state (its reads ran out of time or the heads
+// moved under them): a refusal made before any integration receipt or Git
+// change, so repeating the request is safe.
+func controlMCPUnobservedDelivery(err error) (map[string]any, bool) {
+	var toolErr controlMCPToolError
+	if !errors.As(err, &toolErr) || toolErr.status != http.StatusConflict {
+		return nil, false
+	}
+	var body map[string]any
+	if json.Unmarshal([]byte(toolErr.body), &body) != nil {
+		return nil, false
+	}
+	delivery := controlMCPMap(body["delivery"])
+	if delivery == nil || delivery["freshness"] == "observed" {
+		return nil, false
+	}
+	return delivery, true
+}
+
+// controlMCPIntegrate integrates for the named tool. An unobserved delivery
+// is retried once; if it repeats, the refusal names the tool to call again and
+// the tool that reads the job, never an HTTP route the AI cannot call.
+func controlMCPIntegrate(c *controlMCPCall, args map[string]any, tool, readTool string) (any, error) {
 	projectID, err := controlMCPID(args, "project_id")
 	if err != nil {
 		return nil, err
@@ -2260,7 +2287,21 @@ func controlMCPIntegrateTask(c *controlMCPCall, args map[string]any) (any, error
 		}
 		selection[key] = value
 	}
-	integrated, err := c.dispatch(http.MethodPost, "/v3/projects/"+projectID+"/tasks/"+taskID+"/integrate", nil, selection)
+	path := "/v3/projects/" + projectID + "/tasks/" + taskID + "/integrate"
+	integrated, err := c.dispatch(http.MethodPost, path, nil, selection)
+	if _, unobserved := controlMCPUnobservedDelivery(err); unobserved {
+		integrated, err = c.dispatch(http.MethodPost, path, nil, selection)
+	}
+	if delivery, unobserved := controlMCPUnobservedDelivery(err); unobserved {
+		reason, _ := delivery["reason"].(string)
+		if code, _ := delivery["reason_code"].(string); code != "" {
+			reason = strings.TrimSpace(reason + " (" + code + ")")
+		}
+		if reason == "" {
+			reason = "its delivery state was not observed"
+		}
+		return nil, controlMCPToolFailure("Swarm could not read this task's Git state to merge it (%s); nothing was merged. Call %s again; if it repeats, read %s.", controlMCPTruncate(reason, 200), tool, readTool)
+	}
 	if err != nil {
 		return nil, err
 	}

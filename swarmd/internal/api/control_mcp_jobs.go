@@ -800,7 +800,7 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 			return c.publishJob(kind, a, b, refs, rule, result)
 		}
 	}
-	out, err := controlMCPIntegrateTask(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID})
+	out, err := controlMCPIntegrate(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID}, "swarm_deliver_job", "swarm_get_job")
 	if err != nil {
 		return nil, err
 	}

@@ -23,7 +23,8 @@ func TestTaskDeliveryNotActionableMessageNamesStateAndRemedy(t *testing.T) {
 		{"uncommitted worker output", &pebblestore.TaskDeliveryAssessment{State: "empty", ReasonCode: "no_commits", Reason: "No commits since captured base", Freshness: "observed", SourceDirty: true, SourceBranch: "agent/worker-x"}, []string{`"empty"`, "no_commits", "uncommitted changes", "commit the changes", `"agent/worker-x"`, "POST /v3/projects/p1/tasks/t1/integrate"}},
 		{"no work", &pebblestore.TaskDeliveryAssessment{State: "empty", ReasonCode: "no_commits", Freshness: "observed"}, []string{`"empty"`, "nothing to integrate"}},
 		{"rewritten", &pebblestore.TaskDeliveryAssessment{State: "history_rewritten", ReasonCode: "base_not_on_target", Freshness: "observed"}, []string{`"history_rewritten"`, "POST /v3/projects/p1/tasks/t1/recover-integrate"}},
-		{"stale", &pebblestore.TaskDeliveryAssessment{State: "unavailable", ReasonCode: "heads_changed", Freshness: "stale"}, []string{`"unavailable"`, `freshness "stale"`, "GET /v3/projects/p1/tasks/t1"}},
+		{"stale", &pebblestore.TaskDeliveryAssessment{State: "unavailable", ReasonCode: "heads_changed", Freshness: "stale"}, []string{`"unavailable"`, `freshness "stale"`, "nothing was integrated", "retry POST /v3/projects/p1/tasks/t1/integrate", "GET /v3/projects/p1/tasks/t1"}},
+		{"inspection timeout", &pebblestore.TaskDeliveryAssessment{State: "unavailable", ReasonCode: "inspection_timeout", Reason: "Git inspection exceeded its time budget", Freshness: "unknown"}, []string{`"unavailable"`, "inspection_timeout", "exceeded its time budget", `freshness "unknown"`, "retry POST /v3/projects/p1/tasks/t1/integrate"}},
 		{"ambiguous", &pebblestore.TaskDeliveryAssessment{State: "ambiguous", ReasonCode: "base_not_ancestor", Freshness: "observed"}, []string{`"ambiguous"`, "base_not_ancestor", "inspect the task worktree"}},
 		{"missing", nil, []string{"not assessed", "GET /v3/projects/p1/tasks/t1"}},
 	}

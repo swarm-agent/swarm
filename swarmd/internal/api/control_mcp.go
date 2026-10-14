@@ -177,10 +177,13 @@ type controlMCPCall struct {
 // controlMCPToolError is reported to the model as a tool result with isError,
 // not as a protocol failure, so it can correct its call.
 // status is the HTTP status of a rejected sub-request (0 otherwise), so tools
-// can turn a 404 into a hint naming the id and the list tool.
+// can turn a 404 into a hint naming the id and the list tool. body is that
+// rejection's JSON body (a string keeps the error comparable), for tools
+// that act on its structured detail.
 type controlMCPToolError struct {
 	message string
 	status  int
+	body    string
 }
 
 func (e controlMCPToolError) Error() string { return e.message }
@@ -575,7 +578,7 @@ func (c *controlMCPCall) dispatchTo(handler http.Handler, method, path string, q
 		if strings.TrimSpace(message) == "" {
 			message = http.StatusText(recorder.status)
 		}
-		return nil, controlMCPToolError{message: fmt.Sprintf("Swarm rejected the request (HTTP %d): %s", recorder.status, message), status: recorder.status}
+		return nil, controlMCPToolError{message: fmt.Sprintf("Swarm rejected the request (HTTP %d): %s", recorder.status, message), status: recorder.status, body: recorder.body.String()}
 	}
 	return decoded, nil
 }

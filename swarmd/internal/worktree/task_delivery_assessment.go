@@ -75,22 +75,39 @@ func (d *deliveryInspector) run(path string, args ...string) (string, error) {
 	return strings.TrimRight(out.String(), "\n"), err
 }
 
+// errLaneMoved is a lane Git read that succeeded and observed a different
+// root or branch (including a detached HEAD): real movement, not a failure.
+var errLaneMoved = errors.New("captured lane moved")
+
+// lane reads the root, common directory, HEAD commit and HEAD's symbolic name
+// in one Git process: every Git call may be a sandbox exec, so one read per
+// lane keeps the assessment inside its time budget.
 func (d *deliveryInspector) lane(path, branch string) (head, common string, err error) {
-	root, err := d.run(path, "rev-parse", "--show-toplevel")
-	if err != nil || gitstatus.NormalizePath(root) != gitstatus.NormalizePath(path) {
-		return "", "", errors.New("captured root changed")
-	}
-	common, err = d.run(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	out, err := d.run(path, "rev-parse", "--show-toplevel", "--path-format=absolute", "--git-common-dir", "HEAD", "--symbolic-full-name", "HEAD")
 	if err != nil {
 		return "", "", err
 	}
-	common = gitstatus.NormalizePath(common)
-	actual, err := d.run(path, "symbolic-ref", "--short", "HEAD")
-	if err != nil || actual != branch {
-		return "", "", errors.New("captured branch changed")
+	lines := strings.Split(out, "\n")
+	if len(lines) != 4 || len(lines[2]) < 40 {
+		return "", "", errors.New("unexpected lane read output")
 	}
-	head, err = d.run(path, "rev-parse", "--verify", "HEAD^{commit}")
-	return head, common, err
+	if gitstatus.NormalizePath(lines[0]) != gitstatus.NormalizePath(path) || lines[3] != "refs/heads/"+branch {
+		return "", "", errLaneMoved
+	}
+	return lines[2], gitstatus.NormalizePath(lines[1]), nil
+}
+
+// inspectionFailure reports a failed Git read as what it was: the time budget
+// running out, the caller cancelling, or Git failing. None of these is evidence
+// that the task's heads moved.
+func (d *deliveryInspector) inspectionFailure(a pebblestore.TaskDeliveryAssessment, code, reason string) pebblestore.TaskDeliveryAssessment {
+	switch err := d.ctx.Err(); {
+	case errors.Is(err, context.DeadlineExceeded):
+		return deliveryUnknown(a, "inspection_timeout", "Git inspection exceeded its time budget", "unknown")
+	case err != nil:
+		return deliveryUnknown(a, "inspection_cancelled", "Assessment cancelled", "unknown")
+	}
+	return deliveryUnknown(a, code, reason, "unknown")
 }
 
 func deliveryUnknown(a pebblestore.TaskDeliveryAssessment, code, reason, freshness string) pebblestore.TaskDeliveryAssessment {
@@ -100,15 +117,40 @@ func deliveryUnknown(a pebblestore.TaskDeliveryAssessment, code, reason, freshne
 	return a
 }
 
-// AssessTaskDelivery caps the entire inspection at three seconds and one MiB,
-// admits at most two analyses per repository and shares only exact OID tuples.
-// There is no durable or cross-request cache and no Git writes.
+// Assessment budgets. Every Git read is one process; when the project's
+// sandbox is active each is a container exec (a gVisor exec costs a few
+// hundred milliseconds where host Git costs a few), so the sandboxed budget is
+// sized for roughly fifteen such reads with headroom. Starting a cold sandbox
+// is not part of either budget: it is warmed first, under its own bound.
+var (
+	deliveryHostBudget      = 3 * time.Second
+	deliverySandboxedBudget = 15 * time.Second
+	deliveryWarmTimeout     = 2 * time.Minute
+)
+
+func deliveryBudgetFor() time.Duration {
+	if sandbox.Default().Active() {
+		return deliverySandboxedBudget
+	}
+	return deliveryHostBudget
+}
+
+// AssessTaskDelivery caps the entire inspection at its time budget (three
+// seconds for host Git, fifteen when Git runs in the project's sandbox) and one
+// MiB, admits at most two analyses per repository and shares only exact OID
+// tuples. There is no durable or cross-request cache and no Git writes.
 func AssessTaskDelivery(parent context.Context, in TaskDeliveryInput) pebblestore.TaskDeliveryAssessment {
 	return assessDeliveryWithHook(parent, in, nil)
 }
 
 func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, beforeFinish func()) pebblestore.TaskDeliveryAssessment {
-	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
+	// A sandbox that cannot start is reported by the reads below.
+	warmCtx, cancelWarm := context.WithTimeout(parent, deliveryWarmTimeout)
+	for _, path := range []string{in.SourcePath, in.TargetPath} {
+		_ = sandbox.Warm(warmCtx, path)
+	}
+	cancelWarm()
+	ctx, cancel := context.WithTimeout(parent, deliveryBudgetFor())
 	defer cancel()
 	d := &deliveryInspector{ctx: ctx, budget: deliveryBudget{remaining: 1 << 20}, beforeFinish: beforeFinish}
 	a := deliveryUnknown(in.Identity, "lane_unavailable", "Captured Git lane is unavailable", "unknown")
@@ -126,11 +168,11 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	}
 	source, repo, err := d.lane(in.SourcePath, a.SourceBranch)
 	if err != nil {
-		return a
+		return d.inspectionFailure(a, a.ReasonCode, a.Reason)
 	}
 	target, targetRepo, err := d.lane(in.TargetPath, a.TargetBranch)
 	if err != nil || repo != targetRepo {
-		return a
+		return d.inspectionFailure(a, a.ReasonCode, a.Reason)
 	}
 	a.SourceOID, a.TargetOID = source, target
 	key := deliveryKey{a.AccountID, a.TaskID, a.SessionID, a.AttemptID, a.WorkspaceID, a.BaseOID, source, target, a.SourceBranch, a.TargetBranch, gitstatus.NormalizePath(in.SourcePath), gitstatus.NormalizePath(in.TargetPath), a.TaskRevision, a.WorkspaceGeneration}
@@ -144,7 +186,7 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 			result.AllowedActions = append([]string{}, result.AllowedActions...)
 			return d.finish(in, result, repo)
 		case <-ctx.Done():
-			return deliveryUnknown(a, "inspection_cancelled", "Assessment cancelled", "unknown")
+			return d.inspectionFailure(a, "inspection_cancelled", "Assessment cancelled")
 		}
 	}
 	if deliveryFlights.counts[repo] >= 2 {
@@ -185,7 +227,7 @@ func (d *deliveryInspector) finish(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	for i, path := range []string{in.SourcePath, in.TargetPath} {
 		status, err := d.run(path, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 		if err != nil {
-			return deliveryUnknown(a, "inspection_failed", "Could not inspect working tree", "unknown")
+			return d.inspectionFailure(a, "inspection_failed", "Could not inspect working tree")
 		}
 		entries := parsePorcelainStatusZ(status)
 		if i == 0 {
@@ -211,8 +253,14 @@ func (d *deliveryInspector) finish(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	}
 	source, sourceRepo, e1 := d.lane(in.SourcePath, a.SourceBranch)
 	target, targetRepo, e2 := d.lane(in.TargetPath, a.TargetBranch)
-	if e1 != nil || e2 != nil || source != a.SourceOID || target != a.TargetOID || sourceRepo != repo || targetRepo != repo || d.ctx.Err() != nil {
+	// Stale only on observed movement: both reads succeeded and an OID or
+	// repository differs, or a read saw another root or branch.
+	moved := (e1 == nil && e2 == nil && (source != a.SourceOID || target != a.TargetOID || sourceRepo != repo || targetRepo != repo)) || errors.Is(e1, errLaneMoved) || errors.Is(e2, errLaneMoved)
+	if moved {
 		return deliveryUnknown(a, "heads_changed", "Heads moved during assessment; refresh", "stale")
+	}
+	if e1 != nil || e2 != nil || d.ctx.Err() != nil {
+		return d.inspectionFailure(a, "inspection_failed", "Could not re-read the task's Git heads")
 	}
 	a.Freshness, a.ObservedAt = "observed", time.Now().UnixMilli()
 	return a
@@ -224,7 +272,7 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 		return d.finish(in, a, repo)
 	}
 	fail := func() pebblestore.TaskDeliveryAssessment {
-		return deliveryUnknown(a, "inspection_failed", "Git inspection failed, cancelled or exceeded output budget", "unknown")
+		return d.inspectionFailure(a, "inspection_failed", "Git inspection failed or exceeded output budget")
 	}
 	base, err := d.run(in.SourcePath, "rev-parse", "--verify", a.BaseOID+"^{commit}")
 	if err != nil || base != a.BaseOID {

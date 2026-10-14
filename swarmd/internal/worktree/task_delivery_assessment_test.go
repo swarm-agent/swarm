@@ -140,11 +140,38 @@ func TestTaskDeliveryMovementAndCapacity(t *testing.T) {
 				path = in.TargetPath
 			}
 			got := assessDeliveryWithHook(context.Background(), in, func() { git(path, "commit", "--allow-empty", "-m", "concurrent move") })
-			if got.State != "unavailable" || got.Freshness != "stale" || len(got.AllowedActions) != 0 {
+			if got.State != "unavailable" || got.ReasonCode != "heads_changed" || got.Freshness != "stale" || len(got.AllowedActions) != 0 {
 				t.Fatalf("moved lane actionable: %+v", got)
 			}
 		})
 	}
+	// A lane switched off its captured branch (detached here) is observed
+	// movement too, read by the single-process lane read.
+	t.Run("detached-source", func(t *testing.T) {
+		in, git := deliveryFixture(t)
+		got := assessDeliveryWithHook(context.Background(), in, func() { git(in.SourcePath, "checkout", "--detach") })
+		if got.State != "unavailable" || got.ReasonCode != "heads_changed" || got.Freshness != "stale" || len(got.AllowedActions) != 0 {
+			t.Fatalf("detached lane actionable: %+v", got)
+		}
+	})
+	// Requirement: an assessment whose time budget runs out while finishing
+	// reports the timeout, never "heads moved", so callers do not chase a
+	// movement that did not happen. Threat: a slow (sandboxed) Git read
+	// mislabelled stale. Nothing moves here; the parent deadline expires
+	// inside the finish barrier, so every later Git read is cut off.
+	t.Run("deadline-during-finish", func(t *testing.T) {
+		in, git := deliveryFixture(t)
+		refs := git(in.TargetPath, "show-ref")
+		parent, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		got := assessDeliveryWithHook(parent, in, func() { <-parent.Done() })
+		if got.State != "unavailable" || got.ReasonCode != "inspection_timeout" || got.Freshness != "unknown" || got.ObservedAt != 0 || len(got.AllowedActions) != 0 {
+			t.Fatalf("expired budget not reported as a timeout: %+v", got)
+		}
+		if git(in.TargetPath, "show-ref") != refs {
+			t.Fatal("assessment mutated refs")
+		}
+	})
 	t.Run("exact-tuples-and-capacity", func(t *testing.T) {
 		in, git := deliveryFixture(t)
 		entered, release := make(chan struct{}, 2), make(chan struct{})
