@@ -25,6 +25,7 @@ type agentModelSettingsSystemAgentPatch struct {
 	Compact  *agentmodelsettings.Assignment `json:"compact"`
 	Finder   *agentmodelsettings.Assignment `json:"finder"`
 	Coder    *agentmodelsettings.Assignment `json:"coder"`
+	Reviewer *agentmodelsettings.Assignment `json:"reviewer"`
 	Designer *agentmodelsettings.Assignment `json:"designer"`
 	Router   *agentmodelsettings.Assignment `json:"router"`
 }
@@ -129,6 +130,7 @@ func (patch *agentModelSettingsSystemAgentPatch) target() (string, agentmodelset
 		{pebblestore.SystemAgentCompact, patch.Compact},
 		{pebblestore.SystemAgentFinder, patch.Finder},
 		{pebblestore.SystemAgentCoder, patch.Coder},
+		{pebblestore.SystemAgentReviewer, patch.Reviewer},
 		{pebblestore.SystemAgentDesigner, patch.Designer},
 		{pebblestore.SystemAgentRouter, patch.Router},
 	} {
@@ -170,6 +172,7 @@ func agentModelRoleDescriptors() ([]map[string]string, error) {
 		{agent.SwarmAgentID, "swarm", "action"},
 		{agent.SwarmOrchestratorAgentID, "swarm", "plan"},
 		{agent.CoderAgentID, "system_agents", "coder"},
+		{agent.ReviewerAgentID, "system_agents", "reviewer"},
 		{agent.FinderAgentID, "system_agents", "finder"},
 		{agent.DesignerAgentID, "system_agents", "designer"},
 		{agent.CompactAgentID, "system_agents", "compact"},

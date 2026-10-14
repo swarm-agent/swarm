@@ -137,6 +137,17 @@ func (s *Server) handleRestoreAgentModelDefaults(w http.ResponseWriter, r *http.
 		rec := recommendationForRole(record, target.role, "main")
 		*target.assignment = pebblestore.AgentModelAssignment{Provider: provider, Model: record.Model, Thinking: recommendedThinking(rec, ""), ServiceTier: recommendedServiceTier(rec)}
 	}
+	replacement.SystemAgents.Reviewer = replacement.SystemAgents.Coder
+	reviews, hasReview, reviewErr := s.model.RecommendedCatalogRoleDefaults(replacement.SystemAgents.Coder.Provider, "review")
+	if reviewErr != nil {
+		writeError(w, http.StatusConflict, reviewErr)
+		return
+	}
+	if hasReview {
+		record := reviews["review"]
+		rec := recommendationForRole(record, "review")
+		replacement.SystemAgents.Reviewer = pebblestore.AgentModelAssignment{Provider: replacement.SystemAgents.Coder.Provider, Model: record.Model, Thinking: recommendedThinking(rec, ""), ServiceTier: recommendedServiceTier(rec)}
+	}
 	after, found, err := s.model.CatalogMeta()
 	if err != nil || !found || before.SnapshotID != after.SnapshotID || before.SnapshotVersion != after.SnapshotVersion || before.FetchedAt != after.FetchedAt {
 		writeError(w, http.StatusConflict, errors.New("catalog changed while resolving defaults; retry"))

@@ -40,6 +40,7 @@ type Store struct {
 	beforeProjectTaskUpdateHook func(taskID string) error
 	workersMu                   sync.Mutex
 	workerRunObserver           func(worker WorkerRecord, run WorkerRunRecord)
+	jobReviewObserver           func(account, worker, run string, review JobReview)
 	workerPublisherMu           sync.RWMutex
 	workerPublisher             func(V3RealtimeOutboxRecord)
 	workerBudgetPublisher       func(NotificationRecord)

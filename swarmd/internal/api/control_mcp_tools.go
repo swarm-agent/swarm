@@ -53,6 +53,7 @@ var controlMCPAgentModelRoles = map[string][2]string{
 	"swarm":               {"swarm", "action"},
 	"system-orchestrator": {"swarm", "plan"},
 	"system-coder":        {"system_agents", "coder"},
+	"system-reviewer":     {"system_agents", "reviewer"},
 	"system-finder":       {"system_agents", "finder"},
 	"system-designer":     {"system_agents", "designer"},
 	"system-compact":      {"system_agents", "compact"},
@@ -60,7 +61,7 @@ var controlMCPAgentModelRoles = map[string][2]string{
 }
 
 // The roles in a fixed order (set_agent_model role all applies them in turn).
-var controlMCPAgentModelRoleOrder = []string{"swarm", "system-orchestrator", "system-coder", "system-finder", "system-designer", "system-compact", "system-router"}
+var controlMCPAgentModelRoleOrder = []string{"swarm", "system-orchestrator", "system-coder", "system-reviewer", "system-finder", "system-designer", "system-compact", "system-router"}
 
 var controlMCPSessionAgents = []string{"swarm", "system-orchestrator", "system-coder", "system-designer", "system-finder"}
 

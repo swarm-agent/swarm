@@ -22,6 +22,7 @@ const (
 	SystemAgentCompact  = "compact"
 	SystemAgentFinder   = "finder"
 	SystemAgentCoder    = "coder"
+	SystemAgentReviewer = "reviewer"
 	SystemAgentDesigner = "designer"
 	SystemAgentRouter   = "router"
 )
@@ -44,6 +45,7 @@ type SystemAgentModelAssignments struct {
 	Compact  AgentModelAssignment `json:"compact"`
 	Finder   AgentModelAssignment `json:"finder"`
 	Coder    AgentModelAssignment `json:"coder"`
+	Reviewer AgentModelAssignment `json:"reviewer"`
 	Designer AgentModelAssignment `json:"designer"`
 	Router   AgentModelAssignment `json:"router"`
 }
@@ -92,6 +94,8 @@ func NormalizeSystemAgentName(name string) (string, error) {
 		return SystemAgentFinder, nil
 	case SystemAgentCoder:
 		return SystemAgentCoder, nil
+	case SystemAgentReviewer, "system-reviewer":
+		return SystemAgentReviewer, nil
 	case SystemAgentDesigner:
 		return SystemAgentDesigner, nil
 	case SystemAgentRouter:
@@ -270,6 +274,7 @@ func normalizeAgentModelSettingsRecord(record AgentModelSettingsRecord) AgentMod
 	record.SystemAgents.Compact = NormalizeAgentModelAssignment(record.SystemAgents.Compact)
 	record.SystemAgents.Finder = NormalizeAgentModelAssignment(record.SystemAgents.Finder)
 	record.SystemAgents.Coder = NormalizeAgentModelAssignment(record.SystemAgents.Coder)
+	record.SystemAgents.Reviewer = NormalizeAgentModelAssignment(record.SystemAgents.Reviewer)
 	record.SystemAgents.Designer = NormalizeAgentModelAssignment(record.SystemAgents.Designer)
 	record.SystemAgents.Router = NormalizeAgentModelAssignment(record.SystemAgents.Router)
 	if record.UpdatedAt < 0 {
@@ -287,6 +292,11 @@ func validateAgentModelSettingsRecord(record AgentModelSettingsRecord) error {
 	}
 	if err := ValidateAgentModelAssignment(record.Swarm.Plan); err != nil {
 		return fmt.Errorf("swarm.plan: %w", err)
+	}
+	if record.SystemAgents.Reviewer != (AgentModelAssignment{}) {
+		if err := ValidateAgentModelAssignment(record.SystemAgents.Reviewer); err != nil {
+			return fmt.Errorf("system_agents.reviewer: %w", err)
+		}
 	}
 	assignments := []struct {
 		name  string
@@ -312,6 +322,8 @@ func setSystemAgentAssignment(assignments *SystemAgentModelAssignments, name str
 		assignments.Finder = assignment
 	case SystemAgentCoder:
 		assignments.Coder = assignment
+	case SystemAgentReviewer:
+		assignments.Reviewer = assignment
 	case SystemAgentDesigner:
 		assignments.Designer = assignment
 	case SystemAgentRouter:

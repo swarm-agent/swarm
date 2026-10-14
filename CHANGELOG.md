@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Record fail-closed reviewer verdicts on reviewed jobs, expose exact-head staleness and the landing-policy helper, emit `job.reviewed` signals, and support independent catalog-backed `system-reviewer` model settings. Docs impact: updated reviewer worker contract.
+
 - Enable report-only reviewer jobs with `review_job` on V3 worker direct requests, SDK and MCP; capture detached exact-head checkouts, review environment/context, and discard build outputs after execution. Reviewer delivery is refused. Docs impact: updated `docs/reviewer-worker.md`.
 
 - Add a Docker-gated reviewer read-only Git enforcement proof, preserve folder-image entrypoints in reviewer mount specs, and refuse reviewer MCP deliveries explicitly. Reviewer execution remains fail-closed pending lifecycle integration. Docs impact: docs/reviewer-worker.md.

@@ -866,6 +866,8 @@ test('SwarmWorkersNamespace: directRequest, testRun, trigger dispatch and parse 
 // Requirement: getHistory consumes handleWorkerHistory's `revisions` envelope while preserving
 // the SDK's history return value; reject an incompatible envelope instead of inventing empty history.
 // This transport test is the narrowest wire-contract regression, not daemon/provider acceptance.
+// Purpose: getRun must preserve canonical verdict/staleness evidence over the
+// V3 wire; this HTTP namespace test is the narrowest SDK transport layer.
 test('SwarmWorkersNamespace: mintTriggerToken, listRuns, getRun, cancelRun, getHistory, getRevision work as specified', async () => {
   let lastUrl = '';
   let lastMethod = '';
@@ -886,7 +888,7 @@ test('SwarmWorkersNamespace: mintTriggerToken, listRuns, getRun, cancelRun, getH
       }
       if (req.url === '/v3/workers/w1/runs/r1') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ run: { id: 'r1', worker_id: 'w1', status: 'admitted', created_at: 1000 } }));
+        res.end(JSON.stringify({ run: { id: 'r1', worker_id: 'w1', status: 'admitted', created_at: 1000, review: { verdict: 'ok', head: 'head', reviewer_job_id: 'worker/reviewer/run', model: 'p/m', at: 123, stale: true } } }));
         return;
       }
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -933,6 +935,7 @@ test('SwarmWorkersNamespace: mintTriggerToken, listRuns, getRun, cancelRun, getH
 
     // 3. Get run (existing)
     const run = await workers.getRun({ worker_id: 'w1', run_id: 'r1' });
+  assert.deepEqual(run?.review, { verdict: 'ok', head: 'head', reviewer_job_id: 'worker/reviewer/run', model: 'p/m', at: 123, stale: true });
     assert.ok(run);
     assert.equal(run.id, 'r1');
 

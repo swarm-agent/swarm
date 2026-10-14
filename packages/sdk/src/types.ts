@@ -1153,7 +1153,18 @@ export interface WorkerRevisionRecord {
   change_summary?: string;
 }
 
+export interface JobReview {
+  verdict: 'ok' | 'block';
+  head: string;
+  reviewer_job_id: string;
+  model: string;
+  at: number;
+  reason?: string;
+  stale: boolean;
+}
+
 export interface WorkerRunRecord {
+  review?: Partial<JobReview> & { state?: string; project_id?: string; task_id?: string; task_status?: string; next_action?: string };
   placement?: import('./worker-control.js').WorkerRunPlacement;
   cancel_requested?: boolean;
   id: string;

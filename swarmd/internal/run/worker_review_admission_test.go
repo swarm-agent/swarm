@@ -20,6 +20,19 @@ import (
 // deterministic local engine fixture executes real Git through the routing
 // boundary; it does NOT prove mount enforcement (the Docker test does that).
 func TestReviewerAdmissionAndTerminalCleanup(t *testing.T) {
+	for _, tc := range []struct{ name, report, status, want string }{
+		{"ok", "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: test", sessions.RunIntentCompleted, "ok"},
+		{"block", "VERDICT: BLOCK\nSUMMARY: broken\nFINDINGS: 1. high file:1\nTESTS RUN: failed", sessions.RunIntentCompleted, "block"},
+		{"garbage", "garbage", sessions.RunIntentCompleted, "block"},
+		{"missing", "", sessions.RunIntentCompleted, "block"},
+		{"failed", "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: test", sessions.RunIntentFailed, "block"},
+		{"stopped", "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: test", sessions.RunIntentCancelled, "block"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testReviewerTerminal(t, tc.report, tc.status, tc.want) })
+	}
+}
+
+func testReviewerTerminal(t *testing.T, report, status, want string) {
 	_, ss, s, workspace := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
 	ws := ss.Store().WorkerStore()
 	create := func(role string) store.WorkerRecord {
@@ -112,7 +125,7 @@ esac
 		t.Fatal(scope, err)
 	}
 	// A later source commit must neither change retry identity nor captured head.
-	git(source.WorktreeRootPath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "later")
+
 	replay, err := s.Dispatch(context.Background(), "account", "owner", req)
 	if err != nil || replay.ID != r.ID {
 		t.Fatal(replay, err)
@@ -124,7 +137,13 @@ esac
 	if err != nil || !found {
 		t.Fatal(err)
 	}
-	intent.Status = sessions.RunIntentCompleted
+	intent.Status = status
+	if report != "" {
+		_, err = ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, AccountScopeID: "account", UserID: "owner", Kind: sessions.SessionMutationAppendMessage, ClientRequestID: "report", IdempotencyKey: "report", PayloadHash: "report", RequestHash: "report", EventType: "session.message.appended", Message: &store.MessageSnapshot{ID: "report", Role: "assistant", Content: report}, NowUnixMs: time.Now().UnixMilli()})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	_, err = ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, AccountScopeID: "account", UserID: "owner", Kind: sessions.SessionMutationRecordRunIntent, ClientRequestID: "review-complete", IdempotencyKey: "review-complete", PayloadHash: "review-complete", RequestHash: "review-complete", EventType: "session.run_intent.updated", RunIntent: &intent, NowUnixMs: time.Now().UnixMilli()})
 	if err != nil {
 		t.Fatal(err)
@@ -132,11 +151,24 @@ esac
 	if err := s.observeRun(r); err != nil {
 		t.Fatal(err)
 	}
+	evidence, err := ws.GetJobReview("account", coder.ID, job.ID)
+	if err != nil || evidence == nil || evidence.Verdict != want || evidence.Head != head {
+		t.Fatal(evidence, err)
+	}
+	view, err := s.RunReview(job)
+	if err != nil || view == nil || view.JobReview == nil || view.Stale {
+		t.Fatal(view, err)
+	}
+	git(source.WorktreeRootPath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "later")
+	view, err = s.RunReview(job)
+	if err != nil || view == nil || view.JobReview == nil || !view.Stale {
+		t.Fatal(view, err)
+	}
 	if _, err := os.Stat(review.WorktreeRootPath); !os.IsNotExist(err) {
 		t.Fatal("checkout retained", err)
 	}
 	final, _, err := ws.GetWorkerRun("account", reviewer.ID, r.ID)
-	if err != nil || final.Status != "succeeded" || len(final.Deliverables) != 0 {
+	if err != nil || (status == sessions.RunIntentCompleted && final.Status != "succeeded") || len(final.Deliverables) != 0 {
 		t.Fatal(final, err)
 	}
 }

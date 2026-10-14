@@ -31,8 +31,9 @@ func workerRoleAssignment(settings store.AgentModelSettingsRecord, role string) 
 	case store.WorkerRoleCoder:
 		return settings.SystemAgents.Coder, true
 	case store.WorkerRoleReviewer:
-		// Until the catalog exposes a review assignment, inherit the canonical
-		// coder setting rather than inventing a model/provider fallback.
+		if settings.SystemAgents.Reviewer.Model != "" {
+			return settings.SystemAgents.Reviewer, true
+		}
 		return settings.SystemAgents.Coder, true
 	case store.WorkerRoleDesigner:
 		return settings.SystemAgents.Designer, true
@@ -81,6 +82,30 @@ func (s *Service) ResolveWorkerRoleModelProfile(account, role string, selected *
 			return store.ModelProfileSelection{Provider: a.Provider, Model: a.Model, Thinking: a.Thinking, ServiceTier: a.ServiceTier, ContextMode: a.ContextMode}
 		}
 		if assignment, isRole := workerRoleAssignment(settings, role); isRole {
+			if role == store.WorkerRoleReviewer && settings.SystemAgents.Reviewer.Model == "" {
+				records, ok, err := s.model.RecommendedCatalogRoleDefaults(assignment.Provider, "review")
+				if err != nil {
+					return s.workerDefaultFallback(account, err)
+				}
+				if ok {
+					record := records["review"]
+					for _, rec := range record.Recommendations {
+						if rec.Role == "review" {
+							assignment.Model = record.Model
+							assignment.Thinking = rec.Thinking
+							if assignment.Thinking == "" {
+								assignment.Thinking = record.DefaultThinking
+							}
+							assignment.ServiceTier = ""
+							if rec.Serving == "fast" || rec.Serving == "priority" {
+								assignment.ServiceTier = "priority"
+							}
+							assignment.ContextMode = ""
+							break
+						}
+					}
+				}
+			}
 			if strings.TrimSpace(assignment.Provider) == "" || strings.TrimSpace(assignment.Model) == "" {
 				return s.workerDefaultFallback(account, fmt.Errorf("%s model setting is not configured", role))
 			}

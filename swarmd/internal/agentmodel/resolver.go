@@ -76,6 +76,11 @@ func configuredAgentSettingsForID(settings agentmodelsettings.Settings, agentID 
 		return settings.SystemAgents.Finder, true
 	case agentruntime.CoderAgentID:
 		return settings.SystemAgents.Coder, true
+	case agentruntime.ReviewerAgentID:
+		if settings.SystemAgents.Reviewer.Model != "" {
+			return settings.SystemAgents.Reviewer, true
+		}
+		return settings.SystemAgents.Coder, true
 	case agentruntime.DesignerAgentID, agentruntime.ImageAgentID:
 		// Image workers use the configured Designer reasoning model only to compose
 		// one provider-neutral image prompt. The billed image model remains the

@@ -40,8 +40,26 @@ integration/recovery-integration routes refuse reviewer tasks. Task detail shows
 executor acknowledges termination, the reviewer container is closed and dirty
 checkout/build outputs are removed; no commits/files are delivered.
 
-Verdict recording, review events, stale-head evidence and the dedicated role
-model setting are a separate follow-up. No landing review gate is imposed.
+On completion the daemon parses the final assistant report and durably records
+`{verdict, head, reviewer_job_id, model, at, reason}` on the reviewed worker job.
+Missing/malformed reports and failed/stopped reviewers record `block`. Evidence
+is latest-per-head; terminal replay does not overwrite a newer review. V3 worker
+run detail, SDK `workers.getRun`, and MCP `swarm_get_job` expose the latest
+`review` with `stale` computed against the job's current Git HEAD. An unavailable
+checkout is stale, never a valid approval. Existing review lifecycle fields are
+preserved for compatibility. `WorkerStore.CurrentValidJobReview` is the exported
+exact-head hook for the future landing policy (it returns BLOCK evidence too).
+
+Recording emits an account-scoped `job.reviewed` signal with verdict/head and
+job IDs through the existing best-effort signal observer pattern; report/reason
+text is not forwarded. The feed is consumed by signal sinks and swarm-watch.
+
+`swarm_set_agent_model` accepts role `system-reviewer`; the canonical settings
+PATCH accepts `system_agents.reviewer`. Fresh defaults use the provider catalog's
+`review` recommendation, or the coder assignment if absent. Existing settings
+without the optional reviewer slot resolve catalog review/coder defaults;
+explicit reviewer assignments take precedence. No model/provider is hardcoded.
+No landing review gate is imposed.
 
 ## Docker enforcement proof
 

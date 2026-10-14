@@ -1161,6 +1161,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		return store.ErrWorkerConflict
 	}
 	if store.AutomationV2Terminal(current.Status) {
+		if err := s.recordReviewResult(current); err != nil {
+			return err
+		}
 		return s.cleanupReview(current)
 	}
 	intent, found, err := s.workerRunIntent(r)
@@ -1187,6 +1190,11 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			preparing = !exists || !lifecycle.Active
 		}
 		if preparing && current.Status == "admitted" {
+			current.Status = "cancelled"
+			current.CompletedAt = time.Now().UnixMilli()
+			if err := s.recordReviewResult(current); err != nil {
+				return err
+			}
 			if err := s.cleanupReview(current); err != nil {
 				return err
 			}
@@ -1251,10 +1259,13 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 	default:
 		return fmt.Errorf("%w: run remains active", store.ErrWorkerConflict)
 	}
+	current.CompletedAt = time.Now().UnixMilli()
+	if err := s.recordReviewResult(current); err != nil {
+		return err
+	}
 	if err := s.cleanupReview(current); err != nil {
 		return err
 	}
-	current.CompletedAt = time.Now().UnixMilli()
 	if plan, found, err := s.host.runs.sessions.GetActivePlan(r.SessionID); err != nil {
 		return err
 	} else if found && plan.Document != nil {

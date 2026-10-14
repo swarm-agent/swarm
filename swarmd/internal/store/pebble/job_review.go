@@ -9,7 +9,7 @@ type JobReview struct {
 	Head          string `json:"head"`
 	ReviewerJobID string `json:"reviewer_job_id"`
 	Model         string `json:"model"`
-	RecordedAt    int64  `json:"recorded_at"`
+	RecordedAt    int64  `json:"at"`
 	Reason        string `json:"reason,omitempty"`
 }
 

@@ -453,6 +453,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	signalEmitter := signals.NewEmitter(signalStore)
 	permissionSvc.SetSignalEmitter(signalEmitter)
 	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))
+	store.SetJobReviewObserver(jobReviewSignal(signalEmitter))
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore)
 	if err != nil {

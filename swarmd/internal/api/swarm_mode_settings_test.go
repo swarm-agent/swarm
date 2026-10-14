@@ -160,7 +160,7 @@ func TestAgentModelSettingsHTTPSingleSwarmSlotsAndRoles(t *testing.T) {
 	got := agentModelSettingsHTTP(t, server, principal, http.MethodGet, "", http.StatusOK)
 	assertAgentModelSettingsHTTPResponse(t, got, "new-action", "new-plan", "compact")
 	roles := got["roles"].([]any)
-	if len(roles) != 7 {
+	if len(roles) != 8 {
 		t.Fatalf("role count = %d", len(roles))
 	}
 	found := false

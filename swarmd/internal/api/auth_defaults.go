@@ -362,6 +362,16 @@ func (s *Server) recommendedOnboardingSubagentSettings(providerID string) (pebbl
 			return pebblestore.SystemAgentModelAssignments{}, false, fmt.Errorf("incomplete required %s recommendation for provider %q: %w", name, providerID, err)
 		}
 	}
+	reviews, hasReview, reviewErr := s.model.RecommendedCatalogRoleDefaults(providerID, "review")
+	if reviewErr != nil {
+		return pebblestore.SystemAgentModelAssignments{}, false, reviewErr
+	}
+	assignments.Reviewer = assignments.Coder
+	if hasReview {
+		record := reviews["review"]
+		rec := recommendationForRole(record, "review")
+		assignments.Reviewer = pebblestore.AgentModelAssignment{Provider: providerID, Model: record.Model, Thinking: recommendedThinking(rec, ""), ServiceTier: recommendedServiceTier(rec)}
+	}
 	return assignments, true, nil
 }
 
