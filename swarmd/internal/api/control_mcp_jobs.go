@@ -628,6 +628,9 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 		out["next"] = next
 	}
 	result := controlMCPMap(out["result"])
+	if _, uncommitted := result["uncommitted_changes"]; uncommitted && status == "needs_review" {
+		out["next"] = controlMCPUncommittedNext
+	}
 	integration := controlMCPMap(result["integration"])
 	if delivered := taskDeliveredState(controlMCPString(integration, "state"), controlMCPString(integration, "pull_request_url")); delivered != "" {
 		delete(out, "action_needed")
@@ -639,6 +642,11 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	}
 	return out, nil
 }
+
+// controlMCPUncommittedNext is a reviewable job's next step while its worktree
+// holds changes it did not commit: only commits are merged, so the job is not
+// "nothing to merge" and not ready to deliver either.
+const controlMCPUncommittedNext = "the worker left uncommitted changes in its worktree (result.uncommitted_changes), and only commits are merged: ask it with swarm_message_job to commit them (finishing any unfinished merge or cherry-pick) or to discard what it does not want, then swarm_deliver_job merges the branch"
 
 // controlMCPResultCommitted reports whether a job's result has commits to
 // merge. The delivery assessment is the authority ("empty": no commits or no
@@ -724,7 +732,7 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	run, err := c.sendMessage(refs.sessionID, message, requestID)
 	if err != nil {
-		return nil, err
+		return nil, controlMCPFollowupRefused(err)
 	}
 	out := map[string]any{"job_id": controlMCPJobID(kind, a, b), "client_request_id": requestID, "sent": run, "next": "the worker continues in this job: swarm_get_job with wait_seconds waits for it, then swarm_deliver_job merges the branch"}
 	if wait := controlMCPInt(args, "wait_seconds", 0); wait > 0 {
@@ -737,6 +745,23 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return view, nil
 	}
 	return out, nil
+}
+
+// controlMCPFollowupRefused says plainly that a follow-up was not sent when
+// Swarm refuses to start it: the job's state does not allow it (409), or
+// another run in the job's session won the race to start.
+func controlMCPFollowupRefused(err error) error {
+	var refused controlMCPToolError
+	if !errors.As(err, &refused) {
+		return err
+	}
+	switch {
+	case strings.Contains(refused.message, "already has active v3 run"):
+		return controlMCPToolFailure("the follow-up was not sent: a follow-up is already running in this job; wait for it with swarm_get_job (wait_seconds), then send the next message")
+	case refused.status == http.StatusConflict:
+		return controlMCPToolFailure("the follow-up was not sent: %s", refused.message)
+	}
+	return err
 }
 
 // controlMCPAnswerJob replies to a worker's question (ask_user). It answers

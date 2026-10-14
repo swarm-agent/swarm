@@ -1723,6 +1723,10 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "idempotency_conflict", "error": err.Error()})
 			return
 		}
+		if errors.Is(err, pebblestore.ErrWorkerConflict) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		if strings.Contains(err.Error(), "not found") {
 			writeSessionNotFound(w)
 			return
@@ -1820,6 +1824,9 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	}
 	if runIntent.RunID == "" {
 		runIntent.RunID = stableSessionsV3PrimaryRunID(sessionID, clientRequestID)
+	}
+	if err := s.prepareWorkerJobFollowup(principal, sessionID, clientRequestID); err != nil {
+		return sessionruntime.SessionMutationResult{}, nil, err
 	}
 	payloadHash, err := sessionsV3MessagePayloadHash(sessionID, req, message, runIntent.Status, runIntent.BlockedReason)
 	if err != nil {
@@ -1941,6 +1948,28 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		}
 	}
 	return result, enqueueJob, nil
+}
+
+// prepareWorkerJobFollowup admits a message into a worker job's session only
+// as a follow-up its run can start: the job settled, was not cancelled, its
+// worker still takes work and nothing else runs in the session. A refusal
+// (ErrWorkerConflict) is returned before anything is appended, so a caller is
+// never told a follow-up was accepted that the run gate would then refuse. A
+// retry of an already appended message replays without re-checking.
+func (s *Server) prepareWorkerJobFollowup(principal identity.Principal, sessionID, clientRequestID string) error {
+	if !strings.HasPrefix(sessionID, "worker-execution-") {
+		return nil
+	}
+	if _, replay, err := s.sessions.Store().GetV3SessionOperationIdempotencyRecord(principal.AccountScopeID, sessionID, sessionruntime.SessionMutationAppendMessage, clientRequestID); err != nil {
+		return err
+	} else if replay {
+		return nil
+	}
+	execution, err := s.workerExecutionService()
+	if err != nil {
+		return err
+	}
+	return execution.PrepareFollowup(principal.AccountScopeID, principal.UserID, sessionID)
 }
 
 func (s *Server) sessionsV3ActiveCheckpointMessageRunJob(principal identity.Principal, sessionID, runID, epochID string) (sessionV3ExecutorJob, bool, error) {

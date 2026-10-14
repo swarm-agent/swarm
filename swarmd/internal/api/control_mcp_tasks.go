@@ -291,6 +291,9 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	if state, _ := assessment["state"].(string); state != "" {
 		out["delivery_state"] = state
 	}
+	if dirty, _ := assessment["source_dirty"].(bool); dirty {
+		out["uncommitted_changes"] = controlMCPUncommittedFiles(assessment["source_dirty_files"])
+	}
 	for _, key := range []string{"what_did_do", "what_not_done"} {
 		lines := []string{}
 		for _, raw := range controlMCPList(task[key]) {
@@ -353,6 +356,30 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 		out["next"] = next
 	}
 	return out, nil
+}
+
+// controlMCPMaxUncommittedFiles bounds the uncommitted changes a result names.
+const controlMCPMaxUncommittedFiles = 20
+
+// controlMCPUncommittedFiles names the changes the delivery assessment found
+// uncommitted in the task's worktree (staged, unstaged, untracked or
+// conflicted). It is never empty: a dirty worktree whose files were not listed
+// still says so.
+func controlMCPUncommittedFiles(raw any) []string {
+	files := []string{}
+	for _, item := range controlMCPList(raw) {
+		if line, _ := item.(string); strings.TrimSpace(line) != "" {
+			if len(files) == controlMCPMaxUncommittedFiles {
+				files = append(files, "and more")
+				break
+			}
+			files = append(files, controlMCPTruncate(line, 300))
+		}
+	}
+	if len(files) == 0 {
+		files = append(files, "uncommitted changes (files not listed)")
+	}
+	return files
 }
 
 // controlMCPFillWorktreeHead gives a result the head of the job's own worktree

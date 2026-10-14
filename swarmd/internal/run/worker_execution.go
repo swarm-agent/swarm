@@ -1625,7 +1625,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if err != nil {
 		return err
 	}
-	if !found || r.CancelRequested || r.SessionID != current.ID || r.UserID != current.UserID || (r.Status != "admitted" && r.Status != "running") {
+	if !found || r.CancelRequested || r.SessionID != current.ID || r.UserID != current.UserID {
 		return store.ErrWorkerConflict
 	}
 	intent, hasIntent, intentErr := s.sessions.GetSessionActiveRunIntent(current.ID)
@@ -1633,6 +1633,9 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 		return intentErr
 	}
 	if hasIntent && intent.Status == sessions.RunIntentCancelled {
+		return store.ErrWorkerConflict
+	}
+	if !workerRunExecutable(r, intent, hasIntent) {
 		return store.ErrWorkerConflict
 	}
 	w, found, err := ws.GetWorker(r.AccountScopeID, r.WorkerID)
@@ -1666,6 +1669,144 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 		}
 	}
 	return nil
+}
+
+// workerRunSettledForFollowup lists the receipt states a job accepts a
+// follow-up in: it finished its own run, for review (also after declaring a
+// blocker) or as a failure. A cancelled job accepts none.
+func workerRunSettledForFollowup(status string) bool {
+	return status == "succeeded" || status == "failed"
+}
+
+// workerRunExecutable says whether a worker job's session may run now. The
+// job's own run executes while its receipt is admitted or running. Once the
+// receipt settled, the session runs only a follow-up: a later active run of
+// its own (swarm_message_job), never the job's original run or a checkpoint of
+// its plan again.
+func workerRunExecutable(r store.WorkerRunRecord, intent store.V3SessionRunIntent, hasIntent bool) bool {
+	switch {
+	case r.Status == "admitted" || r.Status == "running":
+		return true
+	case workerRunSettledForFollowup(r.Status):
+		return hasIntent && intent.RunID != "" && intent.RunID != r.ID && intent.PlanID != r.ID &&
+			(intent.Status == sessions.RunIntentPendingExecutor || intent.Status == sessions.RunIntentRunning)
+	}
+	return false
+}
+
+// PrepareFollowup readies a worker job's session for a follow-up message: the
+// job settled (its own run finished, for review, blocked or failed), it was
+// not cancelled, its worker still admits work, and no other run is active in
+// the session. The follow-up runs with the worker's current model settings:
+// a worker revised since the job started (a role model change, for example)
+// does not block it. It changes nothing when it refuses; the message itself is
+// appended by the caller through the canonical V3 message mutation, where a
+// concurrent second run is refused atomically.
+func (s *WorkerExecutionService) PrepareFollowup(account, user, sessionID string) error {
+	s.dispatchMu.Lock()
+	defer s.dispatchMu.Unlock()
+	if err := s.authorizeWorkerOwner(account, user); err != nil {
+		return err
+	}
+	h := s.host
+	snapshot, found, err := h.runs.sessions.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	runID, workerID := mapString(snapshot.Metadata, "worker_execution_run_id"), mapString(snapshot.Metadata, "worker_id")
+	if !found || runID == "" || workerID == "" || snapshot.AccountScopeID != account || snapshot.UserID != user {
+		return fmt.Errorf("%w: the session is not a worker job's session", store.ErrWorkerConflict)
+	}
+	ws, err := s.workerStore()
+	if err != nil {
+		return err
+	}
+	r, found, err := ws.GetWorkerRun(account, workerID, runID)
+	if err != nil {
+		return err
+	}
+	if !found || r.SessionID != sessionID || r.UserID != user {
+		return fmt.Errorf("%w: the job's receipt does not match its session", store.ErrWorkerConflict)
+	}
+	if !store.AutomationV2Terminal(r.Status) && !r.CancelRequested {
+		// The job's own run may have ended without the reconcile loop having
+		// recorded it yet; settle it from its intent, the way the loop does.
+		if err := s.observeRun(r); err != nil && !errors.Is(err, store.ErrWorkerConflict) {
+			return err
+		}
+		if r, _, err = ws.GetWorkerRun(account, workerID, runID); err != nil {
+			return err
+		}
+	}
+	switch {
+	case r.CancelRequested || r.Status == "cancelled":
+		return fmt.Errorf("%w: the job was cancelled; give the worker a new job instead", store.ErrWorkerConflict)
+	case r.Status == "admitted" || r.Status == "running":
+		// The job's own run still owns the session: a message joins it as it
+		// always has (the run gate admits it while the receipt runs, and the
+		// run-intent store refuses a second active run atomically).
+		return nil
+	case !workerRunSettledForFollowup(r.Status):
+		return fmt.Errorf("%w: the job is %s and takes no follow-up", store.ErrWorkerConflict, r.Status)
+	case r.Status == "failed" && workerRunPlanID(r) != "":
+		// A message would resume the failed job's own plan, which its settled
+		// receipt no longer runs.
+		return fmt.Errorf("%w: the job's plan failed; give the worker a corrected job instead", store.ErrWorkerConflict)
+	}
+	w, found, err := ws.GetWorker(account, workerID)
+	if err != nil {
+		return err
+	}
+	if !found || !workerRunAdmissionOpen(w, r) {
+		return fmt.Errorf("%w: the worker is %s and takes no more work", store.ErrWorkerConflict, firstNonEmptyString(string(w.LifecycleState), "gone"))
+	}
+	if !workerRunAutomationEnabled(w, r) {
+		return fmt.Errorf("%w: the job's automation is disabled", store.ErrWorkerConflict)
+	}
+	if active, ok, err := h.runs.sessions.GetSessionActiveRunIntent(sessionID); err != nil {
+		return err
+	} else if ok && (active.Status == sessions.RunIntentPendingExecutor || active.Status == sessions.RunIntentRunning) {
+		return fmt.Errorf("%w: a follow-up is already running in this job; send the next one once it settles", store.ErrWorkerConflict)
+	}
+	if projectID, taskID := mapString(snapshot.Metadata, "project_id"), mapString(snapshot.Metadata, "task_id"); projectID != "" && taskID != "" {
+		task, found, err := h.runs.sessions.Store().GetProjectTask(account, projectID, taskID)
+		if err != nil {
+			return err
+		}
+		if found && task != nil && task.Archived {
+			return fmt.Errorf("%w: the job's task is archived", store.ErrWorkerConflict)
+		}
+	}
+	return s.refreshFollowupModel(snapshot, w)
+}
+
+// refreshFollowupModel points the job's session at the worker's current
+// model settings before a follow-up run, through the canonical session model
+// mutation. The job's own run already finished, so no run changes model
+// mid-flight; an unchanged selection writes nothing.
+func (s *WorkerExecutionService) refreshFollowupModel(snapshot store.SessionSnapshot, w store.WorkerRecord) error {
+	profile, err := s.ResolveRoleModelProfile(snapshot.AccountScopeID, w.Role, w.ModelProfile)
+	if err != nil {
+		return err
+	}
+	profile.UseAccountDefault, profile.ActionUseAccountDefault, profile.PlanUseAccountDefault = false, false, false
+	if err := store.ValidateWorkerModelProfile(profile); err != nil {
+		return err
+	}
+	current := w
+	current.ModelProfile = profile
+	pref := workerExecutionPreference(current)
+	have := snapshot.Preference
+	if have.Provider == pref.Provider && have.Model == pref.Model && have.Thinking == pref.Thinking && have.ServiceTier == pref.ServiceTier && have.ContextMode == pref.ContextMode {
+		return nil
+	}
+	next := snapshot
+	next.Preference = pref
+	next.ModelProfile = profile
+	now := time.Now().UnixMilli()
+	key := fmt.Sprintf("worker-followup-model:%s:%d", snapshot.ID, now)
+	_, err = s.host.apply(sessions.SessionMutationInput{SessionID: snapshot.ID, UserID: snapshot.UserID, AccountScopeID: snapshot.AccountScopeID, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key, RequestHash: key, Kind: sessions.SessionMutationUpdateModelProfile, Session: &next, NowUnixMs: now})
+	return err
 }
 
 func (s *WorkerExecutionService) Resume(account, user, id string, revision uint64) (store.WorkerRecord, error) {
