@@ -32,7 +32,20 @@ func TestReviewerAdmissionAndTerminalCleanup(t *testing.T) {
 	}
 }
 
+// Purpose: reconcile must settle a terminal reviewer with a fresh manager at
+// every durable cleanup phase, including a missing checkout. Real Pebble/Git
+// verifies persisted identity and lifecycle projection; engine mounts are fake.
+func TestReviewerReconcileCleanupRestart(t *testing.T) {
+	for _, phase := range []string{"active", "closing", "container_removed", "checkout_removed", "volume_removed"} {
+		t.Run(phase, func(t *testing.T) {
+			testReviewerTerminalPhase(t, "VERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: test", sessions.RunIntentCompleted, "ok", phase)
+		})
+	}
+}
 func testReviewerTerminal(t *testing.T, report, status, want string) {
+	testReviewerTerminalPhase(t, report, status, want, "")
+}
+func testReviewerTerminalPhase(t *testing.T, report, status, want, phase string) {
 	_, ss, s, workspace := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
 	ws := ss.Store().WorkerStore()
 	create := func(role string) store.WorkerRecord {
@@ -157,7 +170,34 @@ esac
 	if scope, err := m.CommandScope(review.WorktreeRootPath); err != nil || scope.ReviewCheckout == "" {
 		t.Fatal("failed cleanup downgraded scope", scope, err)
 	}
-	if err := s.observeRun(r); err != nil {
+	if phase != "" {
+		state, found, err := ss.Store().GetReviewCleanup("account", r.SessionID)
+		if err != nil || !found {
+			t.Fatal(state, err)
+		}
+		if phase == "checkout_removed" || phase == "volume_removed" {
+			if err := s.host.trees.RemoveReviewWorkspace(review.WorkspacePath, review.WorktreeRootPath, r.SessionID, head); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state.Phase = phase
+		if err := ss.Store().PutReviewCleanup("account", state); err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, Engine: engine, UID: 10001, GID: 10001, StateDir: scratch}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh.SetLayout(sandbox.Layout{Projects: func() ([]string, error) { return []string{source.WorkspacePath}, nil }, WorktreesRoot: filepath.Dir(bucket), Bucket: func(string) (string, error) { return filepath.Base(bucket), nil }})
+		sandbox.SetDefault(fresh)
+		if err := s.ReconcileWorker(context.Background(), "account", reviewer.ID); err != nil {
+			t.Fatal(err)
+		}
+		state, _, err = ss.Store().GetReviewCleanup("account", r.SessionID)
+		if err != nil || state.Phase != "volume_removed" {
+			t.Fatal(state, err)
+		}
+	} else if err := s.observeRun(r); err != nil {
 		t.Fatal(err)
 	}
 	evidence, err := ws.GetJobReview("account", coder.ID, job.ID)

@@ -162,7 +162,11 @@ func (m *Manager) EndReview(ctx context.Context, checkout string) error {
 	m.mu.Unlock()
 	if m.runner != nil {
 		if _, err := m.runner.Run(ctx, m.cfg.Engine, "rm", "-f", name); err != nil {
-			return err
+			// Only a verified missing container makes shutdown idempotent.
+			out, inspectErr := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", name)
+			if inspectErr == nil || !strings.Contains(strings.ToLower(string(out)), "no such container") {
+				return err
+			}
 		}
 	}
 	m.mu.Lock()

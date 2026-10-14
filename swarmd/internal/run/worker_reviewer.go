@@ -121,10 +121,31 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 	if m == nil {
 		return sandbox.ErrSandboxRequired
 	}
+	db := s.host.runs.sessions.Store()
+	state, found, err := db.GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
+	if err != nil {
+		return err
+	}
+	if found {
+		if state.Checkout != snapshot.WorktreeRootPath || state.Session != snapshot.ID {
+			return fmt.Errorf("review identity mismatch")
+		}
+		if err := m.RestoreReviewIdentity(state); err != nil {
+			return err
+		}
+		return m.SetReviewEnvironment(state.Checkout, reviewEnvironment(snapshot.Metadata))
+	}
 	if err := m.RegisterReviewCheckout(snapshot.WorktreeRootPath); err != nil {
 		return err
 	}
 	if err := m.BindReviewSession(snapshot.ID, snapshot.WorktreeRootPath); err != nil {
+		return err
+	}
+	state, err = m.CaptureReviewIdentity(snapshot.ID, snapshot.WorktreeRootPath)
+	if err != nil {
+		return err
+	}
+	if err := db.PutReviewCleanup(snapshot.AccountScopeID, state); err != nil {
 		return err
 	}
 	return m.SetReviewEnvironment(snapshot.WorktreeRootPath, reviewEnvironment(snapshot.Metadata))
@@ -151,10 +172,20 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if m := sandbox.Default(); m != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		return m.CleanupReviewValidated(ctx, snapshot.WorktreeRootPath, validate, remove)
+		if err := s.registerReview(snapshot); err != nil {
+			return err
+		}
+		db := s.host.runs.sessions.Store()
+		state, found, err := db.GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("missing durable review identity")
+		}
+		return m.CleanupReviewDurable(ctx, &state, func(next sandbox.ReviewCleanupState) error {
+			return db.PutReviewCleanup(snapshot.AccountScopeID, next)
+		}, validate, remove)
 	}
-	if err := validate(); err != nil {
-		return err
-	}
-	return remove()
+	return sandbox.ErrSandboxRequired
 }

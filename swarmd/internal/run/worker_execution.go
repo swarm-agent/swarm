@@ -1425,6 +1425,16 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		if err = ctx.Err(); err != nil {
 			return err
 		}
+		if r.Role == store.WorkerRoleReviewer {
+			snapshot, found, restoreErr := s.host.runs.sessions.GetSession(r.SessionID)
+			if restoreErr == nil && found {
+				restoreErr = s.registerReview(snapshot)
+			}
+			if restoreErr != nil {
+				failures = append(failures, restoreErr)
+				continue
+			}
+		}
 		intent, exists, e := s.workerRunIntent(r)
 		if e != nil {
 			failures = append(failures, e)
