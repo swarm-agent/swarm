@@ -232,7 +232,12 @@ func command(ctx context.Context, rule Rule, scratch string, limit time.Duration
 
 func lastLine(output string) string {
 	lines := strings.Split(output, "\n")
-	return strings.TrimSpace(lines[len(lines)-1])
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // ownedByRoot refuses a file another user could change. Tests may set

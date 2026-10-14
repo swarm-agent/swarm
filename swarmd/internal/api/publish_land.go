@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -150,20 +151,39 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	if scope.Root != rule.Folder {
 		return errors.New("job sandbox does not belong to publish folder")
 	}
-	currentBranch, err := m.Exec(ctx, scope, sandbox.ExecRequest{Command: []string{"git", "branch", "--show-current"}, WorkingDir: path, Timeout: time.Minute, MaxTimeout: time.Minute, MaxOutput: 4096})
+	if c.server.sandboxEnvironments == nil {
+		return errors.New("folder environment store unavailable")
+	}
+	env, found, err := c.server.sandboxEnvironments.Get(rule.Folder)
+	if err != nil {
+		return err
+	}
+	if found && env.Account != e.Account {
+		return errors.New("environment belongs to another account")
+	}
+	return prepareLandWorktree(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
+		func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			return m.Exec(ctx, scope, req)
+		}, publish.Update)
+}
+
+// prepareLandWorktree keeps preparation and its verified command boundary testable.
+func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entry, path string, checks []string, checkTimeoutMinutes int,
+	exec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), update func(context.Context, publish.Rule, string) (publish.Base, error)) error {
+	currentBranch, err := exec(ctx, sandbox.ExecRequest{Command: []string{"git", "branch", "--show-current"}, WorkingDir: path, Timeout: time.Minute, MaxTimeout: time.Minute, MaxOutput: 4096})
 	if err != nil {
 		return err
 	}
 	if currentBranch.ExitCode != 0 || strings.TrimSpace(currentBranch.Stdout) != e.Request.Branch {
 		return errors.New("job branch changed before landing")
 	}
-	base, err := publish.Update(ctx, rule, e.Request.BaseBranch)
+	base, err := update(ctx, rule, e.Request.BaseBranch)
 	if err != nil {
 		return errors.New("base update failed")
 	}
 	git := func(args ...string) (string, int, error) {
 		// Exec routes Git explicitly inside the verified sandbox; no host fallback.
-		res, err := m.Exec(ctx, scope, sandbox.ExecRequest{Command: append([]string{"git"}, args...), WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
+		res, err := exec(ctx, sandbox.ExecRequest{Command: append([]string{"git"}, args...), WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
 		if err != nil {
 			return "", -1, err
 		}
@@ -195,29 +215,23 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	if err != nil || code != 0 {
 		return errors.New("cannot read rebased head")
 	}
-	e.Request.Head = strings.TrimSpace(head)
-	e.Request.BaseCommit = base.Commit
-	e.Request.BaseBranch = base.Branch
-	e.Checks = nil
-	if c.server.sandboxEnvironments == nil {
-		return errors.New("folder environment store unavailable")
-	}
-	env, found, err := c.server.sandboxEnvironments.Get(rule.Folder)
+	parsedHead, err := publish.ParseHeadOutput(head)
 	if err != nil {
 		return err
 	}
-	if found && env.Account != e.Account {
-		return errors.New("environment belongs to another account")
-	}
+	e.Request.Head = parsedHead
+	e.Request.BaseCommit = base.Commit
+	e.Request.BaseBranch = base.Branch
+	e.Checks = nil
 	limit := 20 * time.Minute
-	if env.Definition.CheckTimeoutMinutes > 0 {
-		limit = time.Duration(env.Definition.CheckTimeoutMinutes) * time.Minute
+	if checkTimeoutMinutes > 0 {
+		limit = time.Duration(checkTimeoutMinutes) * time.Minute
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
-	for _, command := range env.Definition.Checks {
+	for _, command := range checks {
 		var tail string
-		res, err := m.Exec(checkCtx, scope, sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: 4096, OnOutput: func(data []byte) {
+		res, err := exec(checkCtx, sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: 4096, OnOutput: func(data []byte) {
 			tail += string(data)
 			if len(tail) > 4096 {
 				tail = tail[len(tail)-4096:]
@@ -236,7 +250,8 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 		}
 	}
 	finalHead, code, err := git("rev-parse", "HEAD")
-	if err != nil || code != 0 || strings.TrimSpace(finalHead) != e.Request.Head {
+	parsedFinalHead, parseErr := publish.ParseHeadOutput(finalHead)
+	if err != nil || code != 0 || parseErr != nil || parsedFinalHead != e.Request.Head {
 		return errors.New("checks changed the rebased head")
 	}
 	dirty, code, err = git("status", "--porcelain")

@@ -14,11 +14,29 @@ type LandResult struct {
 	Moved  bool   `json:"moved,omitempty"`
 }
 
+// ParseHeadOutput extracts command evidence for landing.
+func ParseHeadOutput(output string) (string, error) {
+	head := lastLine(output)
+	if !commitPattern.MatchString(head) {
+		return "", errors.New("land refused: head is not a commit id")
+	}
+	return head, nil
+}
+
 // Land invokes the owner's fast-forward-only command. A receipt must name the
 // exact requested head; MOVED asks the queue to refresh the base and retry.
 func Land(ctx context.Context, rule Rule, req Request) (LandResult, error) {
-	if rule.Mode != "land" || !commitPattern.MatchString(req.Head) || !commitPattern.MatchString(req.BaseCommit) || !branchPattern.MatchString(req.BaseBranch) {
-		return LandResult{}, errors.New("land requires a valid head, base commit and base branch")
+	if rule.Mode != "land" {
+		return LandResult{}, errors.New("land refused: mode is not land")
+	}
+	if !commitPattern.MatchString(req.Head) {
+		return LandResult{}, errors.New("land refused: head is not a commit id")
+	}
+	if !commitPattern.MatchString(req.BaseCommit) {
+		return LandResult{}, errors.New("land refused: base commit is not a commit id")
+	}
+	if !branchPattern.MatchString(req.BaseBranch) {
+		return LandResult{}, errors.New("land refused: base branch is not a valid branch")
 	}
 	if err := ownedByRoot(rule.Command, true); err != nil {
 		return LandResult{}, errors.New("land command is not a trusted executable")

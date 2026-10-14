@@ -485,14 +485,15 @@ type DeploymentAccess struct {
 
 // ExecRequest specifies a command to execute inside a running container.
 type ExecRequest struct {
-	OperationID string               `json:"operation_id,omitempty"`
-	Command     []string             `json:"command"`
-	WorkingDir  string               `json:"working_dir,omitempty"`
-	Env         map[string]string    `json:"env,omitempty"`
-	Stdin       io.Reader            `json:"-"`
-	Timeout     time.Duration        `json:"timeout,omitempty"`
-	OnProgress  ExecProgressCallback `json:"-"`
-	MaxOutput   int                  `json:"max_output,omitempty"`
+	OperationID  string               `json:"operation_id,omitempty"`
+	Command      []string             `json:"command"`
+	WorkingDir   string               `json:"working_dir,omitempty"`
+	Env          map[string]string    `json:"env,omitempty"`
+	SecretValues []string             `json:"-"` // trusted caller-marked secrets; never serialized
+	Stdin        io.Reader            `json:"-"`
+	Timeout      time.Duration        `json:"timeout,omitempty"`
+	OnProgress   ExecProgressCallback `json:"-"`
+	MaxOutput    int                  `json:"max_output,omitempty"`
 }
 
 // ExecResult contains the output and exit code of a command execution.
@@ -823,7 +824,7 @@ func commandDiagnostic(out string) string {
 // never treats Swarm's command-routing configuration as a secret.
 func secretExecEnv(key, value string) bool {
 	key = strings.ToUpper(key)
-	if strings.HasPrefix(key, "GIT_") || key == "HOME" || key == "PATH" || strings.Contains(key, "UMASK") {
+	if strings.HasPrefix(key, "GIT_CONFIG_") || key == "GIT_DIR" || key == "GIT_WORK_TREE" || key == "GIT_INDEX_FILE" || key == "HOME" || key == "PATH" || strings.Contains(key, "UMASK") {
 		return false
 	}
 	if strings.HasPrefix(value, "swarm-secret://") {
@@ -840,11 +841,17 @@ func secretExecEnv(key, value string) bool {
 
 // SafeExecOutput redacts complete captured output before applying the per-stream
 // byte limit. It is shared by durable lifecycle results and tool receipt views.
-func SafeExecOutput(out string, maxOutput int, env map[string]string) (string, bool) {
+func SafeExecOutput(out string, maxOutput int, env map[string]string, secretValues ...string) (string, bool) {
+	values := append([]string(nil), secretValues...)
 	for key, value := range env {
+		if secretExecEnv(key, value) {
+			values = append(values, value)
+		}
+	}
+	for _, value := range values {
 		// Command routing/configuration is not credential material. In particular,
 		// replacing GIT_CONFIG_COUNT corrupts commit IDs containing that digit.
-		if len(value) >= 8 && secretExecEnv(key, value) {
+		if len(value) >= 8 {
 			out = strings.ReplaceAll(out, value, "[REDACTED]")
 			// Capture may have ended mid-value; do not persist that prefix.
 			for n := len(value) - 1; n >= 8; n-- {
@@ -1062,8 +1069,8 @@ func ExecSupervised(ctx context.Context, transport ContainerExecTransport, targe
 		lastObserved = time.Now().UTC()
 	}
 
-	safeStdout, outTruncated := SafeExecOutput(stdoutBuf.String(), maxOutput, req.Env)
-	safeStderr, errTruncated := SafeExecOutput(stderrBuf.String(), maxOutput, req.Env)
+	safeStdout, outTruncated := SafeExecOutput(stdoutBuf.String(), maxOutput, req.Env, req.SecretValues...)
+	safeStderr, errTruncated := SafeExecOutput(stderrBuf.String(), maxOutput, req.Env, req.SecretValues...)
 	result := &ExecResult{
 		Stdout:         safeStdout,
 		Stderr:         safeStderr,
@@ -1106,7 +1113,7 @@ func ExecSupervised(ctx context.Context, transport ContainerExecTransport, targe
 		} else {
 			result.ExitCode = -1 // transport failure, not a confirmed command exit
 			redacted := strings.Join(redactArgs(execArgs), " ")
-			safeError, _ := SafeExecOutput(err.Error(), 1024, req.Env)
+			safeError, _ := SafeExecOutput(err.Error(), 1024, req.Env, req.SecretValues...)
 			if _, remote := transport.(*sshDockerTransport); remote {
 				return result, fmt.Errorf("%w: SSH exec transport failed: %s (command: %s); restore access and reconcile operation %s", ErrOperationNotConfirmed, safeError, redacted, opID)
 			}

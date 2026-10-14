@@ -765,13 +765,14 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 
 // ExecRequest is a command for a project's sandbox.
 type ExecRequest struct {
-	Command    []string
-	WorkingDir string
-	Env        map[string]string
-	Timeout    time.Duration
-	MaxTimeout time.Duration
-	MaxOutput  int
-	OnOutput   func([]byte)
+	Command      []string
+	WorkingDir   string
+	Env          map[string]string
+	SecretValues []string
+	Timeout      time.Duration
+	MaxTimeout   time.Duration
+	MaxOutput    int
+	OnOutput     func([]byte)
 }
 
 // Exec runs req in the project's sandbox under the supervised exec contract.
@@ -803,12 +804,13 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }
 	}
 	return provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
-		Command:    append([]string{"sh", "-c", sandboxUmaskScript, "swarm-exec"}, req.Command...),
-		WorkingDir: req.WorkingDir,
-		Env:        req.Env,
-		Timeout:    req.Timeout,
-		MaxOutput:  req.MaxOutput,
-		OnProgress: progress,
+		Command:      append([]string{"sh", "-c", sandboxUmaskScript, "swarm-exec"}, req.Command...),
+		WorkingDir:   req.WorkingDir,
+		Env:          req.Env,
+		SecretValues: req.SecretValues,
+		Timeout:      req.Timeout,
+		MaxOutput:    req.MaxOutput,
+		OnProgress:   progress,
 	}, req.MaxTimeout)
 }
 

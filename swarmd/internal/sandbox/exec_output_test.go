@@ -19,6 +19,14 @@ func TestExecGitOutputRedaction(t *testing.T) {
 	if err != nil || res.Stdout != head+"\n" || res.ExitCode != 0 {
 		t.Fatalf("Git evidence corrupted: %+v %v", res, err)
 	}
+	marked, _ := provider.SafeExecOutput("fixture-marked-secret\n", 4096, nil, "fixture-marked-secret")
+	if strings.Contains(marked, "fixture-marked-secret") {
+		t.Fatal("caller-marked secret leaked")
+	}
+	short, _ := provider.SafeExecOutput("1\n", 4096, nil, "1")
+	if short != "1\n" {
+		t.Fatal("short marked value corrupted output")
+	}
 	for _, tc := range []struct {
 		key, value string
 		redact     bool

@@ -67,3 +67,32 @@ func TestLandProtocol(t *testing.T) {
 		t.Fatal("missing base accepted")
 	}
 }
+
+// Purpose: Land must identify invalid evidence without leaking command values or
+// invoking a privileged command. This boundary test proves each field fails closed.
+func TestLandRefusalFields(t *testing.T) {
+	valid := strings.Repeat("a", 40)
+	for _, tc := range []struct{ field, want string }{
+		{"mode", "land refused: mode is not land"},
+		{"head", "land refused: head is not a commit id"},
+		{"base commit", "land refused: base commit is not a commit id"},
+		{"base branch", "land refused: base branch is not a valid branch"},
+	} {
+		rule := Rule{Mode: "land", Command: "/missing"}
+		req := Request{Head: valid, BaseCommit: valid, BaseBranch: "dev"}
+		switch tc.field {
+		case "mode":
+			rule.Mode = "pr"
+		case "head":
+			req.Head = "private-value"
+		case "base commit":
+			req.BaseCommit = "private-value"
+		case "base branch":
+			req.BaseBranch = "private value"
+		}
+		res, err := Land(context.Background(), rule, req)
+		if err == nil || err.Error() != tc.want || res.Commit != "" || res.Moved {
+			t.Fatalf("%s: %+v %v", tc.field, res, err)
+		}
+	}
+}
