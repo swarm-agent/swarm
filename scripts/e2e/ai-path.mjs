@@ -172,7 +172,9 @@ async function connectMcp(ctx, label = 'mcp') {
   if (ctx.mcp) await ctx.mcp.close()
   const mcp = new McpClient({
     command: path.join(ctx.opts.binDir, 'swarmctl'),
-    args: ['mcp', '--socket', ctx.daemon.socket],
+    // The advanced session and task tools this test drives are listed only
+    // with --all-tools since tools/list tells the worker story by default.
+    args: ['mcp', '--all-tools', '--socket', ctx.daemon.socket],
     env: baseEnv(ctx.runDir, ctx.opts.binDir),
     cwd: path.join(ctx.runDir, 'home'),
     log: ctx.log,
