@@ -124,6 +124,9 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 	if err := m.RegisterReviewCheckout(snapshot.WorktreeRootPath); err != nil {
 		return err
 	}
+	if err := m.BindReviewSession(snapshot.ID, snapshot.WorktreeRootPath); err != nil {
+		return err
+	}
 	return m.SetReviewEnvironment(snapshot.WorktreeRootPath, reviewEnvironment(snapshot.Metadata))
 }
 
@@ -139,20 +142,13 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if head == "" {
 		return fmt.Errorf("review cleanup missing captured head")
 	}
-	m := sandbox.Default()
-	if m != nil {
+	remove := func() error {
+		return s.host.trees.RemoveReviewWorkspace(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, head)
+	}
+	if m := sandbox.Default(); m != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := m.EndReview(ctx, snapshot.WorktreeRootPath); err != nil {
-			return err
-		}
-		m.ForgetReview(snapshot.WorktreeRootPath)
+		return m.CleanupReview(ctx, snapshot.WorktreeRootPath, remove)
 	}
-	if err := s.host.trees.RemoveReviewWorkspace(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, head); err != nil {
-		return err
-	}
-	if m != nil {
-		m.ForgetReview(snapshot.WorktreeRootPath)
-	}
-	return nil
+	return remove()
 }

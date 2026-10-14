@@ -793,6 +793,11 @@ type ExecRequest struct {
 
 // Exec runs req in the project's sandbox under the supervised exec contract.
 func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
+	var err error
+	scope, err = m.enforceReviewIdentity(ctx, scope, req.WorkingDir)
+	if err != nil {
+		return nil, err
+	}
 	result, err := m.execOnce(ctx, scope, req)
 	if errors.Is(err, provider.ErrSupervisorUnavailable) && ctx.Err() == nil {
 		// The container went away underneath us (stopped or removed outside

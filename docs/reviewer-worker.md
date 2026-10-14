@@ -34,6 +34,15 @@ Project roots with a directory `.git` are supported; foreign common Git dirs
 are rejected. Sandbox registration is restored from immutable session evidence
 before execution after restart. No sandbox means refusal, never host fallback.
 
+Execution isolation is bound to the daemon-registered session identity, not a
+caller-supplied cwd: Bash workspace overrides outside the checkout are refused,
+routed Git and supervised exec preserve the review scope, and host file/search
+tools see only the checkout. Terminal cleanup keeps registration restrictive
+until removal succeeds; failed removal can be retried without a writable lane.
+Verdict sections must be unique, ordered and non-empty; quoted or ambiguous
+structure fails closed. Auto-publication skips report-only jobs rather than
+holding the signal cursor, and publication/landing preparation refuse them.
+
 Reviewer results are report-only. MCP delivery and the direct V3 task
 integration/recovery-integration routes refuse reviewer tasks. Task detail shows
 `delivery_assessment.state: "report_only"` and no delivery actions. Once the

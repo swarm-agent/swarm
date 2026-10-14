@@ -37,6 +37,9 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 	if strings.TrimSpace(scope.PrimaryPath) == "" {
 		return "", errors.New("bash workspace path is required")
 	}
+	if scope.ReviewCheckout != "" && (sandbox.Default() == nil || !sandbox.Default().Active()) {
+		return "", sandbox.ErrSandboxRequired
+	}
 	if manager := sandbox.Default(); manager != nil && (manager.Active() || manager.Enforced()) {
 		return executeSandboxedBash(parent, manager, scope, command, timeout, onDelta)
 	}

@@ -21,18 +21,44 @@ func ParseJobReview(report, head, reviewerJobID, model string, now int64) JobRev
 	if len(lines) == 0 || (lines[0] != "VERDICT: OK" && lines[0] != "VERDICT: BLOCK") {
 		return r
 	}
-	verdicts := 0
 	sections := []string{"SUMMARY:", "FINDINGS:", "TESTS RUN:"}
 	next := 0
-	for _, line := range lines {
-		if strings.HasPrefix(line, "VERDICT:") {
-			verdicts++
+	nonempty := false
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		// Structural headings may not appear quoted, fenced, indented,
+		// duplicated or embedded in prose: ambiguous reports fail closed.
+		for _, heading := range append([]string{"VERDICT:"}, sections...) {
+			if strings.Contains(line, heading) && !strings.HasPrefix(line, heading) {
+				return r
+			}
 		}
-		if next < len(sections) && strings.HasPrefix(line, sections[next]) {
-			next++
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, ">") {
+			return r
+		}
+		if strings.HasPrefix(line, "VERDICT:") {
+			return r
+		}
+		structural := false
+		for _, heading := range sections {
+			if strings.HasPrefix(line, heading) {
+				if next >= len(sections) || heading != sections[next] || (next > 0 && !nonempty) {
+					return r
+				}
+				next++
+				nonempty = strings.TrimSpace(strings.TrimPrefix(line, heading)) != ""
+				structural = true
+				break
+			}
+		}
+		if !structural && trimmed != "" {
+			if next == 0 {
+				return r
+			}
+			nonempty = true
 		}
 	}
-	if verdicts != 1 || next != len(sections) || head == "" {
+	if next != len(sections) || !nonempty || head == "" {
 		return r
 	}
 	if lines[0] == "VERDICT: BLOCK" {

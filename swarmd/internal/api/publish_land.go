@@ -147,6 +147,13 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	if err != nil {
 		return err
 	}
+	refs, err := c.jobRefs(kind, a, b)
+	if err != nil {
+		return err
+	}
+	if refs.run["role"] == "reviewer" || controlMCPJobResultJSON(view)["delivery_state"] == "report_only" {
+		return errors.New("reviewer/report-only jobs cannot enter land preparation")
+	}
 	// jobView uses jobState, which includes the session's active follow-up.
 	// Check readiness before reading a result that does not exist yet or
 	// touching the sandbox/worktree while the worker is still writing it.

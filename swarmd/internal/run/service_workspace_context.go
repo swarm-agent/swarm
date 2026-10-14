@@ -119,12 +119,19 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			readOnlyRoots = mergeSessionWorkspaceRoots(readOnlyRoots, roots)
 			roots = []string{resolvedPath}
 		}
+		reviewCheckout := ""
+		if mapString(session.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer {
+			reviewCheckout = resolvedPath
+			roots = []string{resolvedPath}
+			readOnlyRoots = nil
+		}
 		return tool.WorkspaceScope{
+			ReviewCheckout:       reviewCheckout,
 			PrimaryPath:          resolvedPath,
 			Roots:                roots,
 			ReadOnlyRoots:        readOnlyRoots,
 			MutationScopes:       mutationScopes,
-			RejectScopeExpansion: agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
+			RejectScopeExpansion: reviewCheckout != "" || agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
 			Principal:            principal,
 			SessionID:            strings.TrimSpace(session.ID),
 			WorktreeEnabled:      true,

@@ -244,8 +244,10 @@ type ExaRuntimeConfig struct {
 }
 
 type WorkspaceScope struct {
-	PrimaryPath string
-	Roots       []string
+	// ReviewCheckout is immutable daemon-owned execution identity.
+	ReviewCheckout string
+	PrimaryPath    string
+	Roots          []string
 	// ReadOnlyRoots contains narrowly authenticated paths that filesystem reads
 	// may access without treating them as workspace roots or mutation targets.
 	ReadOnlyRoots []string
@@ -2081,6 +2083,26 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		}
 	}
 
+	if registered := sandbox.ReviewSessionCheckout(scope.SessionID); registered != "" {
+		if scope.ReviewCheckout != "" && scope.ReviewCheckout != registered {
+			return "", errors.New("reviewer execution identity mismatch")
+		}
+		scope.ReviewCheckout = registered
+	}
+	if scope.ReviewCheckout != "" {
+		if path := stringValue(args["workspace_path"]); path != "" && filepath.Clean(path) != filepath.Clean(scope.ReviewCheckout) {
+			return "", errors.New("reviewer workspace_path retargeting is forbidden")
+		}
+		var err error
+		ctx, err = sandbox.WithReviewSession(ctx, scope.SessionID, scope.ReviewCheckout)
+		if err != nil {
+			return "", err
+		}
+		scope.PrimaryPath = scope.ReviewCheckout
+		scope.Roots = []string{scope.ReviewCheckout}
+		scope.ReadOnlyRoots = nil
+		scope.RejectScopeExpansion = true
+	}
 	name := strings.ToLower(strings.TrimSpace(call.Name))
 	switch name {
 	case "read":
@@ -2088,7 +2110,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "write":
 		return executeWrite(scope, args)
 	case "bash":
-		if path := stringValue(args["workspace_path"]); path != "" {
+		if path := stringValue(args["workspace_path"]); path != "" && scope.ReviewCheckout == "" {
 			repo, err := r.recoveryRepository(scope, path)
 			if err != nil {
 				return "", err

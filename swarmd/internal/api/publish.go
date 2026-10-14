@@ -60,6 +60,12 @@ func controlMCPJobResultJSON(view map[string]any) map[string]any {
 // the job's task and in the activity feed.
 func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, rule publish.Rule, result map[string]any, explicit bool) (map[string]any, error) {
 	jobID := controlMCPJobID(kind, a, b)
+	if result["delivery_state"] == "report_only" {
+		return nil, errors.New("report-only jobs cannot be published")
+	}
+	if refs.run["role"] == "reviewer" {
+		return nil, errors.New("reviewer jobs are report-only")
+	}
 	if rule.Mode == "land" {
 		principal, ok := PrincipalFromRequest(c.request)
 		if !ok {
@@ -260,7 +266,7 @@ const (
 // base even when the delivery assessment could not read its lane), wait while
 // it is not settled or its commits are not assessed yet, else deliver it.
 func autoPublishNext(status string, result map[string]any) int {
-	if state, _ := result["delivery_state"].(string); state == "empty" {
+	if state, _ := result["delivery_state"].(string); state == "empty" || state == "report_only" {
 		return autoPublishSkip
 	}
 	head, _ := result["head"].(string)
@@ -291,9 +297,15 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		return p.retry(sig, err)
 	}
 	result := controlMCPJobResultJSON(view)
+	if result["delivery_state"] == "report_only" {
+		return nil
+	}
 	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
 	if err != nil {
 		return p.retry(sig, err)
+	}
+	if refs.run["role"] == "reviewer" {
+		return nil
 	}
 	rule, ok, err := p.server.publishRule(c.jobFolder(refs, result))
 	if err != nil || !ok || !rule.Auto {

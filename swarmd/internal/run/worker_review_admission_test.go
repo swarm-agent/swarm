@@ -148,6 +148,14 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Inject a cleanup failure by presenting a mismatched captured head. The
+	// registration must remain restrictive until the successful retry.
+	if err := s.host.trees.RemoveReviewWorkspace(review.WorkspacePath, review.WorktreeRootPath, r.SessionID, "wrong-head"); err == nil {
+		t.Fatal("cleanup failure not injected")
+	}
+	if scope, err := m.CommandScope(review.WorktreeRootPath); err != nil || scope.ReviewCheckout == "" {
+		t.Fatal("failed cleanup downgraded scope", scope, err)
+	}
 	if err := s.observeRun(r); err != nil {
 		t.Fatal(err)
 	}
