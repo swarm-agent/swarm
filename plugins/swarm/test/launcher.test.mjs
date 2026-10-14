@@ -16,7 +16,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const launcher = fileURLToPath(new URL('../bin/swarm-mcp', import.meta.url));
-const update = 'curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes';
+const update = 'curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes';
 
 const newSwarm = `case "$1" in
   help) echo "  swarm mcp [--access full|write|read]   connect a local AI client" ;;

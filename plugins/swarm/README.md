@@ -20,7 +20,7 @@ in their terminal. See `skills/setup/references/authorization.md`.
 ## Quick start (Claude Code, Ubuntu 24.04 x86_64)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
+curl -fsSL https://swarmagent.dev/install | sudo bash
 claude plugin marketplace add swarm-agent/swarm
 claude plugin install swarm@swarm
 ```

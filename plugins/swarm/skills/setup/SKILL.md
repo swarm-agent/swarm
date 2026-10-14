@@ -26,7 +26,7 @@ working one is there, gVisor, and Swarm as a service), run on that machine, as
 the person, with sudo:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
+curl -fsSL https://swarmagent.dev/install | sudo bash
 ```
 
 Everything it starts listens on 127.0.0.1 only. At the end it creates Swarm's

@@ -15,8 +15,7 @@ Docker from snap cannot run the agent sandboxes; the installer stops and asks
 you to remove it. From your own account (the AI connection is made for you):
 
 <copy label="Install">
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh \
-  | sudo bash
+curl -fsSL https://swarmagent.dev/install | sudo bash
 </copy>
 
 `install.sh` installs Docker (it keeps a working Docker with buildx, such as

@@ -22,7 +22,7 @@ npm install @swarm-agent/sdk
 </copy>
 
 You need a running Swarm on Linux x86_64. Install one with
-`curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes`.
+`curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes`.
 
 ## Connect to your Swarm
 

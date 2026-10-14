@@ -36,7 +36,7 @@ current code does.
 Ubuntu 24.04, x86_64. From your own account:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/containers/headless/app/install.sh | sudo bash
+curl -fsSL https://swarmagent.dev/install | sudo bash
 ```
 
 It installs Docker (unless a working one is there) and gVisor, and runs Swarm
@@ -108,7 +108,7 @@ working with it by hand. They are not needed for the box above.
 Linux x86_64 only. One line, no confirmation prompt:
 
 ```bash
-curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes
 ```
 
 It installs Swarm and, on a systemd host, starts the `swarm` service. Without a terminal (an AI agent, CI) a non-root run needs passwordless sudo; otherwise run it as root with `| sudo sh -s -- --yes`. Then [connect your AI](#connect-your-ai-to-the-launcher-install).
@@ -116,8 +116,8 @@ It installs Swarm and, on a systemd host, starts the `swarm` service. Without a 
 To choose the service behavior explicitly:
 
 ```bash
-curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes --service
-curl -fsSL https://swarmagent.dev/install-launcher | sh -s -- --yes --no-service
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes --service
+curl -fsSL https://raw.githubusercontent.com/swarm-agent/swarm/main/install.sh | sh -s -- --yes --no-service
 ```
 
 The installer fetches the latest stable GitHub release asset, extracts it, and runs the bundled installer. You do not need to clone or download this repository to install Swarm. The release archive contains Swarm itself; Git is supplied as a mandatory system package rather than a private bundled executable. The installer provisions the mandatory Git and Bash system packages when they are missing through the detected supported Linux package manager, verifies them before changing Swarm files, and leaves existing installations unchanged. Git is required because every saved or selected workspace must be a repository root with an initial commit and Swarm isolates agent sessions in managed worktrees; direct-session worktree opt-out is not supported. If a selected folder is not ready, Desktop explains the requirement: an empty folder can be initialized with an explicit setup action. For a non-empty folder, a provider-connected user can open the dedicated Onboarding Swarm without first admitting another workspace; it is bound to that exact unsaved folder, keeps dedicated shell-free Git initialization, ignore-file edits, staging, and the first commit permission-gated, uses existing Git identity or a user-supplied one-time identity without persisting it, and returns to onboarding for a readiness recheck before the workspace is saved. The alternative is to fix the repository manually and retry. Deterministic video analysis requires `ffmpeg` and `ffprobe` on `PATH`; those remain feature-local prerequisites rather than startup requirements.
