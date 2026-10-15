@@ -51,6 +51,9 @@ func TestWorkerPromptDeniedBeforePersistence(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if _, err := store.RunWorkerRunIndexMigration(db); err != nil {
+				t.Fatal(err)
+			}
 			svc.SetBypassGate(func() (bool, string) { return tc.active, "sandbox off" })
 			for _, requirement := range []string{"workspace_scope", "write", "network", "subagent", "plan", "ask_user", "client_tool", "design_source_sensitive_read"} {
 				rec, err := svc.CreatePending(CreateInput{SessionID: "session", RunID: "run", CallID: requirement, ToolName: "search", Requirement: requirement, ToolArguments: `{"path":"outside"}`})
@@ -93,6 +96,9 @@ func TestWorkerPermissionRaisesJobWaiting(t *testing.T) {
 	svc := NewService(store.NewPermissionStore(db), nil, nil)
 	svc.SetSessionResolver(workerPromptSessions{false})
 	seedWorkerPromptReceipt(t, db)
+	if _, err := store.RunWorkerRunIndexMigration(db); err != nil {
+		t.Fatal(err)
+	}
 	signalStore := store.NewSignalStore(db)
 	svc.SetSignalEmitter(signals.NewEmitter(signalStore))
 	_, err = svc.CreatePending(CreateInput{SessionID: "session", RunID: "provider-run", ToolName: "ask_user", ToolArguments: `{"question":"private-question"}`})

@@ -22,7 +22,7 @@ const (
 	keyWorkerRunTimePrefix   = "worker/runidx/time/"
 	keyWorkerRunActivePrefix = "worker/runidx/active/"
 	keyWorkerRunIndexVersion = "worker/runidx/version"
-	workerRunIndexVersion    = 1
+	workerRunIndexVersion    = 2
 )
 
 type workerRunIndexEntry struct {
@@ -51,6 +51,7 @@ func keyWorkerRunActive(account, workerID, runID string) string {
 // rewritten identically; its active entry follows its status.
 func indexWorkerRunInBatch(batch *pebble.Batch, account string, data []byte) error {
 	var run struct {
+		SessionID string `json:"session_id"`
 		ID        string `json:"id"`
 		WorkerID  string `json:"worker_id"`
 		Status    string `json:"status"`
@@ -68,6 +69,11 @@ func indexWorkerRunInBatch(batch *pebble.Batch, account string, data []byte) err
 	}
 	if err := batch.Set([]byte(keyWorkerRunTime(account, run.CreatedAt, run.WorkerID, run.ID)), entry, nil); err != nil {
 		return err
+	}
+	if run.SessionID != "" {
+		if err := batch.Set([]byte(keyWorkerRunSession(account, run.SessionID)), entry, nil); err != nil {
+			return err
+		}
 	}
 	active := keyWorkerRunActive(account, run.WorkerID, run.ID)
 	if AutomationV2Terminal(run.Status) {
@@ -117,7 +123,7 @@ func RunWorkerRunIndexMigration(store *Store) (int, error) {
 			return nil
 		}
 		if err := indexWorkerRunInBatch(batch, run.AccountScopeID, value); err != nil {
-			return nil
+			return err
 		}
 		indexed++
 		if batch.Count() >= 2000 {

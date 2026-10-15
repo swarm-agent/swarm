@@ -33,6 +33,9 @@ func TestWorkerOutsideSearchDenialContinues(t *testing.T) {
 	if err := db.PutJSON(store.KeyWorkerRun("account", "worker", "job"), store.WorkerRunRecord{ID: "job", WorkerID: "worker", AccountScopeID: "account", SessionID: "session"}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.RunWorkerRunIndexMigration(db); err != nil {
+		t.Fatal(err)
+	}
 	ps := store.NewPermissionStore(db)
 	perms := permission.NewService(ps, nil, nil)
 	perms.SetSessionResolver(workerScopeSessions{})

@@ -1,16 +1,18 @@
 package pebblestore
 
 import (
-	"encoding/json"
 	"errors"
-	"strings"
-
 	"github.com/cockroachdb/pebble"
+	"strings"
 )
 
-// WorkerRunForSession resolves authority from daemon-owned receipts, never from
-// editable session metadata. Scan only this account's canonical receipts so old
-// receipts do not require a backfill before permission safety takes effect.
+func keyWorkerRunSession(account, session string) string {
+	return "worker/runidx/session/" + keyPart(account) + "/" + keyPart(session)
+}
+
+// WorkerRunForSession performs one index read (two reads for a worker) regardless
+// of history size. The index is only a locator; the canonical receipt owns the
+// account and session binding. Startup backfills pre-index receipts before serving.
 func (s *PermissionStore) WorkerRunForSession(account, session string) (WorkerRunRecord, bool, error) {
 	if s == nil || s.store == nil || s.store.db == nil {
 		return WorkerRunRecord{}, false, errors.New("permission store unavailable")
@@ -18,20 +20,24 @@ func (s *PermissionStore) WorkerRunForSession(account, session string) (WorkerRu
 	if strings.TrimSpace(account) == "" || strings.TrimSpace(session) == "" {
 		return WorkerRunRecord{}, false, nil
 	}
-	prefix := WorkerRunPrefix(account, "")
-	it, err := s.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
+	snap := s.store.db.NewSnapshot()
+	defer snap.Close()
+	return workerRunForSessionFromReader(snap, account, session)
+}
+
+func workerRunForSessionFromReader(snap pebble.Reader, account, session string) (WorkerRunRecord, bool, error) {
+	var entry workerRunIndexEntry
+	found, err := getJSONFromReader(snap, keyWorkerRunSession(account, session), &entry)
+	if err != nil || !found {
+		return WorkerRunRecord{}, false, err
+	}
+	var run WorkerRunRecord
+	found, err = getJSONFromReader(snap, KeyWorkerRun(account, entry.WorkerID, entry.RunID), &run)
 	if err != nil {
 		return WorkerRunRecord{}, false, err
 	}
-	defer it.Close()
-	for ok := it.First(); ok; ok = it.Next() {
-		var r WorkerRunRecord
-		if err := json.Unmarshal(it.Value(), &r); err != nil {
-			return WorkerRunRecord{}, false, err
-		}
-		if r.AccountScopeID == account && r.SessionID == session && r.ID != "" && r.WorkerID != "" && string(it.Key()) == KeyWorkerRun(account, r.WorkerID, r.ID) {
-			return r, true, nil
-		}
+	if !found || run.ID != entry.RunID || run.WorkerID != entry.WorkerID || run.AccountScopeID != account || run.SessionID != session {
+		return WorkerRunRecord{}, false, errors.New("worker session index does not match canonical receipt")
 	}
-	return WorkerRunRecord{}, false, it.Error()
+	return run, true, nil
 }
