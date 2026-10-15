@@ -99,13 +99,35 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if len(brief) > 24000 {
 		brief = brief[:24000]
 	}
-	return map[string]any{"head": state.HeadCommit, "base": base, "job": r.Input["review_job"], "brief": brief, "report": report}, nil
+	captured := map[string]any{"head": state.HeadCommit, "base": base, "job": r.Input["review_job"], "brief": brief, "report": report}
+	// Capture from the same folder definition as landing, never caller input.
+	env, found, err := store.NewSandboxEnvironmentStore(s.host.runs.sessions.Store().Underlying()).Get(task.SourceWorkspace.Path)
+	if err != nil {
+		return nil, err
+	}
+	if found && env.Account != r.AccountScopeID {
+		return nil, errors.New("environment belongs to another account")
+	}
+	if len(env.Definition.Checks) > 0 {
+		commands := make([]string, 0, len(env.Definition.Checks))
+		for _, command := range env.Definition.Checks {
+			// Landing starts each check in a separate login shell at the checkout.
+			commands = append(commands, "bash -lc '"+strings.ReplaceAll(command, "'", "'\"'\"'")+"'")
+		}
+		captured["checks"] = strings.Join(commands, " && ")
+		minutes := env.Definition.CheckTimeoutMinutes
+		if minutes == 0 {
+			minutes = 20 // Same total checks budget as prepareLandWorktree.
+		}
+		captured["checks_timeout_seconds"] = fmt.Sprint(minutes * 60)
+	}
+	return captured, nil
 }
 
 func reviewEnvironment(meta map[string]any) map[string]string {
 	review, _ := meta["worker_review_target"].(map[string]any)
 	env := map[string]string{}
-	for name, key := range map[string]string{"SWARM_REVIEW_HEAD": "head", "SWARM_REVIEW_BASE": "base", "SWARM_REVIEW_JOB": "job"} {
+	for name, key := range map[string]string{"SWARM_REVIEW_HEAD": "head", "SWARM_REVIEW_BASE": "base", "SWARM_REVIEW_JOB": "job", "SWARM_REVIEW_CHECKS": "checks", "SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS": "checks_timeout_seconds"} {
 		if value, ok := review[key].(string); ok {
 			env[name] = value
 		}

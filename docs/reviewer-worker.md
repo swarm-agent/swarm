@@ -19,6 +19,24 @@ to 24 KB each). Commands receive `SWARM_REVIEW_HEAD`, `SWARM_REVIEW_BASE` and
 exists, otherwise the captured landing branch. Reviews do not fetch or advance
 the landing target. A later source commit does not change an existing review.
 
+## Folder checks
+
+Admission also captures `checks` and `check_timeout_minutes` from the source
+folder's account-owned `/v3/sandbox-environments` definition, never the job
+brief. `SWARM_REVIEW_CHECKS` runs those commands in order, each in its own
+`bash -lc` shell, stopping at the first failure, just like landing.
+`SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS` supplies the total budget (20 minutes
+when unspecified). Captured values survive retries; later definition changes
+do not rewrite an existing review.
+
+The compiled reviewer instruction runs these checks in its disposable checkout
+**before** narrow tests, allowing the folder command to install dependencies.
+Failure or timeout requires `VERDICT: BLOCK` and quoted failing output in
+`TESTS RUN`. Without checks, both variables are empty; the reviewer explicitly
+reports no folder checks and runs narrow tests. This is a reviewer instruction,
+not a daemon-enforced proof that a model executed the gate. Landing still runs
+its own checks against its then-current definition and rebased head.
+
 ## Sandbox boundary
 
 The compiled `system-reviewer` profile uses read runtime mode and only read,
