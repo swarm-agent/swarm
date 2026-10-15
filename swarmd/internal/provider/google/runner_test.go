@@ -100,6 +100,78 @@ func TestGoogleTransientStatusesRetryBeforeOutput(t *testing.T) {
 	}
 }
 
+func TestGoogleEmptyRepliesRetryBeforeOutput(t *testing.T) {
+	// Purpose:
+	// - Requirement: a successful Gemini reply with no text, assistant message or function call is
+	//   retried (bounded by googleTransientMaxRetries) for unary and streaming calls, while no answer
+	//   text has reached the caller; a reply that only calls a tool is returned as is.
+	// - Threat/regression: on a live public chat about 1 in 30 Gemini runs came back empty and the
+	//   visitor's message failed with "google returned no final assistant content".
+	// - Boundary/authority: googleResponseEmpty and both Runner request loops in runner.go.
+	// - Narrowest test layer: Runner round-trip transport counting attempts.
+	const empty = `{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[]}}]}`
+	const recovered = `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"recovered"}]}}]}`
+	const toolOnly = `{"candidates":[{"finishReason":"STOP","content":{"parts":[{"functionCall":{"name":"get_playbook","args":{"topic":"pricing"}}}]}}]}`
+	reply := func(req *http.Request, streaming bool, payload string) *http.Response {
+		if streaming {
+			return &http.Response{StatusCode: http.StatusOK, Request: req,
+				Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:   io.NopCloser(strings.NewReader("data: " + payload + "\n\n"))}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Request: req,
+			Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body:   io.NopCloser(strings.NewReader(payload))}
+	}
+	request := provideriface.Request{Model: "gemini-test", Input: []map[string]any{{"role": "user", "content": "hello"}}}
+	call := func(runner *Runner, ctx context.Context, streaming bool) (provideriface.Response, error) {
+		if streaming {
+			return runner.CreateResponseStreaming(ctx, request, func(provideriface.StreamEvent) {})
+		}
+		return runner.CreateResponse(ctx, request)
+	}
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovers/streaming=%v", streaming), func(t *testing.T) {
+			calls := 0
+			runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				if calls < 3 {
+					return reply(req, streaming, empty), nil
+				}
+				return reply(req, streaming, recovered), nil
+			}))
+			runner.retryDelay = func(int) time.Duration { return 0 }
+			resp, err := call(runner, ctx, streaming)
+			if err != nil || calls != 3 || resp.Text != "recovered" {
+				t.Fatalf("calls=%d text=%q err=%v, want 3 calls and the recovered reply", calls, resp.Text, err)
+			}
+		})
+		t.Run(fmt.Sprintf("bounded/streaming=%v", streaming), func(t *testing.T) {
+			calls := 0
+			runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return reply(req, streaming, empty), nil
+			}))
+			runner.retryDelay = func(int) time.Duration { return 0 }
+			resp, err := call(runner, ctx, streaming)
+			if err != nil || calls != googleTransientMaxRetries+1 || !googleResponseEmpty(resp) {
+				t.Fatalf("calls=%d err=%v, want %d calls then the empty reply for the run to classify", calls, err, googleTransientMaxRetries+1)
+			}
+		})
+		t.Run(fmt.Sprintf("tool call is not retried/streaming=%v", streaming), func(t *testing.T) {
+			calls := 0
+			runner, ctx := newGoogleTransportTestRunner(t, googleRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				return reply(req, streaming, toolOnly), nil
+			}))
+			runner.retryDelay = func(int) time.Duration { return 0 }
+			resp, err := call(runner, ctx, streaming)
+			if err != nil || calls != 1 || len(resp.FunctionCalls) != 1 {
+				t.Fatalf("calls=%d function_calls=%d err=%v, want one call returning the tool call", calls, len(resp.FunctionCalls), err)
+			}
+		})
+	}
+}
+
 func TestGooglePermanentStatusesAreNotRetried(t *testing.T) {
 	// Purpose:
 	// - Requirement: request, auth, permission and not-found failures are returned on the first
