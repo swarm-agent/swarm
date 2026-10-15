@@ -79,6 +79,13 @@ func readyRunner() *fakeRunner {
 func newTestManager(t *testing.T, mode Mode, runner *fakeRunner, cfg Config) *Manager {
 	t.Helper()
 	cfg.Mode = mode
+	// Hardening fixtures pin explicit limits; host sizing has its own tests.
+	if cfg.Memory == "" {
+		cfg.Memory = "4g"
+	}
+	if cfg.MaxWorkerRuns == 0 {
+		cfg.MaxWorkerRuns = 2
+	}
 	if cfg.UID == 0 {
 		cfg.UID, cfg.GID = 10001, 10001
 	}

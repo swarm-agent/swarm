@@ -14,6 +14,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/sandbox"
 	sessions "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/worktree"
@@ -345,7 +346,7 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if err != nil {
 		return store.WorkerRunRecord{}, err
 	}
-	if rec.Status == "admitted" {
+	if workerWaiting(rec.Status) {
 		if err := s.Start(ctx, rec); err != nil {
 			return rec, err
 		}
@@ -397,7 +398,7 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	if actual.Status == "running" {
 		return nil
 	}
-	if actual.Status != "admitted" {
+	if !workerWaiting(actual.Status) {
 		return store.ErrWorkerConflict
 	}
 	current, found, err := ws.GetWorker(actual.AccountScopeID, actual.WorkerID)
@@ -464,6 +465,13 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	}
 	if len(doc.Checkpoints) == 0 {
 		return errors.New("worker execution requires a checkpoint")
+	}
+	if m := sandbox.Default(); m != nil {
+		admitted, err := ws.ReserveWorkerCapacity(actual, m.MaxWorkerRuns())
+		if err != nil || !admitted {
+			return err
+		}
+		actual.Status, actual.QueueReason = "preparing", ""
 	}
 	return s.startPlan(ctx, actual, w, doc)
 }
@@ -880,7 +888,7 @@ func (s *WorkerExecutionService) markWorkerRunRunning(r store.WorkerRunRecord, p
 	h := s.host
 	if latest, found, err := h.runs.sessions.Store().WorkerStore().GetWorkerRun(r.AccountScopeID, r.WorkerID, r.ID); err != nil {
 		return err
-	} else if !found || latest.Status != "admitted" {
+	} else if !found || !workerWaiting(latest.Status) {
 		return store.ErrWorkerConflict
 	}
 	r.Status = "running"
@@ -1206,7 +1214,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			}
 			preparing = !exists || !lifecycle.Active
 		}
-		if preparing && (current.Status == "admitted" || current.CancelRequested) {
+		if preparing && (workerWaiting(current.Status) || current.CancelRequested) {
 			current.Status = "cancelled"
 			current.CompletedAt = time.Now().UnixMilli()
 			if err := s.recordReviewResult(current); err != nil {
@@ -1475,7 +1483,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			}
 		}
 		if exists {
-			if !budgetHeld && !r.CancelRequested && workerRunAdmissionOpen(w, r) && workerRunAutomationEnabled(w, r) && r.Status == "admitted" && intent.Status == sessions.RunIntentPendingExecutor {
+			if !budgetHeld && !r.CancelRequested && workerRunAdmissionOpen(w, r) && workerRunAutomationEnabled(w, r) && workerWaiting(r.Status) && intent.Status == sessions.RunIntentPendingExecutor {
 				if e = s.startLocked(ctx, r); e != nil {
 					failures = append(failures, e)
 				}
@@ -1497,7 +1505,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			if e = s.observeRun(r); e != nil {
 				failures = append(failures, e)
 			}
-		} else if r.Status == "admitted" {
+		} else if workerWaiting(r.Status) {
 			// Resume interrupted preparation through the same ownership checks.
 			// If allocation cannot be safely recovered, retain evidence and fail
 			// visibly instead of leaving an admitted receipt stranded forever.
@@ -1539,6 +1547,10 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 	}
 	return errors.Join(failures...)
 }
+func workerWaiting(status string) bool {
+	return status == "admitted" || status == "queued" || status == "preparing"
+}
+
 func workerRunAdmissionOpen(w store.WorkerRecord, r store.WorkerRunRecord) bool {
 	return w.LifecycleState == store.WorkerLifecycleStateActive || (w.LifecycleState == store.WorkerLifecycleStateIdle && r.RequestSource == "test_run")
 }
@@ -1788,7 +1800,7 @@ func workerRunSettledForFollowup(status string) bool {
 // its plan again.
 func workerRunExecutable(r store.WorkerRunRecord, intent store.V3SessionRunIntent, hasIntent bool) bool {
 	switch {
-	case r.Status == "admitted" || r.Status == "running":
+	case workerWaiting(r.Status) || r.Status == "running":
 		return true
 	case workerRunSettledForFollowup(r.Status):
 		return hasIntent && intent.RunID != "" && intent.RunID != r.ID && intent.PlanID != r.ID &&
@@ -1844,7 +1856,7 @@ func (s *WorkerExecutionService) PrepareFollowup(account, user, sessionID string
 	switch {
 	case r.CancelRequested || r.Status == "cancelled":
 		return fmt.Errorf("%w: the job was cancelled; give the worker a new job instead", store.ErrWorkerConflict)
-	case r.Status == "admitted" || r.Status == "running":
+	case workerWaiting(r.Status) || r.Status == "running":
 		// The job's own run still owns the session: a message joins it as it
 		// always has (the run gate admits it while the receipt runs, and the
 		// run-intent store refuses a second active run atomically).

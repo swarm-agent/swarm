@@ -168,6 +168,7 @@ type WorkerRunRecord struct {
 	RequestSource string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator"
 	Input         map[string]any                 `json:"input,omitempty"`
 	Status        string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
+	QueueReason   string                         `json:"queue_reason,omitempty"`
 	Error         string                         `json:"error,omitempty"`
 	Deliverables  []SessionPlanArtifactReference `json:"deliverables,omitempty"`
 	StartedAt     int64                          `json:"started_at,omitempty"`
@@ -1475,7 +1476,7 @@ func (ws *WorkerStore) DeleteWorker(account, user, workerID string, expectedRevi
 		return err
 	}
 	for _, r := range runs {
-		if r.Status == "running" || r.Status == "admitted" {
+		if r.Status == "running" || r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" {
 			return errors.New("cannot delete worker with active runs")
 		}
 	}
@@ -2549,14 +2550,14 @@ func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, sett
 		run.Status = "admitted"
 	}
 	switch run.Status {
-	case "admitted", "running", "succeeded", "failed", "cancelled":
+	case "admitted", "queued", "preparing", "running", "succeeded", "failed", "cancelled":
 	default:
 		return WorkerRunRecord{}, fmt.Errorf("invalid run status: %q", run.Status)
 	}
 	// A delayed scheduler observation must never reopen cancelled/completed work
 	// or replace its terminal outcome. Serialize this check with the write.
 	if existingOk && ((AutomationV2Terminal(existingRun.Status) && run.Status != existingRun.Status) ||
-		(existingRun.Status == "running" && run.Status == "admitted")) {
+		(existingRun.Status == "running" && (run.Status == "admitted" || run.Status == "queued" || run.Status == "preparing"))) {
 		return WorkerRunRecord{}, fmt.Errorf("%w: cannot regress run status from %s to %s", ErrWorkerConflict, existingRun.Status, run.Status)
 	}
 	if run.Deliverables == nil {

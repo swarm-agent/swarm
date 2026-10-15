@@ -75,7 +75,7 @@ func (ws *WorkerStore) SummarizeWorkerRuns(account, workerID string, day time.Ti
 			return WorkerRunSummary{}, ErrWorkerConflict
 		}
 		result.ScannedRuns++
-		if r.Status == "admitted" || r.Status == "running" {
+		if r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" || r.Status == "running" {
 			result.ActiveRuns++
 			if len(result.Active) < 100 {
 				result.Active = append(result.Active, WorkerActiveRun{ID: r.ID, SessionID: r.SessionID, Status: r.Status, CreatedAt: r.CreatedAt})

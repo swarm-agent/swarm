@@ -1,5 +1,5 @@
 // Package sandbox runs agent commands, and the daemon's own Git on
-// agent-writable repositories, inside one hardened container per project.
+// agent-writable repositories, inside hardened project and per-job containers.
 //
 // Swarm stays outside with its storage, credentials and local socket. A
 // project's sandbox mounts only that project's directory and its worktree
@@ -44,6 +44,7 @@ const (
 const (
 	DefaultImage       = "swarm-sandbox:local"
 	DefaultNetwork     = "swarm-sandbox"
+	DefaultMemory      = "" // host-derived; see ResourceDefaults
 	DefaultPidsLimit   = 1024
 	DefaultIdleTimeout = 30 * time.Minute
 	gvisorRuntime      = "runsc"
@@ -78,12 +79,13 @@ type Config struct {
 	Network string
 	// Runtime is the OCI runtime; empty selects gVisor (runsc) when the engine
 	// has it registered and the engine default otherwise.
-	Runtime     string
-	Memory      string
-	PidsLimit   int
-	CPUs        string
-	DNS         []string
-	IdleTimeout time.Duration
+	Runtime       string
+	Memory        string
+	MaxWorkerRuns int
+	PidsLimit     int
+	CPUs          string
+	DNS           []string
+	IdleTimeout   time.Duration
 	// UID and GID the sandbox runs as. They default to the daemon's own ids so
 	// files written in mounted projects keep the daemon user as owner; the
 	// sandbox still cannot reach anything the daemon owns outside its mounts.
@@ -133,8 +135,10 @@ type Status struct {
 // Scope is one project's sandbox: Root identifies it and Mounts are the host
 // directories bind-mounted at the same paths.
 type Scope struct {
-	Root   string
-	Mounts []string
+	Root string
+	// JobCheckout selects an independent memory cgroup for a managed worktree.
+	JobCheckout string
+	Mounts      []string
 	// ReviewCheckout selects a separate container with read-only project mounts
 	// and only this disposable checkout writable.
 	ReviewCheckout string
@@ -206,13 +210,8 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	if err := ValidateMemory(cfg.Memory); err != nil {
 		return nil, err
 	}
-	if cfg.Memory == "" {
-		var err error
-		cfg.Memory, err = hostMemory()
-		if err != nil {
-			cfg.Memory = "4g"
-			slog.Warn("cannot size sandbox from host memory; using minimum limit", "error", err)
-		}
+	if err := resolveResources(&cfg); err != nil {
+		return nil, err
 	}
 	if cfg.PidsLimit <= 0 {
 		cfg.PidsLimit = DefaultPidsLimit
@@ -601,7 +600,7 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--ipc", "private",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
 		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
-		"--mount", "type=volume,src="+name+"-home,dst="+sandboxHome,
+		"--mount", "type=volume,src="+cacheContainerName(name, root)+"-home,dst="+sandboxHome,
 		"--env", "HOME="+sandboxHome,
 		"--env", "GOTMPDIR="+sandboxHome+"/.cache/go-tmp",
 		"--env", "PATH="+image.Path,
@@ -822,6 +821,7 @@ type ExecRequest struct {
 // Exec runs req in the project's sandbox under the supervised exec contract.
 func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
 	var err error
+	scope = jobScope(ctx, scope)
 	scope, err = m.enforceReviewIdentity(ctx, scope, req.WorkingDir)
 	if err != nil {
 		return nil, err
@@ -831,7 +831,15 @@ func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*prov
 		// The container went away underneath us (stopped or removed outside
 		// Swarm); nothing ran. Re-verify it and try once more.
 		m.invalidate(scopeContainerName(scope))
-		return m.execOnce(ctx, scope, req)
+		result, err = m.execOnce(ctx, scope, req)
+	}
+	if err != nil || (result != nil && result.ExitCode != 0) {
+		if interrupted := m.interruption(ctx, scope, fmt.Sprint(err)); interrupted != nil {
+			return result, interrupted
+		}
+		if result != nil && result.ExitCode == 137 {
+			return result, fmt.Errorf("%w: command killed (possible OOM); uncommitted work preserved; continue with a follow-up", ErrInterrupted)
+		}
 	}
 	return result, err
 }

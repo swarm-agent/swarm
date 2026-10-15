@@ -47,6 +47,8 @@ type FileConfig struct {
 	RetainToolOutputHistory      bool
 	V3Diagnostics                bool
 	ProviderAPIDiagnostics       bool
+	SandboxMemory                string
+	WorkerMaxConcurrentRuns      int
 	LongSessionDiagnostics       bool
 	SwarmName                    string
 	DesktopOnboardingComplete    bool
@@ -329,6 +331,10 @@ provider_api_diagnostics = %t
 # Artifacts are private local files under the canonical logs root; changing this requires a restart.
 long_session_diagnostics = %t
 
+# Per-job sandbox memory (empty: host-derived), and box worker admission (0: auto).
+sandbox_memory = %s
+worker_max_concurrent_runs = %d
+
 # Human-readable Swarm name shown in onboarding and discovery surfaces.
 # Leave blank to set it later.
 swarm_name = %s
@@ -349,7 +355,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -513,6 +519,21 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
+		case "sandbox_memory", "worker_max_concurrent_runs":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
+			}
+			rawSeen[key] = struct{}{}
+			seen[key] = struct{}{}
+			if key == "sandbox_memory" {
+				cfg.SandboxMemory = value
+			} else {
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 0 {
+					return FileConfig{}, nil, fmt.Errorf("invalid worker_max_concurrent_runs %q", value)
+				}
+				cfg.WorkerMaxConcurrentRuns = n
+			}
 		case "long_session_diagnostics":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -709,6 +730,8 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 		lines = append(lines,
 			"# Record bounded metadata-only diagnostics for investigating long-session memory and lag.",
 			"# Artifacts are private local files under the canonical logs root; changing this requires a restart.",
+			fmt.Sprintf("sandbox_memory = %s", cfg.SandboxMemory),
+			fmt.Sprintf("worker_max_concurrent_runs = %d", cfg.WorkerMaxConcurrentRuns),
 			fmt.Sprintf("long_session_diagnostics = %t", cfg.LongSessionDiagnostics),
 		)
 	}
@@ -803,7 +826,7 @@ func validate(cfg FileConfig) error {
 
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
+	case "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
 		return true
 	default:
 		return false

@@ -109,6 +109,13 @@ func (m *Manager) ScopeFor(path string) (Scope, bool, error) {
 		for _, root := range roots {
 			if b, err := layout.Bucket(root); err == nil && b == bucket {
 				scope, ok, err := m.scopeForRoot(root, layout)
+				// The first directory below the project bucket is the durable
+				// managed checkout. All commands and daemon Git in it share only
+				// that job's container, not other workers' memory cgroup.
+				parts := strings.Split(rel, string(filepath.Separator))
+				if len(parts) > 1 && parts[1] != ".swarm-scratch" {
+					scope.JobCheckout = filepath.Join(worktrees, bucket, parts[1])
+				}
 				return m.reviewScope(scope, target), ok, err
 			}
 		}

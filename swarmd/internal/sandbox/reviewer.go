@@ -14,7 +14,17 @@ func scopeContainerName(scope Scope) string {
 	if scope.ReviewCheckout != "" {
 		return ContainerName(scope.Root) + "-review-" + filepath.Base(ContainerName(scope.ReviewCheckout))
 	}
+	if scope.JobCheckout != "" {
+		return ContainerName(scope.Root) + "-job-" + filepath.Base(ContainerName(scope.JobCheckout))
+	}
 	return ContainerName(scope.Root)
+}
+
+func cacheContainerName(name, root string) string {
+	if strings.HasPrefix(name, ContainerName(root)+"-job-") {
+		return ContainerName(root)
+	}
+	return name
 }
 
 // RegisterReviewCheckout is daemon-owned, never exposed as an agent tool.

@@ -131,6 +131,7 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		return err
 	}
 	scope, ok, err := m.ScopeFor(target)
+	scope = jobScope(ctx, scope)
 	if err == nil {
 		scope, err = m.enforceReviewIdentity(ctx, scope, target)
 		if err != nil {

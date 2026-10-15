@@ -65,6 +65,9 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 		if run.Status == "failed" && strings.HasPrefix(run.Error, "run stalled:") {
 			emitter.Emit(pebblestore.Signal{Kind: "job.stalled", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: run.Error, DedupKey: "job.stalled:" + run.ID, Refs: refs, Attrs: map[string]string{"job_id": "worker/" + worker.ID + "/" + run.ID}})
 		}
+		if strings.Contains(run.Error, sandbox.ErrInterrupted.Error()) {
+			emitter.Emit(pebblestore.Signal{Kind: "job.sandbox_interrupted", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: "Job sandbox interrupted (OOM or container restart); uncommitted work preserved; retry with a follow-up", Refs: refs, DedupKey: "job.sandbox:" + run.ID})
+		}
 		emitter.Emit(pebblestore.Signal{
 			Kind:     "worker.run." + run.Status,
 			Severity: severity,

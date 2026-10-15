@@ -2083,6 +2083,7 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		}
 	}
 
+	ctx = sandbox.WithJobCheckout(ctx, scope.PrimaryPath)
 	if registered := sandbox.ReviewSessionCheckout(scope.SessionID); registered != "" {
 		if scope.ReviewCheckout != "" && scope.ReviewCheckout != registered {
 			return "", errors.New("reviewer execution identity mismatch")

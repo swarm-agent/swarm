@@ -1799,13 +1799,10 @@ func runGitRaw(path string, args ...string) (string, error) {
 func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
 	defer cancel()
-	cmdArgs := append([]string(nil), args...)
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, cmdArgs...)...)
-	if env != nil {
-		cmd.Env = env
+	out, err := sandbox.GitCombinedOutput(ctx, path, env, args...)
+	if errors.Is(err, sandbox.ErrInterrupted) {
+		return "", err
 	}
-	sandbox.Prepare(ctx, cmd)
-	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if errors.Is(err, exec.ErrNotFound) {
 		return "", errors.New(gitRequiredForWorktreesError)

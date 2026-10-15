@@ -38,6 +38,7 @@ type Config struct {
 	SandboxNetwork          string
 	SandboxRuntime          string
 	SandboxMemory           string
+	WorkerMaxConcurrentRuns int
 	SecretsGateway          string // off (default) | on
 	SecretsGatewayAddr      string // bridge address:port the gateway listens on
 }
@@ -99,8 +100,9 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.SandboxMode, "sandbox", "auto", "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)")
 	fs.StringVar(&cfg.SandboxImage, "sandbox-image", "swarm-sandbox:local", "image for agent sandboxes")
 	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
-	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", "", "sandbox memory limit (Docker size, minimum 1g; default half host memory, minimum 4g)")
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
+	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "memory cap per sandbox (empty: host-derived)")
+	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: CPU/RAM-derived)")
 	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
 	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")

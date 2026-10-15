@@ -74,3 +74,24 @@ func TestWorkerStallSignal(t *testing.T) {
 		t.Fatalf("%+v", sig)
 	}
 }
+
+// Purpose: workerRunSignal must persist an account-scoped warning on sandbox
+// interruption without forwarding private command error text. The real signal
+// store catches invalid kinds that an emitter-only assertion would miss.
+func TestWorkerSandboxWarningSignal(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	feed := pebblestore.NewSignalStore(db)
+	workerRunSignal(signals.NewEmitter(feed))(pebblestore.WorkerRecord{ID: "worker"}, pebblestore.WorkerRunRecord{ID: "run", AccountScopeID: "account", Status: "failed", Error: sandbox.ErrInterrupted.Error() + ": private command detail"})
+	page, err := feed.ListAfter(0, 10, pebblestore.SignalFilter{Account: "account", KindPrefixes: []string{"job"}})
+	if err != nil || len(page.Signals) != 1 {
+		t.Fatalf("warning missing: %+v %v", page, err)
+	}
+	sig := page.Signals[0]
+	if sig.Kind != "job.sandbox_interrupted" || sig.Severity != "warning" || strings.Contains(sig.Summary, "private command") {
+		t.Fatalf("invalid warning: %+v", sig)
+	}
+}
