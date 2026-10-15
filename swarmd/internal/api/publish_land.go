@@ -108,9 +108,9 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			return publish.Land(ctx, rule, e.Request)
 		},
 		SendBack: func(ctx context.Context, e publish.Entry) error {
-			requestID := fmt.Sprintf("land-back-%s-%d", e.Request.JobID, e.SendBacks)
-			if e.Attempt > 0 {
-				requestID = fmt.Sprintf("land-back-%s-attempt-%d-%d", e.Request.JobID, e.Attempt, e.SendBacks)
+			requestID := e.FollowUpID
+			if requestID == "" {
+				return errors.New("landing follow-up has no durable request ID")
 			}
 			_, err := controlMCPMessageJob(c, map[string]any{"job_id": e.Request.JobID, "message": "Landing rejected this job: " + e.Reason, "client_request_id": requestID})
 			return err
@@ -136,8 +136,7 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if e.State == "landed" {
 				summary += " " + e.Commit
 			}
-			c.signalPublish(kind, a, b, refs, signal, severity, summary, map[string]string{"head": e.Commit, "send_backs": fmt.Sprint(e.SendBacks)})
-			return nil
+			return c.signalPublishDurable(kind, a, b, refs, signal, severity, summary, map[string]string{"head": e.Commit, "send_backs": fmt.Sprint(e.SendBacks)})
 		},
 	})
 }

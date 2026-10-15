@@ -135,12 +135,18 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 }
 
 func (c *controlMCPCall) signalPublish(kind, a, b string, refs controlMCPJobRefs, signalKind, severity, summary string, attrs map[string]string) {
+	if err := c.signalPublishDurable(kind, a, b, refs, signalKind, severity, summary, attrs); err != nil {
+		log.Printf("swarmd signal %s not recorded: %v", signalKind, err)
+	}
+}
+
+func (c *controlMCPCall) signalPublishDurable(kind, a, b string, refs controlMCPJobRefs, signalKind, severity, summary string, attrs map[string]string) error {
 	if c.server == nil || c.server.signals == nil {
-		return
+		return fmt.Errorf("publish signals unavailable")
 	}
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok {
-		return
+		return fmt.Errorf("publish signal principal required")
 	}
 	sigRefs := map[string]string{"project_id": refs.projectID, "task_id": refs.taskID}
 	if kind == controlMCPJobWorker {
@@ -152,8 +158,9 @@ func (c *controlMCPCall) signalPublish(kind, a, b string, refs controlMCPJobRefs
 		Kind: signalKind, Severity: severity, Source: pebblestore.SignalSourceSwarmd, Account: principal.AccountScopeID,
 		Summary: summary, DedupKey: dedup, Refs: sigRefs, Attrs: attrs,
 	}); err != nil {
-		log.Printf("swarmd signal %s not recorded: %v", signalKind, err)
+		return err
 	}
+	return nil
 }
 
 // AutoPublisher delivers finished jobs of folders with an auto publish rule.

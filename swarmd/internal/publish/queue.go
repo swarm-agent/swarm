@@ -27,16 +27,19 @@ type ReviewEquivalence struct {
 
 type Entry struct {
 	ValidateReview func(head, patch, base string) error `json:"-"`
-	Checkpoint     func() error                         `json:"-"`
-	Review         *ReviewEquivalence                   `json:"review_equivalence,omitempty"`
-	Account        string                               `json:"account"`
-	Request        Request                              `json:"request"`
-	State          string                               `json:"delivery_state"`
-	Commit         string                               `json:"commit,omitempty"`
-	Reason         string                               `json:"reason,omitempty"`
-	Checks         []CheckResult                        `json:"checks,omitempty"`
-	SendBacks      int                                  `json:"send_backs"`
-	Attempt        int                                  `json:"attempt,omitempty"`
+	Checkpoint func() error `json:"-"`
+	Review *ReviewEquivalence `json:"review_equivalence,omitempty"`
+	Account             string        `json:"account"`
+	Request             Request       `json:"request"`
+	State               string        `json:"delivery_state"`
+	Commit              string        `json:"commit,omitempty"`
+	Reason              string        `json:"reason,omitempty"`
+	Checks              []CheckResult `json:"checks,omitempty"`
+	SendBacks           int           `json:"send_backs"`
+	Attempt             int           `json:"attempt,omitempty"`
+	NotificationPending bool          `json:"notification_pending,omitempty"`
+	SendBackPending     bool          `json:"send_back_pending,omitempty"`
+	FollowUpID          string        `json:"follow_up_id,omitempty"`
 }
 
 // ErrNotSettled defers landing until the job and any follow-up have settled.
@@ -68,7 +71,8 @@ func (q *Queue) load(account string) ([]Entry, error) {
 	_, e := q.store.GetJSON(queueKey(account), &entries)
 	return entries, e
 }
-func active(e Entry) bool { return e.State == "queued" || e.State == "landing" }
+func pending(e Entry) bool { return active(e) || e.NotificationPending || e.SendBackPending }
+func active(e Entry) bool  { return e.State == "queued" || e.State == "landing" }
 func position(entries []Entry, id string) int {
 	n := 0
 	folder := ""
@@ -109,7 +113,7 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 		if old.Request.JobID != e.Request.JobID {
 			continue
 		}
-		if active(old) || old.State == "landed" || (old.State == "landing_stopped" && !retryStopped) {
+		if pending(old) || old.State == "landed" || (old.State == "landing_stopped" && !retryStopped) {
 			return old, position(entries, e.Request.JobID), nil
 		}
 		// Only retain queue-owned evidence for the same source and destination.
@@ -165,7 +169,7 @@ func (q *Queue) save(e Entry) error {
 }
 
 // Process serializes a folder, but never holds the store mutex during external
-// work. A persisted landing always restarts at Prepare, including after MOVED.
+// work. Persisted external effects resume before any new Prepare call.
 func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHooks) error {
 	key := account + "\x00" + folder
 	q.mu.Lock()
@@ -189,13 +193,19 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 		}
 		var e Entry
 		for _, candidate := range entries {
-			if candidate.Request.Folder == folder && active(candidate) {
+			if candidate.Request.Folder == folder && pending(candidate) {
 				e = candidate
 				break
 			}
 		}
 		if e.Request.JobID == "" {
 			return nil
+		}
+		if e.SendBackPending || e.NotificationPending {
+			if err = q.finish(ctx, &e, h); err != nil {
+				return err
+			}
+			continue
 		}
 		e.State = "landing"
 		if err = q.save(e); err != nil {
@@ -238,35 +248,60 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 			var back *SendBackError
 			if errors.As(err, &back) {
 				e.SendBacks++
-				e.Reason = tail(back.Reason, 4096)
+				e.Reason = back.Reason
 				e.State = "sent_back"
 				if e.SendBacks >= 2 {
 					e.State = "landing_stopped"
 				}
-				if h.SendBack == nil {
-					return errors.New("worker follow-up unavailable")
+				e.FollowUpID = fmt.Sprintf("land-back-%s-%d", e.Request.JobID, e.SendBacks)
+				if e.Attempt > 0 {
+					e.FollowUpID = fmt.Sprintf("land-back-%s-attempt-%d-%d", e.Request.JobID, e.Attempt, e.SendBacks)
 				}
-				if err = h.SendBack(ctx, e); err != nil {
-					return err
-				}
+				e.SendBackPending = true
 			} else {
 				e.State = "land_failed"
 				e.Reason = oneLine(err.Error(), 200)
 			}
 			break
 		}
+		e.NotificationPending = true
 		if err = q.save(e); err != nil {
 			return err
 		}
-		if h.Finished != nil {
-			if err = h.Finished(ctx, e); err != nil {
-				return err
-			}
+		if err = q.finish(ctx, &e, h); err != nil {
+			return err
 		}
 	}
 }
 
-// Pending returns one active entry per folder for bounded daemon scheduling.
+// finish replays durable effects at least once. Hooks must be idempotent: a
+// successful external call can be followed by a crash before its acknowledgement.
+func (q *Queue) finish(ctx context.Context, e *Entry, h QueueHooks) error {
+	if e.SendBackPending {
+		if h.SendBack == nil {
+			return errors.New("worker follow-up unavailable")
+		}
+		if err := h.SendBack(ctx, *e); err != nil {
+			return err
+		}
+		e.SendBackPending = false
+		if err := q.save(*e); err != nil {
+			return err
+		}
+	}
+	if e.NotificationPending {
+		if h.Finished != nil {
+			if err := h.Finished(ctx, *e); err != nil {
+				return err
+			}
+		}
+		e.NotificationPending = false
+		return q.save(*e)
+	}
+	return nil
+}
+
+// Pending includes unacknowledged effects for startup and periodic scheduling.
 func (q *Queue) Pending(account string) ([]Entry, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -277,7 +312,7 @@ func (q *Queue) Pending(account string) ([]Entry, error) {
 	seen := map[string]bool{}
 	var out []Entry
 	for _, e := range entries {
-		if active(e) && !seen[e.Request.Folder] {
+		if pending(e) && !seen[e.Request.Folder] {
 			seen[e.Request.Folder] = true
 			out = append(out, e)
 		}
