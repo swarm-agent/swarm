@@ -1328,6 +1328,11 @@ func controlMCPJobTools() []controlMCPTool {
 	waitProp := map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the job settles: needs_review (done, ready to merge), completed, failed, needs_input (the worker asked something) or cancelled. waited.timed_out means it is still working: call swarm_get_job again. Default 0."}
 	return []controlMCPTool{
 		{
+			Name: "swarm_request_update", Title: "Drain for an installer update",
+			Description: "Owner/admin only. Hold new execution admissions while running work finishes. The host installer must perform installation and restart; this tool never changes the host. Repeated requests return the original deadline and blockers.",
+			InputSchema: controlMCPObject(nil, map[string]any{"max_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 86400}}), call: controlMCPRequestUpdate,
+		},
+		{
 			Name: "swarm_status", Title: "Is this box all right?",
 			Description: "One call: status ok, attention (something waits or a job failed today) or degraded (agents unconfined or spending over the limit) with reasons; the sandbox, the secret gateway, jobs waiting on someone, today's spend against the limit, and activity_cursor for swarm_activity. Exact counts: automations (schedules, how many are active and will run, the next run of each), runs today (total, succeeded, failed, unfinished, by source; the failed runs with job_id; everything running now) and the machine's workspaces and build. Today is the UTC day unless you pass the person's timezone.",
 			InputSchema: controlMCPObject(nil, map[string]any{

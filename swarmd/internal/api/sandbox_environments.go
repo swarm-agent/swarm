@@ -100,7 +100,16 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			req.Setup = current.Definition.Setup
 			req.Env = current.Definition.Env
 		}
+		// Serialize build creation with the update fence. Environment definitions
+		// are explicit operations, not durable run admissions.
+		s.envBuildMu.Lock()
+		if manager := s.ExecutionCapacity(); manager != nil && manager.DrainStatus().Draining {
+			s.envBuildMu.Unlock()
+			writeError(w, http.StatusConflict, errors.New("daemon is draining; retry environment definition after restart"))
+			return
+		}
 		env, build, err := s.sandboxEnvironments.Define(principal.AccountScopeID, root, pebblestore.SandboxEnvironmentDefinition{BaseImage: req.BaseImage, Setup: req.Setup, Env: req.Env, Checks: req.Checks, CheckTimeoutMinutes: req.CheckTimeoutMinutes})
+		s.envBuildMu.Unlock()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

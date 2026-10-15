@@ -16,7 +16,7 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 	emitter.Emit(pebblestore.Signal{
 		Kind:     "daemon.started",
 		Severity: pebblestore.SignalSeverityInfo,
-		Summary:  "Swarm started",
+		Summary:  "Swarm started; any previous update drain ended and execution admission reopened",
 		DedupKey: "daemon.started",
 	})
 	if status.Active {

@@ -144,6 +144,9 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                 inject granted secrets through the egress gateway (default on;
                 see secrets-gateway below)
   --auto-update update by itself (install.sh auto-update below; off by default)
+                Updates drain new runs before activation, never kill running jobs.
+                UPDATE_DRAIN_SECONDS=7200 sets the drain limit (1..86400 seconds).
+                Timeout reports blockers and leaves admission held until restart.
   --ask-permissions
                 agents ask before commands and file changes; by default they
                 run without prompts, which Swarm allows only inside the sandbox
@@ -567,7 +570,7 @@ UPDATE_BAD=$STATE/update-bad
 DEFAULT_UPDATE_CHECKS='ai-review=swarm-go-ai-review[bot]'
 LOCAL_API_SOCKET=/var/lib/swarmd/local-transport/api.sock
 
-local_api() { curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" "http://swarm$1"; }
+local_api() { local path=$1; shift; curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" "http://swarm$path" "$@"; }
 
 # Print one field (a.b.c) of the JSON on stdin, with the node of the running
 # release; nothing when it is absent.
@@ -655,17 +658,12 @@ swarm_busy() {
   local out
   systemctl is-active -q "$DAEMON_UNIT" || return 1
   if out=$(local_api /v3/box/busy 2>/dev/null); then
-    [[ $(json_get busy <<<"$out") == true ]] || return 1
+    [[ $(json_get busy <<<"$out") == false ]] && return 1
     echo "$(json_get sessions <<<"$out") agent runs, $(json_get worker_runs <<<"$out") worker runs and $(json_get environment_builds <<<"$out") environment builds are in progress"
     return 0
   fi
-  # A build from before /v3/box/busy counts unfinished runs in its summary;
-  # one older still (or one not answering) cannot say, and is restarted.
-  out=$(local_api /v3/box/summary 2>/dev/null) || return 1
-  case $(json_get runs.running_now <<<"$out") in
-    '' | 0) return 1 ;;
-    *) echo "$(json_get runs.running_now <<<"$out") runs are in progress"; return 0 ;;
-  esac
+  echo "daemon status unavailable; refusing to assume idle"
+  return 0
 }
 
 # Restart Swarm for a setting change only when nothing runs: a restart ends
@@ -769,10 +767,25 @@ finish_update() {
     update_state failed "building ${commit:0:9} failed; Swarm keeps running ${running:0:9} and tries again at the next update" "$commit"
     return 1
   fi
-  if why=$(swarm_busy); then
-    update_state waiting_idle "${commit:0:9} is built and starts once nothing runs: $why" "$commit"
-    return 0
-  fi
+  local drain limit=${UPDATE_DRAIN_SECONDS:-7200}
+  [[ $limit =~ ^[0-9]+$ && $limit -ge 1 && $limit -le 86400 ]] || die "UPDATE_DRAIN_SECONDS must be 1..86400"
+  drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit}") || {
+    update_state blocked "cannot establish admission drain; daemon left running" "$commit"
+    return 1
+  }
+  while :; do
+    [[ $(json_get ready <<<"$drain") == true ]] && break
+    if [[ $(json_get timed_out <<<"$drain") == true ]]; then
+      update_state blocked "drain timed out; running jobs were not stopped: $drain" "$commit"
+      return 1
+    fi
+    update_state draining "waiting for existing runs: $drain" "$commit"
+    sleep 5
+    drain=$(local_api /v3/box/drain) || {
+      update_state blocked "drain status unavailable; daemon left running" "$commit"
+      return 1
+    }
+  done
   sandboxed=$(local_api /v3/box/summary 2>/dev/null | json_get sandbox.active || true)
   activate "$commit"
   if came_up "$commit" "$sandboxed"; then

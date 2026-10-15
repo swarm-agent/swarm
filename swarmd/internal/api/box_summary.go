@@ -94,6 +94,14 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 			raise(BoxStatusAttention, "an update was rolled back: "+update.Reason)
 		}
 	}
+	if manager := s.ExecutionCapacity(); manager != nil {
+		drain := manager.DrainStatus()
+		// Machine summaries expose no cross-account run identifiers.
+		machine["drain"] = map[string]any{"draining": drain.Draining, "since": drain.Since, "deadline": drain.Deadline, "timed_out": drain.TimedOut, "blocking_runs": len(drain.Blockers)}
+		if drain.Draining {
+			raise(BoxStatusAttention, "draining for update")
+		}
+	}
 	busy, err := s.boxBusy()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

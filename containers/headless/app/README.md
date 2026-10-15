@@ -310,3 +310,26 @@ the idle interval; it never authorizes shutdown. The installer sends an
 `external.idle_off` signal through the daemon before root invokes systemd poweroff.
 The daemon never powers off its host. A stopped cloud VM keeps its disk; start
 it in your cloud console to resume. Disk/storage charges may continue.
+
+### Update admission drain
+
+After building, `install.sh update` requests `POST /v3/box/drain` before
+activation. New V3 run intents remain durably pending; existing execution
+owners, including parked parents, finish without being cancelled. The admission
+fence remains closed until daemon restart. Only the installer installs binaries
+and performs the privileged restart.
+
+`UPDATE_DRAIN_SECONDS` sets the wait budget (default 7200, range 1–86400).
+Timeout reports blocking session/run identifiers and leaves the daemon running
+and draining. Resolve blockers, then retry the update; retries retain the original
+deadline but can activate once all blockers finish. An unavailable status endpoint
+never authorizes activation. Older daemons without the drain API require a
+separately supervised upgrade rather than an unsafe idle fallback.
+
+Owner/admin clients can request the same fence with `swarm_request_update`
+(MCP, optional `max_seconds`) or `POST /v3/box/drain` with JSON
+`{"max_seconds":7200}`. This does not execute the installer: automatic updates
+must be enabled or the operator must run it. `GET /v3/box/drain` reports readiness,
+start/deadline times, timeout and blocking runs/builds; the machine summary exposes
+redacted drain counts. New environment definitions are rejected during drain and
+must be retried after restart. Existing builds remain blockers.

@@ -145,6 +145,8 @@ var controlMCPRoutes = []string{
 	// Monitoring: the machine summary and its signal feed (handlers require
 	// signals:read), and which secrets exist where (secrets:read; never values).
 	"GET v3/box/summary",
+	"POST v3/box/drain",
+	"GET v3/box/drain",
 	// Runs across every worker (swarm_list_runs; signals:read).
 	"GET v3/runs",
 	"GET v3/signals",
