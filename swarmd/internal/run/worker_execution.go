@@ -480,7 +480,21 @@ func (s *WorkerExecutionService) startLocked(ctx context.Context, receipt store.
 	return s.startPlan(ctx, actual, w, doc)
 }
 
-func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRunRecord, w store.WorkerRecord, doc store.SessionPlanDocument) error {
+func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRunRecord, w store.WorkerRecord, doc store.SessionPlanDocument) (resultErr error) {
+	reviewAllocated := false
+	defer func() {
+		if resultErr == nil || !reviewAllocated {
+			return
+		}
+		_, hasIntent, err := s.workerRunIntent(r)
+		if err != nil {
+			resultErr = errors.Join(resultErr, err)
+			return
+		}
+		if !hasIntent {
+			resultErr = errors.Join(resultErr, s.cleanupReviewAdmission(r))
+		}
+	}()
 	h := s.host
 	if err := ctx.Err(); err != nil {
 		return err
@@ -675,6 +689,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if err != nil {
 			return err
 		}
+		reviewAllocated = role == store.WorkerRoleReviewer
 		if forgeBranch != "" {
 			allocation.BaseBranch = forgeBranch
 		}
@@ -1538,6 +1553,9 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 					r.Status, r.Error, r.CompletedAt = "failed", "worker preparation failed: "+e.Error(), time.Now().UnixMilli()
 					if _, recordErr := ws.RecordWorkerRun(account, r); recordErr != nil {
 						failures = append(failures, recordErr)
+					}
+					if cleanupErr := s.cleanupReviewAdmission(r); cleanupErr != nil {
+						failures = append(failures, cleanupErr)
 					}
 					if recErr := s.reconcileRunTask(r, "failed", r.Error); recErr != nil {
 						failures = append(failures, recErr)

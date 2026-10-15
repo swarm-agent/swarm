@@ -14,6 +14,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Keep daemon-owned landing preparation outside agent CPU admission, round derived quotas to Docker NanoCPU precision, and detect Docker cgroup drivers during headless install/update. Docs impact: headless CPU settings document driver fallback and quota precision.
 
 - Bound agent CPU quotas and concurrent commands, report CPU-slot waits, isolate ordinary daemon Git from agent CPU budgets, and prioritize headless daemon units over sandbox containers. Docs impact: headless installer README documents CPU settings, defaults, and limitations.
+- Give reviewer checkout admission the bounded allocation timeout, report deadline causes, clean partial checkouts and registrations on failure, and recover orphaned reviewer admissions at startup from durable run ownership. Docs impact: none.
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.
 - Protect quiet V3 provider/tool execution and queued/recovering intents from worker watchdog settlement; fence orphan settlement against concurrent progress/completion and remove only the target review worktree registration during torn cleanup. Docs impact: none.

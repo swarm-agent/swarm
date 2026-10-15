@@ -871,6 +871,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("compose worker execution: %w", err)
 	}
+	if err := workerExecution.SweepReviewAdmissions(bgCtx); err != nil {
+		log.Printf("warning: recover review admissions: %v", err)
+	}
 	runSvc.SetWorkerExecutionService(workerExecution)
 	runSvc.SetAITaskBinder(todoSvc)
 	aiTaskDispatcher, err := runSvc.StartAITaskV2Dispatcher(bgCtx, aiTaskQueueAdapter{service: todoSvc}, sessionSvc.ApplySessionMutation)

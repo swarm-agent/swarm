@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"swarm/packages/swarmd/internal/sandbox"
+	"time"
 
 	"swarm/packages/swarmd/internal/taskscope"
 )
@@ -63,9 +64,14 @@ func canonicalTaskSparseScopes(rawScopes []string) ([]string, bool, error) {
 }
 
 func runGitAllocation(path string, stdin []byte, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), worktreeAllocationTimeout)
+	return runGitAllocationTimeout(path, stdin, worktreeAllocationTimeout, args...)
+}
+
+func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
+	cmd.WaitDelay = time.Second
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -74,6 +80,9 @@ func runGitAllocation(path string, stdin []byte, args ...string) (string, error)
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("git %s (allocation timeout %s): %w: %s", strings.Join(args, " "), timeout, ctx.Err(), output)
+		}
 		if output == "" {
 			output = strings.TrimSpace(err.Error())
 		}

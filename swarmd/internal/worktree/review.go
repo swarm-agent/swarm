@@ -2,11 +2,13 @@ package worktree
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/sandbox"
+	"time"
 )
 
 // AllocateReviewWorkspace creates no branch or writable publication lineage.
@@ -22,6 +24,10 @@ func (s *Service) AllocateReviewWorkspace(p identity.Principal, source, owner, h
 }
 
 func (s *Service) allocateReviewWorkspace(source, owner, head string) (Allocation, error) {
+	return s.allocateReviewWorkspaceTimeout(source, owner, head, worktreeAllocationTimeout)
+}
+
+func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, timeout time.Duration) (Allocation, error) {
 	root, err := resolveRepositoryRoot(source)
 	if err != nil {
 		return Allocation{}, err
@@ -42,8 +48,8 @@ func (s *Service) allocateReviewWorkspace(source, owner, head string) (Allocatio
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		return Allocation{}, errors.New("review checkout already exists")
 	}
-	if _, err := runGit(root, "worktree", "add", "--detach", path, head); err != nil {
-		return Allocation{}, err
+	if _, err := runGitAllocationTimeout(root, nil, timeout, "worktree", "add", "--detach", path, head); err != nil {
+		return Allocation{}, errors.Join(fmt.Errorf("review checkout admission: %w", err), s.CleanupReviewAdmission(root, owner))
 	}
 	return Allocation{WorkspacePath: path, RepoRoot: root, BaseCommit: head, BaseBranch: head, BranchName: "HEAD", WorkspaceID: sessionWorkspaceID(owner)}, nil
 }
@@ -177,6 +183,82 @@ func ValidateReviewExecutionIdentity(source, lane, owner, head string) error {
 	}
 	if actual != head {
 		return errors.New("review head changed")
+	}
+	return nil
+}
+
+// CleanupReviewAdmission is daemon-only. The caller must establish review ownership
+// from a durable run receipt and exclude live execution before calling it. Unlike
+// normal removal it tolerates a checkout interrupted before HEAD was written.
+func (s *Service) CleanupReviewAdmission(source, owner string) error {
+	if strings.TrimSpace(owner) == "" {
+		return errors.New("review owner required")
+	}
+	root, err := resolveRepositoryRoot(source)
+	if err != nil {
+		return err
+	}
+	path, err := deterministicSessionWorktreePath(root, sessionWorkspaceID(owner))
+	if err != nil {
+		return err
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	if parent != filepath.Dir(path) {
+		return errors.New("review parent is a symlink")
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("review checkout is a symlink")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	common, err := runGit(root, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return err
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(root, common)
+	}
+	registrations := filepath.Join(common, "worktrees")
+	if info, err := os.Lstat(registrations); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("worktree registrations directory is a symlink")
+	}
+	entries, err := os.ReadDir(registrations)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	// Identify only this checkout's registration; a global prune would also
+	// remove unrelated missing user worktrees.
+	var owned []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		registration := filepath.Join(registrations, entry.Name())
+		data, err := os.ReadFile(filepath.Join(registration, "gitdir"))
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(data)) == filepath.Join(path, ".git") {
+			head, err := os.ReadFile(filepath.Join(registration, "HEAD"))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			if strings.HasPrefix(strings.TrimSpace(string(head)), "ref:") {
+				return errors.New("refusing to remove a branch-backed checkout as a review")
+			}
+			owned = append(owned, registration)
+		}
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove partial review checkout: %w", err)
+	}
+	for _, registration := range owned {
+		if err := os.RemoveAll(registration); err != nil {
+			return fmt.Errorf("prune review registration: %w", err)
+		}
 	}
 	return nil
 }
