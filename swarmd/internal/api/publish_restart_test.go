@@ -22,13 +22,16 @@ func TestPublishLandSignalAcceptedRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
+	if err := store.NewSessionStore(db).CreateSessionForAccount(store.SessionSnapshot{ID: "publish-session"}, "u", "a"); err != nil {
+		t.Fatal(err)
+	}
 	call := func() *controlMCPCall {
 		r := httptest.NewRequest("POST", "/mcp", nil)
 		r = r.WithContext(context.WithValue(r.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}))
-		return &controlMCPCall{server: &Server{signals: store.NewSignalStore(db)}, request: r}
+		return &controlMCPCall{server: &Server{signals: store.NewSignalStore(db), sessions: sessionruntime.NewService(store.NewSessionStore(db), nil)}, request: r}
 	}
 	notify := func(context.Context, publish.Entry) error {
-		return call().signalPublishDurable(controlMCPJobWorker, "worker", "run", controlMCPJobRefs{}, "job.landed", store.SignalSeverityInfo, "landed", map[string]string{"head": "head"})
+		return call().signalPublishDurable(controlMCPJobWorker, "worker", "run", controlMCPJobRefs{sessionID: "publish-session"}, "job.landed", store.SignalSeverityInfo, "landed", map[string]string{"head": "head"})
 	}
 	q := publish.NewQueue(db)
 	if _, err = q.Enqueue(publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}); err != nil {
@@ -143,6 +146,9 @@ func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
+	if err := store.NewSessionStore(db).CreateSessionForAccount(store.SessionSnapshot{ID: "publish-session"}, "u", "a"); err != nil {
+		t.Fatal(err)
+	}
 	q := publish.NewQueue(db)
 	entry := publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}
 	states := []string{"sent_back", "landing_stopped", "sent_back", "landing_stopped", "land_failed", "land_failed"}
@@ -154,8 +160,8 @@ func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
 		notify := func(_ context.Context, e publish.Entry) error {
 			r := httptest.NewRequest("POST", "/mcp", nil)
 			r = r.WithContext(context.WithValue(r.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}))
-			c := &controlMCPCall{server: &Server{signals: store.NewSignalStore(db)}, request: r}
-			return c.signalPublishDurable(controlMCPJobWorker, "worker", "run", controlMCPJobRefs{}, "job."+e.State, store.SignalSeverityInfo, "terminal", map[string]string{"notification_id": e.NotificationID})
+			c := &controlMCPCall{server: &Server{signals: store.NewSignalStore(db), sessions: sessionruntime.NewService(store.NewSessionStore(db), nil)}, request: r}
+			return c.signalPublishDurable(controlMCPJobWorker, "worker", "run", controlMCPJobRefs{sessionID: "publish-session"}, "job."+e.State, store.SignalSeverityInfo, "terminal", map[string]string{"notification_id": e.NotificationID})
 		}
 		hooks := publish.QueueHooks{Prepare: func(context.Context, *publish.Entry) error {
 			if state == "land_failed" {

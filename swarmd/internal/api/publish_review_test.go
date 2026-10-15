@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
@@ -139,7 +138,7 @@ func TestAutoPublishReviewSignal(t *testing.T) {
 // account, refusing without queue mutation for missing/BLOCK/stale evidence.
 // The real Pebble fixture proves durable admission rather than trusting JSON.
 func TestPublishJobRequiresRecordedReview(t *testing.T) {
-	s, _, _ := setupWorkerAPITestServer(t)
+	s, _, handler := setupWorkerAPITestServer(t)
 	ws := s.sessions.Store().WorkerStore()
 	coder, err := ws.CreateWorker("acct-test", "user-test", store.CreateWorkerRequest{Name: "coder"}, nil)
 	if err != nil {
@@ -149,7 +148,7 @@ func TestPublishJobRequiresRecordedReview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{WorkerID: coder.ID, UserID: "user-test", WorkspaceID: "workspace", Status: "succeeded", RequestSource: "direct"})
+	target, err := ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{WorkerID: coder.ID, UserID: "user-test", SessionID: "publish-review-session", WorkspaceID: "workspace", Status: "succeeded", RequestSource: "direct"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +156,10 @@ func TestPublishJobRequiresRecordedReview(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	request := httptest.NewRequest("POST", "/mcp", nil)
 	request = request.WithContext(context.WithValue(request.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", AccountScopeID: "acct-test", UserID: "user-test"}))
-	c := &controlMCPCall{server: s, request: request, next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })}
+	if err := s.sessions.Store().CreateSessionForAccount(store.SessionSnapshot{ID: target.SessionID}, "user-test", "acct-test"); err != nil {
+		t.Fatal(err)
+	}
+	c := &controlMCPCall{server: s, request: request, next: handler}
 	q, err := s.landingQueue()
 	if err != nil {
 		t.Fatal(err)
