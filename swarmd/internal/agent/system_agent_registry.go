@@ -114,9 +114,9 @@ func NewSystemAgentRegistry(definitions []SystemAgentDefinition) (*SystemAgentRe
 		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
 			return nil, fmt.Errorf("system subagent %q must disable task delegation", definition.ID)
 		}
-		// Orchestrator plans on project task cards, not session plans. Validate
-		// its distinct primary contract without invalidating the whole registry.
-		if definition.ID == SwarmOrchestratorAgentID {
+		// Coding defaults and the project-task Orchestrator do not expose
+		// session planning. Advanced Swarm contexts opt in at materialization.
+		if definition.ID == SwarmOrchestratorAgentID || definition.ID == SwarmAgentID {
 			if profile.Mode != ModePrimary || pebblestore.AgentProfileRuntimeMode(profile) != pebblestore.AgentRuntimeModeReadWrite || profile.ExitPlanModeEnabled == nil || *profile.ExitPlanModeEnabled || agentToolEnabled(profile.ToolContract, "plan_manage") || agentToolEnabled(profile.ToolContract, "exit_plan_mode") {
 				return nil, fmt.Errorf("system orchestrator %q must use read_write runtime with session planning disabled", definition.ID)
 			}
@@ -381,13 +381,13 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"manage_agent":        {Enabled: pebblestore.BoolPtr(false)},
 			"manage_theme":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_sessions":     {Enabled: pebblestore.BoolPtr(true)},
-			"manage_design":       {Enabled: pebblestore.BoolPtr(true)},
-			"manage_artifact":     {Enabled: pebblestore.BoolPtr(true)},
-			"manage_video":        {Enabled: pebblestore.BoolPtr(true)},
+			"manage_design":       {Enabled: pebblestore.BoolPtr(false)},
+			"manage_artifact":     {Enabled: pebblestore.BoolPtr(false)},
+			"manage_video":        {Enabled: pebblestore.BoolPtr(false)},
 			"manage_worktree":     {Enabled: pebblestore.BoolPtr(true)},
-			"plan_manage":         {Enabled: pebblestore.BoolPtr(true)},
+			"plan_manage":         {Enabled: pebblestore.BoolPtr(false)},
 			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
-			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(true)},
+			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(false)},
 			"manage_memory":       {Enabled: pebblestore.BoolPtr(false)},
 			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
 			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
@@ -852,9 +852,17 @@ func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.A
 	// session model profile, just like the other compiled system agents.
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name: SwarmAgentID, Mode: ModePrimary, Description: "Compiled primary orchestrator",
-		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModePlanAuto, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModeAuto),
-		ExitPlanModeEnabled: pebblestore.BoolPtr(true), ToolContract: SwarmAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
+		Prompt: SwarmAgentPrompt(), RuntimeMode: pebblestore.AgentRuntimeModeReadWrite, DefaultSessionMode: firstNonEmptyProfileValue(pebblestore.NormalizeAgentDefaultSessionMode(context.DefaultSessionMode), pebblestore.AgentDefaultSessionModeAuto),
+		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: SwarmAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})
+	// Preserve saved plan capability and explicit interactive plan-mode opt-in.
+	// plan_auto alone is not opt-in: it was the legacy default runtime mode.
+	if agentToolEnabled(context.ToolContract, "plan_manage") || context.DefaultSessionMode == pebblestore.AgentDefaultSessionModePlan {
+		profile.ToolContract.Tools["plan_manage"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+		profile.ToolContract.Tools["exit_plan_mode"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+		profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+		profile.RuntimeMode = pebblestore.AgentRuntimeModePlanAuto
+	}
 	profile.Protected = true
 	preserveEnvironmentToolDenials(&profile, context)
 	return profile

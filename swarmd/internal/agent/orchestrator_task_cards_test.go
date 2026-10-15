@@ -45,7 +45,7 @@ func TestOrchestratorTaskCardProfileReconcilesLegacyPlanSnapshot(t *testing.T) {
 	if !strings.Contains(profile.Prompt, "plan_document") || !strings.Contains(profile.Prompt, "agent=\"coder\"") {
 		t.Fatal("direct structured plans or small Coder tasks missing")
 	}
-	if cfg := SwarmAgentToolContract().Tools["plan_manage"]; cfg.Enabled == nil || !*cfg.Enabled {
-		t.Fatal("ordinary Swarm session planning changed")
+	if agentToolEnabled(SwarmAgentToolContract(), "plan_manage") {
+		t.Fatal("ordinary Swarm session planning must be opt-in")
 	}
 }

@@ -464,7 +464,7 @@ func TestControlMCPInstructionsFollowLevel(t *testing.T) {
 			t.Fatalf("default instructions miss %s: %s", shown, defaults)
 		}
 	}
-	for _, hidden := range []string{"system-orchestrator", "run_task", "start_session", "resolve_permission", "swarm_add_workspace"} {
+	for _, hidden := range []string{"system-orchestrator", "run_task", "start_session", "resolve_permission", "swarm_add_workspace", "checkpoint", "run_plan", "accept_review"} {
 		if strings.Contains(defaults, hidden) {
 			t.Fatalf("default instructions mention advanced %s: %s", hidden, defaults)
 		}

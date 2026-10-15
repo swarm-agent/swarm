@@ -97,12 +97,12 @@ var controlMCPCoreInstructionLines = []controlMCPInstruction{
 // project orchestrators, tasks by role, models and box setup) for clients that
 // asked for every tool.
 var controlMCPInstructionLines = []controlMCPInstruction{
-	{nil, "Advanced tools are listed too."},
+	{nil, "Advanced tools are explicitly enabled (tools=all); session, plan and checkpoint workflows below are optional, not the default worker-job workflow."},
 	{[]string{"swarm_create_project", "swarm_get_project", "swarm_run_task"}, "Projects group folders and carry a project.md (create_project; get_project waits until it is ready); a job's folder gets one automatically. run_task hands one task to a role without a worker (coder, finder, designer, or swarm for a big feature that needs a plan and several coders); wait_task, task_result and integrate_task follow it."},
 	{[]string{"swarm_start_session"}, "A project's own orchestrator (start_session with agent system-orchestrator and the project_id) is optional: use it only when the person wants Swarm itself to split and manage a larger goal."},
 	{[]string{"swarm_create_workspace"}, "Never hand the person an empty repository as their work target: create_workspace makes a new, empty repository and is only for a brand-new project they asked to start from scratch."},
 	{[]string{"swarm_start_session", "swarm_get_session"}, "Work is asynchronous: start_session, send_message and run_plan return at once with the session's current state; pass wait_seconds to start_session, send_message or get_session to wait until the run settles (it ended: finished, failed or stopped; or it waits on a decision in pending_permissions)."},
-	{[]string{"swarm_start_session"}, "Prefer giving a plan (checkpoints with acceptance criteria) for multi-step work; Swarm runs its checkpoints one after another, but agent tool calls still follow the permission policy."},
+	{[]string{"swarm_start_session"}, "For explicitly requested advanced plan execution, provide checkpoints with acceptance criteria; Swarm runs them one after another, but agent tool calls still follow the permission policy."},
 	{[]string{"swarm_get_session"}, "Agent tool calls that need approval, and agent questions (ask_user), wait in pending_permissions."},
 	{[]string{"swarm_resolve_permission"}, "Answer them with resolve_permission (one decision each; saving a lasting rule is for the machine owner in Swarm's settings). Swarm's policy refuses some commands outright, for example recursive deletes of broad targets; they fail in the agent's tool result and never become pending requests."},
 	{[]string{"swarm_read_file", "swarm_get_changes"}, "See what agents produced with get_changes (changed files and diff of a session's worktree) and read_file."},

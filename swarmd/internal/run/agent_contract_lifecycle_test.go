@@ -12,9 +12,12 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
+// Purpose: resolve the current default Swarm profile through the runtime tool
+// boundary so removed plan grants cannot leak back through preset expansion.
+// Retired finder/memory/parallel default aliases are not compiled defaults.
 func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
 	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
-	for _, name := range []string{"swarm", "finder", "memory", "parallel"} {
+	for _, name := range []string{agentruntime.SwarmAgentID} {
 		profile, ok := agentruntime.DefaultProfileByName(name)
 		if !ok {
 			t.Fatalf("DefaultProfileByName(%s) missing", name)
@@ -36,8 +39,8 @@ func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
 			if sessions := resolved.Tools["manage_sessions"]; !sessions.Enabled || !slices.Contains(resolved.AvailableTools, "manage_sessions") {
 				t.Fatalf("Swarm resolved toolkit omits manage_sessions: %+v", resolved)
 			}
-			if plan := resolved.Tools["plan_manage"]; !plan.Enabled || !slices.Contains(resolved.AvailableTools, "plan_manage") {
-				t.Fatalf("Swarm resolved toolkit omits plan_manage: %+v", resolved)
+			if plan := resolved.Tools["plan_manage"]; plan.Enabled || slices.Contains(resolved.AvailableTools, "plan_manage") {
+				t.Fatalf("Swarm default toolkit exposes plan_manage: %+v", resolved)
 			}
 			if !slices.ContainsFunc(svc.ListAgentToolDefinitions(), func(definition tool.Definition) bool { return definition.Name == "manage_todos" }) {
 				t.Fatal("shared tool inventory no longer implements manage_todos")

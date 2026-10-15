@@ -73,6 +73,9 @@ func TestValidatePlanDocumentRejectsStructuralInconsistency(t *testing.T) {
 	}
 }
 
+// Purpose: hiding coding plan tools must not affect durable plan loading or
+// revision reads. SavePlanWithMetadata/GetSession/GetPlan own this persistence
+// boundary; the service fixture proves retained content without provider calls.
 func TestSavePlanPreservesExistingDocumentWhenNoIncomingDocument(t *testing.T) {
 	svc, cleanup := newPlanTestService(t)
 	defer cleanup()
@@ -97,6 +100,17 @@ func TestSavePlanPreservesExistingDocumentWhenNoIncomingDocument(t *testing.T) {
 	}
 	if first.Document == nil || first.Document.Info.Goal != "Implement one plan model" {
 		t.Fatalf("initial document not stored: %#v", first.Document)
+	}
+
+	if _, found, err := svc.GetSession(sessionID); err != nil || !found {
+		t.Fatalf("load existing planned session: found=%v err=%v", found, err)
+	}
+	loaded, found, err := svc.GetPlan(sessionID, "plan-one")
+	if err != nil || !found || loaded.Document == nil || loaded.Document.Info.Goal != initialDoc.Info.Goal {
+		t.Fatalf("read existing stored plan: found=%v err=%v plan=%+v", found, err, loaded)
+	}
+	if _, found, err := svc.GetPlan(sessionID, "missing-plan"); err != nil || found {
+		t.Fatalf("missing plan must not synthesize stored content: found=%v err=%v", found, err)
 	}
 
 	initialDoc.Info.Goal = "mutated caller copy"

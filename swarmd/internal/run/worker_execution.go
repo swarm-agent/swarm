@@ -605,7 +605,12 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		if w.ExecutionMode == "plan" {
 			selection = *w.ModelProfile.Plan
 		}
-		profile, err := h.runs.agents.ResolveSystemAgent(workerRoleAgentID(role), store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode})
+		profileContext := store.AgentProfile{Provider: selection.Provider, Model: selection.Model, Thinking: selection.Thinking, AutoServiceTier: selection.ServiceTier, ContextMode: selection.ContextMode}
+		if planned {
+			// Legacy Swarm-role workers explicitly retain their accepted-plan workflow.
+			profileContext.DefaultSessionMode = store.AgentDefaultSessionModePlan
+		}
+		profile, err := h.runs.agents.ResolveSystemAgent(workerRoleAgentID(role), profileContext)
 		if err != nil {
 			return err
 		}
