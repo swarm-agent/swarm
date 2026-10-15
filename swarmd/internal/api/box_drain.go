@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -27,7 +28,17 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, errors.New("execution admission unavailable"))
 		return
 	}
+	manager.SetDrainEndObserver(func(status executioncapacity.DrainStatus) {
+		if s.signals != nil {
+			_, err := s.signals.Append(pebblestore.Signal{Source: pebblestore.SignalSourceSwarmd, Kind: "update.drain." + status.EndReason, Severity: pebblestore.SignalSeverityInfo, Summary: "Update drain ended: " + status.EndReason, DedupKey: "update.drain.end:" + status.Since.Format(time.RFC3339Nano)})
+			if err != nil {
+				log.Printf("record drain end: %v", err)
+			}
+		}
+	})
 	switch r.Method {
+	case http.MethodDelete:
+		writeJSON(w, http.StatusOK, manager.CancelDrain(r.URL.Query().Get("generation")))
 	case http.MethodGet:
 		status := manager.DrainStatus()
 		if !s.addDrainBuildBlockers(w, &status) {
@@ -83,4 +94,8 @@ func (s *Server) addDrainBuildBlockers(w http.ResponseWriter, status *executionc
 		status.Ready = status.Ready && count == 0
 	}
 	return true
+}
+
+func controlMCPCancelUpdate(c *controlMCPCall, args map[string]any) (any, error) {
+	return c.dispatch(http.MethodDelete, "/v3/box/drain", nil, nil)
 }

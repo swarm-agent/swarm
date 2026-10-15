@@ -146,6 +146,7 @@ var controlMCPRoutes = []string{
 	// signals:read), and which secrets exist where (secrets:read; never values).
 	"GET v3/box/summary",
 	"POST v3/box/drain",
+	"DELETE v3/box/drain",
 	"GET v3/box/drain",
 	// Runs across every worker (swarm_list_runs; signals:read).
 	"GET v3/runs",

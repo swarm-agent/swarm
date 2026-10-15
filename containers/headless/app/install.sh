@@ -146,6 +146,8 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
   --auto-update update by itself (install.sh auto-update below; off by default)
                 Updates drain new runs before activation, never kill running jobs.
                 UPDATE_DRAIN_SECONDS=7200 sets the drain limit (1..86400 seconds).
+Expiry or installer failure reopens admissions; swarm_cancel_update cancels a drain.
+Readiness is generation-bound and checked again immediately before restart.
                 Timeout reports blockers and leaves admission held until restart.
   --ask-permissions
                 agents ask before commands and file changes; by default they
@@ -502,6 +504,14 @@ WRAPPER
   choose_runtime
   sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" && echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF"
   install_units
+  if [[ -n ${UPDATE_DRAIN_GENERATION:-} ]]; then
+    local current_drain
+    current_drain=$(local_api /v3/box/drain) || return 1
+    [[ $(json_get generation <<<"$current_drain") == "$UPDATE_DRAIN_GENERATION" && $(json_get ready <<<"$current_drain") == true ]] || {
+      echo 'swarm: daemon generation or drain readiness changed; refusing restart' >&2
+      return 1
+    }
+  fi
   systemctl restart "$DAEMON_UNIT"
   systemctl restart "$APP_UNIT"
   echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
@@ -748,7 +758,7 @@ update() {
 
 # Bring the services to the checkout's commit: build it, wait until nothing
 # runs, switch, and go back if it does not come up.
-finish_update() {
+finish_update() (
   load_conf
   local commit running why sandboxed
   commit=$(git -C "$SRC" rev-parse HEAD)
@@ -769,16 +779,24 @@ finish_update() {
   fi
   local drain limit=${UPDATE_DRAIN_SECONDS:-7200}
   [[ $limit =~ ^[0-9]+$ && $limit -ge 1 && $limit -le 86400 ]] || die "UPDATE_DRAIN_SECONDS must be 1..86400"
+  UPDATE_DRAIN_GENERATION=''
+  trap 'local_api "/v3/box/drain?generation=$UPDATE_DRAIN_GENERATION" -X DELETE >/dev/null || echo "swarm: drain cleanup unavailable; deadline will reopen admission" >&2' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit}") || {
     update_state blocked "cannot establish admission drain; daemon left running" "$commit"
     return 1
   }
+  UPDATE_DRAIN_GENERATION=$(json_get generation <<<"$drain")
+  [[ -n $UPDATE_DRAIN_GENERATION ]] || return 1
   while :; do
+    [[ $(json_get generation <<<"$drain") == "$UPDATE_DRAIN_GENERATION" ]] || return 1
     [[ $(json_get ready <<<"$drain") == true ]] && break
     if [[ $(json_get timed_out <<<"$drain") == true ]]; then
       update_state blocked "drain timed out; running jobs were not stopped: $drain" "$commit"
       return 1
     fi
+    [[ $(json_get draining <<<"$drain") == true ]] || return 1
     update_state draining "waiting for existing runs: $drain" "$commit"
     sleep 5
     drain=$(local_api /v3/box/drain) || {
@@ -787,7 +805,9 @@ finish_update() {
     }
   done
   sandboxed=$(local_api /v3/box/summary 2>/dev/null | json_get sandbox.active || true)
-  activate "$commit"
+  activate "$commit" || return 1
+  UPDATE_DRAIN_GENERATION=''
+  trap - EXIT INT TERM
   if came_up "$commit" "$sandboxed"; then
     rm -f "$UPDATE_BAD"
     update_state installed "${running:0:9} -> ${commit:0:9}" "$commit"
@@ -803,7 +823,7 @@ finish_update() {
   fi
   update_state failed "${commit:0:9} did not come up and the build before it could not be restored; check: journalctl -u $DAEMON_UNIT" "$commit"
   return 1
-}
+)
 
 # Turn automatic updates on or off, or show them.
 auto_update() {

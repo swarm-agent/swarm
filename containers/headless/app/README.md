@@ -320,9 +320,12 @@ fence remains closed until daemon restart. Only the installer installs binaries
 and performs the privileged restart.
 
 `UPDATE_DRAIN_SECONDS` sets the wait budget (default 7200, range 1–86400).
-Timeout reports blocking session/run identifiers and leaves the daemon running
-and draining. Resolve blockers, then retry the update; retries retain the original
-deadline but can activate once all blockers finish. An unavailable status endpoint
+Timeout reports blocking session/run identifiers and automatically reopens
+admission without interrupting running work. `DELETE /v3/box/drain` or
+`swarm_cancel_update` explicitly cancels the drain; installer exit/failure also
+attempts cancellation. Expiry and cancellation emit end signals. A new request
+after either starts a fresh deadline. Readiness carries a daemon generation;
+the installer verifies that same generation and readiness immediately before restart. An unavailable status endpoint
 never authorizes activation. Older daemons without the drain API require a
 separately supervised upgrade rather than an unsafe idle fallback.
 

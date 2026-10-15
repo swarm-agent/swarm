@@ -1328,6 +1328,9 @@ func controlMCPJobTools() []controlMCPTool {
 	waitProp := map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the job settles: needs_review (done, ready to merge), completed, failed, needs_input (the worker asked something) or cancelled. waited.timed_out means it is still working: call swarm_get_job again. Default 0."}
 	return []controlMCPTool{
 		{
+			Name: "swarm_cancel_update", Title: "Cancel update drain", Description: "Owner/admin only. Reopen held admissions without interrupting running jobs.", InputSchema: controlMCPObject(nil, map[string]any{}), call: controlMCPCancelUpdate,
+		},
+		{
 			Name: "swarm_request_update", Title: "Drain for an installer update",
 			Description: "Owner/admin only. Hold new execution admissions while running work finishes. The host installer must perform installation and restart; this tool never changes the host. Repeated requests return the original deadline and blockers.",
 			InputSchema: controlMCPObject(nil, map[string]any{"max_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 86400}}), call: controlMCPRequestUpdate,

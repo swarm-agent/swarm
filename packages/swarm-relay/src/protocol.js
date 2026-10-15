@@ -71,6 +71,8 @@ export const TOOL_SCOPES = {
   swarm_approve_task: SCOPE_MANAGE,
   // Workers and jobs (the default surface): reading is read; deploying,
   // giving, answering, merging, stopping and scheduling jobs is write.
+  swarm_request_update: SCOPE_MANAGE,
+  swarm_cancel_update: SCOPE_MANAGE,
   swarm_status: SCOPE_READ,
   swarm_activity: SCOPE_READ,
   swarm_list_runs: SCOPE_READ,

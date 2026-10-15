@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ManagerConfig configures an account-scoped execution capacity manager.
@@ -22,12 +23,15 @@ type Manager struct {
 	maxQueueWaiters int
 	limitResolver   func(accountScopeID string) (int, error)
 
-	mu       sync.Mutex
-	accounts map[string]*accountState
-	counter  atomic.Uint64
-	closed   bool
-	changed  chan struct{}
-	drain    DrainStatus
+	mu         sync.Mutex
+	accounts   map[string]*accountState
+	counter    atomic.Uint64
+	closed     bool
+	changed    chan struct{}
+	drain      DrainStatus
+	drainTimer *time.Timer
+	drainEnd   func(DrainStatus)
+	generation string
 }
 
 type accountState struct {
@@ -330,6 +334,10 @@ func (m *Manager) Close() {
 		return
 	}
 	m.closed = true
+	if m.drainTimer != nil {
+		m.drainTimer.Stop()
+	}
+	m.drainEnd = nil
 	m.signalChangedLocked()
 	for _, acc := range m.accounts {
 		for _, w := range acc.waiters {

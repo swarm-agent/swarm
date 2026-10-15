@@ -19,6 +19,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Preserve interrupted follow-up outcomes and failure signals, count follow-ups/reviews/landing in machine busy state, and retry terminal sandbox cleanup with job-visible errors. Add opt-in installer-owned idle auto-off. Docs impact: headless installer README documents cloud VM shutdown and resume.
 - Expose revisioned box limits through V3, MCP and SDK, with live worker admission/job-budget enforcement and limit signals. Docs impact: added `docs/box-limits.md`.
+- Expire or cancel update drains to reopen admissions, clean up failed installers, verify daemon generation before restart, and require explicit MCP management scope. Docs impact: updated drain recovery and cancellation guidance.
+
 - Fence execution admissions while headless updates drain existing runs; add owner drain API/MCP, bounded blocker reporting, and fail-closed installer status handling. Docs impact: headless installer help and update-drain guidance.
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.

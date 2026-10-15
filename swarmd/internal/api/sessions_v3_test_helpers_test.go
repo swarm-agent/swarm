@@ -1,7 +1,10 @@
 package api
 
 import (
+	"context"
 	"path/filepath"
+	"swarm/packages/swarmd/internal/executioncapacity"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,21 +24,30 @@ import (
 
 func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionruntime.Service, *permission.Service, any, any) {
 	t.Helper()
+	return newRoutedSessionTestServerAt(t, filepath.Join(t.TempDir(), "sessions-v3-api.pebble"), false)
+}
+
+func newRoutedSessionTestServerAt(t *testing.T, path string, recovery bool) (*Server, *sessionruntime.Service, *permission.Service, any, any) {
+	t.Helper()
 	t.Setenv("SWARM_API_NO_AUTH", "1")
 	t.Setenv("SWARM_V3_DIAGNOSTICS", "0")
 
 	var server *Server
-	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "sessions-v3-api.pebble"))
+	store, err := pebblestore.Open(path)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() {
-		if server != nil {
-			server.CancelInFlightRuns()
-			server.WaitForInFlightRuns(2 * time.Second)
-		}
-		_ = store.Close()
-	})
+	var closeOnce sync.Once
+	closeStore := func() {
+		closeOnce.Do(func() {
+			if server != nil {
+				server.CancelInFlightRuns()
+				server.WaitForInFlightRuns(2 * time.Second)
+			}
+			_ = store.Close()
+		})
+	}
+	t.Cleanup(closeStore)
 
 	eventLog, err := pebblestore.NewEventLog(store)
 	if err != nil {
@@ -49,6 +61,11 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	}
 	permissionSvc := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
 	permissionSvc.SetSessionResolver(sessionSvc)
+	if recovery {
+		if _, err := permissionSvc.ExecutionCapacity().BeginDrain(time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
 	agentSvc := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
 	if err := agentSvc.EnsureDefaults(); err != nil {
 		t.Fatalf("ensure agent defaults: %v", err)
@@ -71,6 +88,15 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	agentSettingsSvc := agentmodelsettings.NewService(agentSettingsStore)
 	server.SetAgentModelSettingsService(agentSettingsSvc)
 	runSvc.SetAgentModelSettingsService(agentSettingsSvc)
+	if recovery {
+		server.CancelInFlightRuns()
+		if !server.WaitForInFlightRuns(2 * time.Second) {
+			t.Fatal("fixture startup executor failed to stop")
+		}
+		server.runCtx, server.runCancel = context.WithCancel(context.Background())
+		server.shuttingDown.Store(false)
+		permissionSvc.SetExecutionCapacity(executioncapacity.NewManager(executioncapacity.ManagerConfig{}))
+	}
 	server.v3SessionExecutor = nil
 	server.SetTopologyService(topologyruntime.NewService(topologyStore, swarmStore))
 	server.SetSwarmStore(swarmStore)
@@ -82,5 +108,5 @@ func newRoutedSessionTestServerWithSwarmStore(t *testing.T) (*Server, *sessionru
 	server.SetSwarmService(swarmSvc)
 	server.SetStartupConfigPath(filepath.Join(t.TempDir(), "swarm.conf"))
 
-	return server, sessionSvc, permissionSvc, nil, swarmStore
+	return server, sessionSvc, permissionSvc, closeStore, swarmStore
 }

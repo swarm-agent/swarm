@@ -97,6 +97,8 @@ var toolScopes = map[string]string{
 	// and scheduling jobs is write. Answering covers a worker's questions only,
 	// never a tool-call approval; delivering is a local git merge, or a pull
 	// request where the folder's owner set up publishing; Swarm itself never pushes.
+	"swarm_request_update":  ScopeManage,
+	"swarm_cancel_update":   ScopeManage,
 	"swarm_status":          ScopeRead,
 	"swarm_activity":        ScopeRead,
 	"swarm_list_runs":       ScopeRead,

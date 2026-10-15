@@ -1,6 +1,8 @@
 package executioncapacity
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"sort"
 	"time"
 )
@@ -14,6 +16,8 @@ type DrainBlocker struct {
 }
 
 type DrainStatus struct {
+	Generation        string         `json:"generation"`
+	EndReason         string         `json:"end_reason,omitempty"`
 	EnvironmentBuilds int            `json:"environment_builds"`
 	Draining          bool           `json:"draining"`
 	Since             time.Time      `json:"since"`
@@ -38,7 +42,21 @@ func (m *Manager) BeginDrain(timeout time.Duration) (DrainStatus, error) {
 			timeout = DefaultDrainTimeout
 		}
 		now := time.Now().UTC()
-		m.drain = DrainStatus{Draining: true, Since: now, Deadline: now.Add(timeout)}
+		if m.generation == "" {
+			var id [16]byte
+			if _, err := rand.Read(id[:]); err != nil {
+				return DrainStatus{}, err
+			}
+			m.generation = hex.EncodeToString(id[:])
+		}
+		m.drain = DrainStatus{Generation: m.generation, Draining: true, Since: now, Deadline: now.Add(timeout)}
+		m.drainTimer = time.AfterFunc(timeout, func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if m.drain.Since == now && m.drain.Draining {
+				m.endDrainLocked("expired")
+			}
+		})
 		m.signalChangedLocked()
 	}
 	return m.drainStatusLocked(), nil
@@ -52,6 +70,12 @@ func (m *Manager) DrainStatus() DrainStatus {
 
 func (m *Manager) drainStatusLocked() DrainStatus {
 	out := m.drain
+	if out.EndReason == "expired" {
+		out.Blockers = append([]DrainBlocker{}, out.Blockers...)
+		out.Ready = false
+		out.TimedOut = true
+		return out
+	}
 	out.Blockers = []DrainBlocker{}
 	for account, acc := range m.accounts {
 		for _, l := range acc.sessions {
@@ -68,7 +92,37 @@ func (m *Manager) drainStatusLocked() DrainStatus {
 		}
 		return a.Run < b.Run
 	})
-	out.TimedOut = out.Draining && !time.Now().Before(out.Deadline)
-	out.Ready = out.Draining && !m.closed && len(out.Blockers) == 0
+	out.TimedOut = out.EndReason == "expired" || (out.Draining && !time.Now().Before(out.Deadline))
+	out.Ready = out.Draining && !out.TimedOut && !m.closed && len(out.Blockers) == 0
 	return out
+}
+
+// SetDrainEndObserver installs a lifecycle sink. It must not call the manager.
+func (m *Manager) SetDrainEndObserver(fn func(DrainStatus)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.drainEnd = fn
+}
+func (m *Manager) CancelDrain(generation string) DrainStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.drain.Draining && (generation == "" || generation == m.generation) {
+		m.endDrainLocked("cancelled")
+	}
+	return m.drainStatusLocked()
+}
+func (m *Manager) endDrainLocked(reason string) {
+	if m.drainTimer != nil {
+		m.drainTimer.Stop()
+	}
+	m.drain.Blockers = m.drainStatusLocked().Blockers
+	m.drain.Draining = false
+	m.drain.EndReason = reason
+	if m.drainEnd != nil {
+		m.drainEnd(m.drainStatusLocked())
+	}
+	for _, acc := range m.accounts {
+		m.wakeEligibleWaitersLocked(acc)
+	}
+	m.signalChangedLocked()
 }
