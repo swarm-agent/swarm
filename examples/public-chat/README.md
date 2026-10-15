@@ -56,6 +56,9 @@ for role in action plan compact finder coder designer router; do
   docker compose exec swarm swarmctl setup model --role "$role" \
     --provider google --model gemini-3.5-flash-lite --thinking low
 done
+docker compose exec swarm git init -q -b main /project
+docker compose exec swarm git -C /project -c user.name=scratch -c user.email=scratch@localhost \
+  commit -q --allow-empty -m "empty scratch workspace"
 docker compose exec swarm swarmctl setup workspace --path /project --name Scratch
 docker compose exec swarm swarmctl setup complete
 docker compose exec swarm swarmctl setup daily-limit --usd 5
@@ -66,7 +69,8 @@ The role models are the daemon's own defaults, which setup requires; the public
 agent uses the provider and model in `agent.json` (`google`,
 `gemini-3.5-flash-lite` here). Change any of them to a model your account has. The
 workspace is an empty scratch volume: the agent has no file tools, and it must
-never point at real code.
+never point at real code. A workspace must be a Git repository with a commit, so
+the two `git` lines make an empty one (the sealed image has git but no shell).
 
 **3. Keys** (mode 0600 under `./secrets`, which git ignores).
 
@@ -79,10 +83,18 @@ mkdir -p secrets && chmod 700 secrets
  docker compose exec swarm swarmctl setup sdk-token --agent frontdesk --operator --name hub \
    --expires-in-seconds 2592000 | jq -r .token > secrets/swarm_operator_token
  for s in gateway_secret ops_secret hub_events_secret; do openssl rand -hex 32 > secrets/$s; done)
+# Compose mounts secret files as they are, and the gateway runs as uid 10001.
+sudo chown 10001:10001 secrets/swarm_* secrets/*_secret && chmod 0400 secrets/swarm_* secrets/*_secret
 ```
 
 Both Swarm tokens expire within 30 days; mint new ones and restart the gateway
 before they do.
+
+Restrict the provider key to the model API and cap its daily requests in the
+provider's console. An IP restriction only works if you know the address the
+provider sees: on Google Cloud, calls to Google APIs from a VM behind Cloud NAT
+take Google's private path, not the NAT address, so an IP-locked Gemini key is
+refused there.
 
 **4. Cloudflare.**
 
