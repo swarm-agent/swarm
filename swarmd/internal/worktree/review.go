@@ -48,7 +48,22 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		return Allocation{}, errors.New("review checkout already exists")
 	}
-	if _, err := runGitAllocationTimeout(root, nil, timeout, "worktree", "add", "--detach", path, head); err != nil {
+	guard := path + ".review-writer"
+	guardFile, err := os.OpenFile(guard, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return Allocation{}, fmt.Errorf("allocation writer guard: %w", err)
+	}
+	if err := guardFile.Close(); err != nil {
+		return Allocation{}, err
+	}
+	_, allocationErr := runGitAllocationTimeout(root, nil, timeout, "worktree", "add", "--detach", path, head)
+	if errors.Is(allocationErr, ErrAllocationWriterUnconfirmed) {
+		return Allocation{}, allocationErr
+	}
+	if err := os.Remove(guard); err != nil {
+		return Allocation{}, errors.Join(allocationErr, err)
+	}
+	if err := allocationErr; err != nil {
 		return Allocation{}, errors.Join(fmt.Errorf("review checkout admission: %w", err), s.CleanupReviewAdmission(root, owner))
 	}
 	return Allocation{WorkspacePath: path, RepoRoot: root, BaseCommit: head, BaseBranch: head, BranchName: "HEAD", WorkspaceID: sessionWorkspaceID(owner)}, nil
@@ -202,6 +217,9 @@ func (s *Service) CleanupReviewAdmission(source, owner string) error {
 	if err != nil {
 		return err
 	}
+	if _, err := os.Lstat(path + ".review-writer"); !errors.Is(err, os.ErrNotExist) {
+		return ErrAllocationWriterUnconfirmed
+	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil {
 		return err
@@ -232,8 +250,6 @@ func (s *Service) CleanupReviewAdmission(source, owner string) error {
 	// Identify only this checkout's registration; a global prune would also
 	// remove unrelated missing user worktrees.
 	var owned []string
-	// A rename preserves ownership across interruption of recursive deletion.
-	tombstone := filepath.Join(registrations, ".swarm-review-cleanup-"+sessionWorkspaceID(owner))
 	pointer, _ := os.ReadFile(filepath.Join(path, ".git"))
 	linked := strings.TrimSpace(strings.TrimPrefix(string(pointer), "gitdir: "))
 	for _, entry := range entries {
@@ -245,7 +261,7 @@ func (s *Service) CleanupReviewAdmission(source, owner string) error {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if registration == tombstone || strings.TrimSpace(string(data)) == filepath.Join(path, ".git") || (errors.Is(err, os.ErrNotExist) && linked == registration && entry.Name() == filepath.Base(path)) {
+		if strings.TrimSpace(string(data)) == filepath.Join(path, ".git") || (errors.Is(err, os.ErrNotExist) && linked == registration && entry.Name() == filepath.Base(path)) {
 			head, err := os.ReadFile(filepath.Join(registration, "HEAD"))
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
@@ -257,12 +273,7 @@ func (s *Service) CleanupReviewAdmission(source, owner string) error {
 		}
 	}
 	for _, registration := range owned {
-		if registration != tombstone {
-			if err := os.Rename(registration, tombstone); err != nil {
-				return err
-			}
-		}
-		if err := os.RemoveAll(tombstone); err != nil {
+		if err := os.RemoveAll(registration); err != nil {
 			return fmt.Errorf("prune review registration: %w", err)
 		}
 	}

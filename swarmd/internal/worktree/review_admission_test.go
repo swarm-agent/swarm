@@ -101,16 +101,15 @@ func TestReviewAdmissionTimeoutCleanup(t *testing.T) {
 	if _, err := os.Stat(unknown); err != nil {
 		t.Fatal("unowned registration changed", err)
 	}
-	// Interrupted recursive pruning retains its exact owner in the tombstone.
-	tombstone := filepath.Join(repo, ".git", "worktrees", ".swarm-review-cleanup-"+sessionWorkspaceID("timeout-review"))
-	if err := os.Mkdir(tombstone, 0700); err != nil {
+	// Unconfirmed writers must block destructive cleanup across restart.
+	if err := os.WriteFile(path+".review-writer", nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CleanupReviewAdmission(repo, "timeout-review"); err != nil {
+	if err := s.CleanupReviewAdmission(repo, "timeout-review"); !errors.Is(err, ErrAllocationWriterUnconfirmed) {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(tombstone); !os.IsNotExist(err) {
-		t.Fatal("interrupted pruning retained", err)
+	if err := os.Remove(path + ".review-writer"); err != nil {
+		t.Fatal(err)
 	}
 	// Refuse a substituted path without deleting its target.
 	target := t.TempDir()
@@ -148,5 +147,28 @@ func TestAllocationWaitsForContainerWriter(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatal("returned before writer termination", err)
+	}
+}
+
+// Purpose: a stuck engine transport must not hold the allocation lock forever.
+// waitForAllocationGit bounds transport independently of container termination.
+func TestAllocationStalledEngineBound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	engine := filepath.Join(t.TempDir(), "engine")
+	if err := os.WriteFile(engine, []byte("#!/bin/sh\nexec sleep 60\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(ctx, engine, "exec")
+	waitForAllocationGit(cmd)
+	started := time.Now()
+	if err := cmd.Run(); err == nil {
+		t.Fatal("stalled transport succeeded")
+	}
+	if time.Since(started) > 8*time.Second {
+		t.Fatal("transport deadline lost")
+	}
+	if cmd.ProcessState.ExitCode() >= 0 {
+		t.Fatal("expected unconfirmed writer termination")
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"swarm/packages/swarmd/internal/sandbox"
+	"time"
 
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -60,7 +62,23 @@ func (s *WorkerExecutionService) cleanupReviewAdmission(r store.WorkerRunRecord)
 				return err
 			}
 		}
-		return s.host.trees.CleanupReviewAdmission(snapshot.WorkspacePath, r.SessionID)
+		remove := func() error { return s.host.trees.CleanupReviewAdmission(snapshot.WorkspacePath, r.SessionID) }
+		state, registered, err := s.host.runs.sessions.Store().GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
+		if err != nil {
+			return err
+		}
+		if registered {
+			m := sandbox.Default()
+			if m == nil {
+				return sandbox.ErrSandboxRequired
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return m.CleanupReviewDurable(ctx, &state, func(next sandbox.ReviewCleanupState) error {
+				return s.host.runs.sessions.Store().PutReviewCleanup(snapshot.AccountScopeID, next)
+			}, func() error { return nil }, remove)
+		}
+		return remove()
 	}
 	// No session means no execution or review sandbox could have started.
 	entry, err := s.activeWorkspace(r.AccountScopeID, r.UserID, r.WorkspaceID)

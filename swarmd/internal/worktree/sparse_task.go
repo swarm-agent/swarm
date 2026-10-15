@@ -82,6 +82,9 @@ func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, a
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {
+		if allocationGitRouted(cmd) && (errors.Is(err, exec.ErrWaitDelay) || cmd.ProcessState == nil || (cmd.ProcessState.ExitCode() != 124 && cmd.ProcessState.ExitCode() != 137)) {
+			return "", fmt.Errorf("%w: %v", ErrAllocationWriterUnconfirmed, err)
+		}
 		if ctx.Err() != nil {
 			return "", fmt.Errorf("git %s (allocation timeout %s): %w: %s", strings.Join(args, " "), timeout, ctx.Err(), output)
 		}
@@ -93,11 +96,17 @@ func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, a
 	return output, nil
 }
 
+var ErrAllocationWriterUnconfirmed = errors.New("allocation writer termination unconfirmed; cleanup deferred")
+
+func allocationGitRouted(cmd *exec.Cmd) bool {
+	return filepath.Base(cmd.Path) != "git" && len(cmd.Args) > 1 && cmd.Args[1] == "exec"
+}
+
 func waitForAllocationGit(cmd *exec.Cmd) {
-	if filepath.Base(cmd.Path) != "git" && len(cmd.Args) > 1 && cmd.Args[1] == "exec" {
+	if allocationGitRouted(cmd) {
 		// The container timeout owns termination. Killing the engine client at
 		// our deadline would return before its Git process has stopped writing.
-		cmd.Cancel = nil
-		cmd.WaitDelay = 0
+		cmd.Cancel = func() error { return nil }
+		cmd.WaitDelay = 5 * time.Second
 	}
 }

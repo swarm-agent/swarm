@@ -130,6 +130,30 @@ esac
 	m.SetLayout(sandbox.Layout{Projects: func() ([]string, error) { return []string{source.WorkspacePath}, nil }, WorktreesRoot: filepath.Dir(bucket), Bucket: func(string) (string, error) { return filepath.Base(bucket), nil }})
 	sandbox.SetDefault(m)
 	defer sandbox.SetDefault(nil)
+	// Admission can register a sandbox before creating any run intent. The
+	// recovery boundary must finish its durable lifecycle before deleting files.
+	partial, err := s.host.trees.AllocateReviewWorkspace(identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "owner", AccountScopeSource: identity.AccountScopeSourceServerState}, source.WorkspacePath, "partial-"+job.ID, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partialSession := store.SessionSnapshot{ID: "partial-" + job.ID, AccountScopeID: "account", UserID: "owner", WorkspacePath: source.WorkspacePath, WorktreeRootPath: partial.WorkspacePath, Metadata: map[string]any{"worker_role": store.WorkerRoleReviewer, "worker_execution_run_id": "partial-run", "worker_review_target": map[string]any{"head": head, "base": "dev", "job": "fixture"}}}
+	_, err = ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: partialSession.ID, AccountScopeID: "account", UserID: "owner", Kind: sessions.SessionMutationCreateSession, ClientRequestID: "partial", IdempotencyKey: "partial", PayloadHash: "partial", RequestHash: "partial", Session: &partialSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.registerReview(partialSession); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.cleanupReviewAdmission(store.WorkerRunRecord{ID: "partial-run", SessionID: partialSession.ID, AccountScopeID: "account", Role: store.WorkerRoleReviewer}); err != nil {
+		t.Fatal(err)
+	}
+	state, found, err := ss.Store().GetReviewCleanup("account", partialSession.ID)
+	if err != nil || !found || state.Phase != "volume_removed" {
+		t.Fatalf("partial sandbox not cleaned: %+v %v", state, err)
+	}
+	if _, err := os.Stat(partial.WorkspacePath); !os.IsNotExist(err) {
+		t.Fatal("partial checkout retained", err)
+	}
 	reviewer := create(store.WorkerRoleReviewer)
 	req := store.WorkerRunAdmission{WorkerID: reviewer.ID, WorkspaceID: workspace, RequestSource: "direct", Input: map[string]any{"prompt": "review independently", "review_job": "worker/" + coder.ID + "/" + job.ID}, IdempotencyKey: "review"}
 	r, err := s.Dispatch(context.Background(), "account", "owner", req)
