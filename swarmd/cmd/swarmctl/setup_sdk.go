@@ -149,3 +149,73 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	// server response fields. The receiver must protect this one-time export.
 	return json.NewEncoder(output).Encode(map[string]string{"token": result.Token, "id": result.Record.ID})
 }
+
+// runSetupSDKTokens lists the account's SDK tokens so one can be revoked by ID.
+// It prints identity, kind, limits and dates only: never the token, its hash or
+// its hint.
+func runSetupSDKTokens(args []string, output io.Writer) error {
+	fs := flag.NewFlagSet("setup "+args[0], flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	socket := fs.String("socket", "", "private daemon Unix socket")
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(output)
+			fs.PrintDefaults()
+			return nil
+		}
+		return errors.New("invalid sdk-tokens flags; use --help")
+	}
+	if fs.NArg() != 0 {
+		return errors.New("unexpected sdk-tokens arguments")
+	}
+	client, err := newSetupClient(*socket)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+	var result struct {
+		Tokens []struct {
+			ID                string   `json:"id"`
+			Name              string   `json:"name"`
+			Scopes            []string `json:"scopes"`
+			AgentName         string   `json:"agent_name"`
+			AgentOperator     bool     `json:"agent_operator"`
+			MessagesPerMinute int      `json:"messages_per_minute"`
+			SessionsPerHour   int      `json:"sessions_per_hour"`
+			MaxConcurrentRuns int      `json:"max_concurrent_runs"`
+			CreatedAt         int64    `json:"created_at"`
+			ExpiresAt         int64    `json:"expires_at"`
+			LastUsedAt        int64    `json:"last_used_at"`
+			Revoked           bool     `json:"revoked"`
+		} `json:"tokens"`
+	}
+	if err := setupRequest(client, http.MethodGet, "/v3/auth/tokens", nil, &result); err != nil {
+		return err
+	}
+	type listed struct {
+		ID                string   `json:"id"`
+		Name              string   `json:"name"`
+		Kind              string   `json:"kind"`
+		Scopes            []string `json:"scopes,omitempty"`
+		MessagesPerMinute int      `json:"messages_per_minute,omitempty"`
+		SessionsPerHour   int      `json:"sessions_per_hour,omitempty"`
+		MaxConcurrentRuns int      `json:"max_concurrent_runs,omitempty"`
+		CreatedAt         int64    `json:"created_at"`
+		ExpiresAt         int64    `json:"expires_at"`
+		LastUsedAt        int64    `json:"last_used_at,omitempty"`
+		Revoked           bool     `json:"revoked"`
+	}
+	tokens := make([]listed, 0, len(result.Tokens))
+	for _, token := range result.Tokens {
+		item := listed{ID: token.ID, Name: token.Name, Kind: "scoped", Scopes: token.Scopes, CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt, LastUsedAt: token.LastUsedAt, Revoked: token.Revoked}
+		switch {
+		case token.AgentName != "" && token.AgentOperator:
+			item.Kind, item.Scopes = "operator:"+token.AgentName, nil
+		case token.AgentName != "":
+			item.Kind, item.Scopes = "gateway:"+token.AgentName, nil
+			item.MessagesPerMinute, item.SessionsPerHour, item.MaxConcurrentRuns = token.MessagesPerMinute, token.SessionsPerHour, token.MaxConcurrentRuns
+		}
+		tokens = append(tokens, item)
+	}
+	return json.NewEncoder(output).Encode(map[string]any{"tokens": tokens})
+}
