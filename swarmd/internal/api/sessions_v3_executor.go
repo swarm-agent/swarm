@@ -4627,6 +4627,18 @@ func (e *sessionV3Executor) sessionV3ProviderInitialContextInput(job sessionV3Ex
 		if len(handoffInput) == 0 {
 			return nil, errors.New("v3 provider handoff input is empty")
 		}
+		// The handoff is bounded historical context, not the current instruction.
+		// Replay the latest user turn (and its tool replies) separately so neither
+		// the per-message nor total handoff cap can shorten active input.
+		for i := len(messages) - 1; i >= 0; i-- {
+			if strings.EqualFold(strings.TrimSpace(messages[i].Role), "user") {
+				current, err := e.sessionsV3ProviderInputForLineage(resolved, messages[i:], req.ProviderLineageID, false)
+				if err != nil {
+					return nil, err
+				}
+				return append(handoffInput, current...), nil
+			}
+		}
 		return handoffInput, nil
 	}
 	input, err := e.sessionsV3ProviderInputForLineage(resolved, messages, req.ProviderLineageID, req.NativeContinuationAllowed && !req.ForceFreshProviderContext)

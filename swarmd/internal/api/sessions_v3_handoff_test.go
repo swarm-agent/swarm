@@ -84,3 +84,37 @@ func TestSessionV3ProviderRequiresBoundedHandoffOnlyAcrossLineage(t *testing.T) 
 		t.Fatalf("provider/model lineage change should require bounded handoff")
 	}
 }
+
+// Purpose: the executor's next provider request must retain accepted answers,
+// while bulk tool data remains bounded. InitialContextInput and tool-output
+// conversion own this boundary; request assembly is the narrowest regression
+// layer and requires no external model or provider credentials.
+func TestSessionV3ProviderHandoffPreservesAnswersNotBulkOutput(t *testing.T) {
+	for _, name := range []string{"ask_user", "ask-user", "permission", "read"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("SWARM_V3_HANDOFF_TOTAL_CHARS", "500")
+			text := strings.Repeat("界", 100000)
+			messages := []pebblestore.MessageSnapshot{
+				{Role: "user", Content: strings.Repeat("follow-up", 1000)},
+				{Role: "tool", Content: `{"path_id":"run.v3.provider-tool-result.v1","type":"tool.completed","tool_name":"` + name + `","call_id":"reply","arguments":"{}","completed_output":"` + text + `"}`},
+			}
+			req := provideriface.Request{PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff", ForceFreshProviderContext: true}
+			var err error
+			req.Input, err = (&sessionV3Executor{}).sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{}, messages, req, nil, sessionV3ProviderContextConversation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !sessionsV3ProviderInputContainsContentText(req.Input, messages[0].Content) {
+				t.Fatal("total handoff cap shortened newest user turn")
+			}
+			output := sessionsV3LatestFunctionCallOutput(req.Input)
+			if name == "read" {
+				if output == text || len(output) >= len(text) {
+					t.Fatal("bulk tool output escaped bounding")
+				}
+			} else if output != text {
+				t.Fatal("answer shortened in next request")
+			}
+		})
+	}
+}

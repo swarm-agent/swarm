@@ -11,6 +11,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -160,6 +161,13 @@ func TestControlMCPMessageJobStartsOrFails(t *testing.T) {
 	if !foundMessage {
 		t.Fatal("worker session did not receive the complete 6000-character follow-up")
 	}
+	// The next worker request must retain the MCP follow-up across the model
+	// lineage refresh, not merely preserve it in durable storage.
+	req := provideriface.Request{PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff", ForceFreshProviderContext: true}
+	req.Input, err = (&sessionV3Executor{}).sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{}, stored, req, nil, sessionV3ProviderContextConversation)
+	if err != nil || !sessionsV3ProviderInputContainsContentText(req.Input, message) {
+		t.Fatalf("next provider request lost the follow-up: %v", err)
+	}
 	before := messages()
 	if raw, err = messageJobForMCP(h, jobID, "And update the docs", "second"); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second follow-up while one is pending: %+v %v", raw, err)
@@ -250,7 +258,7 @@ func TestControlMCPAnswerJobLongReply(t *testing.T) {
 	if open, err := s.perm.ListPending(run.SessionID, 10); err != nil || len(open) != 1 {
 		t.Fatalf("rejection changed pending question: %v", err)
 	}
-	answer := strings.Repeat("界", 6000)
+	answer := strings.Repeat("界", 100000)
 	args["answer"] = answer
 	if _, err := callJobForMCP(h, "swarm_answer_job", args); err != nil {
 		t.Fatal(err)
@@ -258,5 +266,20 @@ func TestControlMCPAnswerJobLongReply(t *testing.T) {
 	records, err := s.perm.ListPermissions(run.SessionID, 10)
 	if err != nil || len(records) != 1 || records[0].Reason != answer || records[0].Status != "approved" {
 		t.Fatalf("answer not retained whole: %v", err)
+	}
+	// Exercise the executor's next-request reconstruction, including the generic
+	// tool output boundary that used to preview replies above 128 KiB.
+	output, err := json.Marshal(map[string]any{"answer": records[0].Reason})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{"path_id": "run.v3.provider-tool-result.v1", "type": "tool.completed", "tool_name": "ask_user", "call_id": "question", "arguments": `{}`, "completed_output": string(output)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := provideriface.Request{PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff", ForceFreshProviderContext: true}
+	req.Input, err = (&sessionV3Executor{}).sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{}, []pebblestore.MessageSnapshot{{Role: "user", Content: "Continue"}, {Role: "tool", Content: string(payload)}}, req, nil, sessionV3ProviderContextConversation)
+	if err != nil || sessionsV3LatestFunctionCallOutput(req.Input) != string(output) {
+		t.Fatalf("next provider request shortened the answer: %v", err)
 	}
 }

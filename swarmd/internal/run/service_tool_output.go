@@ -468,6 +468,16 @@ func PrepareToolOutputForModel(call tool.Call, result tool.Result) string {
 func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 	output := strings.TrimSpace(result.Output)
 	errorText := strings.TrimSpace(result.Error)
+	// Permission replies are bounded at acceptance in permission.Service. They
+	// are user instructions, not bulk tool data: a byte preview would silently
+	// shorten accepted Unicode answers even within the character limit.
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = strings.TrimSpace(result.Name)
+	}
+	if errorText == "" && (name == "ask_user" || name == "ask-user" || name == "permission") {
+		return output
+	}
 	if errorText == "" && len(output) > maxToolInputBytes {
 		if compact, ok := prepareLargeReadToolOutputForModel(call, result, output); ok {
 			return compact
@@ -477,10 +487,6 @@ func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 		return output
 	}
 
-	name := strings.TrimSpace(call.Name)
-	if name == "" {
-		name = strings.TrimSpace(result.Name)
-	}
 	if name == "" {
 		name = "tool"
 	}
