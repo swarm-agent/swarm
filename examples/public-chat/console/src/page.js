@@ -223,4 +223,6 @@ function consoleApp() {
   })().catch((e) => log('console failed to start: ' + e.message));
 }
 
-export const PAGE_JS = '(' + consoleApp.toString() + ')();\n';
+// Bundlers that keep function names (wrangler's esbuild does) insert calls to a
+// module-level __name helper into consoleApp's source; give the browser a no-op one.
+export const PAGE_JS = 'var __name = (fn) => fn;\n(' + consoleApp.toString() + ')();\n';
