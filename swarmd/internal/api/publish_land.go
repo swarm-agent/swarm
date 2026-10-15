@@ -43,6 +43,9 @@ func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, ret
 }
 func landDeliveryReceipt(entry publish.Entry, pos int) map[string]any {
 	out := map[string]any{"job_id": entry.Request.JobID, "delivery_state": entry.State, "queue_position": pos}
+	if entry.Reason != "" {
+		out["delivery_reason"] = entry.Reason
+	}
 	if entry.Commit != "" {
 		out["commit"] = entry.Commit
 	}
@@ -190,12 +193,14 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	return prepareLandWorktree(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
 		func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
 			return m.Exec(ctx, scope, req)
-		}, publish.Update)
+		}, publish.Update, func(head string) error {
+			return c.requireLandReview(kind, a, b, head)
+		})
 }
 
 // prepareLandWorktree keeps preparation and its verified command boundary testable.
 func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entry, path string, checks []string, checkTimeoutMinutes int,
-	exec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), update func(context.Context, publish.Rule, string) (publish.Base, error)) error {
+	exec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), update func(context.Context, publish.Rule, string) (publish.Base, error), reviewChecks ...func(string) error) error {
 	currentBranch, err := exec(ctx, sandbox.ExecRequest{Command: []string{"git", "branch", "--show-current"}, WorkingDir: path, Timeout: time.Minute, MaxTimeout: time.Minute, MaxOutput: 4096})
 	if err != nil {
 		return err
@@ -222,6 +227,43 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 	if code != 0 || strings.TrimSpace(dirty) != "" {
 		return errors.New("job worktree is not clean")
 	}
+	var reviewedHead, reviewedPatch string
+	patchID := func(head, base string) (string, error) {
+		// Fixed shell program; refs are separate positional arguments. Compute
+		// the whole job's patch without truncating diff bytes through tool output.
+		res, err := exec(ctx, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-c", `git diff --no-ext-diff --no-textconv --binary "$1...$2" | git patch-id --stable`, "patch-id", base, head}, WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
+		if err != nil {
+			return "", err
+		}
+		fields := strings.Fields(res.Stdout)
+		if res.ExitCode != 0 || len(fields) != 2 {
+			return "", errors.New("cannot verify rebased patch identity")
+		}
+		if _, err := publish.ParseHeadOutput(fields[0]); err != nil {
+			return "", err
+		}
+		return fields[0], nil
+	}
+	if reviewGated(rule) {
+		raw, exit, readErr := git("rev-parse", "HEAD")
+		if readErr != nil || exit != 0 {
+			return errors.New("cannot read review head")
+		}
+		reviewedHead, err = publish.ParseHeadOutput(raw)
+		if err != nil {
+			return err
+		}
+		if len(reviewChecks) != 1 {
+			return reviewRequired(reviewedHead)
+		}
+		if err := reviewChecks[0](reviewedHead); err != nil {
+			return err
+		}
+		reviewedPatch, err = patchID(reviewedHead, base.Commit)
+		if err != nil {
+			return err
+		}
+	}
 	_, code, err = git("rebase", base.Commit)
 	if err != nil {
 		return err
@@ -235,7 +277,11 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 		if abortErr != nil || abortCode != 0 {
 			return errors.New("cannot abort conflicted rebase")
 		}
-		return publish.RebaseConflictSendBack(base, files)
+		back := publish.RebaseConflictSendBack(base, files)
+		if reviewGated(rule) {
+			return &publish.SendBackError{Reason: back.Error() + "; after committing the resolution, give the reviewer `review_job` for a new OK review"}
+		}
+		return back
 	}
 	head, code, err := git("rev-parse", "HEAD")
 	if err != nil || code != 0 {
@@ -244,6 +290,15 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 	parsedHead, err := publish.ParseHeadOutput(head)
 	if err != nil {
 		return err
+	}
+	if reviewGated(rule) && parsedHead != reviewedHead {
+		patch, err := patchID(parsedHead, base.Commit)
+		if err != nil {
+			return err
+		}
+		if patch != reviewedPatch {
+			return reviewRequired(parsedHead)
+		}
 	}
 	e.Request.Head = parsedHead
 	e.Request.BaseCommit = base.Commit
@@ -292,6 +347,10 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 	dirty, code, err = git("status", "--porcelain")
 	if err != nil || code != 0 || strings.TrimSpace(dirty) != "" {
 		return errors.New("checks left uncommitted changes")
+	}
+	if reviewGated(rule) {
+		// Checks may take minutes; do not ignore a newer BLOCK verdict.
+		return reviewChecks[0](reviewedHead)
 	}
 	return nil
 }

@@ -70,6 +70,12 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 	if refs.run["role"] == "reviewer" {
 		return nil, errors.New("reviewer jobs are report-only")
 	}
+	if reviewGated(rule) {
+		head, _ := result["head"].(string)
+		if err := c.requireLandReview(kind, a, b, head); err != nil {
+			return map[string]any{"job_id": jobID, "delivery_state": "refused", "delivery_reason": err.Error()}, nil
+		}
+	}
 	if rule.Mode == "land" {
 		principal, ok := PrincipalFromRequest(c.request)
 		if !ok {
@@ -236,7 +242,7 @@ func (p *AutoPublisher) once(ctx context.Context) error {
 			return err
 		}
 		for _, sig := range page.Signals {
-			if sig.Kind == "worker.run.succeeded" {
+			if autoPublishSignal(sig.Kind, sig.Attrs["verdict"]) {
 				if err := p.deliver(ctx, sig); err != nil {
 					return err // retried from this signal
 				}
@@ -314,6 +320,21 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	rule, ok, err := p.server.publishRule(c.jobFolder(refs, result))
 	if err != nil || !ok || !rule.Auto {
 		return nil
+	}
+	if sig.Kind == "job.reviewed" && !reviewGated(rule) {
+		return nil
+	}
+	// A missing review must not hold the signal cursor: a later durable
+	// job.reviewed signal will retry delivery against the then-current head.
+	if reviewGated(rule) {
+		head, _ := result["head"].(string)
+		if err := c.requireLandReview(controlMCPJobWorker, workerID, runID, head); err != nil {
+			var missing *missingLandReview
+			if errors.As(err, &missing) {
+				return nil
+			}
+			return p.retry(sig, err)
+		}
 	}
 	status, _ := view["status"].(string)
 	switch autoPublishNext(status, result) {

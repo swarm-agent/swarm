@@ -104,3 +104,27 @@ Go tests succeed, then verifies unchanged host state. Hermetic admission tests
 use a deterministic engine fixture with real Git and prove source identity,
 exact-head checkout, retry, context and cleanup, not kernel mount enforcement
 or provider-backed review quality.
+
+## Require review before landing
+
+The headless installer can make independent review mandatory for a folder:
+
+```sh
+install.sh workspace publish FOLDER COMMAND --land --require-review --auto
+```
+
+`require-review` is stored in the root-owned publish config; `get_project`
+shows `publish.require_review` on each configured workspace. It requires
+`--land`; omitting it preserves existing delivery behavior.
+
+Delivery needs a recorded `ok` verdict for the job's current exact head. Missing,
+BLOCK, or stale evidence refuses delivery with `delivery_reason` naming the head
+and asking you to give the reviewer `review_job`. With `--auto`, a durable OK
+`job.reviewed` signal triggers another delivery attempt; unreviewed jobs do not
+hold up other jobs' signals. Jobs without worker review evidence cannot land
+under this policy.
+
+A clean rebase may carry approval forward within landing preparation only when
+its whole-job stable Git patch-id is unchanged. Conflicted rebases are aborted
+and sent back; commit the resolution and request a fresh exact-head review.
+Checks that change HEAD or leave uncommitted changes still refuse landing.

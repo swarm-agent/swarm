@@ -2011,7 +2011,19 @@ func controlMCPGetProject(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]any{"project": controlMCPProjectSummary(project)}
+	summary := controlMCPProjectSummary(project)
+	for _, ws := range summary["workspaces"].([]map[string]any) {
+		path, _ := ws["path"].(string)
+		rule, found, err := c.server.publishRule(path)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			// Expose policy, not the privileged command or credentials.
+			ws["publish"] = map[string]any{"mode": rule.Mode, "auto": rule.Auto, "sync": rule.Sync, "require_review": rule.RequireReview}
+		}
+	}
+	out := map[string]any{"project": summary}
 	if status, err := c.projectStatus(projectID, project); err == nil {
 		out["status"] = status
 	}

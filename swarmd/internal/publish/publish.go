@@ -32,6 +32,8 @@ type Rule struct {
 	// Auto delivers a worker job that finished with commits without
 	// waiting for an AI to call swarm_deliver_job.
 	Auto bool `json:"auto"`
+	// RequireReview gates landing on independent exact-head OK evidence.
+	RequireReview bool `json:"require_review"`
 	// Sync starts each worker job from the forge's latest base branch (the
 	// command's update step) instead of the folder's checked-out branch, so a
 	// pull request merged on the forge is the next job's starting point.
@@ -70,7 +72,7 @@ var (
 )
 
 // Load reads the rules: one per line, `FOLDER<TAB>COMMAND[<TAB>OPTIONS]`, where
-// OPTIONS is a comma-separated list of land, auto and sync; blank lines and
+// OPTIONS is a comma-separated list of land, auto, sync and require-review; blank lines and
 // #comments are ignored. A missing file is no rules. The file must be
 // owned by root and not writable by anyone else, like the commands it names:
 // only the machine's administrator decides what runs.
@@ -107,12 +109,17 @@ func Load(path string) ([]Rule, error) {
 					rule.Mode = "land"
 				case "auto":
 					rule.Auto = true
+				case "require-review":
+					rule.RequireReview = true
 				case "sync":
 					rule.Sync = true
 				default:
-					return nil, fmt.Errorf("publish config line %d: options are land, auto and sync, comma-separated", line)
+					return nil, fmt.Errorf("publish config line %d: options are land, auto, sync and require-review, comma-separated", line)
 				}
 			}
+		}
+		if rule.RequireReview && rule.Mode != "land" {
+			return nil, fmt.Errorf("publish config line %d: require-review requires land", line)
 		}
 		if !filepath.IsAbs(rule.Folder) || !filepath.IsAbs(rule.Command) {
 			return nil, fmt.Errorf("publish config line %d: folder and command must be absolute paths", line)

@@ -129,7 +129,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
        install.sh workspace add PATH [--for-user NAME] | remove PATH | list
-       install.sh workspace publish PATH COMMAND [--land] [--auto] [--sync] | publish PATH --off
+       install.sh workspace publish PATH COMMAND [--land] [--require-review] [--auto] [--sync] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
                 ran sudo); used for the AI connection and workspace folders
@@ -228,7 +228,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    the machine up runs this as root; Swarm never changes the
                    machine itself. Then register the folder in place with
                    swarm_add_workspace. remove reverses it.
-  workspace publish PATH COMMAND [--land] [--auto] [--sync]
+  workspace publish PATH COMMAND [--land] [--require-review] [--auto] [--sync]
                    deliver jobs in PATH as pull requests instead of merging
                    them into the folder: Swarm runs COMMAND (root-owned,
                    outside home folders) on this machine with the job in
@@ -238,7 +238,10 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    without asking. --sync starts each job from the forge's
                    latest base branch (COMMAND with SWARM_PUBLISH_ACTION=update
                    fetches it and prints COMMIT BRANCH). publish PATH --off
-                   goes back to merging.
+                   goes back to merging. --land queues fast-forward landing;
+                   --require-review requires an independent OK review of the
+                   current head (give the reviewer review_job). With --auto,
+                   landing waits for that review's job.reviewed signal.
 USAGE
 }
 
@@ -1188,8 +1191,8 @@ workspace() {
       # --sync starts each job from the forge's latest base branch.
       # --land selects fast-forward landing instead of pull requests.
       # COMMAND runs on this machine as Swarm's user, never in a sandbox.
-      local usage="usage: install.sh workspace publish PATH COMMAND [--land] [--auto] [--sync] | publish PATH --off"
-      (( $# >= 3 && $# <= 6 )) || die "$usage"
+      local usage="usage: install.sh workspace publish PATH COMMAND [--land] [--require-review] [--auto] [--sync] | publish PATH --off"
+      (( $# >= 3 && $# <= 7 )) || die "$usage"
       local path=$2 command=$3 options='' flag line
       shift 3
       workspace_listed | grep -qxF "$path" || die "$path is not a Swarm workspace folder on this machine (install.sh workspace add $path)"
@@ -1207,11 +1210,15 @@ workspace() {
       for flag; do
         case $flag in
           --land) options+=${options:+,}land ;;
+          --require-review) options+=${options:+,}require-review ;;
           --auto) options+=${options:+,}auto ;;
           --sync) options+=${options:+,}sync ;;
           *) rm -f "$PUBLISH.new"; die "$usage" ;;
         esac
       done
+      if [[ ,$options, == *,require-review,* && ,$options, != *,land,* ]]; then
+        rm -f "$PUBLISH.new"; die "--require-review requires --land"
+      fi
       [[ $command == /* && $command != *..* && -f $command && -x $command ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be an absolute path to an executable file"; }
       [[ $command != /home/* && $command != /root/* ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be outside home folders (Swarm cannot see them); /usr/local/lib is a good place"; }
       [[ $(stat -c %u "$command") == 0 && $(( 8#$(stat -c %a "$command") & 8#022 )) == 0 ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be owned by root and writable only by root"; }
@@ -1219,7 +1226,7 @@ workspace() {
       mv -f "$PUBLISH.new" "$PUBLISH"
       echo "Jobs in $path use publish command $command${options:+ ($options)}."
       ;;
-    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--land] [--auto] [--sync] | publish PATH --off" ;;
+    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--land] [--require-review] [--auto] [--sync] | publish PATH --off" ;;
   esac
 }
 
