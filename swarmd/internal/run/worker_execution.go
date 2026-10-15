@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -20,6 +22,8 @@ import (
 // WorkerExecutionService is the shared worker admission and dispatch boundary.
 // It uses the existing V3 session/plan executor, not a second execution engine.
 type WorkerExecutionService struct {
+	activity      sync.Map
+	stallTimeout  atomic.Int64
 	host          *AutomationV2ExecutionHost
 	dispatchMu    sync.Mutex
 	scheduleMu    sync.Mutex
@@ -32,7 +36,15 @@ func NewWorkerExecutionService(runs *Service, repository *store.SessionStore, tr
 	if err != nil {
 		return nil, err
 	}
-	return &WorkerExecutionService{host: h}, nil
+	service := &WorkerExecutionService{host: h}
+	if value := strings.TrimSpace(os.Getenv("SWARM_WORKER_STALL_TIMEOUT")); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil || timeout <= 0 {
+			return nil, errors.New("SWARM_WORKER_STALL_TIMEOUT must be a positive duration")
+		}
+		service.SetStallTimeout(timeout)
+	}
+	return service, nil
 }
 
 // MarkWorkerSweep completes one bounded local sweep; it advances the cursor
@@ -1161,6 +1173,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		return store.ErrWorkerConflict
 	}
 	if store.AutomationV2Terminal(current.Status) {
+		if current.Status == "failed" && strings.HasPrefix(current.Error, "run stalled:") {
+			return nil // Watchdog failures retain review work for follow-up.
+		}
 		if err := s.recordReviewResult(current); err != nil {
 			return err
 		}
@@ -1189,7 +1204,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			}
 			preparing = !exists || !lifecycle.Active
 		}
-		if preparing && current.Status == "admitted" {
+		if preparing && (current.Status == "admitted" || current.CancelRequested) {
 			current.Status = "cancelled"
 			current.CompletedAt = time.Now().UnixMilli()
 			if err := s.recordReviewResult(current); err != nil {
@@ -1424,6 +1439,12 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		}
 		if err = ctx.Err(); err != nil {
 			return err
+		}
+		if settled, watchdogErr := s.watchdogRun(r, time.Now()); settled || watchdogErr != nil {
+			if watchdogErr != nil {
+				failures = append(failures, watchdogErr)
+			}
+			continue
 		}
 		if r.Role == store.WorkerRoleReviewer {
 			snapshot, found, restoreErr := s.host.runs.sessions.GetSession(r.SessionID)

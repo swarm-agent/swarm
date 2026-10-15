@@ -53,3 +53,24 @@ func TestStartupAndWorkerRunSignals(t *testing.T) {
 		t.Fatalf("worker signal carries the run error: %+v", failed)
 	}
 }
+
+// Requirement: watchdog failure is a job warning visible to job monitors.
+// workerRunSignal owns this boundary; the persisted signal feed proves its
+// category, account and exact job reference without running a daemon.
+func TestWorkerStallSignal(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	feed := pebblestore.NewSignalStore(db)
+	workerRunSignal(signals.NewEmitter(feed))(pebblestore.WorkerRecord{ID: "worker"}, pebblestore.WorkerRunRecord{ID: "run", AccountScopeID: "account", Status: "failed", Error: "run stalled: execution lost"})
+	page, err := feed.ListAfter(0, 10, pebblestore.SignalFilter{Account: "account"})
+	if err != nil || len(page.Signals) != 2 {
+		t.Fatalf("%+v %v", page, err)
+	}
+	sig := page.Signals[0]
+	if sig.Kind != "job.stalled" || sig.Severity != "warning" || sig.Attrs["job_id"] != "worker/worker/run" {
+		t.Fatalf("%+v", sig)
+	}
+}

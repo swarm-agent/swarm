@@ -512,12 +512,17 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	// A task's review state must not mask a still-running worker run.
 	if runStatus, _ := refs.run["status"].(string); runStatus == "admitted" || runStatus == "running" {
 		status = "in_progress"
-		state["run_active"] = true
+	}
+	state["run_active"] = false
+	if c.server != nil {
+		if execution, err := c.server.workerExecutionService(); err == nil {
+			state["run_active"] = execution.RunActive(refs.sessionID)
+		}
 	}
 	if refs.sessionID != "" {
 		if detail, err := c.dispatch(http.MethodGet, controlMCPSessionPath(refs.sessionID), url.Values{"message_limit": {"0"}, "event_limit": {"0"}}, nil); err == nil {
 			switch intent, _ := controlMCPMap(detail["active_run_intent"])["status"].(string); intent {
-			case "pending_executor", "running", "waiting_tasks":
+			case "pending_executor", "waiting_tasks":
 				state["run_active"] = true
 			}
 			questions, approvals := []map[string]any{}, 0

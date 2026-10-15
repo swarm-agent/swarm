@@ -1330,6 +1330,12 @@ func forwardTargetedSubagentStreamEvent(emit StreamHandler, event StreamEvent) {
 
 func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOptions, onEvent StreamHandler) (result RunResult, runErr error) {
 	sessionID = strings.TrimSpace(sessionID)
+	if s.workerExecution != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+		defer s.workerExecution.trackExecution(sessionID, cancel)()
+	}
 	emit := func(StreamEvent) {}
 	sessionResolved := false
 	lifecycleClaimed := false
@@ -1615,6 +1621,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 
 	var emitMu sync.Mutex
 	emit = func(event StreamEvent) {
+		if s.workerExecution != nil {
+			s.workerExecution.touchExecution(sessionID)
+		}
 		if strings.TrimSpace(event.SessionID) == "" {
 			event.SessionID = sessionID
 		}

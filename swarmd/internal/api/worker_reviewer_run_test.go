@@ -28,11 +28,8 @@ import (
 // checkout. This hermetic integration uses real Git/Pebble and the production
 // executor, with fake provider/engine only; it does not prove Docker isolation.
 func TestReviewerRealRunStart(t *testing.T) {
-	for _, moved := range []bool{false, true} {
-		name := "exact_head"
-		if moved {
-			name = "moved_head"
-		}
+	for _, name := range []string{"exact_head", "moved_head", "missing_pointer", "missing_checkout"} {
+		moved := name == "moved_head"
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
@@ -148,6 +145,37 @@ esac
 				if err := s.authorizeRepositoryItem(principal, item); err == nil {
 					t.Fatal("status/watch admitted moved review head")
 				}
+			}
+			// Stop must complete after interrupted filesystem cleanup, using
+			// the production cancellation and durable sandbox cleanup boundary.
+			if name == "missing_pointer" || name == "missing_checkout" {
+				if name == "missing_pointer" {
+					err = os.Remove(filepath.Join(review.WorktreeRootPath, ".git"))
+				} else {
+					err = os.RemoveAll(review.WorktreeRootPath)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				currentWorker, _, err := ws.GetWorker("acct-test", reviewer.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := execution.Stop(ctx, "acct-test", "user-test", reviewer.ID, currentWorker.Revision, store.WorkerLifecycleStatePaused); err != nil {
+					t.Fatal(err)
+				}
+				final, _, err := ws.GetWorkerRun("acct-test", reviewer.ID, r.ID)
+				if err != nil || final.Status != "cancelled" {
+					t.Fatalf("stop failed: %+v %v", final, err)
+				}
+				cleanup, found, err := s.sessions.Store().GetReviewCleanup("acct-test", r.SessionID)
+				if err != nil || !found || cleanup.Phase != "volume_removed" {
+					t.Fatal(cleanup, err)
+				}
+				if strings.Contains(git(source.WorkspacePath, "worktree", "list", "--porcelain"), review.WorktreeRootPath) {
+					t.Fatal("completed cleanup retained Git registration")
+				}
+				return
 			}
 			fake := &reviewRunProvider{}
 			s.agents = agent.NewService(store.NewAgentStore(db), nil)

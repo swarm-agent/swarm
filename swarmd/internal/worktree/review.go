@@ -3,6 +3,7 @@ package worktree
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/sandbox"
@@ -58,8 +59,26 @@ func (s *Service) RemoveReviewWorkspace(source, path, owner, head string) error 
 
 // ValidateReviewWorkspaceRemoval runs before terminal sandbox shutdown.
 func (s *Service) ValidateReviewWorkspaceRemoval(source, path, owner, head string) error {
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	root, err := resolveRepositoryRoot(source)
+	if err != nil {
+		return err
+	}
+	expected, err := deterministicSessionWorktreePath(root, sessionWorkspaceID(owner))
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(path) != expected {
+		return errors.New("review checkout owner mismatch")
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("review checkout must not be a symlink")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Lstat(filepath.Join(path, ".git")); errors.Is(err, os.ErrNotExist) {
 		return nil
+	} else if err != nil {
+		return err
 	}
 	if err := s.ValidateSessionRepositoryLaneForRead(source, path, owner, "HEAD"); err != nil {
 		return err
@@ -77,8 +96,30 @@ func (s *Service) ValidateReviewWorkspaceRemoval(source, path, owner, head strin
 // RemoveValidatedReviewWorkspace is daemon-only; no Git runs in the closing
 // checkout. Caller must validate before shutdown and retain restrictive scope.
 func (s *Service) RemoveValidatedReviewWorkspace(source, path string) error {
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("review checkout must not be a symlink")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Lstat(filepath.Join(path, ".git")); errors.Is(err, os.ErrNotExist) {
+		// A torn-down checkout can retain files but no Git identity. Pruning
+		// must succeed and registration absence must be confirmed before the
+		// caller releases the restrictive reviewer identity.
+		if _, err := runGit(source, "worktree", "prune", "--expire", "now"); err != nil {
+			return err
+		}
+		listing, err := runGit(source, "worktree", "list", "--porcelain")
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(listing, "\n") {
+			if strings.TrimPrefix(line, "worktree ") == path {
+				return errors.New("review checkout remains registered")
+			}
+		}
 		return nil
+	} else if err != nil {
+		return err
 	}
 	_, err := runGit(source, "worktree", "remove", "--force", path)
 	return err

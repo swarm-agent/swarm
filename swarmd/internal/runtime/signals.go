@@ -62,6 +62,9 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 		if run.AutomationID != "" {
 			refs["automation_id"] = run.AutomationID
 		}
+		if run.Status == "failed" && strings.HasPrefix(run.Error, "run stalled:") {
+			emitter.Emit(pebblestore.Signal{Kind: "job.stalled", Severity: pebblestore.SignalSeverityWarning, Account: run.AccountScopeID, Summary: run.Error, DedupKey: "job.stalled:" + run.ID, Refs: refs, Attrs: map[string]string{"job_id": "worker/" + worker.ID + "/" + run.ID}})
+		}
 		emitter.Emit(pebblestore.Signal{
 			Kind:     "worker.run." + run.Status,
 			Severity: severity,
