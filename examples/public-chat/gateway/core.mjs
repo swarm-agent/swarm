@@ -191,17 +191,29 @@ export function createEmitter({ url, secret, fetchImpl = fetch, now = Date.now }
  * gateway's own mapping (sessionId -> visitorId); the model supplies only the
  * business inputs, which the daemon has already checked against each schema.
  */
-export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, endConversation, presence, setPerson, now = Date.now }) {
+/** Same rule as capture_lead's schema: one @, a dot in the domain, no spaces. */
+export const EMAIL = /^[^@\s]{1,64}@[^@\s]{1,190}\.[A-Za-z]{2,24}$/;
+
+/**
+ * Records contact details for a person to follow up: appended to leads.jsonl
+ * (mode 0600), kept on the visitor for the staff console, and sent as an event.
+ */
+export async function saveLead({ dataDir, emit, visitors, sessionId, visitorId, lead, source, now = Date.now }) {
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  const record = { at: now(), session_id: sessionId, visitor_id: visitorId, source, ...lead };
+  await appendFile(join(dataDir, 'leads.jsonl'), JSON.stringify(record) + '\n', { mode: 0o600 });
+  await visitors?.touch(visitorId, { contact: { ...lead, at: record.at } });
+  emit('lead.captured', { session_id: sessionId, visitor_id: visitorId, source, lead });
+}
+
+export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, endConversation, presence, setPerson, visitors, now = Date.now }) {
   return {
     get_playbook: async ({ topic }) => {
       if (!Object.hasOwn(playbook, topic)) throw new Error(`No playbook entry for ${topic}`);
       return { topic, answer: playbook[topic] };
     },
     capture_lead: async ({ name, email, need }) => {
-      await mkdir(dataDir, { recursive: true, mode: 0o700 });
-      const lead = { at: now(), session_id: sessionId, visitor_id: visitorId, name, email, need };
-      await appendFile(join(dataDir, 'leads.jsonl'), JSON.stringify(lead) + '\n', { mode: 0o600 });
-      emit('lead.captured', { session_id: sessionId, visitor_id: visitorId, lead: { name, email, need } });
+      await saveLead({ dataDir, emit, visitors, sessionId, visitorId, lead: { name, email, need }, source: 'agent', now });
       return { saved: true, next: 'A person will follow up by email.' };
     },
     // Asks whether someone is online; if so the page shows the visitor a Yes button.

@@ -18,6 +18,8 @@ export const PAGE_HTML = `<!doctype html>
   button { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); cursor:pointer; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
   button:disabled { opacity:.45; cursor:default; }
+  a.button { display:inline-block; padding:6px 12px; border-radius:8px; border:1px solid var(--accent); color:var(--accent); text-decoration:none; }
+  #contact { margin:6px 0 10px; padding:8px 10px; background:#f0f4ff; border-radius:8px; }
   main { display:grid; grid-template-columns:340px 1fr; gap:16px; padding:16px 20px; }
   section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
   h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); margin-bottom:10px; }
@@ -53,7 +55,8 @@ export const PAGE_HTML = `<!doctype html>
   <div class="stack">
     <section>
       <div class="row"><h2 id="title">Select a conversation</h2>
-        <span><button id="takeover" disabled>Take over</button> <button id="handback" disabled>Hand back</button> <button id="reopen" disabled>Reopen</button></span></div>
+        <span><button id="takeover" disabled>Take over</button> <button id="handback" disabled>Hand back</button> <button id="reopen" disabled>Reopen</button> <a id="mail" class="button" hidden>Email them</a></span></div>
+      <div id="contact" class="empty" hidden></div>
       <div id="transcript"></div>
       <div style="margin-top:10px"><textarea id="reply" placeholder="Reply as yourself (take over first)" disabled></textarea>
       <div class="row" style="margin-top:8px"><small id="state" class="empty"></small><button id="send" class="primary" disabled>Send</button></div></div>
@@ -143,6 +146,7 @@ function consoleApp() {
       const tags = [v.messages + ' msgs', ago(v.last_at)];
       if (v.person) tags.push(v.person.state);
       if (v.ended) tags.push('ended: ' + v.ended.reason);
+      if (v.contact) tags.push('email left');
       item.append(el('div', '', 'Visitor ' + v.visitor_id.slice(0, 8)), el('small', '', tags.join(' · ')));
       item.addEventListener('click', () => select(v.session_id));
       c.append(item);
@@ -167,6 +171,16 @@ function consoleApp() {
     $('#takeover').disabled = human;
     $('#handback').disabled = !human;
     $('#reopen').disabled = !t.ended;
+    // Contact details the visitor left (form or the agent's capture_lead): reply by email.
+    const contact = t.contact;
+    $('#contact').hidden = !contact;
+    $('#mail').hidden = !contact;
+    if (contact) {
+      $('#contact').textContent = [contact.name, contact.email, contact.need].filter(Boolean).join(' · ');
+      const last = t.messages.filter((m) => m.from === 'visitor').slice(-1)[0];
+      $('#mail').href = 'mailto:' + encodeURIComponent(contact.email) + '?subject=' + encodeURIComponent('Following up on your chat')
+        + '&body=' + encodeURIComponent((contact.name ? 'Hi ' + contact.name + ',' : 'Hi,') + '\n\n' + (last ? 'You asked: "' + last.text.slice(0, 300) + '"\n\n' : ''));
+    }
     $('#reply').disabled = !human;
     $('#send').disabled = !human;
     const box = $('#transcript');

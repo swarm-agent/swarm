@@ -85,16 +85,25 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
   }
   // Whether someone from the team is online, for the widget's header.
   if (request.method === 'GET' && url.pathname === '/api/chat/status') return forward('/chat/status', { method: 'GET' });
-  if (request.method !== 'POST' || (url.pathname !== '/api/chat' && url.pathname !== '/api/chat/person')) return reply(404, { error: 'not found' });
+  if (request.method === 'GET' && url.pathname === '/api/chat/history') {
+    // The widget restoring a conversation after a refresh.
+    const visitorId = url.searchParams.get('visitor_id') ?? '';
+    if (!VISITOR_ID.test(visitorId)) return reply(400, { error: 'invalid query' });
+    return forward(`/chat/history?visitor_id=${visitorId}`, { method: 'GET' });
+  }
+  const SIDE_ROUTES = { '/api/chat/person': ['visitor_id', 'accept'], '/api/chat/contact': ['visitor_id', 'email', 'name', 'note'] };
+  if (request.method !== 'POST' || (url.pathname !== '/api/chat' && !Object.hasOwn(SIDE_ROUTES, url.pathname))) return reply(404, { error: 'not found' });
   if (Number(request.headers.get('Content-Length') ?? 0) > MAX_BODY) return reply(413, { error: 'too large' });
-  if (url.pathname === '/api/chat/person') {
-    // The visitor's Yes / No thanks to talking to a person: forwarded as exactly two fields.
+  if (Object.hasOwn(SIDE_ROUTES, url.pathname)) {
+    // The Yes / No thanks buttons and the email form: forwarded with only their own fields.
     const raw = await request.text();
     if (raw.length > MAX_BODY) return reply(413, { error: 'too large' });
     let body;
     try { body = JSON.parse(raw); } catch { return reply(400, { error: 'invalid json' }); }
-    if (!VISITOR_ID.test(String(body?.visitor_id ?? '')) || typeof body.accept !== 'boolean') return reply(400, { error: 'visitor_id and accept are required' });
-    return forward('/chat/person', { method: 'POST', body: JSON.stringify({ visitor_id: body.visitor_id, accept: body.accept }) });
+    if (!VISITOR_ID.test(String(body?.visitor_id ?? ''))) return reply(400, { error: 'invalid visitor_id' });
+    if (url.pathname === '/api/chat/person' && typeof body.accept !== 'boolean') return reply(400, { error: 'accept is required' });
+    const fields = Object.fromEntries(SIDE_ROUTES[url.pathname].filter((k) => Object.hasOwn(body, k)).map((k) => [k, body[k]]));
+    return forward(url.pathname.replace('/api', ''), { method: 'POST', body: JSON.stringify(fields) });
   }
   const raw = await request.text();
   if (raw.length > MAX_BODY) return reply(413, { error: 'too large' });

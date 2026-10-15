@@ -73,11 +73,36 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     }
     const endConversation = (ended) => visitors.touch(body.visitor_id, { ended });
     const setPerson = (person) => visitors.touch(body.visitor_id, { person });
-    const handlers = core.toolHandlers({ playbook: config.playbook, dataDir: config.dataDir, bookingUrl: config.bookingUrl, emit, sessionId, visitorId: body.visitor_id, endConversation, presence, setPerson, now });
+    const handlers = core.toolHandlers({ playbook: config.playbook, dataDir: config.dataDir, bookingUrl: config.bookingUrl, emit, sessionId, visitorId: body.visitor_id, endConversation, presence, setPerson, visitors, now });
     const { reply, messages } = await gateway.agents.converse(sessionId, body.message, handlers, { timeoutMs: config.replyTimeoutMs });
     // seq lets the widget poll for a person's later replies without repeating this one.
     const status = visitors.get(body.visitor_id)?.ended ? 'ended' : 'answered';
     return [200, { status, reply, seq: core.latestReplySeq(messages), person: core.publicPerson(await personOf(body.visitor_id)) }];
+  }
+
+  // The widget after a page refresh: this visitor's own conversation, text only.
+  async function history(visitorId) {
+    const visitor = core.VISITOR_ID.test(visitorId) ? visitors.get(visitorId) : undefined;
+    if (!visitor?.session_id) return [200, { messages: [] }];
+    const detail = await gateway.sessions.get(visitor.session_id);
+    const messages = (detail.messages ?? [])
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.metadata?.visible !== false && String(m.content ?? '').trim())
+      .slice(-50)
+      .map((m) => ({ seq: Number(m.global_seq ?? m.seq ?? 0), from: m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent', text: String(m.content) }));
+    return [200, { messages, with_person: core.takeoverOf(detail)?.state === 'human', person: core.publicPerson(await personOf(visitorId)), ended: Boolean(visitor.ended), contact_saved: Boolean(visitor.contact) }];
+  }
+
+  // The "leave your email" form: saved for a person to follow up, no model run.
+  async function contact(body) {
+    const email = typeof body?.email === 'string' ? body.email.trim() : '';
+    const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 100) : '';
+    const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 500) : '';
+    if (typeof body?.visitor_id !== 'string' || !core.VISITOR_ID.test(body.visitor_id) || !core.EMAIL.test(email)) return [400, { status: 'invalid', error: 'visitor_id and a valid email are required' }];
+    if (!perVisitor(body.visitor_id)) return [429, { status: 'slow_down' }];
+    const visitor = visitors.get(body.visitor_id);
+    if (!visitor?.session_id) return [404, { status: 'invalid', error: 'unknown visitor' }];
+    await core.saveLead({ dataDir: config.dataDir, emit, visitors, sessionId: visitor.session_id, visitorId: body.visitor_id, lead: { name, email, need: note }, source: 'form', now });
+    return [200, { status: 'saved' }];
   }
 
   // The visitor's answer to the agent's offer (the Yes / No thanks buttons): no model run.
@@ -122,7 +147,8 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     if (!sessionId || !visitors.bySession(sessionId)) return [404, { error: 'unknown conversation' }];
     if (path === '/ops/transcript') {
       const detail = await operator.sessions.get(sessionId);
-      return [200, { takeover: core.takeoverOf(detail), ended: visitors.get(visitors.bySession(sessionId))?.ended ?? null, messages: (detail.messages ?? []).filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ id: m.id, role: m.role, from: m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent', text: m.content, seq: m.global_seq })) }];
+      const visitor = visitors.get(visitors.bySession(sessionId));
+      return [200, { takeover: core.takeoverOf(detail), ended: visitor?.ended ?? null, contact: visitor?.contact ?? null, messages: (detail.messages ?? []).filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ id: m.id, role: m.role, from: m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent', text: m.content, seq: m.global_seq })) }];
     }
     if (path === '/ops/takeover') return [200, { takeover: await operator.agents.takeOver(sessionId) }];
     if (path === '/ops/accept') {
@@ -186,6 +212,14 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
       if (req.method === 'POST' && url.pathname === '/chat') {
         const body = await readBody(req);
         const [status, data] = await chat(body);
+        return json(res, status, data);
+      }
+      if (req.method === 'GET' && url.pathname === '/chat/history') {
+        const [status, data] = await history(url.searchParams.get('visitor_id') ?? '');
+        return json(res, status, data);
+      }
+      if (req.method === 'POST' && url.pathname === '/chat/contact') {
+        const [status, data] = await contact(await readBody(req));
         return json(res, status, data);
       }
       if (req.method === 'POST' && url.pathname === '/chat/person') {

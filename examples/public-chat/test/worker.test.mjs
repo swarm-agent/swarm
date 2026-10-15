@@ -65,6 +65,14 @@ test('staff status and the Yes button are forwarded with only the reviewed field
   const { url, init } = gw.seen.at(-1);
   assert.equal(url, 'https://gw.example.com/chat/person');
   assert.deepEqual(JSON.parse(init.body), { visitor_id: VISITOR, accept: true });
+
+  const contact = new Request('https://chat.example.com/api/chat/contact', { method: 'POST', headers: { Origin: SITE, 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: VISITOR, email: 'pat@example.com', note: 'hi', session_id: 'other' }) });
+  await handle(contact, env(), gw);
+  assert.equal(gw.seen.at(-1).url, 'https://gw.example.com/chat/contact');
+  assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, email: 'pat@example.com', note: 'hi' });
+  assert.equal((await handle(new Request(`https://chat.example.com/api/chat/history?visitor_id=bad`, { headers: { Origin: SITE } }), env(), gw)).status, 400);
+  await handle(new Request(`https://chat.example.com/api/chat/history?visitor_id=${VISITOR}`, { headers: { Origin: SITE } }), env(), gw);
+  assert.equal(gw.seen.at(-1).url, `https://gw.example.com/chat/history?visitor_id=${VISITOR}`);
 });
 
 test('bad input, oversize bodies, the rate limit and the kill switch stop at the edge', async () => {

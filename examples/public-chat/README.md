@@ -188,7 +188,13 @@ replies. A `handoff.requested` event is the cue to take over.
 4. Accept takes the conversation over; the widget says "Sam joined the chat" and
    shows Sam's replies with their name. Hand back returns it to the agent.
 5. If nobody accepts within two minutes (`ACCEPT_TIMEOUT_MS`), the request
-   becomes `missed` and the widget asks the visitor to leave their email.
+   becomes `missed` and the widget asks the visitor to leave their email
+   (`/api/chat/contact`, no model run). It lands in `leads.jsonl`, on the
+   conversation in the console (with an email-reply link) and as `lead.captured`.
+
+A page refresh keeps the conversation: the widget stores its random visitor id
+and reloads the visitor's own messages from `/api/chat/history`. That id is the
+only key to the conversation, so it is long and random and never shown.
 
 The console (`console/`) is a Worker on its own hostname behind an Access
 application for your team's emails. It verifies the Access token itself, takes

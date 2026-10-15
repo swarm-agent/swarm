@@ -82,6 +82,12 @@
     log.scrollTop = log.scrollHeight;
   };
 
+  // After a refresh the stored visitor id brings back the same conversation.
+  fetch(`${endpoint}/api/chat/history?visitor_id=${visitorId}`).then((r) => r.json()).then((data) => {
+    for (const m of data.messages || []) { lastSeq = Math.max(lastSeq, m.seq); say(m.from === 'visitor' ? 'you' : m.from, m.text); }
+    if (data.with_person || data.person?.state === 'waiting') { personShown = data.person?.state ?? ''; pollReplies(); }
+  }).catch(() => {});
+
   // Header: whether someone from the team is online.
   fetch(`${endpoint}/api/chat/status`).then((r) => r.json()).then((data) => {
     if (data.staff?.[0]) header.textContent = `${title} · ${data.staff[0].name} is online`;

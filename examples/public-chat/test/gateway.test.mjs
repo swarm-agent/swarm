@@ -184,6 +184,39 @@ test('staff routes need the ops key and valid input; the event feed wakes on new
   assert.ok(Date.now() - started < 1000, 'resolved on push, not on timeout');
 });
 
+test('after a refresh the visitor gets their own history back, and only theirs', async () => {
+  const g = await start();
+  try {
+    assert.deepEqual((await g.call(`/chat/history?visitor_id=${VISITOR}`, { method: 'GET' })).data, { messages: [] });
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+    const h = (await g.call(`/chat/history?visitor_id=${VISITOR}`, { method: 'GET' })).data;
+    assert.deepEqual(h.messages, [{ seq: 7, from: 'agent', text: 'earlier answer' }]);
+    assert.deepEqual([h.with_person, h.person, h.ended, h.contact_saved], [false, null, false, false]);
+    assert.deepEqual((await g.call('/chat/history?visitor_id=someone_else_123456', { method: 'GET' })).data, { messages: [] });
+  } finally { await g.close(); }
+});
+
+test('the email form saves a lead for a person, with no model run', async () => {
+  const g = await start();
+  try {
+    assert.equal((await g.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'a@b.co' } })).status, 404, 'needs a conversation first');
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+    const runs = g.calls.filter(([op]) => op === 'converse').length;
+    for (const email of ['', 'no-at-sign', 'a@b', 'two@@example.com', 'x'.repeat(70) + '@example.com']) {
+      assert.equal((await g.call('/chat/contact', { body: { visitor_id: VISITOR, email } })).status, 400, email);
+    }
+    const saved = await g.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'pat@example.com', name: 'Pat', note: 'Booking emails', extra: 'dropped' } });
+    assert.deepEqual(saved.data, { status: 'saved' });
+    assert.equal(g.calls.filter(([op]) => op === 'converse').length, runs);
+    const lead = JSON.parse((await readFile(join(g.dataDir, 'leads.jsonl'), 'utf8')).trim());
+    assert.deepEqual([lead.email, lead.name, lead.need, lead.source, lead.extra], ['pat@example.com', 'Pat', 'Booking emails', 'form', undefined]);
+    assert.equal(g.visitors.get(VISITOR).contact.email, 'pat@example.com');
+    assert.ok(g.events.some(([type, data]) => type === 'lead.captured' && data.source === 'form'));
+    const transcript = await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY });
+    assert.equal(transcript.data.contact.email, 'pat@example.com');
+  } finally { await g.close(); }
+});
+
 test('a new visitor gets one conversation, the agent answers with its tools, and seq is returned', async () => {
   const g = await start();
   try {
@@ -266,7 +299,7 @@ test('client tools: approved answers, private lead file, handoff event; identity
   await assert.rejects(tools.get_playbook({ topic: 'constructor' }));
   await tools.capture_lead({ name: 'Ada', email: 'ada@example.com', need: 'Quotes' });
   const file = join(dataDir, 'leads.jsonl');
-  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { at: 5, session_id: 's1', visitor_id: 'v1', name: 'Ada', email: 'ada@example.com', need: 'Quotes' });
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { at: 5, session_id: 's1', visitor_id: 'v1', source: 'agent', name: 'Ada', email: 'ada@example.com', need: 'Quotes' });
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.equal((await tools.handoff_to_human({ summary: 'Wants a person' })).booking_url, 'https://example.com/book');
   assert.deepEqual(events.map(([type, data]) => [type, data.session_id, data.visitor_id]), [['lead.captured', 's1', 'v1'], ['handoff.requested', 's1', 'v1']]);
