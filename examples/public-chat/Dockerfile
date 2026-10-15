@@ -4,7 +4,9 @@
 FROM node:22-slim AS build
 WORKDIR /src
 COPY packages/sdk packages/sdk
-RUN npm --prefix packages/sdk ci --ignore-scripts --no-audit --no-fund && npm --prefix packages/sdk run build
+# Build the SDK, then keep only its runtime dependencies (ws) for the final image.
+RUN npm --prefix packages/sdk ci --ignore-scripts --no-audit --no-fund && npm --prefix packages/sdk run build \
+ && npm --prefix packages/sdk prune --omit=dev --no-audit --no-fund
 COPY examples/public-chat/package.json examples/public-chat/package-lock.json examples/public-chat/
 RUN npm --prefix examples/public-chat ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY examples/public-chat/gateway examples/public-chat/gateway
@@ -14,6 +16,7 @@ FROM node:22-slim
 ENV NODE_ENV=production
 COPY --from=build /src/packages/sdk/package.json /src/packages/sdk/package.json
 COPY --from=build /src/packages/sdk/dist /src/packages/sdk/dist
+COPY --from=build /src/packages/sdk/node_modules /src/packages/sdk/node_modules
 COPY --from=build /src/examples/public-chat /src/examples/public-chat
 WORKDIR /src/examples/public-chat
 USER 10001:10001
