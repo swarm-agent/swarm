@@ -502,7 +502,7 @@ func (ws *WorkerStore) DisableWorkerAutomation(account, user, id, autoID string,
 
 // unfinishedWorkerRuns is called under workersMu; never truncates an active set.
 func (ws *WorkerStore) unfinishedWorkerRuns(account, id, autoID string) ([]WorkerRunRecord, error) {
-	prefix := WorkerRunPrefix(account, id)
+	prefix := keyWorkerRunActivePrefix + keyPart(account) + "/" + keyPart(id) + "/"
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
 	if err != nil {
 		return nil, err
@@ -515,9 +515,16 @@ func (ws *WorkerStore) unfinishedWorkerRuns(account, id, autoID string) ([]Worke
 		if scanned > 10000 {
 			return nil, errors.New("worker active run scan budget exceeded")
 		}
-		var r WorkerRunRecord
-		if err := json.Unmarshal(it.Value(), &r); err != nil {
+		var entry workerRunIndexEntry
+		if err := json.Unmarshal(it.Value(), &entry); err != nil {
 			return nil, err
+		}
+		r, found, err := ws.GetWorkerRun(account, id, entry.RunID)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
 		}
 		if r.AccountScopeID != account || r.WorkerID != id {
 			return nil, ErrWorkerConflict

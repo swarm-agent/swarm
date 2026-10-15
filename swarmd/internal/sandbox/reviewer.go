@@ -20,6 +20,10 @@ func scopeContainerName(scope Scope) string {
 	return ContainerName(scope.Root)
 }
 
+func homeVolumeName(name, root string) string {
+	return cacheContainerName(name, root) + "-home"
+}
+
 func cacheContainerName(name, root string) string {
 	if strings.HasPrefix(name, ContainerName(root)+"-job-") {
 		return ContainerName(root)

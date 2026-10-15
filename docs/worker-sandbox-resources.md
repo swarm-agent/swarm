@@ -27,7 +27,19 @@ The box-wide limit spans accounts. Preparation counts against the limit before
 worktree allocation/provider dispatch. Overflow receipts persist `status: queued`
 and `queue_reason`; the existing worker reconciliation sweep admits them as
 capacity becomes available. Queue order follows reconciliation order, not strict
-FIFO. Admission state survives daemon restart.
+FIFO. Admission state survives daemon restart. A durable active-reservation index is
+updated in the same batch as each receipt, so terminal history never enters the
+capacity count. Follow-up messages retain the original job outcome and expose
+`followup_status: queued` with `queue_reason` until the executor reserves a slot;
+`followup_status: running` holds it until the intent ends. V3 pending intents
+provide restart-safe queue replay, and stale completion cannot free a newer slot.
+
+Terminal runs remove only their disposable job container. Startup inventories
+containers by the sandbox label, removes terminal/unknown job containers and
+stops surviving idle containers before admitting execution. Idle job boxes are
+also removed by the reaper. Shared named caches and bind-mounted checkout files
+are never removed. Home initialization repairs the exact same volume that the
+container mounts; reviewers still use their separate home.
 
 Container OOM/stopped/restart errors are retryable interruptions, not repository
 identity failures. Bind-mounted work and caches are preserved. Observational Git

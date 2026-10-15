@@ -163,17 +163,19 @@ type WorkerRunRecord struct {
 	WorkspaceID     string `json:"workspace_id,omitempty"`
 	WorkspaceSource string `json:"workspace_source,omitempty"`
 	// Role is the worker role pinned at admission (empty means swarm).
-	Role          string                         `json:"role,omitempty"`
-	SessionID     string                         `json:"session_id,omitempty"`
-	RequestSource string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator"
-	Input         map[string]any                 `json:"input,omitempty"`
-	Status        string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
-	QueueReason   string                         `json:"queue_reason,omitempty"`
-	Error         string                         `json:"error,omitempty"`
-	Deliverables  []SessionPlanArtifactReference `json:"deliverables,omitempty"`
-	StartedAt     int64                          `json:"started_at,omitempty"`
-	CompletedAt   int64                          `json:"completed_at,omitempty"`
-	CreatedAt     int64                          `json:"created_at"`
+	Role           string                         `json:"role,omitempty"`
+	SessionID      string                         `json:"session_id,omitempty"`
+	RequestSource  string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator"
+	Input          map[string]any                 `json:"input,omitempty"`
+	Status         string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
+	QueueReason    string                         `json:"queue_reason,omitempty"`
+	FollowupStatus string                         `json:"followup_status,omitempty"`
+	FollowupRunID  string                         `json:"followup_run_id,omitempty"`
+	Error          string                         `json:"error,omitempty"`
+	Deliverables   []SessionPlanArtifactReference `json:"deliverables,omitempty"`
+	StartedAt      int64                          `json:"started_at,omitempty"`
+	CompletedAt    int64                          `json:"completed_at,omitempty"`
+	CreatedAt      int64                          `json:"created_at"`
 }
 
 type WorkerIdempotencyRecord struct {

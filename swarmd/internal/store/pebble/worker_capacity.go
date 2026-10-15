@@ -2,8 +2,8 @@ package pebblestore
 
 import (
 	"encoding/json"
-	"errors"
 	"github.com/cockroachdb/pebble"
+	"strings"
 )
 
 // ReserveWorkerCapacity atomically reserves box-wide capacity across accounts.
@@ -32,26 +32,15 @@ func (ws *WorkerStore) ReserveWorkerCapacity(r WorkerRunRecord, limit int) (bool
 	if current.Status != "admitted" && current.Status != "queued" {
 		return false, ErrWorkerConflict
 	}
-	prefix := KeyWorkerRunAccountPrefix
+	prefix := keyWorkerReservationPrefix
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
 	if err != nil {
 		return false, err
 	}
 	defer it.Close()
-	active, rows, bytes := 0, 0, 0
-	for ok := it.First(); ok; ok = it.Next() {
-		rows++
-		bytes += len(it.Value())
-		if rows > 10000 || bytes > 32<<20 {
-			return false, errors.New("worker capacity scan budget exceeded")
-		}
-		var other WorkerRunRecord
-		if err := json.Unmarshal(it.Value(), &other); err != nil {
-			return false, err
-		}
-		if other.Status == "running" || other.Status == "preparing" {
-			active++
-		}
+	active := 0
+	for ok := it.First(); ok && active < limit; ok = it.Next() {
+		active++
 	}
 	if err := it.Error(); err != nil {
 		return false, err
@@ -77,4 +66,42 @@ func (ws *WorkerStore) ReserveWorkerCapacity(r WorkerRunRecord, limit int) (bool
 	}
 	published = m
 	return admitted, nil
+}
+
+// ActiveWorkerSandboxSessions enumerates only unfinished/reserved receipts for
+// startup inventory reconciliation, including queued and running follow-ups.
+func (ws *WorkerStore) ActiveWorkerSandboxSessions() ([]string, error) {
+	var ids []string
+	err := ws.store.IteratePrefix(keyWorkerRunActivePrefix, int(^uint(0)>>1), func(key string, value []byte) error {
+		var entry workerRunIndexEntry
+		if err := json.Unmarshal(value, &entry); err != nil {
+			return err
+		}
+		account, _, ok := strings.Cut(strings.TrimPrefix(key, keyWorkerRunActivePrefix), "/")
+		if !ok {
+			return ErrWorkerInvalid
+		}
+		var r WorkerRunRecord
+		found, err := ws.store.GetJSON(KeyWorkerRunAccountPrefix+account+"/"+keyPart(entry.WorkerID)+"/"+keyPart(entry.RunID), &r)
+		if err != nil {
+			return err
+		}
+		if found && r.FollowupRunID != "" {
+			intent, exists, err := NewSessionStore(ws.store).GetV3SessionRunIntent(r.SessionID, r.FollowupRunID)
+			if err != nil {
+				return err
+			}
+			if !exists || (intent.Status != V3RunIntentPendingExecutor && intent.Status != V3RunIntentRunning) {
+				if err := ws.ReleaseWorkerFollowup(r.AccountScopeID, r.WorkerID, r.ID, r.FollowupRunID); err != nil {
+					return err
+				}
+				r.FollowupStatus = ""
+			}
+		}
+		if found && (!AutomationV2Terminal(r.Status) || r.FollowupStatus != "") && r.SessionID != "" {
+			ids = append(ids, r.SessionID)
+		}
+		return nil
+	})
+	return ids, err
 }

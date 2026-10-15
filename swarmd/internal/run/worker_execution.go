@@ -1740,6 +1740,9 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if hasIntent && intent.Status == sessions.RunIntentCancelled {
 		return store.ErrWorkerConflict
 	}
+	if workerRunSettledForFollowup(r.Status) && sandbox.Default() != nil && (r.FollowupStatus != "running" || r.FollowupRunID != intent.RunID) {
+		return store.ErrWorkerConflict
+	}
 	if !workerRunExecutable(r, intent, hasIntent) {
 		return store.ErrWorkerConflict
 	}
@@ -1892,7 +1895,14 @@ func (s *WorkerExecutionService) PrepareFollowup(account, user, sessionID string
 			return fmt.Errorf("%w: the job's task is archived", store.ErrWorkerConflict)
 		}
 	}
-	return s.refreshFollowupModel(snapshot, w)
+	if err := s.refreshFollowupModel(snapshot, w); err != nil {
+		return err
+	}
+	if m := sandbox.Default(); m != nil {
+		_, err := ws.ReserveWorkerFollowup(account, workerID, runID, "", m.MaxWorkerRuns())
+		return err
+	}
+	return nil
 }
 
 // refreshFollowupModel points the job's session at the worker's current

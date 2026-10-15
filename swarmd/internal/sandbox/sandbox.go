@@ -393,7 +393,13 @@ func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
 		b.changing = make(chan struct{})
 		m.mu.Unlock()
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "stop", "--time", "5", b.name)
+		if strings.Contains(b.name, "-job-"+containerPrefix) {
+			// Disposable job boxes can be reconstructed from durable checkout
+			// mounts; retain named shared volumes when reaping idle boxes.
+			_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "rm", "-f", b.name)
+		} else {
+			_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "stop", "--time", "5", b.name)
+		}
 		cancel()
 		if broker := m.secretBroker(); broker != nil && b.root != "" {
 			broker.ReleaseSandbox(b.root)
@@ -600,7 +606,7 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--ipc", "private",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
 		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
-		"--mount", "type=volume,src="+cacheContainerName(name, root)+"-home,dst="+sandboxHome,
+		"--mount", "type=volume,src="+homeVolumeName(name, root)+",dst="+sandboxHome,
 		"--env", "HOME="+sandboxHome,
 		"--env", "GOTMPDIR="+sandboxHome+"/.cache/go-tmp",
 		"--env", "PATH="+image.Path,

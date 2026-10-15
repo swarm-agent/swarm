@@ -23,6 +23,7 @@ import (
 	providerdiagnostics "swarm/packages/swarmd/internal/provider/diagnostics"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	runruntime "swarm/packages/swarmd/internal/run"
+	"swarm/packages/swarmd/internal/sandbox"
 
 	"sync"
 	"time"
@@ -271,6 +272,23 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 			return false
 		}
 	}
+	if m := sandbox.Default(); m != nil && strings.HasPrefix(job.SessionID, "worker-execution-") {
+		worker, _ := snapshot.Metadata["worker_id"].(string)
+		receipt, _ := snapshot.Metadata["worker_execution_run_id"].(string)
+		ws := e.server.sessions.Store().WorkerStore()
+		r, ok, lookupErr := ws.GetWorkerRun(job.Principal.AccountScopeID, worker, receipt)
+		if lookupErr != nil || !ok {
+			e.mu.Unlock()
+			return false
+		}
+		if r.Status == "succeeded" || r.Status == "failed" {
+			admitted, reserveErr := ws.ReserveWorkerFollowup(r.AccountScopeID, worker, receipt, job.RunID, m.MaxWorkerRuns())
+			if reserveErr != nil || !admitted {
+				e.mu.Unlock()
+				return reserveErr == nil
+			}
+		}
+	}
 	e.inFlightRuns[runKey] = true
 	e.activeBySession[job.SessionID] = job.RunID
 	if e.runStates == nil {
@@ -291,6 +309,20 @@ func (e *sessionV3Executor) EnqueueRun(job sessionV3ExecutorJob) bool {
 }
 
 func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
+	if strings.HasPrefix(job.SessionID, "worker-execution-") {
+		if snap, ok, err := e.server.sessions.GetSession(job.SessionID); err == nil && ok {
+			worker, _ := snap.Metadata["worker_id"].(string)
+			receipt, _ := snap.Metadata["worker_execution_run_id"].(string)
+			if err := e.server.sessions.Store().WorkerStore().ReleaseWorkerFollowup(snap.AccountScopeID, worker, receipt, job.RunID); err != nil {
+				log.Printf("release worker follow-up capacity: %v", err)
+			}
+			if m := sandbox.Default(); m != nil {
+				if err := m.EndJob(context.Background(), snap.WorktreeRootPath); err != nil {
+					log.Printf("cleanup worker sandbox: %v", err)
+				}
+			}
+		}
+	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
 	e.mu.Lock()
 	delete(e.inFlightRuns, runKey)

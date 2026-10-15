@@ -31,7 +31,7 @@ func (m *Manager) initializeHome(ctx context.Context, name, root string, image E
 	if runtime != "" {
 		args = append(args, "--runtime", runtime)
 	}
-	args = append(args, "--mount", "type=volume,src="+name+"-home,dst="+sandboxHome, "--entrypoint", "sh", image.Image,
+	args = append(args, "--mount", "type=volume,src="+homeVolumeName(name, root)+",dst="+sandboxHome, "--entrypoint", "sh", image.Image,
 		"-c", `chown "$1" "$2" && chmod 0700 "$2"`, "swarm-home", owner, sandboxHome)
 	if _, err := m.runner.Run(ctx, m.cfg.Engine, args...); err != nil {
 		slog.Warn("initialize sandbox home failed", "error", err)

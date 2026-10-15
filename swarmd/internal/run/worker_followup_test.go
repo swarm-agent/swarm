@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/tool"
 
 	sessions "swarm/packages/swarmd/internal/session"
@@ -267,4 +268,57 @@ func (s *Service) validateWorkerExecutionForTest(sessionID string) error {
 		return errors.New("session missing")
 	}
 	return s.validateWorkerExecution(snapshot)
+}
+
+// Purpose: PrepareFollowup must register a durable queue and the execution gate
+// must refuse the appended pending intent until a box slot is reserved. A real
+// session/store fixture proves neither follow-up nor normal work bypasses it.
+func TestWorkerFollowupQueuesBeforeExecution(t *testing.T) {
+	runs, ss, execution, workspace := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
+	w, r := settledCoderJob(t, runs, ss, execution, workspace, "capacity", false)
+	m, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeOff, UID: 10001, GID: 10001, Memory: "1g", MaxWorkerRuns: 1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := sandbox.Default()
+	sandbox.SetDefault(m)
+	t.Cleanup(func() { sandbox.SetDefault(old) })
+	ws := ss.Store().WorkerStore()
+	blocker, err := ws.RecordWorkerRun("account", store.WorkerRunRecord{WorkerID: w.ID, Status: "preparing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = execution.PrepareFollowup("account", "owner", r.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	queued, _, _ := ws.GetWorkerRun("account", w.ID, r.ID)
+	if queued.FollowupStatus != "queued" || queued.QueueReason == "" {
+		t.Fatalf("not queued: %+v", queued)
+	}
+	if _, err = appendFollowup(ss, r.SessionID, "capacity"); err != nil {
+		t.Fatal(err)
+	}
+	intent, found, err := ss.GetSessionActiveRunIntent(r.SessionID)
+	if err != nil || !found {
+		t.Fatal(found, err)
+	}
+	if ok, err := ws.ReserveWorkerFollowup("account", w.ID, r.ID, intent.RunID, 1); err != nil || ok {
+		t.Fatal("overloaded follow-up", ok, err)
+	}
+	if err = runs.validateWorkerExecutionForTest(r.SessionID); !errors.Is(err, store.ErrWorkerConflict) {
+		t.Fatalf("queued intent executable: %v", err)
+	}
+	blocker.Status = "failed"
+	if _, err = ws.RecordWorkerRun("account", blocker); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := ws.ReserveWorkerFollowup("account", w.ID, r.ID, intent.RunID, 1); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err = runs.validateWorkerExecutionForTest(r.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = ws.ReleaseWorkerFollowup("account", w.ID, r.ID, intent.RunID); err != nil {
+		t.Fatal(err)
+	}
 }

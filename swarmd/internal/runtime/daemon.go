@@ -463,6 +463,15 @@ func New(cfg config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("agent sandbox: %w", err)
 	}
 	sandbox.SetDefault(sandboxMgr)
+	emitWorkerRun := workerRunSignal(signalEmitter)
+	store.SetWorkerRunObserver(func(w pebblestore.WorkerRecord, r pebblestore.WorkerRunRecord) {
+		if snap, ok, err := pebblestore.NewSessionStore(store).GetSession(r.SessionID); err == nil && ok {
+			if err := sandboxMgr.EndJob(context.Background(), snap.WorktreeRootPath); err != nil {
+				log.Printf("cleanup terminal worker sandbox: %v", err)
+			}
+		}
+		emitWorkerRun(w, r)
+	})
 	provider.BuildSourceGitRouter = sandbox.RoutedArgv
 	permissionSvc.SetBypassGate(func() (bool, string) {
 		status := sandboxMgr.Status()
@@ -478,6 +487,13 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("swarmd agent sandbox inactive (%s); agent commands run on this machine and permission bypass is disabled", status.Reason)
 	}
 	emitStartupSignals(signalEmitter, sandboxMgr.Status())
+	if err := reconcileWorkerSandboxes(context.Background(), sandboxMgr, store); err != nil {
+		sandboxMgr.Close()
+		_ = secretStore.Close()
+		_ = store.Close()
+		_ = lk.Release()
+		return nil, fmt.Errorf("recover worker sandboxes: %w", err)
+	}
 	sandboxMgr.Start(context.Background())
 	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)

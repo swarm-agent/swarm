@@ -86,3 +86,22 @@ func protectedDaemonPaths(cfg config.Config) (storage, credentials, ancestors []
 	}
 	return storage, credentials, ancestors, nil
 }
+
+func reconcileWorkerSandboxes(ctx context.Context, m *sandbox.Manager, db *pebblestore.Store) error {
+	ids, err := pebblestore.NewWorkerStore(db).ActiveWorkerSandboxSessions()
+	if err != nil {
+		return err
+	}
+	active := map[string]bool{}
+	sessions := pebblestore.NewSessionStore(db)
+	for _, id := range ids {
+		snap, found, err := sessions.GetSession(id)
+		if err != nil {
+			return err
+		}
+		if found && snap.WorktreeRootPath != "" {
+			active[sandbox.JobContainerName(snap.WorkspacePath, snap.WorktreeRootPath)] = true
+		}
+	}
+	return m.ReconcileContainers(ctx, func(name string) (bool, error) { return active[name], nil })
+}
