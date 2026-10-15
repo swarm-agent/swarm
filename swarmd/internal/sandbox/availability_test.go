@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -66,13 +67,20 @@ func TestWorkerContainerCleanup(t *testing.T) {
 	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{root + "/source"}, nil }, WorktreesRoot: root + "/trees", Bucket: func(string) (string, error) { return "bucket", nil }})
 	name := JobContainerName(root+"/source", checkout)
 	m.boxes[name] = &box{name: name, inflight: 1}
-	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return true, nil }); err != nil {
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return true, nil }); err != ErrCleanupDeferred {
 		t.Fatal(err)
 	}
 	if runner.ran("rm -f " + name) {
 		t.Fatal("removed active command")
 	}
+	// A deferred engine failure must not be reported as completed; the next
+	// durable sweep sees the error until an actual removal succeeds.
+	runner.fail["rm -f"] = fmt.Errorf("engine unavailable")
 	m.release(m.boxes[name])
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return true, nil }); err == nil {
+		t.Fatal("failed deferred removal reported complete")
+	}
+	delete(runner.fail, "rm -f")
 	if !runner.ran("rm -f " + name) {
 		t.Fatal("terminal cleanup not retried after lease release")
 	}
@@ -117,13 +125,13 @@ func TestWorkerCleanupFences(t *testing.T) {
 	name := JobContainerName(root+"/source", checkout)
 	b := &box{name: name, root: root + "/source", generation: 1}
 	m.boxes[name] = b
-	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return false, nil }); err != nil {
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return false, nil }); err != ErrCleanupDeferred {
 		t.Fatal(err)
 	}
 	if runner.ran("rm -f " + name) {
 		t.Fatal("removed live job")
 	}
-	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { m.mu.Lock(); b.generation++; m.mu.Unlock(); return true, nil }); err != nil {
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { m.mu.Lock(); b.generation++; m.mu.Unlock(); return true, nil }); err != ErrCleanupDeferred {
 		t.Fatal(err)
 	}
 	if runner.ran("rm -f " + name) {

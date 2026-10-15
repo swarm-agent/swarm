@@ -2,24 +2,28 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 )
 
+// ErrCleanupDeferred means no removal was confirmed; durable cleanup must retry.
+var ErrCleanupDeferred = errors.New("sandbox cleanup deferred")
+
 // EndJob removes only the disposable container, never the shared home volume or
 // checkout. Lifecycle leases refuse removal while a command is still in flight.
 func (m *Manager) EndJob(ctx context.Context, checkout string, terminal func() (bool, error)) error {
 	if m == nil || !m.Active() || checkout == "" {
-		return nil
+		return ErrCleanupDeferred
 	}
 	scope, ok, err := m.ScopeFor(checkout)
 	if err != nil {
 		return err
 	}
 	if !ok || scope.JobCheckout == "" || scope.ReviewCheckout != "" {
-		return nil
+		return ErrCleanupDeferred
 	}
 	name := scopeContainerName(scope)
 	m.mu.Lock()
@@ -33,8 +37,11 @@ func (m *Manager) EndJob(ctx context.Context, checkout string, terminal func() (
 		return fmt.Errorf("job cleanup requires durable terminal state")
 	}
 	done, err := terminal()
-	if err != nil || !done {
+	if err != nil {
 		return err
+	}
+	if !done {
+		return ErrCleanupDeferred
 	}
 	return m.endJobGeneration(ctx, name, b, generation, terminal)
 }
@@ -52,7 +59,7 @@ func (m *Manager) endJobGeneration(ctx context.Context, name string, b *box, gen
 			}
 		}
 		m.mu.Unlock()
-		return nil
+		return ErrCleanupDeferred
 	}
 	m.mu.Unlock()
 	return m.removeJobContainerFenced(ctx, name, b, generation, true)
@@ -67,7 +74,7 @@ func (m *Manager) removeJobContainerFenced(ctx context.Context, name string, exp
 	b := m.boxes[name]
 	if fenced && (b != expected || (b != nil && b.generation != generation)) {
 		m.mu.Unlock()
-		return nil
+		return ErrCleanupDeferred
 	}
 	if b == nil {
 		b = &box{name: name}

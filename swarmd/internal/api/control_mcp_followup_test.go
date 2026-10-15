@@ -35,3 +35,32 @@ func TestControlMCPGetJobFollowupFailure(t *testing.T) {
 		}
 	}
 }
+
+// Purpose: jobView must preserve actionable permission waits over active
+// follow-up receipts. The MCP tool boundary proves status and caller guidance.
+func TestControlMCPGetJobFollowupPermissionWait(t *testing.T) {
+	for _, followup := range []string{"running", "queued"} {
+		for _, tc := range []struct{ tool, status, next string }{{"ask_user", "needs_input", "swarm_answer_job"}, {"bash", "waiting_on_approval", "see waiting_on"}} {
+			t.Run(followup+tc.status, func(t *testing.T) {
+				h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if strings.Contains(r.URL.Path, "/sessions/") {
+						json.NewEncoder(w).Encode(map[string]any{"pending_permissions": []map[string]any{{"id": "permission", "tool_name": tc.tool}}, "active_run_intent": map[string]any{"status": "running"}})
+					} else {
+						json.NewEncoder(w).Encode(map[string]any{"run": map[string]any{"status": "succeeded", "session_id": "session", "followup_status": followup}})
+					}
+				})
+				request := httptest.NewRequest("POST", "/mcp", nil)
+				request = request.WithContext(context.WithValue(request.Context(), productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: "acct", UserID: "user", Scopes: []string{"sessions:read"}}))
+				out, err := controlMCPGetJob(&controlMCPCall{request: request, next: h}, map[string]any{"job_id": "worker/w1/r1"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, _ := json.Marshal(out)
+				if !strings.Contains(string(b), `"status":"`+tc.status+`"`) || !strings.Contains(string(b), tc.next) {
+					t.Fatal(string(b))
+				}
+			})
+		}
+	}
+}
