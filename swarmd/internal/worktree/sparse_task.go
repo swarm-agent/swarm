@@ -69,6 +69,10 @@ func runGitAllocation(path string, stdin []byte, args ...string) (string, error)
 }
 
 func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, args ...string) (string, error) {
+	return runGitAllocationGuarded(path, stdin, timeout, "", args...)
+}
+
+func runGitAllocationGuarded(path string, stdin []byte, timeout time.Duration, guard string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
@@ -79,10 +83,15 @@ func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, a
 	sandbox.Prepare(ctx, cmd)
 	defer sandbox.ReleaseGit(cmd)
 	waitForAllocationGit(cmd)
+	if guard != "" {
+		if err := recordReviewWriter(guard, cmd); err != nil {
+			return "", fmt.Errorf("%w: %v", ErrAllocationWriterUnconfirmed, err)
+		}
+	}
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {
-		if allocationGitRouted(cmd) && (errors.Is(err, exec.ErrWaitDelay) || cmd.ProcessState == nil || (cmd.ProcessState.ExitCode() != 124 && cmd.ProcessState.ExitCode() != 137)) {
+		if allocationGitRouted(cmd) && (errors.Is(err, exec.ErrWaitDelay) || cmd.ProcessState == nil || cmd.ProcessState.ExitCode() < 0) {
 			return "", fmt.Errorf("%w: %v", ErrAllocationWriterUnconfirmed, err)
 		}
 		if ctx.Err() != nil {

@@ -31,7 +31,7 @@ func (s *WorkerExecutionService) SweepReviewAdmissions(ctx context.Context) erro
 		if !store.AutomationV2Terminal(r.Status) {
 			continue
 		}
-		if err := s.cleanupReviewAdmission(r); err != nil {
+		if err := s.cleanupReviewAdmissionMode(r, true); err != nil {
 			failures = append(failures, fmt.Errorf("review admission cleanup: %w", err))
 		}
 	}
@@ -39,6 +39,14 @@ func (s *WorkerExecutionService) SweepReviewAdmissions(ctx context.Context) erro
 }
 
 func (s *WorkerExecutionService) cleanupReviewAdmission(r store.WorkerRunRecord) error {
+	return s.cleanupReviewAdmissionMode(r, false)
+}
+
+func (s *WorkerExecutionService) cleanupReviewAdmissionMode(r store.WorkerRunRecord, startup bool) error {
+	cleanup := s.host.trees.CleanupReviewAdmission
+	if startup {
+		cleanup = s.host.trees.RecoverReviewAdmission
+	}
 	if r.Role != store.WorkerRoleReviewer {
 		return nil
 	}
@@ -62,7 +70,7 @@ func (s *WorkerExecutionService) cleanupReviewAdmission(r store.WorkerRunRecord)
 				return err
 			}
 		}
-		remove := func() error { return s.host.trees.CleanupReviewAdmission(snapshot.WorkspacePath, r.SessionID) }
+		remove := func() error { return cleanup(snapshot.WorkspacePath, r.SessionID) }
 		state, registered, err := s.host.runs.sessions.Store().GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
 		if err != nil {
 			return err
@@ -85,5 +93,5 @@ func (s *WorkerExecutionService) cleanupReviewAdmission(r store.WorkerRunRecord)
 	if err != nil {
 		return err
 	}
-	return s.host.trees.CleanupReviewAdmission(entry.Path, r.SessionID)
+	return cleanup(entry.Path, r.SessionID)
 }

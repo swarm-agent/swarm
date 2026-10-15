@@ -53,10 +53,18 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 	if err != nil {
 		return Allocation{}, fmt.Errorf("allocation writer guard: %w", err)
 	}
+	if _, err := guardFile.WriteString("not-started"); err != nil {
+		guardFile.Close()
+		return Allocation{}, err
+	}
+	if err := guardFile.Sync(); err != nil {
+		guardFile.Close()
+		return Allocation{}, err
+	}
 	if err := guardFile.Close(); err != nil {
 		return Allocation{}, err
 	}
-	_, allocationErr := runGitAllocationTimeout(root, nil, timeout, "worktree", "add", "--detach", path, head)
+	_, allocationErr := runGitAllocationGuarded(root, nil, timeout, guard, "worktree", "add", "--detach", path, head)
 	if errors.Is(allocationErr, ErrAllocationWriterUnconfirmed) {
 		return Allocation{}, allocationErr
 	}
@@ -206,6 +214,15 @@ func ValidateReviewExecutionIdentity(source, lane, owner, head string) error {
 // from a durable run receipt and exclude live execution before calling it. Unlike
 // normal removal it tolerates a checkout interrupted before HEAD was written.
 func (s *Service) CleanupReviewAdmission(source, owner string) error {
+	return s.cleanupReviewAdmission(source, owner, false)
+}
+
+// RecoverReviewAdmission is only for the startup sweep before admissions resume.
+func (s *Service) RecoverReviewAdmission(source, owner string) error {
+	return s.cleanupReviewAdmission(source, owner, true)
+}
+
+func (s *Service) cleanupReviewAdmission(source, owner string, startup bool) error {
 	if strings.TrimSpace(owner) == "" {
 		return errors.New("review owner required")
 	}
@@ -217,8 +234,8 @@ func (s *Service) CleanupReviewAdmission(source, owner string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Lstat(path + ".review-writer"); !errors.Is(err, os.ErrNotExist) {
-		return ErrAllocationWriterUnconfirmed
+	if err := recoverReviewWriter(path+".review-writer", startup); err != nil {
+		return err
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil {

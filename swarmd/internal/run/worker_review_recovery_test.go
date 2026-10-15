@@ -60,6 +60,15 @@ func TestSweepReviewAdmissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Simulate a crash between guard creation and writer identity persistence.
+	guard := paths["failed"] + ".review-writer"
+	if err := os.WriteFile(guard, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.host.trees.CleanupReviewAdmission(entry.Path, "review-failed"); err == nil {
+		t.Fatal("runtime cleanup accepted legacy guard")
+	}
+	// Startup uses only durable receipts/guards, not an in-memory writer handle.
 	for i := 0; i < 2; i++ {
 		if err := s.SweepReviewAdmissions(context.Background()); err != nil {
 			t.Fatal(err)

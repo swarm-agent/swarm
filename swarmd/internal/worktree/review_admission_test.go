@@ -66,6 +66,17 @@ func TestReviewAdmissionTimeoutCleanup(t *testing.T) {
 	if err := s.CleanupReviewAdmission(repo, "timeout-review"); err != nil {
 		t.Fatal("not idempotent", err)
 	}
+	// An ordinary Git failure is terminated, and must not retain a writer guard.
+	failScript := "#!/bin/sh\nif [ \"$3\" = worktree ] && [ \"$4\" = add ]; then exit 128; fi\nexec \"$REAL_GIT\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(failScript), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.allocateReviewWorkspaceTimeout(repo, "timeout-review", head, time.Second); err == nil || errors.Is(err, ErrAllocationWriterUnconfirmed) {
+		t.Fatalf("ordinary exit: %v", err)
+	}
+	if _, err := os.Stat(path + ".review-writer"); !os.IsNotExist(err) {
+		t.Fatal("exit 128 retained guard", err)
+	}
 	// A crash after folder removal but before registration pruning must recover.
 	command("worktree", "add", "--detach", path, head)
 	if err := os.RemoveAll(path); err != nil {
