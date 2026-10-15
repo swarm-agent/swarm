@@ -61,8 +61,10 @@ func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry
 	defer cancel()
 	e.Proof = nil
 	proof := &publish.Proof{Command: strings.TrimSpace(command)}
-	// ls-tree distinguishes an absent declaration from a failed Git read.
-	names, err := proofGit(ctx, rule.Folder, "ls-tree", "--name-only", e.Request.Head, "--", ".swarm-proof.json")
+	// A committed declaration applies only when this job introduces or changes
+	// it. An unchanged declaration inherited from an earlier landing is not this
+	// job's proof (nor a source of files for an explicit API proof command).
+	names, err := proofGit(ctx, rule.Folder, "diff", "--no-ext-diff", "--no-renames", "--name-only", "--diff-filter=AM", e.Request.BaseCommit, e.Request.Head, "--", ".swarm-proof.json")
 	if err != nil {
 		return fmt.Errorf("proof declaration: %w", err)
 	}

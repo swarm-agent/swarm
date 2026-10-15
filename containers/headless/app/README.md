@@ -354,7 +354,8 @@ Add `--pipeline` to `install.sh workspace publish PATH COMMAND --land --require-
 without a reproduction; the option is off by default. `swarm_give_job`, the direct
 worker API and SDK accept a `proof` command run from the folder root. Alternatively,
 the coder commits `.swarm-proof.json`, for example
-`{"command":"bash repro.sh","files":["repro.sh"]}`. Listed files must be newly
+`{"command":"bash repro.sh","files":["repro.sh"]}`. Only declarations added or changed by the job apply; unchanged declarations from
+previous landings are ignored. Listed files must be newly
 added regular files; they are copied from head into the disposable base checkout
 so missing scripts cannot masquerade as reproduction failures.
 
