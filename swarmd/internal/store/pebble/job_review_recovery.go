@@ -55,8 +55,8 @@ func (ws *WorkerStore) ReviewRecoveryPage(account, after string) ([]Signal, stri
 				return nil, "", err
 			}
 			for _, r := range record.ByHead {
-				if r.Verdict == "ok" {
-					out = append(out, Signal{Kind: "job.reviewed", Account: account, Refs: map[string]string{"worker_id": worker, "run_id": run}, Attrs: map[string]string{"verdict": "ok", "head": r.Head}})
+				if r.Verdict == "ok" || r.Verdict == "block" {
+					out = append(out, Signal{Kind: "job.reviewed", Account: account, Refs: map[string]string{"worker_id": worker, "run_id": run}, Attrs: map[string]string{"verdict": r.Verdict, "head": r.Head}})
 					break
 				}
 			}

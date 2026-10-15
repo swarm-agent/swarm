@@ -26,9 +26,10 @@ const ConfigEnv = "SWARM_PUBLISH_CONFIG"
 
 // Rule is one folder's publish setting.
 type Rule struct {
-	Folder  string `json:"folder"`
-	Command string `json:"command"`
-	Mode    string `json:"mode"`
+	Pipeline bool   `json:"pipeline"`
+	Folder   string `json:"folder"`
+	Command  string `json:"command"`
+	Mode     string `json:"mode"`
 	// Auto delivers a worker job that finished with commits without
 	// waiting for an AI to call swarm_deliver_job.
 	Auto bool `json:"auto"`
@@ -72,7 +73,7 @@ var (
 )
 
 // Load reads the rules: one per line, `FOLDER<TAB>COMMAND[<TAB>OPTIONS]`, where
-// OPTIONS is a comma-separated list of land, auto, sync and require-review; blank lines and
+// OPTIONS is a comma-separated list of land, auto, sync, require-review and pipeline; blank lines and
 // #comments are ignored. A missing file is no rules. The file must be
 // owned by root and not writable by anyone else, like the commands it names:
 // only the machine's administrator decides what runs.
@@ -109,14 +110,19 @@ func Load(path string) ([]Rule, error) {
 					rule.Mode = "land"
 				case "auto":
 					rule.Auto = true
+				case "pipeline":
+					rule.Pipeline = true
 				case "require-review":
 					rule.RequireReview = true
 				case "sync":
 					rule.Sync = true
 				default:
-					return nil, fmt.Errorf("publish config line %d: options are land, auto, sync and require-review, comma-separated", line)
+					return nil, fmt.Errorf("publish config line %d: options are land, auto, sync, require-review and pipeline, comma-separated", line)
 				}
 			}
+		}
+		if rule.Pipeline && (!rule.Auto || !rule.RequireReview || rule.Mode != "land") {
+			return nil, fmt.Errorf("publish config line %d: pipeline requires land, require-review and auto", line)
 		}
 		if rule.RequireReview && rule.Mode != "land" {
 			return nil, fmt.Errorf("publish config line %d: require-review requires land", line)

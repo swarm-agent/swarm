@@ -17,7 +17,7 @@ import (
 )
 
 // Purpose: prepareLandWorktree must preserve approval only across an unchanged
-// real Git patch, and abort conflicts without landing. A temporary repository
+// real Git patch (including pipeline range-diff verification), and abort conflicts without landing. A temporary repository
 // exercises Git's actual merge-base, patch-id and rebase behavior at the queue
 // preparation boundary, with no daemon, credentials or external repository.
 // Exact approval must supersede stale retry evidence when upstream absorbs a
@@ -122,7 +122,7 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 					}
 					return nil
 				}
-				return prepareLandWorktree(ctx, publish.Rule{Mode: "land", RequireReview: true}, e, dir, nil, 1, func(ctx context.Context, r sandbox.ExecRequest) (*provider.ExecResult, error) {
+				return prepareLandWorktree(ctx, publish.Rule{Mode: "land", RequireReview: true, Pipeline: mode == "same_patch" || mode == "conflict"}, e, dir, nil, 1, func(ctx context.Context, r sandbox.ExecRequest) (*provider.ExecResult, error) {
 					cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
 					cmd.Dir = r.WorkingDir
 					cmd.Env = env

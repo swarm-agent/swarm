@@ -343,3 +343,7 @@ cannot expire or be cancelled by ordinary API/MCP cancellation. Restart replaces
 it with a fresh admission manager; failure cleanup releases it with the same
 claim. If the installer is killed without executing its trap, operator recovery
 is required; the daemon never kills running work or performs host installation.
+
+### Opt-in review pipeline
+
+Add `--pipeline` to `install.sh workspace publish PATH COMMAND --land --require-review --auto` to enable daemon-owned review and bounded fixes. Without this flag the existing manual-review behavior is unchanged. The publish rule exposes `pipeline`; `swarm_get_job` exposes `review_chain` with the head, reviewer job, BLOCK round, findings and next transition. Account limits expose `fix_rounds` (default 2, range 0–20): reaching that many BLOCK verdicts stops the chain with `job.review_exhausted`. A stopped chain requires outside intervention. Review admission and follow-ups use stable per-head request identities. OK evidence still passes through the existing landing queue and folder checks.

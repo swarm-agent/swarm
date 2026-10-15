@@ -35,7 +35,11 @@ func TestReviewerChecksPrompt(t *testing.T) {
 		"Before narrow relevant builds and tests",
 		`timeout "${SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS}s" bash -lc "$SWARM_REVIEW_CHECKS"`,
 		"Never replace these environment values",
-		"If checks fail or time out, return VERDICT: BLOCK and quote the failing output",
+		"If checks fail or time out, quote the failing output",
+		"BLOCK only for a defect in the diff",
+		"run that one test at the base commit",
+		"Edge cases outside the requested scope are NOTES",
+		"A re-review checks previous findings first",
 		"no folder checks are defined and run the narrow tests",
 	} {
 		if !strings.Contains(prompt, instruction) {

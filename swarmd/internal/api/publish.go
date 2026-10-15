@@ -267,7 +267,7 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 			return err
 		}
 		for _, sig := range page.Signals {
-			if autoPublishSignal(sig.Kind, sig.Attrs["verdict"]) {
+			if autoPublishSignal(sig.Kind, sig.Attrs["verdict"]) || (sig.Kind == "job.reviewed" && sig.Attrs["verdict"] == "block") {
 				if err := deliver(ctx, sig); err != nil {
 					return err // retried from this signal
 				}
@@ -348,6 +348,33 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	}
 	if sig.Kind == "job.reviewed" && !reviewGated(rule) {
 		return nil
+	}
+	if rule.Pipeline {
+		status, _ := view["status"].(string)
+		switch autoPublishNext(status, result) {
+		case autoPublishSkip:
+			return nil
+		case autoPublishWait:
+			return p.retry(sig, errAutoPublishWait)
+		}
+		ready, err := c.advancePipeline(workerID, runID, refs, rule, result)
+		if err != nil {
+			principal, _ := PrincipalFromRequest(c.request)
+			key := pipelineKey(principal.AccountScopeID, controlMCPJobID(controlMCPJobWorker, workerID, runID))
+			var chain ReviewPipeline
+			if _, readErr := p.state.GetJSON(key, &chain); readErr != nil {
+				return readErr
+			}
+			chain.Next = "review_failed"
+			chain.Findings = err.Error()
+			if writeErr := p.state.PutJSON(key, chain); writeErr != nil {
+				return writeErr
+			}
+			return c.signalPublishDurable(controlMCPJobWorker, workerID, runID, refs, "job.review_failed", pebblestore.SignalSeverityWarning, "Review pipeline stopped: "+controlMCPTruncate(err.Error(), 200), map[string]string{"head": controlMCPString(result, "head")})
+		}
+		if !ready {
+			return nil
+		}
 	}
 	// A missing review must not hold the signal cursor: a later durable
 	// job.reviewed signal will retry delivery against the then-current head.

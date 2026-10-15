@@ -9,6 +9,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Correct project cache limits to use the live box limits record, seed the warm pnpm store, and align Docker cache tests with the sandbox UID. Docs impact: updated cache configuration and seeding guidance.
 
 - Share project-local Go build/module caches and pnpm stores across sandbox jobs and reviewers, with trimpath, default-image seeding, size reporting, and a configurable 10 GiB soft trimming limit. Docs impact: installer README and sandbox resource guidance.
+- Add an opt-in folder review pipeline with bounded BLOCK handling, per-job chain visibility and unchanged-patch landing verification; scope-lock the system reviewer. Docs impact: installer pipeline policy and reviewer guidance.
 
 - Preserve the latest worker follow-up across provider/model handoffs and deliver accepted Unicode question answers without generic tool-output previews. Add provider-request regression assertions. Docs impact: none.
 

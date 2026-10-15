@@ -773,6 +773,19 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	if _, uncommitted := result["uncommitted_changes"]; uncommitted && status == "needs_review" {
 		out["next"] = controlMCPUncommittedNext
 	}
+	if c.server != nil && c.server.sessions != nil && c.server.sessions.Store() != nil {
+		if principal, ok := PrincipalFromRequest(c.request); ok {
+			var chain ReviewPipeline
+			found, err := c.server.sessions.Store().Underlying().GetJSON(pipelineKey(principal.AccountScopeID, controlMCPJobID(kind, a, b)), &chain)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				out["review_chain"] = chain
+				out["next"] = chain.Next
+			}
+		}
+	}
 	controlMCPApplyJobDelivery(out)
 	integration := controlMCPMap(result["integration"])
 	if delivered := taskDeliveredState(controlMCPString(integration, "state"), controlMCPString(integration, "pull_request_url")); delivered != "" {

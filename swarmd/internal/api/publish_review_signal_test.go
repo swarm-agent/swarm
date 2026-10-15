@@ -11,7 +11,8 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: AutoPublisher.consume must route durable OK review signals into
+// Purpose: AutoPublisher.consume routes BLOCK for policy evaluation but must
+// never admit it to landing. Durable OK review signals flow into
 // publishJob and the durable queue without replaying them after restart. Real
 // signal/review/queue stores prove the integration; job discovery and the
 // external landing command are supplied at their boundaries, not providers.
@@ -91,8 +92,8 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	appendSignal("job.reviewed", "block")
 	consume()
 	assertEmpty()
-	if calls != 1 {
-		t.Fatalf("BLOCK dispatched: %d", calls)
+	if calls != 2 {
+		t.Fatalf("BLOCK policy dispatch count: %d", calls)
 	}
 	r, err := ws.RecordWorkerRun(account, store.WorkerRunRecord{WorkerID: reviewer.ID, Role: store.WorkerRoleReviewer, UserID: user, WorkspaceID: "workspace", Status: "succeeded", RequestSource: "direct", Input: map[string]any{"review_job": jobID}})
 	if err != nil {
@@ -107,7 +108,7 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	}
 	consume()
 	e, _, err := q.Get(account, jobID)
-	if err != nil || e.State != "queued" || e.Request.Head != head || calls != 2 {
+	if err != nil || e.State != "queued" || e.Request.Head != head || calls != 3 {
 		t.Fatalf("OK failed to queue landing: %+v calls=%d err=%v", e, calls, err)
 	}
 	land := 0
@@ -125,7 +126,7 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	}
 	p = s.NewAutoPublisher(feed, db)
 	consume()
-	if calls != 2 || land != 1 {
+	if calls != 3 || land != 1 {
 		t.Fatal("review signal replayed after restart")
 	}
 }

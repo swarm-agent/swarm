@@ -319,7 +319,7 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	if code != 0 || strings.TrimSpace(dirty) != "" {
 		return errors.New("job worktree is not clean")
 	}
-	var reviewedHead, reviewedPatch string
+	var reviewedHead, reviewedPatch, oldBase string
 	patchID := func(head, base string) (string, error) {
 		// Fixed shell program; refs are separate positional arguments. Compute
 		// the whole job's patch without truncating diff bytes through tool output.
@@ -394,6 +394,16 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			}
 		}
 	}
+	if rule.Pipeline {
+		raw, exit, readErr := git("merge-base", reviewedHead, base.Commit)
+		if readErr != nil || exit != 0 {
+			return errors.New("cannot read range-diff base")
+		}
+		oldBase, err = publish.ParseHeadOutput(raw)
+		if err != nil {
+			return err
+		}
+	}
 	_, code, err = git("rebase", base.Commit)
 	if err != nil {
 		return err
@@ -427,6 +437,13 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	parsedHead, err := publish.ParseHeadOutput(head)
 	if err != nil {
 		return err
+	}
+	if rule.Pipeline && parsedHead != reviewedHead {
+		// Let Git produce only correspondence headers, never a truncated patch.
+		diff, exit, readErr := git("range-diff", "--no-color", "--no-patch", oldBase+".."+reviewedHead, base.Commit+".."+parsedHead)
+		if readErr != nil || exit != 0 || !unchangedRangeDiff(diff) {
+			return reviewRequired(parsedHead)
+		}
 	}
 	if reviewGated(rule) && parsedHead != reviewedHead {
 		patch, err := patchID(parsedHead, base.Commit)

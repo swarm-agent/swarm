@@ -75,5 +75,6 @@ func controlMCPLimitsSchema() map[string]any {
 		"delegation_waves":       map[string]any{"type": "integer", "minimum": 0, "maximum": 256},
 		"active_children":        map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
 		"swarm_children":         map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
+		"fix_rounds":             map[string]any{"type": "integer", "minimum": 0, "maximum": 20},
 	})
 }
