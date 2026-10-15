@@ -190,6 +190,39 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	if found && env.Account != e.Account {
 		return errors.New("environment belongs to another account")
 	}
+	if reviewGated(rule) {
+		ws := c.server.sessions.Store().WorkerStore()
+		e.ValidateReview = func(head, patch string) error {
+			reviews, err := ws.JobReviews(e.Account, a, b)
+			if err != nil {
+				return err
+			}
+			if err := rejectBlockingPatch(head, patch, reviews, func(reviewHead string) (string, error) {
+				res, err := m.Exec(ctx, scope, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-c", `git diff --no-ext-diff --no-textconv --binary "$1...$2" | git patch-id --stable`, "patch-id", e.Request.BaseBranch, reviewHead}, WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
+				if err != nil {
+					return "", err
+				}
+				fields := strings.Fields(res.Stdout)
+				if res.ExitCode != 0 || len(fields) != 2 {
+					return "", errors.New("cannot verify blocking review patch")
+				}
+				return fields[0], nil
+			}); err != nil {
+				return err
+			}
+			if e.Review != nil {
+				r, err := ws.CurrentValidJobReview(e.Account, a, b, e.Review.ReviewedHead)
+				if err != nil {
+					return err
+				}
+				if r == nil || r.Verdict != "ok" || (e.Review.ReviewID != "" && e.Review.ReviewID != r.ReviewerJobID) {
+					return reviewRequired(head)
+				}
+				e.Review.ReviewID = r.ReviewerJobID
+			}
+			return nil
+		}
+	}
 	return prepareLandWorktree(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
 		func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
 			return m.Exec(ctx, scope, req)
@@ -256,12 +289,36 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 		if len(reviewChecks) != 1 {
 			return reviewRequired(reviewedHead)
 		}
+		current := reviewedHead
+		if e.Review != nil {
+			patch, err := patchID(current, base.Commit)
+			if err != nil {
+				return err
+			}
+			if patch != e.Review.PatchID {
+				return reviewRequired(current)
+			}
+			reviewedHead = e.Review.ReviewedHead
+		}
 		if err := reviewChecks[0](reviewedHead); err != nil {
 			return err
 		}
-		reviewedPatch, err = patchID(reviewedHead, base.Commit)
+		reviewedPatch, err = patchID(current, base.Commit)
 		if err != nil {
 			return err
+		}
+		if e.Review == nil {
+			e.Review = &publish.ReviewEquivalence{ReviewedHead: reviewedHead, RebasedHead: current, PatchID: reviewedPatch}
+		}
+		if e.ValidateReview != nil {
+			if err := e.ValidateReview(current, reviewedPatch); err != nil {
+				return err
+			}
+		}
+		if e.Checkpoint != nil {
+			if err := e.Checkpoint(); err != nil {
+				return err
+			}
 		}
 	}
 	_, code, err = git("rebase", base.Commit)
@@ -269,6 +326,13 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 		return err
 	}
 	if code != 0 {
+		// A conflicted attempt must never leave transferable approval behind.
+		e.Review = nil
+		if e.Checkpoint != nil {
+			if err := e.Checkpoint(); err != nil {
+				return err
+			}
+		}
 		files, _, readErr := git("diff", "--name-only", "--diff-filter=U")
 		if readErr != nil {
 			return readErr
@@ -298,6 +362,14 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 		}
 		if patch != reviewedPatch {
 			return reviewRequired(parsedHead)
+		}
+	}
+	if reviewGated(rule) {
+		e.Review.RebasedHead = parsedHead
+		if e.Checkpoint != nil {
+			if err := e.Checkpoint(); err != nil {
+				return err
+			}
 		}
 	}
 	e.Request.Head = parsedHead
@@ -349,7 +421,12 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 		return errors.New("checks left uncommitted changes")
 	}
 	if reviewGated(rule) {
-		// Checks may take minutes; do not ignore a newer BLOCK verdict.
+		// Checks may take minutes; BLOCK on any equivalent patch wins.
+		if e.ValidateReview != nil {
+			if err := e.ValidateReview(parsedHead, reviewedPatch); err != nil {
+				return err
+			}
+		}
 		return reviewChecks[0](reviewedHead)
 	}
 	return nil

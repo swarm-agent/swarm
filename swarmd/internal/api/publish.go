@@ -159,11 +159,12 @@ func (c *controlMCPCall) signalPublish(kind, a, b string, refs controlMCPJobRefs
 
 // AutoPublisher delivers finished jobs of folders with an auto publish rule.
 type AutoPublisher struct {
-	server   *Server
-	feed     outbox.Feed
-	state    *pebblestore.Store
-	mu       sync.Mutex
-	attempts map[uint64]int
+	server       *Server
+	feed         outbox.Feed
+	state        *pebblestore.Store
+	mu           sync.Mutex
+	reviewCursor string
+	attempts     map[uint64]int
 }
 
 const (
@@ -219,6 +220,11 @@ func (p *AutoPublisher) Run(ctx context.Context) {
 }
 
 func (p *AutoPublisher) once(ctx context.Context) error {
+	if p.server.publishConfig != "" {
+		if err := p.recoverReviews(ctx, p.deliver); err != nil {
+			return err
+		}
+	}
 	return p.consume(ctx, p.deliver)
 }
 

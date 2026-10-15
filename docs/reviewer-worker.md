@@ -128,3 +128,9 @@ A clean rebase may carry approval forward within landing preparation only when
 its whole-job stable Git patch-id is unchanged. Conflicted rebases are aborted
 and sent back; commit the resolution and request a fresh exact-head review.
 Checks that change HEAD or leave uncommitted changes still refuse landing.
+The queue durably checkpoints the reviewed head, rebased head, patch-id and
+review identity, so unchanged-patch retries survive MOVED receipts and restart.
+A BLOCK on the rebased head or another reviewed head with the same patch-id
+wins over carried approval. Automatic publishing also scans durable OK evidence
+at startup and periodically in bounded pages; a lost review signal cannot
+permanently strand an approved job.

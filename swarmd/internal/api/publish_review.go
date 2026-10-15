@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"swarm/packages/swarmd/internal/publish"
+	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
 type missingLandReview struct{ head string }
@@ -40,3 +41,22 @@ func autoPublishSignal(kind, verdict string) bool {
 }
 
 func reviewGated(rule publish.Rule) bool { return rule.Mode == "land" && rule.RequireReview }
+
+func rejectBlockingPatch(head, patch string, reviews []store.JobReview, patchID func(string) (string, error)) error {
+	for _, r := range reviews {
+		if r.Verdict != "block" {
+			continue
+		}
+		if r.Head == head {
+			return reviewRequired(head)
+		}
+		blockedPatch, err := patchID(r.Head)
+		if err != nil {
+			return err
+		}
+		if blockedPatch == patch {
+			return reviewRequired(head)
+		}
+	}
+	return nil
+}

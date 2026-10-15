@@ -18,15 +18,25 @@ type CheckResult struct {
 	ExitCode int    `json:"exit_code"`
 	Output   string `json:"output,omitempty"`
 }
+type ReviewEquivalence struct {
+	ReviewedHead string `json:"reviewed_head"`
+	RebasedHead  string `json:"rebased_head"`
+	PatchID      string `json:"patch_id"`
+	ReviewID     string `json:"review_id"`
+}
+
 type Entry struct {
-	Account   string        `json:"account"`
-	Request   Request       `json:"request"`
-	State     string        `json:"delivery_state"`
-	Commit    string        `json:"commit,omitempty"`
-	Reason    string        `json:"reason,omitempty"`
-	Checks    []CheckResult `json:"checks,omitempty"`
-	SendBacks int           `json:"send_backs"`
-	Attempt   int           `json:"attempt,omitempty"`
+	ValidateReview func(head, patch string) error `json:"-"`
+	Checkpoint     func() error                   `json:"-"`
+	Review         *ReviewEquivalence             `json:"review_equivalence,omitempty"`
+	Account        string                         `json:"account"`
+	Request        Request                        `json:"request"`
+	State          string                         `json:"delivery_state"`
+	Commit         string                         `json:"commit,omitempty"`
+	Reason         string                         `json:"reason,omitempty"`
+	Checks         []CheckResult                  `json:"checks,omitempty"`
+	SendBacks      int                            `json:"send_backs"`
+	Attempt        int                            `json:"attempt,omitempty"`
 }
 
 // ErrNotSettled defers landing until the job and any follow-up have settled.
@@ -186,6 +196,7 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 		if err = q.save(e); err != nil {
 			return err
 		}
+		e.Checkpoint = func() error { return q.save(e) }
 		for attempt := 0; attempt < 3; attempt++ {
 			err = h.Prepare(ctx, &e)
 			if errors.Is(err, ErrNotSettled) {
@@ -195,6 +206,9 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 				return q.save(e)
 			}
 			if err == nil {
+				if err = q.save(e); err != nil {
+					return err
+				}
 				var receipt LandResult
 				receipt, err = h.Land(ctx, e)
 				if err == nil && !receipt.Moved {

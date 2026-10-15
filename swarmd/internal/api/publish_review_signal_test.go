@@ -97,7 +97,10 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	if err := ws.RecordJobReview(account, coder.ID, target.ID, store.JobReview{Head: head, Verdict: "ok", ReviewerJobID: "worker/" + reviewer.ID + "/" + r.ID, RecordedAt: 1}); err != nil {
 		t.Fatal(err)
 	}
-	appendSignal("job.reviewed", "ok")
+	// Deliberately omit the OK signal: durable recovery must still enqueue.
+	if err := p.recoverReviews(context.Background(), deliver); err != nil {
+		t.Fatal(err)
+	}
 	consume()
 	e, _, err := q.Get(account, jobID)
 	if err != nil || e.State != "queued" || e.Request.Head != head || calls != 2 {

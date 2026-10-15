@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -194,5 +195,32 @@ func TestPublishJobRequiresRecordedReview(t *testing.T) {
 				t.Fatalf("unauthorized queue mutation: %+v %+v", out, entry)
 			}
 		}
+	}
+}
+
+// Purpose: rejectBlockingPatch is the preparation policy boundary: exact-head
+// and equivalent-head BLOCK both override an older OK, while distinct patches
+// do not. Lookup failure must fail closed, never authorize landing.
+func TestLandReviewBlockingPatch(t *testing.T) {
+	for _, tc := range []struct {
+		name, head, patch string
+		fail, want        bool
+	}{
+		{"rebased", "current", "different", false, true},
+		{"equivalent", "other", "same", false, true},
+		{"different", "other", "different", false, false},
+		{"lookup error", "other", "", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := rejectBlockingPatch("current", "same", []store.JobReview{{Head: "original", Verdict: "ok"}, {Head: tc.head, Verdict: "block"}}, func(string) (string, error) {
+				if tc.fail {
+					return "", errors.New("unavailable")
+				}
+				return tc.patch, nil
+			})
+			if (err != nil) != tc.want {
+				t.Fatalf("BLOCK decision: %v", err)
+			}
+		})
 	}
 }
