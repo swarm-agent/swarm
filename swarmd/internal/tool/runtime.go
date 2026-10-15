@@ -251,6 +251,8 @@ type WorkspaceScope struct {
 	// ReadOnlyRoots contains narrowly authenticated paths that filesystem reads
 	// may access without treating them as workspace roots or mutation targets.
 	ReadOnlyRoots []string
+	// ReadOnlyBash is set by the compiled agent boundary, never tool arguments.
+	ReadOnlyBash bool
 	// MutationScopes contains the task-owned workspace-relative paths that may
 	// be changed by generic filesystem tools. An empty list preserves the normal
 	// whole-workspace contract; a non-empty list is enforced before mutation.
@@ -474,6 +476,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	}
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
+	normalized.ReadOnlyBash = scope.ReadOnlyBash
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
 	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
 	normalized.RejectScopeExpansion = scope.RejectScopeExpansion
@@ -540,6 +543,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	}
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
+	normalized.ReadOnlyBash = normalized.ReadOnlyBash || override.ReadOnlyBash
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
 	normalized.TaskHistoryOnly = override.TaskHistoryOnly
 	normalized.RejectScopeExpansion = override.RejectScopeExpansion

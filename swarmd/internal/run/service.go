@@ -3042,6 +3042,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
 		runtimeScope.Principal = options.Principal
 		runtimeScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
+		runtimeScope.ReadOnlyBash = agentruntime.IsFinderAgentName(agentProfile.Name) || agentProfile.Name == agentruntime.HelperAgentID
 		runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
 		runtimeCtx = s.withDesignSourcePermission(runtimeCtx, runtimeScope, runID, emit)
 		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{

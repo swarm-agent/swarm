@@ -113,7 +113,7 @@ func (s *Service) runDelegatedLogicalLaunch(ctx context.Context, launch taskLaun
 		Prompt: delegatedPrompt, TargetKind: RunTargetKindSubagent, TargetName: launch.SubagentProfile.Name, AgentName: launch.SubagentProfile.Name,
 	}, func() RunStartMeta {
 		meta := delegatedSubagentRunStartMeta(launch, permissionSessionID, principal, applySessionMutation)
-		meta.DisabledTools = taskDisabledTools(strings.EqualFold(strings.TrimSpace(launch.RequestedSubagent), "coder"))
+		meta.DisabledTools = taskDisabledTools(strings.EqualFold(strings.TrimSpace(launch.RequestedSubagent), "coder") || agentruntime.IsFinderAgentName(launch.RequestedSubagent))
 		if launch.ArtifactRunContext != nil {
 			meta.DisabledTools["write"], meta.DisabledTools["edit"] = true, true
 		}

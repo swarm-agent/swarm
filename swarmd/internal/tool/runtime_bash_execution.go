@@ -23,6 +23,14 @@ func executeBash(parent context.Context, scope WorkspaceScope, args map[string]a
 }
 
 func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[string]any, command string, onDelta func(string)) (string, error) {
+	if scope.ReadOnlyBash {
+		if _, err := sandbox.ReadOnlyCommand(command); err != nil {
+			return "", err
+		}
+		if sandbox.Default() == nil || !sandbox.Default().Active() {
+			return "", fmt.Errorf("read-only bash requires an active sandbox")
+		}
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", errors.New("bash requires command")
@@ -107,8 +115,15 @@ func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scop
 	}
 	capture := newCappedBuffer(maxBashOutputViewerBytes)
 	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
+	argv := []string{"bash", "-c", sandboxBashScript, "swarm-bash", command}
+	if scope.ReadOnlyBash {
+		argv, err = sandbox.ReadOnlyCommand(command)
+		if err != nil {
+			return "", err
+		}
+	}
 	result, runErr := manager.Exec(parent, sandboxScope, sandbox.ExecRequest{
-		Command:    []string{"bash", "-c", sandboxBashScript, "swarm-bash", command},
+		Command:    argv,
 		WorkingDir: scope.PrimaryPath,
 		Timeout:    timeout,
 		MaxTimeout: maxBashTimeout,
