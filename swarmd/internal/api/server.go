@@ -973,14 +973,43 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if s.isShuttingDown() {
+	if reason := s.readinessProblem(); reason != "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 			"ok":     false,
-			"reason": "shutting_down",
+			"reason": reason,
 		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// readinessProblem reports why the daemon cannot take work right now: it is
+// shutting down, it has no running session executor, or its durable store does
+// not answer a read. Reasons are fixed words; nothing about the store, its data
+// or the error is exposed on this unauthenticated route.
+func (s *Server) readinessProblem() string {
+	if s.isShuttingDown() {
+		return "shutting_down"
+	}
+	if s.sessions == nil || s.v3SessionExecutor == nil || s.v3SessionExecutor.ctx == nil || s.v3SessionExecutor.ctx.Err() != nil {
+		return "executor_unavailable"
+	}
+	if !s.sessionStoreAnswers() {
+		return "store_unavailable"
+	}
+	return ""
+}
+
+// sessionStoreAnswers performs one cheap durable read (a session that does not
+// exist). A closed or failing store returns an error or panics; both mean not ready.
+func (s *Server) sessionStoreAnswers() (ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	_, _, err := s.sessions.GetSession("readyz-probe")
+	return err == nil
 }
 
 func (s *Server) handleSystemShutdown(w http.ResponseWriter, r *http.Request) {
