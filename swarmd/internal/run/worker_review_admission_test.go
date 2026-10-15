@@ -233,6 +233,7 @@ esac
 		if err := s.ReconcileWorker(context.Background(), "account", reviewer.ID); err != nil {
 			t.Fatal(err)
 		}
+		s.cleanupWG.Wait() // Async cleanup must complete before inspecting its filesystem postconditions.
 		state, _, err = ss.Store().GetReviewCleanup("account", r.SessionID)
 		if err != nil || state.Phase != "volume_removed" {
 			t.Fatal(state, err)
@@ -242,9 +243,44 @@ esac
 		// sandbox cleanup fails. This real-store integration layer also proves
 		// the durable retry deadline prevents each one-second sweep retrying.
 		sandbox.SetDefault(nil)
+		// A different run's cleanup is deliberately blocked at the async
+		// worker boundary; this review must still settle with its verdict.
+		entered, release := make(chan struct{}), make(chan struct{})
+		s.cleanupMu.Lock()
+		s.cleanupRunning = true
+		s.cleanupQueue = map[string]store.WorkerRunRecord{"slow": {ID: "slow"}}
+		s.cleanupWG.Add(1)
+		s.cleanupMu.Unlock()
+		go s.drainReviewCleanupWith(func(next store.WorkerRunRecord) error {
+			if next.ID == "slow" {
+				close(entered)
+				<-release
+				return nil
+			}
+			return s.performReviewCleanup(next)
+		})
+		<-entered
+		settled := make(chan error, 1)
+		go func() { settled <- s.observeRun(r) }()
+		select {
+		case err := <-settled:
+			if err != nil {
+				close(release)
+				t.Fatal(err)
+			}
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("another run's cleanup blocked settlement")
+		}
+		terminal, _, err := ws.GetWorkerRun("account", reviewer.ID, r.ID)
+		close(release)
+		if err != nil || !store.AutomationV2Terminal(terminal.Status) {
+			t.Fatal("not settled", terminal, err)
+		}
 		if err := s.observeRun(r); err != nil {
 			t.Fatal(err)
 		}
+		s.cleanupWG.Wait()
 		failed, _, err := ws.GetWorkerRun("account", reviewer.ID, r.ID)
 		if err != nil || !store.AutomationV2Terminal(failed.Status) || failed.Cleanup == nil || failed.Cleanup.State != "failed" || failed.Cleanup.LastError == "" || failed.Cleanup.Attempts != 1 {
 			t.Fatal(failed, err)
@@ -252,6 +288,7 @@ esac
 		if err := s.observeRun(r); err != nil {
 			t.Fatal(err)
 		}
+		s.cleanupWG.Wait()
 		unchanged, _, _ := ws.GetWorkerRun("account", reviewer.ID, r.ID)
 		if unchanged.Cleanup.Attempts != 1 {
 			t.Fatal("cleanup ignored backoff", unchanged)
@@ -269,6 +306,7 @@ esac
 			t.Fatal(err)
 		}
 	}
+	s.cleanupWG.Wait()
 	evidence, err := ws.GetJobReview("account", coder.ID, job.ID)
 	if err != nil || evidence == nil || evidence.Verdict != want || evidence.Head != head {
 		t.Fatal(evidence, err)

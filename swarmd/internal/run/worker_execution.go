@@ -25,6 +25,10 @@ import (
 type WorkerExecutionService struct {
 	watchdogBeforeSettleForTest func()
 	cleanupMu                   sync.Mutex
+	cleanupQueue                map[string]store.WorkerRunRecord
+	cleanupRunning              bool
+	cleanupWG                   sync.WaitGroup
+	cleanupClosed               bool
 	activityMu                  sync.Mutex
 	activity                    sync.Map
 	stallTimeout                atomic.Int64

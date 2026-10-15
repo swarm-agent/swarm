@@ -18,7 +18,58 @@ func (s *WorkerExecutionService) retryReviewCleanup(r store.WorkerRunRecord) err
 		return nil
 	}
 	s.cleanupMu.Lock()
-	defer s.cleanupMu.Unlock()
+	if s.cleanupClosed {
+		s.cleanupMu.Unlock()
+		return nil
+	}
+	if s.cleanupQueue == nil {
+		s.cleanupQueue = make(map[string]store.WorkerRunRecord)
+	}
+	s.cleanupQueue[r.AccountScopeID+":"+r.ID] = r
+	if !s.cleanupRunning {
+		s.cleanupRunning = true
+		s.cleanupWG.Add(1)
+		go s.drainReviewCleanup()
+	}
+	s.cleanupMu.Unlock()
+	return nil
+}
+
+// CloseCleanup must run before closing the backing store.
+func (s *WorkerExecutionService) CloseCleanup() {
+	s.cleanupMu.Lock()
+	s.cleanupClosed = true
+	s.cleanupMu.Unlock()
+	s.cleanupWG.Wait()
+}
+
+func (s *WorkerExecutionService) drainReviewCleanup() {
+	s.drainReviewCleanupWith(s.performReviewCleanup)
+}
+
+func (s *WorkerExecutionService) drainReviewCleanupWith(clean func(store.WorkerRunRecord) error) {
+	defer s.cleanupWG.Done()
+	for {
+		s.cleanupMu.Lock()
+		var next store.WorkerRunRecord
+		for key, r := range s.cleanupQueue {
+			next = r
+			delete(s.cleanupQueue, key)
+			break
+		}
+		if next.ID == "" {
+			s.cleanupRunning = false
+			s.cleanupMu.Unlock()
+			return
+		}
+		s.cleanupMu.Unlock()
+		if err := clean(next); err != nil {
+			log.Printf("record review cleanup: %v", err)
+		}
+	}
+}
+
+func (s *WorkerExecutionService) performReviewCleanup(r store.WorkerRunRecord) error {
 	ws, err := s.workerStore()
 	if err != nil {
 		return err

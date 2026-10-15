@@ -196,6 +196,7 @@ func setupWorkerExecutionFixture(t *testing.T, enqueue func(identity.Principal, 
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(execution.CloseCleanup)
 	runs.SetWorkerExecutionService(execution)
 	return runs, ss, execution, entry.WorkspaceID
 }

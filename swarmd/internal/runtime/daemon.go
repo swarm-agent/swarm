@@ -1214,6 +1214,9 @@ func (d *Daemon) cleanup() error {
 			d.copilot = nil
 		}
 		if d.store != nil {
+			if d.workerExecution != nil {
+				d.workerExecution.CloseCleanup()
+			}
 			if err := d.store.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("close store: %w", err))
 			}
