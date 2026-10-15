@@ -25,6 +25,18 @@ import (
 
 const agentBoundCreateBodyLimit = 1 << 20
 
+// agentBoundMaxLifetime caps a gateway token; it is always minted with an expiry.
+const agentBoundMaxLifetime = 30 * 24 * time.Hour
+
+// agentBoundCreateFields is everything an agent-bound token may send when it
+// creates a session. Anything else (project, parent, model, preference,
+// metadata, session ID, worktree, swarm or target routing) is refused, so a new
+// create field is closed to gateways until it is reviewed and added here.
+var agentBoundCreateFields = map[string]bool{
+	"agent_name": true, "client_request_id": true, "idempotency_key": true,
+	"title": true, "mode": true, "workspace_path": true, "workspace_id": true,
+}
+
 // Defaults for what an agent-bound token may start: each message is a model
 // run, each session a new conversation. Polling routes are not limited.
 const (
@@ -174,8 +186,8 @@ func checkAgentBoundCreate(r *http.Request, agent string) error {
 	if name, _ := body["agent_name"].(string); strings.TrimSpace(name) != agent {
 		return fmt.Errorf("an agent-bound token can only create %q sessions", agent)
 	}
-	for _, key := range []string{"project_id", "parent_session_id", "model_profile", "metadata", "preference"} {
-		if _, present := body[key]; present {
+	for key := range body {
+		if !agentBoundCreateFields[key] {
 			return fmt.Errorf("an agent-bound token cannot set %q", key)
 		}
 	}

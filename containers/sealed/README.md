@@ -104,7 +104,11 @@ docker exec -i swarm-sealed swarmctl setup sealed-agent --stdin < frontdesk.json
    --name gateway --expires-in-seconds 2592000 > gateway-token.json)
 ```
 
-The token is refused unless the agent is sealed. Tool names cannot reuse built-in
+The token is refused unless the agent is sealed, and it must expire within 30
+days (`--expires-in-seconds`, or `expiresInSeconds` in the SDK). When it creates
+a session it may send only `agent_name`, `client_request_id`,
+`idempotency_key`, `title`, `mode`, `workspace_path` and `workspace_id`; any
+other field is refused. Tool names cannot reuse built-in
 names: the runtime runs built-ins first, so a custom tool named `bash` would run
 real bash. In the SDK, `client.agents.defineClientTool`, `defineSealedAgent` and
 `createGatewayToken` do the same from a trusted owner backend. The gateway answers

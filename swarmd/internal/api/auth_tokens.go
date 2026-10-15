@@ -147,6 +147,11 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, errors.New("an agent-bound token takes no scopes or worker"))
 				return
 			}
+			// A gateway token sits on an internet-facing host: it must expire.
+			if expiresIn <= 0 || expiresIn > agentBoundMaxLifetime {
+				writeError(w, http.StatusBadRequest, errors.New("an agent-bound token needs expires_in_seconds of at most 30 days"))
+				return
+			}
 			if sealedErr := s.sealedAgentError(accountScopeID, agentName); sealedErr != nil {
 				writeError(w, http.StatusBadRequest, sealedErr)
 				return

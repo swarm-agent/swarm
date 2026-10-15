@@ -121,14 +121,15 @@ export class SwarmAgentsNamespace {
    * Mints the token a gateway holds to serve one sealed agent. It can only
    * create and use that agent's sessions and answer its client tool calls;
    * it stops working if the agent is given any built-in tool. Owner only.
+   * The daemon requires an expiry of at most 30 days (2592000 seconds).
    */
-  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds?: number; messagesPerMinute?: number; sessionsPerHour?: number } = {}): Promise<{ token: string; record: Record<string, unknown> }> {
+  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds: number; messagesPerMinute?: number; sessionsPerHour?: number }): Promise<{ token: string; record: Record<string, unknown> }> {
     const agent = toolName(agentName);
     const res = await this.transport.request<{ token: string; record: Record<string, unknown> }>('/v3/auth/tokens', {
       method: 'POST',
       body: {
         name: options.name ?? `${agent} gateway`, agent_name: agent,
-        ...(options.expiresInSeconds ? { expires_in_seconds: options.expiresInSeconds } : {}),
+        expires_in_seconds: options.expiresInSeconds,
         ...(options.messagesPerMinute ? { messages_per_minute: options.messagesPerMinute } : {}),
         ...(options.sessionsPerHour ? { sessions_per_hour: options.sessionsPerHour } : {}),
       },
