@@ -927,6 +927,9 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	if strings.TrimSpace(req.Mode) == "" {
 		req.Mode = pebblestore.AgentProfileDefaultSessionMode(resolvedAgent.Profile)
 	}
+	if sessionruntime.NormalizeMode(req.Mode) == sessionruntime.ModePlan {
+		resolvedAgent.Profile = agentruntime.WithAdvancedPlanning(resolvedAgent.Profile)
+	}
 	workspacePath := binding.SourceWorkspacePath
 	workspaceName := binding.SourceWorkspaceName
 	if workspaceName == "" && req.ProjectID == "" {

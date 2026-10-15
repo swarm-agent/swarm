@@ -49,7 +49,7 @@ func TestCompactAgentStateForDesktopOmitsSettingsOnlyPayload(t *testing.T) {
 			t.Fatalf("compact agent state retained split model field %q: %s", forbidden, body)
 		}
 	}
-	for _, required := range []string{"profiles", "swarm", "runtime_mode", "plan_auto", "default_session_mode", "auto", "enabled"} {
+	for _, required := range []string{"profiles", "swarm", "runtime_mode", "readwrite", "default_session_mode", "auto", "enabled"} {
 		if !strings.Contains(body, required) {
 			t.Fatalf("compact agent state missing %q: %s", required, body)
 		}

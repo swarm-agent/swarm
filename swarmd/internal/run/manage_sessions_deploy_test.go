@@ -60,7 +60,7 @@ func TestResolveManageSessionsDeploySwarmSeparatesCompiledIdentityFromFlatPrefer
 		t.Fatalf("resolve Swarm: found=%t err=%v", found, err)
 	}
 	identity := resolution.ExecutionProfile
-	if identity.Name != agentruntime.SwarmAgentID || identity.Mode != agentruntime.ModePrimary || identity.RuntimeMode != pebblestore.AgentRuntimeModePlanAuto || identity.Prompt != agentruntime.SwarmAgentPrompt() || identity.ToolContract == nil {
+	if identity.Name != agentruntime.SwarmAgentID || identity.Mode != agentruntime.ModePrimary || identity.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || identity.Prompt != agentruntime.SwarmAgentPrompt() || identity.ToolContract == nil {
 		t.Fatalf("compiled Swarm identity = %#v", identity)
 	}
 	if identity.Provider != "" || identity.Model != "" || identity.Thinking != "" {

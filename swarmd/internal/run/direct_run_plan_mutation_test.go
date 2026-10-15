@@ -49,7 +49,13 @@ func TestRunTurnPassesCanonicalV3MutationToPlanManage(t *testing.T) {
 	providers := registry.New()
 	providers.RegisterRunner(&directRunPlanMutationProvider{})
 	modelSvc := model.NewService(pebblestore.NewModelStore(store), eventLog, nil)
-	agents := agentruntime.NewService(pebblestore.NewAgentStore(store), eventLog)
+	agentStore := pebblestore.NewAgentStore(store)
+	// This test exercises an explicitly opted-in advanced planning session, not
+	// the default coding surface. RunTurn must still use the V3 mutation callback.
+	if err := agentStore.PutProfileForAccount("account-test", agentruntime.WithAdvancedPlanning(agentruntime.SwarmAgentProfileForContext(pebblestore.AgentProfile{}))); err != nil {
+		t.Fatal(err)
+	}
+	agents := agentruntime.NewService(agentStore, eventLog)
 	permissions := permission.NewService(pebblestore.NewPermissionStore(store), eventLog, nil)
 	svc := NewService(sessions, modelSvc, providers, tool.NewRuntime(1), permissions, agents, nil, eventLog)
 

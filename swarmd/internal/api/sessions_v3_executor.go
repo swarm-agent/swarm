@@ -4983,6 +4983,15 @@ func (e *sessionV3Executor) resolveSessionV3Capabilities(job sessionV3ExecutorJo
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	// Explicit plan mode and durable plans authorize the advanced surface,
+	// including MCP-attached plans and recovery of pre-existing sessions.
+	activePlan, hasPlan, planErr := e.server.sessions.GetActivePlan(job.SessionID)
+	if planErr != nil {
+		return sessionV3ResolvedRuntime{}, planErr
+	}
+	if session.Mode == sessionruntime.ModePlan || (hasPlan && activePlan.Document != nil) {
+		agentProfile = agentruntime.WithAdvancedPlanning(agentProfile)
+	}
 	if !agentProfile.Enabled {
 		return sessionV3ResolvedRuntime{}, fmt.Errorf("agent %q is disabled", strings.TrimSpace(agentProfile.Name))
 	}

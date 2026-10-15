@@ -111,7 +111,9 @@ func TestCoderWorkspaceDiscoveryToolsIncludeFind(t *testing.T) {
 	}
 }
 
-func TestManagedArtifactToolIsRestrictedToSwarmAndImageWhileDesignerUsesV2(t *testing.T) {
+// Purpose: registry coding defaults exclude managed artifacts; only the image
+// profile in this matrix exposes the legacy manager, without deleting its tool.
+func TestManagedArtifactToolIsRestrictedToImageWhileDesignerUsesV2(t *testing.T) {
 	contracts := map[string]*pebblestore.AgentToolContract{
 		"swarm":    SwarmAgentToolContract(),
 		"designer": DesignerAgentToolContract(),
@@ -124,7 +126,7 @@ func TestManagedArtifactToolIsRestrictedToSwarmAndImageWhileDesignerUsesV2(t *te
 	for name, contract := range contracts {
 		cfg, present := contract.Tools["manage_artifact"]
 		enabled := present && cfg.Enabled != nil && *cfg.Enabled
-		want := name == "swarm" || name == "image"
+		want := name == "image"
 		if enabled != want {
 			t.Fatalf("%s manage_artifact enabled = %t, want %t", name, enabled, want)
 		}

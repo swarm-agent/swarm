@@ -868,6 +868,28 @@ func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.A
 	return profile
 }
 
+// WithAdvancedPlanning enables the explicit planning surface only for Swarm.
+// Callers must establish opt-in from a requested plan mode or a stored plan.
+func WithAdvancedPlanning(profile pebblestore.AgentProfile) pebblestore.AgentProfile {
+	if profile.Name != SwarmAgentID {
+		return profile
+	}
+	contract := SwarmAgentToolContract()
+	if profile.ToolContract != nil {
+		*contract = *profile.ToolContract
+		contract.Tools = make(map[string]pebblestore.AgentToolConfig, len(profile.ToolContract.Tools)+2)
+		for name, config := range profile.ToolContract.Tools {
+			contract.Tools[name] = config
+		}
+	}
+	contract.Tools["plan_manage"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+	contract.Tools["exit_plan_mode"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+	profile.ToolContract = contract
+	profile.ExitPlanModeEnabled = pebblestore.BoolPtr(true)
+	profile.RuntimeMode = pebblestore.AgentRuntimeModePlanAuto
+	return profile
+}
+
 func PlanSidechatAgentProfile() pebblestore.AgentProfile {
 	return PlanSidechatAgentProfileForParent(pebblestore.AgentProfile{})
 }

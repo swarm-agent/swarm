@@ -6860,7 +6860,7 @@ func TestSessionsV3ExecutorAutomaticCheckpointsUseSameEpochAndDistinctRuns(t *te
 		if req.ToolInvoker == nil {
 			return provideriface.Response{}, fmt.Errorf("missing provider-managed tool invoker for %s", checkpointID)
 		}
-		args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": checkpointID, "report": checkpointID + " complete", "result": "done"})
+		args := mustSessionsV3TestJSON(t, map[string]any{"action": "complete_checkpoint", "checkpoint_id": checkpointID, "report": checkpointID + " complete", "result": "done", "handoff_overview": "Checkpoint complete.", "recommendation": map[string]any{"decision": "ship", "action": "review", "reason": "Work completed.", "action_state": "ready"}})
 		result, err := req.ToolInvoker.ExecuteTool(context.Background(), provideriface.ToolInvocation{CallID: "call-complete-" + checkpointID, Name: "plan_manage", Arguments: args})
 		if err != nil {
 			return provideriface.Response{}, err
@@ -6873,11 +6873,12 @@ func TestSessionsV3ExecutorAutomaticCheckpointsUseSameEpochAndDistinctRuns(t *te
 	setupSessionsV3ProviderManagedPlanTest(t, server, sessionSvc, runner)
 	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "provider-auto-epochs-create", "provider auto epochs", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
 	_, _, err := sessionSvc.SavePlanWithMetadata(created.ID, "plan-auto-epochs", "Plan: automatic epochs", "## Plan: automatic epochs", "approved", "approved", true, sessionruntime.PlanSaveMetadata{Document: &pebblestore.SessionPlanDocument{
+		Info:            pebblestore.SessionPlanInfo{Goal: "Execute checkpoints with distinct runs in the same epoch"},
 		ExecutionPolicy: pebblestore.SessionPlanExecutionPolicy{Mode: sessionruntime.PlanExecutionPolicyModeAutomatic, Shape: sessionruntime.PlanExecutionShapeCheckpointed},
 		ExecutionState:  &pebblestore.SessionPlanExecutionState{Status: sessionruntime.PlanExecutionStateIdle},
 		Checkpoints: []pebblestore.SessionPlanCheckpoint{
-			{ID: "cp-1", Title: "First", Status: sessionruntime.PlanCheckpointStatusPending},
-			{ID: "cp-2", Title: "Second", Status: sessionruntime.PlanCheckpointStatusPending},
+			{ID: "cp-1", Title: "First", Objective: "Complete first checkpoint", AcceptanceCriteria: []string{"First result recorded"}, Status: sessionruntime.PlanCheckpointStatusPending},
+			{ID: "cp-2", Title: "Second", Objective: "Complete second checkpoint", AcceptanceCriteria: []string{"Second result recorded"}, Status: sessionruntime.PlanCheckpointStatusPending},
 		},
 		ActiveCheckpointID: "cp-1",
 	}})
@@ -6923,13 +6924,36 @@ func TestSessionsV3ExecutorAutomaticCheckpointsUseSameEpochAndDistinctRuns(t *te
 		t.Fatalf("automatic checkpoint ownership did not preserve one epoch with distinct runs: %+v", intents)
 	}
 	for i, req := range runner.requests {
-		if req.ExecutionEpochID == "" || req.ExecutionEpochID != intents[0].EpochID || req.BoundaryReason != "session_turn" || !req.NativeContinuationAllowed || req.ForceFreshProviderContext {
-			t.Fatalf("request %d did not continue the same checkpoint provider context: %+v", i+1, req)
+		wantBoundary := "session_turn"
+		if i == 0 {
+			wantBoundary = "epoch_fresh_context"
+		}
+		if req.ExecutionEpochID == "" || req.ExecutionEpochID != intents[0].EpochID || req.BoundaryReason != wantBoundary || req.NativeContinuationAllowed != (i > 0) || req.ForceFreshProviderContext != (i == 0) {
+			t.Fatalf("request %d: epoch=%q boundary=%q native=%v fresh=%v", i+1, req.ExecutionEpochID, req.BoundaryReason, req.NativeContinuationAllowed, req.ForceFreshProviderContext)
 		}
 	}
-	messages, err := sessionSvc.ListSessionMessages(created.ID, 0, 10)
-	if err != nil {
-		t.Fatalf("list automatic checkpoint messages: %v", err)
+	// Plan state commits before the executor publishes its terminal messages.
+	// Wait for that observable postcondition, not just the plan projection.
+	var messages []pebblestore.MessageSnapshot
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		all, err := sessionSvc.ListSessionMessages(created.ID, 0, 100)
+		if err != nil {
+			t.Fatalf("list automatic checkpoint messages: %v", err)
+		}
+		messages = nil
+		for _, message := range all {
+			if message.Role == "tool" || message.Metadata["source"] == runruntime.PlanExecutionCheckpointHandoffMessageSource || message.Metadata["source"] == runruntime.PlanExecutionFinalHandoffMessageSource || (message.Metadata["source"] == runruntime.PlanExecutionLifecycleMessageSource && message.Metadata["action"] == "complete_checkpoint" && message.Metadata["next_action"] == "await_review") {
+				messages = append(messages, message)
+			}
+		}
+		if len(messages) >= 5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("terminal messages not published: count=%d", len(messages))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if len(messages) != 5 || messages[0].Role != "tool" || messages[1].Role != "system" || messages[2].Role != "tool" || messages[3].Role != "system" || messages[4].Role != "system" {
 		t.Fatalf("automatic checkpoint message order = %+v", messages)
