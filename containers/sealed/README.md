@@ -76,6 +76,7 @@ Every message to a sealed agent is bounded, whatever the model does:
 | Run deadline | 60 s | `limits.run_timeout_ms` |
 | New messages per gateway token | 120 / minute | `sdk-token --messages-per-minute` |
 | New conversations per gateway token | 300 / hour | `sdk-token --sessions-per-hour` |
+| Model runs at once (the agent's conversations, per gateway token) | 4 | `sdk-token --max-concurrent-runs` (1-64) |
 | Account spend per day | off | `swarmctl setup daily-limit --usd 25` |
 
 When the daily cap is reached the daemon refuses new runs and stops running

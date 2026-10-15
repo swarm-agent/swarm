@@ -123,7 +123,7 @@ export class SwarmAgentsNamespace {
    * it stops working if the agent is given any built-in tool. Owner only.
    * The daemon requires an expiry of at most 30 days (2592000 seconds).
    */
-  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds: number; messagesPerMinute?: number; sessionsPerHour?: number }): Promise<{ token: string; record: Record<string, unknown> }> {
+  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds: number; messagesPerMinute?: number; sessionsPerHour?: number; maxConcurrentRuns?: number }): Promise<{ token: string; record: Record<string, unknown> }> {
     const agent = toolName(agentName);
     const res = await this.transport.request<{ token: string; record: Record<string, unknown> }>('/v3/auth/tokens', {
       method: 'POST',
@@ -132,6 +132,7 @@ export class SwarmAgentsNamespace {
         expires_in_seconds: options.expiresInSeconds,
         ...(options.messagesPerMinute ? { messages_per_minute: options.messagesPerMinute } : {}),
         ...(options.sessionsPerHour ? { sessions_per_hour: options.sessionsPerHour } : {}),
+        ...(options.maxConcurrentRuns ? { max_concurrent_runs: options.maxConcurrentRuns } : {}),
       },
     });
     return { token: res.data.token, record: res.data.record };

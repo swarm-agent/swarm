@@ -120,6 +120,7 @@ type ScopedTokenRecord struct {
 	// Rate limits for agent-bound tokens; zero means the daemon default.
 	MessagesPerMinute int   `json:"messages_per_minute,omitempty"`
 	SessionsPerHour   int   `json:"sessions_per_hour,omitempty"`
+	MaxConcurrentRuns int   `json:"max_concurrent_runs,omitempty"`
 	CreatedAt         int64 `json:"created_at"`
 	ExpiresAt         int64 `json:"expires_at"` // 0 = never
 	Revoked           bool  `json:"revoked"`

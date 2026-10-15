@@ -185,6 +185,20 @@ func newSessionV3Executor(server *Server) *sessionV3Executor {
 	return exec
 }
 
+// activeSessionIDs returns the sessions that have a run in flight right now.
+func (e *sessionV3Executor) activeSessionIDs() []string {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ids := make([]string, 0, len(e.activeBySession))
+	for id := range e.activeBySession {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (e *sessionV3Executor) diagnosticsSnapshot() map[string]any {
 	if e == nil {
 		return nil

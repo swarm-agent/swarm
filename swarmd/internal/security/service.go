@@ -148,25 +148,35 @@ func (s *Service) CreateScopedTokenUnder(parent *pebblestore.ScopedTokenRecord, 
 	})
 }
 
+// AgentBoundLimits bounds what an agent-bound token may start; zero fields
+// mean the daemon defaults.
+type AgentBoundLimits struct {
+	MessagesPerMinute int
+	SessionsPerHour   int
+	MaxConcurrentRuns int
+}
+
 // CreateAgentBoundToken mints a session token limited to one sealed agent's
 // sessions. The caller must have checked the agent is sealed.
-func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string, messagesPerMinute, sessionsPerHour int) (string, pebblestore.ScopedTokenRecord, error) {
-	return s.CreateAgentBoundTokenUnder(nil, name, accountScopeID, userID, expiresIn, agentName, messagesPerMinute, sessionsPerHour)
+func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string, limits AgentBoundLimits) (string, pebblestore.ScopedTokenRecord, error) {
+	return s.CreateAgentBoundTokenUnder(nil, name, accountScopeID, userID, expiresIn, agentName, limits)
 }
 
 // CreateAgentBoundTokenUnder is CreateAgentBoundToken minted on behalf of the
 // scoped token parent (see CreateScopedTokenUnder).
-func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenRecord, name, accountScopeID, userID string, expiresIn time.Duration, agentName string, messagesPerMinute, sessionsPerHour int) (string, pebblestore.ScopedTokenRecord, error) {
+func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenRecord, name, accountScopeID, userID string, expiresIn time.Duration, agentName string, limits AgentBoundLimits) (string, pebblestore.ScopedTokenRecord, error) {
 	if strings.TrimSpace(agentName) == "" {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("agent name is required")
 	}
-	if messagesPerMinute < 0 || messagesPerMinute > 6000 || sessionsPerHour < 0 || sessionsPerHour > 100000 {
+	if limits.MessagesPerMinute < 0 || limits.MessagesPerMinute > 6000 || limits.SessionsPerHour < 0 || limits.SessionsPerHour > 100000 ||
+		limits.MaxConcurrentRuns < 0 || limits.MaxConcurrentRuns > 64 {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("rate limits out of range")
 	}
 	return s.createScopedTokenRecord(parent, name, []string{"sessions:read", "sessions:write"}, accountScopeID, userID, expiresIn, func(record *pebblestore.ScopedTokenRecord) {
 		record.AgentName = strings.TrimSpace(agentName)
-		record.MessagesPerMinute = messagesPerMinute
-		record.SessionsPerHour = sessionsPerHour
+		record.MessagesPerMinute = limits.MessagesPerMinute
+		record.SessionsPerHour = limits.SessionsPerHour
+		record.MaxConcurrentRuns = limits.MaxConcurrentRuns
 	})
 }
 

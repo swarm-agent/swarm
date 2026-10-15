@@ -42,7 +42,71 @@ var agentBoundCreateFields = map[string]bool{
 const (
 	agentBoundDefaultMessagesPerMinute = 120
 	agentBoundDefaultSessionsPerHour   = 300
+	agentBoundDefaultConcurrentRuns    = 4
 )
+
+// agentBoundRunReservation holds an admitted message's slot until its run
+// shows up as active (or the message fails), so simultaneous messages cannot
+// all pass the concurrency check before any of them starts.
+const agentBoundRunReservation = 15 * time.Second
+
+type agentBoundConcurrency struct {
+	mu       sync.Mutex
+	reserved map[string]map[string]time.Time // token ID -> session ID -> reservation expiry
+}
+
+var agentBoundRuns = &agentBoundConcurrency{reserved: map[string]map[string]time.Time{}}
+
+// admit reports whether a message to sessionID may start a run: the agent's
+// running sessions plus this token's live reservations stay within limit. A
+// message to a session that already holds a slot is admitted (it queues behind
+// that session's run and adds no concurrency).
+func (c *agentBoundConcurrency) admit(tokenID, sessionID string, running map[string]bool, limit int, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	held := map[string]bool{}
+	for id := range running {
+		held[id] = true
+	}
+	reservations := c.reserved[tokenID]
+	for id, until := range reservations {
+		if !now.Before(until) || running[id] {
+			delete(reservations, id)
+			continue
+		}
+		held[id] = true
+	}
+	if held[sessionID] {
+		return true
+	}
+	if len(held) >= limit {
+		return false
+	}
+	if reservations == nil {
+		reservations = map[string]time.Time{}
+		c.reserved[tokenID] = reservations
+	}
+	reservations[sessionID] = now.Add(agentBoundRunReservation)
+	return true
+}
+
+// runningAgentSessions returns the account's sessions of agent with a run in flight.
+func (s *Server) runningAgentSessions(accountScopeID, agent string) map[string]bool {
+	running := map[string]bool{}
+	if s.sessions == nil {
+		return running
+	}
+	for _, id := range s.v3SessionExecutor.activeSessionIDs() {
+		session, ok, err := s.sessions.GetSession(id)
+		if err != nil || !ok || session.AccountScopeID != accountScopeID {
+			continue
+		}
+		if sessionsV3MetadataString(session.Metadata, "agent_name") == agent {
+			running[id] = true
+		}
+	}
+	return running
+}
 
 // tokenBucket refills continuously up to its capacity.
 type tokenBucket struct {
@@ -265,6 +329,17 @@ func (s *Server) gateAgentBoundToken(w http.ResponseWriter, r *http.Request, rec
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeError(w, http.StatusTooManyRequests, errors.New("agent-bound token rate limit reached"))
 		return false
+	}
+	if path != "v3/sessions" {
+		// A message starts a model run: bound how many run at once.
+		sessionID := strings.Split(path, "/")[2]
+		agent := strings.TrimSpace(rec.AgentName)
+		limit := agentBoundRateFor(rec.MaxConcurrentRuns, agentBoundDefaultConcurrentRuns)
+		if !agentBoundRuns.admit(rec.ID, sessionID, s.runningAgentSessions(rec.AccountScopeID, agent), limit, time.Now()) {
+			w.Header().Set("Retry-After", "2")
+			writeError(w, http.StatusTooManyRequests, errors.New("agent-bound token concurrent run limit reached"))
+			return false
+		}
 	}
 	return true
 }

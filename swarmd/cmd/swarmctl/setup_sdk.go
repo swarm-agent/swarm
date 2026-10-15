@@ -25,6 +25,7 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	agent := fs.String("agent", "", "mint a gateway token limited to this sealed agent's sessions and client tool calls (lifetime up to 30 days)")
 	messagesPerMinute := fs.Int("messages-per-minute", 0, "with --agent: most messages (model runs) the token may start per minute (default 120)")
 	sessionsPerHour := fs.Int("sessions-per-hour", 0, "with --agent: most new conversations per hour (default 300)")
+	maxConcurrentRuns := fs.Int("max-concurrent-runs", 0, "with --agent: most model runs the agent may have going at once across its conversations (default 4, at most 64)")
 	aiAccess := fs.String("ai-access", "", "mint an AI key for Swarm Control (/mcp): read (default level for AI clients), write, or full (the AI runs this box: approvals, models, workers, custom agents, client keys); lifetime up to 365 days")
 	monitor := fs.Bool("monitor", false, "mint a read-only monitoring key: the machine summary and signal feed (signals:read) and nothing else; lifetime up to 365 days")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -132,7 +133,7 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	} else if agentName := strings.TrimSpace(*agent); agentName != "" {
 		// The daemon refuses unless the agent is sealed (only client tools).
 		payload = map[string]any{"name": strings.TrimSpace(*name), "agent_name": agentName, "expires_in_seconds": *seconds,
-			"messages_per_minute": *messagesPerMinute, "sessions_per_hour": *sessionsPerHour}
+			"messages_per_minute": *messagesPerMinute, "sessions_per_hour": *sessionsPerHour, "max_concurrent_runs": *maxConcurrentRuns}
 	}
 	if err := setupRequest(client, http.MethodPost, "/v3/auth/tokens", payload, &result); err != nil {
 		return err

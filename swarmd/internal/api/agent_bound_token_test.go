@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/permission"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -109,5 +112,121 @@ func TestAgentBoundCreateAllowsOnlyReviewedFields(t *testing.T) {
 	}
 	if err := check(`{"agent_name":"swarm"}`); err == nil {
 		t.Fatal("create for another agent was allowed")
+	}
+}
+
+// Purpose: an agent's concurrent model runs stay within the gateway token's
+// limit. Running sessions and live reservations both hold a slot; a message to a
+// session that already holds one queues and is admitted; a reservation frees its
+// slot when it expires or its run starts. Threat: a burst of visitors (or a
+// leaked token) starting unbounded parallel runs and cost. Boundary:
+// agentBoundConcurrency.admit. Narrowest layer: the admission function with a
+// fixed clock.
+func TestAgentBoundConcurrencyAdmission(t *testing.T) {
+	c := &agentBoundConcurrency{reserved: map[string]map[string]time.Time{}}
+	now := time.Unix(1000, 0)
+	none := map[string]bool{}
+	if !c.admit("tok", "a", none, 2, now) || !c.admit("tok", "b", none, 2, now) {
+		t.Fatal("first two conversations were refused")
+	}
+	if c.admit("tok", "c", none, 2, now) {
+		t.Fatal("a third concurrent run was admitted over a limit of 2")
+	}
+	if !c.admit("tok", "a", none, 2, now) {
+		t.Fatal("a follow-up message to a session that already holds a slot was refused")
+	}
+	if c.admit("tok", "c", map[string]bool{"x": true}, 2, now) {
+		t.Fatal("a running session of the agent did not count against the limit")
+	}
+	// Session a's run started: it now counts once (running), not twice.
+	if c.admit("tok", "c", map[string]bool{"a": true}, 2, now) {
+		t.Fatal("running a plus reserved b should fill a limit of 2")
+	}
+	if !c.admit("tok", "c", map[string]bool{"a": true}, 3, now) {
+		t.Fatal("a running session was counted twice")
+	}
+	later := now.Add(agentBoundRunReservation + time.Second)
+	if !c.admit("tok", "d", none, 1, later) {
+		t.Fatal("expired reservations still held slots")
+	}
+	if !c.admit("other", "e", none, 1, now) {
+		t.Fatal("another token's reservations counted against this token")
+	}
+}
+
+// Purpose: the limit is enforced at the gateway gate, before the handler, and is
+// set when minting (0..64). With max_concurrent_runs 1, a message to a second
+// conversation is refused with 429 and Retry-After while the first holds the
+// slot; an out-of-range limit is refused at mint time. Boundary:
+// Server.gateAgentBoundToken, handleAuthTokens. Narrowest layer: the container SDK
+// handler with a real minted token and seeded sessions.
+func TestAgentBoundTokenConcurrentRunLimit(t *testing.T) {
+	s, _, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-bound-concurrency"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	events, err := pebblestore.NewEventLog(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.perm = permission.NewService(pebblestore.NewPermissionStore(db), nil, nil)
+	s.agents = agentruntime.NewService(pebblestore.NewAgentStore(db), events)
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	account := actor.AccountScopeID
+	if _, err := s.agents.PutCustomToolForAccount(account, pebblestore.AgentCustomToolDefinition{Name: "lookup_order", Kind: pebblestore.AgentCustomToolKindClient, Description: "x", InputSchema: lookupOrderSchema}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := s.agents.UpsertForAccount(account, agentruntime.UpsertInput{Name: "frontdesk", Mode: agentruntime.ModeSubagent, Enabled: pebblestore.BoolPtr(true), Prompt: "x",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"lookup_order": {Enabled: pebblestore.BoolPtr(true)}}}}); err != nil {
+		t.Fatal(err)
+	}
+	mint := func(body string) (int, string, pebblestore.ScopedTokenRecord) {
+		w := httptest.NewRecorder()
+		s.handleAuthTokens(w, requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/v3/auth/tokens", strings.NewReader(body)), actor.UserID, account))
+		var out struct {
+			Token  string                        `json:"token"`
+			Record pebblestore.ScopedTokenRecord `json:"record"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out.Token, out.Record
+	}
+	if code, _, _ := mint(`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":3600,"max_concurrent_runs":65}`); code != http.StatusBadRequest {
+		t.Fatalf("max_concurrent_runs 65 accepted: %d", code)
+	}
+	code, token, record := mint(`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":3600,"max_concurrent_runs":1}`)
+	if code != http.StatusOK || record.MaxConcurrentRuns != 1 {
+		t.Fatalf("mint: %d %+v", code, record)
+	}
+	for _, id := range []string{"desk-a", "desk-b"} {
+		snapshot := pebblestore.SessionSnapshot{ID: id, UserID: actor.UserID, AccountScopeID: account, Title: id, Mode: "auto", Metadata: map[string]any{"agent_name": "frontdesk"}}
+		if _, err := s.sessions.ApplySessionMutation(sessionruntime.SessionMutationInput{Kind: sessionruntime.SessionMutationCreateSession, SessionID: id, UserID: actor.UserID, AccountScopeID: account, Session: &snapshot, IdempotencyKey: id, PayloadHash: id, NowUnixMs: 1000}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if token == "" {
+		t.Fatal("no token minted")
+	}
+	// The gate alone decides admission; calling it directly keeps the handler
+	// (and a real model run) out of this test.
+	message := func(session, requestID string) (bool, *httptest.ResponseRecorder) {
+		req := httptest.NewRequest(http.MethodPost, "/v3/sessions/"+session+"/messages", strings.NewReader(`{"role":"user","content":"hi","client_request_id":"`+requestID+`"}`))
+		rec := httptest.NewRecorder()
+		return s.gateAgentBoundToken(rec, req, &record), rec
+	}
+	if ok, got := message("desk-a", "m1"); !ok {
+		t.Fatalf("first conversation refused: %d %s", got.Code, got.Body.String())
+	}
+	if ok, got := message("desk-a", "m2"); !ok {
+		t.Fatalf("follow-up in the same conversation refused: %d %s", got.Code, got.Body.String())
+	}
+	ok, got := message("desk-b", "m3")
+	if ok || got.Code != http.StatusTooManyRequests || !strings.Contains(got.Body.String(), "concurrent") || got.Header().Get("Retry-After") == "" {
+		t.Fatalf("second conversation over a limit of 1: ok=%v %d %s", ok, got.Code, got.Body.String())
 	}
 }
