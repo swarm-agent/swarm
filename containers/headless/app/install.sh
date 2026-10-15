@@ -721,9 +721,23 @@ came_up() {
     [[ -z $running || $running == "$commit" ]] || continue
     [[ $sandboxed == true && $(json_get sandbox.active <<<"$out") != true ]] && continue
     curl -fsS -o /dev/null --max-time 5 -H "Host: ${APP_ORIGIN#*://}" http://127.0.0.1:8443/ 2>/dev/null || continue
+    post_update_smoke || return 1
     return 0
   done
   return 1
+}
+
+# Use the authenticated owner transport, never read or copy provider credentials.
+# Failure returns to finish_update's existing rollback path.
+post_update_smoke() {
+  local route
+  for route in /healthz /v1/onboarding /v3/projects /v3/runs; do
+    if ! local_api "$route" >/dev/null; then
+      echo "swarm: post-update smoke failed: $route; restoring previous build" >&2
+      return 1
+    fi
+    echo "swarm: post-update smoke $route: PASS"
+  done
 }
 
 update() {

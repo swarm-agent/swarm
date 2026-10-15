@@ -354,3 +354,28 @@ Final extras count is **62**, with exact package/name list in
 PASS groups above in **121 seconds**, exit 0. Both root/daemon builds and compile-
 only tests, web tsc and SDK tsc were rerun on this rebased tree and passed.
 The 178-second measurement above describes the earlier pre-rebase run only.
+
+## App runs
+
+Run `bash scripts/test-app-runs.sh` with `TMPDIR` set. It builds the headless
+installer's three Go binaries, starts a separate loopback daemon with private
+state, bootstraps its owner over the public Unix-socket HTTP API, registers a
+real Git repository/project, checks busy/runs and verifies restart persistence.
+It also executes the installer's post-update smoke against that daemon and
+checks rejection of an unavailable socket. No provider is used.
+
+The headless updater invokes the smoke before accepting the new release and
+uses its existing rollback on failure. The GitHub publisher runs the candidate
+smoke before landing `swarm-agent/swarm`, after queue checks. Test exact-candidate
+selection and failure rejection with
+`bash containers/headless/app/check-app-candidate.sh`.
+
+Current limitations: container build/command/land verification is not implemented;
+without a runtime these steps explicitly skip, and with a runtime the gate fails
+closed. Do not enable this candidate for production landing until those steps
+are implemented. `--live MACHINE_API_URL` is experimental and unverified: run on
+the daemon host with shared filesystem visibility and authenticated transport
+(e.g. its owner `unix:///path/to/api.sock`). It never loads provider credentials.
+It requests a coder job and checks committed hello.txt content; it deletes the
+project record but retains the repository for safe inspection. It does not yet
+prove worktree teardown or full remote-machine authentication.

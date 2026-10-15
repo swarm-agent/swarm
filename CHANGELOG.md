@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add a real-process app lifecycle smoke and headless update rollback smoke, plus an exact-candidate GitHub landing gate; container/live-job qualification remains incomplete and fails closed where unsupported. Docs impact: add App runs guidance in docs/testing.md.
+
 - Correct project cache limits to use the live box limits record, seed the warm pnpm store, and align Docker cache tests with the sandbox UID. Docs impact: updated cache configuration and seeding guidance.
 
 - Share project-local Go build/module caches and pnpm stores across sandbox jobs and reviewers, with trimpath, default-image seeding, size reporting, and a configurable 10 GiB soft trimming limit. Docs impact: installer README and sandbox resource guidance.

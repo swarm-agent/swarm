@@ -82,6 +82,14 @@ if [[ $action == land ]]; then
   [[ $base_commit =~ ^[0-9a-f]{40}$ && $head =~ ^[0-9a-f]{40}$ ]] || die "land requires commit ids"
   git_folder check-ref-format "refs/heads/$base" || die "invalid land base branch"
   git_folder merge-base --is-ancestor "$base_commit" "$head" || die "land head is not based on the supplied base"
+  # This repository's host-side app gate runs after queue checks, before any
+  # credential is minted or any branch is pushed. Other repositories are unchanged.
+  if [[ $REPO == swarm-agent/swarm ]]; then
+    candidate=$(mktemp -d "$TMPDIR/app-candidate.XXXXXX")
+    trap 'rm -rf -- "$candidate"' EXIT
+    git_folder archive "$head" | tar -x -C "$candidate"
+    (cd "$candidate" && bash scripts/test-app-runs.sh) || die "app-runs landing check failed (see step output above)"
+  fi
   permissions='{"contents":"write","metadata":"read"}'
 fi
 
