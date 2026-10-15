@@ -86,14 +86,17 @@ func newTestManager(t *testing.T, mode Mode, runner *fakeRunner, cfg Config) *Ma
 	return m
 }
 
+// Purpose: Manager.RunArgs must preserve isolation while placing Go build scratch
+// on the home volume and enforcing the explicitly selected memory and swap cap.
 func TestRunArgsCarryEveryHardeningFlag(t *testing.T) {
-	m := newTestManager(t, ModeRequired, readyRunner(), Config{})
+	m := newTestManager(t, ModeRequired, readyRunner(), Config{Memory: "6g"})
 	args := strings.Join(m.RunArgs("swarm-sandbox-x", "/srv/p", "spec", []string{"/srv/p", "/w/b"}, SecretSetup{}), " ")
 	for _, want := range []string{
 		"--user 10001:10001", "--cap-drop ALL", "--security-opt no-new-privileges",
-		"--memory 4g", "--memory-swap 4g", "--pids-limit 1024", "--network swarm-sandbox",
+		"--memory 6g", "--memory-swap 6g", "--pids-limit 1024", "--network swarm-sandbox",
 		"--mount type=bind,src=/srv/p,dst=/srv/p", "--mount type=bind,src=/w/b,dst=/w/b",
 		"--env HOME=/home/sandbox", "--dns 1.1.1.1",
+		"--env GOTMPDIR=/home/sandbox/.cache/go-tmp", "--tmpfs /tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("run args missing %q:\n%s", want, args)

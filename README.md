@@ -16,7 +16,10 @@ machine you own, so your AI can work with AI across machines, safely.
 - **Workers** work in your projects (a name and your folders), each job on its
   own branch, in a sandbox per project (gVisor when available), with no access to the host, your
   network or Swarm's keys. Jobs run without permission prompts only while that
-  sandbox is active.
+  sandbox is active. Each sandbox defaults to half the host's physical memory
+  (rounded down to MiB, minimum 4 GiB); `swarmd --sandbox-memory=8g` overrides
+  it (minimum 1 GiB). Swap is disabled. All jobs in a project share this limit.
+  Go build scratch uses the disk-backed home volume, while `/tmp` stays tmpfs.
 - **Secrets** reach a job only through Swarm's gateway: inside the sandbox an
   agent sees a stand-in, and the value goes out only to the websites you
   allowed, for the folders you granted.

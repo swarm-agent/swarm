@@ -202,3 +202,19 @@ func TestParseFreshStartWritesOnboardingIncomplete(t *testing.T) {
 		t.Fatalf("reloaded onboarding complete=%v set=%v, want false/true", loaded.DesktopOnboardingComplete, loaded.DesktopOnboardingCompleteSet)
 	}
 }
+
+// Purpose: Parse owns startup flag admission. Reject malformed or undersized
+// sandbox limits before startup, while preserving explicit valid overrides.
+func TestParseSandboxMemory(t *testing.T) {
+	t.Setenv("CONFIGURATION_DIRECTORY", writeTestStartupConfig(t))
+	for _, value := range []string{"1g", "6g", "1024m", "512m", "bad"} {
+		cfg, err := Parse([]string{"--sandbox-memory", value})
+		invalid := value == "512m" || value == "bad"
+		if (err != nil) != invalid {
+			t.Fatalf("value %q: %v", value, err)
+		}
+		if !invalid && cfg.SandboxMemory != value {
+			t.Fatal(cfg.SandboxMemory)
+		}
+	}
+}

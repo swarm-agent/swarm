@@ -257,12 +257,21 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 	defer cancel()
 	for i, command := range checks {
 		var tail string
-		res, err := exec(checkCtx, sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: 4096, OnOutput: func(data []byte) {
+		req := sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: 4096, OnOutput: func(data []byte) {
 			tail += string(data)
 			if len(tail) > 4096 {
 				tail = tail[len(tail)-4096:]
 			}
-		}})
+		}}
+		res, err := exec(checkCtx, req)
+		var died *sandbox.ErrSandboxDied
+		if errors.As(err, &died) && checkCtx.Err() == nil {
+			tail = ""
+			res, err = exec(checkCtx, req)
+		}
+		if errors.As(err, &died) {
+			return fmt.Errorf("landing check infrastructure failure: %w", err)
+		}
 		if err != nil {
 			if checkCtx.Err() != nil && ctx.Err() == nil {
 				e.Checks = append(e.Checks, publish.CheckResult{ExitCode: -1, Output: tail})

@@ -44,6 +44,7 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 		Image:              cfg.SandboxImage,
 		Network:            cfg.SandboxNetwork,
 		Runtime:            cfg.SandboxRuntime,
+		Memory:             cfg.SandboxMemory,
 		ProtectedRoots:     protected,
 		ProtectedAncestors: ancestors,
 		StateDir:           filepath.Join(cfg.DataDir, "sandbox"),

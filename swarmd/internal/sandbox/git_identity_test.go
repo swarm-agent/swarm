@@ -27,7 +27,8 @@ func isolatedIdentityHost(t *testing.T) string {
 
 // Purpose: ensure must initialize only the home volume, once on creation,
 // without granting capabilities to agents or making identity/ownership failures
-// fatal. The fake engine is the narrowest layer proving lifecycle and exact args.
+// fatal. Go scratch must also be prepared on creation and reuse before commands
+// are admitted. The fake engine is the narrowest layer proving lifecycle and args.
 func TestSandboxCreationHome(t *testing.T) {
 	for _, failure := range []string{"", "identity", "helper"} {
 		t.Run(failure, func(t *testing.T) {
@@ -81,10 +82,18 @@ func TestSandboxCreationHome(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			prepared := 0
 			for _, args := range r.calls[before:] {
+				if reflect.DeepEqual(args, append([]string{"exec", "test-box"}, withSandboxUmask("mkdir", "-p", sandboxHome+"/.cache/go-tmp")...)) {
+					prepared++
+					continue
+				}
 				if args[0] != "container" && args[0] != "start" {
 					t.Fatalf("reinitialized existing sandbox: %q", args)
 				}
+			}
+			if prepared != 2 {
+				t.Fatalf("scratch preparation calls = %d, want 2", prepared)
 			}
 		})
 	}
@@ -200,7 +209,8 @@ func TestSandboxGitIdentityCommit(t *testing.T) {
 
 // Purpose: warmed RouteGit and Exec must not spend engine calls on identity
 // checks, and must apply umask 0007 without interpreting command arguments.
-// The manager/fake transport layer proves call counts and argv for both paths.
+// The manager/fake transport layer proves call counts and argv for both paths,
+// including the pre-execution container-generation inspection needed for death detection.
 func TestSandboxCommandUmaskAndNoIdentityCalls(t *testing.T) {
 	isolatedIdentityHost(t)
 	r := readyRunner()
@@ -227,11 +237,11 @@ func TestSandboxCommandUmaskAndNoIdentityCalls(t *testing.T) {
 	if _, err := m.Exec(ctx, Scope{Root: project}, ExecRequest{WorkingDir: project, Command: []string{"printf", "%s", "literal; argument"}}); err != nil {
 		t.Fatal(err)
 	}
-	// Supervisor probe, execution, and acknowledgement are the only engine calls.
-	if len(r.calls)-before != 3 {
-		t.Fatalf("Exec made %d calls, want 3", len(r.calls)-before)
+	// State inspection, supervisor probe, execution, and acknowledgement.
+	if len(r.calls)-before != 4 {
+		t.Fatalf("Exec made %d calls, want 4", len(r.calls)-before)
 	}
-	args := r.calls[before+1]
+	args := r.calls[before+2]
 	want := []string{"sh", "-c", `umask 0007 && exec "$@"`, "swarm-exec", "printf", "%s", "literal; argument"}
 	if !reflect.DeepEqual(args[len(args)-len(want):], want) {
 		t.Fatalf("Exec wrapper: %q", args)

@@ -44,7 +44,6 @@ const (
 const (
 	DefaultImage       = "swarm-sandbox:local"
 	DefaultNetwork     = "swarm-sandbox"
-	DefaultMemory      = "4g"
 	DefaultPidsLimit   = 1024
 	DefaultIdleTimeout = 30 * time.Minute
 	gvisorRuntime      = "runsc"
@@ -127,6 +126,7 @@ type Status struct {
 	Mode    Mode   `json:"mode"`
 	Active  bool   `json:"active"`
 	Runtime string `json:"runtime,omitempty"`
+	Memory  string `json:"memory,omitempty"`
 	Reason  string `json:"reason,omitempty"`
 }
 
@@ -202,8 +202,16 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	if cfg.Network == "" {
 		cfg.Network = DefaultNetwork
 	}
+	if err := ValidateMemory(cfg.Memory); err != nil {
+		return nil, err
+	}
 	if cfg.Memory == "" {
-		cfg.Memory = DefaultMemory
+		var err error
+		cfg.Memory, err = hostMemory()
+		if err != nil {
+			cfg.Memory = "4g"
+			slog.Warn("cannot size sandbox from host memory; using minimum limit", "error", err)
+		}
 	}
 	if cfg.PidsLimit <= 0 {
 		cfg.PidsLimit = DefaultPidsLimit
@@ -232,7 +240,7 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	if err := m.writeResolvConf(); err != nil {
 		return nil, err
 	}
-	m.status = Status{Mode: cfg.Mode}
+	m.status = Status{Mode: cfg.Mode, Memory: cfg.Memory}
 	if cfg.Mode == ModeOff {
 		m.status.Reason = "sandbox mode is off"
 		return m, nil
@@ -549,7 +557,7 @@ func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint,
 	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v4", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
+		"v5", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
 		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
@@ -594,6 +602,7 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
 		"--mount", "type=volume,src="+name+"-home,dst="+sandboxHome,
 		"--env", "HOME="+sandboxHome,
+		"--env", "GOTMPDIR="+sandboxHome+"/.cache/go-tmp",
 		"--env", "PATH="+image.Path,
 		"--env", "LANG=C.UTF-8",
 		"--workdir", root,
@@ -767,12 +776,12 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 		fields := strings.Fields(string(out))
 		if len(fields) == 2 && fields[0] == spec {
 			if fields[1] == "true" {
-				return nil
+				return m.prepareGoTemp(ctx, name)
 			}
 			if _, err := m.runner.Run(ctx, m.cfg.Engine, "start", name); err != nil {
 				return fmt.Errorf("start sandbox: %w", err)
 			}
-			return nil
+			return m.prepareGoTemp(ctx, name)
 		}
 		// Different spec (new mounts, image or limits): replace it. The home
 		// volume survives, so caches and tool installs are kept.
@@ -784,6 +793,9 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 		return fmt.Errorf("create sandbox: %w", err)
 	}
 	m.initializeHome(ctx, name, root, image)
+	if err := m.prepareGoTemp(ctx, name); err != nil {
+		return err
+	}
 	if err := m.configureGitIdentity(ctx, name); err != nil {
 		slog.Warn("configure sandbox Git identity failed", "error", err)
 	}
@@ -844,7 +856,8 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	if req.OnOutput != nil {
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }
 	}
-	return provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
+	before, stateErr := m.inspectState(ctx, b.name)
+	result, execErr := provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
 		Command:      withSandboxUmask(req.Command...),
 		WorkingDir:   req.WorkingDir,
 		Env:          req.Env,
@@ -853,6 +866,14 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 		MaxOutput:    req.MaxOutput,
 		OnProgress:   progress,
 	}, req.MaxTimeout)
+	if execErr != nil || (result != nil && result.ExitCode != 0) {
+		after, inspectErr := m.inspectState(ctx, b.name)
+		if inspectErr == nil && (stateErr == nil || !after.Running || after.OOMKilled) && sandboxDied(before, after) {
+			m.invalidate(b.name)
+			return nil, &ErrSandboxDied{OOMKilled: after.OOMKilled, Memory: m.cfg.Memory}
+		}
+	}
+	return result, execErr
 }
 
 func (m *Manager) invalidate(name string) {

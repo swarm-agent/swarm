@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Size sandbox memory to the host with a validated `--sandbox-memory` override, keep Go build scratch on disk and reuse configured Go caches; retry landing checks interrupted by sandbox death once without blaming worker code. Docs impact: README sandbox resource guidance.
+
 - Fix MCP media-job retry guidance to name `swarm_request_media`, hint at rephrasing content-policy refusals, and mention inline images only for image files. Docs impact: none.
 - Make `swarm_get_job` delivery guidance and nested delivery state match the landing queue, and keep queued/landing delivery waits unsettled. Docs impact: none.
 - Reviewers capture the folder's landing checks and timeout from its environment definition, run them before narrow tests, and report BLOCK with failing output when checks fail. Job briefs cannot replace the captured command. Docs impact: `docs/reviewer-worker.md`.

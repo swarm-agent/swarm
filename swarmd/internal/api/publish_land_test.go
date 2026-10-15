@@ -103,3 +103,72 @@ func (f *landOutputTransport) RunExec(_ context.Context, _ io.Reader, stdout, _ 
 func (f *landOutputTransport) RunExecCombined(context.Context, ...string) ([]byte, error) {
 	return nil, nil
 }
+
+// Purpose: prepareLandWorktree and Queue.Process own the landing failure route.
+// Container death must retry only once and become land_failed without worker
+// send-back; an actual nonzero check must retain the checks-failed send-back.
+// A scripted executor is the narrowest layer proving these queue postconditions.
+func TestPrepareLandSandboxDeath(t *testing.T) {
+	for _, mode := range []string{"recover", "dies twice", "check fails"} {
+		t.Run(mode, func(t *testing.T) {
+			head := strings.Repeat("a", 40)
+			q := publish.NewQueue(&landMemoryStore{})
+			entry := publish.Entry{Account: "account", Request: publish.Request{JobID: "job", Folder: "/project", Branch: "agent/job", Head: head, BaseBranch: "dev"}}
+			if _, err := q.Enqueue(entry); err != nil {
+				t.Fatal(err)
+			}
+			calls, landed, backs := 0, false, 0
+			err := q.Process(context.Background(), entry.Account, entry.Request.Folder, publish.QueueHooks{
+				Prepare: func(ctx context.Context, e *publish.Entry) error {
+					return prepareLandWorktree(ctx, publish.Rule{Folder: "/project", Mode: "land"}, e, "/project/job", []string{"check"}, 1,
+						func(_ context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+							res := &provider.ExecResult{}
+							switch strings.Join(req.Command, " ") {
+							case "git branch --show-current":
+								res.Stdout = "agent/job\n"
+							case "git rev-parse HEAD":
+								res.Stdout = head + "\n"
+							case "bash -lc check":
+								calls++
+								if mode == "dies twice" || (mode == "recover" && calls == 1) {
+									return nil, &sandbox.ErrSandboxDied{OOMKilled: true, Memory: "6g"}
+								}
+								if mode == "check fails" {
+									res.ExitCode = 1
+								}
+							}
+							return res, nil
+						}, func(context.Context, publish.Rule, string) (publish.Base, error) {
+							return publish.Base{Commit: strings.Repeat("b", 40), Branch: "dev"}, nil
+						})
+				},
+				Land: func(context.Context, publish.Entry) (publish.LandResult, error) {
+					landed = true
+					return publish.LandResult{Commit: head}, nil
+				},
+				SendBack: func(context.Context, publish.Entry) error { backs++; return nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := q.Get(entry.Account, "job")
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "recover":
+				if calls != 2 || !landed || got.State != "landed" {
+					t.Fatalf("%d %+v", calls, got)
+				}
+			case "dies twice":
+				if calls != 2 || landed || backs != 0 || got.SendBacks != 0 || got.State != "land_failed" || !strings.Contains(got.Reason, "6g") {
+					t.Fatalf("%d %+v", calls, got)
+				}
+			case "check fails":
+				if calls != 1 || landed || backs != 1 || got.State != "sent_back" {
+					t.Fatalf("%d %+v", calls, got)
+				}
+			}
+		})
+	}
+}
