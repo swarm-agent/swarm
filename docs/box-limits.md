@@ -57,3 +57,8 @@ is not a hard pre-dispatch token ceiling. Finder/helper bash requires an active
 sandbox and accepts only fixed system readers with literal arguments (no shell
 syntax, executables from the worktree, or arbitrary flags). Three-helper live
 provider fan-out has not yet been validated.
+
+Helper `helper_tokens` is a cumulative budget enforced after the provider's
+usage receipt. An over-budget helper is stopped and reported at the next step;
+the in-flight response may exceed the budget. No pre-dispatch token estimate is
+used.

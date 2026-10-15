@@ -76,7 +76,7 @@ func controlMCPLimitsSchema() map[string]any {
 		"helper_concurrency":     map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
 		"helpers_per_job":        map[string]any{"type": "integer", "minimum": 1, "maximum": 10000},
 		"helper_timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 3600},
-		"helper_tokens":          map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000000},
+		"helper_tokens":          map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000000, "description": "Per-helper cumulative token budget, enforced after provider usage receipts. An over-budget helper is stopped and reported at the next step; no pre-dispatch estimate is used."},
 		"revision":               map[string]any{"type": "integer", "minimum": 0},
 		"worker_job_concurrency": map[string]any{"type": "integer", "minimum": 1, "maximum": 10000},
 		"job_tokens":             map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000},
