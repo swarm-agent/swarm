@@ -58,9 +58,28 @@ for timeout, packages, pattern, cwd in entries:
 sys.exit(int(failed))
 PY
 }
+extras_gate() {
+  python3 - <<'PY'
+import pathlib, re, subprocess, sys
+root = pathlib.Path.cwd()
+failed = False
+for line in (root / 'scripts/test-vital-extras.txt').read_text().splitlines():
+    if not line or line.startswith('#'):
+        continue
+    module, package, names = line.split('|')
+    names = [n for n in names.split() if n not in {'TestProjectCacheDocker', 'TestCPUDockerGitUnderLoad'}]
+    pattern = '^(' + '|'.join(map(re.escape, names)) + ')$'
+    failed |= subprocess.run(['go', 'test', '-p', '4', '-timeout=120s', package, '-run', pattern], cwd=root / module, timeout=300).returncode != 0
+sys.exit(int(failed))
+PY
+}
 web_group() { (cd web && pnpm run "$1"); }
 run_group 'release gate' release_gate
 run_group 'critical Go' critical_gate
+run_group 'core-path extras' extras_gate
+run_group 'root integration' go test -p 4 -timeout=120s ./tests/...
+daemon_integration() { (cd swarmd && go test -p 4 -timeout=120s ./tests/...); }
+run_group 'daemon integration' daemon_integration
 run_group 'web critical' web_group test:critical
 run_group 'web agents' web_group test:agents
 run_group 'web orchestrator selection' web_group test:orchestrator:selection

@@ -177,3 +177,42 @@ context-cancel leaks in provider/google and run tests, a zero-value append in
 sandbox/cache_docker_test.go, unreachable code in run/service.go and
 tool/runtime_manage_artifact.go, and self-assignment in store/pebble/auth_store.go.
 These findings have not been repaired. Package TypeScript gates remain unrun.
+
+## Current reduction and blocking integration failures
+
+The previous progress sections are historical. The exact supplied release list is
+now `scripts/test-vital-release.txt`, checked for missing names before execution;
+critical selections run separately. `scripts/test-vital-extras.txt` enumerates
+58 extras (including CPU/cache startup configuration, real CPU-slot processes,
+worktree removal/recovery, review pipeline, capacity admission, and persistent
+publish queues). Docker extras `TestProjectCacheDocker` and
+`TestCPUDockerGitUnderLoad` are release-pipeline-only (**needs Docker**).
+
+Go inventory is now 230 Test declarations in 197 test/helper files, versus the
+original 6,352 declarations in 1,513 files. The rebase brought additional tests,
+so these numbers are not a same-revision subtraction. Removed 40 unselected
+SDK/CLI/fleet test files; SDK TypeScript passes after locked dependency install.
+Product code was not changed. No tracked testdata paths were found.
+
+Both root and daemon `go build -p 4 ./...` and
+`go test -p 4 -run '^$' ./...` passed after pruning. An initial daemon compile
+was OOM-killed; serial compilation with GOMEMLIMIT=1800MiB passed, and subsequent
+cached four-way compile passed. The runner passed release gate, critical Go,
+core-path extras, four web groups and installer integrity in 129 seconds before
+adding the retained tests-tree groups. This is not a before/after speedup claim.
+
+Explicitly running retained `tests/...` exposed failures, now included as
+failing groups in the vital runner rather than hidden:
+
+- root client plan submit expects execution_granularity=checkpointed but receives
+  no field; resolving the intended submit default needs contract review.
+- root retired-hosting source assertion rejects .dockerignore and references a
+  deleted test file.
+- daemon workspace bootstrap fixtures lack initial Git commits.
+- daemon background metadata test targets unavailable agent `memory`.
+- daemon vault fixtures omit account scope.
+
+These assertions have not been loosened or skipped. The runnable KEEP set is
+therefore **not green**. Test helper retention is conservative; further cleanup
+and per-extra justification review remain pending. Exact extra names are in the
+committed manifest, not a claim that all requested acceptance criteria are done.
