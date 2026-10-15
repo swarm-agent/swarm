@@ -33,7 +33,7 @@
 # and process limits, only that project and its worktrees mounted, and a
 # network that reaches the internet but never this server, your tailnet,
 # private networks or cloud metadata. Agents run without permission prompts
-# (so unattended jobs never wait on a person) only while that sandbox is
+# (questions and hard denials can still pause jobs) only while that sandbox is
 # active: Swarm runs with --sandbox=required and fails closed without it;
 # --ask-permissions (or `install.sh permissions ask`) keeps the prompts. The
 # secret gateway is on by default (--secrets-gateway off turns it off).
@@ -238,7 +238,11 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
                    without asking. --sync starts each job from the forge's
                    latest base branch (COMMAND with SWARM_PUBLISH_ACTION=update
                    fetches it and prints COMMIT BRANCH). publish PATH --off
-                   goes back to merging. --land queues fast-forward landing;
+                   goes back to merging. --land queues fast-forward delivery:
+                   checks run in the sandbox before COMMAND's land action,
+                   which prints LANDED COMMIT or MOVED (refresh and retry).
+                   Conflicts or failed checks send work back to the worker;
+                   retries are bounded. Deliver a stopped job again to retry.
                    --require-review requires an independent OK review of the
                    current head (give the reviewer review_job). With --auto,
                    landing waits for that review's job.reviewed signal.
@@ -892,7 +896,7 @@ install_units() {
   [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on ]] && ai_url=${APP_AI_URL:-} ai_ip=${APP_AI_IP:-}
   [[ ${SANDBOX_RUNTIME:-default} == default ]] && runtime_arg='--sandbox-runtime=runc'
   [[ ${SECRETS_GATEWAY:-off} == on ]] && secrets_arg=--secrets-gateway=on
-  # Unattended jobs never wait on a person: with --sandbox=required Swarm does
+  # Jobs normally skip tool approvals: with --sandbox=required Swarm does
   # not start without its sandbox, and bypass applies only while it is active.
   # The installer's choice is applied at every start.
   case ${PERMISSIONS:-} in

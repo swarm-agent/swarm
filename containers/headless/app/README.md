@@ -159,7 +159,15 @@ socket). A granted project's sandbox sees only a stand-in
 (`NAME=swarm-secret://NAME`); the gateway swaps in the real value on requests
 to the allowed websites, scrubs it from responses and logs each use (`swarmctl secret uses`).
 
-**Agent permissions.** Unattended jobs never wait on a person: the installer
+**Job delivery.** `install.sh workspace publish PATH COMMAND` publishes pull
+requests. `--land` instead queues fast-forward delivery, with checks in the
+sandbox before the command's land action returns `LANDED COMMIT` or `MOVED`
+(refresh and retry). Conflicts or failed checks send work back to the worker;
+retries are bounded, and delivering a stopped job again starts a fresh attempt.
+`--sync` starts jobs from the forge's latest base; `--auto` delivers finished
+jobs with commits without asking. `publish PATH --off` restores local merges.
+
+**Agent permissions.** Jobs normally run without tool-approval prompts: the installer
 starts Swarm with `--sandbox=required --bypass-permissions`, so agents run
 without ordinary prompts (plans to accept, agent questions and hard denials
 still stop). No sandbox, no autonomy: Swarm does not start without its

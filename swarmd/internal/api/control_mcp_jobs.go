@@ -18,15 +18,15 @@ import (
 )
 
 // Workers and jobs: the default way an outside AI (the person's own Claude,
-// ChatGPT or Codex) uses Swarm. The box comes with three preset workers
-// (coder, designer, finder); the AI gives them jobs in the person's folders,
+// ChatGPT or Codex) uses Swarm. The box comes with four preset workers
+// (coder, designer, finder, reviewer); the AI gives them jobs in the person's folders,
 // waits, reads the result and merges it. A job is a worker run, which Swarm
 // executes as a project task on its own branch, in the folder's sandbox, with
 // only that folder's secrets. These tools compose the same allowlisted routes
 // the other Swarm Control tools use; the route handlers keep every check.
 
 // The code-owned preset workers every box has (POST /v3/workers:ensure-presets).
-var controlMCPPresetWorkers = []string{"coder", "designer", "finder"}
+var controlMCPPresetWorkers = []string{"coder", "designer", "finder", "reviewer"}
 
 // Media a job can ask for; each runs as a project task on the media models.
 var controlMCPMediaKinds = map[string]string{"image": "image", "video": "video", "sound": "sound"}
@@ -162,7 +162,7 @@ func (c *controlMCPCall) listWorkers() ([]map[string]any, error) {
 	return workers, nil
 }
 
-// ensurePresets makes sure the coder, designer and finder exist. Swarm creates
+// ensurePresets makes sure the coder, designer, finder and reviewer exist. Swarm creates
 // a missing preset and never touches one the person changed.
 func (c *controlMCPCall) ensurePresets() ([]map[string]any, error) {
 	response, err := c.dispatch(http.MethodPost, "/v3/workers:ensure-presets", nil, map[string]any{})
@@ -178,7 +178,7 @@ func (c *controlMCPCall) ensurePresets() ([]map[string]any, error) {
 	return workers, nil
 }
 
-// resolveWorker finds a worker by preset name (coder, designer, finder), by
+// resolveWorker finds a worker by preset name (coder, designer, finder, reviewer), by
 // id, or by its exact name.
 func (c *controlMCPCall) resolveWorker(ref string) (map[string]any, error) {
 	ref = strings.TrimSpace(ref)
@@ -321,7 +321,7 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 	}
 	name, instructions, role := controlMCPString(args, "name"), controlMCPString(args, "instructions"), controlMCPString(args, "role")
 	if name == "" || instructions == "" || role == "" {
-		return nil, controlMCPToolFailure("a custom worker needs name, role (coder, designer or finder) and instructions; or pass preset")
+		return nil, controlMCPToolFailure("a custom worker needs name, role (coder, designer, finder, reviewer or swarm) and instructions; or pass preset")
 	}
 	body := map[string]any{
 		"name":            name,
@@ -1325,7 +1325,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workers", Title: "List workers",
-			Description: "The box's workers: the preset coder, designer and finder (created on first use) and any others, with role, state and the model their next job uses (their role's model unless pinned). include_jobs adds each worker's latest jobs.",
+			Description: "The box's workers: the preset coder, designer, finder and reviewer (created on first use) and any others, with role, state and the model their next job uses (their role's model unless pinned). include_jobs adds each worker's latest jobs.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"include_jobs": map[string]any{"type": "boolean", "description": "Also list each worker's 5 latest jobs with job_id and status."},
 			}),
@@ -1333,7 +1333,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deploy_worker", Title: "Deploy a worker",
-			Description: "Make a worker ready on this box: preset coder, designer or finder (already there on most boxes), or a custom worker with a name, a role (coder, designer or finder: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to update only the pin, or model: null to clear it (no staged review).",
+			Description: "Make a worker ready on this box: preset coder, designer, finder or reviewer (already there on most boxes), or a custom worker with a name, a role (coder, designer, finder, reviewer or swarm: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to update only the pin, or model: null to clear it (no staged review).",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"preset":       map[string]any{"type": "string", "enum": controlMCPPresetWorkers},
 				"worker":       workerRef,
@@ -1347,7 +1347,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_give_job", Title: "Give a worker a job",
-			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders, in Swarm's sandbox, on its own branch, with only that folder's secrets, and never waits on a person (a question comes back to you through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge. Reviewer workers require review_job, review an exact head in a detached disposable checkout, and return reports only; never deliver them.",
+			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders, in Swarm's sandbox, with only that folder's secrets, and normally runs without tool-approval prompts (questions come back to the calling AI through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge. Reviewer workers require review_job, review an exact head in a detached disposable checkout, and return reports only; never deliver them.",
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),
@@ -1399,7 +1399,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deliver_job", Title: "Merge a job's result into its folder",
-			Description: "Deliver a needs_review job's commits: by default a real local git merge from its branch into the folder's branch; when the folder's owner set up publishing for it on the machine, a pull request instead (the result names it). Swarm never pushes otherwise. Read the result with swarm_get_job first. Refused when the job committed nothing; a merge is also refused on conflicts.",
+			Description: "Deliver a needs_review job's commits: by default a real local git merge from its branch into the folder's branch; when the folder's owner set up publishing for it on the machine, a pull request instead (the result names it), or a queued landing receipt in land mode. Swarm never pushes otherwise. Read the result with swarm_get_job first. Refused when the job committed nothing; a merge is also refused on conflicts.",
 			InputSchema: controlMCPObject([]string{"job_id"}, map[string]any{"job_id": jobID}),
 			Annotations: controlMCPDestructive, call: controlMCPDeliverJob,
 		},
@@ -1474,7 +1474,7 @@ func controlMCPJobTools() []controlMCPTool {
 
 // controlMCPWorkerRoleSlots maps a worker role to its role model setting.
 var controlMCPWorkerRoleSlots = map[string]string{
-	"coder": "system-coder", "designer": "system-designer", "finder": "system-finder", "swarm": "swarm",
+	"coder": "system-coder", "designer": "system-designer", "finder": "system-finder", "reviewer": "system-reviewer", "swarm": "swarm",
 }
 
 // roleModels reads each agent role's model setting once (nil when unreadable).

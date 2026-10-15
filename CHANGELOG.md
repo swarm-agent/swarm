@@ -20,6 +20,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Restore advanced planning capabilities for explicit plan-mode creation, plan-mode entry and MCP-submitted stored plans without enabling planning tools for default coding sessions. Docs impact: none.
 
 - Hide plan and managed design/media tools from default Swarm coding sessions; preserve saved plan capability, explicit advanced planning, worker task cards and legacy Swarm-role plan execution. MCP plan guidance remains opt-in with `tools=all`. Docs impact: none.
+- Initialize the reviewer MCP preset on first use and show its role model; clarify reviewer report-only jobs, sandbox approvals and queued landing. Docs impact: headless installer help/README and SDK worker/job overview.
 
 - Size sandbox memory to the host with a validated `--sandbox-memory` override, keep Go build scratch on disk and reuse configured Go caches; retry landing checks interrupted by sandbox death once without blaming worker code. Docs impact: README sandbox resource guidance.
 - Resolve unattended permission safety and waiting signals from account-bound worker receipts, not editable session metadata; reject worker authority metadata injection through V3. Docs impact: none.
