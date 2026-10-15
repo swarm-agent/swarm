@@ -334,3 +334,23 @@ the regression the retained test is intended to catch, not a live release proof.
 - TestSandboxCacheConfig — sandbox cache configuration loses its intended settings.
 - TestSandboxResourceConfig — sandbox resource configuration loses limits.
 - TestSandboxResourceMigration — resource configuration migration changes intended limits.
+
+### Final rebase validation
+
+Rebased onto the explicitly requested `e643047a7` (verified ancestor). The local
+`refs/swarm/publish/dev` still resolves to `17297f8e6`; it was not silently moved.
+Resolved the SDK workers test modify/delete conflict by preserving deletion:
+that suite is not selected. No product conflict occurred.
+
+The rebase added four proof tests, all retained as extras and run successfully:
+- TestPublishProofRealGit — real Git publication cannot substitute stale or unrelated proof.
+- TestPublishProofExecutionBounds — proof execution respects its bounded execution contract.
+- TestLoadRequireProof — persisted publish policy cannot silently lose required-proof settings.
+- TestWorkerProofContract — worker context preserves the required proof contract.
+
+Final extras count is **62**, with exact package/name list in
+`scripts/test-vital-extras.txt`. Final Go count is **209 declarations / 187 files**
+(original **6,352 / 1,513**). The rebased final vital run passed the same eight
+PASS groups above in **121 seconds**, exit 0. Both root/daemon builds and compile-
+only tests, web tsc and SDK tsc were rerun on this rebased tree and passed.
+The 178-second measurement above describes the earlier pre-rebase run only.
