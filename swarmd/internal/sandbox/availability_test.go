@@ -186,7 +186,7 @@ func TestWorkerGitLeaseLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ReleaseGit(cmd)
-	name := ContainerName(root)
+	name := scopeContainerName(Scope{Root: root, daemonGit: true})
 	if err := m.removeJobContainer(context.Background(), name); err == nil {
 		t.Fatal("removed routed Git container before execution")
 	}

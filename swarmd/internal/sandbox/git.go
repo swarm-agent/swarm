@@ -182,6 +182,12 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		}
 		return nil
 	}
+	// Preserve reviewer lifecycle ownership; ordinary daemon Git gets its own
+	// sandbox rather than the agent's throttled command container.
+	scope.daemonGit = scope.ReviewCheckout == ""
+	if scope.daemonGit {
+		scope.JobCheckout = ""
+	}
 	b, err := m.acquire(ctx, scope, "git")
 	if err != nil {
 		return err
@@ -217,7 +223,9 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		execArgs = append(execArgs, "-e", "GIT_OPTIONAL_LOCKS=0")
 	}
 	execArgs = append(execArgs, name)
-	if deadline, ok := ctx.Deadline(); ok {
+	if timeout, _ := ctx.Value(gitTimeoutKey{}).(time.Duration); timeout > 0 {
+		execArgs = append(execArgs, "timeout", "--kill-after=2", fmt.Sprintf("%.3f", timeout.Seconds()))
+	} else if deadline, ok := ctx.Deadline(); ok {
 		// Killing the engine CLI does not stop the process in the container;
 		// bound it there too.
 		secs := int(math.Ceil(time.Until(deadline).Seconds()))
@@ -371,5 +379,13 @@ func (m *Manager) Warm(ctx context.Context, dir string) error {
 		return err
 	}
 	m.release(b)
+	if scope.ReviewCheckout == "" {
+		scope.daemonGit, scope.JobCheckout = true, ""
+		b, err = m.acquire(ctx, scope)
+		if err != nil {
+			return err
+		}
+		m.release(b)
+	}
 	return nil
 }

@@ -37,13 +37,17 @@ func (m *Manager) interruption(ctx context.Context, scope Scope, detail string) 
 // after recovering a stopped container. Mutations must never be replayed.
 func GitCombinedOutput(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
 	run := func() ([]byte, error) {
-		cmd := exec.CommandContext(ctx, "git", args...)
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		cmd := exec.CommandContext(runCtx, "git", args...)
 		cmd.Dir, cmd.Env = dir, env
 		manager := Default()
-		if err := manager.RouteGit(ctx, cmd); err != nil {
+		if err := manager.RouteGit(runCtx, cmd); err != nil {
 			return nil, err
 		}
 		defer ReleaseGit(cmd)
+		stop := armGitTimeout(ctx, cancel)
+		defer stop()
 		return cmd.CombinedOutput()
 	}
 	return gitOutputWithRecovery(ctx, Default(), dir, args, run)
@@ -56,6 +60,10 @@ func gitOutputWithRecovery(ctx context.Context, m *Manager, dir string, args []s
 	}
 	scope, ok, scopeErr := m.ScopeFor(dir)
 	scope = jobScope(ctx, scope)
+	scope.daemonGit = scope.ReviewCheckout == ""
+	if scope.daemonGit {
+		scope.JobCheckout = ""
+	}
 	if scopeErr != nil || !ok {
 		return out, err
 	}

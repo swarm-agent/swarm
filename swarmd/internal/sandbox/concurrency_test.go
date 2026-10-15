@@ -280,7 +280,9 @@ func TestAcquireSlowGitWaitLogsNameOnly(t *testing.T) {
 	r := &lifecycleRunner{fakeRunner: readyRunner()}
 	m, scope := concurrencyManager(t, r)
 	m.mu.Lock()
-	b := m.boxes[ContainerName(scope.Root)]
+	name := scopeContainerName(Scope{Root: scope.Root, daemonGit: true})
+	b := &box{name: name, root: scope.Root}
+	m.boxes[name] = b
 	b.changing = make(chan struct{})
 	m.mu.Unlock()
 	w := &waitLogWriter{written: make(chan struct{}, 2)}

@@ -38,6 +38,9 @@ type Config struct {
 	SandboxNetwork          string
 	SandboxRuntime          string
 	SandboxMemory           string
+	SandboxCPUs             string
+	SandboxCPUSlots         int
+	SandboxCgroupParent     string
 	WorkerMaxConcurrentRuns int
 	SecretsGateway          string // off (default) | on
 	SecretsGatewayAddr      string // bridge address:port the gateway listens on
@@ -102,6 +105,9 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
 	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "memory cap per sandbox (empty: host-derived)")
+	fs.StringVar(&cfg.SandboxCPUs, "sandbox-cpus", startupCfg.SandboxCPUs, "CPU quota per agent container (empty: host-derived)")
+	fs.IntVar(&cfg.SandboxCPUSlots, "sandbox-cpu-slots", startupCfg.SandboxCPUSlots, "concurrent agent commands (0: host-derived)")
+	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")
 	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: CPU/RAM-derived)")
 	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
 	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")

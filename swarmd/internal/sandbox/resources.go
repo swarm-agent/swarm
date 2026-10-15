@@ -40,7 +40,7 @@ func resolveResources(cfg *Config) error {
 		return fmt.Errorf("worker_max_concurrent_runs must be non-negative")
 	}
 	if cfg.Memory != "" && cfg.MaxWorkerRuns > 0 {
-		return nil
+		return resolveCPU(cfg)
 	}
 	cpus, ram, err := hostResources()
 	if err != nil {
@@ -53,7 +53,7 @@ func resolveResources(cfg *Config) error {
 	if cfg.Memory == "" {
 		cfg.Memory = strconv.FormatUint(ram/4*3/uint64(cfg.MaxWorkerRuns), 10)
 	}
-	return nil
+	return resolveCPU(cfg)
 }
 
 // MaxWorkerRuns is a box-wide admission bound, independent of account quotas.

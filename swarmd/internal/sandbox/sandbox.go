@@ -84,6 +84,8 @@ type Config struct {
 	MaxWorkerRuns int
 	PidsLimit     int
 	CPUs          string
+	CPUSlots      int
+	CgroupParent  string
 	DNS           []string
 	IdleTimeout   time.Duration
 	// UID and GID the sandbox runs as. They default to the daemon's own ids so
@@ -135,7 +137,8 @@ type Status struct {
 // Scope is one project's sandbox: Root identifies it and Mounts are the host
 // directories bind-mounted at the same paths.
 type Scope struct {
-	Root string
+	Root      string
+	daemonGit bool
 	// JobCheckout selects an independent memory cgroup for a managed worktree.
 	JobCheckout string
 	Mounts      []string
@@ -146,8 +149,9 @@ type Scope struct {
 
 // Manager owns the per-project sandbox containers.
 type Manager struct {
-	cfg    Config
-	runner provider.CommandRunner
+	cpuSlots chan struct{}
+	cfg      Config
+	runner   provider.CommandRunner
 
 	mu      sync.Mutex
 	status  Status
@@ -558,7 +562,7 @@ func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint,
 	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v5", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.resolvConf,
+		"v6", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.cfg.CgroupParent, m.resolvConf,
 		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
@@ -608,8 +612,18 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--env", "LANG=C.UTF-8",
 		"--workdir", root,
 	)
-	if m.cfg.CPUs != "" {
-		args = append(args, "--cpus", m.cfg.CPUs)
+	if strings.HasSuffix(name, "-daemon-git") {
+		// Separate cgroup and home: untrusted Git stays confined, but cannot
+		// consume or queue behind an agent container's CPU quota.
+		args = append(args, "--cpu-shares", "2048")
+	} else {
+		if m.cfg.CPUs != "" {
+			args = append(args, "--cpus", m.cfg.CPUs)
+		}
+		args = append(args, "--cpu-shares", "256")
+		if m.cfg.CgroupParent != "" {
+			args = append(args, "--cgroup-parent", m.cfg.CgroupParent)
+		}
 	}
 	for _, dns := range m.cfg.DNS {
 		args = append(args, "--dns", dns)
@@ -860,6 +874,11 @@ func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*prov
 	if err != nil {
 		return nil, err
 	}
+	release, err := m.acquireCPUSlot(ctx, req.OnOutput)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	result, err := m.execOnce(ctx, scope, req)
 	if errors.Is(err, provider.ErrSupervisorUnavailable) && ctx.Err() == nil {
 		// The container went away underneath us (stopped or removed outside

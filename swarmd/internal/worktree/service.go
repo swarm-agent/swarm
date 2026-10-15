@@ -1780,14 +1780,13 @@ func runGit(path string, args ...string) (string, error) {
 
 // runGitRaw returns stdout untrimmed, for formats whose leading spaces matter.
 func runGitRaw(path string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
-	sandbox.Prepare(ctx, cmd)
-	defer sandbox.ReleaseGit(cmd)
+	ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
+	out, err := sandbox.TimedGitOutput(ctx, path, nil, args...)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		stderr.Write(exitErr.Stderr)
+	}
 	if errors.Is(err, exec.ErrNotFound) {
 		return "", errors.New(gitRequiredForWorktreesError)
 	}
@@ -1802,8 +1801,7 @@ func runGitRaw(path string, args ...string) (string, error) {
 }
 
 func runGitWithEnv(path string, env []string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-	defer cancel()
+	ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
 	out, err := sandbox.GitCombinedOutput(ctx, path, env, args...)
 	if errors.Is(err, sandbox.ErrInterrupted) {
 		return "", err
@@ -1822,12 +1820,8 @@ func runGitWithEnv(path string, env []string, args ...string) (string, error) {
 }
 
 func localBranchExists(repoRoot, branchName string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitCommandTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
-	sandbox.Prepare(ctx, cmd)
-	defer sandbox.ReleaseGit(cmd)
-	if err := cmd.Run(); err != nil {
+	ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
+	if _, err := sandbox.TimedGitOutput(ctx, repoRoot, nil, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 			return false, nil

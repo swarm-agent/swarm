@@ -48,6 +48,9 @@ type FileConfig struct {
 	V3Diagnostics                bool
 	ProviderAPIDiagnostics       bool
 	SandboxMemory                string
+	SandboxCPUs                  string
+	SandboxCPUSlots              int
+	SandboxCgroupParent          string
 	WorkerMaxConcurrentRuns      int
 	LongSessionDiagnostics       bool
 	SwarmName                    string
@@ -333,6 +336,9 @@ long_session_diagnostics = %t
 
 # Per-job sandbox memory (empty: host-derived), and box worker admission (0: auto).
 sandbox_memory = %s
+sandbox_cpus = %s
+sandbox_cpu_slots = %d
+sandbox_cgroup_parent = %s
 worker_max_concurrent_runs = %d
 
 # Human-readable Swarm name shown in onboarding and discovery surfaces.
@@ -355,7 +361,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.SandboxCPUSlots, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -519,6 +525,30 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
+		case "sandbox_cpus", "sandbox_cpu_slots", "sandbox_cgroup_parent":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
+			}
+			rawSeen[key] = struct{}{}
+			seen[key] = struct{}{}
+			switch key {
+			case "sandbox_cpus":
+				if value != "" {
+					n, err := strconv.ParseFloat(value, 64)
+					if err != nil || !(n > 0) || n > 1e6 {
+						return FileConfig{}, nil, fmt.Errorf("invalid sandbox_cpus %q", value)
+					}
+				}
+				cfg.SandboxCPUs = value
+			case "sandbox_cpu_slots":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 0 {
+					return FileConfig{}, nil, fmt.Errorf("invalid sandbox_cpu_slots %q", value)
+				}
+				cfg.SandboxCPUSlots = n
+			case "sandbox_cgroup_parent":
+				cfg.SandboxCgroupParent = value
+			}
 		case "sandbox_memory", "worker_max_concurrent_runs":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -726,6 +756,15 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			fmt.Sprintf("provider_api_diagnostics = %t", cfg.ProviderAPIDiagnostics),
 		)
 	}
+	if _, ok := seen["sandbox_cpus"]; !ok {
+		lines = append(lines, fmt.Sprintf("sandbox_cpus = %s", cfg.SandboxCPUs))
+	}
+	if _, ok := seen["sandbox_cpu_slots"]; !ok {
+		lines = append(lines, fmt.Sprintf("sandbox_cpu_slots = %d", cfg.SandboxCPUSlots))
+	}
+	if _, ok := seen["sandbox_cgroup_parent"]; !ok {
+		lines = append(lines, fmt.Sprintf("sandbox_cgroup_parent = %s", cfg.SandboxCgroupParent))
+	}
 	if _, ok := seen["sandbox_memory"]; !ok {
 		lines = append(lines, fmt.Sprintf("sandbox_memory = %s", cfg.SandboxMemory))
 	}
@@ -830,7 +869,7 @@ func validate(cfg FileConfig) error {
 
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
+	case "sandbox_cpus", "sandbox_cgroup_parent", "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
 		return true
 	default:
 		return false

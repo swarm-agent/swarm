@@ -921,6 +921,13 @@ ExecStart=/bin/bash $SRC/containers/sandbox/firewall.sh
 [Install]
 WantedBy=multi-user.target docker.service
 UNIT
+  cat > "$UNITS/swarm-sandbox.slice" <<'UNIT'
+[Unit]
+Description=Low-priority Swarm agent commands
+[Slice]
+CPUWeight=25
+IOWeight=25
+UNIT
   # Swarm itself: its own user, its own private state directories, and Docker
   # access to start sandboxes. Nothing it holds is mounted into a sandbox.
   cat > "$UNITS/$DAEMON_UNIT" <<UNIT
@@ -958,7 +965,10 @@ ConfigurationDirectoryMode=0700
 LogsDirectory=swarmd
 LogsDirectoryMode=0700
 WorkingDirectory=$PROJECT
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $permissions_arg $runtime_arg $sdk_args $secrets_arg
+Slice=swarm.slice
+CPUWeight=1000
+IOWeight=1000
+ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required --sandbox-cgroup-parent=swarm-sandbox.slice $permissions_arg $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20

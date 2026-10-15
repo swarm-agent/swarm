@@ -267,3 +267,28 @@ generates no canned content/progress, and does not treat object upload or a
 Cloud Run services/jobs and legacy Compute Engine provisioning helpers now fail
 with migration errors rather than constructing incompatible/public daemons.
 This does not qualify any cloud deployment, live provider run or external post.
+
+### CPU contention controls
+
+Restart after changing these keys in the daemon startup config (`swarm.conf`):
+
+- `sandbox_cpus`: per-agent-container Docker CPU quota; empty derives
+  `max(2, logical CPUs * 0.75 / worker_max_concurrent_runs)` using resolved worker admission.
+- `sandbox_cpu_slots`: box-wide concurrent agent commands; zero derives
+  `max(1, floor(logical CPUs * 0.75 / 2))`. Every command takes a slot before
+  container acquisition. Queued commands report `waiting for a CPU slot`;
+  their execution timeout starts after admission, while run cancellation remains effective.
+- `sandbox_cgroup_parent`: optional Docker cgroup parent. The headless installer
+  supplies `--sandbox-cgroup-parent=swarm-sandbox.slice` on install and update.
+
+A 22-CPU host defaults to eight command slots; with eight workers its per-container
+quota is 2.0625 CPUs. The two-CPU floor and background descendants mean quotas alone
+are **not** a guaranteed 25% aggregate CPU reservation. The installer gives agent
+containers a lower-weight slice (CPUWeight/IOWeight 25), versus daemon weights 1000,
+and retains `ProtectControlGroups=yes`. This requires Docker's systemd cgroup driver.
+Outside this installer, containers still receive lower CPU shares (256).
+
+Ordinary daemon Git runs in a separate confined per-project container (CPU shares
+2048), outside agent quotas and slots; reviewer Git retains its restricted read-only
+container. Worktree Git command budgets start after sandbox acquisition. Cold-start
+and engine failure can still fail explicitly; priority is not a real-time guarantee.
