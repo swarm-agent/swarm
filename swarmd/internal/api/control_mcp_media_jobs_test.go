@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/base64"
 	"os"
+	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/imagegen"
@@ -118,5 +119,78 @@ func TestOutboxMediaExport(t *testing.T) {
 	small := outboxMediaExport(mediaTestTask(png), outbox.NewBuilder("pc", 4))
 	if len(small.Blobs) != 0 {
 		t.Fatal("a file over the limit is skipped, not exported")
+	}
+}
+
+// Requirement: MCP media views direct retries to swarm_request_media, explain
+// content-policy refusals without rewriting stored errors, and advertise inline
+// images only when present. Threat: generic coder guidance or image-only wording
+// misdirects the AI, while matching truncated errors hides actionable refusals.
+// controlMCPMediaJobFiles owns the view and calls controlMCPMediaJobGuidance;
+// testing that pure guidance boundary with decoded deliverables is the narrowest
+// layer that proves the wording, negative cases, and unchanged source errors.
+func TestControlMCPMediaJobGuidance(t *testing.T) {
+	failed := func(message string) pebblestore.ProjectTaskDeliverable {
+		return pebblestore.ProjectTaskDeliverable{Kind: "sound", Status: "failed", Description: message}
+	}
+	ready := func(kind, mediaType string) pebblestore.ProjectTaskDeliverable {
+		return pebblestore.ProjectTaskDeliverable{Kind: kind, Status: "ready", MediaURL: "data:" + mediaType + ";base64,Ynl0ZXM="}
+	}
+	const hint = "the provider refused the brief by its content policy: rephrase it; naming real artists, songs, films, brands or people often triggers this"
+	for _, tc := range []struct {
+		name         string
+		status       string
+		deliverables []pebblestore.ProjectTaskDeliverable
+		wantHint     bool
+		wantRetry    bool
+		wantImages   bool
+	}{
+		{"failed sound", "failed", []pebblestore.ProjectTaskDeliverable{failed("provider unavailable")}, false, true, false},
+		{"blocked", "blocked", nil, false, true, false},
+		{"cancelled", "cancelled", nil, false, true, false},
+		{"rejected", "rejected", nil, false, true, false},
+		{"policy code case insensitive", "failed", []pebblestore.ProjectTaskDeliverable{failed("HTTP 400: PROHIBITED_CONTENT")}, true, true, false},
+		{"policy message case insensitive", "failed", []pebblestore.ProjectTaskDeliverable{failed("iNpUt BlOcKeD: sensitive words")}, true, true, false},
+		{"later file untruncated error", "failed", []pebblestore.ProjectTaskDeliverable{failed("timeout"), failed(strings.Repeat("x", 450) + "prohibited_content")}, true, true, false},
+		{"ready sound", "needs_review", []pebblestore.ProjectTaskDeliverable{ready("sound", "audio/mpeg")}, false, false, false},
+		{"completed video", "completed", []pebblestore.ProjectTaskDeliverable{ready("video", "video/mp4")}, false, false, false},
+		{"ready image", "needs_review", []pebblestore.ProjectTaskDeliverable{ready("image", "image/png")}, false, false, true},
+		{"completed mixed files", "completed", []pebblestore.ProjectTaskDeliverable{ready("sound", "audio/mpeg"), ready("image", "image/png")}, false, false, true},
+		{"ready partial refusal", "needs_review", []pebblestore.ProjectTaskDeliverable{ready("image", "image/png"), failed("prohibited_content")}, false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &pebblestore.ProjectTaskRecord{Deliverables: tc.deliverables}
+			files := mediaTaskFiles(task)
+			out := map[string]any{"status": tc.status, "next": controlMCPJobNext(tc.status, false)}
+			controlMCPMediaJobGuidance(out, files)
+			next, _ := out["next"].(string)
+			if tc.wantRetry {
+				if !strings.Contains(next, "swarm_request_media") || strings.Contains(next, "swarm_give_job") {
+					t.Fatalf("media retry guidance = %q", next)
+				}
+			} else {
+				if !strings.Contains(next, "swarm_save_media") || !strings.Contains(next, "nothing to merge") {
+					t.Fatalf("ready guidance = %q", next)
+				}
+				if strings.Contains(next, "images") != tc.wantImages || strings.Contains(next, "include_media") != tc.wantImages {
+					t.Fatalf("image guidance = %q, want images %v", next, tc.wantImages)
+				}
+			}
+			gotHint, present := out["hint"]
+			if present != tc.wantHint || (present && gotHint != hint) {
+				t.Fatalf("hint = %v (present %v), want present %v", gotHint, present, tc.wantHint)
+			}
+			if tc.wantHint && !strings.Contains(next, "rephrase") {
+				t.Fatalf("policy retry must suggest rephrasing: %q", next)
+			}
+			if out["status"] != tc.status {
+				t.Fatalf("guidance changed status: %v", out)
+			}
+			for i, file := range files {
+				if file.record.Description != tc.deliverables[i].Description {
+					t.Fatal("guidance changed a stored file error")
+				}
+			}
+		})
 	}
 }

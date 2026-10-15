@@ -151,9 +151,7 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 	if task.Model != "" {
 		out["model"] = task.Model
 	}
-	if status, _ := out["status"].(string); status == "needs_review" || status == "completed" {
-		out["next"] = "the files are ready: include_media shows the images, swarm_save_media writes the files into a workspace; there is nothing to merge"
-	}
+	controlMCPMediaJobGuidance(out, files)
 	show, _ := args["include_media"].(bool)
 	if !show {
 		return out, nil
@@ -178,6 +176,38 @@ func (c *controlMCPCall) controlMCPMediaJobFiles(out map[string]any, projectID, 
 		out["media_notes"] = notes
 	}
 	return controlMCPRichResult{value: out, images: images}, nil
+}
+
+// controlMCPMediaJobGuidance specializes the generic job guidance for media.
+func controlMCPMediaJobGuidance(out map[string]any, files []controlMCPMediaFile) {
+	status, _ := out["status"].(string)
+	switch status {
+	case "needs_review", "completed":
+		prefix := "the files are ready: "
+		for _, file := range files {
+			if strings.HasPrefix(file.mediaType, "image/") {
+				prefix += "include_media shows the images, "
+				break
+			}
+		}
+		out["next"] = prefix + "swarm_save_media writes the files into a workspace; there is nothing to merge"
+	case "failed", "blocked", "cancelled", "rejected":
+		out["next"] = "the media job did not finish: read each file's error, then make a corrected request with swarm_request_media (a new job)"
+		if status != "failed" {
+			return
+		}
+		for _, file := range files {
+			if file.record.Status != "failed" {
+				continue
+			}
+			message := strings.ToLower(file.record.Description)
+			if strings.Contains(message, "prohibited_content") || strings.Contains(message, "input blocked") {
+				out["hint"] = "the provider refused the brief by its content policy: rephrase it; naming real artists, songs, films, brands or people often triggers this"
+				out["next"] = "the media job did not finish: read each file's error, then rephrase the brief and make a corrected request with swarm_request_media (a new job)"
+				break
+			}
+		}
+	}
 }
 
 // saveMediaFiles writes a job's files into a folder inside a registered
