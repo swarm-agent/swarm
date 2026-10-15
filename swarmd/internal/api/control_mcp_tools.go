@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -597,7 +598,7 @@ func controlMCPTools() []controlMCPTool {
 				"permission_id": controlMCPStringProp("", 1, 200),
 				"action":        map[string]any{"type": "string", "enum": []string{"allow_once", "deny_once"}},
 				"reason":        controlMCPStringProp("Shown to the agent.", 0, 500),
-				"answer":        controlMCPStringProp("Reply to an ask_user question (allow_once only).", 0, 10000),
+				"answer":        controlMCPStringProp("Reply to an ask_user question (allow_once only).", 0, permission.MaxReplyCharacters),
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPResolvePermission,
 		},

@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Align job question answers with the 100,000-character job brief/follow-up limit; reject oversized follow-ups and permission replies explicitly at MCP and API/service boundaries. Add durable-session regression coverage for complete 6,000-character messages and answers. Docs impact: none.
+
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.
 - Protect quiet V3 provider/tool execution and queued/recovering intents from worker watchdog settlement; fence orphan settlement against concurrent progress/completion and remove only the target review worktree registration during torn cleanup. Docs impact: none.
 - Release worker follow-up capacity atomically on interruption, fence terminal sandbox cleanup against newer work and in-flight Git, and retain shared gateway authentication for sibling containers. Docs impact: worker sandbox lifecycle guidance updated.

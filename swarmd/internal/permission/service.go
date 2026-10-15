@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/notification"
@@ -23,6 +24,9 @@ import (
 )
 
 const (
+	// MaxReplyCharacters bounds user replies without silently shortening them.
+	MaxReplyCharacters = 100000
+
 	defaultPrincipalID = "local"
 
 	ActionAllowOnce   = "allow_once"
@@ -1146,6 +1150,9 @@ func (s *Service) CancelRunPending(sessionID, runID, reason string) ([]pebblesto
 }
 
 func (s *Service) resolveLocked(sessionID, permissionID, action, reason, approvedArguments string, now int64) (pebblestore.PermissionRecord, bool, error) {
+	if utf8.RuneCountInString(reason) > MaxReplyCharacters {
+		return pebblestore.PermissionRecord{}, false, fmt.Errorf("reply exceeds %d characters; no truncation is performed", MaxReplyCharacters)
+	}
 	record, ok, err := s.store.GetPermission(sessionID, permissionID)
 	if err != nil {
 		return pebblestore.PermissionRecord{}, false, err

@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"swarm/packages/swarmd/internal/permission"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -833,8 +835,11 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	message := controlMCPString(args, "message")
-	if message == "" {
+	message, _ := args["message"].(string)
+	if utf8.RuneCountInString(message) > permission.MaxReplyCharacters {
+		return nil, controlMCPToolFailure("message exceeds %d characters; no truncation is performed", permission.MaxReplyCharacters)
+	}
+	if strings.TrimSpace(message) == "" {
 		return nil, controlMCPToolFailure("message is required")
 	}
 	state, refs, err := c.jobState(kind, a, b)
@@ -895,8 +900,11 @@ func controlMCPAnswerJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	answer := controlMCPString(args, "answer")
-	if answer == "" {
+	answer, _ := args["answer"].(string)
+	if utf8.RuneCountInString(answer) > permission.MaxReplyCharacters {
+		return nil, controlMCPToolFailure("answer exceeds %d characters; no truncation is performed", permission.MaxReplyCharacters)
+	}
+	if strings.TrimSpace(answer) == "" {
 		return nil, controlMCPToolFailure("answer is required")
 	}
 	state, refs, err := c.jobState(kind, a, b)
@@ -1373,7 +1381,7 @@ func controlMCPJobTools() []controlMCPTool {
 			Description: "Tell the worker more in the same job: something to add, a correction, or a redo. It works on the same branch after its current run, so the job stays one thing to wait on (swarm_get_job), read and merge (swarm_deliver_job). Use swarm_answer_job for a question the worker asked, and swarm_give_job for unrelated work.",
 			InputSchema: controlMCPObject([]string{"job_id", "message"}, map[string]any{
 				"job_id":            jobID,
-				"message":           controlMCPStringProp("What the worker should do next and how to know it is done.", 1, 100000),
+				"message":           controlMCPStringProp("What the worker should do next and how to know it is done.", 1, permission.MaxReplyCharacters),
 				"client_request_id": controlMCPStringProp("Reuse when retrying the same message.", 0, 200),
 				"wait_seconds":      waitProp,
 			}),
@@ -1384,7 +1392,7 @@ func controlMCPJobTools() []controlMCPTool {
 			Description: "Reply to the question a job asked (status needs_input; swarm_get_job shows it). The worker continues with your answer. It answers questions only, never approves a tool call.",
 			InputSchema: controlMCPObject([]string{"job_id", "answer"}, map[string]any{
 				"job_id":      jobID,
-				"answer":      controlMCPStringProp("", 1, 10000),
+				"answer":      controlMCPStringProp("", 1, permission.MaxReplyCharacters),
 				"question_id": controlMCPStringProp("Which question, when there are several (from swarm_get_job).", 0, 200),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPAnswerJob,

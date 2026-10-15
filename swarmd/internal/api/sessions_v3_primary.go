@@ -14,12 +14,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodel"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/modelpolicy"
+	"swarm/packages/swarmd/internal/permission"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -1778,6 +1780,9 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	}
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
+	}
+	if strings.HasPrefix(sessionID, "worker-execution-") && utf8.RuneCountInString(req.Content) > permission.MaxReplyCharacters {
+		return sessionruntime.SessionMutationResult{}, nil, fmt.Errorf("message exceeds %d characters; no truncation is performed", permission.MaxReplyCharacters)
 	}
 	if err := validateSelectedWorkerMessageMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err

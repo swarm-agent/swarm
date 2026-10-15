@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -55,10 +56,22 @@ func settledWorkerJobForMCP(t *testing.T, s *Server, h http.Handler, workspaceID
 }
 
 func messageJobForMCP(h http.Handler, jobID, message, requestID string) (any, error) {
+	return callJobForMCP(h, "swarm_message_job", map[string]any{"job_id": jobID, "message": message, "client_request_id": requestID})
+}
+
+func callJobForMCP(h http.Handler, name string, args map[string]any) (any, error) {
 	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	r = r.WithContext(context.WithValue(context.WithValue(r.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", UserID: "user-test", AccountScopeID: "acct-test"}),
 		productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: "acct-test", UserID: "user-test", Scopes: []string{"sessions:read", "sessions:write", "automations:read", "automations:write", "projects:read"}}))
-	return controlMCPMessageJob(&controlMCPCall{request: r, next: h}, map[string]any{"job_id": jobID, "message": message, "client_request_id": requestID})
+	for _, tool := range controlMCPJobTools() {
+		if tool.Name == name {
+			if err := controlMCPValidateArgs(tool.InputSchema, args); err != nil {
+				return nil, err
+			}
+			return tool.call(&controlMCPCall{request: r, next: h}, args)
+		}
+	}
+	panic("unknown job tool")
 }
 
 // Purpose: swarm_message_job sends a reviewing AI's follow-up into a settled
@@ -71,7 +84,9 @@ func messageJobForMCP(h http.Handler, jobID, message, requestID string) (any, er
 // and WorkerExecutionService.PrepareFollowup. The real API mux, worker
 // execution service, Git worktree and Pebble store are the narrowest layer
 // joining the tool to the route that refuses; no provider runs, so the run
-// gate itself is proven in the run package.
+// gate itself is proven in the run package. Also require a 6,000-character
+// follow-up to reach the durable session intact and oversized input to fail
+// without appending a message, through both MCP and the underlying API.
 func TestControlMCPMessageJobStartsOrFails(t *testing.T) {
 	s, db, h := setupWorkerAPITestServer(t)
 	workspaceID := setupWorkerAPIExecution(t, s, db)
@@ -98,7 +113,23 @@ func TestControlMCPMessageJobStartsOrFails(t *testing.T) {
 	w, r := settledWorkerJobForMCP(t, s, h, workspaceID, "followup")
 	jobID := controlMCPJobID(controlMCPJobWorker, w.ID, r.ID)
 
-	raw, err = messageJobForMCP(h, jobID, "Also add a test", "first")
+	beforeLong, err := s.sessions.ListSessionMessages(r.SessionID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized := strings.Repeat("x", 100001)
+	if _, err := messageJobForMCP(h, jobID, oversized, "too-long"); err == nil || !strings.Contains(err.Error(), "100000") {
+		t.Fatalf("oversized MCP follow-up: %v", err)
+	}
+	if _, _, err := s.acceptSessionsV3Message(identity.Principal{Type: "user", UserID: "user-test", AccountScopeID: "acct-test"}, r.SessionID, sessionsV3MessageRequest{Role: "user", Content: oversized, ClientRequestID: "too-long-api"}); err == nil || !strings.Contains(err.Error(), "100000") {
+		t.Fatalf("oversized API follow-up: %v", err)
+	}
+	afterLong, err := s.sessions.ListSessionMessages(r.SessionID, 0, 100)
+	if err != nil || len(afterLong) != len(beforeLong) {
+		t.Fatalf("oversized follow-up changed messages: %v", err)
+	}
+	message := strings.Repeat("界", 6000)
+	raw, err = messageJobForMCP(h, jobID, message, "first")
 	if err != nil {
 		t.Fatalf("follow-up on a settled job refused: %v", err)
 	}
@@ -117,6 +148,17 @@ func TestControlMCPMessageJobStartsOrFails(t *testing.T) {
 			t.Fatal(err)
 		}
 		return len(list)
+	}
+	stored, err := s.sessions.ListSessionMessages(r.SessionID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMessage := false
+	for _, item := range stored {
+		foundMessage = foundMessage || item.Content == message
+	}
+	if !foundMessage {
+		t.Fatal("worker session did not receive the complete 6000-character follow-up")
 	}
 	before := messages()
 	if raw, err = messageJobForMCP(h, jobID, "And update the docs", "second"); err == nil || !strings.Contains(err.Error(), "already running") {
@@ -182,5 +224,39 @@ func TestControlMCPGetJobReportsUncommittedChanges(t *testing.T) {
 				t.Fatalf("uncommitted changes not named: %+v", result)
 			}
 		})
+	}
+}
+
+// Purpose: answers must survive the MCP job schema, permission API and durable
+// receipt whole. Oversized answers must leave the question pending. Owners:
+// controlMCPAnswerJob and permission.Service.resolveLocked; real API/store
+// fixtures prove this boundary without running an external provider.
+func TestControlMCPAnswerJobLongReply(t *testing.T) {
+	s, db, h := setupWorkerAPITestServer(t)
+	s.perm = permission.NewService(pebblestore.NewPermissionStore(db), nil, nil)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
+	w, run := settledWorkerJobForMCP(t, s, h, workspaceID, "long-answer")
+	pending, err := s.perm.CreatePending(permission.CreateInput{SessionID: run.SessionID, RunID: run.ID, CallID: "question", ToolName: "ask_user", ToolArguments: `{"question":"What next?"}`, Requirement: "approval", Mode: "auto"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"job_id": controlMCPJobID(controlMCPJobWorker, w.ID, run.ID), "answer": strings.Repeat("x", 100001)}
+	if _, err := callJobForMCP(h, "swarm_answer_job", args); err == nil || !strings.Contains(err.Error(), "100000") {
+		t.Fatalf("oversized MCP answer: %v", err)
+	}
+	if _, err := s.perm.Resolve(run.SessionID, pending.ID, "allow_once", args["answer"].(string)); err == nil || !strings.Contains(err.Error(), "100000") {
+		t.Fatalf("oversized service answer: %v", err)
+	}
+	if open, err := s.perm.ListPending(run.SessionID, 10); err != nil || len(open) != 1 {
+		t.Fatalf("rejection changed pending question: %v", err)
+	}
+	answer := strings.Repeat("界", 6000)
+	args["answer"] = answer
+	if _, err := callJobForMCP(h, "swarm_answer_job", args); err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.perm.ListPermissions(run.SessionID, 10)
+	if err != nil || len(records) != 1 || records[0].Reason != answer || records[0].Status != "approved" {
+		t.Fatalf("answer not retained whole: %v", err)
 	}
 }
