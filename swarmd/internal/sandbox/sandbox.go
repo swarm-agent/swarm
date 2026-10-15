@@ -172,16 +172,17 @@ type Manager struct {
 type box struct {
 	// All state is guarded by Manager.mu. changing reserves lifecycle work;
 	// commands hold only an inflight lease, never a mutex.
-	changing chan struct{}
-	name     string
-	root     string
-	spec     string
-	mounts   []string
-	lastUsed time.Time
-	verified time.Time
-	invalid  bool // explicit execution failure, not merely periodic staleness
-	inflight int
-	secret   SecretSetup
+	changing  chan struct{}
+	name      string
+	root      string
+	spec      string
+	mounts    []string
+	lastUsed  time.Time
+	verified  time.Time
+	startedAt string
+	invalid   bool // explicit execution failure, not merely periodic staleness
+	inflight  int
+	secret    SecretSetup
 }
 
 // verifyInterval bounds how long a container is trusted to still be running
@@ -729,12 +730,14 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 		// Starting has its own bounded budget, including for Warm callers
 		// whose command deadline has already expired.
 		ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
-		err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image, scope.ReviewCheckout)
+		var startedAt string
+		startedAt, err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image, scope.ReviewCheckout)
 		cancel()
 		m.mu.Lock()
 		if err == nil {
 			b.spec, b.mounts, b.secret = spec, mounts, secret
 			b.verified = time.Now()
+			b.startedAt = startedAt
 			b.invalid = false
 			b.inflight++
 		} else {
@@ -766,40 +769,42 @@ func (m *Manager) release(b *box) {
 	m.mu.Unlock()
 }
 
-func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage, reviewCheckouts ...string) error {
+func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage, reviewCheckouts ...string) (string, error) {
 	reviewCheckout := ""
 	if len(reviewCheckouts) > 0 {
 		reviewCheckout = reviewCheckouts[0]
 	}
-	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}}", name)
+	out, err := m.runner.Run(ctx, m.cfg.Engine, "container", "inspect", "--format", "{{index .Config.Labels \""+labelSpec+"\"}} {{.State.Running}} {{.State.StartedAt}}", name)
 	if err == nil {
 		fields := strings.Fields(string(out))
-		if len(fields) == 2 && fields[0] == spec {
+		if len(fields) == 3 && fields[0] == spec {
 			if fields[1] == "true" {
-				return m.prepareGoTemp(ctx, name)
+				return fields[2], nil
 			}
 			if _, err := m.runner.Run(ctx, m.cfg.Engine, "start", name); err != nil {
-				return fmt.Errorf("start sandbox: %w", err)
+				return "", fmt.Errorf("start sandbox: %w", err)
 			}
-			return m.prepareGoTemp(ctx, name)
+			state, err := m.inspectState(ctx, name)
+			return state.StartedAt, err
 		}
 		// Different spec (new mounts, image or limits): replace it. The home
 		// volume survives, so caches and tool installs are kept.
 		if _, err := m.runner.Run(ctx, m.cfg.Engine, "rm", "-f", name); err != nil {
-			return fmt.Errorf("replace sandbox: %w", err)
+			return "", fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
 	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.scopeRunArgs(name, root, spec, mounts, secret, image, reviewCheckout)...); err != nil {
-		return fmt.Errorf("create sandbox: %w", err)
+		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	m.initializeHome(ctx, name, root, image)
 	if err := m.prepareGoTemp(ctx, name); err != nil {
-		return err
+		return "", err
 	}
 	if err := m.configureGitIdentity(ctx, name); err != nil {
 		slog.Warn("configure sandbox Git identity failed", "error", err)
 	}
-	return nil
+	state, err := m.inspectState(ctx, name)
+	return state.StartedAt, err
 }
 
 // ExecRequest is a command for a project's sandbox.
@@ -856,7 +861,7 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	if req.OnOutput != nil {
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }
 	}
-	before, stateErr := m.inspectState(ctx, b.name)
+	before := containerState{Running: true, StartedAt: b.startedAt}
 	result, execErr := provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
 		Command:      withSandboxUmask(req.Command...),
 		WorkingDir:   req.WorkingDir,
@@ -868,7 +873,7 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	}, req.MaxTimeout)
 	if execErr != nil || (result != nil && result.ExitCode != 0) {
 		after, inspectErr := m.inspectState(ctx, b.name)
-		if inspectErr == nil && (stateErr == nil || !after.Running || after.OOMKilled) && sandboxDied(before, after) {
+		if inspectErr == nil && sandboxDied(before, after) {
 			m.invalidate(b.name)
 			return nil, &ErrSandboxDied{OOMKilled: after.OOMKilled, Memory: m.cfg.Memory}
 		}

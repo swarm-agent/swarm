@@ -52,18 +52,14 @@ func TestSandboxMemory(t *testing.T) {
 
 type deathRunner struct {
 	*fakeRunner
-	before, after containerState
-	states        int
+	after  containerState
+	states int
 }
 
 func (r *deathRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	if len(args) > 3 && args[0] == "container" && args[1] == "inspect" && args[3] == "{{json .State}}" {
-		state := r.before
-		if r.states > 0 {
-			state = r.after
-		}
 		r.states++
-		return json.Marshal(state)
+		return json.Marshal(r.after)
 	}
 	return r.fakeRunner.Run(ctx, name, args...)
 }
@@ -86,12 +82,13 @@ func TestExecSandboxDeath(t *testing.T) {
 		{"command failure", containerState{Running: true, StartedAt: "first"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &deathRunner{fakeRunner: readyRunner(), before: containerState{Running: true, StartedAt: "first"}, after: tc.after}
+			r := &deathRunner{fakeRunner: readyRunner(), after: tc.after}
 			m, err := NewManager(context.Background(), Config{Mode: ModeRequired, UID: 10001, Memory: "6g"}, r)
 			if err != nil {
 				t.Fatal(err)
 			}
 			root := t.TempDir()
+			r.out["container inspect"] = m.specHash(root, []string{root}, "") + " true first"
 			_, err = m.Exec(context.Background(), Scope{Root: root}, ExecRequest{Command: []string{"false"}, WorkingDir: root, Timeout: time.Second})
 			var died *ErrSandboxDied
 			if errors.As(err, &died) != tc.died {
@@ -102,7 +99,7 @@ func TestExecSandboxDeath(t *testing.T) {
 					t.Fatalf("lost death evidence: %+v", died)
 				}
 			}
-			if r.states != 2 {
+			if r.states != 1 {
 				t.Fatalf("unexpected command replay/state calls: %d", r.states)
 			}
 		})

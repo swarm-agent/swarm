@@ -27,7 +27,7 @@ func isolatedIdentityHost(t *testing.T) string {
 
 // Purpose: ensure must initialize only the home volume, once on creation,
 // without granting capabilities to agents or making identity/ownership failures
-// fatal. Go scratch must also be prepared on creation and reuse before commands
+// fatal. Go scratch must be prepared only on creation before commands
 // are admitted. The fake engine is the narrowest layer proving lifecycle and args.
 func TestSandboxCreationHome(t *testing.T) {
 	for _, failure := range []string{"", "identity", "helper"} {
@@ -50,7 +50,7 @@ func TestSandboxCreationHome(t *testing.T) {
 			m.runtime = "runsc"
 			m.owner = func(string) (int, bool) { return 4242, true }
 			image := EnvironmentImage{Image: "test-env", Path: sandboxPath}
-			if err := m.ensure(ctx, "test-box", "/project", "spec", []string{"/project"}, SecretSetup{}, image); err != nil {
+			if _, err := m.ensure(ctx, "test-box", "/project", "spec", []string{"/project"}, SecretSetup{}, image); err != nil {
 				t.Fatal(err)
 			}
 			want := []string{"run", "--rm", "--user", "0", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--read-only", "--runtime", "runsc", "--mount", "type=volume,src=test-box-home,dst=/home/sandbox", "--entrypoint", "sh", "test-env", "-c", `chown "$1" "$2" && chmod 0700 "$2"`, "swarm-home", "4242:10001", sandboxHome}
@@ -75,10 +75,19 @@ func TestSandboxCreationHome(t *testing.T) {
 			if failure != "" && !strings.Contains(logs.String(), "WARN") {
 				t.Fatalf("missing warning: %s", logs.String())
 			}
+			preparedOnCreate := 0
+			for _, args := range r.calls {
+				if reflect.DeepEqual(args, append([]string{"exec", "test-box"}, withSandboxUmask("mkdir", "-p", sandboxHome+"/.cache/go-tmp")...)) {
+					preparedOnCreate++
+				}
+			}
+			if preparedOnCreate != 1 {
+				t.Fatalf("scratch preparation calls on create = %d, want 1", preparedOnCreate)
+			}
 			before := len(r.calls)
 			for _, running := range []string{"true", "false"} {
-				r.out["container inspect"] = "spec " + running
-				if err := m.ensure(ctx, "test-box", "/project", "spec", nil, SecretSetup{}, image); err != nil {
+				r.out["container inspect"] = "spec " + running + " first"
+				if _, err := m.ensure(ctx, "test-box", "/project", "spec", nil, SecretSetup{}, image); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -92,8 +101,8 @@ func TestSandboxCreationHome(t *testing.T) {
 					t.Fatalf("reinitialized existing sandbox: %q", args)
 				}
 			}
-			if prepared != 2 {
-				t.Fatalf("scratch preparation calls = %d, want 2", prepared)
+			if prepared != 0 {
+				t.Fatalf("scratch preparation calls = %d, want 0 on reuse", prepared)
 			}
 		})
 	}
@@ -109,7 +118,7 @@ func TestSandboxCreationHomeAlreadyOwned(t *testing.T) {
 	m.owner = func(string) (int, bool) { return 10001, true }
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := m.ensure(ctx, "test-box", "/project", "spec", nil, SecretSetup{}, EnvironmentImage{Image: "test-env"}); err != nil {
+	if _, err := m.ensure(ctx, "test-box", "/project", "spec", nil, SecretSetup{}, EnvironmentImage{Image: "test-env"}); err != nil {
 		t.Fatal(err)
 	}
 	if r.ran("run --rm") {
@@ -209,8 +218,7 @@ func TestSandboxGitIdentityCommit(t *testing.T) {
 
 // Purpose: warmed RouteGit and Exec must not spend engine calls on identity
 // checks, and must apply umask 0007 without interpreting command arguments.
-// The manager/fake transport layer proves call counts and argv for both paths,
-// including the pre-execution container-generation inspection needed for death detection.
+// The manager/fake transport layer proves call counts and argv for both paths.
 func TestSandboxCommandUmaskAndNoIdentityCalls(t *testing.T) {
 	isolatedIdentityHost(t)
 	r := readyRunner()
@@ -237,11 +245,11 @@ func TestSandboxCommandUmaskAndNoIdentityCalls(t *testing.T) {
 	if _, err := m.Exec(ctx, Scope{Root: project}, ExecRequest{WorkingDir: project, Command: []string{"printf", "%s", "literal; argument"}}); err != nil {
 		t.Fatal(err)
 	}
-	// State inspection, supervisor probe, execution, and acknowledgement.
-	if len(r.calls)-before != 4 {
-		t.Fatalf("Exec made %d calls, want 4", len(r.calls)-before)
+	// Supervisor probe, execution, and acknowledgement are the only engine calls.
+	if len(r.calls)-before != 3 {
+		t.Fatalf("Exec made %d calls, want 3", len(r.calls)-before)
 	}
-	args := r.calls[before+2]
+	args := r.calls[before+1]
 	want := []string{"sh", "-c", `umask 0007 && exec "$@"`, "swarm-exec", "printf", "%s", "literal; argument"}
 	if !reflect.DeepEqual(args[len(args)-len(want):], want) {
 		t.Fatalf("Exec wrapper: %q", args)

@@ -43,6 +43,9 @@ func (f *fakeRunner) record(args []string) (string, error) {
 
 func (f *fakeRunner) Run(_ context.Context, _ string, args ...string) ([]byte, error) {
 	out, err := f.record(args)
+	if err == nil && len(args) > 3 && args[0] == "container" && args[1] == "inspect" && args[3] == "{{json .State}}" {
+		out = `{"Running":true,"StartedAt":"first"}`
+	}
 	return []byte(out), err
 }
 
