@@ -245,8 +245,8 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if err != nil {
 		return WorkerRunRecord{}, err
 	}
-	if len(active) >= limits.WorkerJobConcurrency {
-		return WorkerRunRecord{}, ws.store.limitReached(account, "worker_job_concurrency", limits.WorkerJobConcurrency)
+	if err := ws.store.observeLimit(account, "", "worker_job_concurrency", limits.WorkerJobConcurrency, len(active) >= limits.WorkerJobConcurrency); err != nil {
+		return WorkerRunRecord{}, err
 	}
 	var automationRevision uint64
 	if req.AutomationID != "" {
@@ -515,7 +515,10 @@ func (ws *WorkerStore) DisableWorkerAutomation(account, user, id, autoID string,
 
 // unfinishedWorkerRuns is called under workersMu; never truncates an active set.
 func (ws *WorkerStore) unfinishedWorkerRuns(account, id, autoID string) ([]WorkerRunRecord, error) {
-	prefix := keyWorkerRunActivePrefix + keyPart(account) + "/" + keyPart(id) + "/"
+	prefix := keyWorkerRunActivePrefix + keyPart(account) + "/"
+	if id != "" {
+		prefix += keyPart(id) + "/"
+	}
 	it, err := ws.store.db.NewIter(&pebble.IterOptions{LowerBound: []byte(prefix), UpperBound: []byte(prefix + "\xff")})
 	if err != nil {
 		return nil, err

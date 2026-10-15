@@ -241,8 +241,13 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 	if err != nil {
 		return err
 	}
-	if limits.JobCostUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
-		return s.store.limitReached(account, "job_cost_usd", limits.JobCostUSD)
+	for _, scope := range scopes {
+		if scope.Kind != "worker_run" {
+			continue
+		}
+		if err := s.store.observeLimit(account, scope.ProjectID+"/"+scope.ID+"/pricing", "job_cost_usd", limits.JobCostUSD, limits.JobCostUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription"); err != nil {
+			return err
+		}
 	}
 	if err := s.checkJobLimits(account, scopes); err != nil {
 		return err

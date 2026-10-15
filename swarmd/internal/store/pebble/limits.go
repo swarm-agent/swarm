@@ -115,11 +115,11 @@ func (s *SessionStore) checkJobLimits(account string, scopes []UsageScopeTotal) 
 		if err != nil {
 			return err
 		}
-		if l.JobTokens > 0 && total.TotalTokens >= l.JobTokens {
-			return s.store.limitReached(account, "job_tokens", l.JobTokens)
-		}
-		if l.JobCostUSD > 0 && (total.UnknownReceipts > 0 || total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD >= l.JobCostUSD) {
-			return s.store.limitReached(account, "job_cost_usd", l.JobCostUSD)
+		job := scope.ProjectID + "/" + scope.ID
+		tokenErr := s.store.observeLimit(account, job, "job_tokens", l.JobTokens, l.JobTokens > 0 && total.TotalTokens >= l.JobTokens)
+		costErr := s.store.observeLimit(account, job, "job_cost_usd", l.JobCostUSD, l.JobCostUSD > 0 && (total.UnknownReceipts > 0 || total.CatalogCostUSD+total.ProviderCostUSD+total.ProviderEstimateCostUSD >= l.JobCostUSD))
+		if err := errors.Join(tokenErr, costErr); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -127,12 +127,40 @@ func (s *SessionStore) checkJobLimits(account string, scopes []UsageScopeTotal) 
 
 // SetLimitSignalStore is installed at daemon startup before admissions begin.
 func (s *Store) SetLimitSignalStore(signals *SignalStore) { s.limitSignals = signals }
-func (s *Store) limitReached(account, name string, value any) error {
+
+// observeLimit serializes durable crossing state independently of admission locks.
+// Scope isolates per-job budgets so one exhausted job cannot suppress another.
+func (s *Store) observeLimit(account, scope, name string, value any, crossed bool) error {
+	key := "limits/crossed/" + keyPart(account) + "/" + keyPart(scope) + "/" + keyPart(name)
+	unlock := s.sessionMutations.lockSessions(key)
+	defer unlock()
+	var previous struct {
+		Crossed    bool
+		Generation uint64
+	}
+	if _, err := s.GetJSON(key, &previous); err != nil {
+		return err
+	}
+	if !crossed {
+		if previous.Crossed {
+			previous.Crossed = false
+			previous.Generation++
+			return s.PutJSON(key, previous)
+		}
+		return nil
+	}
 	e := &LimitReached{"limit.reached", name, value}
+	if previous.Crossed {
+		return e
+	}
 	if s.limitSignals != nil {
-		if _, err := s.limitSignals.Append(Signal{Kind: e.Type, Account: account, Severity: SignalSeverityWarning, Summary: e.Error(), Attrs: map[string]string{"limit": name, "value": fmt.Sprint(value)}}); err != nil {
+		if _, err := s.limitSignals.AppendOnce(Signal{DedupKey: fmt.Sprintf("%s/%d", key, previous.Generation), Kind: e.Type, Account: account, Severity: SignalSeverityWarning, Summary: e.Error(), Attrs: map[string]string{"limit": name, "value": fmt.Sprint(value)}}); err != nil {
 			return errors.Join(e, err)
 		}
+	}
+	previous.Crossed = true
+	if err := s.PutJSON(key, previous); err != nil {
+		return errors.Join(e, err)
 	}
 	return e
 }

@@ -38,6 +38,8 @@ over-budget approval behavior, isolation, and other permission settings are not
 changed. Delegation caps remain approval-free allowances, not permission bypasses.
 
 Worker concurrency and job-budget refusals emit `limit.reached` to the machine
-signal feed, with `attrs.limit` and `attrs.value`. Bounded delegation refusals or
+signal feed, with `attrs.limit` and `attrs.value`. Repeated refusals emit only one signal per
+crossing (per job for budgets); observing usage below the limit re-arms it.
+Crossing state survives restart, and signal publication is idempotent. Bounded delegation refusals or
 approval holds emit the same kind. Refusals also preserve the limit name/value in
 the error text. Signal readers use the existing account-filtered signal cursor API.

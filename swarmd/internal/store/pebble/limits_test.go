@@ -98,6 +98,12 @@ func TestLimitsWorkerAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Historical receipts must never consume the active scan budget.
+	for i := 0; i < 10001; i++ {
+		if _, err := ws.RecordWorkerRun("a", WorkerRunRecord{WorkerID: w.ID, Status: "succeeded", RequestSource: "direct"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	l := DefaultLimits()
 	l.WorkerJobConcurrency = 1
 	l, err = db.SetLimits("a", 0, l)
@@ -118,6 +124,11 @@ func TestLimitsWorkerAdmission(t *testing.T) {
 	if _, err = ws.AdmitWorkerRun("a", req); !errors.As(err, &reached) {
 		t.Fatalf("over cap %v", err)
 	}
+	for i := 0; i < 3; i++ {
+		if _, err = ws.AdmitWorkerRun("a", req); !errors.As(err, &reached) {
+			t.Fatal(err)
+		}
+	}
 	active, err := ws.UnfinishedWorkerRuns("a", w.ID, "")
 	if err != nil || len(active) != 1 {
 		t.Fatalf("partial admission %+v %v", active, err)
@@ -126,11 +137,77 @@ func TestLimitsWorkerAdmission(t *testing.T) {
 	if err != nil || len(page.Signals) != 1 || page.Signals[0].Attrs["limit"] != "worker_job_concurrency" {
 		t.Fatalf("signal %+v %v", page, err)
 	}
+	first.Status = "succeeded"
+	if _, err := ws.RecordWorkerRun("a", first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.AdmitWorkerRun("a", req); err != nil {
+		t.Fatal(err)
+	}
+	req.IdempotencyKey = "three"
+	if _, err = ws.AdmitWorkerRun("a", req); !errors.As(err, &reached) {
+		t.Fatal(err)
+	}
+	page, err = signals.ListAfter(0, 10, SignalFilter{Account: "a"})
+	if err != nil || len(page.Signals) != 2 {
+		t.Fatalf("recross %+v %v", page, err)
+	}
 	l.WorkerJobConcurrency = 2
 	if _, err = db.SetLimits("a", l.Revision, l); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = ws.AdmitWorkerRun("a", req); err != nil {
 		t.Fatalf("live raise %v", err)
+	}
+}
+
+// Purpose: checkJobLimits must persist one signal per exhausted job crossing,
+// rearm after usage falls, and not suppress another job. Real receipt totals and
+// SignalStore exercise the narrow persistence boundary without provider calls.
+func TestLimitsJobCrossings(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	s := NewSessionStore(db)
+	signals := NewSignalStore(db)
+	db.SetLimitSignalStore(signals)
+	l := DefaultLimits()
+	l.JobTokens = 10
+	if _, err = db.SetLimits("a", 0, l); err != nil {
+		t.Fatal(err)
+	}
+	scope := UsageScopeTotal{Kind: "worker_run", ProjectID: "worker", ID: "job", TotalTokens: 10}
+	check := func(tokens int64, refused bool) {
+		t.Helper()
+		scope.TotalTokens = tokens
+		if err := db.PutJSON(usageScopeKey("a", scope), scope); err != nil {
+			t.Fatal(err)
+		}
+		err := s.checkJobLimits("a", []UsageScopeTotal{scope})
+		var reached *LimitReached
+		if errors.As(err, &reached) != refused || (!refused && err != nil) {
+			t.Fatalf("check %d: %v", tokens, err)
+		}
+	}
+	check(10, true)
+	check(10, true)
+	page, _ := signals.ListAfter(0, 10, SignalFilter{Account: "a"})
+	if len(page.Signals) != 1 {
+		t.Fatal(page)
+	}
+	check(9, false)
+	check(10, true)
+	check(10, true)
+	page, _ = signals.ListAfter(0, 10, SignalFilter{Account: "a"})
+	if len(page.Signals) != 2 {
+		t.Fatal(page)
+	}
+	scope.ID = "other"
+	check(10, true)
+	page, _ = signals.ListAfter(0, 10, SignalFilter{Account: "a"})
+	if len(page.Signals) != 3 {
+		t.Fatal(page)
 	}
 }
