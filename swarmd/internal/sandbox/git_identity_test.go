@@ -25,7 +25,8 @@ func isolatedIdentityHost(t *testing.T) string {
 	return home
 }
 
-// Purpose: ensure must initialize only the home volume, once on creation,
+// Purpose: ensure's home helper must initialize only the home volume, once on creation,
+// independently of the project cache helper,
 // without granting capabilities to agents or making identity/ownership failures
 // fatal. Go scratch must be prepared only on creation before commands
 // are admitted. The fake engine is the narrowest layer proving lifecycle and args.
@@ -56,7 +57,7 @@ func TestSandboxCreationHome(t *testing.T) {
 			want := []string{"run", "--rm", "--user", "0", "--network", "none", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--security-opt", "no-new-privileges", "--read-only", "--runtime", "runsc", "--mount", "type=volume,src=test-box-home,dst=/home/sandbox", "--entrypoint", "sh", "test-env", "-c", `chown "$1" "$2" && chmod 0700 "$2"`, "swarm-home", "4242:10001", sandboxHome}
 			count := 0
 			for _, args := range r.calls {
-				if len(args) > 1 && args[0] == "run" && args[1] == "--rm" {
+				if strings.HasPrefix(strings.Join(args, " "), "run --rm --user") {
 					count++
 					if !reflect.DeepEqual(args, want) {
 						t.Fatalf("helper args: %q, want %q", args, want)
@@ -121,7 +122,7 @@ func TestSandboxCreationHomeAlreadyOwned(t *testing.T) {
 	if _, err := m.ensure(ctx, "test-box", "/project", "spec", nil, SecretSetup{}, EnvironmentImage{Image: "test-env"}); err != nil {
 		t.Fatal(err)
 	}
-	if r.ran("run --rm") {
+	if r.ran("run --rm --user") {
 		t.Fatal("helper ran for an initialized volume")
 	}
 }

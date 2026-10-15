@@ -383,3 +383,12 @@ These fields must be set in the GitHub repository UI by a maintainer:
 ## License
 
 Apache License 2.0. See [`LICENSE`](LICENSE).
+
+### Sandbox build caches
+
+Installed sandboxes share a project-local Go build/module cache and pnpm store
+across jobs and reviewers, including custom environments. `-trimpath` enables
+reuse across checkout paths. Configure the per-project soft limit with
+`sandbox_project_cache_bytes` in the startup configuration (default 10 GiB).
+See [sandbox resources](docs/sandbox-resources.md) for seeding, concurrency,
+size reporting, and trimming limitations.

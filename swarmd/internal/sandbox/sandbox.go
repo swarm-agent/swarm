@@ -79,15 +79,16 @@ type Config struct {
 	Network string
 	// Runtime is the OCI runtime; empty selects gVisor (runsc) when the engine
 	// has it registered and the engine default otherwise.
-	Runtime       string
-	Memory        string
-	MaxWorkerRuns int
-	PidsLimit     int
-	CPUs          string
-	CPUSlots      int
-	CgroupParent  string
-	DNS           []string
-	IdleTimeout   time.Duration
+	Runtime           string
+	Memory            string
+	ProjectCacheBytes uint64
+	MaxWorkerRuns     int
+	PidsLimit         int
+	CPUs              string
+	CPUSlots          int
+	CgroupParent      string
+	DNS               []string
+	IdleTimeout       time.Duration
 	// UID and GID the sandbox runs as. They default to the daemon's own ids so
 	// files written in mounted projects keep the daemon user as owner; the
 	// sandbox still cannot reach anything the daemon owns outside its mounts.
@@ -570,7 +571,7 @@ func (m *Manager) specHashImage(root string, mounts []string, secretFingerprint,
 	uid, gid := m.sandboxUser(root)
 	m.mu.Lock()
 	parts := []string{
-		"v6", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.cfg.CgroupParent, m.resolvConf,
+		"v7-project-cache", imageID, m.runtime, m.cfg.Network, m.cfg.Memory, strconv.Itoa(m.cfg.PidsLimit), m.cfg.CPUs, m.cfg.CgroupParent, m.resolvConf,
 		strconv.Itoa(uid), strconv.Itoa(gid), strings.Join(m.cfg.DNS, ","), secretFingerprint,
 	}
 	m.mu.Unlock()
@@ -614,6 +615,12 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
 		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
 		"--mount", "type=volume,src="+homeVolumeName(name, root)+",dst="+sandboxHome,
+		"--mount", "type=volume,src="+ProjectCacheVolume(root)+",dst="+projectCachePath,
+		"--env", "GOCACHE="+projectCachePath+"/go-build",
+		"--env", "GOMODCACHE="+projectCachePath+"/go-mod",
+		"--env", "PNPM_HOME="+projectCachePath+"/pnpm-home",
+		"--env", "npm_config_store_dir="+projectCachePath+"/pnpm",
+		"--env", "GOFLAGS=-buildvcs=false -trimpath",
 		"--env", "HOME="+sandboxHome,
 		"--env", "GOTMPDIR="+sandboxHome+"/.cache/go-tmp",
 		"--env", "PATH="+image.Path,
@@ -848,10 +855,16 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 			return "", fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
+	if err := m.initializeProjectCache(ctx, root); err != nil {
+		return "", err
+	}
 	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.scopeRunArgs(name, root, spec, mounts, secret, image, reviewCheckout)...); err != nil {
 		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	m.initializeHome(ctx, name, root, image)
+	if err := m.trimProjectCache(ctx, name); err != nil {
+		return "", fmt.Errorf("trim project cache: %w", err)
+	}
 	if err := m.prepareGoTemp(ctx, name); err != nil {
 		return "", err
 	}

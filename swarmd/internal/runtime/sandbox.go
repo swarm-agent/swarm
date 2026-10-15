@@ -45,6 +45,7 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 		Network:            cfg.SandboxNetwork,
 		Runtime:            cfg.SandboxRuntime,
 		Memory:             cfg.SandboxMemory,
+		ProjectCacheBytes:  cfg.SandboxProjectCacheBytes,
 		CPUs:               cfg.SandboxCPUs,
 		CPUSlots:           cfg.SandboxCPUSlots,
 		CgroupParent:       cfg.SandboxCgroupParent,

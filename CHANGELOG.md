@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Share project-local Go build/module caches and pnpm stores across sandbox jobs and reviewers, with trimpath, default-image seeding, size reporting, and a configurable 10 GiB soft trimming limit. Docs impact: installer README and sandbox resource guidance.
+
 - Preserve the latest worker follow-up across provider/model handoffs and deliver accepted Unicode question answers without generic tool-output previews. Add provider-request regression assertions. Docs impact: none.
 
 - Align job question answers with the 100,000-character job brief/follow-up limit; reject oversized follow-ups and permission replies explicitly at MCP and API/service boundaries. Add durable-session regression coverage for complete 6,000-character messages and answers. Docs impact: none.

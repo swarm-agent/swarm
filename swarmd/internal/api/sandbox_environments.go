@@ -60,7 +60,15 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 		if found && env.Account != principal.AccountScopeID {
 			found = false
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "environment": sandboxEnvironmentView(root, env, found)})
+		view := sandboxEnvironmentView(root, env, found)
+		if manager := sandbox.Default(); manager != nil && manager.Active() {
+			usage, cacheErr := manager.ProjectCacheUsage(r.Context(), root)
+			view["cache"] = usage
+			if cacheErr != nil {
+				view["cache_error"] = cacheErr.Error()
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "environment": view})
 	case http.MethodPut:
 		if !s.requireScope(w, r, "sessions:write") {
 			return
