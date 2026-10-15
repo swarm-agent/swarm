@@ -219,6 +219,11 @@ func (p *AutoPublisher) Run(ctx context.Context) {
 }
 
 func (p *AutoPublisher) once(ctx context.Context) error {
+	return p.consume(ctx, p.deliver)
+}
+
+// consume advances the durable feed only after delivery admission completes.
+func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Context, pebblestore.Signal) error) error {
 	if p.server.publishConfig == "" {
 		return nil
 	}
@@ -243,7 +248,7 @@ func (p *AutoPublisher) once(ctx context.Context) error {
 		}
 		for _, sig := range page.Signals {
 			if autoPublishSignal(sig.Kind, sig.Attrs["verdict"]) {
-				if err := p.deliver(ctx, sig); err != nil {
+				if err := deliver(ctx, sig); err != nil {
 					return err // retried from this signal
 				}
 			}
