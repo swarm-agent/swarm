@@ -134,3 +134,15 @@ A BLOCK on the rebased head or another reviewed head with the same patch-id
 wins over carried approval. Automatic publishing also scans durable OK evidence
 at startup and periodically in bounded pages; a lost review signal cannot
 permanently strand an approved job.
+
+## Problem proofs
+
+When a job declares `proof`, review whether its reproduction tests the problem
+in the brief, not an easier substitute. Read `proof.base` and `proof.head` from
+`swarm_get_job`: these contain daemon-observed exit codes, bounded output and
+exact commits. Missing results mean verification has not happened, not success.
+Landing requires non-zero at base and zero at head. Infrastructure errors do
+not count as a reproduced failure. A coder can commit `.swarm-proof.json` with
+`command` and `files` (new reproduction scripts copied unchanged to base).
+Inspect those scripts as carefully as the fix; the daemon cannot judge whether
+a command's assertion faithfully represents the brief.

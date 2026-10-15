@@ -768,7 +768,7 @@ test('SwarmWorkersNamespace: enableAutomation and disableAutomation send expecte
   }
 });
 
-// Requirement: directRequest preserves review_job as a top-level V3 field;
+// Requirement: directRequest preserves review_job and proof as top-level V3 fields;
 // threat: dropping it prevents safe reviewer admission. HTTP capture is the
 // narrowest SDK serialization proof; daemon tests own role/source validation.
 test('SwarmWorkersNamespace: directRequest, testRun, trigger dispatch and parse WorkerRunRecord envelopes', async () => {
@@ -817,12 +817,14 @@ test('SwarmWorkersNamespace: directRequest, testRun, trigger dispatch and parse 
       prompt: 'Execute query',
       idempotency_key: 'idemp_dir',
       review_job: 'worker/source/run',
+      proof: ' bash repro.sh ',
     });
     assert.equal(lastMethod, 'POST');
     assert.equal(lastUrl, '/v3/workers/w_exec/direct');
     assert.equal(lastHeaders['idempotency-key'], 'idemp_dir');
     assert.equal(lastBody.prompt, 'Execute query');
     assert.equal(lastBody.review_job, 'worker/source/run');
+    assert.equal(lastBody.proof, 'bash repro.sh');
     assert.equal(directRun.request_source, 'direct');
 
     // Test run

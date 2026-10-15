@@ -347,3 +347,21 @@ is required; the daemon never kills running work or performs host installation.
 ### Opt-in review pipeline
 
 Add `--pipeline` to `install.sh workspace publish PATH COMMAND --land --require-review --auto` to enable daemon-owned review and bounded fixes. Without this flag the existing manual-review behavior is unchanged. The publish rule exposes `pipeline`; `swarm_get_job` exposes `review_chain` with the head, reviewer job, BLOCK round, findings and next transition. Account limits expose `fix_rounds` (default 2, range 0–20): reaching that many BLOCK verdicts stops the chain with `job.review_exhausted`. A stopped chain requires outside intervention. Review admission and follow-ups use stable per-head request identities. OK evidence still passes through the existing landing queue and folder checks.
+
+### Require a problem proof at landing
+
+`install.sh workspace publish PATH COMMAND --land --require-proof` refuses jobs
+without a reproduction; the option is off by default. `swarm_give_job`, the direct
+worker API and SDK accept a `proof` command run from the folder root. Alternatively,
+the coder commits `.swarm-proof.json`, for example
+`{"command":"bash repro.sh","files":["repro.sh"]}`. Listed files must be newly
+added regular files; they are copied from head into the disposable base checkout
+so missing scripts cannot masquerade as reproduction failures.
+
+The daemon runs the command host-side in disposable base/head checkouts with a
+minimal environment, a 20-minute combined timeout and 4 KiB output per run. This
+supports Docker-backed reproductions but executes job-authored code as the daemon
+user: only use trusted jobs on a landing-enabled folder. No provider credentials
+are passed in the environment. `swarm_get_job` reports `proof.base` and
+`proof.head` with exact commits, exit codes and output. Base must fail, head must
+pass; timeouts and launch failures refuse landing as infrastructure errors.

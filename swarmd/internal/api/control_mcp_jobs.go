@@ -405,6 +405,7 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/direct", nil, map[string]any{
 		"prompt":          brief,
 		"review_job":      controlMCPString(args, "review_job"),
+		"proof":           controlMCPString(args, "proof"),
 		"input":           map[string]any{"project_id": place.projectID},
 		"idempotency_key": key,
 		"workspace_path":  place.path,
@@ -586,6 +587,9 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 		status = "blocked"
 	}
 	state["status"] = status
+	if command, _ := controlMCPMap(refs.run["input"])["proof"].(string); command != "" {
+		state["proof"] = map[string]any{"command": command}
+	}
 	if principal, ok := PrincipalFromRequest(c.request); ok && c.server != nil {
 		if q, err := c.server.landingQueue(); err == nil {
 			entry, pos, err := q.Get(principal.AccountScopeID, controlMCPJobID(kind, a, b))
@@ -598,6 +602,9 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 				state["landed_commit"] = entry.Commit
 				state["delivery_reason"] = entry.Reason
 				state["checks"] = entry.Checks
+				if entry.Proof != nil {
+					state["proof"] = entry.Proof
+				}
 				if len(entry.Checks) == 0 && entry.State == "landed" {
 					state["checks_note"] = "checks: none defined"
 				}
@@ -1410,6 +1417,7 @@ func controlMCPJobTools() []controlMCPTool {
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),
+				"proof":           controlMCPStringProp("Reproduction command from folder root: must fail at landing base and pass at job head. Commit new reproduction files and list them in .swarm-proof.json files.", 1, 8192),
 				"review_job":      controlMCPStringProp("Required only for reviewer workers: worker/<worker>/<run> of a job in the same project with commits. Reviews its exact head in a disposable detached checkout; report-only, never delivered.", 1, 700),
 				"model":           controlMCPWorkerModelSchema(false),
 				"project":         project,

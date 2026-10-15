@@ -18,6 +18,21 @@ type CheckResult struct {
 	ExitCode int    `json:"exit_code"`
 	Output   string `json:"output,omitempty"`
 }
+
+// Proof records daemon-observed results for immutable landing revisions.
+type Proof struct {
+	Command string       `json:"command"`
+	Files   []string     `json:"files,omitempty"`
+	Base    *ProofResult `json:"base,omitempty"`
+	Head    *ProofResult `json:"head,omitempty"`
+}
+type ProofResult struct {
+	Commit   string `json:"commit"`
+	ExitCode int    `json:"exit_code"`
+	Output   string `json:"output,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
 type ReviewEquivalence struct {
 	ReviewedHead string `json:"reviewed_head"`
 	RebasedHead  string `json:"rebased_head"`
@@ -26,6 +41,7 @@ type ReviewEquivalence struct {
 }
 
 type Entry struct {
+	Proof               *Proof                               `json:"proof,omitempty"`
 	ValidateReview      func(head, patch, base string) error `json:"-"`
 	Checkpoint          func() error                         `json:"-"`
 	Review              *ReviewEquivalence                   `json:"review_equivalence,omitempty"`

@@ -139,7 +139,10 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if err := c.recordJobActivity(kind, a, b, refs, "job.landing", "", e.NotificationID); err != nil {
 				return err
 			}
-			return c.prepareLand(ctx, rule, e)
+			if err := c.prepareLand(ctx, rule, e); err != nil {
+				return err
+			}
+			return c.verifyLandProof(ctx, rule, e)
 		},
 		Land: func(ctx context.Context, e publish.Entry) (publish.LandResult, error) {
 			return publish.Land(ctx, rule, e.Request)

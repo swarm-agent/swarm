@@ -2028,7 +2028,7 @@ func controlMCPGetProject(c *controlMCPCall, args map[string]any) (any, error) {
 		}
 		if found {
 			// Expose policy, not the privileged command or credentials.
-			ws["publish"] = map[string]any{"mode": rule.Mode, "auto": rule.Auto, "sync": rule.Sync, "require_review": rule.RequireReview, "pipeline": rule.Pipeline}
+			ws["publish"] = map[string]any{"mode": rule.Mode, "auto": rule.Auto, "sync": rule.Sync, "require_review": rule.RequireReview, "pipeline": rule.Pipeline, "require_proof": rule.RequireProof}
 		}
 	}
 	out := map[string]any{"project": summary}

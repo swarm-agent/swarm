@@ -13,6 +13,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Add worker-Coder read-only helper profiles, durable helper admission limits, timeout cancellation, and receipt-based token stopping. Finder/helper bash uses a strict direct-reader exec mode in the existing sandbox: no shell interpretation or shared-mount remounting, which would race the writing Coder. This does not provide a kernel read-only mount; provider-backed three-helper fan-out and hard pre-dispatch token ceilings remain validation/implementation gaps. Docs impact: `docs/box-limits.md` documents the constraints.
 
 - Add revisioned helper-limit configuration (concurrency 4, total per job 20, timeout 300 seconds, tokens 32,000) with strict bounds and legacy-record defaults. This is configuration groundwork only: helper spawning and read-only sandbox enforcement are not enabled by this change. Docs impact: `docs/box-limits.md` describes the reserved helper fields.
+- Add optional job proof commands and `--require-proof` landing policy: verify failing base/passing head in disposable checkouts and retain bounded revision-bound results. Coders reproduce before fixing; reviewers scrutinize the proof. Docs impact: reviewer guide and installer README.
 
 - Preserve the latest worker follow-up across provider/model handoffs and deliver accepted Unicode question answers without generic tool-output previews. Add provider-request regression assertions. Docs impact: none.
 

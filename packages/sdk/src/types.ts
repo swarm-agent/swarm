@@ -1334,6 +1334,8 @@ export interface SetWorkerAutomationEnabledParams {
 export interface DirectWorkerRequestParams {
   /** Required for reviewer workers: worker/<worker>/<run> in the same project, with commits. */
   review_job?: string;
+  /** Folder-root reproduction command: fails at landing base, passes at head. */
+  proof?: string;
   worker_id: string;
   prompt?: string;
   input?: Record<string, unknown>;

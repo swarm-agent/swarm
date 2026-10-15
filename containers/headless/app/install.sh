@@ -130,7 +130,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
        install.sh workspace add PATH [--for-user NAME] | remove PATH | list
-       install.sh workspace publish PATH COMMAND [--land] [--require-review] [--pipeline] [--auto] [--sync] | publish PATH --off
+       install.sh workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
                 ran sudo); used for the AI connection and workspace folders
@@ -234,7 +234,7 @@ Readiness is generation-bound and checked again immediately before restart.
                    the machine up runs this as root; Swarm never changes the
                    machine itself. Then register the folder in place with
                    swarm_add_workspace. remove reverses it.
-  workspace publish PATH COMMAND [--land] [--require-review] [--pipeline] [--auto] [--sync]
+  workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync]
                    deliver jobs in PATH as pull requests instead of merging
                    them into the folder: Swarm runs COMMAND (root-owned,
                    outside home folders) on this machine with the job in
@@ -1257,8 +1257,8 @@ workspace() {
       # --sync starts each job from the forge's latest base branch.
       # --land selects fast-forward landing instead of pull requests.
       # COMMAND runs on this machine as Swarm's user, never in a sandbox.
-      local usage="usage: install.sh workspace publish PATH COMMAND [--land] [--require-review] [--pipeline] [--auto] [--sync] | publish PATH --off"
-      (( $# >= 3 && $# <= 8 )) || die "$usage"
+      local usage="usage: install.sh workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off"
+      (( $# >= 3 )) || die "$usage"
       local path=$2 command=$3 options='' flag line
       shift 3
       workspace_listed | grep -qxF "$path" || die "$path is not a Swarm workspace folder on this machine (install.sh workspace add $path)"
@@ -1278,6 +1278,7 @@ workspace() {
           --land) options+=${options:+,}land ;;
           --pipeline) options+=${options:+,}pipeline ;;
           --require-review) options+=${options:+,}require-review ;;
+      --require-proof) options+=${options:+,}require-proof ;;
           --auto) options+=${options:+,}auto ;;
           --sync) options+=${options:+,}sync ;;
           *) rm -f "$PUBLISH.new"; die "$usage" ;;
@@ -1285,6 +1286,9 @@ workspace() {
       done
       if [[ ,$options, == *,pipeline,* && ( ,$options, != *,land,* || ,$options, != *,require-review,* || ,$options, != *,auto,* ) ]]; then
         rm -f "$PUBLISH.new"; die "--pipeline requires --land --require-review --auto"
+      fi
+      if [[ ,$options, == *,require-proof,* && ,$options, != *,land,* ]]; then
+        rm -f "$PUBLISH.new"; die "--require-proof requires --land"
       fi
       if [[ ,$options, == *,require-review,* && ,$options, != *,land,* ]]; then
         rm -f "$PUBLISH.new"; die "--require-review requires --land"
@@ -1296,7 +1300,7 @@ workspace() {
       mv -f "$PUBLISH.new" "$PUBLISH"
       echo "Jobs in $path use publish command $command${options:+ ($options)}."
       ;;
-    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--land] [--require-review] [--pipeline] [--auto] [--sync] | publish PATH --off" ;;
+    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off" ;;
   esac
 }
 
