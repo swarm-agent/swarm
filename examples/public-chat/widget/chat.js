@@ -1,10 +1,14 @@
 // Minimal embeddable chat widget for the public chat edge. Usage:
 //   <script src="chat.js" defer data-endpoint="https://chat.example.com"
-//           data-title="Ask us" data-fallback="Email hello@example.com"></script>
+//           data-title="Ask us" data-fallback="Email hello@example.com"
+//           data-turnstile="TURNSTILE_SITE_KEY"></script>
 // Replies are rendered as text only: visitor and model output is untrusted.
+// With data-turnstile (and TURNSTILE_SECRET on the Worker) a visitor's first
+// message carries a Cloudflare Turnstile token; the edge answers with a 24 h ticket.
 (() => {
   const tag = document.currentScript;
   const endpoint = (tag?.dataset.endpoint || '').replace(/\/$/, '');
+  const siteKey = tag?.dataset.turnstile || '';
   const title = tag?.dataset.title || 'Ask us anything';
   const fallback = tag?.dataset.fallback || 'The assistant is unavailable right now. Please try again later.';
   const store = (() => { try { return window.localStorage; } catch { return undefined; } })();
@@ -93,6 +97,29 @@
     if (data.staff?.[0]) header.textContent = `${title} · ${data.staff[0].name} is online`;
   }).catch(() => {});
 
+  // Cloudflare Turnstile, loaded only when a token is needed; shown only if it asks for interaction.
+  const check = document.createElement('div');
+  check.style.cssText = 'padding:0 10px';
+  form.before(check);
+  let turnstileLoading;
+  const humanToken = async () => {
+    turnstileLoading ??= new Promise((resolve, reject) => {
+      if (window.turnstile) return resolve(window.turnstile);
+      const s = Object.assign(document.createElement('script'), { src: 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit', async: true });
+      s.onload = () => resolve(window.turnstile);
+      s.onerror = () => { turnstileLoading = undefined; reject(new Error('turnstile unavailable')); };
+      document.head.appendChild(s);
+    });
+    const turnstile = await turnstileLoading;
+    return new Promise((resolve, reject) => {
+      const id = turnstile.render(check, {
+        sitekey: siteKey, appearance: 'interaction-only', size: 'flexible', action: 'chat',
+        callback: (token) => { turnstile.remove(id); resolve(token); },
+        'error-callback': () => { turnstile.remove(id); reject(new Error('human check failed')); },
+      });
+    });
+  };
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const message = input.value.trim();
@@ -100,8 +127,9 @@
     input.value = '';
     say('you', message);
     try {
-      const res = await fetch(`${endpoint}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, message, ticket }) });
-      const data = await res.json();
+      const post = async (turnstile_token) => (await fetch(`${endpoint}/api/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, message, ticket, turnstile_token }) })).json();
+      let data = await post(siteKey && !ticket ? await humanToken() : undefined);
+      if (data.status === 'verify' && siteKey) { ticket = undefined; data = await post(await humanToken()); }
       if (data.ticket) { ticket = data.ticket; remember('chat_ticket', ticket); }
       if (Number.isFinite(data.seq)) lastSeq = Math.max(lastSeq, data.seq);
       if (data.status === 'answered') {
