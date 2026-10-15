@@ -19,9 +19,11 @@ func (s *Service) workerIdentity(sessionID string) (worker, run string) {
 	if err != nil || !ok {
 		return "", ""
 	}
-	worker, _ = snapshot.Metadata["worker_id"].(string)
-	run, _ = snapshot.Metadata["worker_execution_run_id"].(string)
-	return strings.TrimSpace(worker), strings.TrimSpace(run)
+	receipt, found, err := s.store.WorkerRunForSession(snapshot.AccountScopeID, snapshot.ID)
+	if err != nil || !found {
+		return "", ""
+	}
+	return receipt.WorkerID, receipt.ID
 }
 
 // All permission producers cross CreatePending, including gates that deliberately
@@ -45,9 +47,11 @@ func (s *Service) rejectWorkerPrompt(input CreateInput) error {
 	if err != nil || !found {
 		return fmt.Errorf("cannot verify session identity for unattended permission safety; retry after session storage is available")
 	}
-	worker, _ := snapshot.Metadata["worker_id"].(string)
-	run, _ := snapshot.Metadata["worker_execution_run_id"].(string)
-	if strings.TrimSpace(worker) == "" || strings.TrimSpace(run) == "" {
+	_, worker, err := s.store.WorkerRunForSession(snapshot.AccountScopeID, snapshot.ID)
+	if err != nil {
+		return fmt.Errorf("cannot verify worker receipt for unattended permission safety: %w", err)
+	}
+	if !worker {
 		return nil
 	}
 	return &workerPromptDeniedError{tool: input.ToolName, requirement: input.Requirement}

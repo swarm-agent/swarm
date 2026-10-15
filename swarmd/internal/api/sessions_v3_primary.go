@@ -2508,6 +2508,12 @@ func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.R
 		return
 	}
 	next := session
+	for key := range req.Metadata {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "worker_") && isProtectedSessionsV3MetadataKey(key) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("metadata key %q is reserved for primary authority state", key))
+			return
+		}
+	}
 	next.Metadata = mergeSessionsV3MetadataUpdate(session.Metadata, req.Metadata)
 	next.UpdatedAt = time.Now().UnixMilli()
 	payloadHash, err := sessionsV3UpdatePayloadHash(sessionID, sessionruntime.SessionMutationUpdateMetadata, map[string]any{"metadata": req.Metadata})
@@ -4524,6 +4530,8 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 		"agent_name",
 		"agent_profile",
 		"resolved_worker_context",
+		"worker_id", "worker_execution_run_id", "worker_name", "worker_job_title",
+		"worker_revision", "worker_execution_mode", "worker_role", "worker_review_target", "worker_workspace_id",
 		"model_profile",
 		"resolved_agent_name",
 		"agent_mode",

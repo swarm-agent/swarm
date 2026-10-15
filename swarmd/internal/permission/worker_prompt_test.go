@@ -38,7 +38,19 @@ func TestWorkerPromptDeniedBeforePersistence(t *testing.T) {
 			}
 			defer db.Close()
 			svc := NewService(store.NewPermissionStore(db), nil, nil)
-			svc.SetSessionResolver(workerPromptSessions{tc.worker})
+			// Deliberately invert metadata: workers have stripped keys, interactive
+			// sessions forge them. Only an account/session-bound receipt counts.
+			svc.SetSessionResolver(workerPromptSessions{!tc.worker})
+			if tc.worker {
+				seedWorkerPromptReceipt(t, db)
+			} else {
+				if err := db.PutJSON(store.KeyWorkerRun("account", "worker", "job-run"), store.WorkerRunRecord{ID: "job-run", WorkerID: "worker", AccountScopeID: "account", SessionID: "different-session"}); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.PutJSON(store.KeyWorkerRun("other-account", "worker", "job-run"), store.WorkerRunRecord{ID: "job-run", WorkerID: "worker", AccountScopeID: "other-account", SessionID: "session"}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			svc.SetBypassGate(func() (bool, string) { return tc.active, "sandbox off" })
 			for _, requirement := range []string{"workspace_scope", "write", "network", "subagent", "plan", "ask_user", "client_tool", "design_source_sensitive_read"} {
 				rec, err := svc.CreatePending(CreateInput{SessionID: "session", RunID: "run", CallID: requirement, ToolName: "search", Requirement: requirement, ToolArguments: `{"path":"outside"}`})
@@ -79,7 +91,8 @@ func TestWorkerPermissionRaisesJobWaiting(t *testing.T) {
 	}
 	defer db.Close()
 	svc := NewService(store.NewPermissionStore(db), nil, nil)
-	svc.SetSessionResolver(workerPromptSessions{true})
+	svc.SetSessionResolver(workerPromptSessions{false})
+	seedWorkerPromptReceipt(t, db)
 	signalStore := store.NewSignalStore(db)
 	svc.SetSignalEmitter(signals.NewEmitter(signalStore))
 	_, err = svc.CreatePending(CreateInput{SessionID: "session", RunID: "provider-run", ToolName: "ask_user", ToolArguments: `{"question":"private-question"}`})
@@ -101,5 +114,12 @@ func TestWorkerPermissionRaisesJobWaiting(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("got %d waiting signals: %+v", count, page.Signals)
+	}
+}
+
+func seedWorkerPromptReceipt(t *testing.T, db *store.Store) {
+	t.Helper()
+	if err := db.PutJSON(store.KeyWorkerRun("account", "worker", "job-run"), store.WorkerRunRecord{ID: "job-run", WorkerID: "worker", AccountScopeID: "account", SessionID: "session"}); err != nil {
+		t.Fatal(err)
 	}
 }

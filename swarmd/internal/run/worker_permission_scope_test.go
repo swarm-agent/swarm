@@ -17,7 +17,7 @@ import (
 type workerScopeSessions struct{}
 
 func (workerScopeSessions) GetSession(id string) (store.SessionSnapshot, bool, error) {
-	return store.SessionSnapshot{ID: id, Metadata: map[string]any{"worker_id": "worker", "worker_execution_run_id": "job"}}, true, nil
+	return store.SessionSnapshot{ID: id, AccountScopeID: "account"}, true, nil
 }
 
 // Purpose: gateWorkspaceScopeCalls must turn an outside host search into a
@@ -30,6 +30,9 @@ func TestWorkerOutsideSearchDenialContinues(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	if err := db.PutJSON(store.KeyWorkerRun("account", "worker", "job"), store.WorkerRunRecord{ID: "job", WorkerID: "worker", AccountScopeID: "account", SessionID: "session"}); err != nil {
+		t.Fatal(err)
+	}
 	ps := store.NewPermissionStore(db)
 	perms := permission.NewService(ps, nil, nil)
 	perms.SetSessionResolver(workerScopeSessions{})
