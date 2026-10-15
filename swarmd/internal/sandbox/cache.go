@@ -14,11 +14,11 @@ const DefaultProjectCacheBytes uint64 = 10 << 30
 // ProjectCacheVolume names a project-local cache, independent of job/review paths.
 func ProjectCacheVolume(root string) string { return ContainerName(root) + "-build-cache" }
 
-func (m *Manager) cacheLimit() uint64 {
-	if m.cfg.ProjectCacheBytes == 0 {
-		return DefaultProjectCacheBytes
+func (m *Manager) cacheLimit(ctx context.Context) (uint64, error) {
+	if m.cfg.ProjectCacheLimit == nil {
+		return DefaultProjectCacheBytes, nil
 	}
-	return m.cfg.ProjectCacheBytes
+	return m.cfg.ProjectCacheLimit(ctx)
 }
 
 // CacheUsage is a best-effort size observation, not a filesystem quota.
@@ -55,6 +55,14 @@ if [ ! -e .ready ]; then
   mkdir go-build go-mod pnpm
   if [ -d /opt/go/cache ]; then cp -a /opt/go/cache/. go-build/; fi
   if [ -n "${GOMODCACHE:-}" ] && [ -d "$GOMODCACHE" ]; then cp -a "$GOMODCACHE/." go-mod/; fi
+  if command -v pnpm >/dev/null 2>&1; then
+   store=$(pnpm store path)
+   if [ -d "$store" ]; then
+    # store path includes the version directory; store-dir points to its parent.
+    mkdir -p "pnpm/$(basename "$store")"
+    cp -a "$store/." "pnpm/$(basename "$store")/"
+   fi
+  fi
  fi
  chown -R "$1" .
  chmod 0700 .
@@ -72,7 +80,11 @@ func (m *Manager) initializeProjectCache(ctx context.Context, root string) error
 
 // ProjectCacheUsage reads without creating a volume. Errors are surfaced to callers.
 func (m *Manager) ProjectCacheUsage(ctx context.Context, root string) (CacheUsage, error) {
-	usage := CacheUsage{Volume: ProjectCacheVolume(root), LimitBytes: m.cacheLimit()}
+	limit, err := m.cacheLimit(ctx)
+	usage := CacheUsage{Volume: ProjectCacheVolume(root), LimitBytes: limit}
+	if err != nil {
+		return usage, err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if _, err := m.runner.Run(ctx, m.cfg.Engine, "volume", "inspect", usage.Volume); err != nil {
@@ -101,6 +113,10 @@ fi`
 // running jobs. This is a soft cap: active writers and dependency stores can
 // exceed it. Go clean uses the Go cache's own removal semantics.
 func (m *Manager) trimProjectCache(ctx context.Context, name string) error {
-	_, err := m.runner.Run(ctx, m.cfg.Engine, append([]string{"exec", name}, withSandboxUmask("sh", "-c", trimCacheScript, "swarm-cache-trim", strconv.FormatUint(m.cacheLimit()/1024, 10))...)...)
+	limit, err := m.cacheLimit(ctx)
+	if err != nil {
+		return fmt.Errorf("read project cache limit: %w", err)
+	}
+	_, err = m.runner.Run(ctx, m.cfg.Engine, append([]string{"exec", name}, withSandboxUmask("sh", "-c", trimCacheScript, "swarm-cache-trim", strconv.FormatUint(limit/1024, 10))...)...)
 	return err
 }

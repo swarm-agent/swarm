@@ -67,6 +67,7 @@ func controlMCPSetLimits(c *controlMCPCall, args map[string]any) (any, error) {
 
 func controlMCPLimitsSchema() map[string]any {
 	return controlMCPObject([]string{"worker_job_concurrency", "job_tokens", "job_cost_usd", "delegation_waves", "active_children", "swarm_children"}, map[string]any{
+		"project_cache_bytes":    map[string]any{"type": "integer", "minimum": 0, "description": "Per-project soft cache cap in bytes; zero selects 10 GiB."},
 		"revision":               map[string]any{"type": "integer", "minimum": 0},
 		"worker_job_concurrency": map[string]any{"type": "integer", "minimum": 1, "maximum": 10000},
 		"job_tokens":             map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000},

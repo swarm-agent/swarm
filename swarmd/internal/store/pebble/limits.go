@@ -10,6 +10,7 @@ import (
 
 // Limits is the account's box-local admission policy. Zero job budgets are unset.
 type Limits struct {
+	ProjectCacheBytes    uint64  `json:"project_cache_bytes"`
 	Revision             uint64  `json:"revision"`
 	WorkerJobConcurrency int     `json:"worker_job_concurrency"`
 	JobTokens            int64   `json:"job_tokens"`
@@ -20,7 +21,7 @@ type Limits struct {
 }
 
 func DefaultLimits() Limits {
-	return Limits{WorkerJobConcurrency: 100, DelegationWaves: 5, ActiveChildren: 5, SwarmChildren: 5}
+	return Limits{ProjectCacheBytes: 10 << 30, WorkerJobConcurrency: 100, DelegationWaves: 5, ActiveChildren: 5, SwarmChildren: 5}
 }
 
 var ErrLimitsConflict = errors.New("limits revision conflict")
@@ -45,6 +46,9 @@ func (s *Store) GetLimits(account string) (Limits, error) {
 		return l, errors.New("limits account required")
 	}
 	found, err := s.GetJSON("limits/"+keyPart(account), &l)
+	if l.ProjectCacheBytes == 0 {
+		l.ProjectCacheBytes = DefaultLimits().ProjectCacheBytes
+	}
 	if err != nil || found {
 		return l, err
 	}
@@ -90,6 +94,9 @@ func (s *Store) SetLimits(account string, expected uint64, l Limits) (Limits, er
 	}
 	if current.Revision != expected || expected == ^uint64(0) {
 		return current, ErrLimitsConflict
+	}
+	if l.ProjectCacheBytes == 0 {
+		l.ProjectCacheBytes = DefaultLimits().ProjectCacheBytes
 	}
 	l.Revision = expected + 1
 	return l, s.PutJSON("limits/"+keyPart(account), l)

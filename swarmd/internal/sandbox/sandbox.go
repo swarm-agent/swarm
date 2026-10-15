@@ -81,7 +81,7 @@ type Config struct {
 	// has it registered and the engine default otherwise.
 	Runtime           string
 	Memory            string
-	ProjectCacheBytes uint64
+	ProjectCacheLimit func(context.Context) (uint64, error)
 	MaxWorkerRuns     int
 	PidsLimit         int
 	CPUs              string

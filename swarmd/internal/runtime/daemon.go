@@ -457,7 +457,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))
 	store.SetJobReviewObserver(jobReviewSignal(signalEmitter))
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
-	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore)
+	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore, store)
 	if err != nil {
 		_ = secretStore.Close()
 		_ = store.Close()

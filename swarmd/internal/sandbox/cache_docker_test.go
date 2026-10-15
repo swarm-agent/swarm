@@ -46,6 +46,10 @@ func TestProjectCacheDocker(t *testing.T) {
 	m.cfg.Image = image
 	m.runtime = ""
 	m.owner = func(string) (int, bool) { return os.Getuid(), true }
+	uid, gid := m.sandboxUser(root)
+	if err := os.Chmod(root, 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := m.initializeProjectCache(ctx, root); err != nil {
 		t.Fatal(err)
 	}
@@ -57,19 +61,25 @@ func TestProjectCacheDocker(t *testing.T) {
 	})
 	for _, name := range []string{"one", "two"} {
 		dir := filepath.Join(root, name)
-		if err := os.Mkdir(dir, 0700); err != nil {
+		if err := os.Mkdir(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0755); err != nil {
 			t.Fatal(err)
 		}
 		for file, body := range map[string]string{"go.mod": "module cacheproof\n\ngo 1.22\n", "cache_test.go": "package cacheproof\nimport \"testing\"\nfunc TestValue(t *testing.T) { if 2+2 != 4 { t.Fatal(\"bad value\") } }\n"} {
-			if err := os.WriteFile(filepath.Join(dir, file), []byte(body), 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(dir, file), []byte(body), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(filepath.Join(dir, file), 0644); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
 	args := func(dir, command string) []string {
-		return []string{"run", "--rm", "--network", "none", "--user", fmt.Sprintf("%d:%d", os.Getuid(), m.cfg.GID), "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=volume,src=" + volume + ",dst=" + projectCachePath, "--mount", "type=bind,src=" + root + ",dst=" + root, "-w", dir, "-e", "GOCACHE=" + projectCachePath + "/go-build", "-e", "GOMODCACHE=" + projectCachePath + "/go-mod", "-e", "GOFLAGS=-buildvcs=false -trimpath", "-e", "GOMAXPROCS=4", "--entrypoint", "sh", image, "-c", command}
+		return []string{"run", "--rm", "--network", "none", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=volume,src=" + volume + ",dst=" + projectCachePath, "--mount", "type=bind,src=" + root + ",dst=/cacheproof,readonly", "-w", "/cacheproof/" + filepath.Base(dir), "-e", "GOCACHE=" + projectCachePath + "/go-build", "-e", "GOMODCACHE=" + projectCachePath + "/go-mod", "-e", "GOFLAGS=-buildvcs=false -trimpath", "-e", "GOMAXPROCS=4", "--entrypoint", "sh", image, "-c", command}
 	}
-	if err := exec.CommandContext(ctx, "docker", append(args(root, "command -v go"))...).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "docker", append(args(filepath.Join(root, "one"), "command -v go"))...).Run(); err != nil {
 		t.Skip("sandbox image has no Go toolchain")
 	}
 	run(args(filepath.Join(root, "one"), "go test -p 4 ./...")...)

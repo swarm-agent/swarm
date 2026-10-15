@@ -47,7 +47,6 @@ type FileConfig struct {
 	RetainToolOutputHistory      bool
 	V3Diagnostics                bool
 	ProviderAPIDiagnostics       bool
-	SandboxProjectCacheBytes     uint64
 	SandboxMemory                string
 	SandboxCPUs                  string
 	SandboxCPUSlots              int
@@ -336,7 +335,6 @@ provider_api_diagnostics = %t
 long_session_diagnostics = %t
 
 # Per-job sandbox memory (empty: host-derived), and box worker admission (0: auto).
-sandbox_project_cache_bytes = %d
 sandbox_memory = %s
 sandbox_cpus = %s
 sandbox_cpu_slots = %d
@@ -363,7 +361,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxProjectCacheBytes, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.SandboxCPUSlots, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.SandboxCPUSlots, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -551,17 +549,6 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			case "sandbox_cgroup_parent":
 				cfg.SandboxCgroupParent = value
 			}
-		case "sandbox_project_cache_bytes":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
-			}
-			rawSeen[key] = struct{}{}
-			seen[key] = struct{}{}
-			n, err := strconv.ParseUint(value, 10, 64)
-			if err != nil {
-				return FileConfig{}, nil, fmt.Errorf("invalid sandbox_project_cache_bytes %q", value)
-			}
-			cfg.SandboxProjectCacheBytes = n
 		case "sandbox_memory", "worker_max_concurrent_runs":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("line %d: duplicate key %q", lineNumber+1, key)
@@ -779,7 +766,6 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 		lines = append(lines, fmt.Sprintf("sandbox_cgroup_parent = %s", cfg.SandboxCgroupParent))
 	}
 	if _, ok := seen["sandbox_project_cache_bytes"]; !ok {
-		lines = append(lines, fmt.Sprintf("sandbox_project_cache_bytes = %d", cfg.SandboxProjectCacheBytes))
 	}
 	if _, ok := seen["sandbox_memory"]; !ok {
 		lines = append(lines, fmt.Sprintf("sandbox_memory = %s", cfg.SandboxMemory))

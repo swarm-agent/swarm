@@ -10,6 +10,7 @@ import (
 	"swarm-refactor/swarmtui/pkg/storagecontract"
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/config"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/tool"
@@ -27,7 +28,7 @@ var homeCredentialDirs = []string{
 // newSandboxManager builds the agent sandbox manager from daemon flags. Every
 // daemon storage root is protected: no sandbox can mount it, a directory
 // inside it, or a directory containing it.
-func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebblestore.WorkspaceStore) (*sandbox.Manager, error) {
+func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebblestore.WorkspaceStore, db *pebblestore.Store) (*sandbox.Manager, error) {
 	mode, err := sandbox.ParseMode(cfg.SandboxMode)
 	if err != nil {
 		return nil, err
@@ -40,12 +41,19 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 	tool.SetProtectedPaths(storage, credentials)
 	protected := append(append([]string(nil), storage...), credentials...)
 	manager, err := sandbox.NewManager(ctx, sandbox.Config{
-		Mode:               mode,
-		Image:              cfg.SandboxImage,
-		Network:            cfg.SandboxNetwork,
-		Runtime:            cfg.SandboxRuntime,
-		Memory:             cfg.SandboxMemory,
-		ProjectCacheBytes:  cfg.SandboxProjectCacheBytes,
+		Mode:    mode,
+		Image:   cfg.SandboxImage,
+		Network: cfg.SandboxNetwork,
+		Runtime: cfg.SandboxRuntime,
+		Memory:  cfg.SandboxMemory,
+		ProjectCacheLimit: func(ctx context.Context) (uint64, error) {
+			principal, ok := identity.PrincipalFromContext(ctx)
+			if !ok {
+				return 0, identity.ErrPrincipalRequired
+			}
+			limits, err := db.GetLimits(principal.AccountScopeID)
+			return limits.ProjectCacheBytes, err
+		},
 		CPUs:               cfg.SandboxCPUs,
 		CPUSlots:           cfg.SandboxCPUSlots,
 		CgroupParent:       cfg.SandboxCgroupParent,

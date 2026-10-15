@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestProjectCacheMounts(t *testing.T) {
 	if ProjectCacheVolume(root) == ProjectCacheVolume("/another-project") {
 		t.Fatal("cross-project cache collision")
 	}
-	if m.cacheLimit() != 10<<30 {
+	if limit, err := m.cacheLimit(context.Background()); err != nil || limit != 10<<30 {
 		t.Fatal("incorrect default cap")
 	}
 }
@@ -54,7 +55,7 @@ func TestProjectCacheInitializationFailure(t *testing.T) {
 func TestProjectCacheUsage(t *testing.T) {
 	r := readyRunner()
 	r.out["run --network"] = "123\t/opt/swarm-cache\n"
-	m := newTestManager(t, ModeRequired, r, Config{ProjectCacheBytes: 2048})
+	m := newTestManager(t, ModeRequired, r, Config{ProjectCacheLimit: func(context.Context) (uint64, error) { return 2048, nil }})
 	usage, err := m.ProjectCacheUsage(context.Background(), "/project")
 	if err != nil || usage.Bytes != 123*1024 || usage.LimitBytes != 2048 {
 		t.Fatalf("usage=%+v error=%v", usage, err)
@@ -66,5 +67,32 @@ func TestProjectCacheUsage(t *testing.T) {
 	}
 	if len(r.calls) != before+1 {
 		t.Fatal("missing volume was created")
+	}
+}
+
+// Purpose: trimProjectCache must read live limits on every admission and reject
+// store failures without invoking cleanup. The runner boundary proves the exact
+// current cap reaches the trim command without needing a Docker daemon.
+func TestProjectCacheLiveLimit(t *testing.T) {
+	r := readyRunner()
+	cap := uint64(2048)
+	var failure error
+	m := newTestManager(t, ModeRequired, r, Config{ProjectCacheLimit: func(context.Context) (uint64, error) { return cap, failure }})
+	for _, value := range []uint64{2048, 4096} {
+		cap = value
+		if err := m.trimProjectCache(context.Background(), "job"); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasSuffix(strings.Join(r.calls[len(r.calls)-1], " "), fmt.Sprint(value/1024)) {
+			t.Fatalf("wrong cap: %v", r.calls)
+		}
+	}
+	before := len(r.calls)
+	failure = errors.New("store unavailable")
+	if err := m.trimProjectCache(context.Background(), "job"); err == nil {
+		t.Fatal("ignored store failure")
+	}
+	if len(r.calls) != before {
+		t.Fatal("trimmed after failed read")
 	}
 }

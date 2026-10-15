@@ -211,3 +211,50 @@ func TestLimitsJobCrossings(t *testing.T) {
 		t.Fatal(page)
 	}
 }
+
+// Purpose: durable cache limits must retain defaults for old records, isolate
+// accounts, survive reopen, and reject stale writes without changing the cap.
+// Real Pebble is the narrowest persistence boundary for GetLimits/SetLimits.
+func TestProjectCacheLimitsPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cache-limits")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := db.GetLimits("a")
+	if err != nil || l.ProjectCacheBytes != 10<<30 {
+		t.Fatalf("default: %+v %v", l, err)
+	}
+	l.ProjectCacheBytes = 2048
+	saved, err := db.SetLimits("a", 0, l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.ProjectCacheBytes = 4096
+	if _, err := db.SetLimits("a", 0, l); !errors.Is(err, ErrLimitsConflict) {
+		t.Fatalf("stale: %v", err)
+	}
+	other, err := db.GetLimits("b")
+	if err != nil || other.ProjectCacheBytes != 10<<30 {
+		t.Fatalf("other: %+v %v", other, err)
+	}
+	if err := db.PutJSON("limits/"+keyPart("legacy"), map[string]any{"revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := db.GetLimits("legacy")
+	if err != nil || legacy.ProjectCacheBytes != 10<<30 {
+		t.Fatalf("legacy: %+v %v", legacy, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	got, err := db.GetLimits("a")
+	if err != nil || got != saved {
+		t.Fatalf("reopened: %+v %v", got, err)
+	}
+}
