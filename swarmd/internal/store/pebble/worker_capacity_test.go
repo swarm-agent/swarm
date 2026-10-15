@@ -165,7 +165,7 @@ func TestWorkerFollowupRestartRelease(t *testing.T) {
 			}
 			transition := func(status string) {
 				t.Helper()
-				_, err := ss.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: r.SessionID, UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationRecordRunIntent, IdempotencyKey: status, PayloadHash: status, RunIntent: &V3SessionRunIntent{RunID: "followup", Status: status}})
+				_, err := ss.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: r.SessionID, UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationRecordRunIntent, IdempotencyKey: status, PayloadHash: status, RunIntent: &V3SessionRunIntent{RunID: "followup", Status: status, BlockedReason: "daemon shutdown"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -186,9 +186,22 @@ func TestWorkerFollowupRestartRelease(t *testing.T) {
 			if _, err := ws.ActiveWorkerSandboxSessions(); err != nil {
 				t.Fatal(err)
 			}
+			observed := false
+			db.SetWorkerRunObserver(func(_ WorkerRecord, got WorkerRunRecord) { observed = got.FollowupStatus == terminal })
 			transition(terminal)
+			if !observed {
+				t.Fatal("missing follow-up terminal observer")
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ws, ss = NewWorkerStore(db), NewSessionStore(db)
 			got, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
-			if err != nil || got.FollowupStatus != "" || got.FollowupRunID != "" || got.Status != "succeeded" {
+			if err != nil || got.FollowupStatus != terminal || got.FollowupRunID != "followup" || got.FollowupError != "daemon shutdown" || got.Status != "succeeded" {
 				t.Fatalf("reservation leaked or outcome changed: %+v %v", got, err)
 			}
 			next, err := ws.RecordWorkerRun("account", WorkerRunRecord{WorkerID: w.ID, Status: "admitted"})

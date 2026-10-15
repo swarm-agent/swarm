@@ -86,7 +86,7 @@ func indexWorkerRunInBatch(batch *pebble.Batch, account string, data []byte) err
 		return err
 	}
 	active := keyWorkerRunActive(account, run.WorkerID, run.ID)
-	if AutomationV2Terminal(run.Status) && run.FollowupStatus == "" {
+	if AutomationV2Terminal(run.Status) && run.FollowupStatus != "running" && run.FollowupStatus != "queued" {
 		return batch.Delete([]byte(active), nil)
 	}
 	return batch.Set([]byte(active), entry, nil)

@@ -116,6 +116,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
+       install.sh idle-off MINUTES|off
        install.sh auto-update [on|off] [--checks CONTEXT=APP[,...]|none] [--hook PATH]
        install.sh dev-sync /path/to/checkout | off
        install.sh channel [BRANCH]
@@ -1966,7 +1967,72 @@ set_secrets_gateway() {
   echo "Secret gateway is $1."
 }
 
+# Root-owned, opt-in host policy. The daemon only reports activity and a signal.
+idle_off() {
+  [[ $EUID == 0 ]] || die "idle-off requires root"
+  local minutes=${1:-} script
+  [[ $minutes == off || $minutes =~ ^[1-9][0-9]{0,5}$ ]] || die "usage: install.sh idle-off MINUTES|off"
+  mkdir -p "$STATE" "$UNITS"
+  if [[ $minutes == off ]]; then
+    systemctl disable --now swarm-idle-off.timer
+    rm -f "$STATE/idle-off-minutes" "$STATE/idle-off-since"
+    return
+  fi
+  script=$(readlink -f "${BASH_SOURCE[0]}")
+  [[ $script == /* && -f $script ]] || die "run idle-off from the installed script"
+  install -o root -g root -m 0700 "$script" "$STATE/idle-off.sh"
+  script=$STATE/idle-off.sh
+  printf '%s\n' "$minutes" >"$STATE/idle-off-minutes"
+  rm -f "$STATE/idle-off-since"
+  cat >"$UNITS/swarm-idle-off.service" <<EOF
+[Unit]
+Description=Power off Swarm host after continuous verified idle
+[Service]
+Type=oneshot
+User=root
+ExecStart=/bin/bash "$script" idle-off-check
+EOF
+  cat >"$UNITS/swarm-idle-off.timer" <<EOF
+[Unit]
+Description=Check opt-in Swarm host idle policy
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now swarm-idle-off.timer
+}
+
+idle_off_check() {
+  local minutes out busy now since boot saved_boot
+  [[ -f $STATE/idle-off-minutes ]] || return 0
+  read -r minutes <"$STATE/idle-off-minutes"
+  [[ $minutes =~ ^[1-9][0-9]{0,5}$ ]] || return 0
+  # Any transport/JSON/contract failure resets the continuous idle interval.
+  if ! out=$(local_api /v3/box/busy) || ! busy=$(json_get busy <<<"$out") || [[ $busy != false ]]; then
+    rm -f "$STATE/idle-off-since"
+    return 0
+  fi
+  read -r boot </proc/sys/kernel/random/boot_id
+  now=$(cut -d. -f1 /proc/uptime)
+  since=$now saved_boot=$boot
+  if [[ -f $STATE/idle-off-since ]]; then read -r saved_boot since <"$STATE/idle-off-since" || since=$now; fi
+  if [[ $saved_boot != "$boot" || ! $since =~ ^[0-9]+$ || $since -gt $now ]]; then since=$now; fi
+  printf '%s %s\n' "$boot" "$since" >"$STATE/idle-off-since"
+  (( now - since >= minutes * 60 )) || return 0
+  # Do not shut down if the daemon cannot accept the one pre-shutdown signal.
+  curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" -H 'Content-Type: application/json' \
+    -d '{"kind":"external.idle_off","severity":"info","summary":"Installer powering off idle host","source":"installer"}' \
+    http://swarm/v3/signals >/dev/null || { rm -f "$STATE/idle-off-since"; return 0; }
+  rm -f "$STATE/idle-off-since"
+  systemctl poweroff
+}
+
 status_cmd() {
+  echo "Idle auto-off: $(cat "$STATE/idle-off-minutes" 2>/dev/null || echo off) (minutes when enabled)"
+  systemctl --no-pager status swarm-idle-off.timer 2>/dev/null | grep -E '●|Active:' || true
   systemctl --no-pager status "$DAEMON_UNIT" "$APP_UNIT" | grep -E '●|Active:' || true
   if [[ -f $CONF ]]; then
     load_conf
@@ -1986,6 +2052,8 @@ main() {
     update) update ;;
     finish-update) finish_update ;;
     build-release) shift; load_conf; build_release "${1:?build-release needs a commit}" ;;
+    idle-off) shift; idle_off "$@" ;;
+    idle-off-check) idle_off_check ;;
     auto-update) shift; auto_update "$@" ;;
     dev-sync) shift; dev_sync "$@" ;;
     channel) shift; channel "$@" ;;

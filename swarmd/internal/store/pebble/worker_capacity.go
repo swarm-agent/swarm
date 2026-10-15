@@ -86,7 +86,7 @@ func (ws *WorkerStore) ActiveWorkerSandboxSessions() ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if found && r.FollowupRunID != "" {
+		if found && r.FollowupActive() && r.FollowupRunID != "" {
 			intent, exists, err := NewSessionStore(ws.store).GetV3SessionRunIntent(r.SessionID, r.FollowupRunID)
 			if err != nil {
 				return err
@@ -98,7 +98,7 @@ func (ws *WorkerStore) ActiveWorkerSandboxSessions() ([]string, error) {
 				r.FollowupStatus = ""
 			}
 		}
-		if found && (!AutomationV2Terminal(r.Status) || r.FollowupStatus != "") && r.SessionID != "" {
+		if found && (!AutomationV2Terminal(r.Status) || r.FollowupActive()) && r.SessionID != "" {
 			ids = append(ids, r.SessionID)
 		}
 		return nil

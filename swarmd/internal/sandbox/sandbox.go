@@ -158,13 +158,15 @@ type Manager struct {
 	imageID string
 	runtime string
 	// envResolver names folders' environment images (environment.go).
-	envResolver   EnvironmentResolver
-	reviewClosing map[string]bool   // terminal tombstones; never reacquire
-	reviews       map[string]string // checkout -> project root; daemon-owned admission only
-	boxes         map[string]*box
-	used          map[string]struct{}
-	layout        *layoutCache
-	stop          chan struct{}
+	envResolver     EnvironmentResolver
+	reviewClosing   map[string]bool   // terminal tombstones; never reacquire
+	reviews         map[string]string // checkout -> project root; daemon-owned admission only
+	boxes           map[string]*box
+	used            map[string]struct{}
+	layout          *layoutCache
+	stop            chan struct{}
+	terminalCleanup func(context.Context)
+	reaper          sync.WaitGroup
 	// resolvConf is the sandbox's own /etc/resolv.conf (public resolvers, no
 	// search domain). Docker's embedded resolver (127.0.0.11) does not
 	// answer under gVisor, and the host's search domain names the tailnet.
@@ -351,7 +353,9 @@ func (m *Manager) Start(ctx context.Context) {
 	if m == nil || !m.Active() {
 		return
 	}
+	m.reaper.Add(1)
 	go func() {
+		defer m.reaper.Done()
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
@@ -361,6 +365,9 @@ func (m *Manager) Start(ctx context.Context) {
 			case <-m.stop:
 				return
 			case <-ticker.C:
+				if m.terminalCleanup != nil {
+					m.terminalCleanup(ctx)
+				}
 				m.stopIdle(ctx, time.Now())
 			}
 		}
@@ -373,12 +380,13 @@ func (m *Manager) Close() {
 		return
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	select {
 	case <-m.stop:
 	default:
 		close(m.stop)
 	}
+	m.mu.Unlock()
+	m.reaper.Wait()
 }
 
 func (m *Manager) stopIdle(ctx context.Context, now time.Time) {

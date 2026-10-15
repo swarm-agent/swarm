@@ -1728,6 +1728,26 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	}
 	if runIntentProvided && isV3RunIntentTerminal(runIntent.Status) {
 		// Serialize with admission until the intent and reservation commit together.
+		defer func() {
+			if !reservationCommitted || s.store.workerRunObserver == nil {
+				return
+			}
+			snap, found, err := s.GetSession(runIntent.SessionID)
+			if err != nil || !found {
+				return
+			}
+			worker, _ := snap.Metadata["worker_id"].(string)
+			receipt, _ := snap.Metadata["worker_execution_run_id"].(string)
+			ws := NewWorkerStore(s.store)
+			r, found, err := ws.GetWorkerRun(runIntent.AccountScopeID, worker, receipt)
+			if err != nil || !found || r.FollowupRunID != runIntent.RunID || r.FollowupActive() {
+				return
+			}
+			w, found, err := ws.GetWorker(runIntent.AccountScopeID, worker)
+			if err == nil && found {
+				s.store.workerRunObserver(w, r)
+			}
+		}()
 		s.store.workersMu.Lock()
 		defer s.store.workersMu.Unlock()
 		if err := s.releaseWorkerFollowupInBatch(batch, runIntent); err != nil {

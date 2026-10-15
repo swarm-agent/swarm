@@ -14,6 +14,9 @@ import (
 // account on the machine: agent runs in progress (session lifecycles),
 // unfinished worker runs and sandbox environment builds. Counts only.
 type boxBusy struct {
+	Followups         int  `json:"followups"`
+	Reviews           int  `json:"reviews"`
+	Landing           int  `json:"landing"`
 	Busy              bool `json:"busy"`
 	Sessions          int  `json:"sessions"`
 	WorkerRuns        int  `json:"worker_runs"`
@@ -28,6 +31,10 @@ func (s *Server) boxBusy() (boxBusy, error) {
 			return out, errors.New("read active runs: " + err.Error())
 		}
 		out.Sessions = len(active)
+		out.Followups, out.Reviews, out.Landing, err = s.sessions.Store().WorkerStore().BoxExecutionCounts()
+		if err != nil {
+			return out, err
+		}
 		if out.WorkerRuns, err = s.sessions.CountUnfinishedWorkerRuns(); err != nil {
 			return out, errors.New("count unfinished worker runs: " + err.Error())
 		}
@@ -39,7 +46,7 @@ func (s *Server) boxBusy() (boxBusy, error) {
 		}
 		out.EnvironmentBuilds = building
 	}
-	out.Busy = out.Sessions+out.WorkerRuns+out.EnvironmentBuilds > 0
+	out.Busy = out.Sessions+out.WorkerRuns+out.EnvironmentBuilds+out.Followups+out.Reviews+out.Landing > 0
 	return out, nil
 }
 

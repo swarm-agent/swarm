@@ -471,14 +471,20 @@ func New(cfg config.Config) (*Daemon, error) {
 				if err != nil || !found {
 					return false, err
 				}
-				if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupStatus != "" {
+				if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupActive() {
 					return false, nil
 				}
 				_, active, err := pebblestore.NewSessionStore(store).GetV3SessionActiveRunIntent(r.SessionID)
 				return !active, err
 			}); err != nil {
 				log.Printf("cleanup terminal worker sandbox: %v", err)
+				if saveErr := pebblestore.NewWorkerStore(store).SetSandboxCleanupError(r, err.Error()); saveErr != nil {
+					log.Printf("record sandbox cleanup: %v", saveErr)
+				}
 			}
+		}
+		if r.Role == pebblestore.WorkerRoleReviewer && pebblestore.AutomationV2Terminal(r.Status) {
+			cleanupTerminalSandboxes(context.Background(), sandboxMgr, store)
 		}
 		emitWorkerRun(w, r)
 	})
@@ -504,6 +510,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		_ = lk.Release()
 		return nil, fmt.Errorf("recover worker sandboxes: %w", err)
 	}
+	sandboxMgr.SetTerminalCleanup(func(ctx context.Context) { cleanupTerminalSandboxes(ctx, sandboxMgr, store) })
 	sandboxMgr.Start(context.Background())
 	workspaceSvc := workspace.NewService(workspaceStore)
 	workspaceSvc.SetEventPublisher(events, hub.Publish)

@@ -45,6 +45,7 @@ func (ws *WorkerStore) ReserveWorkerFollowup(account, worker, run, intent string
 		return false, err
 	}
 	admitted := intent != "" && limit > 0 && active < limit
+	r.FollowupError = ""
 	r.FollowupStatus, r.FollowupRunID = "queued", intent
 	r.QueueReason = "follow-up waiting for box worker capacity"
 	if admitted {
@@ -81,10 +82,18 @@ func (ws *WorkerStore) ReleaseWorkerFollowup(account, worker, run, intent string
 	if !found {
 		return ErrWorkerNotFound
 	}
-	if r.FollowupRunID != intent || r.FollowupStatus == "" {
+	if r.FollowupRunID != intent || !r.FollowupActive() {
 		return nil
 	}
-	r.FollowupStatus, r.FollowupRunID, r.QueueReason = "", "", ""
+	terminal, exists, err := NewSessionStore(ws.store).GetV3SessionRunIntent(r.SessionID, intent)
+	if err != nil {
+		return err
+	}
+	if exists && isV3RunIntentTerminal(terminal.Status) {
+		r.FollowupStatus, r.FollowupError, r.QueueReason = terminal.Status, terminal.BlockedReason, ""
+	} else {
+		r.FollowupStatus, r.FollowupRunID, r.QueueReason = "", "", ""
+	}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: r.UserID, workerID: worker}
 	if err = m.put(KeyWorkerRun(account, worker, run), r); err != nil {
 		return err
@@ -116,10 +125,11 @@ func (s *SessionStore) releaseWorkerFollowupInBatch(batch *pebble.Batch, intent 
 	if err != nil || !found {
 		return err
 	}
-	if r.SessionID != intent.SessionID || r.FollowupRunID != intent.RunID || r.FollowupStatus == "" {
+	if r.SessionID != intent.SessionID || r.FollowupRunID != intent.RunID || !r.FollowupActive() {
 		return nil
 	}
-	r.FollowupStatus, r.FollowupRunID, r.QueueReason = "", "", ""
+	r.FollowupStatus, r.QueueReason = intent.Status, ""
+	r.FollowupError = intent.BlockedReason
 	m := &workerRealtimeMutation{accountScopeID: intent.AccountScopeID, userID: r.UserID, workerID: worker}
 	if err := m.put(KeyWorkerRun(intent.AccountScopeID, worker, receipt), r); err != nil {
 		return err

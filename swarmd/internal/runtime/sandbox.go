@@ -104,6 +104,7 @@ func reconcileWorkerSandboxes(ctx context.Context, m *sandbox.Manager, db *pebbl
 		}
 		if found && snap.WorktreeRootPath != "" {
 			active[sandbox.JobContainerName(snap.WorkspacePath, snap.WorktreeRootPath)] = true
+			active[sandbox.ReviewContainerName(snap.WorkspacePath, snap.WorktreeRootPath)] = true
 		}
 	}
 	return m.ReconcileContainers(ctx, func(name string) (bool, error) { return active[name], nil })

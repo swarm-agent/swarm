@@ -95,3 +95,20 @@ func TestWorkerSandboxWarningSignal(t *testing.T) {
 		t.Fatalf("invalid warning: %+v", sig)
 	}
 }
+
+// Purpose: interrupted follow-ups must emit worker.run.failed without changing
+// the original successful receipt or exposing its error. The signal store is
+// the narrow boundary consumed by job monitors.
+func TestInterruptedFollowupSignal(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	feed := pebblestore.NewSignalStore(db)
+	workerRunSignal(signals.NewEmitter(feed))(pebblestore.WorkerRecord{ID: "worker"}, pebblestore.WorkerRunRecord{ID: "job", AccountScopeID: "account", Status: "succeeded", FollowupStatus: "interrupted", FollowupRunID: "followup", FollowupError: "daemon shutdown"})
+	page, err := feed.ListAfter(0, 10, pebblestore.SignalFilter{Account: "account"})
+	if err != nil || len(page.Signals) != 1 || page.Signals[0].Kind != "worker.run.failed" {
+		t.Fatal(page, err)
+	}
+}

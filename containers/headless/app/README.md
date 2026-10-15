@@ -296,3 +296,17 @@ Ordinary daemon Git runs in a separate confined per-project container (CPU share
 2048), outside agent quotas and slots; reviewer Git retains its restricted read-only
 container. Worktree Git command budgets start after sandbox acquisition. Cold-start
 and engine failure can still fail explicitly; priority is not a real-time guarantee.
+
+### Optional idle auto-off (cloud VMs)
+
+`sudo bash install.sh idle-off 30` installs a root systemd timer that powers off
+this machine after 30 continuous minutes of verified idle. It is off by default;
+`sudo bash install.sh idle-off off` disables it. `install.sh status` shows the
+configured interval and timer state. Use the saved installer file, not a pipe.
+
+The timer checks `/v3/box/busy`, including follow-ups, reviews and landing work.
+An unreachable daemon, malformed response or failed pre-shutdown signal resets
+the idle interval; it never authorizes shutdown. The installer sends an
+`external.idle_off` signal through the daemon before root invokes systemd poweroff.
+The daemon never powers off its host. A stopped cloud VM keeps its disk; start
+it in your cloud console to resume. Disk/storage charges may continue.

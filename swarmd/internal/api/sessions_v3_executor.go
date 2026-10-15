@@ -322,7 +322,7 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 					if err != nil || !found {
 						return false, err
 					}
-					if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupStatus != "" {
+					if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupActive() {
 						return false, nil
 					}
 					_, active, err := e.server.sessions.Store().GetV3SessionActiveRunIntent(job.SessionID)

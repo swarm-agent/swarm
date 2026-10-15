@@ -47,6 +47,10 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 // run; the run's input, output and error text stay on the machine.
 func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
 	return func(worker pebblestore.WorkerRecord, run pebblestore.WorkerRunRecord) {
+		followup := run.FollowupRunID
+		if run.FollowupStatus == "interrupted" || run.FollowupStatus == "failed" {
+			run.Status = "failed"
+		}
 		severity := pebblestore.SignalSeverityInfo
 		if run.Status == "failed" {
 			severity = pebblestore.SignalSeverityWarning
@@ -73,7 +77,7 @@ func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pe
 			Severity: severity,
 			Account:  run.AccountScopeID,
 			Summary:  "Worker " + name + " run " + run.Status,
-			DedupKey: "worker.run:" + run.ID,
+			DedupKey: "worker.run:" + run.ID + ":" + followup,
 			Refs:     refs,
 			Attrs:    map[string]string{"source": run.RequestSource},
 		})

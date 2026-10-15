@@ -129,7 +129,7 @@ func (m *Manager) ReconcileContainers(ctx context.Context, active func(string) (
 		if !strings.HasPrefix(name, "swarm-sandbox-") {
 			continue
 		}
-		if strings.Contains(name, "-job-"+containerPrefix) {
+		if strings.Contains(name, "-job-"+containerPrefix) || strings.Contains(name, "-review-") {
 			live, err := active(name)
 			if err != nil {
 				return err
@@ -152,4 +152,21 @@ func (m *Manager) ReconcileContainers(ctx context.Context, active func(string) (
 // inventory during startup recovery.
 func JobContainerName(root, checkout string) string {
 	return scopeContainerName(Scope{Root: root, JobCheckout: checkout})
+}
+
+// SetTerminalCleanup installs the durable retry sweep before Start.
+func (m *Manager) SetTerminalCleanup(fn func(context.Context)) { m.terminalCleanup = fn }
+
+// EndTerminalReview removes the container independently of checkout cleanup.
+func (m *Manager) EndTerminalReview(ctx context.Context, root, checkout string) error {
+	m.mu.Lock()
+	_, registered := m.reviews[checkout]
+	m.mu.Unlock()
+	if registered {
+		return m.EndReview(ctx, checkout)
+	}
+	return m.removeJobContainer(ctx, ReviewContainerName(root, checkout))
+}
+func ReviewContainerName(root, checkout string) string {
+	return scopeContainerName(Scope{Root: root, ReviewCheckout: checkout})
 }
