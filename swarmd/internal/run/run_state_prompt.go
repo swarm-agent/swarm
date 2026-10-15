@@ -149,6 +149,15 @@ func renderDurablePlanRunState(state compactRunState, plan pebblestore.SessionPl
 	return renderCompactRunState(state)
 }
 
+// ScopeDurableRunStateInstructions keeps parent lifecycle instructions out of
+// restricted worker requests at both provider entry points.
+func ScopeDurableRunStateInstructions(text string, profile pebblestore.AgentProfile) string {
+	if usesWorkerContext(profile) {
+		return workerRunStateInstructions()
+	}
+	return text
+}
+
 func renderCompactRunState(state compactRunState) (string, error) {
 	raw, err := json.Marshal(state)
 	if err != nil {

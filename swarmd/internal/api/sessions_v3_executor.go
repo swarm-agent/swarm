@@ -5063,7 +5063,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		if stateErr != nil {
 			return sessionV3ResolvedRuntime{}, stateErr
 		}
-		instructions = strings.TrimSpace(instructions + "\n\n" + runState)
+		instructions = strings.TrimSpace(instructions + "\n\n" + runruntime.ScopeDurableRunStateInstructions(runState, agentProfile))
 	}
 	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: resolved.ContextWindow, ModelCatalog: resolved.ModelCatalog, CatalogMeta: resolved.CatalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice, Limits: effectiveAgentRunLimits(agentProfile.Limits, sealed)}, nil
 }

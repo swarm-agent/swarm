@@ -8,15 +8,17 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 )
 
-// Requirement: Coders author tests without shell access; the parent runs them.
+// Requirement: regular delegated Coders author tests without shell access;
+// Worker Coders instead run their own sandbox tests. The harness must distinguish them.
 // Regression: executable prompt examples must not assign impossible test runs or
 // encourage permission expansion. Exercise emitted prompts and compiled policy,
 // not source-file spelling. This is prompt/policy coverage, not provider proof.
 func TestCoderParentValidationPromptContract(t *testing.T) {
 	parent := masterHarnessPrompt(".")
 	for _, text := range []string{
-		"Coders do not get Bash or command execution by design",
-		"the parent executes tests, builds, formatters",
+		"Worker Coders run Bash and tests in their sandbox",
+		"Regular delegated Coders lack Bash",
+		"their parent runs tests, builds and formatters",
 		"not run; parent validation required",
 		"batch independent tests in parallel",
 		"never race tests against files another worker is editing",

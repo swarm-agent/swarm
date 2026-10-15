@@ -425,7 +425,7 @@ func appendHostRuntimeContext(base string, workspacePath string, workspaceRoots 
 
 	var block strings.Builder
 	block.WriteString("Workspace runtime policy:\n")
-	block.WriteString("- Tools run directly on the host workspace path: ")
+	block.WriteString("- Workspace path (sandbox commands, scoped file tools): ")
 	block.WriteString(workspacePath)
 	block.WriteString("\n")
 	for _, line := range workspaceGitContext(workspacePath) {

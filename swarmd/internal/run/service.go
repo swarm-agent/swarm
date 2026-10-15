@@ -2167,7 +2167,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		if stateErr != nil {
 			return RunResult{}, stateErr
 		}
-		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + runStateInstructions)
+		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + ScopeDurableRunStateInstructions(runStateInstructions, agentProfile))
 		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
 		stepToolDefinitions = MaterializeSessionVideoTool(stepToolDefinitions, sessionSnapshot.Metadata)
 		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && planContextGuard.beginDecision() {

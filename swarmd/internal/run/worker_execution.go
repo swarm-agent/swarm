@@ -988,8 +988,16 @@ func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc s
 			}
 		}
 	}
-	if len(r.Input) != 0 {
-		payload, err := json.Marshal(r.Input)
+	input := make(map[string]any, len(r.Input))
+	for key, value := range r.Input {
+		// The direct brief was rendered above; preserve all other input.
+		if r.AutomationID == "" && key == "prompt" {
+			continue
+		}
+		input[key] = value
+	}
+	if len(input) != 0 {
+		payload, err := json.Marshal(input)
 		if err != nil {
 			return "", err
 		}
