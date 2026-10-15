@@ -310,6 +310,12 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		Reconcile:   reconcileReviewerAgentProfile,
 	},
 	{
+		ID:          HelperAgentID,
+		DisplayName: "Read-only helper",
+		Materialize: HelperAgentProfileForParent,
+		Reconcile:   HelperAgentProfileForParent,
+	},
+	{
 		ID:          WorkerCoderAgentID,
 		DisplayName: CoderAgentName,
 		Materialize: WorkerCoderAgentProfileForParent,
@@ -1210,6 +1216,7 @@ func WorkerCoderAgentToolContract() *pebblestore.AgentToolContract {
 	contract := CoderAgentToolContract()
 	contract.Tools["bash"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 	contract.Tools["ask_user"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+	contract.Tools["task"] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
 	return contract
 }
 

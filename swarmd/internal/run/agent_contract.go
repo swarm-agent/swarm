@@ -332,7 +332,14 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		}
 	}
 	if strings.EqualFold(strings.TrimSpace(profile.Mode), "subagent") {
-		resolved.Tools["task"] = ResolvedAgentTool{Enabled: false, Source: "runtime.subagent_boundary"}
+		resolved.Tools["task"] = ResolvedAgentTool{Enabled: profile.Name == agentruntime.WorkerCoderAgentID, Source: "runtime.subagent_boundary"}
+	}
+	if profile.Name == agentruntime.HelperAgentID {
+		resolved.InheritPolicy = false
+		for name := range resolved.Tools {
+			allowed := name == "read" || name == "search" || name == "find" || name == "list" || name == "bash"
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: allowed, Source: "runtime.helper_boundary"}
+		}
 	}
 
 	return resolved, nil

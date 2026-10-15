@@ -1243,6 +1243,13 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	if err != nil {
 		return taskLaunchPrepared{}, err
 	}
+	if workerHelperParent(parentSession) {
+		if !agentruntime.IsFinderAgentName(requestedSubagent) {
+			return taskLaunchPrepared{}, errors.New("coder task permits read-only Finder helpers only")
+		}
+		subagentProfile = agentruntime.HelperAgentProfileForParent(subagentProfile)
+		launch.TargetWorkspacePath = firstNonEmptyString(parentSession.WorktreeRootPath, parentSession.WorkspacePath)
+	}
 	if strings.TrimSpace(subagentProfile.Name) == "" {
 		return taskLaunchPrepared{}, errors.New("task resolved empty subagent")
 	}
@@ -5295,6 +5302,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		if !ok {
 			return "", fmt.Errorf("session %q not found", sessionID)
 		}
+	}
+	if err := validateHelperTask(parentSession, parsed); err != nil {
+		return "", err
 	}
 	if err := validatePlanSidechatTaskTargets(parentSession, launchSpecs); err != nil {
 		return "", err

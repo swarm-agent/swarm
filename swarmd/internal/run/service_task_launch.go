@@ -3900,6 +3900,13 @@ func (s *Service) resolveTaskLaunchProfile(parentSession pebblestore.SessionSnap
 }
 
 func (s *Service) resolveTaskLaunchProfileForMode(parentSession pebblestore.SessionSnapshot, requested, childMode string) (pebblestore.AgentProfile, bool, string, error) {
+	if workerHelperParent(parentSession) {
+		if !agentruntime.IsFinderAgentName(requested) {
+			return pebblestore.AgentProfile{}, false, "", errors.New("coder task permits read-only Finder helpers only")
+		}
+		profile, err := s.resolveTaskSubagentForAccount(parentSession.AccountScopeID, requested)
+		return agentruntime.HelperAgentProfileForParent(profile), false, "", err
+	}
 	if strings.EqualFold(strings.TrimSpace(requested), agentruntime.SwarmAgentID) {
 		if parentSession.ModelProfile == nil {
 			return pebblestore.AgentProfile{}, false, "", fmt.Errorf("Swarm child launch requires the parent immutable model profile")
@@ -4172,6 +4179,9 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 	}
 	if !ok {
 		return taskLaunchManifest{}, fmt.Errorf("session %q not found", sessionID)
+	}
+	if err := validateHelperTask(parentSession, parsed); err != nil {
+		return taskLaunchManifest{}, err
 	}
 	if parsed.Swarm != nil && parsed.Swarm.AgentType == "image" {
 		images := make([]taskImageManifestRow, len(parsed.Launches))
