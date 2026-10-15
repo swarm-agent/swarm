@@ -53,6 +53,9 @@ type SendBackError struct{ Reason string }
 func (e *SendBackError) Error() string { return e.Reason }
 
 type QueueHooks struct {
+	// Admit fences each entry before any durable transition or external work.
+	// A failed admission leaves the entry pending for the next scheduler/restart.
+	Admit    func(context.Context, Entry) (func(), error)
 	Queued   func(context.Context, Entry) error // idempotent receipt, replayed before advancing
 	Finished func(context.Context, Entry) error
 	Prepare  func(context.Context, *Entry) error // update, sandbox rebase and checks
@@ -187,7 +190,17 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 	q.mu.Unlock()
 	lock.Lock()
 	defer lock.Unlock()
+	var release func()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 	for {
+		if release != nil {
+			release()
+			release = nil
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -206,6 +219,12 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 		}
 		if e.Request.JobID == "" {
 			return nil
+		}
+		if h.Admit != nil {
+			release, err = h.Admit(ctx, e)
+			if err != nil {
+				return err
+			}
 		}
 		if e.SendBackPending || e.NotificationPending {
 			if err = q.finish(ctx, &e, h); err != nil {

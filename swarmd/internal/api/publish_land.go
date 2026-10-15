@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/environments/provider"
+	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -114,6 +115,7 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 		return errors.New("queued folder no longer has a land rule")
 	}
 	return q.Process(ctx, account, folder, publish.QueueHooks{
+		Admit: p.server.admitLanding,
 		Queued: func(ctx context.Context, e publish.Entry) error {
 			kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
 			if err != nil {
@@ -175,6 +177,22 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 		},
 	})
 }
+
+// admitLanding shares the run admission lock with drain and restart claims.
+// Queue.Process retains the durable entry while waiting, and releases only after
+// checks, Git and durable effects finish, before admitting the next entry.
+func (s *Server) admitLanding(ctx context.Context, e publish.Entry) (func(), error) {
+	manager := s.ExecutionCapacity()
+	if manager == nil {
+		return nil, errors.New("landing admission unavailable")
+	}
+	lease, err := manager.Acquire(ctx, executioncapacity.AcquireRequest{AccountScopeID: e.Account, SessionID: "landing:" + e.Request.JobID, RunID: "landing:" + e.Request.JobID})
+	if err != nil {
+		return nil, err
+	}
+	return func() { _ = lease.Release() }, nil
+}
+
 func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *publish.Entry) error {
 	kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
 	if err != nil {
