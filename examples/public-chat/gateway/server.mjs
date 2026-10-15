@@ -19,6 +19,22 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
   let readyAt = 0;
   // Every event goes to the staff console's feed and, if configured, the hub.
   const emit = (type, data) => { feed.push(type, data); sendEvent(type, data); };
+  // The daemon refuses a run over the token's concurrency limit (429) before it
+  // records the message, so the gateway can wait for a free slot and retry instead
+  // of turning the visitor away. It gives up after busyWaitMs and answers busy.
+  const busyWaitMs = config.busyWaitMs ?? 20_000;
+  const busyRetryMs = config.busyRetryMs ?? 500;
+  async function waitForSlot(run) {
+    const started = now();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await run();
+      } catch (error) {
+        if (error?.status !== 429 || now() - started >= busyWaitMs) throw error;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(busyRetryMs * 2 ** attempt, 3000) + Math.random() * busyRetryMs / 2));
+      }
+    }
+  }
   // A waiting request nobody accepted in time becomes missed, once.
   const personOf = async (visitorId) => {
     const visitor = visitors.get(visitorId);
@@ -74,7 +90,7 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     const endConversation = (ended) => visitors.touch(body.visitor_id, { ended });
     const setPerson = (person) => visitors.touch(body.visitor_id, { person });
     const handlers = core.toolHandlers({ playbook: config.playbook, dataDir: config.dataDir, bookingUrl: config.bookingUrl, emit, sessionId, visitorId: body.visitor_id, endConversation, presence, setPerson, visitors, now });
-    const { reply, messages } = await gateway.agents.converse(sessionId, body.message, handlers, { timeoutMs: config.replyTimeoutMs });
+    const { reply, messages } = await waitForSlot(() => gateway.agents.converse(sessionId, body.message, handlers, { timeoutMs: config.replyTimeoutMs }));
     // seq lets the widget poll for a person's later replies without repeating this one.
     const status = visitors.get(body.visitor_id)?.ended ? 'ended' : 'answered';
     return [200, { status, reply, seq: core.latestReplySeq(messages), person: core.publicPerson(await personOf(body.visitor_id)) }];
@@ -275,7 +291,8 @@ async function main() {
     visitorMessagesPerWindow: Number(env.VISITOR_MESSAGES_PER_WINDOW ?? 20),
     visitorWindowMs: Number(env.VISITOR_WINDOW_MS ?? 600_000),
     maxConversationMessages: Number(env.MAX_CONVERSATION_MESSAGES ?? 30),
-    maxInflight: Number(env.MAX_INFLIGHT ?? 8),
+    maxInflight: Number(env.MAX_INFLIGHT ?? 32),
+    busyWaitMs: Number(env.BUSY_WAIT_MS ?? 20_000),
     replyTimeoutMs: Number(env.REPLY_TIMEOUT_MS ?? 45_000),
     acceptTimeoutMs: Number(env.ACCEPT_TIMEOUT_MS ?? 120_000),
   };

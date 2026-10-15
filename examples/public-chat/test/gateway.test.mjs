@@ -14,9 +14,10 @@ const GATEWAY_KEY = 'g'.repeat(40);
 const OPS_KEY = 'o'.repeat(40);
 const VISITOR = 'visitor_abcdefghijklmnop';
 
-function fakeClients({ takeover, spentOut = false, converseError, endsWith, offerWith } = {}) {
+function fakeClients({ takeover, spentOut = false, converseError, endsWith, offerWith, busyTimes = 0 } = {}) {
   const calls = [];
   let endOnce = endsWith;
+  let busyLeft = busyTimes;
   const session = { metadata: takeover ? { takeover } : {} };
   const messages = [{ id: 'm1', role: 'assistant', global_seq: 7, content: 'earlier answer', metadata: {} }];
   const gateway = {
@@ -30,6 +31,7 @@ function fakeClients({ takeover, spentOut = false, converseError, endsWith, offe
       converse: async (id, message, handlers) => {
         calls.push(['converse', id, message, Object.keys(handlers).sort()]);
         if (converseError) throw converseError;
+        if (busyLeft-- > 0) throw Object.assign(new Error('agent-bound token concurrent run limit reached'), { status: 429 });
         if (endOnce) {
           // The "model" calls end_conversation once, the way a real run would mid-turn.
           await handlers.end_conversation(endOnce);
@@ -67,7 +69,7 @@ async function start(options = {}) {
     playbook: { pricing: 'Fixed price.' }, gatewaySecret: GATEWAY_KEY, opsSecret: OPS_KEY,
     maxMessageChars: 2000, visitorMessagesPerWindow: options.perVisitor ?? 20, visitorWindowMs: 60_000,
     maxConversationMessages: options.maxConversation ?? 30, maxInflight: 8, replyTimeoutMs: 1000,
-    acceptTimeoutMs: 120_000,
+    acceptTimeoutMs: 120_000, busyWaitMs: 300, busyRetryMs: 20,
   };
   const now = options.now ?? Date.now;
   const presence = core.createPresence({ ttlMs: 60_000, now });
@@ -182,6 +184,15 @@ test('staff routes need the ops key and valid input; the event feed wakes on new
   feed.push('handoff.requested', { session_id: 's1' });
   assert.deepEqual((await waiting).map((e) => [e.seq, e.type]), [[1, 'handoff.requested']]);
   assert.ok(Date.now() - started < 1000, 'resolved on push, not on timeout');
+});
+
+test('when every run slot is taken the visitor waits for one instead of being turned away', async () => {
+  const g = await start({ busyTimes: 3 });
+  try {
+    const res = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+    assert.equal(res.data.status, 'answered');
+    assert.equal(g.calls.filter(([op]) => op === 'converse').length, 4, 'three refusals, then the run');
+  } finally { await g.close(); }
 });
 
 test('after a refresh the visitor gets their own history back, and only theirs', async () => {
