@@ -53,6 +53,7 @@ type SendBackError struct{ Reason string }
 func (e *SendBackError) Error() string { return e.Reason }
 
 type QueueHooks struct {
+	Queued   func(context.Context, Entry) error // idempotent receipt, replayed before advancing
 	Finished func(context.Context, Entry) error
 	Prepare  func(context.Context, *Entry) error // update, sandbox rebase and checks
 	Land     func(context.Context, Entry) (LandResult, error)
@@ -212,6 +213,13 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 			}
 			continue
 		}
+		// Repair a crash between enqueue persistence and receipt publication.
+		// Do not advance until the idempotent receipt has committed.
+		if e.State == "queued" && h.Queued != nil {
+			if err = h.Queued(ctx, e); err != nil {
+				return err
+			}
+		}
 		// Resume an interrupted landing with the same receipt identity. Only a
 		// new queued-to-landing transition allocates another durable identity.
 		if e.State != "landing" || e.NotificationID == "" {
@@ -227,9 +235,17 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 			err = h.Prepare(ctx, &e)
 			if errors.Is(err, ErrNotSettled) {
 				e.State = "queued"
+				e.TransitionSequence++
+				e.NotificationID = fmt.Sprintf("attempt-%d-transition-%d", e.Attempt, e.TransitionSequence)
 				// Keep FIFO order and retry on the next scheduler round, without
 				// checks, landing, send-backs or terminal notifications.
-				return q.save(e)
+				if err = q.save(e); err != nil {
+					return err
+				}
+				if h.Queued != nil {
+					return h.Queued(ctx, e)
+				}
+				return nil
 			}
 			if err == nil {
 				if err = q.save(e); err != nil {

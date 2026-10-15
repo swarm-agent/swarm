@@ -114,6 +114,17 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 		return errors.New("queued folder no longer has a land rule")
 	}
 	return q.Process(ctx, account, folder, publish.QueueHooks{
+		Queued: func(ctx context.Context, e publish.Entry) error {
+			kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
+			if err != nil {
+				return err
+			}
+			refs, err := c.jobRefs(kind, a, b)
+			if err != nil {
+				return err
+			}
+			return c.recordJobActivity(kind, a, b, refs, "job.queued", e.Commit, e.NotificationID)
+		},
 		Prepare: func(ctx context.Context, e *publish.Entry) error {
 			kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
 			if err != nil {

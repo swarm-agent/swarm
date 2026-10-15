@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 
@@ -233,7 +234,9 @@ func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
 
 // Purpose: queued and landing receipts must distinguish requeues without an
 // Attempt increment, while replay after a lost acknowledgement remains exactly
-// once. Real Pebble reopen exercises Queue persistence and activity idempotency.
+// once. A crash after enqueue but before its receipt must be repaired before
+// landing; ErrNotSettled must emit a distinct queued receipt before retrying.
+// Real Pebble reopen exercises Queue persistence and activity idempotency.
 func TestPublishLandRequeuedActivityRestart(t *testing.T) {
 	path := t.TempDir()
 	db, err := store.Open(path)
@@ -264,23 +267,14 @@ func TestPublishLandRequeuedActivityRestart(t *testing.T) {
 	}
 	for cycle := 0; cycle < 2; cycle++ {
 		q := publish.NewQueue(db)
-		entry, _, err := q.EnqueueDelivery(publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}, true)
+		_, _, err := q.EnqueueDelivery(publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}, true)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := receipt(entry); err != nil {
-			t.Fatal(err)
-		}
+		// Crash after queue commit, before publishing its activity receipt.
 		reopen()
 		q = publish.NewQueue(db)
-		entry, _, err = q.EnqueueDelivery(publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}, true)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := receipt(entry); err != nil {
-			t.Fatal(err)
-		}
-		hooks := publish.QueueHooks{Prepare: func(_ context.Context, e *publish.Entry) error {
+		hooks := publish.QueueHooks{Queued: func(_ context.Context, e publish.Entry) error { return receipt(e) }, Prepare: func(_ context.Context, e *publish.Entry) error {
 			if err := receipt(*e); err != nil {
 				t.Fatal(err)
 			}
@@ -300,6 +294,21 @@ func TestPublishLandRequeuedActivityRestart(t *testing.T) {
 			}
 			return nil
 		}
+		if cycle == 1 {
+			prepare := hooks.Prepare
+			hooks.Prepare = func(_ context.Context, e *publish.Entry) error {
+				if err := receipt(*e); err != nil {
+					return err
+				}
+				return publish.ErrNotSettled
+			}
+			if err := q.Process(context.Background(), "a", "f", hooks); err != nil {
+				t.Fatal(err)
+			}
+			reopen()
+			q = publish.NewQueue(db)
+			hooks.Prepare = prepare
+		}
 		hooks.SendBack = func(context.Context, publish.Entry) error { return nil }
 		hooks.Land = func(context.Context, publish.Entry) (publish.LandResult, error) {
 			return publish.LandResult{Commit: "head"}, nil
@@ -314,10 +323,16 @@ func TestPublishLandRequeuedActivityRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	counts := map[string]int{}
+	var states []string
 	for _, e := range events {
 		counts[e.State]++
+		states = append(states, e.State)
 	}
-	for state, want := range map[string]int{"job.queued": 2, "job.landing": 2, "job.sent_back": 1, "job.landed": 1} {
+	want := "[job.queued job.landing job.sent_back job.queued job.landing job.queued job.landing job.landed]"
+	if fmt.Sprint(states) != want {
+		t.Fatalf("receipt order %v", states)
+	}
+	for state, want := range map[string]int{"job.queued": 3, "job.landing": 3, "job.sent_back": 1, "job.landed": 1} {
 		if counts[state] != want {
 			t.Fatalf("receipt counts %v, want %s=%d", counts, state, want)
 		}
