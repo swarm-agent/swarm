@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/cockroachdb/pebble"
+	"path/filepath"
 	"testing"
 )
 
@@ -133,5 +134,70 @@ func TestWorkerFollowupCapacity(t *testing.T) {
 	}
 	if ok, err := ws.ReserveWorkerCapacity(another, 1); err != nil || !ok {
 		t.Fatal("follow-up leaked capacity", ok, err)
+	}
+}
+
+// Purpose: ApplyV3SessionMutation must release the exact follow-up reservation
+// atomically with terminal intents, especially restart interruption. Reopening
+// real Pebble proves startup cannot leave a slot held until a second restart.
+func TestWorkerFollowupRestartRelease(t *testing.T) {
+	for _, terminal := range []string{V3RunIntentInterrupted, V3RunIntentCompleted, V3RunIntentFailed, V3RunIntentCancelled, V3RunIntentExpired} {
+		t.Run(terminal, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "store")
+			db, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			ws := NewWorkerStore(db)
+			w, err := ws.CreateWorker("account", "user", CreateWorkerRequest{Name: "worker"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := ws.RecordWorkerRun("account", WorkerRunRecord{WorkerID: w.ID, Status: "succeeded", SessionID: "followup-session"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ss := NewSessionStore(db)
+			_, err = ss.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: r.SessionID, UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationCreateSession, IdempotencyKey: "create", PayloadHash: "create", Session: &SessionSnapshot{ID: r.SessionID, Metadata: map[string]any{"worker_id": w.ID, "worker_execution_run_id": r.ID}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			transition := func(status string) {
+				t.Helper()
+				_, err := ss.ApplyV3SessionMutation(V3SessionMutationInput{SessionID: r.SessionID, UserID: "user", AccountScopeID: "account", Kind: V3SessionMutationRecordRunIntent, IdempotencyKey: status, PayloadHash: status, RunIntent: &V3SessionRunIntent{RunID: "followup", Status: status}})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			transition(V3RunIntentPendingExecutor)
+			transition(V3RunIntentRunning)
+			if ok, err := ws.ReserveWorkerFollowup("account", w.ID, r.ID, "followup", 1); err != nil || !ok {
+				t.Fatal(ok, err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			db, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ws, ss = NewWorkerStore(db), NewSessionStore(db)
+			if _, err := ws.ActiveWorkerSandboxSessions(); err != nil {
+				t.Fatal(err)
+			}
+			transition(terminal)
+			got, _, err := ws.GetWorkerRun("account", w.ID, r.ID)
+			if err != nil || got.FollowupStatus != "" || got.FollowupRunID != "" || got.Status != "succeeded" {
+				t.Fatalf("reservation leaked or outcome changed: %+v %v", got, err)
+			}
+			next, err := ws.RecordWorkerRun("account", WorkerRunRecord{WorkerID: w.ID, Status: "admitted"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok, err := ws.ReserveWorkerCapacity(next, 1); err != nil || !ok {
+				t.Fatalf("slot still held: %v %v", ok, err)
+			}
+		})
 	}
 }

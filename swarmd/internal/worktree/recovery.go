@@ -84,6 +84,7 @@ func recoveryGit(path string, input []byte, args ...string) ([]byte, error) {
 	var out, stderr recoveryOutput
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("recovery git %s: %w: %s", args[0], err, stderr.String())
 	}

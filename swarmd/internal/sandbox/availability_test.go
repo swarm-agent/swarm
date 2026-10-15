@@ -3,7 +3,9 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"strings"
+	"swarm/packages/swarmd/internal/egress"
 	"testing"
 	"time"
 )
@@ -12,7 +14,7 @@ import (
 func TestMain(m *testing.M) {
 	for _, pair := range os.Environ() {
 		key, _, _ := strings.Cut(pair, "=")
-		if strings.HasPrefix(key, "GIT_CONFIG_") {
+		if strings.HasPrefix(key, "GIT_") {
 			_ = os.Unsetenv(key)
 		}
 	}
@@ -64,11 +66,17 @@ func TestWorkerContainerCleanup(t *testing.T) {
 	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{root + "/source"}, nil }, WorktreesRoot: root + "/trees", Bucket: func(string) (string, error) { return "bucket", nil }})
 	name := JobContainerName(root+"/source", checkout)
 	m.boxes[name] = &box{name: name, inflight: 1}
-	if err := m.EndJob(context.Background(), checkout); err == nil {
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if runner.ran("rm -f " + name) {
 		t.Fatal("removed active command")
 	}
-	m.boxes[name].inflight = 0
-	if err := m.EndJob(context.Background(), checkout); err != nil {
+	m.release(m.boxes[name])
+	if !runner.ran("rm -f " + name) {
+		t.Fatal("terminal cleanup not retried after lease release")
+	}
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return true, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if !runner.ran("rm -f " + name) {
@@ -87,12 +95,106 @@ func TestWorkerContainerCleanup(t *testing.T) {
 	idle := JobContainerName(root+"/source", checkout+"idle")
 	fresh.boxes[idle] = &box{name: idle, lastUsed: time.Now().Add(-2 * fresh.cfg.IdleTimeout)}
 	fresh.stopIdle(context.Background(), time.Now())
-	if !runner.ran("rm -f " + idle) {
-		t.Fatal("idle job retained")
+	if !runner.ran("stop --time 5 "+idle) || runner.ran("rm -f "+idle) {
+		t.Fatal("idle live job must be stopped, not removed")
 	}
 	for _, c := range runner.calls {
 		if len(c) > 0 && c[0] == "rm" && strings.Contains(strings.Join(c, " "), "-v") {
 			t.Fatal("cache removal")
 		}
+	}
+}
+
+// Purpose: EndJob requires durable terminal evidence and fences that evidence
+// against a newer acquisition. The manager/engine boundary proves a delayed
+// terminal callback cannot remove a next checkpoint's container.
+func TestWorkerCleanupFences(t *testing.T) {
+	runner := readyRunner()
+	m := newTestManager(t, ModeRequired, runner, Config{})
+	root := t.TempDir()
+	checkout := root + "/trees/bucket/job"
+	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{root + "/source"}, nil }, WorktreesRoot: root + "/trees", Bucket: func(string) (string, error) { return "bucket", nil }})
+	name := JobContainerName(root+"/source", checkout)
+	b := &box{name: name, root: root + "/source", generation: 1}
+	m.boxes[name] = b
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { return false, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if runner.ran("rm -f " + name) {
+		t.Fatal("removed live job")
+	}
+	if err := m.EndJob(context.Background(), checkout, func() (bool, error) { m.mu.Lock(); b.generation++; m.mu.Unlock(); return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	if runner.ran("rm -f " + name) {
+		t.Fatal("stale callback removed newer acquisition")
+	}
+}
+
+type registryBroker struct {
+	registry *egress.Registry
+	token    string
+}
+
+func (b *registryBroker) PrepareSandbox(root string) (SecretSetup, error) { return SecretSetup{}, nil }
+func (b *registryBroker) ReleaseSandbox(root string)                      { b.registry.Unregister(root) }
+
+// Purpose: project gateway registration is shared by sibling job containers.
+// Manager removal must retain authentication until its last reference is gone;
+// a real egress.Registry checks token resolution, not merely a callback count.
+func TestWorkerCleanupRetainsSiblingGateway(t *testing.T) {
+	runner := readyRunner()
+	m := newTestManager(t, ModeRequired, runner, Config{})
+	root := t.TempDir()
+	registry := egress.NewRegistry()
+	token, err := registry.Register(egress.Sandbox{WorkspacePath: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetSecretBroker(&registryBroker{registry: registry, token: token})
+	a, b := JobContainerName(root, "a"), JobContainerName(root, "b")
+	m.boxes[a] = &box{name: a, root: root}
+	m.boxes[b] = &box{name: b, root: root}
+	if err := m.removeJobContainer(context.Background(), a); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.ResolveSandbox(token); !ok {
+		t.Fatal("sibling authentication revoked")
+	}
+	m.stopIdle(context.Background(), time.Now().Add(2*m.cfg.IdleTimeout))
+	if _, ok := registry.ResolveSandbox(token); !ok {
+		t.Fatal("idle stop revoked live authentication")
+	}
+	if err := m.removeJobContainer(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := registry.ResolveSandbox(token); ok {
+		t.Fatal("last container retained registration")
+	}
+}
+
+// Purpose: RouteGit must retain its manager lease until the execution caller
+// releases it. Reaper/removal rejection before release protects in-flight daemon
+// Git; explicit release also covers command start failure.
+func TestWorkerGitLeaseLifetime(t *testing.T) {
+	runner := readyRunner()
+	m := newTestManager(t, ModeRequired, runner, Config{Engine: "true"})
+	root := t.TempDir()
+	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{root}, nil }})
+	cmd := exec.Command("git", "-C", root, "status")
+	if err := m.RouteGit(context.Background(), cmd); err != nil {
+		t.Fatal(err)
+	}
+	defer ReleaseGit(cmd)
+	name := ContainerName(root)
+	if err := m.removeJobContainer(context.Background(), name); err == nil {
+		t.Fatal("removed routed Git container before execution")
+	}
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	ReleaseGit(cmd)
+	if err := m.removeJobContainer(context.Background(), name); err != nil {
+		t.Fatal(err)
 	}
 }

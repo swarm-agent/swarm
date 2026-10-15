@@ -131,6 +131,7 @@ func RunGitPathQuery(ctx context.Context, path string, args ...string) (string, 
 	commandArgs = append(commandArgs, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	raw, err := cmd.Output()
 	if err != nil {
 		return "", err

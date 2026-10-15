@@ -442,6 +442,7 @@ func controlMCPGit(ctx context.Context, dir string, limit int, args ...string) (
 	cmd.Env = append(gitenv.FilterIdentityOverrides(os.Environ()), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return "", false, controlMCPToolFailure("Git took too long in %s", dir)

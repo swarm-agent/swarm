@@ -70,6 +70,7 @@ func runGitAllocation(path string, stdin []byte, args ...string) (string, error)
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {

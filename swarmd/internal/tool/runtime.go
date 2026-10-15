@@ -2638,6 +2638,7 @@ func executeGitCommandWithTimeout(parent context.Context, scope WorkspaceScope, 
 	cmd.Stderr = capture
 
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	err = cmd.Run()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	wasTruncated := capture.Truncated()
@@ -2725,6 +2726,7 @@ func gitOutputForEvidence(dir string, env []string, argv ...string) (string, err
 	cmd.Dir = dir
 	cmd.Env = env
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	output, err := cmd.Output()
 	return strings.TrimSpace(string(output)), err
 }

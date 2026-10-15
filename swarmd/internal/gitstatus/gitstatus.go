@@ -523,6 +523,7 @@ func gitOutputContext(ctx context.Context, target string, args ...string) ([]byt
 	commandArgs = append(commandArgs, args...)
 	cmd := exec.CommandContext(ctx, "git", commandArgs...)
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return out, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)

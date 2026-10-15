@@ -647,6 +647,7 @@ func manageSessionsRunGit(ctx context.Context, repoRoot string, args ...string) 
 	cmd := exec.CommandContext(commandCtx, "git", args...)
 	cmd.Dir = repoRoot
 	sandbox.Prepare(commandCtx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return "", fmt.Errorf("git %s timed out", strings.Join(args, " "))

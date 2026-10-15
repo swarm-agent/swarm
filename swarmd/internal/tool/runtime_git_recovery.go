@@ -243,6 +243,7 @@ func recoveryCommit(ctx context.Context, repo string, args map[string]any, princ
 		out := newCappedBuffer(maxCommandOutput)
 		cmd.Stdout, cmd.Stderr = out, out
 		sandbox.Prepare(ctx, cmd)
+		defer sandbox.ReleaseGit(cmd)
 		err := cmd.Run()
 		if err != nil {
 			return "", fmt.Errorf("recovery git %s: %w: %s", argv[0], err, out.String())

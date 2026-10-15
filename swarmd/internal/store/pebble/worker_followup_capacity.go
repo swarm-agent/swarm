@@ -98,3 +98,31 @@ func (ws *WorkerStore) ReleaseWorkerFollowup(account, worker, run, intent string
 	published = m
 	return nil
 }
+
+// releaseWorkerFollowupInBatch runs under workersMu at the canonical intent
+// boundary, including restart interruption and cancellation outside the executor.
+func (s *SessionStore) releaseWorkerFollowupInBatch(batch *pebble.Batch, intent V3SessionRunIntent) error {
+	snap, found, err := s.GetSession(intent.SessionID)
+	if err != nil || !found {
+		return err
+	}
+	worker, _ := snap.Metadata["worker_id"].(string)
+	receipt, _ := snap.Metadata["worker_execution_run_id"].(string)
+	if worker == "" || receipt == "" {
+		return nil
+	}
+	ws := NewWorkerStore(s.store)
+	r, found, err := ws.GetWorkerRun(intent.AccountScopeID, worker, receipt)
+	if err != nil || !found {
+		return err
+	}
+	if r.SessionID != intent.SessionID || r.FollowupRunID != intent.RunID || r.FollowupStatus == "" {
+		return nil
+	}
+	r.FollowupStatus, r.FollowupRunID, r.QueueReason = "", "", ""
+	m := &workerRealtimeMutation{accountScopeID: intent.AccountScopeID, userID: r.UserID, workerID: worker}
+	if err := m.put(KeyWorkerRun(intent.AccountScopeID, worker, receipt), r); err != nil {
+		return err
+	}
+	return setWorkerRealtimeMutationInBatch(batch, intent.AccountScopeID, m)
+}

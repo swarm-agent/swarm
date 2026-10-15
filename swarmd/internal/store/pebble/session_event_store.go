@@ -1725,6 +1725,14 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 			return V3SessionMutationResult{}, err
 		}
 	}
+	if runIntentProvided && isV3RunIntentTerminal(runIntent.Status) {
+		// Serialize with admission until the intent and reservation commit together.
+		s.store.workersMu.Lock()
+		defer s.store.workersMu.Unlock()
+		if err := s.releaseWorkerFollowupInBatch(batch, runIntent); err != nil {
+			return V3SessionMutationResult{}, err
+		}
+	}
 	if runIntentProvided {
 		runPayload, err := json.Marshal(runIntent)
 		if err != nil {

@@ -37,8 +37,11 @@ provide restart-safe queue replay, and stale completion cannot free a newer slot
 Terminal runs remove only their disposable job container. Startup inventories
 containers by the sandbox label, removes terminal/unknown job containers and
 stops surviving idle containers before admitting execution. Idle job boxes are
-also removed by the reaper. Shared named caches and bind-mounted checkout files
-are never removed. Home initialization repairs the exact same volume that the
+stopped, never removed, by the reaper. Terminal removal is fenced against newer
+acquisitions and waits for command/Git leases. Project gateway registration stays
+valid until the last container reference is removed. Follow-up reservations are
+released atomically with terminal intents, including restart interruption.
+Shared named caches and bind-mounted checkout files are never removed. Home initialization repairs the exact same volume that the
 container mounts; reviewers still use their separate home.
 
 Container OOM/stopped/restart errors are retryable interruptions, not repository

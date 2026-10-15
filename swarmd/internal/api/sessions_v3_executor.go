@@ -317,8 +317,18 @@ func (e *sessionV3Executor) finish(job sessionV3ExecutorJob) {
 				log.Printf("release worker follow-up capacity: %v", err)
 			}
 			if m := sandbox.Default(); m != nil {
-				if err := m.EndJob(context.Background(), snap.WorktreeRootPath); err != nil {
-					log.Printf("cleanup worker sandbox: %v", err)
+				if err := m.EndJob(context.Background(), snap.WorktreeRootPath, func() (bool, error) {
+					current, found, err := e.server.sessions.Store().WorkerStore().GetWorkerRun(snap.AccountScopeID, worker, receipt)
+					if err != nil || !found {
+						return false, err
+					}
+					if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupStatus != "" {
+						return false, nil
+					}
+					_, active, err := e.server.sessions.Store().GetV3SessionActiveRunIntent(job.SessionID)
+					return !active, err
+				}); err != nil {
+					log.Printf("cleanup terminal worker sandbox: %v", err)
 				}
 			}
 		}

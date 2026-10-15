@@ -8,6 +8,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.
 - Protect quiet V3 provider/tool execution and queued/recovering intents from worker watchdog settlement; fence orphan settlement against concurrent progress/completion and remove only the target review worktree registration during torn cleanup. Docs impact: none.
+- Release worker follow-up capacity atomically on interruption, fence terminal sandbox cleanup against newer work and in-flight Git, and retain shared gateway authentication for sibling containers. Docs impact: worker sandbox lifecycle guidance updated.
+
 - Reconcile isolated worker sandboxes with host memory validation and cached container generations; use one typed infrastructure interruption across command and Git recovery. Docs impact: README resource defaults aligned with worker admission.
 
 - Size sandbox memory to the host with a validated `--sandbox-memory` override, keep Go build scratch on disk and reuse configured Go caches; retry landing checks interrupted by sandbox death once without blaming worker code. Docs impact: README sandbox resource guidance.

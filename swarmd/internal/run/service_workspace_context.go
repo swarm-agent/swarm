@@ -301,6 +301,7 @@ func linkedWorktreeGitAdminRoot(worktreePath string) (string, error) {
 	}
 	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--path-format=absolute", "--git-dir")
 	sandbox.Prepare(context.Background(), cmd)
+	defer sandbox.ReleaseGit(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("resolve linked worktree Git admin path: %s", strings.TrimSpace(string(output)))

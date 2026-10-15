@@ -605,6 +605,7 @@ func runManageSessionsGitInput(ctx context.Context, repository string, input []b
 		cmd.Stdin = strings.NewReader(string(input))
 	}
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("git %s: %w: %s", first, err, strings.TrimSpace(string(output)))

@@ -57,6 +57,7 @@ type ExecGitRunner struct{}
 func (ExecGitRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	sandbox.Prepare(ctx, command)
+	defer sandbox.ReleaseGit(command)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return "", errors.New(strings.TrimSpace(string(output)))

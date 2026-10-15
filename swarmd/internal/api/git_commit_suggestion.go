@@ -264,6 +264,7 @@ func runBoundedGitCommand(ctx context.Context, workspacePath string, limit int, 
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return nil, errors.New("Git inspection timed out")

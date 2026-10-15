@@ -76,6 +76,7 @@ func (d *deliveryInspector) run(path string, args ...string) (string, error) {
 	cmd.Env = append(cmd.Env, d.env...)
 	cmd.Stdout, cmd.Stderr = out, out
 	sandbox.Prepare(d.ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	err := cmd.Run()
 	return strings.TrimRight(out.String(), "\n"), err
 }

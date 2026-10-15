@@ -1601,6 +1601,7 @@ func workspacePathIgnored(ctx context.Context, workspaceRoot, absolutePath strin
 	}
 	cmd := exec.CommandContext(ctx, "git", "-C", workspaceRoot, "check-ignore", "--no-index", "--quiet", "--", filepath.ToSlash(relative))
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	err = cmd.Run()
 	if err == nil {
 		return true, nil

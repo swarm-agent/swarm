@@ -3,13 +3,14 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
 
 // EndJob removes only the disposable container, never the shared home volume or
 // checkout. Lifecycle leases refuse removal while a command is still in flight.
-func (m *Manager) EndJob(ctx context.Context, checkout string) error {
+func (m *Manager) EndJob(ctx context.Context, checkout string, terminal func() (bool, error)) error {
 	if m == nil || !m.Active() || checkout == "" {
 		return nil
 	}
@@ -20,17 +21,59 @@ func (m *Manager) EndJob(ctx context.Context, checkout string) error {
 	if !ok || scope.JobCheckout == "" || scope.ReviewCheckout != "" {
 		return nil
 	}
-	return m.removeJobContainer(ctx, scopeContainerName(scope))
+	name := scopeContainerName(scope)
+	m.mu.Lock()
+	b := m.boxes[name]
+	var generation uint64
+	if b != nil {
+		generation = b.generation
+	}
+	m.mu.Unlock()
+	if terminal == nil {
+		return fmt.Errorf("job cleanup requires durable terminal state")
+	}
+	done, err := terminal()
+	if err != nil || !done {
+		return err
+	}
+	return m.endJobGeneration(ctx, name, b, generation, terminal)
+}
+
+func (m *Manager) endJobGeneration(ctx context.Context, name string, b *box, generation uint64, terminal func() (bool, error)) error {
+	m.mu.Lock()
+	if b != nil && m.boxes[name] == b && b.generation == generation && b.inflight > 0 {
+		b.cleanup = func() {
+			done, err := terminal()
+			if err == nil && done {
+				err = m.endJobGeneration(context.Background(), name, b, generation, terminal)
+			}
+			if err != nil {
+				slog.Warn("deferred sandbox cleanup failed", "error", err)
+			}
+		}
+		m.mu.Unlock()
+		return nil
+	}
+	m.mu.Unlock()
+	return m.removeJobContainerFenced(ctx, name, b, generation, true)
 }
 
 func (m *Manager) removeJobContainer(ctx context.Context, name string) error {
+	return m.removeJobContainerFenced(ctx, name, nil, 0, false)
+}
+
+func (m *Manager) removeJobContainerFenced(ctx context.Context, name string, expected *box, generation uint64, fenced bool) error {
 	m.mu.Lock()
 	b := m.boxes[name]
+	if fenced && (b != expected || (b != nil && b.generation != generation)) {
+		m.mu.Unlock()
+		return nil
+	}
 	if b == nil {
 		b = &box{name: name}
 		m.boxes[name] = b
 	}
-	if b.inflight != 0 || b.changing != nil {
+	if b.inflight != 0 || b.preparing != 0 || b.changing != nil {
 		m.mu.Unlock()
 		return fmt.Errorf("job sandbox still has active commands")
 	}
@@ -43,7 +86,29 @@ func (m *Manager) removeJobContainer(ctx context.Context, name string) error {
 	if err != nil && !strings.Contains(strings.ToLower(string(out)), "no such container") {
 		return fmt.Errorf("remove job sandbox: %w", err)
 	}
+	m.mu.Lock()
+	m.releaseProjectReferenceLocked(b)
+	m.mu.Unlock()
 	return nil
+}
+
+func (m *Manager) releaseProjectReferenceLocked(b *box) {
+	root := b.root
+	// boxes is the project registration reference set. Stopped containers
+	// retain references; only successful removal releases one.
+	b.root = ""
+	remaining := false
+	for _, other := range m.boxes {
+		if other.root == root && root != "" {
+			remaining = true
+			break
+		}
+	}
+	if !remaining && root != "" {
+		if broker := m.cfg.SecretBroker; broker != nil {
+			broker.ReleaseSandbox(root)
+		}
+	}
 }
 
 // ReconcileContainers discovers previous-process containers by the product

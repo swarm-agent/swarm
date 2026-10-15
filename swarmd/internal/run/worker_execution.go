@@ -1444,6 +1444,17 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 	}
 	var failures []error
 	for _, r := range pending {
+		if r.FollowupRunID != "" {
+			intent, exists, err := s.host.runs.sessions.GetV3SessionRunIntent(r.SessionID, r.FollowupRunID)
+			if err != nil {
+				return err
+			}
+			if !exists || (intent.Status != sessions.RunIntentPendingExecutor && intent.Status != sessions.RunIntentRunning) {
+				if err := ws.ReleaseWorkerFollowup(account, id, r.ID, r.FollowupRunID); err != nil {
+					return err
+				}
+			}
+		}
 		if r.Placement != nil {
 			return store.ErrWorkerRemoteUnavailable
 		}

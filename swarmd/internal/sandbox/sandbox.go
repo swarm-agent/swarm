@@ -176,17 +176,20 @@ type Manager struct {
 type box struct {
 	// All state is guarded by Manager.mu. changing reserves lifecycle work;
 	// commands hold only an inflight lease, never a mutex.
-	changing  chan struct{}
-	name      string
-	root      string
-	spec      string
-	mounts    []string
-	lastUsed  time.Time
-	verified  time.Time
-	startedAt string
-	invalid   bool // explicit execution failure, not merely periodic staleness
-	inflight  int
-	secret    SecretSetup
+	changing   chan struct{}
+	name       string
+	root       string
+	spec       string
+	mounts     []string
+	lastUsed   time.Time
+	verified   time.Time
+	startedAt  string
+	generation uint64
+	invalid    bool // explicit execution failure, not merely periodic staleness
+	inflight   int
+	preparing  int
+	cleanup    func()
+	secret     SecretSetup
 }
 
 // verifyInterval bounds how long a container is trusted to still be running
@@ -386,24 +389,16 @@ func (m *Manager) stopIdle(ctx context.Context, now time.Time) {
 	for _, b := range idle {
 		m.mu.Lock()
 		// Re-check after the snapshot, atomically with acquire's lease.
-		if b.inflight != 0 || b.changing != nil || now.Sub(b.lastUsed) <= m.cfg.IdleTimeout {
+		if b.inflight != 0 || b.preparing != 0 || b.changing != nil || now.Sub(b.lastUsed) <= m.cfg.IdleTimeout {
 			m.mu.Unlock()
 			continue
 		}
 		b.changing = make(chan struct{})
 		m.mu.Unlock()
 		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		if strings.Contains(b.name, "-job-"+containerPrefix) {
-			// Disposable job boxes can be reconstructed from durable checkout
-			// mounts; retain named shared volumes when reaping idle boxes.
-			_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "rm", "-f", b.name)
-		} else {
-			_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "stop", "--time", "5", b.name)
-		}
+		// Idleness is not durable completion: checkpoints may still be live.
+		_, _ = m.runner.Run(stopCtx, m.cfg.Engine, "stop", "--time", "5", b.name)
 		cancel()
-		if broker := m.secretBroker(); broker != nil && b.root != "" {
-			broker.ReleaseSandbox(b.root)
-		}
 		m.mu.Lock()
 		b.spec = "" // next use re-verifies and restarts it
 		close(b.changing)
@@ -682,10 +677,36 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 	}
 	name := scopeContainerName(scope)
 	secret := SecretSetup{}
-	if broker := m.secretBroker(); broker != nil {
-		if secret, err = broker.PrepareSandbox(root); err != nil {
-			return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
+	// Register this container's project reference before preparing credentials;
+	// removal and preparation serialize so a sibling cannot revoke this token.
+	for {
+		m.mu.Lock()
+		if b := m.boxes[name]; b != nil && b.changing != nil {
+			changing := b.changing
+			m.mu.Unlock()
+			select {
+			case <-changing:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
 		}
+		break
+	}
+	if m.boxes[name] == nil {
+		m.boxes[name] = &box{name: name}
+	}
+	m.boxes[name].root = root
+	m.boxes[name].generation++
+	preparingBox := m.boxes[name]
+	preparingBox.preparing++
+	defer func() { m.mu.Lock(); preparingBox.preparing--; m.mu.Unlock() }()
+	if broker := m.cfg.SecretBroker; broker != nil {
+		secret, err = broker.PrepareSandbox(root)
+	}
+	m.mu.Unlock()
+	if err != nil {
+		return nil, fmt.Errorf("prepare sandbox secrets: %w", err)
 	}
 	image, imageID, err := m.sandboxImage(root)
 	if err != nil {
@@ -771,7 +792,14 @@ func (m *Manager) release(b *box) {
 	m.mu.Lock()
 	b.inflight--
 	b.lastUsed = time.Now()
+	var cleanup func()
+	if b.inflight == 0 {
+		cleanup, b.cleanup = b.cleanup, nil
+	}
 	m.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
 }
 
 func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage, reviewCheckouts ...string) (string, error) {

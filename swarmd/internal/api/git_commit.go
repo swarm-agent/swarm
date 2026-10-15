@@ -140,6 +140,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 		stageCmd.Dir = workspacePath
 		stageCmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 		sandbox.Prepare(ctx, stageCmd)
+		defer sandbox.ReleaseGit(stageCmd)
 		stageOutput, stageErr := stageCmd.CombinedOutput()
 		if strings.TrimSpace(string(stageOutput)) != "" {
 			combinedParts = append(combinedParts, strings.TrimSpace(string(stageOutput)))
@@ -165,6 +166,7 @@ func runWorkspaceGitCommit(parent context.Context, workspacePath, message string
 	cmd.Dir = workspacePath
 	cmd.Env = gitenv.FilterIdentityOverrides(os.Environ())
 	sandbox.Prepare(ctx, cmd)
+	defer sandbox.ReleaseGit(cmd)
 	output, err := cmd.CombinedOutput()
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	exitCode := workspaceGitCommandExitCode(err)

@@ -466,7 +466,17 @@ func New(cfg config.Config) (*Daemon, error) {
 	emitWorkerRun := workerRunSignal(signalEmitter)
 	store.SetWorkerRunObserver(func(w pebblestore.WorkerRecord, r pebblestore.WorkerRunRecord) {
 		if snap, ok, err := pebblestore.NewSessionStore(store).GetSession(r.SessionID); err == nil && ok {
-			if err := sandboxMgr.EndJob(context.Background(), snap.WorktreeRootPath); err != nil {
+			if err := sandboxMgr.EndJob(context.Background(), snap.WorktreeRootPath, func() (bool, error) {
+				current, found, err := pebblestore.NewWorkerStore(store).GetWorkerRun(r.AccountScopeID, r.WorkerID, r.ID)
+				if err != nil || !found {
+					return false, err
+				}
+				if !pebblestore.AutomationV2Terminal(current.Status) || current.FollowupStatus != "" {
+					return false, nil
+				}
+				_, active, err := pebblestore.NewSessionStore(store).GetV3SessionActiveRunIntent(r.SessionID)
+				return !active, err
+			}); err != nil {
 				log.Printf("cleanup terminal worker sandbox: %v", err)
 			}
 		}

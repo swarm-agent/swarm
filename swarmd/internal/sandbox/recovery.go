@@ -43,6 +43,7 @@ func GitCombinedOutput(ctx context.Context, dir string, env []string, args ...st
 		if err := manager.RouteGit(ctx, cmd); err != nil {
 			return nil, err
 		}
+		defer ReleaseGit(cmd)
 		return cmd.CombinedOutput()
 	}
 	return gitOutputWithRecovery(ctx, Default(), dir, args, run)

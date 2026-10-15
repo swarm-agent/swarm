@@ -46,6 +46,16 @@ func testReviewerTerminal(t *testing.T, report, status, want string) {
 	testReviewerTerminalPhase(t, report, status, want, "")
 }
 func testReviewerTerminalPhase(t *testing.T, report, status, want, phase string) {
+	// This fixture owns real repositories; caller Git routing/config must not
+	// redirect common-dir resolution or alter its captured commit identity.
+	for _, pair := range os.Environ() {
+		key, _, _ := strings.Cut(pair, "=")
+		if strings.HasPrefix(key, "GIT_") {
+			old := os.Getenv(key)
+			_ = os.Unsetenv(key)
+			t.Cleanup(func() { _ = os.Setenv(key, old) })
+		}
+	}
 	_, ss, s, workspace := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
 	ws := ss.Store().WorkerStore()
 	create := func(role string) store.WorkerRecord {
@@ -86,14 +96,14 @@ case "$1" in
  image) echo sha256:fixture;;
  info) echo '{}';;
  network) echo fixture;;
- container) exit 1;;
+ container) case "$4" in *json*) echo '{"Running":true,"StartedAt":"fixture"}';; *) exit 1;; esac;;
  run|rm|start) exit 0;;
  volume) exit 0;;
  exec)
  shift
  while [ "$#" -gt 0 ]; do
  case "$1" in
- -w) cd "$2" || exit 1; shift 2;;
+ -w) if [ "$2" = /home/sandbox ]; then exit 0; fi; cd "$2" || exit 1; shift 2;;
  -e) export "$2"; shift 2;;
  -i) shift;;
  *) shift; break;;
@@ -106,7 +116,7 @@ esac
 	if err := os.WriteFile(engine, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	m, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, Engine: engine, UID: 10001, GID: 10001, StateDir: scratch}, nil)
+	m, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, MaxWorkerRuns: 4, Engine: engine, UID: 10001, GID: 10001, StateDir: scratch}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +132,7 @@ esac
 	}
 	review, found, err := ss.GetSession(r.SessionID)
 	if err != nil || !found {
-		t.Fatal(err)
+		t.Fatalf("review session missing: receipt=%+v error=%v", r, err)
 	}
 	if git(review.WorktreeRootPath, "rev-parse", "HEAD") != head {
 		t.Fatal("wrong head")
@@ -184,7 +194,7 @@ esac
 		if err := ss.Store().PutReviewCleanup("account", state); err != nil {
 			t.Fatal(err)
 		}
-		fresh, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, Engine: engine, UID: 10001, GID: 10001, StateDir: scratch}, nil)
+		fresh, err := sandbox.NewManager(context.Background(), sandbox.Config{Mode: sandbox.ModeRequired, MaxWorkerRuns: 4, Engine: engine, UID: 10001, GID: 10001, StateDir: scratch}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

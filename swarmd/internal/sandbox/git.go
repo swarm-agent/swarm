@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -21,6 +22,31 @@ import (
 // passes its prepared command through.
 
 var defaultManager atomic.Pointer[Manager]
+
+var gitLeases sync.Map // *exec.Cmd -> release; callers release after Wait, including Start errors.
+
+func ReleaseGit(cmd *exec.Cmd) {
+	if release, ok := gitLeases.LoadAndDelete(cmd); ok {
+		release.(func())()
+	}
+}
+
+type GitCommand struct{ *exec.Cmd }
+
+func (c *GitCommand) Run() error              { defer ReleaseGit(c.Cmd); return c.Cmd.Run() }
+func (c *GitCommand) Output() ([]byte, error) { defer ReleaseGit(c.Cmd); return c.Cmd.Output() }
+func (c *GitCommand) CombinedOutput() ([]byte, error) {
+	defer ReleaseGit(c.Cmd)
+	return c.Cmd.CombinedOutput()
+}
+func (c *GitCommand) Wait() error { defer ReleaseGit(c.Cmd); return c.Cmd.Wait() }
+func (c *GitCommand) Start() error {
+	err := c.Cmd.Start()
+	if err != nil {
+		ReleaseGit(c.Cmd)
+	}
+	return err
+}
 
 // SetDefault installs the manager RouteGit uses. Daemon startup calls it once.
 func SetDefault(m *Manager) { defaultManager.Store(m) }
@@ -70,24 +96,24 @@ func Prepare(ctx context.Context, cmd *exec.Cmd) *exec.Cmd {
 // The target directory must be named by -C (or the daemon's working
 // directory); callers that set Dir, Env or Stdin afterwards use Prepare
 // instead, once those are set.
-func Command(ctx context.Context, args ...string) *exec.Cmd {
-	return Prepare(ctx, exec.CommandContext(ctx, "git", args...))
+func Command(ctx context.Context, args ...string) *GitCommand {
+	return &GitCommand{Prepare(ctx, exec.CommandContext(ctx, "git", args...))}
 }
 
 // RoutedArgv is RouteGit for callers that run commands through their own
 // runner: it returns the engine program and arguments that run
 // `git args...` (with env) in the project's sandbox, or routed=false when
 // the target is not agent-writable and the caller runs Git itself.
-func RoutedArgv(ctx context.Context, env []string, args ...string) (name string, argv []string, routed bool, err error) {
+func RoutedArgv(ctx context.Context, env []string, args ...string) (name string, argv []string, release func(), routed bool, err error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = env
 	if err := RouteGit(ctx, cmd); err != nil {
-		return "", nil, false, err
+		return "", nil, nil, false, err
 	}
 	if filepath.Base(cmd.Args[0]) == "git" {
-		return "", nil, false, nil
+		return "", nil, nil, false, nil
 	}
-	return cmd.Path, cmd.Args[1:], true, nil
+	return cmd.Path, cmd.Args[1:], func() { ReleaseGit(cmd) }, true, nil
 }
 
 // ScratchDir creates a private disposable directory for files a Git command
@@ -161,7 +187,12 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 		return err
 	}
 	name, mounts := b.name, append([]string(nil), b.mounts...)
-	m.release(b)
+	retained := false
+	defer func() {
+		if !retained {
+			m.release(b)
+		}
+	}()
 
 	env := cmd.Env
 	if env == nil {
@@ -207,6 +238,8 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 	cmd.Err = nil
 	cmd.Dir = "/"
 	cmd.Env = engineEnv(os.Environ())
+	gitLeases.Store(cmd, func() { m.release(b) })
+	retained = true
 	return nil
 }
 

@@ -21,11 +21,11 @@ const maxBuildContext = int64(512 << 20)
 // sandbox of an agent-writable repository (sandbox.RoutedArgv). The daemon
 // installs it at startup; the provider cannot import the sandbox package,
 // which builds on this one.
-var BuildSourceGitRouter func(ctx context.Context, env []string, args ...string) (name string, argv []string, routed bool, err error)
+var BuildSourceGitRouter func(ctx context.Context, env []string, args ...string) (name string, argv []string, release func(), routed bool, err error)
 
-func routeBuildSourceGit(ctx context.Context, env []string, args ...string) (string, []string, bool, error) {
+func routeBuildSourceGit(ctx context.Context, env []string, args ...string) (string, []string, func(), bool, error) {
 	if BuildSourceGitRouter == nil {
-		return "", nil, false, nil
+		return "", nil, nil, false, nil
 	}
 	return BuildSourceGitRouter(ctx, env, args...)
 }
@@ -37,6 +37,12 @@ func ExportCommittedBuild(ctx context.Context, runner CommandRunner, productRoot
 	if err := b.Validate(); err != nil {
 		return "", err
 	}
+	var releases []func()
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
 	hash := sha256.New()
 	total := int64(0)
 	count := 0
@@ -50,11 +56,13 @@ func ExportCommittedBuild(ctx context.Context, runner CommandRunner, productRoot
 		// on an agent-writable repository those run inside its sandbox.
 		gitCommand := func(extra ...string) (string, []string, error) {
 			all := append(append([]string{}, gitArgs...), extra...)
-			name, argv, routed, err := routeBuildSourceGit(ctx, gitEnv, all...)
+			name, argv, release, routed, err := routeBuildSourceGit(ctx, gitEnv, all...)
 			if err != nil {
 				return "", nil, err
 			}
 			if routed {
+				// Retain through the export, including streaming archive completion.
+				releases = append(releases, release)
 				return name, argv, nil
 			}
 			return "env", append(append(append([]string{"-i"}, gitEnv...), "git"), all...), nil

@@ -174,7 +174,7 @@ func (m *Manager) EndReview(ctx context.Context, checkout string) error {
 	m.mu.Lock()
 	name := scopeContainerName(Scope{Root: m.reviews[checkout], ReviewCheckout: checkout})
 	b := m.boxes[name]
-	if b != nil && (b.inflight != 0 || b.changing != nil) {
+	if b != nil && (b.inflight != 0 || b.preparing != 0 || b.changing != nil) {
 		m.mu.Unlock()
 		return fmt.Errorf("review sandbox still has active commands")
 	}
@@ -193,6 +193,9 @@ func (m *Manager) EndReview(ctx context.Context, checkout string) error {
 		}
 	}
 	m.mu.Lock()
+	if b != nil {
+		m.releaseProjectReferenceLocked(b)
+	}
 	delete(m.boxes, name)
 	m.mu.Unlock()
 	return nil
