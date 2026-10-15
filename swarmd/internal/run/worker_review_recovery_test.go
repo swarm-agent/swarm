@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
+	sessions "swarm/packages/swarmd/internal/session"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -41,6 +42,18 @@ func TestSweepReviewAdmissions(t *testing.T) {
 			t.Fatal(err)
 		}
 		paths[status] = a.WorkspacePath
+		if status == "failed" {
+			// Persisted session, but no admission intent or captured-head metadata:
+			// ordinary cleanupReview cannot validate this interrupted admission.
+			snapshot := store.SessionSnapshot{ID: r.SessionID, AccountScopeID: "account", UserID: "owner", WorkspacePath: entry.Path, WorktreeRootPath: a.WorkspacePath, Metadata: map[string]any{"worker_execution_run_id": r.ID}}
+			_, err := ss.ApplySessionMutation(sessions.SessionMutationInput{SessionID: r.SessionID, AccountScopeID: "account", UserID: "owner", Kind: sessions.SessionMutationCreateSession, ClientRequestID: "partial", IdempotencyKey: "partial", PayloadHash: "partial", RequestHash: "partial", Session: &snapshot})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.cleanupReview(r); err == nil {
+				t.Fatal("fixture must fail normal cleanup")
+			}
+		}
 	}
 	// An unowned detached lane is not a review merely because its name is ws_*.
 	unowned, err := s.host.trees.AllocateReviewWorkspace(identity.Principal{Type: identity.PrincipalTypeUser, AccountScopeID: "account", UserID: "owner", AccountScopeSource: identity.AccountScopeSourceServerState}, entry.Path, "unowned-lane", head)

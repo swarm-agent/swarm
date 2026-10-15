@@ -232,16 +232,20 @@ func (s *Service) CleanupReviewAdmission(source, owner string) error {
 	// Identify only this checkout's registration; a global prune would also
 	// remove unrelated missing user worktrees.
 	var owned []string
+	// A rename preserves ownership across interruption of recursive deletion.
+	tombstone := filepath.Join(registrations, ".swarm-review-cleanup-"+sessionWorkspaceID(owner))
+	pointer, _ := os.ReadFile(filepath.Join(path, ".git"))
+	linked := strings.TrimSpace(strings.TrimPrefix(string(pointer), "gitdir: "))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		registration := filepath.Join(registrations, entry.Name())
 		data, err := os.ReadFile(filepath.Join(registration, "gitdir"))
-		if err != nil {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if strings.TrimSpace(string(data)) == filepath.Join(path, ".git") {
+		if registration == tombstone || strings.TrimSpace(string(data)) == filepath.Join(path, ".git") || (errors.Is(err, os.ErrNotExist) && linked == registration && entry.Name() == filepath.Base(path)) {
 			head, err := os.ReadFile(filepath.Join(registration, "HEAD"))
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
@@ -252,13 +256,18 @@ func (s *Service) CleanupReviewAdmission(source, owner string) error {
 			owned = append(owned, registration)
 		}
 	}
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("remove partial review checkout: %w", err)
-	}
 	for _, registration := range owned {
-		if err := os.RemoveAll(registration); err != nil {
+		if registration != tombstone {
+			if err := os.Rename(registration, tombstone); err != nil {
+				return err
+			}
+		}
+		if err := os.RemoveAll(tombstone); err != nil {
 			return fmt.Errorf("prune review registration: %w", err)
 		}
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove partial review checkout: %w", err)
 	}
 	return nil
 }

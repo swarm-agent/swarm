@@ -95,6 +95,7 @@ case "$1" in
  version) echo fixture;;
  image) echo sha256:fixture;;
  info) echo '{}';;
+ inspect) echo true;;
  network) echo fixture;;
  container) case "$4" in *json*) echo '{"Running":true,"StartedAt":"fixture"}';; *) exit 1;; esac;;
  run|rm|start) exit 0;;
@@ -103,12 +104,17 @@ case "$1" in
  shift
  while [ "$#" -gt 0 ]; do
  case "$1" in
- -w) if [ "$2" = /home/sandbox ]; then exit 0; fi; cd "$2" || exit 1; shift 2;;
+ -w) if [ "$2" = /home/sandbox ]; then cd "$(dirname "$0")" || exit 1; else cd "$2" || exit 1; fi; shift 2;;
  -e) export "$2"; shift 2;;
  -i) shift;;
+ -u) shift 2;;
  *) shift; break;;
  esac
  done
+ # The production container has its own writable HOME. Do not inherit the
+ # host fixture's read-only /dev/null global-config override.
+ unset GIT_CONFIG_GLOBAL
+ export HOME="$(dirname "$0")"
  exec "$@";;
  *) exit 1;;
 esac

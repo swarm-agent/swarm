@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"swarm/packages/swarmd/internal/sandbox"
@@ -77,6 +78,7 @@ func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, a
 	}
 	sandbox.Prepare(ctx, cmd)
 	defer sandbox.ReleaseGit(cmd)
+	waitForAllocationGit(cmd)
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {
@@ -89,4 +91,13 @@ func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, a
 		return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), output)
 	}
 	return output, nil
+}
+
+func waitForAllocationGit(cmd *exec.Cmd) {
+	if filepath.Base(cmd.Path) != "git" && len(cmd.Args) > 1 && cmd.Args[1] == "exec" {
+		// The container timeout owns termination. Killing the engine client at
+		// our deadline would return before its Git process has stopped writing.
+		cmd.Cancel = nil
+		cmd.WaitDelay = 0
+	}
 }

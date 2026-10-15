@@ -48,8 +48,17 @@ func (s *WorkerExecutionService) cleanupReviewAdmission(r store.WorkerRunRecord)
 		if snapshot.AccountScopeID != r.AccountScopeID || snapshot.Metadata["worker_execution_run_id"] != r.ID {
 			return store.ErrWorkerConflict
 		}
-		if err := s.cleanupReview(r); err != nil {
+		// A session is persisted before admission. Without a run intent there
+		// cannot have been provider execution; do not require successful Git
+		// identity validation of an interrupted checkout to discard it.
+		_, admitted, err := s.host.runs.sessions.GetSessionRunIntent(r.SessionID, r.ID)
+		if err != nil {
 			return err
+		}
+		if admitted {
+			if err := s.cleanupReview(r); err != nil {
+				return err
+			}
 		}
 		return s.host.trees.CleanupReviewAdmission(snapshot.WorkspacePath, r.SessionID)
 	}
