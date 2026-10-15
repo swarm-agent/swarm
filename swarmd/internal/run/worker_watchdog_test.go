@@ -2,8 +2,10 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,6 +115,60 @@ func TestWorkerWatchdog(t *testing.T) {
 			}
 			if _, err := os.Stat(snapshot.WorktreeRootPath); err != nil {
 				t.Fatalf("work lost: %v", err)
+			}
+		})
+	}
+}
+
+// Requirement: overflow compaction must not release the outer V3 turn's
+// ownership before its continuation finishes. trackExecution/TrackV3Execution
+// are the shared boundary used by RunTurn and the V3 executor. This unit test
+// exercises that exact nesting with a channel-blocked continuation, without a
+// provider dependency, and checks both release orders and duplicate cleanup.
+func TestWorkerExecutionNestedCompactionOwnership(t *testing.T) {
+	for _, outerFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("outer_first_%t", outerFirst), func(t *testing.T) {
+			s := &WorkerExecutionService{}
+			outer := s.TrackV3Execution("session", func() {})
+			defer outer()
+			compact := s.trackExecution("session", func() {})
+			defer compact()
+			if outerFirst {
+				outer()
+				outer()
+			} else {
+				compact()
+				compact()
+			}
+			started, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			go func() { close(started); <-release; close(done) }()
+			var releaseOnce sync.Once
+			finish := func() { releaseOnce.Do(func() { close(release) }); <-done }
+			defer finish()
+			<-started
+			if !s.RunActive("session") {
+				t.Fatal("nested release lost ownership during continuation")
+			}
+			s.touchExecution("session")
+			finish()
+			if outerFirst {
+				compact()
+			} else {
+				outer()
+			}
+			if s.RunActive("session") {
+				t.Fatal("final release retained ownership")
+			}
+			// A stale release must not decrement a subsequent turn's ownership.
+			next := s.TrackV3Execution("session", func() {})
+			outer()
+			compact()
+			if !s.RunActive("session") {
+				t.Fatal("stale release removed new owner")
+			}
+			next()
+			if s.RunActive("session") {
+				t.Fatal("new owner leaked")
 			}
 		})
 	}

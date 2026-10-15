@@ -15,14 +15,28 @@ type workerExecutionActivity struct {
 	mu     sync.Mutex
 	last   time.Time
 	cancel context.CancelFunc
+	owners int // guarded by WorkerExecutionService.activityMu
 }
 
 func (s *WorkerExecutionService) trackExecution(sessionID string, cancel context.CancelFunc) func() {
-	a := &workerExecutionActivity{last: time.Now(), cancel: cancel}
 	s.activityMu.Lock()
-	s.activity.Store(sessionID, a)
+	value, _ := s.activity.LoadOrStore(sessionID, &workerExecutionActivity{last: time.Now(), cancel: cancel})
+	a := value.(*workerExecutionActivity)
+	a.owners++
 	s.activityMu.Unlock()
-	return func() { s.activityMu.Lock(); defer s.activityMu.Unlock(); s.activity.CompareAndDelete(sessionID, a) }
+	// Nested compaction and its outer V3 continuation share ownership. Each
+	// release is idempotent and only the final owner removes the entry.
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.activityMu.Lock()
+			defer s.activityMu.Unlock()
+			a.owners--
+			if a.owners == 0 {
+				s.activity.CompareAndDelete(sessionID, a)
+			}
+		})
+	}
 }
 func (s *WorkerExecutionService) touchExecution(sessionID string) {
 	if value, ok := s.activity.Load(sessionID); ok {
