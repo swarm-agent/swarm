@@ -140,7 +140,19 @@ try {
   process.exitCode = 1
 } finally {
   const cleanup = async (name, fn) => { try { await run(name, fn) } catch (error) { console.error(`${name}: FAIL: ${error.message}`); process.exitCode = 1 } }
-  if (liveJob) await cleanup('job-cancel', () => api('POST', `${liveJob}/cancel`, {}))
+  if (liveJob) await cleanup('job-cancel', async () => {
+    const current = (await api('GET', liveJob)).run
+    if (!['completed', 'succeeded', 'failed', 'cancelled', 'blocked', 'needs_review'].includes(current.status)) {
+      await api('POST', `${liveJob}/cancel`, {})
+      const deadline = Date.now() + 60000
+      while (Date.now() < deadline) {
+        const job = (await api('GET', liveJob)).run
+        if (['completed', 'succeeded', 'failed', 'cancelled', 'blocked'].includes(job.status)) return
+        await new Promise(resolve => setTimeout(resolve, 1000))
+      }
+      throw new Error('cancellation did not settle within 60 seconds')
+    }
+  })
   if (liveProject) {
     try { await run('project-cleanup', () => api('DELETE', `/v3/projects/${liveProject}`)) } catch (error) { console.error(`project-cleanup: FAIL: ${error.message}`); process.exitCode = 1 }
   }

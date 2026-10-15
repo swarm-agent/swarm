@@ -365,22 +365,20 @@ It also executes the installer's post-update smoke against that daemon and
 checks rejection of an unavailable socket. No provider is used.
 
 The headless updater invokes the smoke before accepting the new release and
-uses its existing rollback on failure. The GitHub publisher runs the candidate
-smoke before landing `swarm-agent/swarm`, after queue checks. Test exact-candidate
-selection and failure rejection with
-`bash containers/headless/app/check-app-candidate.sh`.
-
-With a usable container runtime, the isolated daemon enables its sandbox and
-builds an environment derived from Swarm's default image through the public
-environment API, waiting up to eight minutes for ready. Without a runtime this
-step skips. Model-dependent command/commit steps belong to `--live` only.
+uses its existing rollback on failure. `install.sh workspace publish --land`
+and `install.sh update` append the smoke to this repository folder's environment
+checks, preserving existing checks. The queue captures and runs them on its
+candidate in the project sandbox. The privileged publisher never runs candidate
+code. Layer 1 always disables nested sandboxes; environment build and real
+command/commit verification belong to `--live` against the running daemon.
 
 Run `bash scripts/test-app-runs.sh --live unix:///path/to/api.sock` on the daemon
 host using its local owner transport (as with local MCP). No provider credential
 is loaded or copied. It requests a real coder job, waits at most fifteen minutes,
 and verifies hello.txt on the branch attributed to that job's project task,
-then deletes the project record. The repository is retained for inspection;
-this is not a remote-machine filesystem test. Live provider/container execution
+then deletes the project, environment and workspace registration and removes
+the repository. Cleanup cancels unfinished jobs and restores the prior current
+workspace; cleanup failures are reported. This is not a remote filesystem test. Live provider/container execution
 requires separate host validation; deterministic checks do not prove it.
 
 Landing uses a ten-minute default timeout, configurable on the daemon with
