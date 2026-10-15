@@ -18,6 +18,8 @@ COPY --from=build /src/packages/sdk/package.json /src/packages/sdk/package.json
 COPY --from=build /src/packages/sdk/dist /src/packages/sdk/dist
 COPY --from=build /src/packages/sdk/node_modules /src/packages/sdk/node_modules
 COPY --from=build /src/examples/public-chat /src/examples/public-chat
+# DATA_DIR: a new named volume mounted here inherits this owner and mode.
+RUN install -d -o 10001 -g 10001 -m 0700 /data
 WORKDIR /src/examples/public-chat
 USER 10001:10001
 EXPOSE 8080
