@@ -24,6 +24,7 @@ import (
 // It uses the existing V3 session/plan executor, not a second execution engine.
 type WorkerExecutionService struct {
 	watchdogBeforeSettleForTest func()
+	cleanupMu                   sync.Mutex
 	activityMu                  sync.Mutex
 	activity                    sync.Map
 	stallTimeout                atomic.Int64
@@ -1212,7 +1213,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		if err := s.recordReviewResult(current); err != nil {
 			return err
 		}
-		return s.cleanupReview(current)
+		return s.retryReviewCleanup(current)
 	}
 	intent, found, err := s.workerRunIntent(r)
 	if err != nil {
@@ -1243,9 +1244,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 			if err := s.recordReviewResult(current); err != nil {
 				return err
 			}
-			if err := s.cleanupReview(current); err != nil {
-				return err
-			}
+			markReviewCleanupPending(&current)
 			current.Status = "cancelled"
 			current.CompletedAt = time.Now().UnixMilli()
 			_, err = ws.RecordWorkerRun(r.AccountScopeID, current)
@@ -1253,6 +1252,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 				if recErr := s.reconcileRunTask(current, "cancelled", "worker run cancelled"); recErr != nil {
 					return recErr
 				}
+			}
+			if err == nil {
+				return s.retryReviewCleanup(current)
 			}
 			return err
 		}
@@ -1311,9 +1313,7 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 	if err := s.recordReviewResult(current); err != nil {
 		return err
 	}
-	if err := s.cleanupReview(current); err != nil {
-		return err
-	}
+	markReviewCleanupPending(&current)
 	if plan, found, err := s.host.runs.sessions.GetActivePlan(r.SessionID); err != nil {
 		return err
 	} else if found && plan.Document != nil {
@@ -1327,6 +1327,9 @@ func (s *WorkerExecutionService) observeRun(r store.WorkerRunRecord) error {
 		if recErr := s.reconcileRunTask(current, current.Status, current.Error); recErr != nil {
 			return recErr
 		}
+	}
+	if err == nil {
+		return s.retryReviewCleanup(current)
 	}
 	return err
 }
@@ -1566,15 +1569,26 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		}
 	}
 	// In addition to unfinished runs, check recent terminal runs to repair any failed task projection updates
-	recentRuns, _, listErr := ws.ListWorkerRuns(account, id, 50, "")
-	if listErr == nil {
+	for cursor := ""; ; {
+		recentRuns, next, listErr := ws.ListWorkerRuns(account, id, 100, cursor)
+		if listErr != nil {
+			failures = append(failures, listErr)
+			break
+		}
 		for _, r := range recentRuns {
 			if store.AutomationV2Terminal(r.Status) {
+				if cleanupErr := s.retryReviewCleanup(r); cleanupErr != nil {
+					failures = append(failures, cleanupErr)
+				}
 				if recErr := s.reconcileRunTask(r, r.Status, r.Error); recErr != nil {
 					failures = append(failures, recErr)
 				}
 			}
 		}
+		if next == "" {
+			break
+		}
+		cursor = next
 	}
 	if w.LifecycleState == store.WorkerLifecycleStateStopping && len(failures) == 0 {
 		_, err := s.ReconcileStop(account, "", id, w.Revision, w.StopTarget)

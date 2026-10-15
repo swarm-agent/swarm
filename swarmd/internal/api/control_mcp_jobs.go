@@ -490,6 +490,9 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	status := ""
 	if refs.run != nil {
 		state["model"] = controlMCPRunModel(refs.run)
+		if cleanup, ok := refs.run["cleanup"]; ok {
+			state["cleanup"] = cleanup
+		}
 		status, _ = refs.run["status"].(string)
 		if errText, _ := refs.run["error"].(string); strings.TrimSpace(errText) != "" {
 			state["error"] = controlMCPTruncate(errText, 400)

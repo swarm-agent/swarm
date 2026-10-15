@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -182,6 +183,14 @@ type Service struct {
 }
 
 func NewService(store *pebblestore.WorktreeStore, workspace *workspaceruntime.Service, events *pebblestore.EventLog) *Service {
+	root, rootErr := appstorage.WorktreesRoot()
+	if rootErr == nil {
+		go func() {
+			if err := resumeTrashRoot(root); err != nil {
+				log.Printf("worktree trash recovery failed: %v", err)
+			}
+		}()
+	}
 	return &Service{store: store, workspace: workspace, events: events}
 }
 
@@ -914,7 +923,7 @@ func (s *Service) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID
 	if !integrated {
 		return errors.New("child commit range is not integrated; worktree remains recoverable")
 	}
-	if _, err := runGit(parentRoot, "worktree", "remove", actualPath); err != nil {
+	if err := removeManagedWorktree(parentRoot, actualPath); err != nil {
 		return fmt.Errorf("remove integrated child worktree: %w", err)
 	}
 	return nil
@@ -1258,10 +1267,8 @@ func (s *Service) PruneManagedForPrincipal(principal identity.Principal, workspa
 			result.Skipped = append(result.Skipped, path)
 			continue
 		}
-		if _, err := runGit(repoRoot, "worktree", "remove", "--force", path); err != nil {
-			if _, pruneErr := runGit(repoRoot, "worktree", "prune"); pruneErr != nil {
-				return result, fmt.Errorf("remove managed worktree metadata %q: %w", path, err)
-			}
+		if err := removeManagedWorktree(repoRoot, path); err != nil {
+			return result, fmt.Errorf("remove managed worktree metadata %q: %w", path, err)
 		}
 		result.Removed = append(result.Removed, path)
 	}
@@ -1852,20 +1859,15 @@ func cleanupFailedWorktreeAllocation(repoRoot, worktreePath string) error {
 	if err != nil {
 		cleanupErrs = append(cleanupErrs, err)
 	} else if registered {
-		if _, err := runGit(repoRoot, "worktree", "remove", "--force", worktreePath); err != nil {
+		if err := removeManagedWorktree(repoRoot, worktreePath); err != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree metadata: %w", err))
-		} else if err := os.RemoveAll(worktreePath); err != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
 		}
 	} else if owned, ownershipErr := partialWorktreePathOwnedByRepository(repoRoot, worktreePath); ownershipErr != nil {
 		cleanupErrs = append(cleanupErrs, ownershipErr)
 	} else if owned {
-		if err := os.RemoveAll(worktreePath); err != nil {
+		if err := removeManagedWorktree(repoRoot, worktreePath); err != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove partial worktree path: %w", err))
 		}
-	}
-	if _, err := runGit(repoRoot, "worktree", "prune"); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Errorf("prune partial worktree metadata: %w", err))
 	}
 	return errors.Join(cleanupErrs...)
 }

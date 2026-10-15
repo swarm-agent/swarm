@@ -85,6 +85,9 @@ func TestReviewerExactHeadAndCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(a.WorkspacePath, "leftover"), []byte("must be deleted"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			if missing == "pointer" {
 				err = os.Remove(filepath.Join(a.WorkspacePath, ".git"))
 			} else {
@@ -105,8 +108,8 @@ func TestReviewerExactHeadAndCleanup(t *testing.T) {
 			if strings.Contains(git(repo, "worktree", "list", "--porcelain"), a.WorkspacePath) {
 				t.Fatal("stale registration retained")
 			}
-			if err := os.RemoveAll(a.WorkspacePath); err != nil {
-				t.Fatal(err)
+			if _, err := os.Lstat(a.WorkspacePath); !os.IsNotExist(err) {
+				t.Fatal("torn checkout retained", err)
 			}
 		})
 	}

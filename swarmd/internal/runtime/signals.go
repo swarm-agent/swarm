@@ -47,6 +47,14 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 // run; the run's input, output and error text stay on the machine.
 func workerRunSignal(emitter *signals.Emitter) func(pebblestore.WorkerRecord, pebblestore.WorkerRunRecord) {
 	return func(worker pebblestore.WorkerRecord, run pebblestore.WorkerRunRecord) {
+		if run.Cleanup != nil && run.Cleanup.FailureReported {
+			kind, severity, summary := "job.cleanup_failed", pebblestore.SignalSeverityWarning, "Job finished but checkout cleanup repeatedly failed"
+			if run.Cleanup.State == "done" {
+				kind, severity, summary = "job.cleanup_recovered", pebblestore.SignalSeverityInfo, "Job checkout cleanup recovered"
+			}
+			emitter.Emit(pebblestore.Signal{Kind: kind, Severity: severity, Account: run.AccountScopeID, Summary: summary, DedupKey: kind + ":" + run.ID, Refs: map[string]string{"worker_id": worker.ID, "run_id": run.ID}, Attrs: map[string]string{"job_id": "worker/" + worker.ID + "/" + run.ID}})
+			return
+		}
 		followup := run.FollowupRunID
 		if run.FollowupStatus == "interrupted" || run.FollowupStatus == "failed" {
 			run.Status = "failed"

@@ -112,3 +112,34 @@ func TestInterruptedFollowupSignal(t *testing.T) {
 		t.Fatal(page, err)
 	}
 }
+
+// Requirement: cleanup threshold and recovery transitions each produce a
+// signal through the durable forwarding feed without leaking private errors.
+// workerRunSignal and SignalStore own this boundary; store transition tests
+// separately verify that repeated observations do not invoke this observer.
+func TestWorkerCleanupSignals(t *testing.T) {
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "store"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	feed := pebblestore.NewSignalStore(db)
+	emit := workerRunSignal(signals.NewEmitter(feed))
+	w := pebblestore.WorkerRecord{ID: "worker"}
+	r := pebblestore.WorkerRunRecord{ID: "run", AccountScopeID: "account", Status: "succeeded", Cleanup: &pebblestore.WorkerRunCleanup{State: "failed", Attempts: 5, FailureReported: true, LastError: "private detail"}}
+	emit(w, r)
+	r.Cleanup.State = "done"
+	emit(w, r)
+	page, err := feed.ListAfter(0, 10, pebblestore.SignalFilter{Account: "account"})
+	if err != nil || len(page.Signals) != 2 {
+		t.Fatal(page, err)
+	}
+	if page.Signals[0].Kind != "job.cleanup_failed" || page.Signals[1].Kind != "job.cleanup_recovered" {
+		t.Fatal(page)
+	}
+	for _, sig := range page.Signals {
+		if strings.Contains(sig.Summary, "private detail") {
+			t.Fatal(sig)
+		}
+	}
+}

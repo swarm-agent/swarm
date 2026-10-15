@@ -22,6 +22,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Expire or cancel update drains to reopen admissions, clean up failed installers, verify daemon generation before restart, and require explicit MCP management scope. Docs impact: updated drain recovery and cancellation guidance.
 
 - Fence execution admissions while headless updates drain existing runs; add owner drain API/MCP, bounded blocker reporting, and fail-closed installer status handling. Docs impact: headless installer help and update-drain guidance.
+- Quarantine managed worktrees before deleting their files, recover interrupted trash cleanup on startup, and retain terminal reviewer results independently of durable cleanup retries. Expose cleanup errors on jobs and emit threshold/recovery signals. Docs impact: none.
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.
 - Protect quiet V3 provider/tool execution and queued/recovering intents from worker watchdog settlement; fence orphan settlement against concurrent progress/completion and remove only the target review worktree registration during torn cleanup. Docs impact: none.

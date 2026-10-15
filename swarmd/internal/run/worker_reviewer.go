@@ -178,8 +178,11 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 		return nil
 	}
 	snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)
-	if err != nil || !found {
+	if err != nil {
 		return err
+	}
+	if !found {
+		return fmt.Errorf("review cleanup session is missing")
 	}
 	head := reviewEnvironment(snapshot.Metadata)["SWARM_REVIEW_HEAD"]
 	if head == "" {

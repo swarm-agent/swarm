@@ -237,8 +237,37 @@ esac
 		if err != nil || state.Phase != "volume_removed" {
 			t.Fatal(state, err)
 		}
-	} else if err := s.observeRun(r); err != nil {
-		t.Fatal(err)
+	} else {
+		// Requirement: observeRun commits verdict and terminal outcome even if
+		// sandbox cleanup fails. This real-store integration layer also proves
+		// the durable retry deadline prevents each one-second sweep retrying.
+		sandbox.SetDefault(nil)
+		if err := s.observeRun(r); err != nil {
+			t.Fatal(err)
+		}
+		failed, _, err := ws.GetWorkerRun("account", reviewer.ID, r.ID)
+		if err != nil || !store.AutomationV2Terminal(failed.Status) || failed.Cleanup == nil || failed.Cleanup.State != "failed" || failed.Cleanup.LastError == "" || failed.Cleanup.Attempts != 1 {
+			t.Fatal(failed, err)
+		}
+		if err := s.observeRun(r); err != nil {
+			t.Fatal(err)
+		}
+		unchanged, _, _ := ws.GetWorkerRun("account", reviewer.ID, r.ID)
+		if unchanged.Cleanup.Attempts != 1 {
+			t.Fatal("cleanup ignored backoff", unchanged)
+		}
+		evidence, err := ws.GetJobReview("account", coder.ID, job.ID)
+		if err != nil || evidence == nil || evidence.Verdict != want {
+			t.Fatal(evidence, err)
+		}
+		sandbox.SetDefault(m)
+		failed.Cleanup.NextAttemptAt = 0
+		if _, err := ws.RecordWorkerRun("account", failed); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.observeRun(r); err != nil {
+			t.Fatal(err)
+		}
 	}
 	evidence, err := ws.GetJobReview("account", coder.ID, job.ID)
 	if err != nil || evidence == nil || evidence.Verdict != want || evidence.Head != head {

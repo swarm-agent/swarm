@@ -3,7 +3,6 @@ package worktree
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -71,16 +70,10 @@ func (s *Service) RollbackAllocation(allocation Allocation) error {
 			return fmt.Errorf("rollback worktree allocation: unlock worktree: %w", err)
 		}
 	}
-	if _, err := runGit(repoRoot, "worktree", "remove", "--force", worktreePath); err != nil {
+	if err := removeManagedWorktree(repoRoot, worktreePath); err != nil {
 		return fmt.Errorf("rollback worktree allocation: remove worktree: %w", err)
 	}
 	var cleanupErrs []error
-	if err := os.RemoveAll(worktreePath); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Errorf("remove worktree path: %w", err))
-	}
-	if _, err := runGit(repoRoot, "worktree", "prune"); err != nil {
-		cleanupErrs = append(cleanupErrs, fmt.Errorf("prune worktree metadata: %w", err))
-	}
 	if _, err := runGit(repoRoot, "branch", "-D", branchName); err != nil {
 		cleanupErrs = append(cleanupErrs, fmt.Errorf("remove branch: %w", err))
 	}

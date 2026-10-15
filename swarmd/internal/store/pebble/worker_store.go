@@ -142,9 +142,18 @@ type WorkerRevisionRecord struct {
 	ChangeSummary  string       `json:"change_summary,omitempty"`
 }
 
+type WorkerRunCleanup struct {
+	State           string `json:"state"`
+	LastError       string `json:"last_error,omitempty"`
+	Attempts        int    `json:"attempts"`
+	NextAttemptAt   int64  `json:"next_attempt_at,omitempty"`
+	FailureReported bool   `json:"failure_reported,omitempty"`
+}
+
 type WorkerRunRecord struct {
 	// ProjectID is the authoritative project resolved at admission.
 	ProjectID          string                       `json:"project_id,omitempty"`
+	Cleanup            *WorkerRunCleanup            `json:"cleanup,omitempty"`
 	ModelSource        string                       `json:"model_source,omitempty"`
 	Placement          *WorkerRunPlacement          `json:"placement,omitempty"`
 	ModelProfile       *SessionModelProfileSnapshot `json:"model_profile,omitempty"`
@@ -2592,7 +2601,7 @@ func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, sett
 		return WorkerRunRecord{}, err
 	}
 	published = m
-	if AutomationV2Terminal(run.Status) && (!existingOk || existingRun.Status != run.Status) {
+	if AutomationV2Terminal(run.Status) && (!existingOk || existingRun.Status != run.Status || cleanupSignalChanged(existingRun.Cleanup, run.Cleanup)) {
 		stored := run
 		finished, finishedWorker = &stored, w
 	}
