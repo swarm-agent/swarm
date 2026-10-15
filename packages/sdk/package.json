@@ -42,7 +42,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "ws": "8.18.3"
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@types/node": "22.19.15",
