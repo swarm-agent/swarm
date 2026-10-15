@@ -60,6 +60,10 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     if (!success) return reply(429, { status: 'slow_down' });
   }
 
+  // REQUIRE_TURNSTILE=true fails closed: a deploy that lost its secrets pauses the chat instead of dropping the check.
+  const humanCheck = Boolean(env.TURNSTILE_SECRET) || env.REQUIRE_TURNSTILE === 'true';
+  if (humanCheck && !(env.TURNSTILE_SECRET && env.TICKET_SECRET)) return reply(503, { status: 'unavailable', fallback: true });
+
   const gatewayHeaders = {
     'Content-Type': 'application/json',
     'X-Gateway-Key': env.GATEWAY_SECRET ?? '',
@@ -102,6 +106,8 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     try { body = JSON.parse(raw); } catch { return reply(400, { error: 'invalid json' }); }
     if (!VISITOR_ID.test(String(body?.visitor_id ?? ''))) return reply(400, { error: 'invalid visitor_id' });
     if (url.pathname === '/api/chat/person' && typeof body.accept !== 'boolean') return reply(400, { error: 'accept is required' });
+    // These can alert staff, so they need the ticket a verified first message earned.
+    if (humanCheck && !(await ticketValid(env.TICKET_SECRET, body.visitor_id, body.ticket, now()))) return reply(403, { status: 'verify', error: 'human check required' });
     const fields = Object.fromEntries(SIDE_ROUTES[url.pathname].filter((k) => Object.hasOwn(body, k)).map((k) => [k, body[k]]));
     return forward(url.pathname.replace('/api', ''), { method: 'POST', body: JSON.stringify(fields) });
   }
@@ -113,14 +119,16 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
   if (typeof body.message !== 'string' || !body.message.trim() || body.message.length > MAX_MESSAGE) return reply(400, { error: `message must be 1-${MAX_MESSAGE} characters` });
 
   let ticket;
-  if (env.TURNSTILE_SECRET) {
+  if (humanCheck) {
     if (!(await ticketValid(env.TICKET_SECRET, body.visitor_id, body.ticket, now()))) {
       const form = new FormData();
       form.append('secret', env.TURNSTILE_SECRET);
       form.append('response', String(body.turnstile_token ?? ''));
       form.append('remoteip', ip);
       const check = await fetchImpl('https://challenges.cloudflare.com/turnstile/v0/siteverify', { method: 'POST', body: form }).then((r) => r.json()).catch(() => ({}));
-      if (!check.success) return reply(403, { status: 'verify', error: 'human check required' });
+      // A token solved on another site, or for another widget action, does not count.
+      const solvedHere = allowedOrigins(env).some((o) => new URL(o).hostname === check.hostname) && check.action === 'chat';
+      if (!check.success || !solvedHere) return reply(403, { status: 'verify', error: 'human check required' });
       ticket = await issueTicket(env.TICKET_SECRET, body.visitor_id, now());
     }
   }

@@ -16,7 +16,12 @@ function gatewayStub(response = { status: 'answered', reply: 'hi' }, status = 20
   const seen = [];
   const fetchImpl = async (url, init) => {
     seen.push({ url, init });
-    if (String(url).startsWith('https://challenges.cloudflare.com/')) return Response.json({ success: init.body.get('response') === 'good-token' });
+    if (String(url).startsWith('https://challenges.cloudflare.com/')) {
+      const token = init.body.get('response');
+      if (token === 'good-token') return Response.json({ success: true, hostname: 'www.example.com', action: 'chat' });
+      if (token === 'other-site-token') return Response.json({ success: true, hostname: 'evil.example', action: 'chat' });
+      return Response.json({ success: false });
+    }
     return Response.json(response, { status });
   };
   return { seen, fetchImpl };
@@ -114,4 +119,27 @@ test('with Turnstile on, a visitor proves once and then uses a signed 24 h ticke
   const second = await handle(post({ visitor_id: VISITOR, message: 'again', ticket }), env(secrets), gw);
   assert.equal(second.status, 200);
   assert.equal(verifies(), before, 'a valid ticket skips the human check');
+});
+
+test('Turnstile tokens from another site are refused, and side routes need the ticket', async () => {
+  const secrets = { TURNSTILE_SECRET: 'ts', TICKET_SECRET: 'ticket-secret' };
+  const gw = gatewayStub();
+  assert.equal((await handle(post({ visitor_id: VISITOR, message: 'hi', turnstile_token: 'other-site-token' }), env(secrets), gw)).status, 403);
+  const side = (path, body) => new Request(`https://chat.example.com${path}`, { method: 'POST', headers: { Origin: SITE, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const forwarded = () => gw.seen.filter(({ url }) => String(url).startsWith('https://gw.example.com')).length;
+  const before = forwarded();
+  assert.equal((await handle(side('/api/chat/person', { visitor_id: VISITOR, accept: true }), env(secrets), gw)).status, 403);
+  assert.equal((await handle(side('/api/chat/contact', { visitor_id: VISITOR, email: 'a@example.com' }), env(secrets), gw)).status, 403);
+  assert.equal(forwarded(), before, 'nothing reaches the gateway without a ticket');
+  const ticket = await issueTicket('ticket-secret', VISITOR);
+  const yes = await handle(side('/api/chat/person', { visitor_id: VISITOR, accept: true, ticket }), env(secrets), gw);
+  assert.equal(yes.status, 200);
+  assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, accept: true }, 'the ticket is not forwarded');
+});
+
+test('REQUIRE_TURNSTILE without its secrets pauses the chat instead of skipping the check', async () => {
+  const gw = gatewayStub();
+  const res = await handle(post({ visitor_id: VISITOR, message: 'hi' }), env({ REQUIRE_TURNSTILE: 'true' }), gw);
+  assert.deepEqual([res.status, await res.json()], [503, { status: 'unavailable', fallback: true }]);
+  assert.equal(gw.seen.length, 0);
 });

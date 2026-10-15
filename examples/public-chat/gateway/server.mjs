@@ -15,6 +15,7 @@ const MAX_BODY = 8192;
 export function gatewayHandler({ gateway, operator, config, visitors, emit: sendEvent, presence = core.createPresence(), feed = core.createFeed(), now = Date.now }) {
   const perVisitor = core.createLimiter({ limit: config.visitorMessagesPerWindow, windowMs: config.visitorWindowMs, now });
   const acceptTimeoutMs = config.acceptTimeoutMs ?? 120_000;
+  const alertsPerVisitor = config.alertsPerVisitor ?? 3;
   let inflight = 0;
   let readyAt = 0;
   // Every event goes to the staff console's feed and, if configured, the hub.
@@ -117,6 +118,9 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     if (!perVisitor(body.visitor_id)) return [429, { status: 'slow_down' }];
     const visitor = visitors.get(body.visitor_id);
     if (!visitor?.session_id) return [404, { status: 'invalid', error: 'unknown visitor' }];
+    // Each save alerts staff, so one visitor gets a few, not a stream.
+    if ((visitor.contacts ?? 0) >= alertsPerVisitor) return [429, { status: 'slow_down' }];
+    await visitors.touch(body.visitor_id, { contacts: (visitor.contacts ?? 0) + 1 });
     await core.saveLead({ dataDir: config.dataDir, emit, visitors, sessionId: visitor.session_id, visitorId: body.visitor_id, lead: { name, email, need: note }, source: 'form', now });
     return [200, { status: 'saved' }];
   }
@@ -137,8 +141,9 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     if (current?.state === 'waiting' || current?.state === 'joined') return [200, { status: current.state, person: core.publicPerson(current) }];
     const [staff] = presence.online();
     if (!staff) return [200, { status: 'unavailable', booking_url: config.bookingUrl }];
+    if ((visitor.handoffs ?? 0) >= alertsPerVisitor) return [429, { status: 'slow_down' }];
     const person = { state: 'waiting', name: staff.name, role: staff.role, summary: current?.summary ?? 'Visitor asked for a person', since: now() };
-    await visitors.touch(body.visitor_id, { person });
+    await visitors.touch(body.visitor_id, { person, handoffs: (visitor.handoffs ?? 0) + 1 });
     emit('handoff.requested', { session_id: visitor.session_id, visitor_id: body.visitor_id, summary: person.summary, staff_online: true, source: 'button' });
     return [200, { status: 'waiting', person: core.publicPerson(person) }];
   }
@@ -295,6 +300,7 @@ async function main() {
     busyWaitMs: Number(env.BUSY_WAIT_MS ?? 20_000),
     replyTimeoutMs: Number(env.REPLY_TIMEOUT_MS ?? 45_000),
     acceptTimeoutMs: Number(env.ACCEPT_TIMEOUT_MS ?? 120_000),
+    alertsPerVisitor: Number(env.ALERTS_PER_VISITOR ?? 3),
   };
   if (config.gatewaySecret.length < 32 || config.opsSecret.length < 32) throw new Error('GATEWAY_SECRET_FILE and OPS_SECRET_FILE must each hold at least 32 characters');
   const gateway = new SwarmClient({ baseUrl: config.swarmUrl, token: await secret('SWARM_GATEWAY_TOKEN') });

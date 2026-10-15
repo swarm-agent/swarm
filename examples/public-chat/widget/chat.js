@@ -63,11 +63,12 @@
       try {
         const res = await fetch(`${endpoint}/api/chat/replies?visitor_id=${visitorId}&after=${lastSeq}`);
         const data = await res.json();
+        if (data.status === 'slow_down') return; // rate limited: keep polling, a person may be typing
         showPerson(data.person);
         for (const r of data.replies || []) { lastSeq = Math.max(lastSeq, r.seq); say(r.from, r.from === 'person' && data.person ? `${data.person.name}: ${r.text}` : r.text); }
         if (!data.with_person && data.person?.state !== 'waiting') clearInterval(polling);
       } catch { clearInterval(polling); }
-    }, 3000);
+    }, 5000);
   };
 
   // The agent offered a person who is online: one Yes button, no model run when pressed.
@@ -78,7 +79,7 @@
     yes.style.cssText = 'align-self:flex-start;padding:7px 12px;border:0;border-radius:999px;background:#111;color:#fff;cursor:pointer';
     yes.addEventListener('click', async () => {
       yes.remove();
-      const res = await fetch(`${endpoint}/api/chat/person`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, accept: true }) }).catch(() => undefined);
+      const res = await fetch(`${endpoint}/api/chat/person`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, accept: true, ticket }) }).catch(() => undefined);
       const data = res ? await res.json().catch(() => ({})) : {};
       if (data.status === 'waiting' || data.status === 'joined') { showPerson(data.person); pollReplies(); } else say('agent', 'Nobody is online right now. ' + fallback);
     });

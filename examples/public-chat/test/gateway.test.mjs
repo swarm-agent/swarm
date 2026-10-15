@@ -170,6 +170,18 @@ test('an unanswered request becomes missed once, and presence lapses without a s
   } finally { await g.close(); }
 });
 
+test('toggling No / Yes cannot page staff more than three times', async () => {
+  const g = await start({ offerWith: { summary: 'Wants a call' } });
+  try {
+    await g.call('/ops/presence', { ops: true, key: OPS_KEY, body: { id: 'staff-1', name: 'Sam', role: 'founder', available: true } });
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+    const answer = async (accept) => (await g.call('/chat/person', { body: { visitor_id: VISITOR, accept } })).data.status;
+    for (let i = 0; i < 3; i++) { assert.equal(await answer(true), 'waiting'); assert.equal(await answer(false), 'declined'); }
+    assert.equal(await answer(true), 'slow_down');
+    assert.equal(g.events.filter(([type]) => type === 'handoff.requested').length, 3);
+  } finally { await g.close(); }
+});
+
 test('staff routes need the ops key and valid input; the event feed wakes on new events', async () => {
   const g = await start();
   try {
@@ -225,6 +237,10 @@ test('the email form saves a lead for a person, with no model run', async () => 
     assert.ok(g.events.some(([type, data]) => type === 'lead.captured' && data.source === 'form'));
     const transcript = await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY });
     assert.equal(transcript.data.contact.email, 'pat@example.com');
+    // Each save alerts staff: a visitor gets three, then slow_down.
+    for (const n of [2, 3]) assert.equal((await g.call('/chat/contact', { body: { visitor_id: VISITOR, email: `pat${n}@example.com` } })).status, 200);
+    assert.equal((await g.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'pat4@example.com' } })).status, 429);
+    assert.equal(g.events.filter(([type]) => type === 'lead.captured').length, 3);
   } finally { await g.close(); }
 });
 

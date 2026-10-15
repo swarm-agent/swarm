@@ -4,6 +4,7 @@
 //   npx wrangler secret put ACCESS_CLIENT_SECRET
 //   npx wrangler secret put TURNSTILE_SECRET        (optional: require a human check once per visitor)
 //   npx wrangler secret put TICKET_SECRET           (with TURNSTILE_SECRET: signs the 24 h visitor ticket)
+//   (set the REQUIRE_TURNSTILE var to "true" in production so missing secrets pause the chat instead of skipping the check)
 //   npx wrangler deploy
 {
   "name": "public-chat-edge",
