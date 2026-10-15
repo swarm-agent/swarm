@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Fix MCP media-job retry guidance to name `swarm_request_media`, hint at rephrasing content-policy refusals, and mention inline images only for image files. Docs impact: none.
+- Make `swarm_get_job` delivery guidance and nested delivery state match the landing queue, and keep queued/landing delivery waits unsettled. Docs impact: none.
 
 - Fix reviewer run startup and repository status checks to accept only registered detached checkouts at the captured review head, without relaxing writable branch/rebase checks. Add real V3 executor regression coverage for successful review, cleanup, and moved-head refusal. Docs impact: none.
 - Job delivery checks use a landing folder's fetched publish target when available, avoiding false history-rewritten warnings when `--sync` leaves the local branch behind while still detecting real rewrites. Docs impact: none

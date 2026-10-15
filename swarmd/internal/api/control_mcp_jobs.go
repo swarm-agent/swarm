@@ -556,6 +556,24 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 		status = "in_progress"
 	}
 	state["status"] = status
+	if principal, ok := PrincipalFromRequest(c.request); ok && c.server != nil {
+		if q, err := c.server.landingQueue(); err == nil {
+			entry, pos, err := q.Get(principal.AccountScopeID, controlMCPJobID(kind, a, b))
+			if err != nil {
+				return nil, refs, err
+			}
+			if entry.State != "" {
+				state["delivery_state"] = entry.State
+				state["queue_position"] = pos
+				state["landed_commit"] = entry.Commit
+				state["delivery_reason"] = entry.Reason
+				state["checks"] = entry.Checks
+				if len(entry.Checks) == 0 && entry.State == "landed" {
+					state["checks_note"] = "checks: none defined"
+				}
+			}
+		}
+	}
 	return state, refs, nil
 }
 
@@ -585,16 +603,46 @@ func controlMCPJobNext(status string, committed bool) string {
 	return ""
 }
 
+// controlMCPApplyJobDelivery reconciles the result assessment with the queue
+// receipt. Integration receipts still override this guidance in jobView.
+func controlMCPApplyJobDelivery(out map[string]any) {
+	state := controlMCPString(out, "delivery_state")
+	if state == "" {
+		return
+	}
+	if result, ok := out["result"].(map[string]any); ok {
+		result["delivery_state"] = state
+	}
+	switch state {
+	case "queued":
+		position, _ := out["queue_position"].(int)
+		out["next"] = "the job is queued for delivery (position " + strconv.Itoa(position) + "): call swarm_get_job with wait_seconds to wait; do not deliver it again"
+	case "landing":
+		out["next"] = "the job is being delivered (checks run first): call swarm_get_job with wait_seconds to wait"
+	case "landed":
+		out["next"] = "the job is delivered: landed as " + controlMCPString(out, "landed_commit")
+	case "sent_back", "landing_stopped", "land_failed":
+		out["next"] = "delivery failed: " + controlMCPString(out, "delivery_reason") + "; fix it and deliver again"
+	}
+}
+
+func controlMCPJobWaitSettled(state map[string]any) bool {
+	switch controlMCPString(state, "delivery_state") {
+	case "queued", "landing":
+		return false
+	case "landed", "sent_back", "landing_stopped", "land_failed":
+		return true
+	}
+	return controlMCPJobSettled[controlMCPString(state, "status")]
+}
+
 // waitForJob returns the job's state once it settles or at the deadline. It
 // wakes on committed realtime records for the job's session or project task
 // and re-reads; it never polls on a timer.
 func (c *controlMCPCall) waitForJob(kind, a, b string, seconds int) (map[string]any, controlMCPJobRefs, map[string]any, error) {
 	started := time.Now()
 	elapsed := func() int { return int(time.Since(started).Seconds()) }
-	settled := func(state map[string]any) bool {
-		status, _ := state["status"].(string)
-		return controlMCPJobSettled[status]
-	}
+	settled := controlMCPJobWaitSettled
 	state, refs, err := c.jobState(kind, a, b)
 	if err != nil || seconds <= 0 || settled(state) {
 		return state, refs, map[string]any{"settled": err == nil && settled(state), "waited_seconds": elapsed()}, err
@@ -695,6 +743,7 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	if _, uncommitted := result["uncommitted_changes"]; uncommitted && status == "needs_review" {
 		out["next"] = controlMCPUncommittedNext
 	}
+	controlMCPApplyJobDelivery(out)
 	integration := controlMCPMap(result["integration"])
 	if delivered := taskDeliveredState(controlMCPString(integration, "state"), controlMCPString(integration, "pull_request_url")); delivered != "" {
 		delete(out, "action_needed")
@@ -702,24 +751,6 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 			out["next"] = "the job was delivered as a pull request: " + controlMCPString(integration, "pull_request_url")
 		} else {
 			out["next"] = "the job is finished and merged"
-		}
-	}
-	if principal, ok := PrincipalFromRequest(c.request); ok && c.server != nil {
-		if q, err := c.server.landingQueue(); err == nil {
-			entry, pos, err := q.Get(principal.AccountScopeID, controlMCPJobID(kind, a, b))
-			if err != nil {
-				return nil, err
-			}
-			if entry.State != "" {
-				out["delivery_state"] = entry.State
-				out["queue_position"] = pos
-				out["landed_commit"] = entry.Commit
-				out["delivery_reason"] = entry.Reason
-				out["checks"] = entry.Checks
-				if len(entry.Checks) == 0 && entry.State == "landed" {
-					out["checks_note"] = "checks: none defined"
-				}
-			}
 		}
 	}
 	return out, nil

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"swarm/packages/swarmd/internal/publish"
+	"swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -219,6 +222,115 @@ func TestTaskGitDeliveredReceiptSkipsLane(t *testing.T) {
 			got := inspectTaskGitStateContext(context.Background(), task, nil)
 			if got.deliveryAssessment.State != state || got.deliveryAssessment.ReasonCode != "delivery_receipt" || got.actionNeeded != "" || len(got.deliveryAssessment.AllowedActions) != 0 || got.isIntegrated {
 				t.Fatalf("receipt replaced by lane readiness or fabricated ancestry: %+v", got)
+			}
+		})
+	}
+}
+
+// Purpose: jobView must use the durable queue receipt for delivery guidance and
+// both delivery_state fields, without changing no-entry or PR/merged guidance.
+// Threat: a stale Git assessment invites duplicate delivery while landing.
+// Owners: jobState, jobView, controlMCPApplyJobDelivery, publish.Queue.Get.
+// A temporary store and stub task routes prove the tool boundary without Git,
+// providers or media fixtures; conflicting assessments are the negative cases.
+func TestControlMCPGetJobQueueDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		state, integration, want string
+	}{
+		{"", "", "the work is done: read it here (include_diff for the patch), then swarm_deliver_job merges it into the folder"},
+		{"queued", "", "the job is queued for delivery (position 1): call swarm_get_job with wait_seconds to wait; do not deliver it again"},
+		{"landing", "", "the job is being delivered (checks run first): call swarm_get_job with wait_seconds to wait"},
+		{"landed", "", "the job is delivered: landed as abc123"},
+		{"sent_back", "", "delivery failed: checks rejected the patch; fix it and deliver again"},
+		{"landing_stopped", "", "delivery failed: checks rejected the patch; fix it and deliver again"},
+		{"land_failed", "", "delivery failed: checks rejected the patch; fix it and deliver again"},
+		{"land_failed", "pull_request", "the job was delivered as a pull request: https://example.invalid/repo/pull/1"},
+		{"landing", "merged", "the job is finished and merged"},
+	} {
+		t.Run(tc.state+"/"+tc.integration, func(t *testing.T) {
+			db, err := pebblestore.Open(filepath.Join(t.TempDir(), "jobs"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			memory := &landMemoryStore{}
+			if tc.state != "" {
+				if err := memory.PutJSON("", []publish.Entry{{Account: testActorContext().Principal.AccountScopeID, Request: publish.Request{JobID: "worker/w1/r1", Folder: "folder"}, State: tc.state, Commit: "abc123", Reason: "checks rejected the patch"}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := &Server{sessions: session.NewService(pebblestore.NewSessionStore(db), nil), landQueue: publish.NewQueue(memory), v3RealtimeOutbox: newV3RealtimeOutboxHub()}
+			task := map[string]any{"id": "t1", "project_id": "p1", "status": "needs_review", "delivery_assessment": map[string]any{"state": "unavailable"}}
+			if tc.integration != "" {
+				task["integration"] = map[string]any{"state": tc.integration, "pull_request_url": "https://example.invalid/repo/pull/1"}
+			}
+			h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/v3/workers/w1/runs/r1":
+					_ = json.NewEncoder(w).Encode(map[string]any{"run": map[string]any{"status": "succeeded", "review": map[string]any{"project_id": "p1", "task_id": "t1"}}})
+				case "/v3/projects/p1/tasks/t1":
+					_ = json.NewEncoder(w).Encode(map[string]any{"task": task})
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			})
+			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			r = r.WithContext(context.WithValue(r.Context(), productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: "acct", UserID: "user", Scopes: []string{"sessions:read"}}))
+			args := map[string]any{"job_id": "worker/w1/r1"}
+			if tc.integration == "" {
+				args["wait_seconds"] = float64(1)
+			}
+			raw, err := controlMCPGetJob(&controlMCPCall{request: withTestPrincipal(r), next: h, server: server}, args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := controlMCPMap(raw)
+			if out["next"] != tc.want {
+				t.Fatalf("next = %v, want %q", out["next"], tc.want)
+			}
+			if tc.integration == "" {
+				waited := controlMCPMap(out["waited"])
+				active := tc.state == "queued" || tc.state == "landing"
+				if waited["settled"] != !active || (active && waited["timed_out"] != true) {
+					t.Fatalf("incorrect delivery wait: %+v", waited)
+				}
+			}
+			result := controlMCPMap(out["result"])
+			if tc.state == "" {
+				if out["delivery_state"] != nil || result["delivery_state"] != "unavailable" {
+					t.Fatalf("no-entry assessment changed: %+v", out)
+				}
+			} else if out["delivery_state"] != tc.state || result["delivery_state"] != tc.state {
+				t.Fatalf("contradictory delivery states: %+v", out)
+			}
+		})
+	}
+}
+
+// Purpose: waitForJob must not settle needs_review while a queue delivery is
+// active, but must preserve ordinary status semantics without an entry. Threat:
+// waits return immediately and induce duplicate delivery. The settlement
+// predicate is the narrowest deterministic layer proving this decision.
+func TestControlMCPJobWaitQueueSettled(t *testing.T) {
+	for _, tc := range []struct {
+		status, delivery string
+		want             bool
+	}{
+		{"needs_review", "", true},
+		{"in_progress", "", false},
+		{"needs_review", "queued", false},
+		{"needs_review", "landing", false},
+		{"completed", "landing", false},
+		{"needs_review", "landed", true},
+		{"needs_review", "sent_back", true},
+		{"needs_review", "landing_stopped", true},
+		{"needs_review", "land_failed", true},
+	} {
+		t.Run(tc.status+"/"+tc.delivery, func(t *testing.T) {
+			if got := controlMCPJobWaitSettled(map[string]any{"status": tc.status, "delivery_state": tc.delivery}); got != tc.want {
+				t.Fatalf("settled = %v, want %v", got, tc.want)
 			}
 		})
 	}
