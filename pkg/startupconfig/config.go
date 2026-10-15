@@ -726,12 +726,16 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 			fmt.Sprintf("provider_api_diagnostics = %t", cfg.ProviderAPIDiagnostics),
 		)
 	}
+	if _, ok := seen["sandbox_memory"]; !ok {
+		lines = append(lines, fmt.Sprintf("sandbox_memory = %s", cfg.SandboxMemory))
+	}
+	if _, ok := seen["worker_max_concurrent_runs"]; !ok {
+		lines = append(lines, fmt.Sprintf("worker_max_concurrent_runs = %d", cfg.WorkerMaxConcurrentRuns))
+	}
 	if _, ok := seen["long_session_diagnostics"]; !ok {
 		lines = append(lines,
 			"# Record bounded metadata-only diagnostics for investigating long-session memory and lag.",
 			"# Artifacts are private local files under the canonical logs root; changing this requires a restart.",
-			fmt.Sprintf("sandbox_memory = %s", cfg.SandboxMemory),
-			fmt.Sprintf("worker_max_concurrent_runs = %d", cfg.WorkerMaxConcurrentRuns),
 			fmt.Sprintf("long_session_diagnostics = %t", cfg.LongSessionDiagnostics),
 		)
 	}
