@@ -43,8 +43,8 @@ const (
 	maxInlineRequestBytes    = 20 << 20
 	maxInlineImageBytes      = 14 << 20
 
-	googleServiceUnavailableMaxRetries = 3
-	googleServiceUnavailableBaseDelay  = 500 * time.Millisecond
+	googleTransientMaxRetries = 3
+	googleTransientBaseDelay  = 500 * time.Millisecond
 )
 
 var googleInlineImageMIMETypes = []string{"image/heic", "image/heif", "image/jpeg", "image/png", "image/webp"}
@@ -234,7 +234,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 		resp *http.Response
 		body []byte
 	)
-	for attempt := 0; attempt <= googleServiceUnavailableMaxRetries; attempt++ {
+	for attempt := 0; attempt <= googleTransientMaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := r.retryWait(attempt, resp)
 			if err := sleepWithContext(ctx, delay); err != nil {
@@ -262,7 +262,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 			providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", err)
 			return provideriface.Response{}, sanitizeGoogleError("read google generateContent response", err)
 		}
-		if resp.StatusCode == http.StatusServiceUnavailable && attempt < googleServiceUnavailableMaxRetries {
+		if googleTransientStatus(resp.StatusCode) && attempt < googleTransientMaxRetries {
 			continue
 		}
 		if resp.StatusCode >= http.StatusBadRequest {
@@ -278,7 +278,7 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 		result.Model = modelID
 		return result, nil
 	}
-	return provideriface.Response{}, googleStatusError("google generateContent failed", http.StatusServiceUnavailable, body)
+	return provideriface.Response{}, googleStatusError("google generateContent failed", resp.StatusCode, body)
 }
 
 func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
@@ -311,7 +311,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		resp *http.Response
 		body []byte
 	)
-	for attempt := 0; attempt <= googleServiceUnavailableMaxRetries; attempt++ {
+	for attempt := 0; attempt <= googleTransientMaxRetries; attempt++ {
 		if attempt > 0 {
 			delay := r.retryWait(attempt, resp)
 			if err := sleepWithContext(ctx, delay); err != nil {
@@ -336,7 +336,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 			return provideriface.Response{}, sanitizeGoogleError("google streamGenerateContent request failed", err)
 		}
 
-		if resp.StatusCode == http.StatusServiceUnavailable && attempt < googleServiceUnavailableMaxRetries {
+		if googleTransientStatus(resp.StatusCode) && attempt < googleTransientMaxRetries {
 			body, _ = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 			resp.Body.Close()
 			providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, body)
@@ -377,7 +377,7 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 		annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, servedTier)
 		return result, nil
 	}
-	return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", http.StatusServiceUnavailable, body)
+	return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", resp.StatusCode, body)
 }
 
 func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
@@ -1623,6 +1623,18 @@ func sanitizeGoogleText(raw string) string {
 	return strings.TrimSpace(sanitized)
 }
 
+// googleTransientStatus reports provider statuses worth retrying before any
+// output exists: rate limiting and transient server or gateway failures.
+// Request, auth and not-found errors are returned at once.
+func googleTransientStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
 func (r *Runner) retryWait(attempt int, resp *http.Response) time.Duration {
 	if r != nil && r.retryDelay != nil {
 		return r.retryDelay(attempt)
@@ -1638,7 +1650,7 @@ func (r *Runner) retryWait(attempt int, resp *http.Response) time.Duration {
 	if multiplier <= 0 || multiplier > 16 {
 		multiplier = 16
 	}
-	return googleServiceUnavailableBaseDelay * time.Duration(multiplier)
+	return googleTransientBaseDelay * time.Duration(multiplier)
 }
 
 func sleepWithContext(ctx context.Context, delay time.Duration) error {
