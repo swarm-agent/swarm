@@ -274,6 +274,10 @@ func (r *Runner) createResponse(ctx context.Context, req provideriface.Request) 
 			return provideriface.Response{}, sanitizeGoogleError("decode google response", err)
 		}
 		result := parseGoogleResponse(decoded)
+		if googleResponseEmpty(result) && attempt < googleTransientMaxRetries {
+			providerdiagnostics.LogErrorContext(ctx, "google", "generateContent", errors.New("empty response; retrying"))
+			continue
+		}
 		annotateGoogleServiceTier(&result.Usage, requestPayload.ServiceTier, resp.Header.Get("x-gemini-service-tier"))
 		result.Model = modelID
 		return result, nil
@@ -354,19 +358,36 @@ func (r *Runner) createStreamingResponse(ctx context.Context, req provideriface.
 			return provideriface.Response{}, googleStatusError("google streamGenerateContent failed", resp.StatusCode, body)
 		}
 
-		defer resp.Body.Close()
 		providerdiagnostics.LogResponse("google", "streamGenerateContent", resp, nil)
 		headerServiceTier := resp.Header.Get("x-gemini-service-tier")
 		accumulator := newGoogleStreamAccumulator(modelID)
-		if err := parseGoogleEventStream(resp.Body, func(payload string) error {
+		// Answer text already shown to the caller rules out a retry; reasoning
+		// summaries alone do not.
+		textStreamed := false
+		forward := onEvent
+		if onEvent != nil {
+			forward = func(event provideriface.StreamEvent) {
+				if event.Type == provideriface.StreamEventOutputTextDelta && event.Delta != "" {
+					textStreamed = true
+				}
+				onEvent(event)
+			}
+		}
+		parseErr := parseGoogleEventStream(resp.Body, func(payload string) error {
 			providerdiagnostics.LogStreamChunkContext(ctx, "google", "streamGenerateContent", []byte(payload))
-			return accumulator.applyPayload(payload, onEvent)
-		}); err != nil {
-			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", err)
-			return provideriface.Response{}, sanitizeGoogleError("decode google stream response", err)
+			return accumulator.applyPayload(payload, forward)
+		})
+		resp.Body.Close()
+		if parseErr != nil {
+			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", parseErr)
+			return provideriface.Response{}, sanitizeGoogleError("decode google stream response", parseErr)
 		}
 		if !accumulator.finished {
 			return provideriface.Response{}, errors.New("google stream ended without a finish reason")
+		}
+		if !textStreamed && attempt < googleTransientMaxRetries && googleResponseEmpty(accumulator.response()) {
+			providerdiagnostics.LogErrorContext(ctx, "google", "streamGenerateContent", errors.New("empty response; retrying"))
+			continue
 		}
 		servedTier, err := reconcileGoogleServiceTierSignals(headerServiceTier, accumulator.serviceTier)
 		if err != nil {
@@ -1633,6 +1654,23 @@ func googleTransientStatus(code int) bool {
 		return true
 	}
 	return false
+}
+
+// googleResponseEmpty reports a successful Gemini reply with nothing in it: no
+// text, no assistant message and no function call. Gemini occasionally answers
+// that way; the run would then fail with "no final assistant content", so the
+// runner retries it (bounded, like transient statuses) while no answer text has
+// reached the caller.
+func googleResponseEmpty(resp provideriface.Response) bool {
+	if strings.TrimSpace(resp.Text) != "" || len(resp.FunctionCalls) > 0 || resp.RestartTurn {
+		return false
+	}
+	for _, message := range resp.AssistantMessages {
+		if strings.TrimSpace(message.Text) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Runner) retryWait(attempt int, resp *http.Response) time.Duration {
