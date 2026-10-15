@@ -388,3 +388,5 @@ failure step receipt, not privileged command logs, enters delivery_reason.
 decision against temporary executable releases; Layer 1 additionally runs it
 against the real daemon's smoke and an unavailable candidate socket. It does
 not exercise privileged systemd/Docker activation.
+
+The vital extras retain `TestTerminalReviewContainerReconcileRetry`, `TestReconcileSkipsUnverifiableOwnership`, `TestSandboxInstanceOwnership` and `TestAppRunsFailureReceipt` to protect reconcile retry/ownership isolation and bounded landing-failure receipts; `job_cleanup_lifecycle_test.go` is focused regression coverage for this reconcile change.
