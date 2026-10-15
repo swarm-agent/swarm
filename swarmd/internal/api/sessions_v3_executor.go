@@ -199,6 +199,16 @@ func (e *sessionV3Executor) activeSessionIDs() []string {
 	return ids
 }
 
+// activeRunID returns the run in flight for sessionID, or "".
+func (e *sessionV3Executor) activeRunID(sessionID string) string {
+	if e == nil {
+		return ""
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.activeBySession[sessionID]
+}
+
 func (e *sessionV3Executor) diagnosticsSnapshot() map[string]any {
 	if e == nil {
 		return nil

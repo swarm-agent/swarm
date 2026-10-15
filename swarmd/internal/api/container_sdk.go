@@ -153,6 +153,13 @@ func containerSDKRouteAllowed(r *http.Request) bool {
 	if len(p) == 4 && p[3] == "messages" {
 		return r.Method == http.MethodPost
 	}
+	// Human takeover; an agent-bound token reaches these only as an operator token.
+	if len(p) == 4 && p[3] == "takeover" {
+		return r.Method == http.MethodGet || r.Method == http.MethodPost
+	}
+	if len(p) == 4 && p[3] == "operator-messages" {
+		return r.Method == http.MethodPost
+	}
 	if len(p) == 5 && p[3] == "run" && p[4] == "stop" {
 		return r.Method == http.MethodPost
 	}

@@ -330,6 +330,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
+	case "takeover":
+		s.handleSessionV3Takeover(w, r, principal, sessionID)
+	case "operator-messages":
+		s.handleSessionV3OperatorMessages(w, r, principal, sessionID)
 	case "run/stream":
 		s.handleSessionV3PrimaryRunStreamControl(w, r, sessionID, principal)
 	case "context/clear":
@@ -4395,6 +4399,10 @@ func sessionsV3PrimaryAuthorityStatus(req sessionsV3MessageRequest) string {
 }
 
 func (s *Server) sessionsV3PrimaryRunIntentStatus(principal identity.Principal, session pebblestore.SessionSnapshot, req sessionsV3MessageRequest) (string, string) {
+	// A person holds the conversation: keep the message, start no model run.
+	if sessionTakeoverActive(session) {
+		return sessionruntime.RunIntentDispatchBlocked, sessionTakeoverBlockedReason
+	}
 	if reason := s.sessionsV3PrimaryDispatchBlockedReason(principal, session, req); reason != "" {
 		return sessionruntime.RunIntentDispatchBlocked, reason
 	}

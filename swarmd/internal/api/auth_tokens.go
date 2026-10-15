@@ -23,6 +23,8 @@ type createScopedTokenRequest struct {
 	MessagesPerMinute int    `json:"messages_per_minute,omitempty"`
 	SessionsPerHour   int    `json:"sessions_per_hour,omitempty"`
 	MaxConcurrentRuns int    `json:"max_concurrent_runs,omitempty"`
+	// Operator (with agent_name) mints the human-takeover token for that agent.
+	Operator bool `json:"operator,omitempty"`
 	// AIAccess mints an AI key for Swarm Control (/mcp): "read", "write" or "full".
 	// Scopes are derived from the level; scopes, worker and agent stay empty.
 	AIAccess string `json:"ai_access,omitempty"`
@@ -158,7 +160,7 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, sealedErr)
 				return
 			}
-			rawToken, record, err = s.security.CreateAgentBoundTokenUnder(parent, req.Name, accountScopeID, principal.UserID, expiresIn, agentName, security.AgentBoundLimits{MessagesPerMinute: req.MessagesPerMinute, SessionsPerHour: req.SessionsPerHour, MaxConcurrentRuns: req.MaxConcurrentRuns})
+			rawToken, record, err = s.security.CreateAgentBoundTokenUnder(parent, req.Name, accountScopeID, principal.UserID, expiresIn, agentName, security.AgentBoundLimits{MessagesPerMinute: req.MessagesPerMinute, SessionsPerHour: req.SessionsPerHour, MaxConcurrentRuns: req.MaxConcurrentRuns, Operator: req.Operator})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return

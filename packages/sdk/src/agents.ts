@@ -74,6 +74,14 @@ function toolName(name: string): string {
   return name;
 }
 
+/** Who holds a conversation, as stored in its metadata under `takeover`. */
+export type Takeover = { state: 'human'; by: string; since: number } | { state: 'agent'; ended_at: number };
+
+function operatorRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `sdk-operator-${crypto.randomUUID()}`;
+  return `sdk-operator-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 10)}`;
+}
+
 /**
  * Sealed agents and client tools (`/v2/agents`, `/v2/custom-tools`). Defining
  * them needs the owner or an `admin` token: keep this in a trusted backend.
@@ -139,6 +147,54 @@ export class SwarmAgentsNamespace {
   }
 
   /** Today's spend against the daily cap. A gateway token may read it. */
+  /**
+   * Mints the human-takeover token for one sealed agent: it can read that
+   * agent's conversations, take one over (the agent stops replying), reply as a
+   * person and hand it back. It cannot post as the visitor, start runs or answer
+   * tool calls. Owner only; the daemon requires an expiry of at most 30 days.
+   */
+  async createOperatorToken(agentName: string, options: { name?: string; expiresInSeconds: number }): Promise<{ token: string; record: Record<string, unknown> }> {
+    const agent = toolName(agentName);
+    const res = await this.transport.request<{ token: string; record: Record<string, unknown> }>('/v3/auth/tokens', {
+      method: 'POST',
+      body: { name: options.name ?? `${agent} operator`, agent_name: agent, operator: true, expires_in_seconds: options.expiresInSeconds },
+    });
+    return { token: res.data.token, record: res.data.record };
+  }
+
+  /** Who holds a conversation: `{ state: 'human', by, since }`, `{ state: 'agent', ended_at }`, or undefined. */
+  async takeoverState(sessionId: string): Promise<Takeover | undefined> {
+    const res = await this.transport.request<{ takeover?: Takeover }>(`/v3/sessions/${encodeURIComponent(sessionId)}/takeover`);
+    return res.data.takeover ?? undefined;
+  }
+
+  /** A person takes the conversation: the agent's run in flight stops and visitor messages start no runs. */
+  async takeOver(sessionId: string, options: { clientRequestId?: string } = {}): Promise<Takeover> {
+    return this.setTakeover(sessionId, 'start', options.clientRequestId);
+  }
+
+  /** Hands the conversation back to the agent; the next visitor message runs it again. */
+  async handBack(sessionId: string, options: { clientRequestId?: string } = {}): Promise<Takeover> {
+    return this.setTakeover(sessionId, 'end', options.clientRequestId);
+  }
+
+  /** Replies as a person during a takeover (an assistant message with source "operator"). */
+  async replyAsOperator(sessionId: string, content: string, options: { clientRequestId?: string } = {}): Promise<Record<string, unknown>> {
+    const res = await this.transport.request<{ message: Record<string, unknown> }>(`/v3/sessions/${encodeURIComponent(sessionId)}/operator-messages`, {
+      method: 'POST',
+      body: { content, client_request_id: options.clientRequestId ?? operatorRequestId() },
+    });
+    return res.data.message;
+  }
+
+  private async setTakeover(sessionId: string, action: 'start' | 'end', clientRequestId?: string): Promise<Takeover> {
+    const res = await this.transport.request<{ takeover: Takeover }>(`/v3/sessions/${encodeURIComponent(sessionId)}/takeover`, {
+      method: 'POST',
+      body: { action, client_request_id: clientRequestId ?? operatorRequestId() },
+    });
+    return res.data.takeover;
+  }
+
   async spendToday(): Promise<SpendToday> {
     const res = await this.transport.request<{ limits: SpendToday }>('/v3/sessions:usage-limits');
     return res.data.limits;

@@ -118,13 +118,16 @@ type ScopedTokenRecord struct {
 	// AgentName binds the token to one sealed agent's sessions (default-deny).
 	AgentName string `json:"agent_name,omitempty"`
 	// Rate limits for agent-bound tokens; zero means the daemon default.
-	MessagesPerMinute int   `json:"messages_per_minute,omitempty"`
-	SessionsPerHour   int   `json:"sessions_per_hour,omitempty"`
-	MaxConcurrentRuns int   `json:"max_concurrent_runs,omitempty"`
-	CreatedAt         int64 `json:"created_at"`
-	ExpiresAt         int64 `json:"expires_at"` // 0 = never
-	Revoked           bool  `json:"revoked"`
-	LastUsedAt        int64 `json:"last_used_at,omitempty"`
+	MessagesPerMinute int `json:"messages_per_minute,omitempty"`
+	SessionsPerHour   int `json:"sessions_per_hour,omitempty"`
+	MaxConcurrentRuns int `json:"max_concurrent_runs,omitempty"`
+	// AgentOperator makes an agent-bound token the human-takeover key for the
+	// agent's conversations instead of the gateway key (see agentOperatorRouteError).
+	AgentOperator bool  `json:"agent_operator,omitempty"`
+	CreatedAt     int64 `json:"created_at"`
+	ExpiresAt     int64 `json:"expires_at"` // 0 = never
+	Revoked       bool  `json:"revoked"`
+	LastUsedAt    int64 `json:"last_used_at,omitempty"`
 	// ParentTokenID is the scoped token that minted this one; this token is
 	// valid only while that parent is (security.Service.ValidateScopedToken).
 	ParentTokenID string `json:"parent_token_id,omitempty"`

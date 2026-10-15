@@ -154,6 +154,9 @@ type AgentBoundLimits struct {
 	MessagesPerMinute int
 	SessionsPerHour   int
 	MaxConcurrentRuns int
+	// Operator mints the human-takeover token (read, take over, reply, hand
+	// back) instead of the gateway token; it starts no runs.
+	Operator bool
 }
 
 // CreateAgentBoundToken mints a session token limited to one sealed agent's
@@ -177,6 +180,7 @@ func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenReco
 		record.MessagesPerMinute = limits.MessagesPerMinute
 		record.SessionsPerHour = limits.SessionsPerHour
 		record.MaxConcurrentRuns = limits.MaxConcurrentRuns
+		record.AgentOperator = limits.Operator
 	})
 }
 

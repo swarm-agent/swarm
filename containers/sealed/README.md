@@ -116,6 +116,33 @@ real bash. In the SDK, `client.agents.defineClientTool`, `defineSealedAgent` and
 calls with `client.agents.serve(sessionId, handlers)`, or with `pendingCalls`,
 `answer` and `fail`.
 
+## Human takeover
+
+A person can take a conversation from the agent, reply, and hand it back. The
+state is durable session metadata (`takeover`), so the gateway sees it on the
+session it already reads.
+
+| Route | Does |
+|---|---|
+| `GET /v3/sessions/{id}/takeover` | who holds the conversation |
+| `POST /v3/sessions/{id}/takeover` `{"action":"start"\|"end","client_request_id"}` | start cancels the agent's run in flight; end hands back |
+| `POST /v3/sessions/{id}/operator-messages` `{"content","client_request_id"}` | reply as a person (only during a takeover) |
+
+While a person holds the conversation, a visitor message is kept with a
+`dispatch_blocked` run intent (reason `human_takeover`) and no model run starts.
+A reply is an assistant message with `source: "operator"`, so the agent sees it
+after hand-back. The gateway token cannot reach these routes. The key for
+whoever answers (a support hub) is a separate operator token, which can only
+read the agent's conversations, take them over, reply and hand back:
+
+```sh
+(umask 077; docker exec swarm-sealed swarmctl setup sdk-token --agent frontdesk --operator \
+   --name hub --expires-in-seconds 2592000 > operator-token.json)
+```
+
+In the SDK: `agents.createOperatorToken`, `takeOver`, `replyAsOperator`,
+`handBack` and `takeoverState`.
+
 ## Build and run
 
 ```sh

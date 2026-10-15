@@ -201,6 +201,9 @@ func (s *Server) agentBoundRequestError(r *http.Request, rec *pebblestore.Scoped
 		return errors.New("route unavailable to an agent-bound token")
 	}
 	if len(p) == 2 {
+		if rec.AgentOperator {
+			return errors.New("an operator token cannot list or create sessions")
+		}
 		if r.Method != http.MethodPost {
 			return errors.New("an agent-bound token cannot list sessions")
 		}
@@ -223,6 +226,9 @@ func (s *Server) agentBoundRequestError(r *http.Request, rec *pebblestore.Scoped
 		return errors.New("session not found")
 	}
 	rest := strings.Join(p[3:], "/")
+	if rec.AgentOperator {
+		return agentOperatorRouteError(r.Method, rest)
+	}
 	switch {
 	case rest == "messages" && r.Method == http.MethodPost:
 		return checkAgentBoundMessage(r)
@@ -235,6 +241,21 @@ func (s *Server) agentBoundRequestError(r *http.Request, rec *pebblestore.Scoped
 		return s.checkAgentBoundResolve(rec.AccountScopeID, sessionID, p[4])
 	}
 	return errors.New("route unavailable to an agent-bound token")
+}
+
+// agentOperatorRouteError admits the human-takeover key (an agent-bound token
+// minted with operator) to its agent's conversations only to read them, take
+// them over or hand them back, and reply as a person. It cannot post as the
+// visitor, start runs, create or list sessions, or answer tool calls.
+func agentOperatorRouteError(method, rest string) error {
+	switch {
+	case rest == "" && method == http.MethodGet,
+		rest == "messages" && method == http.MethodGet,
+		rest == "takeover" && (method == http.MethodGet || method == http.MethodPost),
+		rest == "operator-messages" && method == http.MethodPost:
+		return nil
+	}
+	return errors.New("route unavailable to an operator token")
 }
 
 func checkAgentBoundCreate(r *http.Request, agent string) error {
