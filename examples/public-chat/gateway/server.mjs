@@ -46,7 +46,7 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
   };
   const conversation = async (visitorId) => {
     const known = visitors.get(visitorId);
-    if (known) return known;
+    if (known?.session_id) return known;
     const session = await gateway.sessions.create({ agent_name: config.agentName, workspace_path: config.workspacePath, title: `Visitor ${visitorId.slice(0, 8)}` });
     emit('conversation.started', { session_id: session.id, visitor_id: visitorId });
     return visitors.touch(visitorId, { session_id: session.id, messages: 0 });
@@ -143,8 +143,10 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
       return [200, { takeover: await operator.agents.handBack(sessionId) }];
     }
     if (path === '/ops/reopen') {
+      // The visitor starts a fresh conversation: the agent would otherwise read its
+      // own goodbye in the history and keep treating the chat as closed.
       const visitorId = visitors.bySession(sessionId);
-      await visitors.touch(visitorId, { ended: null });
+      await visitors.touch(visitorId, { ended: null, person: null, session_id: null, messages: 0, previous_session_id: sessionId });
       emit('conversation.reopened', { session_id: sessionId, visitor_id: visitorId });
       return [200, { reopened: true }];
     }

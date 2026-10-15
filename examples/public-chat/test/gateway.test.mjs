@@ -108,8 +108,11 @@ test('end_conversation is a hard stop: later messages get no daemon call until a
     assert.equal(transcript.data.ended.reason, 'abuse');
     assert.equal((await g.call('/ops/reopen', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1' } })).status, 200);
     assert.ok(g.events.some(([type]) => type === 'conversation.reopened'));
+    const creates = g.calls.filter(([op]) => op === 'create').length;
     const reopened = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'sorry, how much does it cost?' } });
     assert.equal(reopened.data.status, 'answered');
+    assert.equal(g.calls.filter(([op]) => op === 'create').length, creates + 1, 'a reopened chat starts a fresh conversation');
+    assert.equal(g.visitors.get(VISITOR).previous_session_id, 'sess-1');
   } finally { await g.close(); }
 });
 
