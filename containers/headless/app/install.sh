@@ -833,6 +833,12 @@ finish_update() (
   activate "$commit" || return 1
   UPDATE_DRAIN_GENERATION=''
   trap - EXIT INT TERM
+  verify_update_or_rollback "$commit" "$running" "$sandboxed"
+)
+
+# Shared acceptance/rollback decision, after activation has completed.
+verify_update_or_rollback() {
+  local commit=$1 running=$2 sandboxed=$3
   if came_up "$commit" "$sandboxed"; then
     rm -f "$UPDATE_BAD"
     update_state installed "${running:0:9} -> ${commit:0:9}" "$commit"
@@ -848,7 +854,7 @@ finish_update() (
   fi
   update_state failed "${commit:0:9} did not come up and the build before it could not be restored; check: journalctl -u $DAEMON_UNIT" "$commit"
   return 1
-)
+}
 
 # Turn automatic updates on or off, or show them.
 auto_update() {

@@ -88,7 +88,13 @@ if [[ $action == land ]]; then
     candidate=$(mktemp -d "$TMPDIR/app-candidate.XXXXXX")
     trap 'rm -rf -- "$candidate"' EXIT
     git_folder archive "$head" | tar -x -C "$candidate"
-    (cd "$candidate" && bash scripts/test-app-runs.sh) || die "app-runs landing check failed (see step output above)"
+    if ! (cd "$candidate" && bash scripts/test-app-runs.sh) >"$candidate/app-runs.log" 2>&1; then
+      cat "$candidate/app-runs.log" >&2
+      step=$(sed -nE 's/^([a-z][a-z0-9-]{0,63}): FAIL:.*/\1/p' "$candidate/app-runs.log" | head -n 1)
+      echo "APP_RUNS_FAILED:${step:-app-runs}" >&2
+      exit 1
+    fi
+    cat "$candidate/app-runs.log"
   fi
   permissions='{"contents":"write","metadata":"read"}'
 fi

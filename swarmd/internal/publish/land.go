@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -46,13 +47,13 @@ func Land(ctx context.Context, rule Rule, req Request) (LandResult, error) {
 		return LandResult{}, err
 	}
 	defer os.RemoveAll(scratch)
-	output, err := command(ctx, rule, scratch, 5*time.Minute, "land",
+	output, err := command(ctx, rule, scratch, landTimeout(), "land",
 		"SWARM_PUBLISH_JOB_ID="+req.JobID, "SWARM_PUBLISH_BRANCH="+req.Branch,
 		"SWARM_PUBLISH_HEAD="+req.Head, "SWARM_PUBLISH_BASE_BRANCH="+req.BaseBranch,
 		"SWARM_PUBLISH_BASE_COMMIT="+req.BaseCommit)
 	// Do not expose privileged command output: it may contain credentials.
 	if err != nil {
-		return LandResult{}, errors.New("land command failed")
+		return LandResult{}, landFailure(output)
 	}
 	receipt := lastLine(output)
 	if receipt == "MOVED" {
@@ -63,4 +64,21 @@ func Land(ctx context.Context, rule Rule, req Request) (LandResult, error) {
 		return LandResult{}, errors.New("land command did not print LANDED with the requested head or MOVED")
 	}
 	return LandResult{Commit: fields[1]}, nil
+}
+
+// Only the bounded step receipt crosses into delivery_reason, never command logs.
+var appFailureReceipt = regexp.MustCompile(`(?m)^APP_RUNS_FAILED:([a-z][a-z0-9-]{0,63})$`)
+
+func landFailure(output string) error {
+	if match := appFailureReceipt.FindStringSubmatch(output); match != nil {
+		return errors.New("app-runs landing check failed: " + match[1])
+	}
+	return errors.New("land command failed")
+}
+
+func landTimeout() time.Duration {
+	if value, err := time.ParseDuration(os.Getenv("SWARM_LAND_TIMEOUT")); err == nil && value > 0 && value <= time.Hour {
+		return value
+	}
+	return 10 * time.Minute
 }

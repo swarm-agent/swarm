@@ -370,12 +370,23 @@ smoke before landing `swarm-agent/swarm`, after queue checks. Test exact-candida
 selection and failure rejection with
 `bash containers/headless/app/check-app-candidate.sh`.
 
-Current limitations: container build/command/land verification is not implemented;
-without a runtime these steps explicitly skip, and with a runtime the gate fails
-closed. Do not enable this candidate for production landing until those steps
-are implemented. `--live MACHINE_API_URL` is experimental and unverified: run on
-the daemon host with shared filesystem visibility and authenticated transport
-(e.g. its owner `unix:///path/to/api.sock`). It never loads provider credentials.
-It requests a coder job and checks committed hello.txt content; it deletes the
-project record but retains the repository for safe inspection. It does not yet
-prove worktree teardown or full remote-machine authentication.
+With a usable container runtime, the isolated daemon enables its sandbox and
+builds an environment derived from Swarm's default image through the public
+environment API, waiting up to eight minutes for ready. Without a runtime this
+step skips. Model-dependent command/commit steps belong to `--live` only.
+
+Run `bash scripts/test-app-runs.sh --live unix:///path/to/api.sock` on the daemon
+host using its local owner transport (as with local MCP). No provider credential
+is loaded or copied. It requests a real coder job, waits at most fifteen minutes,
+and verifies hello.txt on the branch attributed to that job's project task,
+then deletes the project record. The repository is retained for inspection;
+this is not a remote-machine filesystem test. Live provider/container execution
+requires separate host validation; deterministic checks do not prove it.
+
+Landing uses a ten-minute default timeout, configurable on the daemon with
+`SWARM_LAND_TIMEOUT` (Go duration, positive and at most one hour). Only a bounded
+failure step receipt, not privileged command logs, enters delivery_reason.
+`bash scripts/test-update-rollback.sh` exercises the shared installer rollback
+decision against temporary executable releases; Layer 1 additionally runs it
+against the real daemon's smoke and an unavailable candidate socket. It does
+not exercise privileged systemd/Docker activation.
