@@ -1216,6 +1216,19 @@ func controlMCPStatus(c *controlMCPCall, _ map[string]any) (any, error) {
 // controlMCPActivity reads the machine's signal feed after a cursor and adds
 // the job id to each worker signal, so the AI can open it with get_job.
 func controlMCPActivity(c *controlMCPCall, args map[string]any) (any, error) {
+	if cursor, present := args["since_cursor"]; present {
+		value, ok := cursor.(string)
+		if !ok {
+			return nil, controlMCPToolFailure("since_cursor must be a decimal cursor string")
+		}
+		if _, err := strconv.ParseUint(value, 10, 64); err != nil {
+			return nil, controlMCPToolFailure("invalid since_cursor")
+		}
+		if err := c.requireTokenScope("sessions:read"); err != nil {
+			return nil, err
+		}
+		return c.dispatch(http.MethodGet, "/v3/activity", url.Values{"cursor": {value}}, nil)
+	}
 	if err := c.requireTokenScope("signals:read"); err != nil {
 		return nil, controlMCPToolFailure("this key cannot read the activity feed (it lacks signals:read; keys made before monitoring existed need replacing)")
 	}
@@ -1315,6 +1328,7 @@ func controlMCPJobTools() []controlMCPTool {
 			Name: "swarm_activity", Title: "What happened since last time",
 			Description: "The machine's activity after a cursor, oldest first: jobs finished, failed or cancelled (with job_id), agents blocked or unblocked, sandbox changes, refused keys and outside reports. Pass the cursor you got last time (or activity_cursor from swarm_status) to see only what is new; more means call again.",
 			InputSchema: controlMCPObject(nil, map[string]any{
+				"since_cursor": controlMCPStringProp("V3 metadata activity cursor; use 0 initially. Separate from the legacy signal cursor. Requires sessions:read.", 1, 32),
 				"after":        controlMCPStringProp("Cursor from swarm_status or a previous swarm_activity; empty for the oldest kept.", 0, 32),
 				"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "description": "Default 30."},
 				"min_severity": map[string]any{"type": "string", "enum": []string{"info", "warning", "critical"}},

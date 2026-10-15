@@ -112,6 +112,7 @@ type Server struct {
 	runner                      runService
 	runStreams                  *runControlAllocator
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
+	activityStreams             atomic.Int64
 	v3LiveHub                   *v3LiveHub
 	v3LivePatchEnabled          bool
 	v3SyncCursors               *v3SyncCursorKeyring
