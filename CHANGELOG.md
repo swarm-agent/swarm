@@ -18,6 +18,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Surface follow-up and sandbox cleanup failures in MCP job views, recover erased follow-up outcomes from retained session intents, stop retrying completed container cleanup, and strictly validate idle-off busy responses. Docs impact: none.
 
 - Preserve interrupted follow-up outcomes and failure signals, count follow-ups/reviews/landing in machine busy state, and retry terminal sandbox cleanup with job-visible errors. Add opt-in installer-owned idle auto-off. Docs impact: headless installer README documents cloud VM shutdown and resume.
+- Expose revisioned box limits through V3, MCP and SDK, with live worker admission/job-budget enforcement and limit signals. Docs impact: added `docs/box-limits.md`.
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.
 - Protect quiet V3 provider/tool execution and queued/recovering intents from worker watchdog settlement; fence orphan settlement against concurrent progress/completion and remove only the target review worktree registration during torn cleanup. Docs impact: none.

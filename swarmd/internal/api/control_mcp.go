@@ -58,6 +58,7 @@ type controlMCPInstruction struct {
 // tools (/mcp?tools=all, `swarm mcp --all-tools`). A tool the caller's key
 // level does not allow is never listed.
 var controlMCPCoreTools = map[string]bool{
+	"swarm_get_limits": true, "swarm_set_limits": true,
 	"swarm_status": true, "swarm_activity": true, "swarm_list_runs": true,
 	"swarm_list_providers": true, "swarm_connect_chatgpt": true, "swarm_request_provider_key": true,
 	"swarm_list_models": true, "swarm_set_agent_model": true, "swarm_get_usage": true,

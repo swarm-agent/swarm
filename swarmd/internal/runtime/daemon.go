@@ -450,6 +450,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	// The machine signal feed: high-level events monitors and forwarders follow.
 	signalStore := pebblestore.NewSignalStore(store)
+	store.SetLimitSignalStore(signalStore)
 	signalEmitter := signals.NewEmitter(signalStore)
 	permissionSvc.SetSignalEmitter(signalEmitter)
 	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))

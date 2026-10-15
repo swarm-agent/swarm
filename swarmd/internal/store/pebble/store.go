@@ -40,6 +40,7 @@ type Store struct {
 	beforeProjectTaskUpdateHook func(taskID string) error
 	signalsMu                   sync.Mutex
 	workersMu                   sync.Mutex
+	limitSignals                *SignalStore
 	workerRunObserver           func(worker WorkerRecord, run WorkerRunRecord)
 	jobReviewObserver           func(account, worker, run string, review JobReview)
 	workerPublisherMu           sync.RWMutex

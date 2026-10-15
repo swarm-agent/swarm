@@ -237,6 +237,16 @@ func (s *SessionStore) CheckWorkerSessionBudgetWithPrice(account, sessionID, pri
 	if !workerOwned {
 		return nil
 	}
+	limits, err := s.GetLimits(account)
+	if err != nil {
+		return err
+	}
+	if limits.JobCostUSD > 0 && priceStatus != "known" && priceStatus != "free" && priceStatus != "subscription" {
+		return s.store.limitReached(account, "job_cost_usd", limits.JobCostUSD)
+	}
+	if err := s.checkJobLimits(account, scopes); err != nil {
+		return err
+	}
 	date := time.Now().UTC().Format("2006-01-02")
 	// Exhaustion precedes reservations so they cannot hide a genuine day stop.
 	for _, scope := range scopes {

@@ -78,6 +78,7 @@ var controlMCPWorkspaceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 // minting and ChatGPT sign-in appear only for the box-setup tools, which fix
 // the scopes and the sign-in method themselves.
 var controlMCPRoutes = []string{
+	"GET v3/limits", "PUT v3/limits",
 	"GET v1/workspace/list",
 	"POST v1/workspace/repository/setup",
 	"POST v1/workspace/add",
@@ -802,6 +803,8 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPAssignWorkerTask,
 		},
+		{Name: "swarm_get_limits", Title: "Read box limits", Description: "Read revisioned box admission and per-job limits.", InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPGetLimits},
+		{Name: "swarm_set_limits", Title: "Set box limits", Description: "Replace box limits using expected_revision; requires usage:write. Hard ceilings cannot be raised.", InputSchema: controlMCPObject([]string{"expected_revision", "limits"}, map[string]any{"expected_revision": map[string]any{"type": "integer", "minimum": 0}, "limits": controlMCPLimitsSchema()}), Annotations: controlMCPDestructive, call: controlMCPSetLimits},
 		{
 			Name: "swarm_get_usage", Title: "Read usage and limits",
 			Description: "Model spend and tokens for a period, top models, and the account's daily limits. Each model's billing says why its cost is what it is: subscription (a sign-in provider such as ChatGPT: Swarm reports no per-token cost; nominal_cost_usd is the same use at API prices when known), metered (priced per token) or unpriced (no price known, so cost shows 0). A limit of none means no limit.",

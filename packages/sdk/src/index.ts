@@ -36,3 +36,6 @@ export * from './websocket.js';
 export * from './browser.js';
 
 export type { ApplicationResults, ApplicationResultsOptions } from './app-results.js';
+
+export { SwarmLimitsNamespace } from './limits.js';
+export type { BoxLimits } from './limits.js';

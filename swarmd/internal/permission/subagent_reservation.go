@@ -144,6 +144,16 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 	if decision == SubagentReservationApprove && automaticWaves >= policy.AutomaticLaunchesPerParentRun {
 		decision, reason = overBudgetSubagentDecision(policy, "the automatic wave budget is exhausted")
 	}
+	if decision != SubagentReservationApprove && s.signals != nil && policy.Mode == SubagentModeBounded && !request.Delegated {
+		name, value := "active_children", launchLimit
+		if request.SwarmMode {
+			name = "swarm_children"
+		}
+		if automaticWaves >= policy.AutomaticLaunchesPerParentRun {
+			name, value = "delegation_waves", policy.AutomaticLaunchesPerParentRun
+		}
+		s.signals.Emit(pebblestore.Signal{Kind: "limit.reached", Account: request.AccountScopeID, Severity: pebblestore.SignalSeverityWarning, Summary: reason, Attrs: map[string]string{"limit": name, "value": fmt.Sprint(value)}})
+	}
 	status := string(decision)
 	record := pebblestore.SubagentWaveReservation{AccountScopeID: request.AccountScopeID, SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, SwarmMode: request.SwarmMode, Program: request.Program, ReadyCount: request.ReadyCount, MaxConcurrency: request.MaxConcurrency, Status: status}
 	if decision != SubagentReservationDeny {

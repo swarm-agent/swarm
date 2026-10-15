@@ -237,6 +237,17 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	if err := NewSessionStore(ws.store).checkWorkerBudgetAdmissionLocked(account, req.WorkerID); err != nil {
 		return WorkerRunRecord{}, err
 	}
+	limits, err := ws.store.GetLimits(account)
+	if err != nil {
+		return WorkerRunRecord{}, err
+	}
+	active, err := ws.unfinishedWorkerRuns(account, "", "")
+	if err != nil {
+		return WorkerRunRecord{}, err
+	}
+	if len(active) >= limits.WorkerJobConcurrency {
+		return WorkerRunRecord{}, ws.store.limitReached(account, "worker_job_concurrency", limits.WorkerJobConcurrency)
+	}
 	var automationRevision uint64
 	if req.AutomationID != "" {
 		for _, a := range worker.Automations {
@@ -521,14 +532,14 @@ func (ws *WorkerStore) unfinishedWorkerRuns(account, id, autoID string) ([]Worke
 		if err := json.Unmarshal(it.Value(), &entry); err != nil {
 			return nil, err
 		}
-		r, found, err := ws.GetWorkerRun(account, id, entry.RunID)
+		r, found, err := ws.GetWorkerRun(account, entry.WorkerID, entry.RunID)
 		if err != nil {
 			return nil, err
 		}
 		if !found {
 			continue
 		}
-		if r.AccountScopeID != account || r.WorkerID != id {
+		if r.AccountScopeID != account || (id != "" && r.WorkerID != id) {
 			return nil, ErrWorkerConflict
 		}
 		if (r.Status == "admitted" || r.Status == "queued" || r.Status == "preparing" || r.Status == "running") && (autoID == "" || r.AutomationID == autoID) {
