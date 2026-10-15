@@ -89,7 +89,9 @@ sudo chown 10001:10001 secrets/swarm_* secrets/*_secret && chmod 0400 secrets/sw
 ```
 
 Both Swarm tokens expire within 30 days; mint new ones and restart the gateway
-before they do.
+before they do. `swarmctl setup sdk-tokens` lists every token's ID, kind and
+limits (never the token); `swarmctl setup revoke-sdk-token --id ID` revokes one,
+for example the old gateway token after you swap in a new one.
 
 Restrict the provider key to the model API and cap its daily requests in the
 provider's console. An IP restriction only works if you know the address the
