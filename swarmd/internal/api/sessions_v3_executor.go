@@ -914,6 +914,9 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	e.attachCancel(job, runCancel)
+	if execution, err := e.server.workerExecutionService(); err == nil {
+		defer execution.TrackV3Execution(job.SessionID, runCancel)()
+	}
 	if e.startDelay > 0 {
 		select {
 		case <-runCtx.Done():

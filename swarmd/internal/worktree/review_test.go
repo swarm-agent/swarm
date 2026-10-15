@@ -70,8 +70,15 @@ func TestReviewerExactHeadAndCleanup(t *testing.T) {
 	if err := s.RemoveReviewWorkspace(repo, a.WorkspacePath, "review-owner", selected); err != nil {
 		t.Fatal("cleanup not idempotent", err)
 	}
-	// Torn cleanup must prune stale registration, but never accept another
-	// owner's path. Real Git is the narrowest proof of prune postconditions.
+	// Torn cleanup removes only its target registration. Another unavailable
+	// job must remain registered: real Git proves this isolation boundary.
+	other, err := s.allocateReviewWorkspace(repo, "other-owner", selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(other.WorkspacePath); err != nil {
+		t.Fatal(err)
+	}
 	for _, missing := range []string{"pointer", "directory"} {
 		t.Run(missing, func(t *testing.T) {
 			a, err := s.allocateReviewWorkspace(repo, "review-owner", selected)
@@ -91,6 +98,9 @@ func TestReviewerExactHeadAndCleanup(t *testing.T) {
 			}
 			if err := s.RemoveReviewWorkspace(repo, a.WorkspacePath, "review-owner", selected); err != nil {
 				t.Fatal(err)
+			}
+			if !strings.Contains(git(repo, "worktree", "list", "--porcelain"), other.WorkspacePath) {
+				t.Fatal("unrelated registration removed")
 			}
 			if strings.Contains(git(repo, "worktree", "list", "--porcelain"), a.WorkspacePath) {
 				t.Fatal("stale registration retained")

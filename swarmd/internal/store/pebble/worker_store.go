@@ -2385,6 +2385,15 @@ func (ws *WorkerStore) ImportWorkerUpdate(account, user, workerID string, expect
 }
 
 func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (WorkerRunRecord, error) {
+	return ws.recordWorkerRun(account, run, nil)
+}
+
+// RecordWorkerRunIfRunning never replaces a concurrent terminal outcome.
+func (ws *WorkerStore) RecordWorkerRunIfRunning(account string, run WorkerRunRecord, settle func() error) (WorkerRunRecord, error) {
+	return ws.recordWorkerRun(account, run, settle)
+}
+
+func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, settle func() error) (WorkerRunRecord, error) {
 	if ws == nil || ws.store == nil || ws.store.db == nil {
 		return WorkerRunRecord{}, errors.New("store is not open")
 	}
@@ -2483,6 +2492,9 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	if runErr != nil {
 		return WorkerRunRecord{}, runErr
 	}
+	if settle != nil && (!existingOk || existingRun.Status != "running" || existingRun.CancelRequested || existingRun.SessionID != run.SessionID || existingRun.StartedAt != run.StartedAt) {
+		return WorkerRunRecord{}, ErrWorkerConflict
+	}
 	if run.Placement != nil || (existingOk && existingRun.Placement != nil) {
 		return WorkerRunRecord{}, fmt.Errorf("%w: remote outcomes require adapter fencing", ErrWorkerConflict)
 	}
@@ -2562,6 +2574,11 @@ func (ws *WorkerStore) RecordWorkerRun(account string, run WorkerRunRecord) (Wor
 	}
 	if err := m.setPayload(WorkerRealtimePayload{WorkerID: workerID, Revision: w.Revision, LifecycleState: w.LifecycleState, ChangeSummary: "run " + run.Status}); err != nil {
 		return WorkerRunRecord{}, err
+	}
+	if settle != nil {
+		if err := settle(); err != nil {
+			return WorkerRunRecord{}, err
+		}
 	}
 	if err := ws.store.commitWorkerRealtime(m); err != nil {
 		return WorkerRunRecord{}, err

@@ -78,7 +78,11 @@ version) echo fixture;;
 image) echo sha256:fixture;;
 info) echo '{}';;
 network) echo fixture;;
-container) exit 1;;
+container)
+ case "$4" in
+ *json*) echo '{"Running":true,"StartedAt":"fixture"}';;
+ *) exit 1;;
+ esac;;
 run|rm|start|volume) exit 0;;
 exec)
  shift
@@ -177,7 +181,22 @@ esac
 				}
 				return
 			}
-			fake := &reviewRunProvider{}
+			// Requirement: a quiet in-flight V3 provider owns execution even
+			// past the watchdog deadline; no streamed event is needed. This
+			// production executor fixture catches registration on the wrong path.
+			fake := &reviewRunProvider{inFlight: func() {
+				execution.SetStallTimeout(time.Nanosecond)
+				if !execution.RunActive(r.SessionID) {
+					t.Fatal("V3 provider not active")
+				}
+				if err := execution.ReconcileWorker(ctx, "acct-test", reviewer.ID); err != nil {
+					t.Fatal(err)
+				}
+				current, _, err := ws.GetWorkerRun("acct-test", reviewer.ID, r.ID)
+				if err != nil || current.Status != "running" {
+					t.Fatalf("quiet provider settled: %+v %v", current, err)
+				}
+			}}
 			s.agents = agent.NewService(store.NewAgentStore(db), nil)
 			s.providers = registry.New()
 			s.providers.RegisterRunner(fake)
@@ -232,7 +251,10 @@ esac
 	}
 }
 
-type reviewRunProvider struct{ calls int }
+type reviewRunProvider struct {
+	calls    int
+	inFlight func()
+}
 
 func (p *reviewRunProvider) ID() string { return "codex" }
 func (p *reviewRunProvider) CreateResponse(ctx context.Context, req provideriface.Request) (provideriface.Response, error) {
@@ -240,6 +262,9 @@ func (p *reviewRunProvider) CreateResponse(ctx context.Context, req providerifac
 }
 func (p *reviewRunProvider) CreateResponseStreaming(context.Context, provideriface.Request, func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	p.calls++
+	if p.inFlight != nil {
+		p.inFlight()
+	}
 	return provideriface.Response{StopReason: "end_turn", Text: "VERDICT: OK\nSUMMARY: correct\nFINDINGS: None\nTESTS RUN: fixture"}, nil
 }
 

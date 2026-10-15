@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.
+- Protect quiet V3 provider/tool execution and queued/recovering intents from worker watchdog settlement; fence orphan settlement against concurrent progress/completion and remove only the target review worktree registration during torn cleanup. Docs impact: none.
 
 - Size sandbox memory to the host with a validated `--sandbox-memory` override, keep Go build scratch on disk and reuse configured Go caches; retry landing checks interrupted by sandbox death once without blaming worker code. Docs impact: README sandbox resource guidance.
 - Resolve unattended permission safety and waiting signals from account-bound worker receipts, not editable session metadata; reject worker authority metadata injection through V3. Docs impact: none.

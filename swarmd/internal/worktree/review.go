@@ -105,8 +105,40 @@ func (s *Service) RemoveValidatedReviewWorkspace(source, path string) error {
 		// A torn-down checkout can retain files but no Git identity. Pruning
 		// must succeed and registration absence must be confirmed before the
 		// caller releases the restrictive reviewer identity.
-		if _, err := runGit(source, "worktree", "prune", "--expire", "now"); err != nil {
+		common, err := runGit(source, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err != nil {
 			return err
+		}
+		adminRoot := filepath.Join(strings.TrimSpace(common), "worktrees")
+		entries, err := os.ReadDir(adminRoot)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			admin := filepath.Join(adminRoot, entry.Name())
+			pointer := filepath.Join(admin, "gitdir")
+			info, err := os.Lstat(pointer)
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return errors.New("invalid worktree admin pointer")
+			}
+			data, err := os.ReadFile(pointer)
+			if err != nil {
+				return err
+			}
+			if filepath.Clean(strings.TrimSpace(string(data))) != filepath.Join(filepath.Clean(path), ".git") {
+				continue
+			}
+			// Delete only the positively identified target registration. Never
+			// prune unrelated jobs whose checkouts may also be unavailable.
+			if err := os.RemoveAll(admin); err != nil {
+				return err
+			}
 		}
 		listing, err := runGit(source, "worktree", "list", "--porcelain")
 		if err != nil {

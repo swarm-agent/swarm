@@ -22,13 +22,15 @@ import (
 // WorkerExecutionService is the shared worker admission and dispatch boundary.
 // It uses the existing V3 session/plan executor, not a second execution engine.
 type WorkerExecutionService struct {
-	activity      sync.Map
-	stallTimeout  atomic.Int64
-	host          *AutomationV2ExecutionHost
-	dispatchMu    sync.Mutex
-	scheduleMu    sync.Mutex
-	presetMu      sync.Mutex
-	lastScheduled time.Time
+	watchdogBeforeSettleForTest func()
+	activityMu                  sync.Mutex
+	activity                    sync.Map
+	stallTimeout                atomic.Int64
+	host                        *AutomationV2ExecutionHost
+	dispatchMu                  sync.Mutex
+	scheduleMu                  sync.Mutex
+	presetMu                    sync.Mutex
+	lastScheduled               time.Time
 }
 
 func NewWorkerExecutionService(runs *Service, repository *store.SessionStore, trees *worktree.Service, apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error), enqueue func(identity.Principal, store.V3SessionRunIntent) bool) (*WorkerExecutionService, error) {

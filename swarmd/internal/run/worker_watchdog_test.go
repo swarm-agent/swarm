@@ -17,7 +17,7 @@ import (
 // execution. WorkerExecutionService is the authority; a temporary durable store
 // and real Git lane exercise settlement without a provider dependency.
 func TestWorkerWatchdog(t *testing.T) {
-	for _, mode := range []string{"stalled", "restart", "progress", "queued"} {
+	for _, mode := range []string{"stalled", "restart", "progress", "queued", "completion"} {
 		t.Run(mode, func(t *testing.T) {
 			_, ss, execution, workspaceID := setupWorkerExecutionFixture(t, func(identity.Principal, store.V3SessionRunIntent) bool { return true })
 			ws := ss.Store().WorkerStore()
@@ -45,14 +45,49 @@ func TestWorkerWatchdog(t *testing.T) {
 				}
 			}
 			cancelled := false
-			if mode == "stalled" || mode == "progress" {
-				defer execution.trackExecution(r.SessionID, func() { cancelled = true })()
+			if mode == "progress" {
+				defer execution.TrackV3Execution(r.SessionID, func() { cancelled = true })()
+			}
+			if mode == "stalled" || mode == "restart" || mode == "completion" {
+				// Simulate the reported torn durable ownership: receipt running,
+				// but no active intent remains for executor recovery.
+				if err := ss.Store().Underlying().Delete(store.KeyV3SessionRunIntentActive(r.SessionID)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "completion" {
+				// Pause after watchdog inspection, then let completion win before
+				// its conditional write. Channels make the race deterministic.
+				inspected := make(chan struct{})
+				done := make(chan error, 1)
+				execution.watchdogBeforeSettleForTest = func() {
+					close(inspected)
+					if err := <-done; err != nil {
+						t.Fatal(err)
+					}
+				}
+				go func() {
+					<-inspected
+					completed := r
+					completed.Status = "succeeded"
+					_, err := ws.RecordWorkerRun("account", completed)
+					done <- err
+				}()
+				settled, err := execution.watchdogRun(r, time.Now().Add(time.Hour))
+				if err != nil || settled {
+					t.Fatalf("completion overwritten: %v %v", settled, err)
+				}
+				got, _, _ := ws.GetWorkerRun("account", w.ID, r.ID)
+				if got.Status != "succeeded" {
+					t.Fatal(got)
+				}
+				return
 			}
 			if mode == "restart" {
 				// A fresh service has no inherited execution ownership.
 				execution = &WorkerExecutionService{host: execution.host}
 			}
-			if mode == "stalled" || mode == "restart" {
+			if mode == "stalled" || mode == "restart" || mode == "queued" || mode == "progress" {
 				execution.SetStallTimeout(time.Nanosecond)
 			}
 			if err := execution.ReconcileWorker(context.Background(), "account", w.ID); err != nil {
@@ -70,8 +105,8 @@ func TestWorkerWatchdog(t *testing.T) {
 				if err != nil || found {
 					t.Fatalf("active intent retained: %+v %v", intent, err)
 				}
-				if mode == "stalled" && !cancelled {
-					t.Fatal("executor not cancelled")
+				if cancelled {
+					t.Fatal("owned executor cancelled")
 				}
 			} else if got.Status != "running" {
 				t.Fatalf("healthy run failed: %+v", got)
