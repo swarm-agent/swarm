@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +24,6 @@ type removalReceipt struct {
 var removalMu sync.Mutex
 var removalInFlight = map[string]<-chan error{}
 var removalSlots = make(chan struct{}, 2)
-var trashRecoveryOnce sync.Once
 var removalPending = map[string]removalReceipt{}
 
 func noSymlinkDirectory(path string) error {
@@ -193,9 +193,22 @@ func finishRemovalWithWait(entry string, receipt removalReceipt, wait time.Durat
 			result <- err
 			removalMu.Lock()
 			delete(removalInFlight, entry)
+			if err != nil {
+				removalPending[entry] = receipt
+			} else {
+				delete(removalPending, entry)
+			}
 			for pending, receipt := range removalPending {
-				delete(removalPending, pending)
-				_ = finishRemovalWithWait(pending, receipt, 0)
+				if err != nil {
+					break
+				}
+				// Failed attempts wait for the ticker, not an immediate retry loop.
+				if pending == entry {
+					continue
+				}
+				if err := finishRemovalWithWait(pending, receipt, 0); err == nil {
+					delete(removalPending, pending)
+				}
 				if len(removalSlots) == cap(removalSlots) {
 					break
 				}
@@ -305,18 +318,8 @@ func removeWorktreeRegistrationWithReceipt(source, path, receiptDir string) erro
 	return nil
 }
 
-// ResumeTrash starts durable periodic retries at service construction, without touching live lanes or
-// pruning unrelated Git entries. Invalid receipts remain for explicit repair.
+// ResumeTrash performs one durable recovery pass.
 func ResumeTrash() error {
-	trashRecoveryOnce.Do(func() {
-		go func() {
-			ticker := time.NewTicker(time.Minute)
-			defer ticker.Stop()
-			for range ticker.C {
-				_ = ResumeTrash()
-			}
-		}()
-	})
 	root, err := appstorage.WorktreesRoot()
 	if err != nil {
 		return err
@@ -435,4 +438,41 @@ func deleteReceiptedAdmin(adminRoot, receiptDir, path string) error {
 	}
 	defer anchor.Close()
 	return anchor.RemoveAll(name)
+}
+
+// startTrashRecovery owns both the initial pass and retries for this service.
+func (s *Service) startTrashRecovery(root string, interval time.Duration) {
+	s.trashStop = make(chan struct{})
+	s.trashDone = make(chan struct{})
+	go func() {
+		defer close(s.trashDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		lastError := ""
+		for {
+			err := resumeTrashRoot(root)
+			message := ""
+			if err != nil {
+				message = err.Error()
+			}
+			if message != "" && message != lastError {
+				log.Printf("worktree trash recovery failed: %s", message)
+			}
+			lastError = message
+			select {
+			case <-s.trashStop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// Close stops periodic recovery and waits for its current pass to finish.
+func (s *Service) Close() {
+	if s.trashStop == nil {
+		return
+	}
+	s.trashClose.Do(func() { close(s.trashStop) })
+	<-s.trashDone
 }

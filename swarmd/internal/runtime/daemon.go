@@ -142,6 +142,7 @@ type Daemon struct {
 	automationClosed          bool
 	automationV2Scheduler     *sessionruntime.AutomationV2Scheduler
 	workerExecution           *run.WorkerExecutionService
+	worktreeService           *worktreeruntime.Service
 	webhookDispatcher         *webhook.Dispatcher
 	automationLoop            *automationLoop
 	automationExecution       *automation.ExecutionService
@@ -990,6 +991,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		aiTaskDispatcher:          aiTaskDispatcher,
 		designDispatcher:          designDispatcher,
 		workerExecution:           workerExecution,
+		worktreeService:           worktreeSvc,
 		deploymentMgr:             deploymentMgr,
 		localTransportRuntimeName: localTransportRuntimeName,
 		remoteTransport:           remoteSvc,
@@ -1216,6 +1218,9 @@ func (d *Daemon) cleanup() error {
 		if d.store != nil {
 			if d.workerExecution != nil {
 				d.workerExecution.CloseCleanup()
+			}
+			if d.worktreeService != nil {
+				d.worktreeService.Close()
 			}
 			if err := d.store.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("close store: %w", err))

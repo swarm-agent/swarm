@@ -67,7 +67,8 @@ func TestRemovalTrashRestart(t *testing.T) {
 		t.Fatal("live lane retained", err)
 	}
 	// Recreate the service against the same filesystem, as daemon startup does.
-	NewService(nil, nil, nil)
+	recovery := NewService(nil, nil, nil)
+	defer recovery.Close()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if _, err := os.Lstat(entry); os.IsNotExist(err) {
@@ -212,5 +213,78 @@ func TestRemovalQueueDrains(t *testing.T) {
 		if _, err := os.Lstat(entry); !os.IsNotExist(err) {
 			t.Fatal("stranded receipt", entry, err)
 		}
+	}
+}
+
+// Requirement: service-owned periodic recovery retries a failed deletion without
+// a caller rescan. Real Git/files and an unavailable source repository exercise
+// the transient registration failure boundary; Close must stop the worker.
+func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.Mkdir(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-b", "dev")
+	git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base")
+	a, err := (&Service{}).allocateReviewWorkspace(repo, "ticker-retry", git("rev-parse", "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(filepath.Dir(a.WorkspacePath), ".trash", filepath.Base(a.WorkspacePath))
+	if err := os.MkdirAll(entry, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(removalReceipt{repo, a.WorkspacePath})
+	if err := os.WriteFile(filepath.Join(entry, "receipt.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(repo, repo+"-offline"); err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{}
+	s.startTrashRecovery(filepath.Dir(filepath.Dir(a.WorkspacePath)), 20*time.Millisecond)
+	defer s.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(entry, "renamed")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("initial recovery did not attempt deletion")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Serialize with the first failed pass before restoring the dependency.
+	removalMu.Lock()
+	if _, err := os.Stat(filepath.Join(entry, "receipt.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(repo+"-offline", repo); err != nil {
+		t.Fatal(err)
+	}
+	removalMu.Unlock()
+	for {
+		if _, err := os.Lstat(entry); os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("ticker stranded failed receipt")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.Close()
+	select {
+	case <-s.trashDone:
+	default:
+		t.Fatal("recovery did not stop")
 	}
 }

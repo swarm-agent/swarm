@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,22 +175,22 @@ type PruneResult struct {
 var errAccountOwnedWorkspaceRequired = errors.New("account-owned workspace path is required")
 
 type Service struct {
-	store     *pebblestore.WorktreeStore
-	workspace *workspaceruntime.Service
-	events    *pebblestore.EventLog
-	mu        sync.Mutex
+	store      *pebblestore.WorktreeStore
+	workspace  *workspaceruntime.Service
+	events     *pebblestore.EventLog
+	mu         sync.Mutex
+	trashStop  chan struct{}
+	trashDone  chan struct{}
+	trashClose sync.Once
 }
 
 func NewService(store *pebblestore.WorktreeStore, workspace *workspaceruntime.Service, events *pebblestore.EventLog) *Service {
+	s := &Service{store: store, workspace: workspace, events: events}
 	root, rootErr := appstorage.WorktreesRoot()
 	if rootErr == nil {
-		go func() {
-			if err := resumeTrashRoot(root); err != nil {
-				log.Printf("worktree trash recovery failed: %v", err)
-			}
-		}()
+		s.startTrashRecovery(root, time.Minute)
 	}
-	return &Service{store: store, workspace: workspace, events: events}
+	return s
 }
 
 func (s *Service) IsEnabled(workspacePath string) (bool, error) {
