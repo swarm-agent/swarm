@@ -43,17 +43,49 @@
     log.scrollTop = log.scrollHeight;
   };
 
+  // A person stepping in: offered -> waiting -> joined, or missed if nobody accepts in time.
+  let personShown = '';
+  const showPerson = (person) => {
+    if (!person || personShown === person.state) return;
+    personShown = person.state;
+    if (person.state === 'waiting') say('agent', `Connecting you with ${person.name}…`);
+    if (person.state === 'joined') say('agent', `${person.name} joined the chat.`);
+    if (person.state === 'missed') say('agent', `${person.name} couldn't join just now. Leave your email and they will get back to you.`);
+  };
+
   const pollReplies = () => {
     clearInterval(polling);
     polling = setInterval(async () => {
       try {
         const res = await fetch(`${endpoint}/api/chat/replies?visitor_id=${visitorId}&after=${lastSeq}`);
         const data = await res.json();
-        for (const r of data.replies || []) { lastSeq = Math.max(lastSeq, r.seq); say(r.from, r.text); }
-        if (!data.with_person) clearInterval(polling);
+        showPerson(data.person);
+        for (const r of data.replies || []) { lastSeq = Math.max(lastSeq, r.seq); say(r.from, r.from === 'person' && data.person ? `${data.person.name}: ${r.text}` : r.text); }
+        if (!data.with_person && data.person?.state !== 'waiting') clearInterval(polling);
       } catch { clearInterval(polling); }
-    }, 4000);
+    }, 3000);
   };
+
+  // The agent offered a person who is online: one Yes button, no model run when pressed.
+  const offerPerson = (person) => {
+    const yes = document.createElement('button');
+    yes.type = 'button';
+    yes.textContent = `Yes, talk to ${person.name}`;
+    yes.style.cssText = 'align-self:flex-start;padding:7px 12px;border:0;border-radius:999px;background:#111;color:#fff;cursor:pointer';
+    yes.addEventListener('click', async () => {
+      yes.remove();
+      const res = await fetch(`${endpoint}/api/chat/person`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitor_id: visitorId, accept: true }) }).catch(() => undefined);
+      const data = res ? await res.json().catch(() => ({})) : {};
+      if (data.status === 'waiting' || data.status === 'joined') { showPerson(data.person); pollReplies(); } else say('agent', 'Nobody is online right now. ' + fallback);
+    });
+    log.appendChild(yes);
+    log.scrollTop = log.scrollHeight;
+  };
+
+  // Header: whether someone from the team is online.
+  fetch(`${endpoint}/api/chat/status`).then((r) => r.json()).then((data) => {
+    if (data.staff?.[0]) header.textContent = `${title} · ${data.staff[0].name} is online`;
+  }).catch(() => {});
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -66,13 +98,17 @@
       const data = await res.json();
       if (data.ticket) { ticket = data.ticket; remember('chat_ticket', ticket); }
       if (Number.isFinite(data.seq)) lastSeq = Math.max(lastSeq, data.seq);
-      if (data.status === 'answered') say('agent', data.reply);
+      if (data.status === 'answered') {
+        say('agent', data.reply);
+        if (data.person?.state === 'offered') offerPerson(data.person);
+        if (data.person?.state === 'waiting') { showPerson(data.person); pollReplies(); }
+      }
       else if (data.status === 'ended') {
         if (data.reply) say('agent', data.reply);
         say('agent', 'This chat has ended.');
         for (const el of form.elements) el.disabled = true;
       }
-      else if (data.status === 'with_person') { say('agent', 'A person is with you now.'); pollReplies(); }
+      else if (data.status === 'with_person') { showPerson(data.person || { state: 'joined', name: 'A person' }); pollReplies(); }
       else if (data.status === 'slow_down') say('agent', 'Please wait a moment before sending more.');
       else if (data.status === 'busy') say('agent', 'Lots of visitors right now. Please try again in a few seconds.');
       else if (data.status === 'conversation_full') say('agent', 'Let us continue this with a person: ' + (data.booking_url || fallback));

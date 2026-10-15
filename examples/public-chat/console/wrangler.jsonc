@@ -1,0 +1,24 @@
+// Staff console. Put it on its own hostname behind a Cloudflare Access
+// application that allows only your team's emails; the Worker verifies the
+// Access token as well. Deploy from this directory:
+//   npx wrangler secret put OPS_SECRET              (same value as the gateway's)
+//   npx wrangler secret put ACCESS_CLIENT_ID        (Access service token for the gateway's tunnel hostname)
+//   npx wrangler secret put ACCESS_CLIENT_SECRET
+//   npx wrangler deploy
+{
+  "name": "public-chat-console",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  // No workers.dev or preview URL: only the Access-protected hostname reaches it.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "staff.example.com", "custom_domain": true }],
+  "vars": {
+    "GATEWAY_URL": "https://chat-gateway.example.com",
+    // Your Access team domain and the console application's Audience (AUD) tag.
+    "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
+    "ACCESS_AUD": "REPLACE_WITH_THE_APPLICATION_AUD_TAG",
+    // Who may use the console, as shown to visitors ("Sam, the founder").
+    "STAFF": "{\"sam@example.com\": {\"name\": \"Sam\", \"role\": \"founder\"}}"
+  }
+}

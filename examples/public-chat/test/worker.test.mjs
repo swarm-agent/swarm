@@ -54,6 +54,19 @@ test('a valid message is forwarded with the gateway key and Access service token
   assert.equal(init.headers['CF-Access-Client-Secret'], 'csecret');
 });
 
+test('staff status and the Yes button are forwarded with only the reviewed fields', async () => {
+  const gw = gatewayStub({ staff_online: true, staff: [{ name: 'Sam', role: 'founder' }] });
+  const status = await handle(new Request('https://chat.example.com/api/chat/status', { headers: { Origin: SITE } }), env(), gw);
+  assert.equal(status.status, 200);
+  assert.equal(gw.seen[0].url, 'https://gw.example.com/chat/status');
+  const yes = (body) => new Request('https://chat.example.com/api/chat/person', { method: 'POST', headers: { Origin: SITE, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await handle(yes({ visitor_id: VISITOR, accept: 'yes' }), env(), gw)).status, 400);
+  assert.equal((await handle(yes({ visitor_id: VISITOR, accept: true, session_id: 'other' }), env(), gw)).status, 200);
+  const { url, init } = gw.seen.at(-1);
+  assert.equal(url, 'https://gw.example.com/chat/person');
+  assert.deepEqual(JSON.parse(init.body), { visitor_id: VISITOR, accept: true });
+});
+
 test('bad input, oversize bodies, the rate limit and the kill switch stop at the edge', async () => {
   const gw = gatewayStub();
   for (const req of [

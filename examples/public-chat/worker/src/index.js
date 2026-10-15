@@ -83,8 +83,19 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     if (!VISITOR_ID.test(visitorId) || !Number.isFinite(after)) return reply(400, { error: 'invalid query' });
     return forward(`/chat/replies?visitor_id=${visitorId}&after=${after}`, { method: 'GET' });
   }
-  if (request.method !== 'POST' || url.pathname !== '/api/chat') return reply(404, { error: 'not found' });
+  // Whether someone from the team is online, for the widget's header.
+  if (request.method === 'GET' && url.pathname === '/api/chat/status') return forward('/chat/status', { method: 'GET' });
+  if (request.method !== 'POST' || (url.pathname !== '/api/chat' && url.pathname !== '/api/chat/person')) return reply(404, { error: 'not found' });
   if (Number(request.headers.get('Content-Length') ?? 0) > MAX_BODY) return reply(413, { error: 'too large' });
+  if (url.pathname === '/api/chat/person') {
+    // The visitor's Yes / No thanks to talking to a person: forwarded as exactly two fields.
+    const raw = await request.text();
+    if (raw.length > MAX_BODY) return reply(413, { error: 'too large' });
+    let body;
+    try { body = JSON.parse(raw); } catch { return reply(400, { error: 'invalid json' }); }
+    if (!VISITOR_ID.test(String(body?.visitor_id ?? '')) || typeof body.accept !== 'boolean') return reply(400, { error: 'visitor_id and accept are required' });
+    return forward('/chat/person', { method: 'POST', body: JSON.stringify({ visitor_id: body.visitor_id, accept: body.accept }) });
+  }
   const raw = await request.text();
   if (raw.length > MAX_BODY) return reply(413, { error: 'too large' });
   let body;

@@ -74,6 +74,72 @@ export async function createVisitorStore(file, { maxVisitors = 50_000, now = Dat
   };
 }
 
+/**
+ * Who on the team is reachable now. The staff console sends a heartbeat while
+ * it is open and set to available; an entry lapses after its TTL, so a closed
+ * laptop reads as away within a minute or two without any sign-out. The TTL
+ * allows for browsers slowing a background tab's timers to once a minute.
+ */
+export function createPresence({ ttlMs = 90_000, maxStaff = 20, now = Date.now } = {}) {
+  const staff = new Map();
+  const online = () => {
+    const t = now();
+    for (const [id, s] of staff) if (s.until <= t) staff.delete(id);
+    return [...staff.values()].map(({ name, role }) => ({ name, role }));
+  };
+  return {
+    beat({ id, name, role }) {
+      staff.delete(id);
+      staff.set(id, { name, role, until: now() + ttlMs });
+      while (staff.size > maxStaff) staff.delete(staff.keys().next().value);
+      return online();
+    },
+    leave(id) { staff.delete(id); return online(); },
+    online,
+  };
+}
+
+/**
+ * Recent gateway events for the staff console to long-poll: each has a
+ * sequence number, and wait() resolves as soon as something newer arrives.
+ */
+export function createFeed({ max = 500, now = Date.now } = {}) {
+  const events = [];
+  const waiters = new Set();
+  let seq = 0;
+  const since = (after) => events.filter((e) => e.seq > after);
+  return {
+    push(type, data) {
+      events.push({ seq: ++seq, type, at: now(), ...data });
+      if (events.length > max) events.shift();
+      for (const wake of waiters) wake();
+      waiters.clear();
+    },
+    since,
+    latest: () => seq,
+    wait(after, ms) {
+      if (since(after).length) return Promise.resolve(since(after));
+      return new Promise((resolve) => {
+        const wake = () => { clearTimeout(timer); waiters.delete(wake); resolve(since(after)); };
+        const timer = setTimeout(wake, ms);
+        waiters.add(wake);
+      });
+    },
+  };
+}
+
+/**
+ * Where a visitor stands with a person: offered (the agent asked), waiting
+ * (they said yes), joined (someone accepted), missed (nobody accepted in time).
+ * A waiting request lapses to missed after acceptTimeoutMs.
+ */
+export function personState(visitor, { acceptTimeoutMs, now = Date.now }) {
+  const person = visitor?.person;
+  if (!person) return null;
+  if (person.state === 'waiting' && now() - person.since > acceptTimeoutMs) return { ...person, state: 'missed' };
+  return person;
+}
+
 /** Who holds the conversation, from the session the gateway already reads. */
 export function takeoverOf(detail) {
   const takeover = detail?.raw?.session?.metadata?.takeover;
@@ -85,6 +151,11 @@ export function repliesAfter(detail, afterSeq = 0) {
   return (detail?.messages ?? [])
     .filter((m) => m.role === 'assistant' && Number(m.global_seq ?? m.seq ?? 0) > afterSeq && m.metadata?.visible !== false)
     .map((m) => ({ id: m.id, seq: Number(m.global_seq ?? m.seq ?? 0), from: m.metadata?.source === 'operator' ? 'person' : 'agent', text: String(m.content ?? '') }));
+}
+
+/** A person's hand-off state as the widget sees it: no summaries or internal notes. */
+export function publicPerson(person) {
+  return person ? { state: person.state, name: person.name, role: person.role } : null;
 }
 
 /** The newest assistant message's sequence in `messages`, or 0. */
@@ -120,7 +191,7 @@ export function createEmitter({ url, secret, fetchImpl = fetch, now = Date.now }
  * gateway's own mapping (sessionId -> visitorId); the model supplies only the
  * business inputs, which the daemon has already checked against each schema.
  */
-export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, endConversation, now = Date.now }) {
+export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, endConversation, presence, setPerson, now = Date.now }) {
   return {
     get_playbook: async ({ topic }) => {
       if (!Object.hasOwn(playbook, topic)) throw new Error(`No playbook entry for ${topic}`);
@@ -133,9 +204,21 @@ export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, v
       emit('lead.captured', { session_id: sessionId, visitor_id: visitorId, lead: { name, email, need } });
       return { saved: true, next: 'A person will follow up by email.' };
     },
+    // Asks whether someone is online; if so the page shows the visitor a Yes button.
+    offer_person: async ({ summary }) => {
+      const [staff] = presence.online();
+      if (!staff) return { available: false, next: 'Nobody from the team is online right now. Offer to take the visitor\'s name, email and need with capture_lead so a person follows up.' };
+      await setPerson({ state: 'offered', name: staff.name, role: staff.role, summary, since: now() });
+      emit('person.offered', { session_id: sessionId, visitor_id: visitorId, summary });
+      return { available: true, name: staff.name, role: staff.role, next: `In one short sentence, ask whether they would like to talk to ${staff.name}, the ${staff.role}, now. The page shows them a Yes button. If they say yes in words, call handoff_to_human.` };
+    },
     handoff_to_human: async ({ summary }) => {
-      emit('handoff.requested', { session_id: sessionId, visitor_id: visitorId, summary });
-      return { requested: true, booking_url: bookingUrl, next: 'A person has been asked to join. If nobody is around, they will follow up.' };
+      const [staff] = presence.online();
+      if (staff) await setPerson({ state: 'waiting', name: staff.name, role: staff.role, summary, since: now() });
+      emit('handoff.requested', { session_id: sessionId, visitor_id: visitorId, summary, staff_online: Boolean(staff) });
+      return staff
+        ? { requested: true, waiting: true, name: staff.name, next: `Tell the visitor ${staff.name} has been asked to join and will appear in this chat shortly.` }
+        : { requested: true, waiting: false, booking_url: bookingUrl, next: 'Nobody is online right now. Say a person will follow up, and offer to take their name and email with capture_lead.' };
     },
     // A hard stop the model can trigger but not undo: the gateway refuses every
     // later message from this visitor without a model run until a person reopens it.

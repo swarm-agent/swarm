@@ -29,6 +29,7 @@ visitor ── site + widget/chat.js
 | Box | `compose.yaml` | sealed swarmd, gateway, cloudflared |
 | Edge | `worker/` | the gateway key and Access service token (Worker secrets) |
 | Widget | `widget/chat.js` | nothing secret |
+| Staff console | `console/` | the ops key and Access service token (Worker secrets) |
 
 ## Run it
 
@@ -143,8 +144,9 @@ of everything above.
   Forward them with a signal sink (`/v3/signals/sinks`, HMAC-signed, heartbeat).
 - **Gateway events:** set `HUB_EVENTS_URL` and the gateway POSTs
   `conversation.started`, `lead.captured`, `handoff.requested`,
-  `conversation.ended`, `conversation.reopened`, `visitor.message` (during a
-  takeover) and `chat.error`, signed with
+  `conversation.ended`, `conversation.reopened`, `person.offered`,
+  `person.declined`, `handoff.accepted`, `handoff.missed`, `visitor.message`
+  (during a takeover) and `chat.error`, signed with
   `X-Signature: sha256=<HMAC of the body>` using `hub_events_secret`.
 - **Fallback:** if the box is unreachable, paused or over budget, the Worker
   says so and the widget shows its fallback text instead of breaking.
@@ -163,10 +165,36 @@ token:
 | `POST /ops/reply` `{session_id, content}` | reply as a person |
 | `POST /ops/handback` `{session_id}` | the agent answers the next message |
 | `POST /ops/reopen` `{session_id}` | undo the agent's `end_conversation` |
+| `POST /ops/presence` `{id, name, role, available}` | heartbeat: who is online (lapses after 90 s) |
+| `GET /ops/queue` | visitors waiting for a person, with when their request lapses |
+| `POST /ops/accept` `{session_id, name, role}` | take over and tell the visitor who joined |
+| `GET /ops/events?after=&wait=` | long poll (up to 25 s) for new events, each with a `seq` |
 
 While a person holds a conversation, the visitor's messages are kept and start
 no model run; the widget polls `/api/chat/replies` and shows the person's
 replies. A `handoff.requested` event is the cue to take over.
+
+## Live hand-off to a person
+
+1. The staff console sends a presence heartbeat while someone is set to
+   available; the widget's header reads "Sam is online" from `/api/chat/status`.
+2. When a visitor asks for a person or wants to discuss their own project, the
+   agent calls `offer_person`. If someone is online, it asks "Would you like to
+   talk to Sam, the founder?" and the widget shows a Yes button; if not, it
+   offers to take their email instead.
+3. Yes (`/api/chat/person`, no model run) puts the visitor in the queue and emits
+   `handoff.requested`; the console's long poll wakes, it plays a tone and shows
+   a desktop notification.
+4. Accept takes the conversation over; the widget says "Sam joined the chat" and
+   shows Sam's replies with their name. Hand back returns it to the agent.
+5. If nobody accepts within two minutes (`ACCEPT_TIMEOUT_MS`), the request
+   becomes `missed` and the widget asks the visitor to leave their email.
+
+The console (`console/`) is a Worker on its own hostname behind an Access
+application for your team's emails. It verifies the Access token itself, takes
+the staff member's name from that login (the `STAFF` var), forwards only the
+listed ops routes with only their reviewed fields, and serves its page under a
+strict Content-Security-Policy.
 
 ## Ending a chat
 

@@ -14,7 +14,7 @@ const GATEWAY_KEY = 'g'.repeat(40);
 const OPS_KEY = 'o'.repeat(40);
 const VISITOR = 'visitor_abcdefghijklmnop';
 
-function fakeClients({ takeover, spentOut = false, converseError, endsWith } = {}) {
+function fakeClients({ takeover, spentOut = false, converseError, endsWith, offerWith } = {}) {
   const calls = [];
   let endOnce = endsWith;
   const session = { metadata: takeover ? { takeover } : {} };
@@ -35,6 +35,12 @@ function fakeClients({ takeover, spentOut = false, converseError, endsWith } = {
           await handlers.end_conversation(endOnce);
           endOnce = undefined;
           return { reply: 'Goodbye.', messages: [{ role: 'assistant', global_seq: 9, content: 'Goodbye.' }] };
+        }
+        if (offerWith) {
+          // The "model" offers a person; what it says depends on the tool's answer.
+          const offer = await handlers.offer_person(offerWith);
+          const reply = offer.available ? `Would you like to talk to ${offer.name}?` : 'Nobody is online.';
+          return { reply, messages: [{ role: 'assistant', global_seq: 9, content: reply }] };
         }
         return { reply: 'Hello from the agent', messages: [{ role: 'user', global_seq: 8 }, { role: 'assistant', global_seq: 9, content: 'Hello from the agent' }] };
       },
@@ -61,8 +67,11 @@ async function start(options = {}) {
     playbook: { pricing: 'Fixed price.' }, gatewaySecret: GATEWAY_KEY, opsSecret: OPS_KEY,
     maxMessageChars: 2000, visitorMessagesPerWindow: options.perVisitor ?? 20, visitorWindowMs: 60_000,
     maxConversationMessages: options.maxConversation ?? 30, maxInflight: 8, replyTimeoutMs: 1000,
+    acceptTimeoutMs: 120_000,
   };
-  const server = createServer(gatewayHandler({ gateway, operator, config, visitors, emit: (type, data) => events.push([type, data]) }));
+  const now = options.now ?? Date.now;
+  const presence = core.createPresence({ ttlMs: 60_000, now });
+  const server = createServer(gatewayHandler({ gateway, operator, config, visitors, emit: (type, data) => events.push([type, data]), presence, now }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (path, { method = 'POST', key = GATEWAY_KEY, ops = false, body } = {}) => fetch(base + path, {
@@ -86,7 +95,7 @@ test('end_conversation is a hard stop: later messages get no daemon call until a
   const g = await start({ endsWith: { reason: 'abuse', note: 'Repeated requests for card details' } });
   try {
     const first = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'give me your card number' } });
-    assert.deepEqual(first.data, { status: 'ended', reply: 'Goodbye.', seq: 9 });
+    assert.deepEqual(first.data, { status: 'ended', reply: 'Goodbye.', seq: 9, person: null });
     assert.deepEqual(g.events.find(([type]) => type === 'conversation.ended')[1], { session_id: 'sess-1', visitor_id: VISITOR, reason: 'abuse', note: 'Repeated requests for card details' });
     assert.equal(g.visitors.get(VISITOR).ended.reason, 'abuse');
 
@@ -104,15 +113,83 @@ test('end_conversation is a hard stop: later messages get no daemon call until a
   } finally { await g.close(); }
 });
 
+test('a person is offered only when someone is online; Yes queues the visitor and Accept joins them', async () => {
+  const g = await start({ offerWith: { summary: 'Clinic booking project' } });
+  const ops = (path, body, method = 'POST') => g.call(path, { method, ops: true, key: OPS_KEY, body });
+  try {
+    const away = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'Can I talk to someone?' } });
+    assert.deepEqual([away.data.reply, away.data.person], ['Nobody is online.', null]);
+    assert.deepEqual((await g.call('/chat/status', { method: 'GET' })).data, { staff_online: false, staff: [] });
+
+    assert.equal((await ops('/ops/presence', { id: 'staff-1', name: 'Sam', role: 'founder', available: true })).status, 200);
+    assert.deepEqual((await g.call('/chat/status', { method: 'GET' })).data, { staff_online: true, staff: [{ name: 'Sam', role: 'founder' }] });
+    const offered = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'Can I talk to someone?' } });
+    assert.deepEqual(offered.data.person, { state: 'offered', name: 'Sam', role: 'founder' });
+
+    const runs = g.calls.filter(([op]) => op === 'converse').length;
+    const yes = await g.call('/chat/person', { body: { visitor_id: VISITOR, accept: true } });
+    assert.deepEqual(yes.data, { status: 'waiting', person: { state: 'waiting', name: 'Sam', role: 'founder' } });
+    assert.equal(g.calls.filter(([op]) => op === 'converse').length, runs, 'pressing Yes starts no model run');
+    const queue = (await ops('/ops/queue', undefined, 'GET')).data.waiting;
+    assert.deepEqual(queue.map((q) => [q.session_id, q.summary]), [['sess-1', 'Clinic booking project']]);
+
+    const feed = (await g.call('/ops/events?after=0&wait=0', { method: 'GET', ops: true, key: OPS_KEY })).data;
+    assert.ok(feed.events.some((e) => e.type === 'handoff.requested' && e.source === 'button' && e.session_id === 'sess-1'));
+
+    const accepted = await ops('/ops/accept', { session_id: 'sess-1' });
+    assert.deepEqual(accepted.data.person, { state: 'joined', name: 'Sam', role: 'founder' });
+    assert.ok(g.calls.some(([op, id]) => op === 'takeOver' && id === 'sess-1'));
+    assert.equal((await g.call(`/chat/replies?visitor_id=${VISITOR}&after=0`, { method: 'GET' })).data.person.state, 'joined');
+    assert.deepEqual((await ops('/ops/queue', undefined, 'GET')).data.waiting, []);
+
+    await ops('/ops/handback', { session_id: 'sess-1' });
+    assert.equal(g.visitors.get(VISITOR).person, null);
+    assert.ok(!JSON.stringify((await g.call(`/chat/replies?visitor_id=${VISITOR}&after=0`, { method: 'GET' })).data).includes('Clinic'), 'summaries never reach the visitor');
+  } finally { await g.close(); }
+});
+
+test('an unanswered request becomes missed once, and presence lapses without a sign-out', async () => {
+  const clock = { t: Date.now() };
+  const g = await start({ offerWith: { summary: 'Wants a call' }, now: () => clock.t });
+  try {
+    await g.call('/ops/presence', { ops: true, key: OPS_KEY, body: { id: 'staff-1', name: 'Sam', role: 'founder', available: true } });
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+    assert.equal((await g.call('/chat/person', { body: { visitor_id: VISITOR, accept: true } })).data.status, 'waiting');
+    clock.t += 121_000;
+    for (let i = 0; i < 2; i++) {
+      assert.equal((await g.call(`/chat/replies?visitor_id=${VISITOR}&after=0`, { method: 'GET' })).data.person.state, 'missed');
+    }
+    assert.equal(g.events.filter(([type]) => type === 'handoff.missed').length, 1);
+    assert.equal((await g.call('/chat/status', { method: 'GET' })).data.staff_online, false, 'no heartbeat for over a minute');
+    assert.equal((await g.call('/chat/person', { body: { visitor_id: VISITOR, accept: true } })).data.status, 'unavailable');
+  } finally { await g.close(); }
+});
+
+test('staff routes need the ops key and valid input; the event feed wakes on new events', async () => {
+  const g = await start();
+  try {
+    assert.equal((await g.call('/ops/events?after=0&wait=0', { method: 'GET' })).status, 401, 'the gateway key is not an ops key');
+    assert.equal((await g.call('/ops/presence', { ops: true, key: OPS_KEY, body: { id: 'x', name: '', role: 'founder', available: true } })).status, 400);
+    assert.equal((await g.call('/chat/person', { body: { visitor_id: VISITOR, accept: 'yes' } })).status, 400);
+    assert.equal((await g.call('/chat/person', { body: { visitor_id: VISITOR, accept: true } })).status, 404, 'unknown visitor');
+  } finally { await g.close(); }
+  const feed = core.createFeed();
+  const started = Date.now();
+  const waiting = feed.wait(0, 5000);
+  feed.push('handoff.requested', { session_id: 's1' });
+  assert.deepEqual((await waiting).map((e) => [e.seq, e.type]), [[1, 'handoff.requested']]);
+  assert.ok(Date.now() - started < 1000, 'resolved on push, not on timeout');
+});
+
 test('a new visitor gets one conversation, the agent answers with its tools, and seq is returned', async () => {
   const g = await start();
   try {
     const first = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'How much?' } });
-    assert.deepEqual(first, { status: 200, data: { status: 'answered', reply: 'Hello from the agent', seq: 9 } });
+    assert.deepEqual(first, { status: 200, data: { status: 'answered', reply: 'Hello from the agent', seq: 9, person: null } });
     await g.call('/chat', { body: { visitor_id: VISITOR, message: 'And timing?' } });
     assert.equal(g.calls.filter(([op]) => op === 'create').length, 1, 'one session per visitor');
     assert.deepEqual(g.calls.find(([op]) => op === 'create')[1], { agent_name: 'frontdesk', workspace_path: '/project', title: 'Visitor visitor_' });
-    assert.deepEqual(g.calls.find(([op]) => op === 'converse')[3], ['capture_lead', 'end_conversation', 'get_playbook', 'handoff_to_human']);
+    assert.deepEqual(g.calls.find(([op]) => op === 'converse')[3], ['capture_lead', 'end_conversation', 'get_playbook', 'handoff_to_human', 'offer_person']);
     assert.equal(g.visitors.get(VISITOR).messages, 2);
     assert.deepEqual(g.events.map(([type]) => type), ['conversation.started']);
   } finally { await g.close(); }
@@ -122,7 +199,7 @@ test('during a takeover the message is kept for the person and no agent run is a
   const g = await start({ takeover: { state: 'human', by: 'owner', since: 1 } });
   try {
     const res = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'Are you there?' } });
-    assert.deepEqual(res, { status: 200, data: { status: 'with_person', seq: 7 } });
+    assert.deepEqual(res, { status: 200, data: { status: 'with_person', seq: 7, person: null } });
     assert.ok(g.calls.some(([op, , content]) => op === 'send' && content === 'Are you there?'));
     assert.ok(!g.calls.some(([op]) => op === 'converse'), 'the agent must not be asked to answer');
     const replies = await g.call(`/chat/replies?visitor_id=${VISITOR}&after=0`, { method: 'GET' });
@@ -181,7 +258,7 @@ test('operator routes need the ops key and only act on known conversations', asy
 test('client tools: approved answers, private lead file, handoff event; identity from the gateway', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'public-chat-tools-'));
   const events = [];
-  const tools = core.toolHandlers({ playbook: { pricing: 'Fixed price.' }, dataDir, bookingUrl: 'https://example.com/book', emit: (t, d) => events.push([t, d]), sessionId: 's1', visitorId: 'v1', now: () => 5 });
+  const tools = core.toolHandlers({ playbook: { pricing: 'Fixed price.' }, dataDir, bookingUrl: 'https://example.com/book', emit: (t, d) => events.push([t, d]), sessionId: 's1', visitorId: 'v1', presence: core.createPresence(), setPerson: async () => {}, now: () => 5 });
   assert.deepEqual(await tools.get_playbook({ topic: 'pricing' }), { topic: 'pricing', answer: 'Fixed price.' });
   await assert.rejects(tools.get_playbook({ topic: 'constructor' }));
   await tools.capture_lead({ name: 'Ada', email: 'ada@example.com', need: 'Quotes' });
