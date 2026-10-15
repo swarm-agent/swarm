@@ -11,8 +11,13 @@ import (
 // transaction must also retain metadata-only worker/review outbox receipts.
 func TestJobReviewDurableLatestPerHead(t *testing.T) {
 	s, ws := openTestStore(t)
+	// Pre-upgrade records have no pinned ProjectID; only the owned worker binding
+	// may supply it to both lifecycle and review receipts (not untrusted input).
+	if err := NewSessionStore(s).PutProject("account", &ProjectRecord{ID: "project", AccountID: "account", Name: "Project"}); err != nil {
+		t.Fatal(err)
+	}
 	create := func(role string) WorkerRecord {
-		w, err := ws.CreateWorker("account", "user", CreateWorkerRequest{Name: role, Role: role}, nil)
+		w, err := ws.CreateWorker("account", "user", CreateWorkerRequest{Name: role, Role: role, Metadata: map[string]any{"project_id": "project"}}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,6 +67,9 @@ func TestJobReviewDurableLatestPerHead(t *testing.T) {
 		var metadata WorkerRealtimePayload
 		if err := json.Unmarshal(row.Event.Payload, &metadata); err != nil {
 			t.Fatal(err)
+		}
+		if metadata.RunID != "" && metadata.ProjectID != "project" {
+			t.Fatalf("legacy receipt lost project: %+v", metadata)
 		}
 		if metadata.ActivityKind == "review.recorded" {
 			reviews++

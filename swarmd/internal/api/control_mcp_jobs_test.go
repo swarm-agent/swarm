@@ -127,7 +127,10 @@ func TestControlMCPDeliverJobRetriesUnobservedDelivery(t *testing.T) {
 			})
 			r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			r = r.WithContext(context.WithValue(r.Context(), productScopedTokenRequestContextKey, &pebblestore.ScopedTokenRecord{AccountScopeID: "acct", UserID: "user", Scopes: []string{"sessions:read", "sessions:write"}}))
-			result, err := controlMCPDeliverJob(&controlMCPCall{request: r, next: h}, map[string]any{"job_id": "media/p1/t1"})
+			server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+			createV3RealtimeTestSessionResult(t, server, "s1", "delivery-fixture")
+			r = withTestPrincipal(r)
+			result, err := controlMCPDeliverJob(&controlMCPCall{server: server, request: r, next: h}, map[string]any{"job_id": "media/p1/t1"})
 			if posts != tc.wantPosts {
 				t.Fatalf("integrate requests: got %d, want %d (err %v)", posts, tc.wantPosts, err)
 			}
