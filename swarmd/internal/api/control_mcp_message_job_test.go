@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,8 +14,11 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/permission"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	"swarm/packages/swarmd/internal/provider/registry"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // settledWorkerJobForMCP dispatches a direct worker job through the real
@@ -161,13 +166,6 @@ func TestControlMCPMessageJobStartsOrFails(t *testing.T) {
 	if !foundMessage {
 		t.Fatal("worker session did not receive the complete 6000-character follow-up")
 	}
-	// The next worker request must retain the MCP follow-up across the model
-	// lineage refresh, not merely preserve it in durable storage.
-	req := provideriface.Request{PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff", ForceFreshProviderContext: true}
-	req.Input, err = (&sessionV3Executor{}).sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{}, stored, req, nil, sessionV3ProviderContextConversation)
-	if err != nil || !sessionsV3ProviderInputContainsContentText(req.Input, message) {
-		t.Fatalf("next provider request lost the follow-up: %v", err)
-	}
 	before := messages()
 	if raw, err = messageJobForMCP(h, jobID, "And update the docs", "second"); err == nil || !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("second follow-up while one is pending: %+v %v", raw, err)
@@ -267,19 +265,106 @@ func TestControlMCPAnswerJobLongReply(t *testing.T) {
 	if err != nil || len(records) != 1 || records[0].Reason != answer || records[0].Status != "approved" {
 		t.Fatalf("answer not retained whole: %v", err)
 	}
-	// Exercise the executor's next-request reconstruction, including the generic
-	// tool output boundary that used to preview replies above 128 KiB.
-	output, err := json.Marshal(map[string]any{"answer": records[0].Reason})
+}
+
+// Purpose: MCP replies must reach the actual provider adapter after executor
+// assembly, including a model handoff. The executor and permission tool runner
+// own this contract. A recording adapter and real MCP/API/store/tool execution
+// exercise it without external credentials; bulk autonomous history must remain
+// bounded while the current user instruction and accepted answer stay whole.
+func TestControlMCPRepliesReachProvider(t *testing.T) {
+	t.Setenv("SWARM_V3_HANDOFF_TOTAL_CHARS", "2000")
+	s, db, h := setupWorkerAPITestServer(t)
+	workspaceID := setupWorkerAPIExecution(t, s, db)
+	w, previous := settledWorkerJobForMCP(t, s, h, workspaceID, "provider-replies")
+	s.perm = permission.NewService(pebblestore.NewPermissionStore(db), nil, nil)
+	message, answer := strings.Repeat("界", 6000), strings.Repeat("答", 100000)
+	if _, err := messageJobForMCP(h, controlMCPJobID(controlMCPJobWorker, w.ID, previous.ID), message, "provider-followup"); err != nil {
+		t.Fatal(err)
+	}
+	intent, ok, err := s.sessions.GetSessionActiveRunIntent(previous.SessionID)
+	if err != nil || !ok {
+		t.Fatalf("active: %v", err)
+	}
+	snapshot, _, err := s.sessions.GetSession(previous.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := json.Marshal(map[string]any{"path_id": "run.v3.provider-tool-result.v1", "type": "tool.completed", "tool_name": "ask_user", "call_id": "question", "arguments": `{}`, "completed_output": string(output)})
-	if err != nil {
+	job := sessionV3ExecutorJob{SessionID: previous.SessionID, RunID: intent.RunID, EpochID: intent.EpochID, SourceMessageID: intent.SourceMessageID, Principal: identity.Principal{Type: "user", UserID: "user-test", AccountScopeID: "acct-test"}}
+	exec := &sessionV3Executor{server: s}
+	bulk := strings.Repeat("BULK-HISTORY-", 2000)
+	if _, err := exec.recordPreToolAssistantSegment(job, sessionV3AssistantResponse{Content: bulk}, 1); err != nil {
 		t.Fatal(err)
 	}
-	req := provideriface.Request{PreviousProviderLineageID: "old", ProviderLineageID: "new", BoundaryReason: "provider_model_runtime_handoff", ForceFreshProviderContext: true}
-	req.Input, err = (&sessionV3Executor{}).sessionV3ProviderInitialContextInput(sessionV3ExecutorJob{}, sessionV3ResolvedRuntime{}, []pebblestore.MessageSnapshot{{Role: "user", Content: "Continue"}, {Role: "tool", Content: string(payload)}}, req, nil, sessionV3ProviderContextConversation)
-	if err != nil || sessionsV3LatestFunctionCallOutput(req.Input) != string(output) {
-		t.Fatalf("next provider request shortened the answer: %v", err)
+	if err := s.sessions.PutExecutionProviderLifecycleState(pebblestore.ExecutionProviderLifecycleState{SessionID: job.SessionID, EpochID: job.EpochID, Provider: "test-provider", Model: "old-model", ConfigurationHash: "old-config", ContextBranchID: "old-branch", ProviderLineageID: "old-lineage", UpdatedAt: time.Now().UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &sessionsV3RecordingProviderRunner{responses: []provideriface.Response{
+		{FunctionCalls: []provideriface.FunctionCall{{CallID: "question", Name: "ask-user", Arguments: `{"question":"What next?","options":["Continue","Stop"]}`}}},
+		{Text: "done"},
+	}}
+	providers := registry.New()
+	providers.RegisterRunner(runner)
+	s.providers = providers
+	s.runner = runruntime.NewService(s.sessions, nil, providers, tool.NewRuntime(1), s.perm.(*permission.Service), nil, nil, nil)
+	resolved := sessionV3ResolvedRuntime{Instructions: "Ask before proceeding.", ToolChoice: "auto", Session: snapshot, Preference: pebblestore.ModelPreference{Provider: "test-provider", Model: "new-model"}, Scope: tool.WorkspaceScope{PrimaryPath: snapshot.WorkspacePath}, Tools: []provideriface.ToolDefinition{{Type: "function", Name: "ask_user"}}}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := exec.providerAssistantResponse(ctx, job, resolved, "", false, nil); done <- err }()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+waiting:
+	for {
+		select {
+		case err := <-done:
+			t.Fatalf("executor exited before question: %v", err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-ticker.C:
+			pending, err := s.perm.ListPending(job.SessionID, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pending) > 0 {
+				break waiting
+			}
+		}
+	}
+	if _, err := callJobForMCP(h, "swarm_answer_job", map[string]any{"job_id": controlMCPJobID(controlMCPJobWorker, w.ID, previous.ID), "answer": answer}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// Re-enter the executor from durable history after another model switch.
+	// The answer below is the actual persisted tool result, not a fabricated
+	// permission-record projection.
+	resolved.Preference.Model = "third-model"
+	stopAfterCapture := errors.New("stop after recording handoff request")
+	runner.err = stopAfterCapture
+	if _, err := exec.providerAssistantResponse(ctx, job, resolved, "handoff", false, nil); !errors.Is(err, stopAfterCapture) {
+		t.Fatalf("handoff capture: %v", err)
+	}
+	runner.mu.Lock()
+	requests := append([]provideriface.Request(nil), runner.requests...)
+	runner.mu.Unlock()
+	if len(requests) != 3 {
+		t.Fatalf("requests = %d", len(requests))
+	}
+	if requests[0].BoundaryReason != "provider_model_runtime_handoff" || requests[2].BoundaryReason != "provider_model_runtime_handoff" {
+		t.Fatalf("no model handoff: %s", requests[0].BoundaryReason)
+	}
+	for i, req := range requests {
+		input := fmt.Sprint(req.Input)
+		if !strings.Contains(input, message) {
+			t.Fatalf("request %d shortened user turn", i)
+		}
+		if strings.Contains(input, bulk) {
+			t.Fatalf("request %d replayed bulk history", i)
+		}
+	}
+	if !strings.Contains(fmt.Sprint(requests[1].Input), answer) || !strings.Contains(fmt.Sprint(requests[2].Input), answer) {
+		t.Fatal("provider did not receive whole accepted answer")
 	}
 }

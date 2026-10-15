@@ -4632,7 +4632,21 @@ func (e *sessionV3Executor) sessionV3ProviderInitialContextInput(job sessionV3Ex
 		// the per-message nor total handoff cap can shorten active input.
 		for i := len(messages) - 1; i >= 0; i-- {
 			if strings.EqualFold(strings.TrimSpace(messages[i].Role), "user") {
-				current, err := e.sessionsV3ProviderInputForLineage(resolved, messages[i:], req.ProviderLineageID, false)
+				active := []pebblestore.MessageSnapshot{messages[i]}
+				for _, message := range messages[i+1:] {
+					if !strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+						continue
+					}
+					record, ok := sessionsV3DecodeProviderToolResultRecord(message.Content)
+					if !ok || record.Error != "" {
+						continue
+					}
+					switch record.ToolName {
+					case "ask_user", "ask-user", "permission":
+						active = append(active, message)
+					}
+				}
+				current, err := e.sessionsV3ProviderInputForLineage(resolved, active, req.ProviderLineageID, false)
 				if err != nil {
 					return nil, err
 				}
