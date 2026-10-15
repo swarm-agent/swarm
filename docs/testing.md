@@ -1,7 +1,8 @@
-# Test retention audit (in progress)
+# Test retention audit and local vital runner (in progress)
 
-This document records the initial audit, not a completed reduction or a passing
-vital gate. No tests have been deleted yet. Baseline: commit
+This document records a partial reduction, not completed acceptance. The local
+vital runner passes, but Go pruning and the full inventory remain incomplete.
+Baseline: commit
 `c7bbc6c48f6c94c0638b8dc29512c62625884532`.
 
 ## Counts and timings
@@ -82,7 +83,7 @@ and `test:agents`, plus the transitive selections of `test:orchestrator` and
 `test:orchestrator:selection`. `test:orchestrator` delegates to
 `web/scripts/run-orchestrator-tests.mjs`; its inventory still needs expansion.
 No tracked package.json currently contains a `release:verify` script.
-The isolated worktree has no `web/node_modules`; web tests have not run.
+Locked web dependencies were installed during follow-up; results appear below.
 
 ### Installer and end-to-end tests
 
@@ -113,9 +114,66 @@ are not full command wall times or whole-suite before/after measurements.
 ## Outstanding work
 
 Expand the exact KEEP inventory, select and justify any extras (maximum 150),
-remove unselected tests and unused test-only dependencies, compile and validate
-the retained packages, install/validate web dependencies, implement
-`scripts/test-vital.sh`, and replace the opt-in precommit test block. Run build,
+finish removing unselected tests and unused test-only dependencies, and compile
+and validate the retained packages. The vital runner and precommit integration
+are now implemented but do not yet cover the complete requested inventory. Run build,
 vet and TypeScript gates and record actual full runner timings. A missing live
 installer environment must be reported as unavailable, not relabeled Docker or
 counted as a passing test.
+
+## Follow-up implementation status
+
+The operator supplied the exact external qualification names. The current runner
+uses the checked-in critical selections (including deep) as its release-gate
+selection; it is not yet an independent exact-name 144-test manifest. Root
+`internal/app` and `internal/client` are root-module packages despite the supplied
+list's general `internal` mapping.
+
+374 unselected local web test files have now been removed. The original 492 web
+test files are reduced to 118: 19 explicitly selected files in
+`scripts/test-vital-web.txt`, plus 99 browser/e2e files retained pending complete
+release-only classification. The four runnable web groups contain 115 tests
+(74 critical, 19 agents, 5 selection, 17 orchestrator); all passed. Web `tsc -b`
+also passed after deletion. Go pruning and SDK pruning are not complete.
+
+`bash scripts/test-vital.sh` runs bounded cached Go critical selections under
+`release gate`, the four web suites, and the hermetic installer artifact-integrity
+check. Precommit now invokes this runner rather than the opt-in broad Go block.
+The first run, before adding installer integrity, passed all five groups in 57
+wall-clock seconds. The final runner passed all six groups in 23 seconds with
+warm caches. This is not a whole-suite before/after performance comparison.
+
+### runs in the release pipeline only
+
+- `scripts/test-sandbox.sh` and Docker sandbox tests: **needs Docker**, with
+  project-container capability and the explicit sandbox E2E opt-in.
+- `scripts/test-install-omarchy-vm.sh`: disposable SSH Omarchy VM, sudo, candidate
+  release archive and checksum.
+- `scripts/test-install-distro.sh`: disposable distribution installation
+  environment and release inputs; not the developer host.
+- `scripts/test-install-root-scenario.sh`: disposable privileged installation
+  environment and release inputs.
+- `scripts/test-install-mint-guard.sh`: root inside a disposable systemd guest
+  with the installed service; it modifies the service override during setup.
+- Retained browser/e2e tests: browser runtime and, depending on the scenario,
+  a live authenticated daemon/provider configuration. Their individual external
+  prerequisites still need complete classification.
+
+Missing external environments are not local validation failures and are not
+reported as passing runs.
+
+### Additional validation and unresolved gates
+
+Focused retained API, worktree, agent, action, workspace, discovery, artifact,
+video, media, scheduler, store, artifact-Git and permission tests passed, as did
+root app/client routing tests. Existing API `TestLandReview*` and `TestAutoPublish*`
+also passed. `TestReviewPipeline*`, `TestPublishProof*`, and
+`TestWorkerProofContract*` declarations are absent from this captured revision.
+No test added in another checkout is claimed as retained here.
+
+Root `go build -p 4 ./pkg/...` and `go vet -p 4 ./pkg/...` passed. Daemon
+`go build -p 4 ./...` passed; daemon `go vet -p 4 ./...` failed with existing
+context-cancel leaks in provider/google and run tests, a zero-value append in
+sandbox/cache_docker_test.go, unreachable code in run/service.go and
+tool/runtime_manage_artifact.go, and self-assignment in store/pebble/auth_store.go.
+These findings have not been repaired. Package TypeScript gates remain unrun.

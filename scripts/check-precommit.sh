@@ -71,25 +71,7 @@ if (( ${#go_files[@]} > 0 )); then
   fi
 fi
 
-echo "[precommit] tests are opt-in (run only when explicitly requested)"
-if [[ "${SWARM_PRECOMMIT_RUN_TESTS:-0}" == "1" ]]; then
-  echo "[precommit] excluding relocated tests/internal/... and tests/swarmd/... packages from root go test"
-  echo "[precommit] reason: those directories currently contain package-scope and cross-module tests that do not compile as standalone root-module packages"
-  mapfile -t root_test_packages < <(list_root_test_packages)
-  if (( ${#root_test_packages[@]} == 0 )); then
-    echo "[precommit] FAIL: no root-module packages discovered for go test" >&2
-    exit 1
-  fi
-  echo "[precommit] running go test (tui module)"
-  run_go test "${root_test_packages[@]}"
-
-  echo "[precommit] running go test (swarmd module)"
-  (
-    cd "${ROOT_DIR}/swarmd"
-    run_go test ./...
-  )
-else
-  echo "[precommit] skipping go test (set SWARM_PRECOMMIT_RUN_TESTS=1 to enable)"
-fi
+echo "[precommit] running vital tests"
+bash "${SCRIPT_DIR}/test-vital.sh"
 
 echo "[precommit] PASS"
