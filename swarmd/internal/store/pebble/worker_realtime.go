@@ -182,7 +182,7 @@ func (s *Store) commitWorkerRealtime(m *workerRealtimeMutation) error {
 			return err
 		}
 		metadata.RunID, metadata.SessionID, metadata.State = run.ID, run.SessionID, run.Status
-		metadata.ProjectID, _ = run.Input["project_id"].(string)
+		metadata.ProjectID = run.ProjectID
 		worker, found, readErr := NewWorkerStore(s).GetWorker(m.accountScopeID, m.workerID)
 		if readErr != nil {
 			s.sessionMutations.abandonOutbox(reserved)

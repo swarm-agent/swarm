@@ -79,7 +79,7 @@ func (ws *WorkerStore) RecordJobReview(account, worker, run string, review JobRe
 	}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: target.UserID, workerID: worker}
 	m.putBytes(key, data)
-	project, _ := target.Input["project_id"].(string)
+	project := target.ProjectID
 	if err := m.setPayload(WorkerRealtimePayload{WorkerID: worker, RunID: run, SessionID: target.SessionID, ProjectID: project, ActivityKind: "review.recorded", State: review.Verdict}); err != nil {
 		return err
 	}

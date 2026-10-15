@@ -381,3 +381,62 @@ func TestActivityPreSessionAdmissionReplay(t *testing.T) {
 		t.Fatalf("session ACL bypass %+v %v", events, err)
 	}
 }
+
+// Purpose: project-filtered SSE must retain admission and review receipts when
+// input omits project_id. The execution resolver is tested in run; this HTTP
+// boundary verifies its pinned admission result survives both durable producers.
+func TestActivityResolvedProjectAdmissionAndReview(t *testing.T) {
+	s, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	ws := s.sessions.Store().WorkerStore()
+	worker, err := ws.CreateWorker(p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "Activity", WorkspaceRequirements: []pebblestore.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err = ws.ActivateWorker(p.AccountScopeID, p.UserID, worker.ID, worker.Revision, map[string]string{"primary": "workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := ws.AdmitWorkerRun(p.AccountScopeID, pebblestore.WorkerRunAdmission{WorkerID: worker.ID, UserID: p.UserID, RequestSource: "direct", IdempotencyKey: "resolved-project", ResolvedProjectID: "project", Input: map[string]any{"prompt": "private"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Input["project_id"] != nil {
+		t.Fatal("fixture unexpectedly supplied project input")
+	}
+	reviewer, err := ws.RecordWorkerRun(p.AccountScopeID, pebblestore.WorkerRunRecord{WorkerID: worker.ID, Role: pebblestore.WorkerRoleReviewer, UserID: p.UserID, WorkspaceID: run.WorkspaceID, Input: map[string]any{"review_job": "worker/" + worker.ID + "/" + run.ID}, Status: "succeeded", RequestSource: "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RecordJobReview(p.AccountScopeID, worker.ID, run.ID, pebblestore.JobReview{Head: "head", RecordedAt: 1, Verdict: "ok", ReviewerJobID: "worker/" + worker.ID + "/" + reviewer.ID}); err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleActivity(w, withTestPrincipal(r)) }))
+	defer httpServer.Close()
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Get(httpServer.URL + "/v3/activity/stream?project=project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	scanner := bufio.NewScanner(response.Body)
+	kinds := []string{}
+	for scanner.Scan() {
+		if !strings.HasPrefix(scanner.Text(), "data: ") {
+			continue
+		}
+		var event activityEvent
+		if json.Unmarshal([]byte(strings.TrimPrefix(scanner.Text(), "data: ")), &event) != nil || event.Kind == "" {
+			continue
+		}
+		if event.ProjectID != "project" || event.JobID != "worker/"+worker.ID+"/"+run.ID {
+			t.Fatalf("incorrect identity %+v", event)
+		}
+		kinds = append(kinds, event.Kind)
+		if len(kinds) == 2 {
+			break
+		}
+	}
+	if strings.Join(kinds, ",") != "job.started,review.recorded" {
+		t.Fatalf("lost filtered receipts %v: %v", kinds, scanner.Err())
+	}
+}

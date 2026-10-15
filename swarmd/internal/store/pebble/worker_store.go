@@ -143,6 +143,8 @@ type WorkerRevisionRecord struct {
 }
 
 type WorkerRunRecord struct {
+	// ProjectID is the authoritative project resolved at admission.
+	ProjectID          string                       `json:"project_id,omitempty"`
 	ModelSource        string                       `json:"model_source,omitempty"`
 	Placement          *WorkerRunPlacement          `json:"placement,omitempty"`
 	ModelProfile       *SessionModelProfileSnapshot `json:"model_profile,omitempty"`

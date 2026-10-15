@@ -35,6 +35,8 @@ type WorkerRunAdmission struct {
 	// under the worker lock and refuses a mismatch, then pins it on the receipt.
 	WorkspaceID         string
 	ResolvedWorkspaceID string
+	// ResolvedProjectID is supplied only by the execution authority, not run input.
+	ResolvedProjectID string
 }
 
 type workerRunIdempotency struct {
@@ -270,7 +272,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 	now := time.Now().UnixMilli()
 	runID := GenerateWorkerRunID()
 	req.SessionID = "worker-execution-" + runID
-	receipt := WorkerRunRecord{ModelSource: req.ModelSource, ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
+	receipt := WorkerRunRecord{ProjectID: req.ResolvedProjectID, ModelSource: req.ModelSource, ModelProfile: model, ID: runID, AccountScopeID: account, UserID: req.UserID, WorkerID: worker.ID, WorkerRevision: worker.Revision, AutomationID: req.AutomationID, AutomationRevision: automationRevision, OccurrenceID: req.OccurrenceID, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource, Role: worker.Role, SessionID: req.SessionID, RequestSource: req.RequestSource, Input: acceptedInput, Status: "admitted", CreatedAt: now}
 	m := &workerRealtimeMutation{accountScopeID: account, userID: req.UserID, workerID: worker.ID}
 	if err := ws.pinWorkerPlacement(account, req, worker, &receipt, m); err != nil {
 		return WorkerRunRecord{}, err

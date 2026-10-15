@@ -961,6 +961,9 @@ func TestWorkerProjectAssociationValidatedAtActivationAndAdmission(t *testing.T)
 	if err != nil || rec.ID == "" || rec.Status == "failed" {
 		t.Fatalf("retry after fixing project = %+v %v", rec, err)
 	}
+	if rec.ProjectID != "proj_fixture" || rec.Input["project_id"] != nil {
+		t.Fatalf("admission must pin resolved workspace project without input: %+v", rec)
+	}
 	replay, err := execution.Dispatch(context.Background(), "account", "owner", req)
 	if err != nil || replay.ID != rec.ID {
 		t.Fatalf("idempotent replay = %+v %v, want run %s", replay, err, rec.ID)

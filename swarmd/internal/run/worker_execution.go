@@ -334,7 +334,11 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 			}
 			req.CapturedReviewTarget = target
 		}
-		if _, err := s.resolveWorkerProject(candidate, w); errors.Is(err, errWorkerProjectNotAssociated) {
+		project, projectErr := s.resolveWorkerProject(candidate, w)
+		if projectErr == nil && project != nil {
+			req.ResolvedProjectID = project.ID
+		}
+		if err := projectErr; errors.Is(err, errWorkerProjectNotAssociated) {
 			return store.WorkerRunRecord{}, workerProjectRequiredError(w.ID, entry.WorkspaceID, entry.Path)
 		} else if err != nil && workspaceSource == store.WorkerRunWorkspaceSourceJob {
 			// A named job workspace must resolve to exactly one project now,
