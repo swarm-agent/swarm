@@ -973,6 +973,10 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 	result := controlMCPMap(out)
 	delete(result, "task")
 	result["job_id"] = controlMCPJobID(kind, a, b)
+	head, _ := controlMCPMap(result["integration"])["resulting_target_head"].(string)
+	if err := c.recordJobActivity(kind, a, b, refs, "job.delivered", head); err != nil {
+		return nil, err
+	}
 	c.signalDelivered(kind, a, b, refs, controlMCPMap(result["integration"]))
 	return result, nil
 }

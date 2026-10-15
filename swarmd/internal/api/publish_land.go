@@ -38,6 +38,17 @@ func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, ret
 	if err != nil {
 		return nil, err
 	}
+	kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": req.JobID})
+	if err != nil {
+		return nil, err
+	}
+	refs, err := c.jobRefs(kind, a, b)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.recordJobActivity(kind, a, b, refs, "job."+entry.State, entry.Commit); err != nil {
+		return nil, err
+	}
 	// The durable entry, not this request goroutine, owns recovery.
 	return landDeliveryReceipt(entry, pos), nil
 }
@@ -103,7 +114,20 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 		return errors.New("queued folder no longer has a land rule")
 	}
 	return q.Process(ctx, account, folder, publish.QueueHooks{
-		Prepare: func(ctx context.Context, e *publish.Entry) error { return c.prepareLand(ctx, rule, e) },
+		Prepare: func(ctx context.Context, e *publish.Entry) error {
+			kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
+			if err != nil {
+				return err
+			}
+			refs, err := c.jobRefs(kind, a, b)
+			if err != nil {
+				return err
+			}
+			if err := c.recordJobActivity(kind, a, b, refs, "job.landing", fmt.Sprint(e.Attempt)); err != nil {
+				return err
+			}
+			return c.prepareLand(ctx, rule, e)
+		},
 		Land: func(ctx context.Context, e publish.Entry) (publish.LandResult, error) {
 			return publish.Land(ctx, rule, e.Request)
 		},

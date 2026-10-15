@@ -1,15 +1,26 @@
-# V3 activity stream (implementation preview)
+# V3 activity stream
 
-`GET /v3/activity/stream?cursor=0&project=...&worker=...` projects metadata from the existing durable V3 realtime outbox. It requires the same principal and `sessions:read` scope as session reads; each session is checked again before inclusion. The stream is capped at 32 concurrent connections, with the existing 256-record bounded outbox subscription queue. Writes have a five-second deadline; a disconnected or permanently blocked transport cannot be guaranteed to receive its gap notification.
+`GET /v3/activity/stream?cursor=0&project=...&worker=...` is a metadata-only SSE feed over the existing durable V3 realtime outbox. It uses the same authenticated principal and `sessions:read` scope as session reads, checks account/user ownership, and checks session read access for session-bound records. No second event store is created.
 
-SSE frames are `activity`, `cursor`, or `gap`. Persist cursor strings, not SSE arrival counts. `gap` contains `from`, `to`, and a recovery `cursor`; reconnect with that cursor. Heartbeat comments are scheduled every 15 seconds. A cursor ahead of the log or before retained history produces a gap. The cursor space is the V3 outbox sequence, not the legacy signals sequence.
+Each `activity` frame contains `seq`, `at` (Unix milliseconds), `kind`, `session_id`, `job_id`, `worker_id`, `worker_name`, `project_id`, `state`, and `summary`. Unavailable identity fields are empty strings. `seq` increases in the global outbox sequence; filtered activity need not have consecutive sequence numbers. Summaries are fixed event labels, never provider text. Tool events add `tool_name` and, for read/write/edit, `file_path`; arguments, output, file contents, prompts, messages, review reasons and publish output are excluded.
 
-`GET /v3/activity?cursor=...` provides one bounded replay page. MCP `swarm_activity` accepts `since_cursor` for this page; its existing `after` option remains the separate legacy signal feed.
+## Delivery and recovery
 
-The SDK exposes `client.activity.stream({cursor, project, worker, signal})`, yielding metadata events and explicit gap records, reconnecting after clean stream closure. This initial implementation requires HTTP, not Unix socket transport. Network-exception retries and Unix socket streaming remain outstanding.
+- At most 32 simultaneous streams per daemon, with a 256-record bounded subscription queue each. Excess streams receive HTTP 429.
+- An initial `: connected` comment flushes the subscription immediately; idle connections receive `: heartbeat` every 15 seconds.
+- `cursor` frames advance the replay position across filtered-out records. Persist their decimal-string `cursor` value and reconnect with `?cursor=...`.
+- Overflow emits `gap` with `from`, `to`, and the last delivered `cursor`, then closes. Reconnecting replays durable events. Expired/ahead cursors also emit `gap` and close, with a recovery cursor at the current head; historical loss must be displayed, not hidden.
+- Writes have a five-second deadline. A disconnected or permanently blocked network cannot be guaranteed to receive a gap frame; reconnect with the last received cursor. Producers never wait for clients.
+- Project and worker filters are exact IDs. Filtering is not an authorization mechanism.
 
-## Current limitations / not ready for release
+`GET /v3/activity?cursor=...` returns one bounded replay page: `events`, `cursor`, and `gap`. MCP `swarm_activity({since_cursor:"0"})` uses this page and requires `sessions:read`. Its older `after` option remains the separate signal feed; do not mix those cursor spaces.
 
-This implementation is not yet verified. Tests were attempted but sandbox execution failed or timed out; no latency numbers are claimed. Lifecycle projection currently covers session creation, assistant/run transitions and tool start/completion/failure. Review, delivery and landing producer integration is incomplete: projection cases alone do not establish that canonical producers emit those events. Worker/job identity mapping needs verification against canonical worker bindings. Dedicated permission-scope, expired-retention, heartbeat, transport-overflow and SDK reconnect tests remain necessary before release.
+## SDK
 
-The latency test measures actual in-process durable session creation through SSE receipt, including connection setup; it is not a provider/AI benchmark.
+`client.activity.stream({cursor, project, worker, signal})` is an async iterator yielding activity events and explicit `{kind:"gap", ...}` records. It reconnects after EOF or network failures, resumes the last cursor, and stops on authorization/protocol errors or cancellation. Reconnects are delayed one second, not activity polling. This SSE implementation currently requires HTTP; Unix-socket SDK transport is not supported.
+
+## Producers and limits
+
+Session/tool/run events use their existing session envelopes. Worker run changes and recorded reviews carry metadata in the same durable batch as their existing worker/review records, with the existing worker realtime publisher. Delivery, pull-request and landing transitions append idempotent receipts to the owning session's event log/outbox. External Git/landing effects and their receipt are not one atomic transaction; receipt errors are surfaced and operations may require reconciliation after a crash. This feed is not proof that Git landed unless the underlying delivery authority recorded that outcome.
+
+Focused tests exercise metadata exclusion, account/scope checks, stream caps, cursor replay/expiration, overflow plus close, heartbeat timing, durable worker/review receipts, delivery idempotency, MCP and SDK resume. The latency test commits real in-process session mutations after opening an SSE subscription and measures through client receipt; it is not an AI/provider benchmark. Measured results belong in the validation handoff, not a permanent performance guarantee.

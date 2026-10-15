@@ -3,7 +3,6 @@ package pebblestore
 import (
 	"encoding/json"
 	"errors"
-	"github.com/cockroachdb/pebble"
 	"net/url"
 	"strings"
 )
@@ -30,8 +29,10 @@ func (ws *WorkerStore) RecordJobReview(account, worker, run string, review JobRe
 	}
 	ws.store.workersMu.Lock()
 	changed := false
+	var published *workerRealtimeMutation
 	defer func() {
 		ws.store.workersMu.Unlock()
+		ws.store.publishWorkerRealtime(published)
 		if changed && ws.store.jobReviewObserver != nil {
 			ws.store.jobReviewObserver(account, worker, run, review)
 		}
@@ -76,9 +77,16 @@ func (ws *WorkerStore) RecordJobReview(account, worker, run string, review JobRe
 	if err != nil {
 		return err
 	}
-	if err := ws.store.db.Set([]byte(key), data, pebble.Sync); err != nil {
+	m := &workerRealtimeMutation{accountScopeID: account, userID: target.UserID, workerID: worker}
+	m.putBytes(key, data)
+	project, _ := target.Input["project_id"].(string)
+	if err := m.setPayload(WorkerRealtimePayload{WorkerID: worker, RunID: run, SessionID: target.SessionID, ProjectID: project, ActivityKind: "review.recorded", State: review.Verdict}); err != nil {
 		return err
 	}
+	if err := ws.store.commitWorkerRealtime(m); err != nil {
+		return err
+	}
+	published = m
 	changed = true
 	return nil
 }

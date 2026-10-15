@@ -1,10 +1,14 @@
 package pebblestore
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 // Purpose: RecordJobReview owns durable per-head evidence. Store-level tests
 // prove idempotent completion, latest-per-head ordering, and cross-account
-// rejection without unauthorized changes, not provider review accuracy.
+// rejection without unauthorized changes, not provider review accuracy. The same
+// transaction must also retain metadata-only worker/review outbox receipts.
 func TestJobReviewDurableLatestPerHead(t *testing.T) {
 	s, ws := openTestStore(t)
 	create := func(role string) WorkerRecord {
@@ -48,6 +52,29 @@ func TestJobReviewDurableLatestPerHead(t *testing.T) {
 	}
 	if err := ws.RecordJobReview("foreign", coder.ID, target.ID, second); err == nil {
 		t.Fatal("foreign review accepted")
+	}
+	rows, err := NewSessionStore(s).ListV3RealtimeOutboxAfter(0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviews, finished := 0, 0
+	for _, row := range rows {
+		var metadata WorkerRealtimePayload
+		if err := json.Unmarshal(row.Event.Payload, &metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata.ActivityKind == "review.recorded" {
+			reviews++
+			if metadata.WorkerID != coder.ID || metadata.RunID != target.ID || metadata.State != "ok" {
+				t.Fatalf("bad review receipt %+v", metadata)
+			}
+		}
+		if metadata.ActivityKind == "job.finished" {
+			finished++
+		}
+	}
+	if reviews != 3 || finished != 4 {
+		t.Fatalf("receipts reviews=%d finished=%d", reviews, finished)
 	}
 	if count != 3 {
 		t.Fatal("duplicate or rejected review notified", count)

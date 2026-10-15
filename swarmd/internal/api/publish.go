@@ -125,7 +125,9 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 			return nil
 		})
 	}
-	c.signalPublish(kind, a, b, refs, "job.pull_request", pebblestore.SignalSeverityInfo, "Job delivered as a pull request", map[string]string{"pull_request_url": res.URL, "head": head})
+	if err := c.signalPublishDurable(kind, a, b, refs, "job.pull_request", pebblestore.SignalSeverityInfo, "Job delivered as a pull request", map[string]string{"pull_request_url": res.URL, "head": head}); err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"job_id":       jobID,
 		"pull_request": res.URL,
@@ -147,6 +149,9 @@ func (c *controlMCPCall) signalPublishDurable(kind, a, b string, refs controlMCP
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok {
 		return fmt.Errorf("publish signal principal required")
+	}
+	if err := c.recordJobActivity(kind, a, b, refs, signalKind, attrs["head"]); err != nil {
+		return err
 	}
 	sigRefs := map[string]string{"project_id": refs.projectID, "task_id": refs.taskID}
 	if kind == controlMCPJobWorker {

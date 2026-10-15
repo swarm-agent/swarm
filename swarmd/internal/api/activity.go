@@ -10,6 +10,7 @@ import (
 
 	"swarm/packages/swarmd/internal/identity"
 	sessionruntime "swarm/packages/swarmd/internal/session"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 const activityStreamLimit = 32
@@ -32,6 +33,18 @@ type activityEvent struct {
 
 // No free-form summaries, messages, output, or arbitrary payload maps cross this boundary.
 func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, bool) {
+	if row.Event.EventType == pebblestore.WorkerUpdatedEventType {
+		var metadata pebblestore.WorkerRealtimePayload
+		if json.Unmarshal(row.Event.Payload, &metadata) != nil {
+			return activityEvent{}, false
+		}
+		switch metadata.ActivityKind {
+		case "job.started", "job.state_changed", "job.finished", "job.failed", "review.recorded":
+		default:
+			return activityEvent{}, false
+		}
+		return activityEvent{Seq: row.EndpointSeq, At: row.CreatedAt, Kind: metadata.ActivityKind, SessionID: metadata.SessionID, JobID: "worker/" + metadata.WorkerID + "/" + metadata.RunID, WorkerID: metadata.WorkerID, WorkerName: metadata.WorkerName, ProjectID: metadata.ProjectID, State: metadata.State, Summary: metadata.ActivityKind}, true
+	}
 	state := ""
 	switch row.Event.EventType {
 	case "session.created":
@@ -50,7 +63,7 @@ func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, b
 		state = "finished"
 	case "session.review.recorded":
 		state = "recorded"
-	case "session.delivery.updated", "session.landing.updated", "session.run_intent.updated", "session.run_intent.recorded":
+	case "session.delivery.updated", "session.landing.updated", "session.lifecycle.updated", "session.task.reported", "session.task.delivered", "session.run.waiting_tasks", "session.run.tasks_ready", "session.run_intent.updated", "session.run_intent.recorded":
 		state = "changed"
 	default:
 		return activityEvent{}, false
@@ -61,6 +74,35 @@ func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, b
 			if value, ok := row.Membership.Metadata[key].(string); ok {
 				*dst = value
 			}
+		}
+	}
+	if event.Kind == "session.delivery.updated" {
+		var receipt struct {
+			State     string `json:"state"`
+			JobID     string `json:"job_id"`
+			ProjectID string `json:"project_id"`
+		}
+		if json.Unmarshal(row.Event.Payload, &receipt) == nil {
+			switch receipt.State {
+			case "job.queued", "job.landing", "job.sent_back", "job.delivered", "job.publish_failed", "job.pull_request", "job.landed", "job.landing_stopped", "job.land_failed":
+				event.State = receipt.State
+			}
+			event.JobID, event.ProjectID = receipt.JobID, receipt.ProjectID
+		}
+	}
+	if row.Membership != nil {
+		metadata := row.Membership.Metadata
+		if run, ok := metadata["worker_run_id"].(string); ok && event.WorkerID != "" && run != "" {
+			event.JobID = "worker/" + event.WorkerID + "/" + run
+		}
+	}
+	var lifecycle struct {
+		Status string `json:"status"`
+	}
+	if json.Unmarshal(row.Event.Payload, &lifecycle) == nil {
+		switch lifecycle.Status {
+		case "pending_executor", "running", "completed", "failed", "cancelled", "interrupted", "waiting_tasks":
+			event.State = lifecycle.Status
 		}
 	}
 	if strings.HasPrefix(event.Kind, "session.tool.") {
@@ -109,14 +151,23 @@ func (s *Server) activityPage(principal identity.Principal, cursor uint64, proje
 		if row.AccountScopeID != principal.AccountScopeID || row.UserID != principal.UserID {
 			continue
 		}
-		allowed, err := s.authorizeReadableSessionV3Access(principal, row.SessionID)
+		event, ok := activityMetadata(row)
+		if !ok {
+			continue
+		}
+		// Worker rows before session creation are principal-owned; once bound,
+		// the same per-session ACL and scoped-token limits apply.
+		allowed := event.SessionID == ""
+		var err error
+		if event.SessionID != "" {
+			allowed, err = s.authorizeReadableSessionV3Access(principal, event.SessionID)
+		}
 		if err != nil {
 			return nil, cursor, false, err
 		}
 		if !allowed {
 			continue
 		}
-		event, ok := activityMetadata(row)
 		if ok && (project == "" || event.ProjectID == project) && (worker == "" || event.WorkerID == worker) {
 			events = append(events, event)
 		}
@@ -187,6 +238,15 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 	gap := func(end uint64) {
 		send("gap", map[string]any{"from": cursor + 1, "to": end, "cursor": strconv.FormatUint(cursor, 10)})
 	}
+	// Flush headers immediately so a client can establish its subscription before
+	// committing work. The deadline is refreshed before every subsequent write.
+	_ = controller.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
+	if controller.Flush() != nil {
+		return
+	}
 	ticker := time.NewTicker(activityHeartbeat)
 	defer ticker.Stop()
 	for {
@@ -211,6 +271,15 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 		}
 		advanced := next != cursor
 		cursor = next
+		// These records are wakeups, not a second delivery authority. Discard
+		// already observed notifications in bounded work before replaying again.
+		for i := 0; advanced && i < v3RealtimeSubscriberBufSize; i++ {
+			select {
+			case <-sub.send:
+			default:
+				i = v3RealtimeSubscriberBufSize
+			}
+		}
 		if advanced {
 			if !send("cursor", map[string]string{"cursor": strconv.FormatUint(cursor, 10)}) {
 				return

@@ -147,6 +147,7 @@ var controlMCPRoutes = []string{
 	// Runs across every worker (swarm_list_runs; signals:read).
 	"GET v3/runs",
 	"GET v3/signals",
+	"GET v3/activity",
 	"GET v3/secrets/status",
 	// A folder's sandbox environment (sandbox_environments.go): read, define
 	// (Swarm builds it under gVisor) or clear.

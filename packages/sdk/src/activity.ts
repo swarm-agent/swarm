@@ -22,6 +22,7 @@ export class SwarmActivityNamespace {
       if (options.worker) query.set('worker', options.worker);
       const headers: Record<string, string> = { ...config.defaultHeaders, Accept: 'text/event-stream' };
       if (config.token && !headers.Authorization && !headers.authorization) headers.Authorization = `Bearer ${config.token}`;
+      try {
       const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/v3/activity/stream?${query}`, { headers, signal: options.signal });
       if (!response.ok || !response.body) throw new Error(`Activity stream failed: ${response.status}`);
       const reader = response.body.getReader();
@@ -45,7 +46,13 @@ export class SwarmActivityNamespace {
             else if (kind === 'activity') { cursor = String(value.seq); yield value as ActivityEvent; }
           }
         }
-      } finally { await reader.cancel(); reader.releaseLock(); }
+      } finally { try { await reader.cancel(); } catch { /* The disconnected transport is already closed. */ } reader.releaseLock(); }
+      } catch (error) {
+        if (options.signal?.aborted) return;
+        // fetch and stream transport failures are TypeErrors; malformed frames
+        // and HTTP authorization failures are not retried.
+        if (!(error instanceof TypeError)) throw error;
+      }
       // Bound reconnect frequency; this is reconnection, not polling for activity.
       if (!options.signal?.aborted) await new Promise<void>(resolve => {
         const finish = () => { clearTimeout(timer); options.signal?.removeEventListener('abort', finish); resolve(); };
