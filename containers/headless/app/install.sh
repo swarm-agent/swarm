@@ -798,6 +798,8 @@ update() {
 # runs, switch, and go back if it does not come up.
 finish_update() (
   load_conf
+  # Older installers exec this new entrypoint directly, bypassing update().
+  ensure_app_landing_checks
   local commit running why sandboxed
   commit=$(git -C "$SRC" rev-parse HEAD)
   running=$(running_commit)

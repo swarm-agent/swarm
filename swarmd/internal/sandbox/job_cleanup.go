@@ -139,11 +139,13 @@ func (m *Manager) ReconcileContainers(ctx context.Context, active func(string) (
 		}
 		inspection, err := m.runner.Run(ctx, m.cfg.Engine, "inspect", name)
 		if err != nil {
-			return fmt.Errorf("inspect sandbox ownership: %w", err)
+			slog.Warn("sandbox reconciliation left container alone: ownership inspect failed", "container", name)
+			continue
 		}
 		var items []instanceInspection
 		if err := json.Unmarshal(inspection, &items); err != nil {
-			return fmt.Errorf("decode sandbox ownership: %w", err)
+			slog.Warn("sandbox reconciliation left container alone: invalid ownership inspect", "container", name)
+			continue
 		}
 		if len(items) != 1 || !ownsInstance(m.cfg.StateDir, items[0]) {
 			continue
