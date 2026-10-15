@@ -959,10 +959,7 @@ func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc s
 		b.WriteString(instructions)
 		b.WriteString("\n\n")
 	}
-	if r.AutomationID == "" {
-		prompt, _ := r.Input["prompt"].(string)
-		b.WriteString(strings.TrimSpace(prompt))
-	} else {
+	if r.AutomationID != "" {
 		if title := strings.TrimSpace(doc.Title); title != "" {
 			b.WriteString("Job: " + title + "\n")
 		}
@@ -988,16 +985,10 @@ func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc s
 			}
 		}
 	}
-	input := make(map[string]any, len(r.Input))
-	for key, value := range r.Input {
-		// The direct brief was rendered above; preserve all other input.
-		if r.AutomationID == "" && key == "prompt" {
-			continue
-		}
-		input[key] = value
-	}
-	if len(input) != 0 {
-		payload, err := json.Marshal(input)
+	// Render request data once, including the brief, inside the untrusted
+	// boundary even when prompt is the only input field.
+	if len(r.Input) != 0 {
+		payload, err := json.Marshal(r.Input)
 		if err != nil {
 			return "", err
 		}

@@ -11,6 +11,9 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// Purpose: modeCapabilityInstructions must use the Finder's read-only runtime
+// contract even when the caller supplies plan mode. This builder-level check
+// prevents worker lifecycle leakage while retaining tool and permission limits.
 func TestModeCapabilityInstructionsUseExecutionModeWhenPlanModeDisabled(t *testing.T) {
 	profile := pebblestore.NormalizeAgentProfile(pebblestore.AgentProfile{
 		Name:                "finder",
@@ -23,10 +26,8 @@ func TestModeCapabilityInstructionsUseExecutionModeWhenPlanModeDisabled(t *testi
 
 	for _, want := range []string{
 		"Current execution mode: read.",
-		"Execution mode is controlled by the saved agent runtime_mode because plan mode is disabled for this agent.",
-		"Current agent runtime contract: read.",
-		"Current agent exit-plan-mode enabled: false.",
-		"With plan mode disabled, the backend uses runtime_mode as the effective runtime contract.",
+		"The resolved tool list is authoritative; do not assume unavailable tools.",
+		"Normal tool permissions apply; invoke the tool to request authorization, never bypass a denial.",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("instructions missing %q\n--- instructions ---\n%s", want, instructions)
@@ -34,6 +35,9 @@ func TestModeCapabilityInstructionsUseExecutionModeWhenPlanModeDisabled(t *testi
 	}
 	for _, forbidden := range []string{
 		"Current session mode: plan.",
+		"Current execution mode: readwrite.",
+		"plan_manage",
+		"checkpoint",
 		"Plan-mode expectation:",
 		"Because the current session mode is plan",
 	} {
