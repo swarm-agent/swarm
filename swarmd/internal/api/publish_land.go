@@ -290,6 +290,16 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 			return reviewRequired(reviewedHead)
 		}
 		current := reviewedHead
+		// Exact-head authority supersedes an older equivalence checkpoint: the
+		// landing base may have absorbed part of this already-approved job.
+		if exactErr := reviewChecks[0](current); exactErr == nil {
+			e.Review = nil
+		} else {
+			var missing *missingLandReview
+			if !errors.As(exactErr, &missing) || e.Review == nil {
+				return exactErr
+			}
+		}
 		if e.Review != nil {
 			patch, err := patchID(current, base.Commit)
 			if err != nil {

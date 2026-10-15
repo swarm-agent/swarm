@@ -20,8 +20,10 @@ import (
 // real Git patch, and abort conflicts without landing. A temporary repository
 // exercises Git's actual merge-base, patch-id and rebase behavior at the queue
 // preparation boundary, with no daemon, credentials or external repository.
+// Exact approval must supersede stale retry evidence when upstream absorbs a
+// commit, while equivalent BLOCK still prevents landing at that new base.
 func TestLandReviewRealGitRebase(t *testing.T) {
-	for _, mode := range []string{"same_patch", "conflict", "restart", "block_rebased", "stale_base_block", "retry", "retry_block"} {
+	for _, mode := range []string{"same_patch", "conflict", "restart", "block_rebased", "stale_base_block", "retry", "retry_block", "absorbed", "absorbed_block"} {
 		conflict := mode == "conflict"
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -53,6 +55,13 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 			git("checkout", "-b", "agent/job")
 			put("file", "job\n")
 			git("commit", "-am", "job")
+			firstJob := git("rev-parse", "HEAD")
+			absorbed := mode == "absorbed" || mode == "absorbed_block"
+			if absorbed {
+				put("second", "second job commit\n")
+				git("add", ".")
+				git("commit", "-m", "second job commit")
+			}
 			reviewed := git("rev-parse", "HEAD")
 			git("checkout", "dev")
 			if conflict {
@@ -64,6 +73,10 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 			git("commit", "-m", "upstream")
 			base := git("rev-parse", "HEAD")
 			git("checkout", "agent/job")
+			if absorbed {
+				base = originalBase
+				git("branch", "-f", "dev", base)
+			}
 			blockedHead := ""
 			if mode == "stale_base_block" {
 				git("checkout", "-b", "blocked", base)
@@ -134,7 +147,7 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 					interrupted = true
 					return publish.LandResult{}, context.Canceled
 				}
-				if (mode == "retry" || mode == "retry_block") && !interrupted {
+				if (mode == "retry" || mode == "retry_block" || absorbed) && !interrupted {
 					interrupted = true
 					return publish.LandResult{}, errors.New("transient landing failure")
 				}
@@ -144,10 +157,22 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 				return publish.LandResult{Commit: e.Request.Head}, nil
 			}, SendBack: func(context.Context, publish.Entry) error { return nil }}
 			err = q.Process(ctx, "account", dir, hooks)
-			if mode == "retry" || mode == "retry_block" {
+			if mode == "retry" || mode == "retry_block" || absorbed {
 				saved, _, getErr := q.Get("account", "job")
 				if getErr != nil || saved.State != "land_failed" || saved.Review == nil {
 					t.Fatalf("missing failed receipt: %+v %v", saved, getErr)
+				}
+				if absorbed {
+					// Upstream absorbs the first commit without changing the approved
+					// job head. The remaining aggregate patch differs from the receipt.
+					if git("rev-parse", "HEAD") != reviewed {
+						t.Fatal("approval head moved")
+					}
+					base = firstJob
+					git("branch", "-f", "dev", base)
+					if mode == "absorbed_block" {
+						blockedHead = reviewed
+					}
 				}
 				queued, _, enqueueErr := q.EnqueueDelivery(publish.Entry{Account: "account", Request: saved.Request}, true)
 				if enqueueErr != nil || queued.Review == nil {
@@ -180,7 +205,7 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "block_rebased" || mode == "stale_base_block" || mode == "retry_block" {
+			if mode == "block_rebased" || mode == "stale_base_block" || mode == "retry_block" || mode == "absorbed_block" {
 				if land != 0 || entry.State != "land_failed" || !strings.Contains(entry.Reason, "needs an OK review") {
 					t.Fatalf("BLOCK ignored: %+v", entry)
 				}
@@ -194,7 +219,7 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 					t.Fatal("conflict not cleanly aborted")
 				}
 			} else {
-				if land != 1 || entry.State != "landed" || entry.Commit == reviewed || git("rev-parse", "dev") != entry.Commit {
+				if land != 1 || entry.State != "landed" || (!absorbed && entry.Commit == reviewed) || git("rev-parse", "dev") != entry.Commit {
 					t.Fatalf("rebased patch not landed: %+v", entry)
 				}
 			}
