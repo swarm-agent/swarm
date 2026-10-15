@@ -123,7 +123,7 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if err != nil {
 				return err
 			}
-			if err := c.recordJobActivity(kind, a, b, refs, "job.landing", fmt.Sprint(e.Attempt)); err != nil {
+			if err := c.recordJobActivity(kind, a, b, refs, "job.landing", "", e.NotificationID); err != nil {
 				return err
 			}
 			return c.prepareLand(ctx, rule, e)

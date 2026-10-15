@@ -179,7 +179,7 @@ func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
 			t.Fatal("expected lost acknowledgement")
 		}
 		saved, _, err := q.Get("a", "j")
-		if err != nil || saved.State != state || saved.NotificationID == "" || ids[saved.NotificationID] || saved.TransitionSequence != uint64(i+1) {
+		if err != nil || saved.State != state || saved.NotificationID == "" || ids[saved.NotificationID] || saved.TransitionSequence != uint64(3*(i+1)) {
 			t.Fatalf("invalid transition: %+v %v", saved, err)
 		}
 		ids[saved.NotificationID] = true
@@ -227,6 +227,99 @@ func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
 			if sig.Kind != "job."+states[j] {
 				t.Fatalf("signal %d: %+v", j, sig)
 			}
+		}
+	}
+}
+
+// Purpose: queued and landing receipts must distinguish requeues without an
+// Attempt increment, while replay after a lost acknowledgement remains exactly
+// once. Real Pebble reopen exercises Queue persistence and activity idempotency.
+func TestPublishLandRequeuedActivityRestart(t *testing.T) {
+	path := t.TempDir()
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := store.NewSessionStore(db).CreateSessionForAccount(store.SessionSnapshot{ID: "cycle-session"}, "u", "a"); err != nil {
+		t.Fatal(err)
+	}
+	call := func() *controlMCPCall {
+		r := httptest.NewRequest("POST", "/mcp", nil)
+		r = r.WithContext(context.WithValue(r.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}))
+		return &controlMCPCall{server: &Server{sessions: sessionruntime.NewService(store.NewSessionStore(db), nil)}, request: r}
+	}
+	receipt := func(e publish.Entry) error {
+		return call().recordJobActivity(controlMCPJobWorker, "worker", "run", controlMCPJobRefs{sessionID: "cycle-session"}, "job."+e.State, e.Commit, e.NotificationID)
+	}
+	reopen := func() {
+		t.Helper()
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		db, err = store.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for cycle := 0; cycle < 2; cycle++ {
+		q := publish.NewQueue(db)
+		entry, _, err := q.EnqueueDelivery(publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := receipt(entry); err != nil {
+			t.Fatal(err)
+		}
+		reopen()
+		q = publish.NewQueue(db)
+		entry, _, err = q.EnqueueDelivery(publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := receipt(entry); err != nil {
+			t.Fatal(err)
+		}
+		hooks := publish.QueueHooks{Prepare: func(_ context.Context, e *publish.Entry) error {
+			if err := receipt(*e); err != nil {
+				t.Fatal(err)
+			}
+			return context.Canceled // interruption after receipt, before landing
+		}}
+		if err := q.Process(context.Background(), "a", "f", hooks); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected interruption: %v", err)
+		}
+		reopen()
+		q = publish.NewQueue(db)
+		hooks.Prepare = func(_ context.Context, e *publish.Entry) error {
+			if err := receipt(*e); err != nil {
+				return err
+			}
+			if cycle == 0 {
+				return &publish.SendBackError{Reason: "fix"}
+			}
+			return nil
+		}
+		hooks.SendBack = func(context.Context, publish.Entry) error { return nil }
+		hooks.Land = func(context.Context, publish.Entry) (publish.LandResult, error) {
+			return publish.LandResult{Commit: "head"}, nil
+		}
+		hooks.Finished = func(_ context.Context, e publish.Entry) error { return receipt(e) }
+		if err := q.Process(context.Background(), "a", "f", hooks); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, _, _, err := call().server.activityPage(identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}, 0, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for _, e := range events {
+		counts[e.State]++
+	}
+	for state, want := range map[string]int{"job.queued": 2, "job.landing": 2, "job.sent_back": 1, "job.landed": 1} {
+		if counts[state] != want {
+			t.Fatalf("receipt counts %v, want %s=%d", counts, state, want)
 		}
 	}
 }

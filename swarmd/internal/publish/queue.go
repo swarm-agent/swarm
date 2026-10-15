@@ -134,6 +134,8 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 		break
 	}
 	e.State = "queued"
+	e.TransitionSequence++
+	e.NotificationID = fmt.Sprintf("attempt-%d-transition-%d", e.Attempt, e.TransitionSequence)
 	e.Reason, e.Commit, e.Checks = "", "", nil
 	entries = append(entries, e)
 	if err = q.store.PutJSON(queueKey(e.Account), entries); err != nil {
@@ -209,6 +211,12 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 				return err
 			}
 			continue
+		}
+		// Resume an interrupted landing with the same receipt identity. Only a
+		// new queued-to-landing transition allocates another durable identity.
+		if e.State != "landing" || e.NotificationID == "" {
+			e.TransitionSequence++
+			e.NotificationID = fmt.Sprintf("attempt-%d-transition-%d", e.Attempt, e.TransitionSequence)
 		}
 		e.State = "landing"
 		if err = q.save(e); err != nil {
