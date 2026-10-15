@@ -43,6 +43,8 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit, now 
     const problem = core.messageProblem(body, config.maxMessageChars);
     if (problem) return [400, { status: 'invalid', error: problem }];
     if (!perVisitor(body.visitor_id)) return [429, { status: 'slow_down' }];
+    // Ended by the agent (end_conversation): no daemon call, no model run, until a person reopens it.
+    if (visitors.get(body.visitor_id)?.ended) return [200, { status: 'ended' }];
     const spend = await gateway.agents.spendToday();
     if (spend.limit_exceeded) return [503, { status: 'resting' }];
     const visitor = await conversation(body.visitor_id);
@@ -56,10 +58,12 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit, now 
       emit('visitor.message', { session_id: sessionId, visitor_id: body.visitor_id });
       return [200, { status: 'with_person', seq: core.latestReplySeq(detail.messages) }];
     }
-    const handlers = core.toolHandlers({ playbook: config.playbook, dataDir: config.dataDir, bookingUrl: config.bookingUrl, emit, sessionId, visitorId: body.visitor_id, now });
+    const endConversation = (ended) => visitors.touch(body.visitor_id, { ended });
+    const handlers = core.toolHandlers({ playbook: config.playbook, dataDir: config.dataDir, bookingUrl: config.bookingUrl, emit, sessionId, visitorId: body.visitor_id, endConversation, now });
     const { reply, messages } = await gateway.agents.converse(sessionId, body.message, handlers, { timeoutMs: config.replyTimeoutMs });
     // seq lets the widget poll for a person's later replies without repeating this one.
-    return [200, { status: 'answered', reply, seq: core.latestReplySeq(messages) }];
+    const status = visitors.get(body.visitor_id)?.ended ? 'ended' : 'answered';
+    return [200, { status, reply, seq: core.latestReplySeq(messages) }];
   }
 
   async function ops(path, body, url) {
@@ -68,10 +72,16 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit, now 
     if (!sessionId || !visitors.bySession(sessionId)) return [404, { error: 'unknown conversation' }];
     if (path === '/ops/transcript') {
       const detail = await operator.sessions.get(sessionId);
-      return [200, { takeover: core.takeoverOf(detail), messages: (detail.messages ?? []).filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ id: m.id, role: m.role, from: m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent', text: m.content, seq: m.global_seq })) }];
+      return [200, { takeover: core.takeoverOf(detail), ended: visitors.get(visitors.bySession(sessionId))?.ended ?? null, messages: (detail.messages ?? []).filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ id: m.id, role: m.role, from: m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent', text: m.content, seq: m.global_seq })) }];
     }
     if (path === '/ops/takeover') return [200, { takeover: await operator.agents.takeOver(sessionId) }];
     if (path === '/ops/handback') return [200, { takeover: await operator.agents.handBack(sessionId) }];
+    if (path === '/ops/reopen') {
+      const visitorId = visitors.bySession(sessionId);
+      await visitors.touch(visitorId, { ended: null });
+      emit('conversation.reopened', { session_id: sessionId, visitor_id: visitorId });
+      return [200, { reopened: true }];
+    }
     if (path === '/ops/reply') {
       if (typeof body?.content !== 'string' || !body.content.trim() || body.content.length > 4000) return [400, { error: 'content is required (at most 4000 characters)' }];
       return [200, { message: await operator.agents.replyAsOperator(sessionId, body.content) }];

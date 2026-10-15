@@ -98,7 +98,8 @@ export function signBody(secret, body) {
 
 /**
  * Sends gateway events (conversation.started, lead.captured,
- * handoff.requested, chat.error) to a monitoring hub, signed with HMAC-SHA256.
+ * handoff.requested, conversation.ended, conversation.reopened, visitor.message,
+ * chat.error) to a monitoring hub, signed with HMAC-SHA256.
  * Delivery is best effort and never blocks or fails a visitor's request.
  */
 export function createEmitter({ url, secret, fetchImpl = fetch, now = Date.now }) {
@@ -119,7 +120,7 @@ export function createEmitter({ url, secret, fetchImpl = fetch, now = Date.now }
  * gateway's own mapping (sessionId -> visitorId); the model supplies only the
  * business inputs, which the daemon has already checked against each schema.
  */
-export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, now = Date.now }) {
+export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, endConversation, now = Date.now }) {
   return {
     get_playbook: async ({ topic }) => {
       if (!Object.hasOwn(playbook, topic)) throw new Error(`No playbook entry for ${topic}`);
@@ -135,6 +136,13 @@ export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, v
     handoff_to_human: async ({ summary }) => {
       emit('handoff.requested', { session_id: sessionId, visitor_id: visitorId, summary });
       return { requested: true, booking_url: bookingUrl, next: 'A person has been asked to join. If nobody is around, they will follow up.' };
+    },
+    // A hard stop the model can trigger but not undo: the gateway refuses every
+    // later message from this visitor without a model run until a person reopens it.
+    end_conversation: async ({ reason, note }) => {
+      await endConversation({ reason, at: now() });
+      emit('conversation.ended', { session_id: sessionId, visitor_id: visitorId, reason, note });
+      return { ended: true, next: 'The chat is now closed and the visitor cannot send more messages. Say one short, polite goodbye.' };
     },
   };
 }

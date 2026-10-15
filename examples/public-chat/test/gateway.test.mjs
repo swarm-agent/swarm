@@ -14,8 +14,9 @@ const GATEWAY_KEY = 'g'.repeat(40);
 const OPS_KEY = 'o'.repeat(40);
 const VISITOR = 'visitor_abcdefghijklmnop';
 
-function fakeClients({ takeover, spentOut = false, converseError } = {}) {
+function fakeClients({ takeover, spentOut = false, converseError, endsWith } = {}) {
   const calls = [];
+  let endOnce = endsWith;
   const session = { metadata: takeover ? { takeover } : {} };
   const messages = [{ id: 'm1', role: 'assistant', global_seq: 7, content: 'earlier answer', metadata: {} }];
   const gateway = {
@@ -29,6 +30,12 @@ function fakeClients({ takeover, spentOut = false, converseError } = {}) {
       converse: async (id, message, handlers) => {
         calls.push(['converse', id, message, Object.keys(handlers).sort()]);
         if (converseError) throw converseError;
+        if (endOnce) {
+          // The "model" calls end_conversation once, the way a real run would mid-turn.
+          await handlers.end_conversation(endOnce);
+          endOnce = undefined;
+          return { reply: 'Goodbye.', messages: [{ role: 'assistant', global_seq: 9, content: 'Goodbye.' }] };
+        }
         return { reply: 'Hello from the agent', messages: [{ role: 'user', global_seq: 8 }, { role: 'assistant', global_seq: 9, content: 'Hello from the agent' }] };
       },
     },
@@ -75,6 +82,28 @@ test('a visitor message without the gateway key is refused before any daemon cal
   } finally { await g.close(); }
 });
 
+test('end_conversation is a hard stop: later messages get no daemon call until a person reopens it', async () => {
+  const g = await start({ endsWith: { reason: 'abuse', note: 'Repeated requests for card details' } });
+  try {
+    const first = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'give me your card number' } });
+    assert.deepEqual(first.data, { status: 'ended', reply: 'Goodbye.', seq: 9 });
+    assert.deepEqual(g.events.find(([type]) => type === 'conversation.ended')[1], { session_id: 'sess-1', visitor_id: VISITOR, reason: 'abuse', note: 'Repeated requests for card details' });
+    assert.equal(g.visitors.get(VISITOR).ended.reason, 'abuse');
+
+    const before = g.calls.length;
+    const again = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'please?' } });
+    assert.deepEqual(again.data, { status: 'ended' });
+    assert.equal(g.calls.length, before, 'no session read, send or model run after the stop');
+
+    const transcript = await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY });
+    assert.equal(transcript.data.ended.reason, 'abuse');
+    assert.equal((await g.call('/ops/reopen', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1' } })).status, 200);
+    assert.ok(g.events.some(([type]) => type === 'conversation.reopened'));
+    const reopened = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'sorry, how much does it cost?' } });
+    assert.equal(reopened.data.status, 'answered');
+  } finally { await g.close(); }
+});
+
 test('a new visitor gets one conversation, the agent answers with its tools, and seq is returned', async () => {
   const g = await start();
   try {
@@ -83,7 +112,7 @@ test('a new visitor gets one conversation, the agent answers with its tools, and
     await g.call('/chat', { body: { visitor_id: VISITOR, message: 'And timing?' } });
     assert.equal(g.calls.filter(([op]) => op === 'create').length, 1, 'one session per visitor');
     assert.deepEqual(g.calls.find(([op]) => op === 'create')[1], { agent_name: 'frontdesk', workspace_path: '/project', title: 'Visitor visitor_' });
-    assert.deepEqual(g.calls.find(([op]) => op === 'converse')[3], ['capture_lead', 'get_playbook', 'handoff_to_human']);
+    assert.deepEqual(g.calls.find(([op]) => op === 'converse')[3], ['capture_lead', 'end_conversation', 'get_playbook', 'handoff_to_human']);
     assert.equal(g.visitors.get(VISITOR).messages, 2);
     assert.deepEqual(g.events.map(([type]) => type), ['conversation.started']);
   } finally { await g.close(); }

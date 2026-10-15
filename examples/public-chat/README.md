@@ -1,8 +1,8 @@
 # Public chat: a website assistant on a sealed Swarm agent
 
 An always-on "ask us anything" chat for a public website. A sealed agent answers
-from an approved playbook, captures leads and asks for a person; a person can
-take any conversation over and hand it back. Everything the visitor can reach is
+from an approved playbook, captures leads, asks for a person and can end an
+abusive chat; a person can take any conversation over and hand it back. Everything the visitor can reach is
 narrow, rate-limited and replaceable.
 
 ```
@@ -23,7 +23,7 @@ visitor ── site + widget/chat.js
 
 | Piece | Path | Holds |
 |---|---|---|
-| Agent and tools | `agent.json` | the prompt, three client tools, model and limits |
+| Agent and tools | `agent.json` | the prompt, four client tools, model and limits |
 | Approved answers | `playbook.json` | what `get_playbook` returns; edit for your business |
 | Gateway | `gateway/`, `Dockerfile` | the gateway and operator tokens (files), visitor map, leads |
 | Box | `compose.yaml` | sealed swarmd, gateway, cloudflared |
@@ -143,7 +143,8 @@ of everything above.
   Forward them with a signal sink (`/v3/signals/sinks`, HMAC-signed, heartbeat).
 - **Gateway events:** set `HUB_EVENTS_URL` and the gateway POSTs
   `conversation.started`, `lead.captured`, `handoff.requested`,
-  `visitor.message` (during a takeover) and `chat.error`, signed with
+  `conversation.ended`, `conversation.reopened`, `visitor.message` (during a
+  takeover) and `chat.error`, signed with
   `X-Signature: sha256=<HMAC of the body>` using `hub_events_secret`.
 - **Fallback:** if the box is unreachable, paused or over budget, the Worker
   says so and the widget shows its fallback text instead of breaking.
@@ -161,10 +162,21 @@ token:
 | `POST /ops/takeover` `{session_id}` | a person takes over; the agent's run in flight stops |
 | `POST /ops/reply` `{session_id, content}` | reply as a person |
 | `POST /ops/handback` `{session_id}` | the agent answers the next message |
+| `POST /ops/reopen` `{session_id}` | undo the agent's `end_conversation` |
 
 While a person holds a conversation, the visitor's messages are kept and start
 no model run; the widget polls `/api/chat/replies` and shows the person's
 replies. A `handoff.requested` event is the cue to take over.
+
+## Ending a chat
+
+The agent's `end_conversation` tool (reason `abuse` or `cannot_help`, plus an
+internal note) is a hard stop the model can trigger but not undo. The gateway
+records it against the visitor and answers every later message with
+`{"status":"ended"}` before any daemon call, so no model run or spend follows;
+the widget shows the goodbye and disables its input. Only a person reopens it
+(`/ops/reopen`). A visitor can still clear their browser storage and start a new
+conversation; the Worker's per-IP limit is what bounds that.
 
 ## Security boundaries and what is not covered
 

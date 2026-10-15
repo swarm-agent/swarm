@@ -67,6 +67,11 @@
       if (data.ticket) { ticket = data.ticket; remember('chat_ticket', ticket); }
       if (Number.isFinite(data.seq)) lastSeq = Math.max(lastSeq, data.seq);
       if (data.status === 'answered') say('agent', data.reply);
+      else if (data.status === 'ended') {
+        if (data.reply) say('agent', data.reply);
+        say('agent', 'This chat has ended.');
+        for (const el of form.elements) el.disabled = true;
+      }
       else if (data.status === 'with_person') { say('agent', 'A person is with you now.'); pollReplies(); }
       else if (data.status === 'slow_down') say('agent', 'Please wait a moment before sending more.');
       else if (data.status === 'busy') say('agent', 'Lots of visitors right now. Please try again in a few seconds.');
