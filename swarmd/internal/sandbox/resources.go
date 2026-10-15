@@ -2,10 +2,8 @@ package sandbox
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"strconv"
-	"strings"
 )
 
 const gib = uint64(1 << 30)
@@ -30,20 +28,11 @@ func ResourceDefaults(cpus int, memory uint64) (workers int, bytes uint64) {
 }
 
 func hostResources() (int, uint64, error) {
-	data, err := os.ReadFile("/proc/meminfo")
+	ram, err := hostMemory()
 	if err != nil {
 		return 0, 0, fmt.Errorf("sandbox host memory detection: %w; configure sandbox_memory and worker_max_concurrent_runs", err)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 3 && fields[0] == "MemTotal:" {
-			kb, err := strconv.ParseUint(fields[1], 10, 64)
-			if err == nil && kb > 0 {
-				return runtime.NumCPU(), kb * 1024, nil
-			}
-		}
-	}
-	return 0, 0, fmt.Errorf("sandbox host memory detection: missing MemTotal")
+	return runtime.NumCPU(), ram, nil
 }
 
 func resolveResources(cfg *Config) error {

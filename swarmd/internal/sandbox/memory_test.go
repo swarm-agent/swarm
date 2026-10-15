@@ -14,14 +14,17 @@ import (
 // unit tests prevent small-host underprovisioning, malformed overrides, and
 // accidental changes to the effective status/spec without requiring Docker.
 func TestSandboxMemory(t *testing.T) {
-	for _, tc := range []struct{ info, want string }{
-		{"MemTotal: 2097152 kB\n", "4g"},
-		{"MemTotal: 33554432 kB\n", "16g"},
-		{"MemTotal: 33556480 kB\n", "16385m"},
+	for _, tc := range []struct {
+		info string
+		want uint64
+	}{
+		{"MemTotal: 2097152 kB\n", 2 * gib},
+		{"MemTotal: 33554432 kB\n", 32 * gib},
+		{"MemTotal: 33556480 kB\n", 33556480 * 1024},
 	} {
 		got, err := memoryFromMeminfo(strings.NewReader(tc.info))
 		if err != nil || got != tc.want {
-			t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			t.Fatalf("got %d, %v; want %d", got, err, tc.want)
 		}
 	}
 	for _, info := range []string{"", "MemTotal: broken kB", "MemTotal: 0 kB"} {

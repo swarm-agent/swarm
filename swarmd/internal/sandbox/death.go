@@ -10,15 +10,22 @@ import (
 // ErrSandboxDied means the command lost its execution container, not that the
 // program rejected its input. Callers must not attribute this to worker code.
 type ErrSandboxDied struct {
-	OOMKilled bool
-	Memory    string
+	OOMKilled   bool
+	Memory      string
+	PossibleOOM bool
 }
 
+func (e *ErrSandboxDied) Is(target error) bool { return target == ErrInterrupted }
+
 func (e *ErrSandboxDied) Error() string {
-	if e.OOMKilled {
-		return fmt.Sprintf("the sandbox ran out of memory (limit %s); commands running in it were stopped; it will be restarted on retry", e.Memory)
+	prefix := ErrInterrupted.Error() + ": uncommitted work preserved; continue with a follow-up; "
+	if e.PossibleOOM {
+		return prefix + "command killed (possible OOM)"
 	}
-	return fmt.Sprintf("the sandbox stopped or restarted (memory limit %s); commands running in it were stopped", e.Memory)
+	if e.OOMKilled {
+		return prefix + fmt.Sprintf("the sandbox ran out of memory (limit %s); commands running in it were stopped; it will be restarted on retry", e.Memory)
+	}
+	return prefix + fmt.Sprintf("the sandbox stopped or restarted (memory limit %s); commands running in it were stopped", e.Memory)
 }
 
 type containerState struct {

@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 )
@@ -41,18 +42,21 @@ func TestWorkerResources(t *testing.T) {
 // Git/command failure, preserve the checkout and invalidate only the dead box.
 // Fake engine state proves classification without needing Docker.
 func TestContainerInterruption(t *testing.T) {
-	for _, state := range []string{"true false false", "false false false", "false true true"} {
-		runner := readyRunner()
-		runner.out["container inspect"] = state
-		m := newTestManager(t, ModeRequired, runner, Config{})
+	for _, state := range []string{`{"OOMKilled":true}`, `{"Running":false}`, `{"Running":true,"StartedAt":"restarted"}`} {
+		runner := &deathRunner{fakeRunner: readyRunner()}
+		if err := json.Unmarshal([]byte(state), &runner.after); err != nil {
+			t.Fatal(err)
+		}
+		m := newTestManager(t, ModeRequired, runner.fakeRunner, Config{})
+		m.runner = runner
 		err := m.interruption(context.Background(), Scope{Root: t.TempDir()}, "OCI runtime exec failed: container in state stopped")
 		if !errors.Is(err, ErrInterrupted) {
 			t.Fatalf("%s: %v", state, err)
 		}
 	}
-	runner := readyRunner()
-	runner.out["container inspect"] = "false true false"
-	m := newTestManager(t, ModeRequired, runner, Config{})
+	runner := &deathRunner{fakeRunner: readyRunner(), after: containerState{Running: true}}
+	m := newTestManager(t, ModeRequired, runner.fakeRunner, Config{})
+	m.runner = runner
 	if err := m.interruption(context.Background(), Scope{Root: t.TempDir()}, "fatal: not a git repository"); err != nil {
 		t.Fatal(err)
 	}
@@ -71,9 +75,9 @@ func TestContainerInterruption(t *testing.T) {
 // Injected engine death and command callbacks isolate the retry boundary.
 func TestGitContainerRetryOnce(t *testing.T) {
 	for _, command := range []string{"rev-parse", "commit"} {
-		runner := readyRunner()
-		runner.out["container inspect"] = "true false false"
-		m := newTestManager(t, ModeRequired, runner, Config{})
+		runner := &deathRunner{fakeRunner: readyRunner(), after: containerState{OOMKilled: true}}
+		m := newTestManager(t, ModeRequired, runner.fakeRunner, Config{})
+		m.runner = runner
 		root := t.TempDir()
 		m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{root}, nil }})
 		calls := 0
@@ -93,5 +97,31 @@ func TestGitContainerRetryOnce(t *testing.T) {
 				t.Fatalf("mutation replayed: %d %v", calls, err)
 			}
 		}
+	}
+}
+
+// Purpose: interruption must compare the mutex-protected generation for the
+// affected job only. Separate job cache entries prevent a restarted sentry from
+// invalidating or falsely classifying an unrelated in-flight job.
+func TestJobGenerationIsolation(t *testing.T) {
+	runner := &deathRunner{fakeRunner: readyRunner(), after: containerState{Running: true, StartedAt: "a-new"}}
+	m := newTestManager(t, ModeRequired, runner.fakeRunner, Config{})
+	m.runner = runner
+	a := Scope{Root: t.TempDir(), JobCheckout: "/jobs/a"}
+	b := Scope{Root: a.Root, JobCheckout: "/jobs/b"}
+	m.boxes[scopeContainerName(a)] = &box{startedAt: "a-old"}
+	m.boxes[scopeContainerName(b)] = &box{startedAt: "b-current"}
+	runner.out["container inspect"] = `{"Running":true,"StartedAt":"a-new"}`
+	err := m.interruption(context.Background(), a, "transport failed")
+	var died *ErrSandboxDied
+	if !errors.As(err, &died) || !errors.Is(err, ErrInterrupted) {
+		t.Fatalf("restart not classified: %v", err)
+	}
+	if !m.boxes[scopeContainerName(a)].invalid || m.boxes[scopeContainerName(b)].invalid {
+		t.Fatal("generation invalidated wrong job")
+	}
+	runner.after = containerState{Running: true, StartedAt: "b-current"}
+	if err := m.interruption(context.Background(), b, "command failed"); err != nil {
+		t.Fatal(err)
 	}
 }

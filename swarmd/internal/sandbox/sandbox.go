@@ -840,11 +840,8 @@ func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*prov
 		result, err = m.execOnce(ctx, scope, req)
 	}
 	if err != nil || (result != nil && result.ExitCode != 0) {
-		if interrupted := m.interruption(ctx, scope, fmt.Sprint(err)); interrupted != nil {
-			return result, interrupted
-		}
 		if result != nil && result.ExitCode == 137 {
-			return result, fmt.Errorf("%w: command killed (possible OOM); uncommitted work preserved; continue with a follow-up", ErrInterrupted)
+			return result, &ErrSandboxDied{Memory: m.cfg.Memory, PossibleOOM: true}
 		}
 	}
 	return result, err
@@ -890,7 +887,7 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	}, req.MaxTimeout)
 	if execErr != nil || (result != nil && result.ExitCode != 0) {
 		after, inspectErr := m.inspectState(ctx, b.name)
-		if inspectErr == nil && sandboxDied(before, after) {
+		if (inspectErr == nil && sandboxDied(before, after)) || ContainerStopped(fmt.Sprint(execErr)) {
 			m.invalidate(b.name)
 			return nil, &ErrSandboxDied{OOMKilled: after.OOMKilled, Memory: m.cfg.Memory}
 		}

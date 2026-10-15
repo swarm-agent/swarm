@@ -3,10 +3,8 @@ package sandbox
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 )
 
 // ErrInterrupted is retryable by a follow-up, not by replaying a possibly
@@ -20,25 +18,19 @@ func ContainerStopped(detail string) bool {
 
 func (m *Manager) interruption(ctx context.Context, scope Scope, detail string) error {
 	name := scopeContainerName(scope)
-	inspectCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	out, err := m.runner.Run(inspectCtx, m.cfg.Engine, "container", "inspect", "--format", "{{.State.OOMKilled}} {{.State.Running}} {{.State.Restarting}}", name)
-	state := strings.Fields(string(out))
-	cause := "container stopped or restarted"
-	dead := ContainerStopped(detail)
-	if err == nil && len(state) == 3 {
-		if state[0] == "true" {
-			cause, dead = "OOM (container memory limit exceeded)", true
-		}
-		if state[1] == "false" || state[2] == "true" {
-			dead = true
-		}
+	m.mu.Lock()
+	var before containerState
+	if b := m.boxes[name]; b != nil {
+		before.StartedAt = b.startedAt
 	}
+	m.mu.Unlock()
+	state, err := m.inspectState(ctx, name)
+	dead := ContainerStopped(detail) || (err == nil && sandboxDied(before, state))
 	if !dead {
 		return nil
 	}
 	m.invalidate(name)
-	return fmt.Errorf("%w: %s; uncommitted work is preserved; continue this job with a follow-up", ErrInterrupted, cause)
+	return &ErrSandboxDied{OOMKilled: state.OOMKilled, Memory: m.cfg.Memory}
 }
 
 // GitCombinedOutput retries only explicitly read-only daemon Git queries once

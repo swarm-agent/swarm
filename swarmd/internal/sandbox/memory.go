@@ -35,36 +35,32 @@ func ValidateMemory(value string) error {
 	return fmt.Errorf("invalid sandbox memory %q: expected a Docker size of at least 1g", value)
 }
 
-// memoryFromMeminfo rounds half the physical memory down to MiB, with a 4 GiB floor.
-func memoryFromMeminfo(r io.Reader) (string, error) {
+// memoryFromMeminfo reads physical RAM once for the shared admission/memory budget.
+func memoryFromMeminfo(r io.Reader) (uint64, error) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) == 3 && fields[0] == "MemTotal:" && fields[2] == "kB" {
 			kb, err := strconv.ParseUint(fields[1], 10, 64)
 			if err != nil || kb == 0 {
-				return "", fmt.Errorf("invalid MemTotal")
+				return 0, fmt.Errorf("invalid MemTotal")
 			}
-			mib := kb / 2048
-			if mib < 4096 {
-				mib = 4096
+			if kb > ^uint64(0)/1024 {
+				return 0, fmt.Errorf("MemTotal overflow")
 			}
-			if mib%1024 == 0 {
-				return fmt.Sprintf("%dg", mib/1024), nil
-			}
-			return fmt.Sprintf("%dm", mib), nil
+			return kb * 1024, nil
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", err
+		return 0, err
 	}
-	return "", fmt.Errorf("MemTotal missing from host memory information")
+	return 0, fmt.Errorf("MemTotal missing from host memory information")
 }
 
-func hostMemory() (string, error) {
+func hostMemory() (uint64, error) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	defer f.Close()
 	return memoryFromMeminfo(f)

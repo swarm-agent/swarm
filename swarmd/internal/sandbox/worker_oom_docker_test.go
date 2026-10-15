@@ -36,7 +36,9 @@ func TestWorkerDockerOOMIsolation(t *testing.T) {
 	if err := os.Chmod(root, 0777); err != nil {
 		t.Fatal(err)
 	}
-	m := newTestManager(t, ModeRequired, readyRunner(), Config{Memory: "128m"})
+	m := newTestManager(t, ModeRequired, readyRunner(), Config{Memory: "1g"})
+	// Failure injection bypasses the production minimum only for this probe.
+	m.cfg.Memory = "128m"
 	// No network is required for the OOM probe.
 	m.cfg.Network = "none"
 	a := Scope{Root: root, JobCheckout: filepath.Join(root, "a")}
