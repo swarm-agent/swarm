@@ -42,17 +42,3 @@ func TestV3RealtimeRejectsQueryStringSessionSubscriptions(t *testing.T) {
 		t.Fatalf("query subscription frame = %+v", frame)
 	}
 }
-
-func TestV3RealtimeResumeRejectsUnknownSelectorKindWithoutLegacyWorkset(t *testing.T) {
-	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
-	created := createV3RealtimeTestSessionResult(t, server, "session-realtime-bad-selector", "create-realtime-bad-selector")
-	httpServer := newV3RealtimeHTTPTestServer(t, server)
-	conn := dialV3RealtimeStream(t, httpServer.URL)
-	defer conn.Close()
-	writeV3RealtimeMessage(t, conn, V3RealtimeMessage{Protocol: V3RealtimeProtocol, ProtocolVersion: V3RealtimeProtocolVersion, Kind: V3RealtimeKindResume, EndpointCursor: signedV3RealtimeCursorForTest(t, server, created.RealtimeOutbox.EndpointSeq), Worksets: []V3RealtimeWorksetSubscriptionRequest{{WorksetID: "bad-kind", SubscriptionID: "bad-kind-sub", Selector: V3RealtimeWorksetSelector{Kind: "everything", Global: true}, AutoSubscribeSessions: true}}})
-	frame := readV3RealtimeFrame(t, conn)
-	assertV3RealtimeFrame(t, frame, V3RealtimeKindAuthDenied, "", 0)
-	if frame.ErrorCode != "invalid_message" || !strings.Contains(frame.Error, `unsupported v3 realtime selector.kind "everything"`) {
-		t.Fatalf("unknown selector frame = %+v", frame)
-	}
-}

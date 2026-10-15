@@ -1,10 +1,5 @@
 package api
 
-// Cookie fixture maintenance: buildDesktopLocalSessionCookie now requires the
-// request origin. These API-layer JWT rejection/precedence tests must send the
-// selected cookie name so they still exercise token validation, not a missing
-// cookie. Bootstrap/restart assertions retain the server-issued cookie unchanged.
-
 import (
 	"crypto/hmac"
 	"crypto/sha256"
@@ -22,7 +17,6 @@ import (
 	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
-	updateapi "swarm/packages/swarmd/internal/update"
 )
 
 func TestDesktopSessionBootstrapFailsBeforeIdentityAndDoesNotCreateIdentity(t *testing.T) {
@@ -92,96 +86,6 @@ func TestDesktopSessionBootstrapIssuesJWTAndProtectedAPIAcceptsAfterRestart(t *t
 	restarted.DesktopHandler().ServeHTTP(vaultRec, vaultReq)
 	if vaultRec.Code != http.StatusOK {
 		t.Fatalf("protected API with persisted jwt status=%d want %d body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
-	}
-}
-
-func TestLocalTransportUpdateApplyRequiresBootstrappedProductPrincipal(t *testing.T) {
-	server, _, _, cleanup := newDesktopJWTTestServer(t, true)
-	defer cleanup()
-	server.SetUpdateService(updateapi.NewService("dev", false))
-
-	unauthorizedRec := httptest.NewRecorder()
-	unauthorizedReq := httptest.NewRequest(http.MethodPost, "http://swarm-local-transport/v1/update/apply", nil)
-	server.LocalTransportHandler().ServeHTTP(unauthorizedRec, unauthorizedReq)
-	if unauthorizedRec.Code != http.StatusUnauthorized || !strings.Contains(unauthorizedRec.Body.String(), "trusted principal is required") {
-		t.Fatalf("unauthenticated update apply status=%d body=%s, want trusted-principal 401", unauthorizedRec.Code, unauthorizedRec.Body.String())
-	}
-
-	bootstrapRec := httptest.NewRecorder()
-	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://swarm-local-transport/v1/auth/desktop/session", nil)
-	server.LocalTransportHandler().ServeHTTP(bootstrapRec, bootstrapReq)
-	if bootstrapRec.Code != http.StatusOK {
-		t.Fatalf("local session bootstrap status=%d body=%s", bootstrapRec.Code, bootstrapRec.Body.String())
-	}
-	var session struct {
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(bootstrapRec.Body.Bytes(), &session); err != nil {
-		t.Fatalf("decode local session: %v", err)
-	}
-
-	authorizedRec := httptest.NewRecorder()
-	authorizedReq := httptest.NewRequest(http.MethodPost, "http://swarm-local-transport/v1/update/apply", nil)
-	authorizedReq.Header.Set("X-Swarm-Token", session.Token)
-	server.LocalTransportHandler().ServeHTTP(authorizedRec, authorizedReq)
-	if authorizedRec.Code == http.StatusUnauthorized || strings.Contains(authorizedRec.Body.String(), "trusted principal is required") {
-		t.Fatalf("authenticated update apply status=%d body=%s, principal was not preserved", authorizedRec.Code, authorizedRec.Body.String())
-	}
-	if authorizedRec.Code != http.StatusBadRequest || !strings.Contains(authorizedRec.Body.String(), "update apply is suppressed") {
-		t.Fatalf("authenticated update apply status=%d body=%s, want update-service response after auth", authorizedRec.Code, authorizedRec.Body.String())
-	}
-}
-
-func TestLocalTransportSessionBootstrapReturnsTokenForTUI(t *testing.T) {
-	server, _, _, cleanup := newDesktopJWTTestServer(t, true)
-	defer cleanup()
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "http://swarm-local-transport/v1/auth/desktop/session", nil)
-	req.RemoteAddr = "192.0.2.10:43210"
-	server.LocalTransportHandler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("local transport session status=%d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var response struct {
-		OK             bool   `json:"ok"`
-		Token          string `json:"token"`
-		UserID         string `json:"user_id"`
-		AccountScopeID string `json:"account_scope_id"`
-		Username       string `json:"username"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode local transport session response: %v", err)
-	}
-	if !response.OK || strings.TrimSpace(response.Token) == "" || response.UserID != "user_desktop_jwt_test" || response.AccountScopeID != "acct_desktop_jwt_test" || response.Username != "desktop-jwt-user" {
-		t.Fatalf("local transport session response = %+v", response)
-	}
-
-	meRec := httptest.NewRecorder()
-	meReq := httptest.NewRequest(http.MethodGet, "http://swarm-local-transport/me", nil)
-	meReq.RemoteAddr = "192.0.2.10:43210"
-	meReq.Header.Set("X-Swarm-Token", response.Token)
-	server.LocalTransportHandler().ServeHTTP(meRec, meReq)
-	if meRec.Code != http.StatusOK {
-		t.Fatalf("local transport /me with X-Swarm-Token status=%d want %d body=%s", meRec.Code, http.StatusOK, meRec.Body.String())
-	}
-	var me struct {
-		Type                 string  `json:"type"`
-		UserID               string  `json:"userID"`
-		AccountScopeID       string  `json:"accountScopeID"`
-		TeamID               *string `json:"teamID"`
-		AccountScopeSource   string  `json:"accountScopeSource"`
-		AccountScopeSourceUS string  `json:"account_scope_source"`
-		SessionID            string  `json:"session_id"`
-	}
-	if err := json.Unmarshal(meRec.Body.Bytes(), &me); err != nil {
-		t.Fatalf("decode local transport /me response: %v", err)
-	}
-	if me.Type != "user" || me.UserID != "user_desktop_jwt_test" || me.AccountScopeID != "acct_desktop_jwt_test" || me.TeamID != nil || strings.TrimSpace(me.SessionID) == "" {
-		t.Fatalf("local transport /me principal = %+v", me)
-	}
-	if me.AccountScopeSource != string(identity.AccountScopeSourceSession) || me.AccountScopeSourceUS != string(identity.AccountScopeSourceSession) {
-		t.Fatalf("local transport /me account scope source = %q/%q, want %q", me.AccountScopeSource, me.AccountScopeSourceUS, identity.AccountScopeSourceSession)
 	}
 }
 

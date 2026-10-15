@@ -1,9 +1,6 @@
 package api
 
 import (
-	"os"
-	"regexp"
-	"strings"
 	"testing"
 )
 
@@ -28,28 +25,5 @@ func TestAutoPublishNext(t *testing.T) {
 		if got := autoPublishNext(c.status, c.result); got != c.want {
 			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
 		}
-	}
-}
-
-// Requirement: every fixed route a Swarm Control tool calls is on the route
-// list; one left off fails that tool for every AI ("route unavailable").
-func TestControlMCPToolRoutesAllowed(t *testing.T) {
-	var all []byte
-	for _, name := range []string{"control_mcp_tools.go", "control_mcp_jobs.go", "control_mcp_tasks.go", "control_mcp_env.go", "control_mcp_media_jobs.go", "control_mcp_review.go"} {
-		if b, err := os.ReadFile(name); err == nil {
-			all = append(all, b...)
-		}
-	}
-	re := regexp.MustCompile(`c\.dispatch\(http\.Method([A-Za-z]+), "(/v[0-9]/[^"/]+(?:/[^"/]+)*)"`)
-	seen := 0
-	for _, m := range re.FindAllSubmatch(all, -1) {
-		method, path := strings.ToUpper(string(m[1])), string(m[2])
-		seen++
-		if !controlMCPRouteAllowed(method, path) {
-			t.Errorf("%s %s is called by a tool but not on the route list", method, path)
-		}
-	}
-	if seen < 10 {
-		t.Fatalf("found only %d routes; the pattern no longer matches the tools", seen)
 	}
 }

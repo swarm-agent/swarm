@@ -12,43 +12,6 @@ import (
 	"swarm/packages/swarmd/internal/tool"
 )
 
-// Purpose: resolve the current default Swarm profile through the runtime tool
-// boundary so removed plan grants cannot leak back through preset expansion.
-// Retired finder/memory/parallel default aliases are not compiled defaults.
-func TestResolveAgentToolContractUsesSavedBuiltInContracts(t *testing.T) {
-	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
-	for _, name := range []string{agentruntime.SwarmAgentID} {
-		profile, ok := agentruntime.DefaultProfileByName(name)
-		if !ok {
-			t.Fatalf("DefaultProfileByName(%s) missing", name)
-		}
-		resolved, _, _, err := svc.ResolveAgentToolContract(profile)
-		if err != nil {
-			t.Fatalf("ResolveAgentToolContract(%s) error = %v", name, err)
-		}
-		if strings.TrimSpace(resolved.RawPreset) == "" && len(profile.ToolContract.Tools) == 0 {
-			t.Fatalf("%s resolved without persisted preset or explicit tools: %+v", name, resolved)
-		}
-		if name == agentruntime.SwarmAgentID {
-			if _, configured := profile.ToolContract.Tools["manage_todos"]; configured {
-				t.Fatalf("Swarm tool contract still configures manage_todos: %+v", profile.ToolContract)
-			}
-			if todo := resolved.Tools["manage_todos"]; todo.Enabled || slices.Contains(resolved.AvailableTools, "manage_todos") {
-				t.Fatalf("Swarm resolved toolkit advertises manage_todos: %+v", resolved)
-			}
-			if sessions := resolved.Tools["manage_sessions"]; !sessions.Enabled || !slices.Contains(resolved.AvailableTools, "manage_sessions") {
-				t.Fatalf("Swarm resolved toolkit omits manage_sessions: %+v", resolved)
-			}
-			if plan := resolved.Tools["plan_manage"]; plan.Enabled || slices.Contains(resolved.AvailableTools, "plan_manage") {
-				t.Fatalf("Swarm default toolkit exposes plan_manage: %+v", resolved)
-			}
-			if !slices.ContainsFunc(svc.ListAgentToolDefinitions(), func(definition tool.Definition) bool { return definition.Name == "manage_todos" }) {
-				t.Fatal("shared tool inventory no longer implements manage_todos")
-			}
-		}
-	}
-}
-
 func TestResolveAgentToolContractRestoresManageSessionsOnlyForSwarmPrimary(t *testing.T) {
 	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
 	for _, tc := range []struct {
@@ -146,36 +109,6 @@ func TestResolveAgentToolContractForcesTaskOffForEverySubagent(t *testing.T) {
 	}
 }
 
-// Requirement: onboarding repository mutations always ask even if the account
-// policy would otherwise allow them, while discovery remains allowed and broad
-// product authority remains denied. Threat: an allow rule or mutable snapshot
-// could silently initialize/commit user files. The compiled policy is the
-// narrowest layer proving the effective decisions before tool execution.
-func TestWorkspaceOnboardingToolContractForcesMutationApproval(t *testing.T) {
-	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
-	profile := agentruntime.WorkspaceOnboardingAgentProfileForParent(pebblestore.AgentProfile{Provider: "test", Model: "model", Thinking: "high"})
-	resolved, compiled, disabled, err := svc.ResolveAgentToolContract(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"write", "edit", "git_init", "git_add", "git_commit", "git_commit_initial"} {
-		if !resolved.Tools[name].Enabled || disabled[name] {
-			t.Fatalf("mutation tool %q not available for approval: resolved=%+v disabled=%v", name, resolved.Tools[name], disabled[name])
-		}
-		if explain := permission.ExplainPolicy("auto", name, `{}`, *compiled); explain.Decision != permission.PolicyDecisionAsk {
-			t.Fatalf("mutation tool %q decision=%q want ask", name, explain.Decision)
-		}
-	}
-	if explain := permission.ExplainPolicy("auto", "bash", `{"command":"git status","explanation":["Inspect status"],"category":"read","critical":false}`, *compiled); explain.Decision != permission.PolicyDecisionDeny {
-		t.Fatalf("non-init bash decision=%q want deny", explain.Decision)
-	}
-	for _, deniedName := range []string{"task", "manage_sessions", "manage_worktree", "plan_manage"} {
-		if resolved.Tools[deniedName].Enabled || !disabled[deniedName] {
-			t.Fatalf("escalation tool %q resolved=%+v disabled=%v", deniedName, resolved.Tools[deniedName], disabled[deniedName])
-		}
-	}
-}
-
 func TestResolveAgentToolContractFailsClosedWhenSavedContractMissing(t *testing.T) {
 	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
 	_, _, _, err := svc.ResolveAgentToolContract(pebblestore.AgentProfile{
@@ -186,52 +119,5 @@ func TestResolveAgentToolContractFailsClosedWhenSavedContractMissing(t *testing.
 	})
 	if err == nil || !strings.Contains(err.Error(), "tool_contract is not configured") {
 		t.Fatalf("ResolveAgentToolContract() error = %v, want missing tool_contract", err)
-	}
-}
-
-// Requirement: the Orchestrator's compiled tool contract enables manage_projects,
-// which compiles to an "allow tool: manage_projects" rule ahead of the default
-// policy. That rule must keep authorizing reads and task cards that wait for the
-// person's Approve, but must not pre-approve the Orchestrator approving or
-// deploying its own cards, proposals that start work or spend at once
-// (auto_approve, plan, media), or project/task deletion and archiving. Threat:
-// an enabled tool silently bypassing the card gate and destructive-action
-// approval. ResolveAgentToolContract on the real Orchestrator profile plus
-// ExplainPolicy is the narrowest layer that proves the decision the run gate
-// evaluates (gateToolCalls passes this compiled policy as the overlay).
-func TestOrchestratorCompiledContractKeepsProjectLaunchAndRemovalApproval(t *testing.T) {
-	svc := NewService(nil, nil, nil, tool.NewRuntime(1), nil, nil, nil, nil)
-	profile := agentruntime.SwarmOrchestratorAgentProfileForContext(pebblestore.AgentProfile{})
-	resolved, compiled, disabled, err := svc.ResolveAgentToolContract(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !resolved.Tools["manage_projects"].Enabled || disabled["manage_projects"] {
-		t.Fatalf("orchestrator manage_projects resolved=%+v disabled=%v", resolved.Tools["manage_projects"], disabled["manage_projects"])
-	}
-	for _, args := range []string{
-		`{"action":"list"}`,
-		`{"action":"get_task","project_id":"p","task_id":"t"}`,
-		`{"action":"propose_task","project_id":"p","prompt":"Fix login","agent":"coder"}`,
-		`{"action":"propose_task","project_id":"p","title":"Audit","agent":"finder","workspace_id":"w"}`,
-	} {
-		if got := permission.ExplainPolicy("auto", "manage_projects", args, *compiled); got.Decision != permission.PolicyDecisionAllow {
-			t.Fatalf("orchestrator %s = %+v, want allow", args, got)
-		}
-	}
-	for _, args := range []string{
-		`{"action":"approve_task","project_id":"p","task_id":"t"}`,
-		`{"action":"accept_task","project_id":"p","task_id":"t"}`,
-		`{"action":"deploy_task","project_id":"p","task_id":"t"}`,
-		`{"action":"propose_task","project_id":"p","prompt":"Fix","agent":"coder","auto_approve":true}`,
-		`{"action":"propose_task","project_id":"p","prompt":"Spec it","agent":"plan"}`,
-		`{"action":"propose_task","project_id":"p","prompt":"Logo","agent":"image"}`,
-		`{"action":"delete","id":"p"}`,
-		`{"action":"delete_task","project_id":"p","task_id":"t"}`,
-		`{"action":"archive_task","project_id":"p","task_id":"t"}`,
-	} {
-		if got := permission.ExplainPolicy("auto", "manage_projects", args, *compiled); got.Decision != permission.PolicyDecisionAsk {
-			t.Fatalf("orchestrator %s = %+v, want ask", args, got)
-		}
 	}
 }

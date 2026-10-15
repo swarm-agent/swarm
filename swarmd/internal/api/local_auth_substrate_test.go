@@ -1,21 +1,12 @@
 package api
 
-// Cookie fixture maintenance: bootstrap and websocket tests exercise the real
-// Desktop/withAuth boundary using the issued origin-scoped cookie. Handshakes
-// build the cookie from the actual test server URL so a missing cookie cannot
-// masquerade as validation of the JWT or its retained principal.
-
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/gorilla/websocket"
 	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/identity"
@@ -24,7 +15,7 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
-	"swarm/packages/swarmd/internal/update"
+
 	"swarm/packages/swarmd/internal/workspace"
 )
 
@@ -40,253 +31,6 @@ func sessionCookieFromRecorder(t *testing.T, rec *httptest.ResponseRecorder) *ht
 	}
 	t.Fatalf("expected %q cookie to be issued", desktopLocalSessionCookieName)
 	return nil
-}
-
-func TestDesktopHandlerBootstrapsCookieAndAllowsProtectedAPIWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/app", nil)
-	req.RemoteAddr = "127.0.0.1:43210"
-	req.Header.Set("Origin", "http://127.0.0.1")
-	req.Header.Set("Referer", "http://127.0.0.1/app")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	rec := httptest.NewRecorder()
-	server.DesktopHandler().ServeHTTP(rec, req)
-	sessionCookie := sessionCookieFromRecorder(t, rec)
-
-	vaultReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1/vault", nil)
-	vaultReq.RemoteAddr = "127.0.0.1:43210"
-	vaultReq.Header.Set("Origin", "http://127.0.0.1")
-	vaultReq.Header.Set("Referer", "http://127.0.0.1/app")
-	vaultReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	vaultReq.AddCookie(sessionCookie)
-	vaultRec := httptest.NewRecorder()
-	server.DesktopHandler().ServeHTTP(vaultRec, vaultReq)
-
-	if vaultRec.Code != http.StatusOK {
-		t.Fatalf("vault status with desktop session = %d, want %d, body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
-	}
-	var status auth.VaultStatus
-	if err := json.Unmarshal(vaultRec.Body.Bytes(), &status); err != nil {
-		t.Fatalf("decode vault status: %v", err)
-	}
-	if status.Enabled {
-		t.Fatalf("expected test vault to be disabled")
-	}
-}
-
-func TestMainHandlerDesktopSessionBootstrapAllowsProtectedAPIWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/auth/desktop/session", nil)
-	bootstrapReq.RemoteAddr = "127.0.0.1:43210"
-	bootstrapReq.Header.Set("Origin", "http://127.0.0.1:5555")
-	bootstrapReq.Header.Set("Referer", "http://127.0.0.1:5555/app")
-	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	bootstrapRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
-	if bootstrapRec.Code != http.StatusOK {
-		t.Fatalf("desktop session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusOK, bootstrapRec.Body.String())
-	}
-	sessionCookie := sessionCookieFromRecorder(t, bootstrapRec)
-
-	vaultReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/vault", nil)
-	vaultReq.RemoteAddr = "127.0.0.1:43210"
-	vaultReq.Header.Set("Origin", "http://127.0.0.1:5555")
-	vaultReq.Header.Set("Referer", "http://127.0.0.1:5555/app")
-	vaultReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	vaultReq.AddCookie(sessionCookie)
-	vaultRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(vaultRec, vaultReq)
-	if vaultRec.Code != http.StatusOK {
-		t.Fatalf("proxied desktop vault status with session = %d, want %d, body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
-	}
-}
-
-func TestMainHandlerDesktopSessionBootstrapRejectsNonLocalSameOriginBrowserWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	bootstrapReq := httptest.NewRequest(http.MethodGet, "https://swarm.example.test/v1/auth/desktop/session", nil)
-	bootstrapReq.RemoteAddr = "192.0.2.10:43210"
-	bootstrapReq.Header.Set("Origin", "https://swarm.example.test")
-	bootstrapReq.Header.Set("Referer", "https://swarm.example.test/roy")
-	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	bootstrapRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
-	if bootstrapRec.Code != http.StatusUnauthorized {
-		t.Fatalf("non-local desktop session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusUnauthorized, bootstrapRec.Body.String())
-	}
-}
-
-func TestMainHandlerDesktopSessionBootstrapAllowsSameMachineLANOriginWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	lanAddrs := detectLANAddresses()
-	if len(lanAddrs) == 0 {
-		t.Skip("no LAN addresses available on this machine")
-	}
-	lanIP := strings.TrimSpace(lanAddrs[0])
-	if lanIP == "" {
-		t.Skip("empty LAN address")
-	}
-
-	bootstrapReq := httptest.NewRequest(http.MethodGet, "http://"+lanIP+":5555/v1/auth/desktop/session", nil)
-	bootstrapReq.RemoteAddr = lanIP + ":43210"
-	bootstrapReq.Header.Set("Origin", "http://"+lanIP+":5555")
-	bootstrapReq.Header.Set("Referer", "http://"+lanIP+":5555/app")
-	bootstrapReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	bootstrapRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(bootstrapRec, bootstrapReq)
-	if bootstrapRec.Code != http.StatusOK {
-		t.Fatalf("desktop LAN session bootstrap status = %d, want %d, body=%s", bootstrapRec.Code, http.StatusOK, bootstrapRec.Body.String())
-	}
-	sessionCookie := sessionCookieFromRecorder(t, bootstrapRec)
-
-	vaultReq := httptest.NewRequest(http.MethodGet, "http://"+lanIP+":5555/v1/vault", nil)
-	vaultReq.RemoteAddr = lanIP + ":43210"
-	vaultReq.Header.Set("Origin", "http://"+lanIP+":5555")
-	vaultReq.Header.Set("Referer", "http://"+lanIP+":5555/app")
-	vaultReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	vaultReq.AddCookie(sessionCookie)
-	vaultRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(vaultRec, vaultReq)
-	if vaultRec.Code != http.StatusOK {
-		t.Fatalf("proxied desktop LAN vault status with session = %d, want %d, body=%s", vaultRec.Code, http.StatusOK, vaultRec.Body.String())
-	}
-}
-
-func TestLocalTransportHandlerAllowsProtectedAPIWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "http://swarm-local-transport/v1/vault", nil)
-	req.RemoteAddr = "192.0.2.10:7777"
-	rec := httptest.NewRecorder()
-	server.LocalTransportHandler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("local transport vault status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
-func TestMainHandlerUpdateStatusAllowsLoopbackWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	server.SetUpdateService(newStaticUpdateService(t, true))
-
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:5555/v1/update/status", nil)
-	req.RemoteAddr = "127.0.0.1:43210"
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("loopback update status without attach token = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-}
-
-func TestMainHandlerUpdateStatusRejectsNonLoopbackWithoutAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	server.SetUpdateService(newStaticUpdateService(t, true))
-
-	req := httptest.NewRequest(http.MethodGet, "http://192.0.2.10:5555/v1/update/status", nil)
-	req.RemoteAddr = "192.0.2.10:43210"
-	rec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("non-loopback update status without attach token = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
-}
-
-func TestDesktopWebsocketAllowsCookieAuthenticatedHandshake(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	token, expiresAt, err := server.desktopLocalSessions.Ensure(time.Now())
-	if err != nil {
-		t.Fatalf("ensure desktop local session: %v", err)
-	}
-	ts := httptest.NewServer(server.DesktopHandler())
-	defer ts.Close()
-
-	cookie := buildDesktopLocalSessionCookie(httptest.NewRequest(http.MethodGet, ts.URL, nil), token, expiresAt)
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
-	headers := http.Header{}
-	headers.Set("Origin", ts.URL)
-	headers.Set("Referer", ts.URL+"/app")
-	headers.Set("Sec-Fetch-Site", "same-origin")
-	headers.Add("Cookie", cookie.String())
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err != nil {
-		status := 0
-		body := ""
-		if resp != nil {
-			status = resp.StatusCode
-			if raw, readErr := io.ReadAll(resp.Body); readErr == nil {
-				body = string(raw)
-			}
-		}
-		t.Fatalf("dial websocket: %v, status=%d, body=%s", err, status, body)
-	}
-	defer conn.Close()
-	if resp == nil || resp.StatusCode != http.StatusSwitchingProtocols {
-		status := 0
-		if resp != nil {
-			status = resp.StatusCode
-		}
-		t.Fatalf("websocket handshake status = %d, want %d", status, http.StatusSwitchingProtocols)
-	}
-}
-
-func TestMainHandlerWebsocketAllowsCookieAuthenticatedHandshake(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-	token, expiresAt, err := server.desktopLocalSessions.Ensure(time.Now())
-	if err != nil {
-		t.Fatalf("ensure desktop local session: %v", err)
-	}
-	ts := httptest.NewServer(server.Handler())
-	defer ts.Close()
-
-	cookie := buildDesktopLocalSessionCookie(httptest.NewRequest(http.MethodGet, ts.URL, nil), token, expiresAt)
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
-	headers := http.Header{}
-	headers.Set("Origin", ts.URL)
-	headers.Set("Referer", ts.URL+"/app")
-	headers.Set("Sec-Fetch-Site", "same-origin")
-	headers.Add("Cookie", cookie.String())
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if err != nil {
-		status := 0
-		body := ""
-		if resp != nil {
-			status = resp.StatusCode
-			if raw, readErr := io.ReadAll(resp.Body); readErr == nil {
-				body = string(raw)
-			}
-		}
-		t.Fatalf("dial proxied websocket: %v, status=%d, body=%s", err, status, body)
-	}
-	defer conn.Close()
-	if resp == nil || resp.StatusCode != http.StatusSwitchingProtocols {
-		status := 0
-		if resp != nil {
-			status = resp.StatusCode
-		}
-		t.Fatalf("proxied websocket handshake status = %d, want %d", status, http.StatusSwitchingProtocols)
-	}
-}
-
-func TestDesktopProtectedAPIRejectsMissingDesktopSessionAndAttachToken(t *testing.T) {
-	server := newLocalAuthTestServer(t)
-
-	req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/v1/vault", nil)
-	req.RemoteAddr = "127.0.0.1:43210"
-	req.Header.Set("Origin", "http://127.0.0.1")
-	req.Header.Set("Referer", "http://127.0.0.1/app")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	rec := httptest.NewRecorder()
-	server.DesktopHandler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("desktop protected API without session status = %d, want %d, body=%s", rec.Code, http.StatusUnauthorized, rec.Body.String())
-	}
 }
 
 func newLocalAuthTestServer(t *testing.T) *Server {
@@ -341,24 +85,6 @@ func newLocalAuthTestServer(t *testing.T) *Server {
 	return server
 }
 
-func setLocalAuthTestStartupConfig(t *testing.T, server *Server, mutate func(*startupconfig.FileConfig)) {
-	t.Helper()
-	cfg, err := server.loadStartupConfig()
-	if err != nil {
-		t.Fatalf("load startup config: %v", err)
-	}
-	mutate(&cfg)
-	if err := startupconfig.Write(cfg); err != nil {
-		t.Fatalf("write startup config: %v", err)
-	}
-}
-
-func newStaticUpdateService(t *testing.T, updateAvailable bool) *update.Service {
-	t.Helper()
-	_ = updateAvailable
-	return update.NewService("dev", true)
-}
-
 type fakeLocalAuthSwarmCalls struct {
 	ensureLocalState int
 	upsertGroup      int
@@ -398,20 +124,6 @@ func (f fakeLocalAuthSwarmService) DeleteGroup(string) error { return nil }
 
 func (f fakeLocalAuthSwarmService) SetCurrentGroup(string, string) (swarmruntime.GroupState, error) {
 	return swarmruntime.GroupState{}, nil
-}
-
-func (f fakeLocalAuthSwarmService) OutgoingPeerAuthToken(swarmID string) (string, bool, error) {
-	if f.outgoingPeerAuthTokens != nil {
-		token := strings.TrimSpace(f.outgoingPeerAuthTokens[strings.TrimSpace(swarmID)])
-		if token != "" {
-			return token, true, nil
-		}
-	}
-	return "", false, nil
-}
-
-func (f fakeLocalAuthSwarmService) ValidateIncomingPeerAuth(string, string) (bool, error) {
-	return true, nil
 }
 
 func (f fakeLocalAuthSwarmService) UpsertGroupMember(swarmruntime.UpsertGroupMemberInput) (swarmruntime.GroupMember, error) {

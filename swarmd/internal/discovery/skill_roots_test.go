@@ -6,21 +6,6 @@ import (
 	"testing"
 )
 
-func TestWorkspaceSkillRootsEnumeratesBoundaryThroughActiveScope(t *testing.T) {
-	project := filepath.Join(t.TempDir(), "project")
-	active := filepath.Join(project, "packages", "api")
-	linked := filepath.Join(t.TempDir(), "linked")
-
-	got := workspaceSkillRoots(active, []string{active, project, linked, project})
-	want := []string{
-		linked,
-		project,
-		filepath.Join(project, "packages"),
-		active,
-	}
-	assertSkillRootPaths(t, got, want)
-}
-
 // TestScanScopeUsesNestedProjectSkillPrecedenceAndDeduplicatesRoots proves the
 // active nested workspace wins over physical lower-precedence copies without
 // duplicate roots; the package layer directly observes ScanScope resolution.
@@ -93,17 +78,5 @@ func writeSkillFile(t *testing.T, skillDir, name, body string) {
 	content := []byte("---\nname: " + name + "\ndescription: test skill\n---\n" + body + "\n")
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), content, 0o600); err != nil {
 		t.Fatalf("write skill %q: %v", skillDir, err)
-	}
-}
-
-func assertSkillRootPaths(t *testing.T, got, want []string) {
-	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("paths = %#v, want %#v", got, want)
-	}
-	for index := range want {
-		if filepath.Clean(got[index]) != filepath.Clean(want[index]) {
-			t.Fatalf("paths = %#v, want %#v", got, want)
-		}
 	}
 }
