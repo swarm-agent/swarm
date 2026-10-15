@@ -26,22 +26,22 @@ type ReviewEquivalence struct {
 }
 
 type Entry struct {
-	ValidateReview func(head, patch, base string) error `json:"-"`
-	Checkpoint func() error `json:"-"`
-	Review *ReviewEquivalence `json:"review_equivalence,omitempty"`
-	Account             string        `json:"account"`
-	Request             Request       `json:"request"`
-	State               string        `json:"delivery_state"`
-	Commit              string        `json:"commit,omitempty"`
-	Reason              string        `json:"reason,omitempty"`
-	Checks              []CheckResult `json:"checks,omitempty"`
-	SendBacks           int           `json:"send_backs"`
-	Attempt             int           `json:"attempt,omitempty"`
-	TransitionSequence  uint64        `json:"transition_sequence,omitempty"`
-	NotificationID      string        `json:"notification_id,omitempty"`
-	NotificationPending bool          `json:"notification_pending,omitempty"`
-	SendBackPending     bool          `json:"send_back_pending,omitempty"`
-	FollowUpID          string        `json:"follow_up_id,omitempty"`
+	ValidateReview      func(head, patch, base string) error `json:"-"`
+	Checkpoint          func() error                         `json:"-"`
+	Review              *ReviewEquivalence                   `json:"review_equivalence,omitempty"`
+	Account             string                               `json:"account"`
+	Request             Request                              `json:"request"`
+	State               string                               `json:"delivery_state"`
+	Commit              string                               `json:"commit,omitempty"`
+	Reason              string                               `json:"reason,omitempty"`
+	Checks              []CheckResult                        `json:"checks,omitempty"`
+	SendBacks           int                                  `json:"send_backs"`
+	Attempt             int                                  `json:"attempt,omitempty"`
+	TransitionSequence  uint64                               `json:"transition_sequence,omitempty"`
+	NotificationID      string                               `json:"notification_id,omitempty"`
+	NotificationPending bool                                 `json:"notification_pending,omitempty"`
+	SendBackPending     bool                                 `json:"send_back_pending,omitempty"`
+	FollowUpID          string                               `json:"follow_up_id,omitempty"`
 }
 
 // ErrNotSettled defers landing until the job and any follow-up have settled.
