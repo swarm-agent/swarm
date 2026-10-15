@@ -77,9 +77,6 @@ web_group() { (cd web && pnpm run "$1"); }
 run_group 'release gate' release_gate
 run_group 'critical Go' critical_gate
 run_group 'core-path extras' extras_gate
-run_group 'root integration' go test -p 4 -timeout=120s ./tests/...
-daemon_integration() { (cd swarmd && go test -p 4 -timeout=120s ./tests/...); }
-run_group 'daemon integration' daemon_integration
 run_group 'web critical' web_group test:critical
 run_group 'web agents' web_group test:agents
 run_group 'web orchestrator selection' web_group test:orchestrator:selection

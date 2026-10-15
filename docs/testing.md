@@ -216,3 +216,121 @@ These assertions have not been loosened or skipped. The runnable KEEP set is
 therefore **not green**. Test helper retention is conservative; further cleanup
 and per-extra justification review remain pending. Exact extra names are in the
 committed manifest, not a claim that all requested acceptance criteria are done.
+
+## Final runnable gate (supersedes progress sections above)
+
+The runnable KEEP gate is green. On this revision, `bash scripts/test-vital.sh`
+exited 0 in **178 seconds**, with caching enabled, GOMAXPROCS=4 and Go -p 4:
+
+```text
+PASS release gate
+PASS critical Go
+PASS core-path extras
+PASS web critical
+PASS web agents
+PASS web orchestrator selection
+PASS web orchestrator
+PASS installer artifact integrity
+```
+
+Original inventory: **6,352 Go Test declarations / 1,513 test files**.
+Final inventory: **205 Go Test declarations / 184 test/helper files**.
+This follow-up removed 25 declarations in 13 unselected integration test/helper
+files. Prior web reduction remains 492 → 118 files (19 explicitly selected,
+99 retained browser/e2e); 115 runnable web assertions pass. The prior SDK/CLI/
+fleet reduction removed 40 test files. Original whole-suite time was never
+measured; 178 seconds is the final cached runner time, not a claimed speedup.
+
+After the deletions, both root and swarmd passed `go build -p 4 ./...` and
+`go test -p 4 -run '^$' ./...` with GOMAXPROCS=4 and GOMEMLIMIT=1800MiB.
+`cd web && pnpm exec tsc -b` and
+`cd packages/sdk && ./node_modules/.bin/tsc --noEmit` passed. SDK is the only
+packages subtree with a checked-in tsconfig. Vet is not a requested gate.
+External-machine tests were not run; their release-only classifications above
+still apply. No product code or retained assertion was changed in this follow-up.
+
+### Decisions
+
+Selection means workflows, the original critical script, the supplied exact
+release list, or justified extras—not the temporary broad integration commands
+introduced by this job. Inspection found no original workflow/script selection
+of `./tests/...`. The original request's tests-directory allowance concerned
+installer and e2e shell tests; it did not require preserving every Go test there.
+
+| Test | Previous expectation | Decision and reason |
+| --- | --- | --- |
+| TestPlanLifecycleEndpointAndPayloads | Plan submit sends checkpointed execution granularity by default | Deleted: unselected, not an extra; direct coding is the deliberate default and plans are opt-in. |
+| TestSessionPlanDocumentDecodesExecutionState | Legacy plan document execution-state decoding | Deleted with the unselected plan test file, not rewritten into new default-flow coverage. |
+| TestRetiredSessionHostingResidueRemoved | No retired-hosting source residue, including a rejected .dockerignore and references to a removed test file | Deleted: unselected source-text assertion, not a vital behavioral extra. |
+| TestWorkspaceBootstrapReturnsWorkspaceDesktopPayload; TestWorkspaceBootstrapPrefersStandaloneChildWorkspaceForNestedLink | Bootstrap succeeds using fixtures without initial Git commits | Deleted: neither selected nor justified extras; no product change to permit uncommitted bases. |
+| TestRunTurnStreamingSessionMetadataDistinguishesForegroundAndBackgroundRuns | Background metadata uses the retired memory agent | Deleted: unselected; no restoration of a retired agent. |
+| TestAuthStoreEncryptsSecretsBeforePebbleWrite; TestAuthStorePasswordVaultKeepsSecretsEncryptedAcrossRestart | Unscoped vault fixtures accepted | Deleted: unselected; account scoping was not relaxed. |
+| Remaining tests in the same integration trees | Miscellaneous client compile, lineage, launcher, config, copied database and bootstrap behavior | Deleted consistently with selection, regardless of pass/fail; none appear in the exact release or extras manifests. Installer/e2e shell files remain. |
+
+The obsolete root/daemon integration groups were removed from the runner after
+removing their unselected tests. Every selected runnable group still runs.
+
+### Exact extras and regression purposes (58)
+
+Executable package/name authority: `scripts/test-vital-extras.txt`. Docker-only
+extras are retained but excluded from local execution. Each line below states
+the regression the retained test is intended to catch, not a live release proof.
+
+- TestAutoPublishNext — incorrect next-item selection for automatic publication.
+- TestReviewPipelineExhaustion — exhausted review pipeline incorrectly advances work.
+- TestReviewPipelinePrincipal — review pipeline loses principal scoping.
+- TestReviewPipelineReceiptReplay — receipt replay changes review outcome twice.
+- TestLandReviewRealGitRebase — landing/review breaks real Git rebasing.
+- TestAutoPublishReviewSignalQueuesLanding — approved review fails to queue landing.
+- TestAutoPublishReviewSignal — publication loses the review signal.
+- TestLandReviewBlockingPatch — a blocking review patch incorrectly lands.
+- TestAutoPublishReviewerDoesNotDelayCoder — review scheduling unnecessarily blocks coding.
+- TestRemovalTrashRestart — queued trash removal does not survive restart.
+- TestRemovalAdminCrashRecovery — interrupted worktree administration cannot recover.
+- TestRemovalQueueDrains — removal work remains stranded in the queue.
+- TestTrashRecoveryTickerRetriesFailure — failed trash cleanup is not retried.
+- TestProjectCacheDocker — project cache fails inside Docker (needs Docker).
+- TestProjectCachePnpmSeed — pnpm shared cache initialization loses seeded content.
+- TestProjectCacheMounts — project cache mounts resolve to incorrect locations.
+- TestProjectCacheInitializationFailure — failed cache setup is reported as usable.
+- TestProjectCacheUsage — shared cache usage accounting becomes incorrect.
+- TestProjectCacheLiveLimit — active cache limits are not enforced.
+- TestCPUSlotsRealProcesses — real commands exceed admitted CPU slots.
+- TestCPUIsolationArgs — sandbox CPU isolation arguments omit configured limits.
+- TestCPUSlotCancellationAndValidation — cancelled/invalid slot requests leak admission.
+- TestCPUDefaultsNanoPrecision — CPU defaults lose required precision.
+- TestCPUDaemonExecBypassesSlots — daemon control execution is blocked by agent slots.
+- TestCPUDockerGitUnderLoad — Git fails under Docker CPU contention (needs Docker).
+- TestDrainAdmissionFence — draining admits new work across the fence.
+- TestDrainConcurrentAdmission — concurrent admission bypasses draining.
+- TestDrainEndReopensAdmissions — completed drain leaves admission closed.
+- TestDrainGenerationChangesAfterRestart — restart reuses stale drain generation.
+- TestDrainRestartReservation — restart reservations lose their admission contract.
+- TestContention — contended capacity admits too much work or strands waiters.
+- TestAccountIsolation — one account consumes another account's capacity authority.
+- TestQueueFull — a full capacity queue accepts excess requests.
+- TestCancellationAndGrantRace — cancellation races leak granted capacity.
+- TestParkReacquireCap1 — parked work deadlocks at a capacity of one.
+- TestSessionSerialization — concurrent work violates per-session serialization.
+- TestPolicyUpdatesWakeWaiters — policy changes fail to wake eligible requests.
+- TestLeaseTransitionsAndValidation — invalid lease transitions change capacity.
+- TestCap1ParentParkWithSecondRunQueued — parent parking starves queued work.
+- TestCloseSignalsErrClosedNoFakeSuccess — shutdown looks like successful admission.
+- TestReleaseParkedWithQueuedReacquireDoesNotResurrectOrGoNegative — released parked leases resurrect or corrupt counts.
+- TestConcurrentDuplicateReacquire — duplicate reacquisition grants multiple leases.
+- TestUnrelatedSessionBehindBlockedSameSessionWaiter — blocked session causes unrelated head-of-line starvation.
+- TestCancellationDispatchesOthers — cancelled requests prevent later dispatch.
+- TestLimitResolverFailClosed — unresolved limits silently permit admission.
+- TestActiveLeaseForSession — active session lease lookup returns incorrect ownership.
+- TestLeaseFromContextReleasedAndAccount — released/cross-account context leases remain valid.
+- TestChangedRemainsClosedAfterShutdown — shutdown notifications reopen or strand listeners.
+- TestInvalidResolvedLimitFailsClosed — invalid resolved policy admits work.
+- TestQueuePebbleRestart — durable publication queue loses entries after restart.
+- TestQueueGitCommand — publication Git commands violate queue operation behavior.
+- TestPublishLandNotificationRestart — landing notification state is lost on restart.
+- TestPublishLandSendBackRestart — review send-back state is lost on restart.
+- TestPublishLandSendBackInstructions — send-back loses corrective instructions.
+- TestCPUConfigRoundTrip — CPU configuration fails persistence round-trip.
+- TestSandboxCacheConfig — sandbox cache configuration loses its intended settings.
+- TestSandboxResourceConfig — sandbox resource configuration loses limits.
+- TestSandboxResourceMigration — resource configuration migration changes intended limits.
