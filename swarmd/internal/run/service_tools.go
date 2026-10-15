@@ -1831,10 +1831,11 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 					decisions[i].Result.Error = decisions[i].Err.Error()
 					continue
 				}
-				delegated := false
+				delegated, helper := false, false
 				if s.sessions != nil {
 					if session, ok, _ := s.sessions.GetSession(sessionID); ok {
 						delegated = strings.EqualFold(strings.TrimSpace(mapString(session.Metadata, "lineage_kind")), "delegated_subagent")
+						helper = workerHelperParent(session)
 					}
 				}
 				programCap := 0
@@ -1844,7 +1845,7 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 				reserved, reserveErr := s.permissions.ReserveSubagentWave(permission.SubagentReservationRequest{
 					SessionID: sessionID, AccountScopeID: accountScopeID, RunID: runID, CallID: callID,
 					ManifestHash: manifest.ManifestHash, LaunchCount: manifest.LaunchCount, SwarmMode: manifest.TaskMode == taskModeSwarm,
-					Program: manifest.Program != nil, ReadyCount: manifest.ProgramReadyCount, MaxConcurrency: programCap, Delegated: delegated,
+					Program: manifest.Program != nil, ReadyCount: manifest.ProgramReadyCount, MaxConcurrency: programCap, Delegated: delegated, Helper: helper,
 				})
 				if reserveErr != nil {
 					decisions[i].Err = reserveErr

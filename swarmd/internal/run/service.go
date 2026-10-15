@@ -2602,6 +2602,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 			return RunResult{}, err
 		}
+		if budget, ok := ctx.Value(helperTokenBudgetKey{}).(int); ok && cumulativeBilledTokens >= int64(budget) {
+			return RunResult{}, fmt.Errorf("helper_tokens limit %d exhausted", budget)
+		}
 		runRequestDebugEvent("provider_response", map[string]any{
 			"session_id":              sessionID,
 			"run_id":                  runID,

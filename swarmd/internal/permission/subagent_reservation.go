@@ -28,6 +28,8 @@ type SubagentReservationRequest struct {
 	ReadyCount     int
 	MaxConcurrency int
 	Delegated      bool
+	// Helper is set only by the authenticated worker-Coder launch boundary.
+	Helper bool
 }
 
 type SubagentReservationResult struct {
@@ -67,6 +69,38 @@ func (s *Service) ReserveSubagentWave(request SubagentReservationRequest) (Subag
 			return SubagentReservationResult{}, errors.New("task call already reserved with a different exact wave or program")
 		}
 		return reservationResult(existing), nil
+	}
+	if request.Helper {
+		if request.Program || request.SwarmMode {
+			return SubagentReservationResult{}, errors.New("helper reservations cannot launch programs or swarms")
+		}
+		limits, err := s.store.GetLimits(request.AccountScopeID)
+		if err != nil {
+			return SubagentReservationResult{}, err
+		}
+		records, err := s.store.ListSubagentWaveReservations(request.SessionID, "")
+		if err != nil {
+			return SubagentReservationResult{}, err
+		}
+		total, active := 0, 0
+		for _, record := range records {
+			if record.Status == "deny" || record.Status == "denied" {
+				continue
+			}
+			total += record.LaunchCount
+			active += record.ActiveCount
+		}
+		if active+request.LaunchCount > limits.HelperConcurrency {
+			return SubagentReservationResult{}, fmt.Errorf("helper_concurrency limit %d exceeded", limits.HelperConcurrency)
+		}
+		if total+request.LaunchCount > limits.HelpersPerJob {
+			return SubagentReservationResult{}, fmt.Errorf("helpers_per_job limit %d exceeded", limits.HelpersPerJob)
+		}
+		record := pebblestore.SubagentWaveReservation{AccountScopeID: request.AccountScopeID, SessionID: request.SessionID, RunID: request.RunID, CallID: request.CallID, ManifestHash: request.ManifestHash, LaunchCount: request.LaunchCount, ActiveCount: request.LaunchCount, Status: string(SubagentReservationApprove)}
+		if err := s.store.PutSubagentWaveReservation(record); err != nil {
+			return SubagentReservationResult{}, err
+		}
+		return reservationResult(record), nil
 	}
 	// Reservation limits must be authoritative at call time. Reload the
 	// account policy so an edit made after this run started immediately applies

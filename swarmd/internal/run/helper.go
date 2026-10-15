@@ -32,3 +32,7 @@ func validateHelperTask(parent pebblestore.SessionSnapshot, parsed taskCallArgum
 	}
 	return nil
 }
+
+// The provider receipt is authoritative; stop before executing further tools
+// when a helper exhausts its cumulative usage allowance.
+type helperTokenBudgetKey struct{}

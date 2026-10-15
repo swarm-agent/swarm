@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	agentruntime "swarm/packages/swarmd/internal/agent"
+	"time"
 
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
@@ -97,6 +99,16 @@ func (s *Service) runDelegatedLogicalLaunch(ctx context.Context, launch taskLaun
 		return launch, RunResult{}, err
 	}
 	childCtx := executioncapacity.WithoutLease(ctx)
+	if launch.SubagentProfile.Name == agentruntime.HelperAgentID {
+		limits, err := s.sessions.Store().GetLimits(launch.ChildSession.AccountScopeID)
+		if err != nil {
+			return launch, RunResult{}, err
+		}
+		var cancel context.CancelFunc
+		childCtx, cancel = context.WithTimeout(childCtx, time.Duration(limits.HelperTimeoutSeconds)*time.Second)
+		defer cancel()
+		childCtx = context.WithValue(childCtx, helperTokenBudgetKey{}, limits.HelperTokens)
+	}
 	result, err := s.RunTurnStreaming(childCtx, launch.ChildSession.ID, RunRequest{
 		Prompt: delegatedPrompt, TargetKind: RunTargetKindSubagent, TargetName: launch.SubagentProfile.Name, AgentName: launch.SubagentProfile.Name,
 	}, func() RunStartMeta {
