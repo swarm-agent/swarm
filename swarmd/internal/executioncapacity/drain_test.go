@@ -191,3 +191,42 @@ func TestDrainGenerationChangesAfterRestart(t *testing.T) {
 	}
 	fresh.CancelDrain(second.Generation)
 }
+
+// Purpose: restart reservations keep the admission fence through expiry and
+// ordinary cancellation; only the owning installer's failure cleanup releases it.
+func TestDrainRestartReservation(t *testing.T) {
+	m := NewManager(ManagerConfig{})
+	defer m.Close()
+	s, err := m.BeginDrain(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := "01234567890123456789012345678901"
+	if _, err = m.ClaimRestart("stale", claim); err == nil {
+		t.Fatal("stale generation accepted")
+	}
+	if _, err = m.ClaimRestart(s.Generation, claim); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.drain.Deadline = time.Now().Add(-time.Hour)
+	m.mu.Unlock()
+	if !m.CancelDrain(s.Generation).Draining {
+		t.Fatal("cancel broke reservation")
+	}
+	if !m.ReleaseRestart(s.Generation, "wrong").Draining {
+		t.Fatal("wrong owner released reservation")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if l, err := m.Acquire(ctx, AcquireRequest{SessionID: "held", RunID: "held"}); err == nil {
+		l.Release()
+		t.Fatal("admitted during restart")
+	}
+	if s := m.DrainStatus(); !s.Ready || !s.Reserved {
+		t.Fatalf("reservation expired: %+v", s)
+	}
+	if m.ReleaseRestart(s.Generation, claim).Draining {
+		t.Fatal("cleanup failed")
+	}
+}

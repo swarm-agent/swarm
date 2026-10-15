@@ -61,6 +61,7 @@ reviewed() { echo "[$(status ai-review "$2" swarm-go-ai-review[bot])]" >"$work/s
 busy=false
 local_api() {
   case $1 in
+    /v3/box/drain*) printf '{"generation":"test-boot","draining":true,"ready":%s,"timed_out":%s}' "$([[ $busy == true ]] && echo false || echo true)" "$busy" ;;
     /v3/box/busy) printf '{"busy":%s,"sessions":%s,"worker_runs":0,"environment_builds":0}' "$busy" "$([[ $busy == true ]] && echo 1 || echo 0)" ;;
     /v3/box/summary) printf '{"machine":{"commit":"%s"},"sandbox":{"active":true}}' "$(running_commit)" ;;
   esac
@@ -109,8 +110,8 @@ run_update
 
 # 3. While anything runs, the new build waits next to the running one.
 busy=true
-finish_update
-[[ $(state state) == waiting_idle && $(running_commit) == "$c1" ]] || fail "Swarm was restarted while work ran: $(cat "$UPDATE_STATE")"
+finish_update && fail 'busy drain unexpectedly activated'
+[[ $(state state) == blocked && $(running_commit) == "$c1" ]] || fail "Swarm was restarted while work ran: $(cat "$UPDATE_STATE")"
 grep -q "^activate" "$log" && fail "activated while busy"
 grep -qx "build $c3" "$log" || fail "the update did not build while work ran"
 
@@ -163,7 +164,7 @@ UPDATE_CHECKS=none checks_passed "$changed" || fail "UPDATE_CHECKS=none still ch
 # 8. A hook others can change is not run.
 chmod 0777 "$work/hook"
 : >"$work/hook-log"
-update_state blocked "test" "other-commit" 2>/dev/null
+SWARM_REF=dev UPDATE_HOOK=$work/hook update_state blocked "test" "other-commit" 2>/dev/null
 [[ ! -s $work/hook-log ]] || fail "a world-writable hook was run"
 
 # 9. A setting change (workspace add, daemon-env, tailnet, secret gateway)

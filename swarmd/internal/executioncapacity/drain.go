@@ -3,6 +3,7 @@ package executioncapacity
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"sort"
 	"time"
 )
@@ -16,6 +17,8 @@ type DrainBlocker struct {
 }
 
 type DrainStatus struct {
+	Reserved          bool `json:"reserved"`
+	claim             string
 	Generation        string         `json:"generation"`
 	EndReason         string         `json:"end_reason,omitempty"`
 	EnvironmentBuilds int            `json:"environment_builds"`
@@ -53,7 +56,7 @@ func (m *Manager) BeginDrain(timeout time.Duration) (DrainStatus, error) {
 		m.drainTimer = time.AfterFunc(timeout, func() {
 			m.mu.Lock()
 			defer m.mu.Unlock()
-			if m.drain.Since == now && m.drain.Draining {
+			if m.drain.Since == now && m.drain.Draining && !m.drain.Reserved {
 				m.endDrainLocked("expired")
 			}
 		})
@@ -92,7 +95,7 @@ func (m *Manager) drainStatusLocked() DrainStatus {
 		}
 		return a.Run < b.Run
 	})
-	out.TimedOut = out.EndReason == "expired" || (out.Draining && !time.Now().Before(out.Deadline))
+	out.TimedOut = out.EndReason == "expired" || (out.Draining && !out.Reserved && !time.Now().Before(out.Deadline))
 	out.Ready = out.Draining && !out.TimedOut && !m.closed && len(out.Blockers) == 0
 	return out
 }
@@ -106,7 +109,7 @@ func (m *Manager) SetDrainEndObserver(fn func(DrainStatus)) {
 func (m *Manager) CancelDrain(generation string) DrainStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.drain.Draining && (generation == "" || generation == m.generation) {
+	if m.drain.Draining && !m.drain.Reserved && (generation == "" || generation == m.generation) {
 		m.endDrainLocked("cancelled")
 	}
 	return m.drainStatusLocked()
@@ -125,4 +128,27 @@ func (m *Manager) endDrainLocked(reason string) {
 		m.wakeEligibleWaitersLocked(acc)
 	}
 	m.signalChangedLocked()
+}
+
+// ClaimRestart transfers timeout ownership to the installer. Only its secret
+// claim can release the fence; ordinary cancellation cannot interrupt restart.
+func (m *Manager) ClaimRestart(generation, claim string) (DrainStatus, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if generation != m.generation || len(claim) < 32 || !m.drainStatusLocked().Ready || m.drain.Reserved {
+		return DrainStatus{}, errors.New("drain not ready for restart reservation")
+	}
+	m.drain.Reserved = true
+	m.drain.claim = claim
+	m.drainTimer.Stop()
+	return m.drainStatusLocked(), nil
+}
+func (m *Manager) ReleaseRestart(generation, claim string) DrainStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.drain.Reserved && generation == m.generation && claim == m.drain.claim {
+		m.drain.Reserved = false
+		m.endDrainLocked("cancelled")
+	}
+	return m.drainStatusLocked()
 }

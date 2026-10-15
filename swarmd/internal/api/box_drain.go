@@ -37,6 +37,36 @@ func (s *Server) handleBoxDrain(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	switch r.Method {
+	case http.MethodPut:
+		var body struct {
+			Generation string `json:"generation"`
+			Claim      string `json:"claim"`
+			Release    bool   `json:"release"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+			writeError(w, 400, err)
+			return
+		}
+		if body.Release {
+			writeJSON(w, 200, manager.ReleaseRestart(body.Generation, body.Claim))
+			return
+		}
+		s.envBuildMu.Lock()
+		defer s.envBuildMu.Unlock()
+		status := manager.DrainStatus()
+		if !s.addDrainBuildBlockers(w, &status) {
+			return
+		}
+		if !status.Ready {
+			writeError(w, 409, errors.New("drain not ready"))
+			return
+		}
+		status, err := manager.ClaimRestart(body.Generation, body.Claim)
+		if err != nil {
+			writeError(w, 409, err)
+			return
+		}
+		writeJSON(w, 200, status)
 	case http.MethodDelete:
 		writeJSON(w, http.StatusOK, manager.CancelDrain(r.URL.Query().Get("generation")))
 	case http.MethodGet:

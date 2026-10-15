@@ -479,41 +479,51 @@ build_release() {
 # Switch the services to a built release and restart them (this stops any
 # agent run in progress). The release that ran before stays as
 # $OPT/previous, so an update that does not come up can go back to it.
+cleanup_update_drain() {
+  if [[ -n ${UPDATE_DRAIN_CLAIM:-} ]]; then
+    local_api /v3/box/drain -X PUT -H 'Content-Type: application/json' -d "{\"generation\":\"$UPDATE_DRAIN_GENERATION\",\"claim\":\"$UPDATE_DRAIN_CLAIM\",\"release\":true}" >/dev/null || echo 'swarm: reservation cleanup failed; operator intervention required' >&2
+  else
+    local_api "/v3/box/drain?generation=$UPDATE_DRAIN_GENERATION" -X DELETE >/dev/null || echo 'swarm: drain cleanup unavailable' >&2
+  fi
+}
+
 activate() {
   local commit=$1 release=$OPT/releases/$1 old
   [[ -x $release/bin/swarmd ]] || die "release ${commit:0:9} is not built"
-  old=$(running_commit)
+  if [[ -n ${UPDATE_DRAIN_GENERATION:-} ]]; then
+    UPDATE_DRAIN_CLAIM=$(cat /proc/sys/kernel/random/uuid) || return 1
+    local reservation
+    reservation=$(local_api /v3/box/drain -X PUT -H 'Content-Type: application/json' -d "{\"generation\":\"$UPDATE_DRAIN_GENERATION\",\"claim\":\"$UPDATE_DRAIN_CLAIM\"}") || return 1
+    [[ $(json_get reserved <<<"$reservation") == true ]] || return 1
+  fi
+  old=$(running_commit) || return 1
   if [[ -n $old && $old != "$commit" ]]; then
     # Installs from before per-commit sandbox images kept only the :local tag.
     docker image inspect "swarm-sandbox:$old" >/dev/null 2>&1 ||
       docker tag "$SANDBOX_IMAGE" "swarm-sandbox:$old" 2>/dev/null || true
-    ln -sfn "$OPT/releases/$old" "$OPT/previous.new" && mv -T "$OPT/previous.new" "$OPT/previous"
+    ln -sfn "$OPT/releases/$old" "$OPT/previous.new" && mv -T "$OPT/previous.new" "$OPT/previous" || return 1
   fi
-  docker tag "swarm-sandbox:$commit" "$SANDBOX_IMAGE"
-  ln -sfn "$release" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current"
-  prune_releases
-  install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER
+  docker tag "swarm-sandbox:$commit" "$SANDBOX_IMAGE" || return 1
+  # Switch current only after preparation succeeds; never prune rollback data here.
+  install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER || return 1
 #!/bin/sh
 # swarmctl talks to Swarm's private socket, so it runs as Swarm's own user.
 if [ "\$(id -un)" = $SERVICE_USER ]; then exec $OPT/current/bin/swarmctl "\$@"; fi
 exec runuser -u $SERVICE_USER -- env HOME=$SERVICE_HOME LD_LIBRARY_PATH=$OPT/current/lib $OPT/current/bin/swarmctl "\$@"
 WRAPPER
 
-  firewall
-  register_gvisor
-  choose_runtime
-  sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" && echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF"
-  install_units
-  if [[ -n ${UPDATE_DRAIN_GENERATION:-} ]]; then
-    local current_drain
-    current_drain=$(local_api /v3/box/drain) || return 1
-    [[ $(json_get generation <<<"$current_drain") == "$UPDATE_DRAIN_GENERATION" && $(json_get ready <<<"$current_drain") == true ]] || {
-      echo 'swarm: daemon generation or drain readiness changed; refusing restart' >&2
-      return 1
-    }
+  firewall || return 1
+  register_gvisor || return 1
+  choose_runtime || return 1
+  sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" || return 1
+  echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF" || return 1
+  install_units || return 1
+  ln -sfn "$release" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current" || return 1
+  if ! systemctl restart "$DAEMON_UNIT"; then
+    ln -sfn "$OPT/releases/$old" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current"
+    return 1
   fi
-  systemctl restart "$DAEMON_UNIT"
-  systemctl restart "$APP_UNIT"
+  systemctl restart "$APP_UNIT" || return 1
   echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
 }
 
@@ -780,7 +790,8 @@ finish_update() (
   local drain limit=${UPDATE_DRAIN_SECONDS:-7200}
   [[ $limit =~ ^[0-9]+$ && $limit -ge 1 && $limit -le 86400 ]] || die "UPDATE_DRAIN_SECONDS must be 1..86400"
   UPDATE_DRAIN_GENERATION=''
-  trap 'local_api "/v3/box/drain?generation=$UPDATE_DRAIN_GENERATION" -X DELETE >/dev/null || echo "swarm: drain cleanup unavailable; deadline will reopen admission" >&2' EXIT
+  UPDATE_DRAIN_CLAIM=''
+  trap 'cleanup_update_drain' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit}") || {

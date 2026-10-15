@@ -336,3 +336,10 @@ must be enabled or the operator must run it. `GET /v3/box/drain` reports readine
 start/deadline times, timeout and blocking runs/builds; the machine summary exposes
 redacted drain counts. New environment definitions are rejected during drain and
 must be retried after restart. Existing builds remain blockers.
+
+Before changing activation files, the installer atomically reserves a ready drain
+using `PUT /v3/box/drain` with its generation and a private claim. A reservation
+cannot expire or be cancelled by ordinary API/MCP cancellation. Restart replaces
+it with a fresh admission manager; failure cleanup releases it with the same
+claim. If the installer is killed without executing its trap, operator recovery
+is required; the daemon never kills running work or performs host installation.
