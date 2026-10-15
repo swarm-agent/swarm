@@ -86,7 +86,7 @@ func TestWorkerPermissionRaisesJobWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := signalStore.ListAfter(0, 20, store.SignalFilter{})
+	page, err := signalStore.ListAfter(0, 20, store.SignalFilter{Account: "account"})
 	if err != nil {
 		t.Fatal(err)
 	}
