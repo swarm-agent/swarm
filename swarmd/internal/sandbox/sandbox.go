@@ -861,7 +861,10 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 	if req.OnOutput != nil {
 		progress = func(p provider.ExecProgress) { req.OnOutput(p.Data) }
 	}
-	before := containerState{Running: true, StartedAt: b.startedAt}
+	m.mu.Lock()
+	startedAt := b.startedAt
+	m.mu.Unlock()
+	before := containerState{Running: true, StartedAt: startedAt}
 	result, execErr := provider.ExecSupervised(ctx, &transport{m: m}, b.name, provider.ExecRequest{
 		Command:      withSandboxUmask(req.Command...),
 		WorkingDir:   req.WorkingDir,
