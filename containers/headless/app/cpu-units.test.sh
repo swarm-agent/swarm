@@ -10,6 +10,8 @@ set -euo pipefail
 load_conf() { :; }
 conf_migrate() { :; }
 systemctl() { :; }
+driver=systemd
+docker() { echo "$driver"; }
 gateway_port() { echo 7784; }
 UNITS=$work/units OPT=$work/opt SRC=$work/src PROJECT=$work/project
 # Unit generation is the boundary under test, not system account installation.
@@ -25,4 +27,10 @@ done
 grep -q -- '--sandbox-cgroup-parent=swarm-sandbox.slice' "$UNITS/$DAEMON_UNIT"
 grep -qx CPUWeight=25 "$UNITS/swarm-sandbox.slice"
 grep -qx IOWeight=25 "$UNITS/swarm-sandbox.slice"
+driver=cgroupfs
+install_units
+grep -q -- '--sandbox-cgroup-parent= ' "$UNITS/$DAEMON_UNIT"
+! grep -q -- '--sandbox-cgroup-parent=swarm-sandbox.slice' "$UNITS/$DAEMON_UNIT"
+driver=unknown
+if install_units; then echo 'unknown driver accepted' >&2; exit 1; fi
 echo 'CPU unit generation passed'

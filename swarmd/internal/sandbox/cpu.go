@@ -15,7 +15,7 @@ func CPUDefaults(cpus, workers int) (string, int) {
 	if workers < 1 {
 		workers = 1
 	}
-	return strconv.FormatFloat(math.Max(2, float64(cpus)*0.75/float64(workers)), 'f', -1, 64), max(1, cpus*3/8)
+	return strconv.FormatFloat(math.Floor(math.Max(2, float64(cpus)*0.75/float64(workers))*1e9)/1e9, 'f', 9, 64), max(1, cpus*3/8)
 }
 
 func resolveCPU(cfg *Config) error {

@@ -197,7 +197,7 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 				return err
 			}
 			if err := rejectBlockingPatch(head, patch, reviews, func(reviewHead string) (string, error) {
-				res, err := m.Exec(ctx, scope, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-c", `git diff --no-ext-diff --no-textconv --binary "$1...$2" | git patch-id --stable`, "patch-id", base, reviewHead}, WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
+				res, err := m.ExecDaemon(ctx, scope, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-c", `git diff --no-ext-diff --no-textconv --binary "$1...$2" | git patch-id --stable`, "patch-id", base, reviewHead}, WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
 				if err != nil {
 					return "", err
 				}
@@ -222,8 +222,10 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 			return nil
 		}
 	}
-	return prepareLandWorktree(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
+	return prepareLandWorktreeWithExecutors(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
 		func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			return m.ExecDaemon(ctx, scope, req)
+		}, func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
 			return m.Exec(ctx, scope, req)
 		}, publish.Update, func(head string) error {
 			return c.requireLandReview(kind, a, b, head)
@@ -233,6 +235,11 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 // prepareLandWorktree keeps preparation and its verified command boundary testable.
 func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entry, path string, checks []string, checkTimeoutMinutes int,
 	exec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), update func(context.Context, publish.Rule, string) (publish.Base, error), reviewChecks ...func(string) error) error {
+	return prepareLandWorktreeWithExecutors(ctx, rule, e, path, checks, checkTimeoutMinutes, exec, exec, update, reviewChecks...)
+}
+
+func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e *publish.Entry, path string, checks []string, checkTimeoutMinutes int,
+	exec, checkExec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), update func(context.Context, publish.Rule, string) (publish.Base, error), reviewChecks ...func(string) error) error {
 	currentBranch, err := exec(ctx, sandbox.ExecRequest{Command: []string{"git", "branch", "--show-current"}, WorkingDir: path, Timeout: time.Minute, MaxTimeout: time.Minute, MaxOutput: 4096})
 	if err != nil {
 		return err
@@ -403,11 +410,11 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 				tail = tail[len(tail)-4096:]
 			}
 		}}
-		res, err := exec(checkCtx, req)
+		res, err := checkExec(checkCtx, req)
 		var died *sandbox.ErrSandboxDied
 		if errors.As(err, &died) && checkCtx.Err() == nil {
 			tail = ""
-			res, err = exec(checkCtx, req)
+			res, err = checkExec(checkCtx, req)
 		}
 		if errors.As(err, &died) {
 			return fmt.Errorf("landing check infrastructure failure: %w", err)

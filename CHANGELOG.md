@@ -9,6 +9,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Preserve the latest worker follow-up across provider/model handoffs and deliver accepted Unicode question answers without generic tool-output previews. Add provider-request regression assertions. Docs impact: none.
 
 - Align job question answers with the 100,000-character job brief/follow-up limit; reject oversized follow-ups and permission replies explicitly at MCP and API/service boundaries. Add durable-session regression coverage for complete 6,000-character messages and answers. Docs impact: none.
+- Keep daemon-owned landing preparation outside agent CPU admission, round derived quotas to Docker NanoCPU precision, and detect Docker cgroup drivers during headless install/update. Docs impact: headless CPU settings document driver fallback and quota precision.
+
 - Bound agent CPU quotas and concurrent commands, report CPU-slot waits, isolate ordinary daemon Git from agent CPU budgets, and prioritize headless daemon units over sandbox containers. Docs impact: headless installer README documents CPU settings, defaults, and limitations.
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.

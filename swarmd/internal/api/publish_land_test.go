@@ -172,3 +172,37 @@ func TestPrepareLandSandboxDeath(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: prepareLandWorktreeWithExecutors must send only code-owned Git to
+// daemon admission; arbitrary folder checks must retain agent throttling. This
+// boundary test detects accidentally granting trusted execution to check text.
+func TestPrepareLandSeparatesTrustedCommands(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	entry := publish.Entry{Request: publish.Request{Branch: "agent/job", BaseBranch: "dev"}}
+	checks := 0
+	err := prepareLandWorktreeWithExecutors(context.Background(), publish.Rule{Mode: "land"}, &entry, "/project", []string{"git status --porcelain"}, 1,
+		func(_ context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			out := ""
+			switch strings.Join(req.Command, " ") {
+			case "git branch --show-current":
+				out = "agent/job\n"
+			case "git rev-parse HEAD":
+				out = head + "\n"
+			}
+			if req.Command[0] != "git" {
+				t.Fatalf("user check reached trusted executor: %v", req.Command)
+			}
+			return &provider.ExecResult{Stdout: out}, nil
+		}, func(_ context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			checks++
+			if strings.Join(req.Command, " ") != "bash -lc git status --porcelain" {
+				t.Fatalf("unexpected agent command: %v", req.Command)
+			}
+			return &provider.ExecResult{}, nil
+		}, func(context.Context, publish.Rule, string) (publish.Base, error) {
+			return publish.Base{Commit: head, Branch: "dev"}, nil
+		})
+	if err != nil || checks != 1 || entry.Request.Head != head {
+		t.Fatalf("checks=%d entry=%+v err=%v", checks, entry, err)
+	}
+}

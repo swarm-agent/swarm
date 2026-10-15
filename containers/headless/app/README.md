@@ -285,8 +285,12 @@ A 22-CPU host defaults to eight command slots; with eight workers its per-contai
 quota is 2.0625 CPUs. The two-CPU floor and background descendants mean quotas alone
 are **not** a guaranteed 25% aggregate CPU reservation. The installer gives agent
 containers a lower-weight slice (CPUWeight/IOWeight 25), versus daemon weights 1000,
-and retains `ProtectControlGroups=yes`. This requires Docker's systemd cgroup driver.
+and retains `ProtectControlGroups=yes`. Install/update detects Docker's cgroup
+ driver: systemd uses the slice; cgroupfs explicitly clears the parent override
+and uses per-container CPU shares (256 versus daemon-command containers' 2048).
+Unknown drivers or failed detection stop installation rather than guessing.
 Outside this installer, containers still receive lower CPU shares (256).
+Derived quotas are rounded down to nine decimal places (Docker NanoCPU precision).
 
 Ordinary daemon Git runs in a separate confined per-project container (CPU shares
 2048), outside agent quotas and slots; reviewer Git retains its restricted read-only

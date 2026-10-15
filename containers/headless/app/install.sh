@@ -921,6 +921,13 @@ ExecStart=/bin/bash $SRC/containers/sandbox/firewall.sh
 [Install]
 WantedBy=multi-user.target docker.service
 UNIT
+  local cgroup_arg='--sandbox-cgroup-parent=' cgroup_driver
+  cgroup_driver=$(docker info --format '{{.CgroupDriver}}') || { echo 'Cannot determine Docker cgroup driver' >&2; return 1; }
+  case "$cgroup_driver" in
+    systemd) cgroup_arg='--sandbox-cgroup-parent=swarm-sandbox.slice' ;;
+    cgroupfs) echo 'Docker cgroupfs: using per-container CPU shares instead of systemd slice' >&2 ;;
+    *) echo "Unsupported Docker cgroup driver: $cgroup_driver" >&2; return 1 ;;
+  esac
   cat > "$UNITS/swarm-sandbox.slice" <<'UNIT'
 [Unit]
 Description=Low-priority Swarm agent commands
@@ -968,7 +975,7 @@ WorkingDirectory=$PROJECT
 Slice=swarm.slice
 CPUWeight=1000
 IOWeight=1000
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required --sandbox-cgroup-parent=swarm-sandbox.slice $permissions_arg $runtime_arg $sdk_args $secrets_arg
+ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $cgroup_arg $permissions_arg $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20

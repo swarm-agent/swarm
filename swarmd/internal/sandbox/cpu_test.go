@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -58,7 +59,7 @@ func TestCPUSlotsRealProcesses(t *testing.T) {
 // quotas while preserving confinement. This unit layer proves exact engine args.
 func TestCPUIsolationArgs(t *testing.T) {
 	cpus, slots := CPUDefaults(22, 8)
-	if cpus != "2.0625" || slots != 8 {
+	if cpus != "2.062500000" || slots != 8 {
 		t.Fatalf("%s %d", cpus, slots)
 	}
 	m := newTestManager(t, ModeRequired, readyRunner(), Config{CPUs: "2", CPUSlots: 2, CgroupParent: "swarm-sandbox.slice"})
@@ -95,4 +96,56 @@ func TestCPUSlotCancellationAndValidation(t *testing.T) {
 			t.Fatal(value)
 		}
 	}
+}
+
+// Purpose: CPUDefaults must produce Docker NanoCPU-compatible decimal quotas,
+// including recurring fractions; unit arithmetic is the narrowest boundary.
+func TestCPUDefaultsNanoPrecision(t *testing.T) {
+	for _, tc := range []struct {
+		cpus, workers int
+		want          string
+	}{{22, 7, "2.357142857"}, {32, 7, "3.428571428"}, {22, 8, "2.062500000"}} {
+		got, _ := CPUDefaults(tc.cpus, tc.workers)
+		if got != tc.want {
+			t.Fatalf("%+v: %s", tc, got)
+		}
+	}
+}
+
+// Purpose: ExecDaemon must bypass occupied agent admission and select the daemon
+// container, while Exec of identical text remains queued. The fake engine tests
+// routing only; Docker integration separately proves actual command execution.
+func TestCPUDaemonExecBypassesSlots(t *testing.T) {
+	runner := readyRunner()
+	m := newTestManager(t, ModeRequired, runner, Config{CPUSlots: 1})
+	root := t.TempDir()
+	m.SetLayout(Layout{Projects: func() ([]string, error) { return []string{root}, nil }})
+	release, err := m.acquireCPUSlot(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req := ExecRequest{WorkingDir: root, Command: []string{"git", "status", "--porcelain"}, Timeout: time.Second, MaxTimeout: time.Second}
+	_, _ = m.ExecDaemon(ctx, Scope{Root: root}, req)
+	if ctx.Err() != nil {
+		t.Fatal("daemon queued behind agent slot")
+	}
+	runner.mu.Lock()
+	calls := fmt.Sprint(runner.calls)
+	runner.mu.Unlock()
+	if !strings.Contains(calls, ContainerName(root)+"-daemon-git") {
+		t.Fatalf("daemon container not selected: %s", calls)
+	}
+	blocked, cancelBlocked := context.WithCancel(context.Background())
+	req.OnOutput = func(p []byte) {
+		if strings.Contains(string(p), "waiting for a CPU slot") {
+			cancelBlocked()
+		}
+	}
+	if _, err := m.Exec(blocked, Scope{Root: root}, req); err == nil {
+		t.Fatal("agent bypassed admission")
+	}
+	cancelBlocked()
 }

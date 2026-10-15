@@ -868,17 +868,35 @@ type ExecRequest struct {
 
 // Exec runs req in the project's sandbox under the supervised exec contract.
 func (m *Manager) Exec(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
+	return m.exec(ctx, scope, req, false)
+}
+
+// ExecDaemon runs code-owned maintenance commands outside agent CPU admission.
+// Never expose this method to tool requests or user-configured checks.
+func (m *Manager) ExecDaemon(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
+	return m.exec(ctx, scope, req, true)
+}
+
+func (m *Manager) exec(ctx context.Context, scope Scope, req ExecRequest, daemon bool) (*provider.ExecResult, error) {
 	var err error
 	scope = jobScope(ctx, scope)
 	scope, err = m.enforceReviewIdentity(ctx, scope, req.WorkingDir)
 	if err != nil {
 		return nil, err
 	}
-	release, err := m.acquireCPUSlot(ctx, req.OnOutput)
-	if err != nil {
-		return nil, err
+	if daemon {
+		if scope.ReviewCheckout != "" {
+			return nil, errors.New("reviewer cannot execute daemon maintenance")
+		}
+		scope.JobCheckout = ""
+		scope.daemonGit = true
+	} else {
+		release, err := m.acquireCPUSlot(ctx, req.OnOutput)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
 	}
-	defer release()
 	result, err := m.execOnce(ctx, scope, req)
 	if errors.Is(err, provider.ErrSupervisorUnavailable) && ctx.Err() == nil {
 		// The container went away underneath us (stopped or removed outside
