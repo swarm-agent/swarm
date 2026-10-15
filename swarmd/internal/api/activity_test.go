@@ -295,3 +295,89 @@ func TestActivityMCPCursor(t *testing.T) {
 		t.Fatal("malformed cursor accepted")
 	}
 }
+
+// Purpose: durable membership must retain filter identities across session and
+// tool envelopes; the HTTP stream proves cursor advancement cannot hide either.
+func TestActivityFilteredSessionAndToolStream(t *testing.T) {
+	s, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	_, err := s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: "filtered", UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: sessionruntime.SessionMutationCreateSession, ClientRequestID: "filtered-create", IdempotencyKey: "filtered-create", PayloadHash: "create", Session: &pebblestore.SessionSnapshot{ID: "filtered", UserID: p.UserID, AccountScopeID: p.AccountScopeID, Metadata: map[string]any{"project_id": "project", "worker_id": "worker", "worker_name": "Worker", "worker_run_id": "run", "job_id": "job"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: "filtered", UserID: p.UserID, AccountScopeID: p.AccountScopeID, Kind: sessionruntime.SessionMutationRecordDiagnostic, EventType: "session.tool.started", EventPayload: json.RawMessage(`{"tool_name":"read"}`), ClientRequestID: "filtered-tool", IdempotencyKey: "filtered-tool", PayloadHash: "tool"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.handleActivity(w, withTestPrincipal(r)) }))
+	defer httpServer.Close()
+	client := &http.Client{Timeout: 3 * time.Second}
+	response, err := client.Get(httpServer.URL + "/v3/activity/stream?project=project&worker=worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	scanner := bufio.NewScanner(response.Body)
+	kinds := []string{}
+	for scanner.Scan() {
+		if !strings.HasPrefix(scanner.Text(), "data: ") {
+			continue
+		}
+		var event activityEvent
+		if json.Unmarshal([]byte(strings.TrimPrefix(scanner.Text(), "data: ")), &event) != nil || event.Kind == "" {
+			continue
+		}
+		if event.ProjectID != "project" || event.WorkerID != "worker" || event.WorkerName != "Worker" || event.JobID != "worker/worker/run" {
+			t.Fatalf("lost identity %+v", event)
+		}
+		kinds = append(kinds, event.Kind)
+		if len(kinds) == 2 {
+			break
+		}
+	}
+	if strings.Join(kinds, ",") != "session.created,session.tool.started" {
+		t.Fatalf("filtered events %v: %v", kinds, scanner.Err())
+	}
+}
+
+// Purpose: admission replay must use durable run ownership before its session
+// exists, but never bypass existing-session ACLs or disclose to another owner.
+func TestActivityPreSessionAdmissionReplay(t *testing.T) {
+	s, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
+	p := testPrincipal()
+	ws := s.sessions.Store().WorkerStore()
+	worker, err := ws.CreateWorker(p.AccountScopeID, p.UserID, pebblestore.CreateWorkerRequest{Name: "Activity", WorkspaceRequirements: []pebblestore.WorkerWorkspaceRequirement{{Role: "primary", Required: true}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err = ws.ActivateWorker(p.AccountScopeID, p.UserID, worker.ID, worker.Revision, map[string]string{"primary": "workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := s.sessions.CurrentRealtimeOutboxRevision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := ws.AdmitWorkerRun(p.AccountScopeID, pebblestore.WorkerRunAdmission{WorkerID: worker.ID, UserID: p.UserID, RequestSource: "direct", IdempotencyKey: "activity-admit", Input: map[string]any{"prompt": "private"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, next, gap, err := s.activityPage(p, cursor, "", worker.ID)
+	if err != nil || gap || len(events) != 1 || events[0].SessionID != run.SessionID || next <= cursor {
+		t.Fatalf("lost admission %+v %v", events, err)
+	}
+	foreign := p
+	foreign.UserID = "foreign"
+	events, _, _, err = s.activityPage(foreign, cursor, "", worker.ID)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("foreign disclosure %+v %v", events, err)
+	}
+	_, err = s.applySessionV3PrimaryMutation(sessionruntime.SessionMutationInput{SessionID: run.SessionID, UserID: foreign.UserID, AccountScopeID: p.AccountScopeID, Kind: sessionruntime.SessionMutationCreateSession, ClientRequestID: "foreign-create", IdempotencyKey: "foreign-create", PayloadHash: "foreign", Session: &pebblestore.SessionSnapshot{ID: run.SessionID, UserID: foreign.UserID, AccountScopeID: p.AccountScopeID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, _, _, err = s.activityPage(p, cursor, "", worker.ID)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("session ACL bypass %+v %v", events, err)
+	}
+}

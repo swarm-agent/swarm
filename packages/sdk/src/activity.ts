@@ -23,7 +23,7 @@ export class SwarmActivityNamespace {
       const headers: Record<string, string> = { ...config.defaultHeaders, Accept: 'text/event-stream' };
       if (config.token && !headers.Authorization && !headers.authorization) headers.Authorization = `Bearer ${config.token}`;
       try {
-      const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/v3/activity/stream?${query}`, { headers, signal: options.signal });
+      const response = await fetch(`${config.baseUrl.replace(/\/+$/, '')}/v3/activity/stream?${query}`, { headers, signal: options.signal, redirect: 'error' });
       if (!response.ok || !response.body) throw new Error(`Activity stream failed: ${response.status}`);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();

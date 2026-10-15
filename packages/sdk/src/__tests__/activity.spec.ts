@@ -48,3 +48,22 @@ test('activity iterator does not retry forbidden responses', { timeout: 3000 }, 
     assert.equal(requests, 1);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+// Purpose: authenticated SSE must not follow even same-origin 307 redirects;
+// an actual HTTP peer verifies no request (or bearer) reaches the redirect target.
+test('activity rejects redirects without forwarding credentials', { timeout: 4000 }, async () => {
+  let forwarded = 0;
+  const abort = new AbortController();
+  const server = http.createServer((req, res) => {
+    if (req.url === '/capture') { forwarded++; res.end(); return; }
+    res.writeHead(307, { Location: '/capture' }); res.end();
+    setTimeout(() => abort.abort(), 100);
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address() as { port: number };
+    const activity = new SwarmActivityNamespace(new SwarmTransport({ baseUrl: `http://127.0.0.1:${address.port}`, token: 'test-token' }));
+    await activity.stream({ signal: abort.signal }).next();
+    assert.equal(forwarded, 0);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});

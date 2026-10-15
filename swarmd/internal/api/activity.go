@@ -155,13 +155,7 @@ func (s *Server) activityPage(principal identity.Principal, cursor uint64, proje
 		if !ok {
 			continue
 		}
-		// Worker rows before session creation are principal-owned; once bound,
-		// the same per-session ACL and scoped-token limits apply.
-		allowed := event.SessionID == ""
-		var err error
-		if event.SessionID != "" {
-			allowed, err = s.authorizeReadableSessionV3Access(principal, event.SessionID)
-		}
+		allowed, err := s.authorizeActivityEvent(principal, row, event)
 		if err != nil {
 			return nil, cursor, false, err
 		}
@@ -303,4 +297,37 @@ func (s *Server) handleActivity(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// Only absent, never tombstoned, worker sessions can use admission ownership.
+// An existing session's ACL denial must not fall back to worker ownership.
+func (s *Server) authorizeActivityEvent(p identity.Principal, row sessionruntime.RealtimeOutboxRecord, event activityEvent) (bool, error) {
+	if event.SessionID != "" {
+		_, exists, err := s.sessions.GetSession(event.SessionID)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return s.authorizeReadableSessionV3Access(p, event.SessionID)
+		}
+		_, tombstoned, err := s.sessions.Store().GetV3SessionTombstone(event.SessionID)
+		if err != nil {
+			return false, err
+		}
+		if tombstoned {
+			return s.authorizeReadableSessionV3Access(p, event.SessionID)
+		}
+	}
+	if row.Event.EventType != pebblestore.WorkerUpdatedEventType {
+		return false, nil
+	}
+	var payload pebblestore.WorkerRealtimePayload
+	if err := json.Unmarshal(row.Event.Payload, &payload); err != nil {
+		return false, err
+	}
+	run, exists, err := s.sessions.Store().WorkerStore().GetWorkerRun(p.AccountScopeID, payload.WorkerID, payload.RunID)
+	if err != nil {
+		return false, err
+	}
+	return exists && run.AccountScopeID == p.AccountScopeID && run.UserID == p.UserID && run.SessionID == event.SessionID, nil
 }
