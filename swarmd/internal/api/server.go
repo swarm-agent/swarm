@@ -177,6 +177,10 @@ type Server struct {
 	artifactV2                  *artifactv2.Service
 	artifactV3                  ArtifactV3Service
 
+	// loadPublishConfig permits hermetic configuration injection; nil uses the
+	// root-owned file loader. It is set only during server construction/tests.
+	loadPublishConfig func(string) ([]publish.Rule, error)
+
 	longSessionDesktopSampleLogOnce sync.Once
 
 	controlMCPRoutesOnce sync.Once

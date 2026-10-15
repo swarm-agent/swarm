@@ -34,7 +34,11 @@ func (s *Server) publishRule(folder string) (publish.Rule, bool, error) {
 	if s == nil || s.publishConfig == "" || strings.TrimSpace(folder) == "" {
 		return publish.Rule{}, false, nil
 	}
-	rules, err := publish.Load(s.publishConfig)
+	load := s.loadPublishConfig
+	if load == nil {
+		load = publish.Load
+	}
+	rules, err := load(s.publishConfig)
 	if err != nil {
 		return publish.Rule{}, false, err
 	}

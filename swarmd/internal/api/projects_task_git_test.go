@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/publish"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -187,21 +188,31 @@ func TestInspectTaskGitStateCapturedTargetAndPatchEquivalentPromotion(t *testing
 	// AssessTaskDelivery own this boundary. Real refs prove both true rewrites
 	// and fallback behavior without allowing a read to mutate Git or task rows.
 	t.Run("publish landing target", func(t *testing.T) {
-		if os.Geteuid() != 0 {
-			t.Skip("publish config requires root ownership; ref selection is also tested in worktree")
-		}
+		// Inject only configuration loading, keeping folder matching, the API
+		// response path and Git assessment real without root-owned host files.
 		config := filepath.Join(t.TempDir(), "publish.conf")
-		if err := os.WriteFile(config, []byte(root+"\t/unused-publish-command\tland,sync\n"), 0600); err != nil {
-			t.Fatal(err)
+		loads := 0
+		server.loadPublishConfig = func(path string) ([]publish.Rule, error) {
+			if path != config {
+				t.Fatalf("loaded unexpected publish configuration %q", path)
+			}
+			loads++
+			return []publish.Rule{{Folder: root, Mode: "land", Sync: true}}, nil
 		}
 		server.SetPublishConfig(config)
-		defer server.SetPublishConfig("")
+		defer func() {
+			server.SetPublishConfig("")
+			server.loadPublishConfig = nil
+		}()
 		landed := trimGit(run(root, "rev-parse", "HEAD"))
 		// Local release predates the recorded task base; the fetched ref has it.
 		old := trimGit(run(root, "commit-tree", base+"^{tree}", "-m", "unrelated old local"))
 		run(root, "update-ref", "refs/swarm/publish/release", landed)
 		run(root, "reset", "--hard", old)
 		assertHTTPReadOnly("integrated", false)
+		if loads == 0 {
+			t.Fatal("API assessment did not load the publish rule")
+		}
 		// A real target rewrite must not be hidden by the landing rule.
 		run(root, "update-ref", "refs/swarm/publish/release", old)
 		assertHTTPReadOnly("history_rewritten", false)
