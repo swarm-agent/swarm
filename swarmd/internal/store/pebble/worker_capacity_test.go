@@ -201,3 +201,33 @@ func TestWorkerFollowupRestartRelease(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: upgrading the landed version-2 session index must backfill capacity
+// reservations before admission. Real Pebble migration plus admission proves
+// existing active runs cannot be overlooked by the combined index version.
+func TestWorkerCapacityMigrationFromSessionIndex(t *testing.T) {
+	db, ws := openTestStore(t)
+	w, err := ws.CreateWorker("account", "user", CreateWorkerRequest{Name: "Worker"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := WorkerRunRecord{ID: "existing", AccountScopeID: "account", WorkerID: w.ID, Status: "running"}
+	if err := db.PutJSON(KeyWorkerRun("account", w.ID, active.ID), active); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(keyWorkerRunIndexVersion, map[string]int{"version": 2}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := RunWorkerRunIndexMigration(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	next, err := ws.RecordWorkerRun("account", WorkerRunRecord{WorkerID: w.ID, Status: "admitted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := ws.ReserveWorkerCapacity(next, 1); err != nil || ok {
+		t.Fatalf("existing reservation ignored: %v %v", ok, err)
+	}
+}

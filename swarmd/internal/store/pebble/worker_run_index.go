@@ -22,7 +22,8 @@ const (
 	keyWorkerRunTimePrefix   = "worker/runidx/time/"
 	keyWorkerRunActivePrefix = "worker/runidx/active/"
 	keyWorkerRunIndexVersion = "worker/runidx/version"
-	workerRunIndexVersion    = 2
+	// Version 3 adds capacity reservations to the version 2 session index.
+	workerRunIndexVersion = 3
 )
 
 type workerRunIndexEntry struct {
