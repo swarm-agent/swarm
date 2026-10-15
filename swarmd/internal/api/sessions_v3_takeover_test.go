@@ -53,7 +53,7 @@ func TestSessionTakeoverHoldsRunsAndRecordsOperatorReplies(t *testing.T) {
 		return result.RunIntent.Status, result.RunIntent.BlockedReason, job != nil
 	}
 
-	if code, _ := call(operator, http.MethodPost, "/", `{"content":"Hi, Roy here","client_request_id":"op-early"}`); code != http.StatusConflict {
+	if code, _ := call(operator, http.MethodPost, "/", `{"content":"Hi, a person here","client_request_id":"op-early"}`); code != http.StatusConflict {
 		t.Fatalf("operator reply before takeover: %d, want 409", code)
 	}
 	if code, _ := call(takeover, http.MethodPost, "/", `{"action":"pause","client_request_id":"bad"}`); code != http.StatusBadRequest {
@@ -72,7 +72,7 @@ func TestSessionTakeoverHoldsRunsAndRecordsOperatorReplies(t *testing.T) {
 		t.Fatalf("visitor message during takeover: status=%s reason=%s enqueued=%v", status, reason, enqueued)
 	}
 
-	code, out = call(operator, http.MethodPost, "/", `{"content":"Hi, Roy here. Happy to help.","client_request_id":"op-1"}`)
+	code, out = call(operator, http.MethodPost, "/", `{"content":"Hi, a person here. Happy to help.","client_request_id":"op-1"}`)
 	if code != http.StatusOK {
 		t.Fatalf("operator reply: %d %v", code, out)
 	}
@@ -86,11 +86,11 @@ func TestSessionTakeoverHoldsRunsAndRecordsOperatorReplies(t *testing.T) {
 			reply = &messages[i]
 		}
 	}
-	if reply == nil || reply.Role != "assistant" || reply.Content != "Hi, Roy here. Happy to help." || reply.Metadata["operator_user_id"] != principal.UserID {
+	if reply == nil || reply.Role != "assistant" || reply.Content != "Hi, a person here. Happy to help." || reply.Metadata["operator_user_id"] != principal.UserID {
 		t.Fatalf("operator reply not stored as an operator assistant message: %+v", reply)
 	}
 	// Retrying the same reply does not duplicate it.
-	if code, _ := call(operator, http.MethodPost, "/", `{"content":"Hi, Roy here. Happy to help.","client_request_id":"op-1"}`); code != http.StatusOK {
+	if code, _ := call(operator, http.MethodPost, "/", `{"content":"Hi, a person here. Happy to help.","client_request_id":"op-1"}`); code != http.StatusOK {
 		t.Fatalf("operator reply retry: %d", code)
 	}
 	if again, _ := server.sessions.ListSessionMessages(id, 0, 50); len(again) != len(messages) {
