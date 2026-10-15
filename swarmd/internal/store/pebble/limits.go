@@ -12,6 +12,10 @@ import (
 type Limits struct {
 	ProjectCacheBytes    uint64  `json:"project_cache_bytes"`
 	FixRounds            int     `json:"fix_rounds"`
+	HelperConcurrency    int     `json:"helper_concurrency"`
+	HelpersPerJob        int     `json:"helpers_per_job"`
+	HelperTimeoutSeconds int     `json:"helper_timeout_seconds"`
+	HelperTokens         int64   `json:"helper_tokens"`
 	Revision             uint64  `json:"revision"`
 	WorkerJobConcurrency int     `json:"worker_job_concurrency"`
 	JobTokens            int64   `json:"job_tokens"`
@@ -22,7 +26,8 @@ type Limits struct {
 }
 
 func DefaultLimits() Limits {
-	return Limits{ProjectCacheBytes: 10 << 30, FixRounds: 2, WorkerJobConcurrency: 100, DelegationWaves: 5, ActiveChildren: 5, SwarmChildren: 5}
+	return Limits{ProjectCacheBytes: 10 << 30, FixRounds: 2, WorkerJobConcurrency: 100, DelegationWaves: 5, ActiveChildren: 5, SwarmChildren: 5,
+		HelperConcurrency: 4, HelpersPerJob: 20, HelperTimeoutSeconds: 300, HelperTokens: 32000}
 }
 
 var ErrLimitsConflict = errors.New("limits revision conflict")
@@ -36,6 +41,18 @@ type LimitReached struct {
 
 func (e *LimitReached) Error() string { return fmt.Sprintf("limit.reached: %s=%v", e.Limit, e.Value) }
 func (l Limits) Validate() error {
+	if l.HelperConcurrency < 1 || l.HelperConcurrency > 256 {
+		return errors.New("helper_concurrency must be 1..256")
+	}
+	if l.HelpersPerJob < 1 || l.HelpersPerJob > 10000 {
+		return errors.New("helpers_per_job must be 1..10000")
+	}
+	if l.HelperTimeoutSeconds < 1 || l.HelperTimeoutSeconds > 3600 {
+		return errors.New("helper_timeout_seconds must be 1..3600")
+	}
+	if l.HelperTokens < 1 || l.HelperTokens > 1000000000 {
+		return errors.New("helper_tokens must be 1..1000000000")
+	}
 	if l.FixRounds < 0 || l.FixRounds > 20 || l.WorkerJobConcurrency < 1 || l.WorkerJobConcurrency > 10000 || l.DelegationWaves < 0 || l.DelegationWaves > 256 || l.ActiveChildren < 1 || l.ActiveChildren > 256 || l.SwarmChildren < 1 || l.SwarmChildren > 256 || l.JobTokens < 0 || l.JobTokens > 1000000000 || math.IsNaN(l.JobCostUSD) || math.IsInf(l.JobCostUSD, 0) || l.JobCostUSD < 0 || l.JobCostUSD > 1000000 {
 		return errors.New("limits exceed hard bounds: fix rounds 0..20, concurrency 1..10000, waves 0..256, children 1..256, job tokens 0..1000000000, job USD 0..1000000")
 	}

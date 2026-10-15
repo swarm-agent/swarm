@@ -33,6 +33,11 @@ func (s *Server) handleLimits(w http.ResponseWriter, r *http.Request) {
 			ExpectedRevision *uint64      `json:"expected_revision"`
 			Limits           store.Limits `json:"limits"`
 		}
+		defaults := store.DefaultLimits()
+		req.Limits = store.Limits{
+			HelperConcurrency: defaults.HelperConcurrency, HelpersPerJob: defaults.HelpersPerJob,
+			HelperTimeoutSeconds: defaults.HelperTimeoutSeconds, HelperTokens: defaults.HelperTokens,
+		}
 		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
@@ -68,6 +73,10 @@ func controlMCPSetLimits(c *controlMCPCall, args map[string]any) (any, error) {
 func controlMCPLimitsSchema() map[string]any {
 	return controlMCPObject([]string{"worker_job_concurrency", "job_tokens", "job_cost_usd", "delegation_waves", "active_children", "swarm_children"}, map[string]any{
 		"project_cache_bytes":    map[string]any{"type": "integer", "minimum": 0, "description": "Per-project soft cache cap in bytes; zero selects 10 GiB."},
+		"helper_concurrency":     map[string]any{"type": "integer", "minimum": 1, "maximum": 256},
+		"helpers_per_job":        map[string]any{"type": "integer", "minimum": 1, "maximum": 10000},
+		"helper_timeout_seconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 3600},
+		"helper_tokens":          map[string]any{"type": "integer", "minimum": 1, "maximum": 1000000000},
 		"revision":               map[string]any{"type": "integer", "minimum": 0},
 		"worker_job_concurrency": map[string]any{"type": "integer", "minimum": 1, "maximum": 10000},
 		"job_tokens":             map[string]any{"type": "integer", "minimum": 0, "maximum": 1000000000},

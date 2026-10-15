@@ -10,6 +10,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Share project-local Go build/module caches and pnpm stores across sandbox jobs and reviewers, with trimpath, default-image seeding, size reporting, and a configurable 10 GiB soft trimming limit. Docs impact: installer README and sandbox resource guidance.
 - Add an opt-in folder review pipeline with bounded BLOCK handling, per-job chain visibility and unchanged-patch landing verification; scope-lock the system reviewer. Docs impact: installer pipeline policy and reviewer guidance.
+- Add revisioned helper-limit configuration (concurrency 4, total per job 20, timeout 300 seconds, tokens 32,000) with strict bounds and legacy-record defaults. This is configuration groundwork only: helper spawning and read-only sandbox enforcement are not enabled by this change. Docs impact: `docs/box-limits.md` describes the reserved helper fields.
 
 - Preserve the latest worker follow-up across provider/model handoffs and deliver accepted Unicode question answers without generic tool-output previews. Add provider-request regression assertions. Docs impact: none.
 

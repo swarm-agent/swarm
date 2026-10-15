@@ -43,3 +43,11 @@ crossing (per job for budgets); observing usage below the limit re-arms it.
 Crossing state survives restart, and signal publication is idempotent. Bounded delegation refusals or
 approval holds emit the same kind. Refusals also preserve the limit name/value in
 the error text. Signal readers use the existing account-filtered signal cursor API.
+
+### Reserved helper budgets
+
+The limits record also stores `helper_concurrency` (default 4, range 1–256),
+`helpers_per_job` (20, 1–10,000), `helper_timeout_seconds` (300, 1–3,600), and
+`helper_tokens` (32,000, 1–1,000,000,000). Existing records inherit these defaults.
+These fields are configuration groundwork, not an enabled helper execution
+contract; helper admission and read-only execution enforcement remain pending.
