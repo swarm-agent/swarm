@@ -19,6 +19,9 @@
   "routes": [{ "pattern": "staff.example.com", "custom_domain": true }],
   "triggers": { "crons": ["* * * * *"] },
   "kv_namespaces": [{ "binding": "ALERT_STATE", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }],
+  // If the alert service is a Worker on the same account, bind it: a Worker cannot fetch
+  // another Worker's workers.dev URL on the same account (error 1042).
+  // "services": [{ "binding": "ALERTS", "service": "swarm-watch" }],
   "vars": {
     "GATEWAY_URL": "https://chat-gateway.example.com",
     // Your Access team domain and the console application's Audience (AUD) tag.

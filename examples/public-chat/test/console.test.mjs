@@ -115,3 +115,18 @@ test('the alert relay starts from now, forwards only actionable events once, and
   assert.match(sent[1].body, /pat@example\.com/);
   assert.deepEqual(await relayAlerts({ ...env }, { fetchImpl }), { relayed: 0, skipped: 'not configured' });
 });
+
+test('the alert relay uses a service binding to the alert service when one is configured', async () => {
+  const kv = new Map([['cursor', '0']]);
+  const ALERT_STATE = { get: async (k) => (kv.has(k) ? kv.get(k) : null), put: async (k, v) => { kv.set(k, v); } };
+  const viaBinding = [];
+  const ALERTS = { fetch: async (url, init) => { viaBinding.push([String(url), JSON.parse(init.body).kind]); return new Response('{}'); } };
+  const fetchImpl = async (url) => {
+    if (String(url).startsWith('https://watch.example.com')) throw new Error('error code: 1042');
+    return Response.json({ events: [{ seq: 1, type: 'handoff.missed', session_id: 's1' }], latest: 1 });
+  };
+  const clock = { t: 0 };
+  const result = await relayAlerts({ ...env, ALERTS_URL: 'https://watch.example.com', ALERTS_AUTH: 'Authorization: Bearer t', ALERT_STATE, ALERTS }, { fetchImpl, now: () => (clock.t += 6000), budgetMs: 12_000 });
+  assert.deepEqual(viaBinding, [['https://watch.example.com/v1/event', 'chat.handoff']]);
+  assert.equal(result.relayed, 1);
+});

@@ -135,6 +135,9 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
  */
 export async function relayAlerts(env, { fetchImpl = fetch, now = Date.now, budgetMs = 55_000 } = {}) {
   if (!env.ALERTS_URL || !env.ALERTS_AUTH || !env.ALERT_STATE || !env.GATEWAY_URL) return { relayed: 0, skipped: 'not configured' };
+  // A Worker cannot fetch another Worker's workers.dev URL on the same account
+  // (error 1042); with the alert service bound as ALERTS, call it through that.
+  const sendAlert = env.ALERTS ? (url, init) => env.ALERTS.fetch(url, init) : fetchImpl;
   const started = now();
   const headers = { 'X-Ops-Key': env.OPS_SECRET ?? '', 'CF-Access-Client-Id': env.ACCESS_CLIENT_ID ?? '', 'CF-Access-Client-Secret': env.ACCESS_CLIENT_SECRET ?? '' };
   const poll = async (after, wait) => {
@@ -160,9 +163,10 @@ export async function relayAlerts(env, { fetchImpl = fetch, now = Date.now, budg
         cursor = Math.max(cursor, event.seq);
         const alert = alertFor(event.type, event, env.CONSOLE_URL);
         if (!alert) continue;
-        const ok = await fetchImpl(env.ALERTS_URL.replace(/\/$/, '') + '/v1/event', { method: 'POST', headers: alertHeaders(env.ALERTS_AUTH), body: JSON.stringify(alert), signal: AbortSignal.timeout(5000) })
-          .then((r) => r.ok, () => false);
-        if (ok) relayed++;
+        const status = await sendAlert(env.ALERTS_URL.replace(/\/$/, '') + '/v1/event', { method: 'POST', headers: alertHeaders(env.ALERTS_AUTH), body: JSON.stringify(alert), signal: AbortSignal.timeout(5000) })
+          .then((r) => r.status, (e) => String(e?.message ?? e).slice(0, 100));
+        if (status === 200 || status === 201 || status === 202 || status === 204) relayed++;
+        else console.error('alert not delivered:', event.type, status);
       }
       if (data.events?.length) await env.ALERT_STATE.put('cursor', String(cursor));
     }
