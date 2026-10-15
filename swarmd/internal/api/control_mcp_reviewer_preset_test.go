@@ -89,7 +89,7 @@ func TestControlMCPReviewerModelMatchesResolution(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 			request = request.WithContext(context.WithValue(request.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", AccountScopeID: "acct-test", UserID: "user-test"}))
 			c := &controlMCPCall{server: s, request: request}
-			roles, err := c.roleModels()
+			roles, err := c.roleModels("reviewer")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -109,5 +109,63 @@ func TestControlMCPReviewerModelMatchesResolution(t *testing.T) {
 				t.Fatal(got)
 			}
 		})
+	}
+}
+
+// Purpose: list and deployWorkerModel summaries must not turn a valid pinned
+// worker or a successful pin write into a failure when defaults are unavailable.
+// This MCP composition test injects unavailable execution and dispatch receipts;
+// it checks both the write postcondition and the unresolved inherited receipt.
+func TestControlMCPModelSummaryUnavailableDefaults(t *testing.T) {
+	s, _, _ := setupWorkerAPITestServer(t) // Deliberately no execution/model service.
+	request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	request = request.WithContext(context.WithValue(request.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", AccountScopeID: "acct-test", UserID: "user-test"}))
+	pinned := map[string]any{"action": map[string]any{"provider": "fixture", "model": "selected"}}
+	worker := map[string]any{"id": "pinned-worker", "role": "coder", "model_profile": pinned}
+	writes := 0
+	c := &controlMCPCall{server: s, request: request, next: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v3/workers":
+			workers := []any{worker}
+			for _, role := range controlMCPPresetWorkers {
+				workers = append(workers, map[string]any{"id": role, "role": role, "metadata": map[string]any{"preset": role}})
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workers": workers})
+		case r.Method == http.MethodPut && r.URL.Path == "/v3/workers/pinned-worker/model":
+			writes++
+			worker["model_profile"] = pinned
+			json.NewEncoder(w).Encode(map[string]any{"worker": worker})
+		default:
+			t.Errorf("unexpected dispatch %s %s", r.Method, r.URL.Path)
+		}
+	})}
+	if _, err := c.roleModels("reviewer"); err == nil {
+		t.Fatal("fixture must have unavailable defaults")
+	}
+	result, err := controlMCPListWorkerJobs(c, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workers := result.(map[string]any)["workers"].([]map[string]any)
+	model := controlMCPMap(workers[0]["model"])
+	if model["source"] != "pinned" || model["model"] != "selected" {
+		t.Fatal(model)
+	}
+	for _, inherited := range workers[1:] {
+		model := controlMCPMap(inherited["model"])
+		if model["status"] != "unresolved" || controlMCPString(model, "reason") == "" {
+			t.Fatalf("missing unresolved reason: %v", model)
+		}
+	}
+	delete(worker, "model_profile")
+	result, err = c.deployWorkerModel(worker, map[string]any{"model": map[string]any{"provider": "fixture", "model": "selected", "thinking": ""}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := controlMCPMap(result.(map[string]any)["worker"])
+	model = controlMCPMap(view["model"])
+	if writes != 1 || worker["model_profile"] == nil || model["source"] != "pinned" || model["model"] != "selected" {
+		t.Fatalf("write=%d worker=%v receipt=%v", writes, worker, result)
 	}
 }

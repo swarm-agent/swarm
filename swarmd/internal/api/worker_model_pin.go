@@ -130,10 +130,6 @@ func (c *controlMCPCall) deployWorkerModel(worker map[string]any, args map[strin
 		worker = controlMCPMap(response["worker"])
 	}
 	view := controlMCPWorkerView(worker)
-	roleModels, err := c.roleModels()
-	if err != nil {
-		return nil, err
-	}
-	view["model"] = controlMCPWorkerModel(worker, roleModels)
+	view["model"] = c.workerModelSummary(worker)
 	return map[string]any{"worker": view, "deployed": true}, nil
 }

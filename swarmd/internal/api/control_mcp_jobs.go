@@ -250,14 +250,10 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 			break
 		}
 	}
-	roleModels, err := c.roleModels()
-	if err != nil {
-		return nil, err
-	}
 	out := []map[string]any{}
 	for _, worker := range workers {
 		view := controlMCPWorkerView(worker)
-		if model := controlMCPWorkerModel(worker, roleModels); model != nil {
+		if model := c.workerModelSummary(worker); model != nil {
 			view["model"] = model
 		}
 		if include, _ := args["include_jobs"].(bool); include {
@@ -1482,7 +1478,7 @@ var controlMCPWorkerRoleSlots = map[string]string{
 
 // roleModels resolves inherited worker models through the execution authority,
 // including catalog recommendations and account-default fallbacks.
-func (c *controlMCPCall) roleModels() (map[string]map[string]any, error) {
+func (c *controlMCPCall) roleModels(role string) (map[string]map[string]any, error) {
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok || !principal.Valid() || c.server == nil {
 		return nil, errors.New("worker model resolution requires an authenticated account")
@@ -1491,16 +1487,29 @@ func (c *controlMCPCall) roleModels() (map[string]map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]map[string]any{}
-	for role, slot := range controlMCPWorkerRoleSlots {
-		profile, err := execution.ResolveRoleModelProfile(principal.AccountScopeID, role, nil)
-		if err != nil {
-			return nil, err
-		}
-		a := profile.Action
-		out[slot] = map[string]any{"provider": a.Provider, "model": a.Model, "thinking": a.Thinking, "service_tier": a.ServiceTier}
+	profile, err := execution.ResolveRoleModelProfile(principal.AccountScopeID, role, nil)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	a := profile.Action
+	return map[string]map[string]any{controlMCPWorkerRoleSlots[role]: {"provider": a.Provider, "model": a.Model, "thinking": a.Thinking, "service_tier": a.ServiceTier}}, nil
+}
+
+// workerModelSummary resolves only the default this worker inherits. Summary
+// failures are data, not failures of an otherwise successful list or mutation.
+func (c *controlMCPCall) workerModelSummary(worker map[string]any) map[string]any {
+	if pinned := controlMCPWorkerModel(worker, nil); pinned != nil {
+		return pinned
+	}
+	role := controlMCPString(worker, "role")
+	if role == "" {
+		role = "swarm"
+	}
+	models, err := c.roleModels(role)
+	if err != nil {
+		return map[string]any{"source": "role default", "status": "unresolved", "reason": err.Error()}
+	}
+	return controlMCPWorkerModel(worker, models)
 }
 
 // controlMCPWorkerModel is the model a worker's next job uses: its own pinned
