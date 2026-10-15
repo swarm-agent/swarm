@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/sandbox"
 )
 
 // AllocateReviewWorkspace creates no branch or writable publication lineage.
@@ -81,4 +82,28 @@ func (s *Service) RemoveValidatedReviewWorkspace(source, path string) error {
 	}
 	_, err := runGit(source, "worktree", "remove", "--force", path)
 	return err
+}
+
+// ValidateReviewExecutionIdentity admits only the daemon-registered, owner-bound
+// detached review checkout at its immutable reviewed commit. It grants no branch
+// publication or mutation authority and never substitutes for writable validation.
+func ValidateReviewExecutionIdentity(source, lane, owner, head string) error {
+	if sandbox.ReviewSessionCheckout(owner) != lane {
+		return errors.New("review session checkout is not registered")
+	}
+	if err := (&Service{}).ValidateSessionRepositoryLaneForRead(source, lane, owner, "HEAD"); err != nil {
+		return err
+	}
+	resolved, err := runGit(lane, "rev-parse", "--verify", "--end-of-options", head+"^{commit}")
+	if err != nil || resolved != head || head == "" {
+		return errors.New("review requires an exact recorded head")
+	}
+	actual, err := resolveRepositoryHeadCommit(lane)
+	if err != nil {
+		return err
+	}
+	if actual != head {
+		return errors.New("review head changed")
+	}
+	return nil
 }

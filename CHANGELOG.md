@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Fix reviewer run startup and repository status checks to accept only registered detached checkouts at the captured review head, without relaxing writable branch/rebase checks. Add real V3 executor regression coverage for successful review, cleanup, and moved-head refusal. Docs impact: none.
+
 - Add report-only reviewer jobs through V3, SDK and MCP `review_job`, with detached exact-head checkouts, session-bound read-only shared Git isolation, bounded review context, retry-safe cleanup, and no delivery/publication/landing. Record fail-closed verdicts with per-head evidence, staleness, `job.reviewed` signals and catalog-backed `system-reviewer` model settings; include a Docker-gated enforcement test. Docs impact: `docs/reviewer-worker.md`.
 
 - Keep both jobs' changelog entries when Git merges or rebases overlapping additions. Docs impact: none

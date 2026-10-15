@@ -17,6 +17,18 @@ func validateSessionRepositoryIdentity(session pebblestore.SessionSnapshot) erro
 }
 
 func validateSessionExecutionRepositoryIdentity(session pebblestore.SessionSnapshot) error {
+	if mapString(session.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer {
+		if !session.WorktreeEnabled {
+			return errors.New("review session requires its isolated checkout")
+		}
+		return validateSessionRepositoryIdentityWith(session, func(source, lane, branch, base string) error {
+			head := reviewEnvironment(session.Metadata)["SWARM_REVIEW_HEAD"]
+			if branch != "HEAD" || base != head || session.WorktreeBaseBranch != head || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != session.ID {
+				return errors.New("review session worktree identity mismatch")
+			}
+			return worktreeruntime.ValidateReviewExecutionIdentity(source, lane, session.ID, head)
+		})
+	}
 	return validateSessionRepositoryIdentityWith(session, worktreeruntime.ValidateOwnedExecutionIdentity)
 }
 

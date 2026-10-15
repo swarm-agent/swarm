@@ -1743,7 +1743,10 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 			return store.ErrWorkerConflict
 		}
 		execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: s}}
-		return execution.registerReview(current)
+		if err := execution.registerReview(current); err != nil {
+			return err
+		}
+		return validateSessionExecutionRepositoryIdentity(current)
 	}
 	return nil
 }
