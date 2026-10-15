@@ -571,13 +571,15 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	}
 	switch followup, _ := refs.run["followup_status"].(string); followup {
 	case "failed", "interrupted", "cancelled":
-		status = "failed"
+		if status != "needs_input" && status != "waiting_on_approval" {
+			status = "failed"
+		}
 	case "running", "queued":
 		if status != "needs_input" && status != "waiting_on_approval" {
 			status = "in_progress"
 		}
 	}
-	if cleanup, _ := refs.run["sandbox_cleanup_error"].(string); cleanup != "" && status != "in_progress" && status != "failed" {
+	if cleanup, _ := refs.run["sandbox_cleanup_error"].(string); cleanup != "" && status != "in_progress" && status != "failed" && status != "needs_input" && status != "waiting_on_approval" {
 		status = "blocked"
 	}
 	state["status"] = status
