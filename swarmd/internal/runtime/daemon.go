@@ -484,7 +484,7 @@ func New(cfg config.Config) (*Daemon, error) {
 			}
 		}
 		if r.Role == pebblestore.WorkerRoleReviewer && pebblestore.AutomationV2Terminal(r.Status) {
-			cleanupTerminalSandboxes(context.Background(), sandboxMgr, store)
+			// Container cleanup is retried by the manager's background sweep.
 		}
 		emitWorkerRun(w, r)
 	})
@@ -736,6 +736,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 	if err := runSvc.ReconcileActiveLifecycles("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile active session lifecycles: %v", err)
+	}
+	if err := pebblestore.NewWorkerStore(store).RecoverClearedWorkerFollowups(); err != nil {
+		return nil, fmt.Errorf("recover follow-up outcomes: %w", err)
 	}
 	if err := permissionSvc.ReconcilePendingRuns("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile pending permissions: %v", err)

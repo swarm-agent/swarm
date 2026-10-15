@@ -40,6 +40,9 @@ func cleanupTerminalSandboxes(ctx context.Context, m *sandbox.Manager, db *pebbl
 			return !active, err
 		}
 		done, err := terminal()
+		if err == nil && !done {
+			continue
+		}
 		if err == nil && done {
 			if r.Role == pebblestore.WorkerRoleReviewer {
 				err = m.EndTerminalReview(ctx, snap.WorkspacePath, snap.WorktreeRootPath)

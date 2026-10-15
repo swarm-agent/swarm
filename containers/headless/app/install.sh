@@ -2005,13 +2005,24 @@ EOF
   systemctl enable --now swarm-idle-off.timer
 }
 
+idle_off_response_is_idle() {
+  "$OPT/current/bin/node" -e '
+    try {
+      const v = JSON.parse(require("fs").readFileSync(0, "utf8"));
+      const counts = ["sessions", "worker_runs", "followups", "reviews", "landing"];
+      if (!v || Array.isArray(v) || v.busy !== false ||
+          counts.some(k => v[k] !== 0) ||
+          Object.entries(v).some(([k,n]) => k !== "busy" && n !== 0)) process.exit(1);
+    } catch { process.exit(1); }'
+}
+
 idle_off_check() {
   local minutes out busy now since boot saved_boot
   [[ -f $STATE/idle-off-minutes ]] || return 0
   read -r minutes <"$STATE/idle-off-minutes"
   [[ $minutes =~ ^[1-9][0-9]{0,5}$ ]] || return 0
   # Any transport/JSON/contract failure resets the continuous idle interval.
-  if ! out=$(local_api /v3/box/busy) || ! busy=$(json_get busy <<<"$out") || [[ $busy != false ]]; then
+  if ! out=$(local_api /v3/box/busy) || ! idle_off_response_is_idle <<<"$out"; then
     rm -f "$STATE/idle-off-since"
     return 0
   fi

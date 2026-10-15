@@ -15,6 +15,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Bound agent CPU quotas and concurrent commands, report CPU-slot waits, isolate ordinary daemon Git from agent CPU budgets, and prioritize headless daemon units over sandbox containers. Docs impact: headless installer README documents CPU settings, defaults, and limitations.
 - Give reviewer checkout admission the bounded allocation timeout, report deadline causes, clean partial checkouts and registrations on failure, and recover orphaned reviewer admissions at startup from durable run ownership. Docs impact: none.
+- Surface follow-up and sandbox cleanup failures in MCP job views, recover erased follow-up outcomes from retained session intents, stop retrying completed container cleanup, and strictly validate idle-off busy responses. Docs impact: none.
+
 - Preserve interrupted follow-up outcomes and failure signals, count follow-ups/reviews/landing in machine busy state, and retry terminal sandbox cleanup with job-visible errors. Add opt-in installer-owned idle auto-off. Docs impact: headless installer README documents cloud VM shutdown and resume.
 
 - Index worker receipt session bindings atomically and backfill existing history once at startup, keeping permission classification independent of worker history size. Docs impact: none.

@@ -172,6 +172,7 @@ type WorkerRunRecord struct {
 	Status              string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
 	QueueReason         string                         `json:"queue_reason,omitempty"`
 	FollowupError       string                         `json:"followup_error,omitempty"`
+	SandboxCleanupDone  bool                           `json:"sandbox_cleanup_done,omitempty"`
 	SandboxCleanupError string                         `json:"sandbox_cleanup_error,omitempty"`
 	FollowupStatus      string                         `json:"followup_status,omitempty"`
 	FollowupRunID       string                         `json:"followup_run_id,omitempty"`

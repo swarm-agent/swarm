@@ -29,6 +29,10 @@ func TestBoxExecutionCounts(t *testing.T) {
 	if err := db.PutJSON("publish_queue/test", []map[string]any{{"delivery_state": "landing"}}); err != nil {
 		t.Fatal(err)
 	}
+	r, _, err = ws.GetWorkerRun("account", w.ID, r.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := ws.SetSandboxCleanupError(r, "engine unavailable"); err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ func (ws *WorkerStore) WorkerSandboxRuns() ([]WorkerRunRecord, error) {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		if r.SessionID != "" {
+		if r.SessionID != "" && !r.SandboxCleanupDone {
 			runs = append(runs, r)
 		}
 		return nil
@@ -27,10 +27,14 @@ func (ws *WorkerStore) SetSandboxCleanupError(r WorkerRunRecord, message string)
 	if !found {
 		return ErrWorkerNotFound
 	}
-	if current.SandboxCleanupError == message {
+	if current.FollowupRunID != r.FollowupRunID || (message == "" && current.FollowupActive()) {
+		return nil
+	}
+	if current.SandboxCleanupError == message && current.SandboxCleanupDone == (message == "") {
 		return nil
 	}
 	current.SandboxCleanupError = message
+	current.SandboxCleanupDone = message == ""
 	m := &workerRealtimeMutation{accountScopeID: r.AccountScopeID, userID: r.UserID, workerID: r.WorkerID}
 	if err := m.put(KeyWorkerRun(r.AccountScopeID, r.WorkerID, r.ID), current); err != nil {
 		return err

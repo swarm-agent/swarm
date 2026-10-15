@@ -564,6 +564,20 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 	case "admitted", "running":
 		status = "in_progress"
 	}
+	for _, key := range []string{"followup_status", "followup_error", "sandbox_cleanup_error"} {
+		if text, _ := refs.run[key].(string); text != "" {
+			state[key] = controlMCPTruncate(text, 400)
+		}
+	}
+	switch followup, _ := refs.run["followup_status"].(string); followup {
+	case "failed", "interrupted", "cancelled":
+		status = "failed"
+	case "running", "queued":
+		status = "in_progress"
+	}
+	if cleanup, _ := refs.run["sandbox_cleanup_error"].(string); cleanup != "" && status != "in_progress" && status != "failed" {
+		status = "blocked"
+	}
 	state["status"] = status
 	if principal, ok := PrincipalFromRequest(c.request); ok && c.server != nil {
 		if q, err := c.server.landingQueue(); err == nil {
