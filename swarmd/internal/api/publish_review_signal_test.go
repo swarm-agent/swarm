@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -16,6 +15,7 @@ import (
 // publishJob and the durable queue without replaying them after restart. Real
 // signal/review/queue stores prove the integration; job discovery and the
 // external landing command are supplied at their boundaries, not providers.
+// Real worker routing and an owned session also exercise activity receipt ACLs.
 func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
@@ -25,6 +25,7 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	account, user := actor.AccountScopeID, actor.UserID
+	handler := s.apiMux()
 	s.SetPublishConfig("configured")
 	ws := s.sessions.Store().WorkerStore()
 	coder, err := ws.CreateWorker(account, user, store.CreateWorkerRequest{Name: "coder"}, nil)
@@ -35,7 +36,7 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := ws.RecordWorkerRun(account, store.WorkerRunRecord{WorkerID: coder.ID, UserID: user, WorkspaceID: "workspace", Status: "succeeded", RequestSource: "direct"})
+	target, err := ws.RecordWorkerRun(account, store.WorkerRunRecord{WorkerID: coder.ID, UserID: user, SessionID: "review-signal-session", WorkspaceID: "workspace", Status: "succeeded", RequestSource: "direct"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,10 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req = req.WithContext(context.WithValue(req.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", AccountScopeID: account, UserID: user}))
-	c := &controlMCPCall{server: s, request: req, next: http.NotFoundHandler()}
+	if err := s.sessions.Store().CreateSessionForAccount(store.SessionSnapshot{ID: target.SessionID}, user, account); err != nil {
+		t.Fatal(err)
+	}
+	c := &controlMCPCall{server: s, request: req, next: handler}
 	feed := store.NewSignalStore(db)
 	appendSignal := func(kind, verdict string) {
 		t.Helper()

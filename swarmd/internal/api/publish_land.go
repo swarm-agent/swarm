@@ -46,7 +46,7 @@ func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, ret
 	if err != nil {
 		return nil, err
 	}
-	if err := c.recordJobActivity(kind, a, b, refs, "job."+entry.State, entry.Commit); err != nil {
+	if err := c.recordJobActivity(kind, a, b, refs, "job."+entry.State, entry.Commit, entry.NotificationID); err != nil {
 		return nil, err
 	}
 	// The durable entry, not this request goroutine, owns recovery.

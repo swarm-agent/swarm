@@ -150,7 +150,7 @@ func (c *controlMCPCall) signalPublishDurable(kind, a, b string, refs controlMCP
 	if !ok {
 		return fmt.Errorf("publish signal principal required")
 	}
-	if err := c.recordJobActivity(kind, a, b, refs, signalKind, attrs["head"]); err != nil {
+	if err := c.recordJobActivity(kind, a, b, refs, signalKind, attrs["head"], attrs["notification_id"]); err != nil {
 		return err
 	}
 	sigRefs := map[string]string{"project_id": refs.projectID, "task_id": refs.taskID}

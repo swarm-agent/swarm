@@ -138,7 +138,8 @@ func TestPublishLandDispatchAcceptedRestart(t *testing.T) {
 
 // Purpose: terminal receipts must distinguish new transitions after explicit
 // retries while deduplicating acceptance replay. Queue.Process journals identity;
-// signalPublishDurable owns publication. Real Pebble reopen tests their boundary.
+// signalPublishDurable owns signal and activity publication. Real Pebble reopen
+// proves both preserve each empty-head transition while deduplicating retries.
 func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
 	path := t.TempDir()
 	db, err := store.Open(path)
@@ -198,6 +199,29 @@ func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
 		page, err := store.NewSignalStore(db).ListAfter(0, 100, store.SignalFilter{Account: "a"})
 		if err != nil || len(page.Signals) != i+1 {
 			t.Fatalf("transition %d: signals=%d err=%v", i, len(page.Signals), err)
+		}
+		service := sessionruntime.NewService(store.NewSessionStore(db), nil)
+		rows, err := service.ListRealtimeOutboxAfter(0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var receipts []activityEvent
+		for _, row := range rows {
+			if row.Event.EventType == "session.delivery.updated" {
+				event, ok := activityMetadata(row)
+				if !ok {
+					t.Fatal("activity receipt not projected")
+				}
+				receipts = append(receipts, event)
+			}
+		}
+		if len(receipts) != i+1 {
+			t.Fatalf("transition %d: activity receipts=%d", i, len(receipts))
+		}
+		for j, receipt := range receipts {
+			if receipt.State != "job."+states[j] || receipt.SessionID != "publish-session" || receipt.JobID != "worker/worker/run" {
+				t.Fatalf("activity receipt %d: %+v", j, receipt)
+			}
 		}
 		for j, sig := range page.Signals {
 			if sig.Kind != "job."+states[j] {
