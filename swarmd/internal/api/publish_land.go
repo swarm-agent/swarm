@@ -400,8 +400,9 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	if checkTimeoutMinutes > 0 {
 		limit = time.Duration(checkTimeoutMinutes) * time.Minute
 	}
-	checkCtx, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
+	// ExecRequest.Timeout is enforced by the supervisor after CPU admission.
+	// Keep only caller cancellation on ctx: a command deadline here would also
+	// charge queueing (and container acquisition) to the check's budget.
 	for i, command := range checks {
 		var tail string
 		req := sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: 4096, OnOutput: func(data []byte) {
@@ -410,17 +411,17 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 				tail = tail[len(tail)-4096:]
 			}
 		}}
-		res, err := checkExec(checkCtx, req)
+		res, err := checkExec(ctx, req)
 		var died *sandbox.ErrSandboxDied
-		if errors.As(err, &died) && checkCtx.Err() == nil {
+		if errors.As(err, &died) && ctx.Err() == nil {
 			tail = ""
-			res, err = checkExec(checkCtx, req)
+			res, err = checkExec(ctx, req)
 		}
 		if errors.As(err, &died) {
 			return fmt.Errorf("landing check infrastructure failure: %w", err)
 		}
 		if err != nil {
-			if checkCtx.Err() != nil && ctx.Err() == nil {
+			if errors.Is(err, provider.ErrOperationTimedOut) && ctx.Err() == nil {
 				e.Checks = append(e.Checks, publish.CheckResult{ExitCode: -1, Output: tail})
 				return publish.ChecksSendBack(base, checks[:i+1], true, tail)
 			}

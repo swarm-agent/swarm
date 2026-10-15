@@ -3,7 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -204,5 +207,126 @@ func TestPrepareLandSeparatesTrustedCommands(t *testing.T) {
 		})
 	if err != nil || checks != 1 || entry.Request.Head != head {
 		t.Fatalf("checks=%d entry=%+v err=%v", checks, entry, err)
+	}
+}
+
+// Purpose: prepareLandWorktreeWithExecutors must leave admission cancellation
+// distinct from the supervisor's execution budget. A held single-slot executor
+// queues beyond a short command budget, then runs a real process. Injecting the
+// executor is the narrowest layer that detects a pre-admission landing deadline;
+// sandbox tests independently own Manager slot enforcement.
+func TestPrepareLandCheckAdmissionBudget(t *testing.T) {
+	head := strings.Repeat("a", 40)
+	entry := publish.Entry{Request: publish.Request{Branch: "agent/job", BaseBranch: "dev"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	slots := make(chan struct{}, 1)
+	slots <- struct{}{}
+	queued := make(chan struct{})
+	released := make(chan struct{})
+	const budget = 50 * time.Millisecond
+	go func() {
+		defer close(released)
+		select {
+		case <-queued:
+		case <-ctx.Done():
+			return
+		}
+		// This timer models admission delay, not CPU work or benchmark telemetry.
+		timer := time.NewTimer(3 * budget)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			<-slots
+		case <-ctx.Done():
+		}
+	}()
+	ran := false
+	err := prepareLandWorktreeWithExecutors(ctx, publish.Rule{Mode: "land"}, &entry, t.TempDir(), []string{"printf passed"}, 1,
+		func(_ context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			out := ""
+			switch strings.Join(req.Command, " ") {
+			case "git branch --show-current":
+				out = "agent/job\n"
+			case "git rev-parse HEAD":
+				out = head + "\n"
+			}
+			return &provider.ExecResult{Stdout: out}, nil
+		}, func(admission context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			// Landing must pass the caller context unchanged, not a check deadline.
+			if admission != ctx {
+				t.Error("landing imposed a pre-admission check deadline")
+			}
+			if req.Timeout != time.Minute {
+				t.Errorf("lost configured timeout: %v", req.Timeout)
+			}
+			req.Timeout = budget // shrink only the executor fixture's execution budget
+			req.OnOutput([]byte("waiting for a CPU slot\n"))
+			close(queued)
+			select {
+			case slots <- struct{}{}:
+			case <-admission.Done():
+				return nil, admission.Err()
+			}
+			defer func() { <-slots }()
+			execution, stop := context.WithTimeout(admission, req.Timeout)
+			defer stop()
+			deadline, _ := execution.Deadline()
+			if time.Until(deadline) < budget/2 {
+				t.Error("admission consumed execution budget")
+			}
+			output, err := exec.CommandContext(execution, "sh", "-c", req.Command[2]).CombinedOutput()
+			ran = true
+			req.OnOutput(output)
+			return &provider.ExecResult{}, err
+		}, func(context.Context, publish.Rule, string) (publish.Base, error) {
+			return publish.Base{Commit: head, Branch: "dev"}, nil
+		})
+	<-released
+	if err != nil || !ran || len(entry.Checks) != 1 || !strings.Contains(entry.Checks[0].Output, "passed") {
+		t.Fatalf("ran=%v checks=%+v err=%v", ran, entry.Checks, err)
+	}
+}
+
+// Purpose: removing the pre-admission deadline must not swallow a supervisor
+// timeout or turn caller cancellation into a failed check. The injected executor
+// exercises the landing error boundary without needing Docker.
+func TestPrepareLandCheckTimeoutClassification(t *testing.T) {
+	for _, cancelled := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelled), func(t *testing.T) {
+			head := strings.Repeat("a", 40)
+			entry := publish.Entry{Request: publish.Request{Branch: "agent/job", BaseBranch: "dev"}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			err := prepareLandWorktreeWithExecutors(ctx, publish.Rule{Mode: "land"}, &entry, t.TempDir(), []string{"check"}, 1,
+				func(_ context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+					out := ""
+					switch strings.Join(req.Command, " ") {
+					case "git branch --show-current":
+						out = "agent/job\n"
+					case "git rev-parse HEAD":
+						out = head + "\n"
+					}
+					return &provider.ExecResult{Stdout: out}, nil
+				}, func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error) {
+					if cancelled {
+						cancel()
+						return nil, context.Canceled
+					}
+					return nil, provider.ErrOperationTimedOut
+				}, func(context.Context, publish.Rule, string) (publish.Base, error) {
+					return publish.Base{Commit: head, Branch: "dev"}, nil
+				})
+			if err == nil {
+				t.Fatal("failure swallowed")
+			}
+			if cancelled {
+				if !errors.Is(err, context.Canceled) || len(entry.Checks) != 0 {
+					t.Fatalf("cancellation misclassified: %v %+v", err, entry.Checks)
+				}
+			} else if len(entry.Checks) != 1 || entry.Checks[0].ExitCode != -1 {
+				t.Fatalf("timeout not recorded: %v %+v", err, entry.Checks)
+			}
+		})
 	}
 }
