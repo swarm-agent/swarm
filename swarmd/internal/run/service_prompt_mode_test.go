@@ -160,7 +160,7 @@ func TestSubagentPolicyInstructionsUseSimplifiedContract(t *testing.T) {
 		"- swarm_active_child_limit: 5",
 		"- over_budget_action: ask",
 		"- require_write_isolation: true",
-		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
+		"- delegation_scope: parent sessions and worker Coders only; worker Coders may launch read-only Finder helpers in the same job, and helpers cannot delegate",
 	} {
 		if !strings.Contains(instructions, want) {
 			t.Fatalf("subagent policy instructions missing %q:\n%s", want, instructions)

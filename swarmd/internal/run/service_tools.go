@@ -5204,6 +5204,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			return "", err
 		}
 	}
+	if parent, ok, loadErr := s.sessions.GetSession(sessionID); loadErr != nil {
+		return "", loadErr
+	} else if ok {
+		if err := validateHelperTask(parent, parsed); err != nil {
+			return "", err
+		}
+	}
 	parsed, err = s.resolveApprovedCheckpointTaskProgram(sessionID, parsed)
 	if err != nil {
 		return "", err

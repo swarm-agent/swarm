@@ -85,6 +85,8 @@ func TestPlanSidechatIsRestrictedAndHidden(t *testing.T) {
 	}
 }
 
+// Purpose: the compiled registry permits task only for the worker Coder's
+// bounded helper entrypoint; helpers and all other subagents remain depth-one.
 func TestSystemSubagentsDoNotEnableRecursiveTask(t *testing.T) {
 	registry, err := BuiltinSystemAgentRegistry()
 	if err != nil {
@@ -95,7 +97,10 @@ func TestSystemSubagentsDoNotEnableRecursiveTask(t *testing.T) {
 		if err != nil {
 			t.Fatalf("materialize %q: %v", id, err)
 		}
-		if profile.Mode == ModeSubagent && agentToolEnabled(profile.ToolContract, "task") {
+		if id == WorkerCoderAgentID && !agentToolEnabled(profile.ToolContract, "task") {
+			t.Fatal("worker helper entrypoint missing")
+		}
+		if profile.Mode == ModeSubagent && id != WorkerCoderAgentID && agentToolEnabled(profile.ToolContract, "task") {
 			t.Fatalf("system subagent %q enables recursive task delegation", id)
 		}
 	}

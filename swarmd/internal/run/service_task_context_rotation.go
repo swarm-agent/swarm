@@ -119,6 +119,9 @@ func (s *Service) runDelegatedLogicalLaunch(ctx context.Context, launch taskLaun
 		}
 		return meta
 	}(), onEvent)
+	if launch.SubagentProfile.Name == agentruntime.HelperAgentID && errors.Is(childCtx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("helper_timeout_seconds limit exhausted: %w", childCtx.Err())
+	}
 	if result.ArtifactRunContext != nil {
 		launch.ArtifactRunContext = cloneArtifactRunContext(result.ArtifactRunContext)
 	}

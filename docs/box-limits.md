@@ -49,5 +49,11 @@ the error text. Signal readers use the existing account-filtered signal cursor A
 The limits record also stores `helper_concurrency` (default 4, range 1–256),
 `helpers_per_job` (20, 1–10,000), `helper_timeout_seconds` (300, 1–3,600), and
 `helper_tokens` (32,000, 1–1,000,000,000). Existing records inherit these defaults.
-These fields are configuration groundwork, not an enabled helper execution
-contract; helper admission and read-only execution enforcement remain pending.
+Worker-Coder task launches accept Finder helpers only in the job checkout.
+Helper admission counts reservations across turns; completion releases active
+capacity, not the per-job total. Helpers cannot delegate or use mutation tools.
+Timeout cancels the child; token stopping uses provider receipts and therefore
+is not a hard pre-dispatch token ceiling. Finder/helper bash requires an active
+sandbox and accepts only fixed system readers with literal arguments (no shell
+syntax, executables from the worktree, or arbitrary flags). Three-helper live
+provider fan-out has not yet been validated.

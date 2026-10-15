@@ -918,6 +918,7 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 					runtimeScope.Roots = append([]string(nil), workspaceCtx.WorkspaceRoots...)
 					runtimeScope.Principal = principal
 					runtimeScope.SessionID = strings.TrimSpace(config.sessionID)
+					runtimeScope.ReadOnlyBash = agentruntime.IsFinderAgentName(config.agentProfile.Name) || config.agentProfile.Name == agentruntime.HelperAgentID
 					runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
 					runtimeCtx = s.withDesignSourcePermission(runtimeCtx, runtimeScope, config.runID, config.emit)
 					runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(config))

@@ -19,7 +19,7 @@ func TestBuiltinSystemAgentRegistryIsCompleteAndUnique(t *testing.T) {
 	if err := registry.Validate(); err != nil {
 		t.Fatalf("validate builtin registry: %v", err)
 	}
-	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, SwarmOrchestratorAgentID, PlanSidechatAgentID, ReviewCommitAgentID, ReviewerAgentID, RouterAgentID, VideoAgentID, WorkerCoderAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
+	want := []string{SwarmAgentID, AISidechatAgentID, AITaskPreparerAgentID, CoderAgentID, CompactAgentID, DesignerAgentID, FinderAgentID, IdeaAgentID, ImageAgentID, SwarmOrchestratorAgentID, PlanSidechatAgentID, HelperAgentID, ReviewCommitAgentID, ReviewerAgentID, RouterAgentID, VideoAgentID, WorkerCoderAgentID, WorkspaceDefinitionAgentID, WorkspaceOnboardingAgentID}
 	if got := registry.IDs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registry IDs = %v, want %v", got, want)
 	}

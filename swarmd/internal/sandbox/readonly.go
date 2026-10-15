@@ -1,8 +1,10 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"swarm/packages/swarmd/internal/environments/provider"
 	"unicode"
 )
 
@@ -38,6 +40,23 @@ func ReadOnlyCommand(command string) ([]string, error) {
 			return deny()
 		}
 	}
+	if args[0] == "rg" {
+		args = append([]string{"rg", "--no-config"}, args[1:]...)
+	}
 	args[0] = "/usr/bin/" + args[0]
 	return args, nil
+}
+
+// ExecReadOnly executes only fixed readers within the existing job container.
+// It never remounts shared state and cannot fall back to host execution.
+func (m *Manager) ExecReadOnly(ctx context.Context, scope Scope, command string, req ExecRequest) (*provider.ExecResult, error) {
+	argv, err := ReadOnlyCommand(command)
+	if err != nil {
+		return nil, err
+	}
+	if m == nil || !m.Active() {
+		return nil, fmt.Errorf("read-only bash requires an active sandbox")
+	}
+	req.Command = argv
+	return m.Exec(ctx, scope, req)
 }

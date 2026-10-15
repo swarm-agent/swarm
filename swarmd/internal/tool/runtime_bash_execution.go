@@ -122,7 +122,13 @@ func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scop
 			return "", err
 		}
 	}
-	result, runErr := manager.Exec(parent, sandboxScope, sandbox.ExecRequest{
+	execute := manager.Exec
+	if scope.ReadOnlyBash {
+		execute = func(ctx context.Context, sc sandbox.Scope, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			return manager.ExecReadOnly(ctx, sc, command, req)
+		}
+	}
+	result, runErr := execute(parent, sandboxScope, sandbox.ExecRequest{
 		Command:    argv,
 		WorkingDir: scope.PrimaryPath,
 		Timeout:    timeout,

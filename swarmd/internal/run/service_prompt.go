@@ -365,7 +365,7 @@ func subagentPolicyInstructions(subagents permission.SubagentPolicy) string {
 		fmt.Sprintf("- swarm_active_child_limit: %d (separate approval-free limit for a swarm-mode task call and aggregate active swarm children; completed swarm children release capacity)", subagents.SwarmActiveChildLimit),
 		"- over_budget_action: " + string(subagents.OverBudgetAction),
 		fmt.Sprintf("- require_write_isolation: %t", subagents.RequireWriteIsolation),
-		"- delegation_scope: parent sessions only; child sessions cannot invoke task delegation",
+		"- delegation_scope: parent sessions and worker Coders only; worker Coders may launch read-only Finder helpers in the same job, and helpers cannot delegate",
 		"Use active_child_limit for regular task launches and swarm_active_child_limit for mode=swarm. Both are approval-free limits, never targets; an over-limit exact wave follows over_budget_action, while the backend absolute safety bound still fails closed. These values are loaded when runtime instructions are composed; backend reservation enforcement remains authoritative if policy changes during an active run.",
 	}, "\n"))
 }
