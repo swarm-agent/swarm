@@ -1416,6 +1416,7 @@ func (e *sessionV3Executor) recordRunStatusInEpoch(job sessionV3ExecutorJob, mut
 		NowUnixMs:       now,
 	})
 	if err == nil {
+		e.server.signalSessionRunEnded(job, status, result)
 		err = e.server.reconcileAITaskRunLifecycle(job, status, sanitizedReason, "")
 	}
 	if err == nil {

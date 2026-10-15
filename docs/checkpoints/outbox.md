@@ -100,6 +100,9 @@ they are optional.
 `kind`, `severity`, `summary`, `refs` and `attrs` are the signal's, unchanged
 (see `/v3/signals`). `job_id` and `result` are present on a finished worker
 job (`worker.run.succeeded`, `worker.run.failed`, `worker.run.cancelled`).
+A session run that ends without completing raises `session.run.failed` or
+`session.run.interrupted` (warning; `refs.session_id`, `refs.run_id`,
+`attrs.agent`), once per run and without the failure reason.
 When the machine's feed dropped signals the outbox had not exported yet, one
 record of kind `outbox.gap` says so (`attrs.from`, `attrs.to`).
 
