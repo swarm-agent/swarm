@@ -250,7 +250,10 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 			break
 		}
 	}
-	roleModels := c.roleModels()
+	roleModels, err := c.roleModels()
+	if err != nil {
+		return nil, err
+	}
 	out := []map[string]any{}
 	for _, worker := range workers {
 		view := controlMCPWorkerView(worker)
@@ -1477,20 +1480,27 @@ var controlMCPWorkerRoleSlots = map[string]string{
 	"coder": "system-coder", "designer": "system-designer", "finder": "system-finder", "reviewer": "system-reviewer", "swarm": "swarm",
 }
 
-// roleModels reads each agent role's model setting once (nil when unreadable).
-func (c *controlMCPCall) roleModels() map[string]map[string]any {
-	settings, err := c.dispatch(http.MethodGet, "/v1/agent-model-settings", nil, nil)
+// roleModels resolves inherited worker models through the execution authority,
+// including catalog recommendations and account-default fallbacks.
+func (c *controlMCPCall) roleModels() (map[string]map[string]any, error) {
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok || !principal.Valid() || c.server == nil {
+		return nil, errors.New("worker model resolution requires an authenticated account")
+	}
+	execution, err := c.server.workerExecutionService()
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	assignments := controlMCPMap(settings["agent_model_settings"])
 	out := map[string]map[string]any{}
-	for role, slot := range controlMCPAgentModelRoles {
-		if entry := controlMCPPick(controlMCPMap(controlMCPMap(assignments[slot[0]])[slot[1]]), "provider", "model", "thinking", "service_tier"); len(entry) > 0 {
-			out[role] = entry
+	for role, slot := range controlMCPWorkerRoleSlots {
+		profile, err := execution.ResolveRoleModelProfile(principal.AccountScopeID, role, nil)
+		if err != nil {
+			return nil, err
 		}
+		a := profile.Action
+		out[slot] = map[string]any{"provider": a.Provider, "model": a.Model, "thinking": a.Thinking, "service_tier": a.ServiceTier}
 	}
-	return out
+	return out, nil
 }
 
 // controlMCPWorkerModel is the model a worker's next job uses: its own pinned

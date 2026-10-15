@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
 
+	"swarm/packages/swarmd/internal/identity"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -54,46 +56,58 @@ func TestControlMCPReviewerFirstUse(t *testing.T) {
 	}
 }
 
-// Purpose: controlMCPWorkerModel must display the explicit reviewer assignment
-// actually selected by run.ResolveWorkerRoleModelProfile, not coder or Swarm.
+// Purpose: controlMCPWorkerModel must display the reviewer model selected by
+// run.ResolveWorkerRoleModelProfile, including an empty reviewer's fallback.
 // The real isolated execution/model fixture plus summary function is the
 // narrowest cross-boundary proof; a pinned model must still override the role.
 func TestControlMCPReviewerModelMatchesResolution(t *testing.T) {
-	s, db, _ := setupWorkerAPITestServer(t)
-	setupWorkerAPIExecution(t, s, db)
-	settings := store.NewAgentModelSettingsStore(db)
-	record, _, err := settings.GetForAccount("acct-test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	record.SystemAgents.Reviewer = record.SystemAgents.Coder
-	if _, err := settings.PutForAccount(record); err != nil {
-		t.Fatal(err)
-	}
-	execution, err := s.workerExecutionService()
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolved, err := execution.ResolveRoleModelProfile("acct-test", store.WorkerRoleReviewer, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := record.SystemAgents.Reviewer
-	roles := map[string]map[string]any{
-		"system-reviewer": {"provider": a.Provider, "model": a.Model, "thinking": a.Thinking, "service_tier": a.ServiceTier},
-		"system-coder":    {"provider": "wrong", "model": "wrong"},
-		"swarm":           {"provider": "wrong", "model": "wrong"},
-	}
-	worker := map[string]any{"role": "reviewer"}
-	got := controlMCPWorkerModel(worker, roles)
-	want := controlMCPRoleModel(map[string]any{"provider": resolved.Action.Provider, "model": resolved.Action.Model, "thinking": resolved.Action.Thinking, "service_tier": resolved.Action.ServiceTier})
-	want["source"] = "role default"
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("summary=%v resolution=%v", got, want)
-	}
-	worker["model_profile"] = map[string]any{"action": map[string]any{"provider": "pinned", "model": "selected"}}
-	got = controlMCPWorkerModel(worker, roles)
-	if got["source"] != "pinned" || got["model"] != "selected" {
-		t.Fatal(got)
+	for _, explicit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "unassigned", true: "explicit"}[explicit], func(t *testing.T) {
+			s, db, _ := setupWorkerAPITestServer(t)
+			setupWorkerAPIExecution(t, s, db)
+			settings := store.NewAgentModelSettingsStore(db)
+			record, _, err := settings.GetForAccount("acct-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if explicit {
+				record.SystemAgents.Reviewer = record.SystemAgents.Coder
+			} else {
+				record.SystemAgents.Reviewer = store.AgentModelAssignment{}
+			}
+			if _, err := settings.PutForAccount(record); err != nil {
+				t.Fatal(err)
+			}
+			execution, err := s.workerExecutionService()
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := execution.ResolveRoleModelProfile("acct-test", store.WorkerRoleReviewer, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			request = request.WithContext(context.WithValue(request.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", AccountScopeID: "acct-test", UserID: "user-test"}))
+			c := &controlMCPCall{server: s, request: request}
+			roles, err := c.roleModels()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.Action.Model == "" {
+				t.Fatal("execution resolved an empty model")
+			}
+			worker := map[string]any{"role": "reviewer"}
+			got := controlMCPWorkerModel(worker, roles)
+			want := controlMCPRoleModel(map[string]any{"provider": resolved.Action.Provider, "model": resolved.Action.Model, "thinking": resolved.Action.Thinking, "service_tier": resolved.Action.ServiceTier})
+			want["source"] = "role default"
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("summary=%v resolution=%v", got, want)
+			}
+			worker["model_profile"] = map[string]any{"action": map[string]any{"provider": "pinned", "model": "selected"}}
+			got = controlMCPWorkerModel(worker, roles)
+			if got["source"] != "pinned" || got["model"] != "selected" {
+				t.Fatal(got)
+			}
+		})
 	}
 }
