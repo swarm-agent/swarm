@@ -15,9 +15,32 @@ run_group() {
     status=1
   fi
 }
-# Parse the checked-in literal critical selections, not shell code. This also
-# includes the deep selections required by the supplied release gate.
 release_gate() {
+  python3 - <<'PY'
+import pathlib, re, subprocess, sys
+root = pathlib.Path.cwd()
+failed = False
+for line in (root / 'scripts/test-vital-release.txt').read_text().splitlines():
+    if not line or line.startswith('#'):
+        continue
+    module, package, names = line.split('|')
+    names = names.split()
+    cwd = root / module
+    listing = subprocess.run(['go', 'test', '-p', '4', package, '-list', '^Test'], cwd=cwd, text=True, capture_output=True, timeout=300)
+    missing = set(names) - set(listing.stdout.splitlines())
+    if listing.returncode or missing:
+        print(listing.stderr, file=sys.stderr)
+        print(f'{module}/{package}: missing release tests: {sorted(missing)}', file=sys.stderr)
+        failed = True
+        continue
+    pattern = '^(' + '|'.join(re.escape(name) for name in names) + ')$'
+    result = subprocess.run(['go', 'test', '-p', '4', '-timeout=120s', package, '-run', pattern], cwd=cwd, timeout=300)
+    failed |= result.returncode != 0
+sys.exit(int(failed))
+PY
+}
+# Preserve the additional selections of all checked-in critical tiers.
+critical_gate() {
   python3 - <<'PY'
 import pathlib, re, subprocess, sys
 root = pathlib.Path.cwd()
@@ -37,6 +60,7 @@ PY
 }
 web_group() { (cd web && pnpm run "$1"); }
 run_group 'release gate' release_gate
+run_group 'critical Go' critical_gate
 run_group 'web critical' web_group test:critical
 run_group 'web agents' web_group test:agents
 run_group 'web orchestrator selection' web_group test:orchestrator:selection
