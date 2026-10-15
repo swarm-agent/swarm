@@ -3,7 +3,7 @@
 // and what reaches the gateway, not a deployed Access configuration.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { handle } from '../console/src/index.js';
+import { handle, relayAlerts } from '../console/src/index.js';
 
 const TEAM = 'team.example.com';
 const AUD = 'aud-tag-123';
@@ -80,4 +80,38 @@ test('identity comes from the login, bodies are cut to reviewed fields, and othe
   }
   assert.equal((await handle(req('/ops/reply', { jwt, method: 'POST', origin: 'https://evil.example.com', body: { session_id: 's1', content: 'x' } }), env, s)).status, 403);
   assert.equal(s.seen.length, before);
+});
+
+test('the alert relay starts from now, forwards only actionable events once, and survives a gateway restart', async () => {
+  const kv = new Map();
+  const ALERT_STATE = { get: async (k) => (kv.has(k) ? kv.get(k) : null), put: async (k, v) => { kv.set(k, v); } };
+  const relayEnv = { ...env, ALERTS_URL: 'https://watch.example.com', ALERTS_AUTH: 'Authorization: Bearer t', CONSOLE_URL: 'https://staff.example.com', ALERT_STATE };
+  let feed = [{ seq: 1, type: 'handoff.requested', session_id: 'old', summary: 'old one' }];
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    url = String(url);
+    if (url.startsWith('https://watch.example.com/')) { sent.push(JSON.parse(init.body)); return new Response('{}'); }
+    const after = Number(new URL(url).searchParams.get('after'));
+    assert.equal(init.headers['X-Ops-Key'], 'ops-secret');
+    return Response.json({ events: feed.filter((e) => e.seq > after), latest: feed.at(-1)?.seq ?? 0 });
+  };
+  const clock = { t: 0 };
+  const now = () => (clock.t += 6000);
+  await relayAlerts(relayEnv, { fetchImpl, now, budgetMs: 20_000 });
+  assert.equal(sent.length, 0, 'a first run does not replay old events');
+  assert.equal(kv.get('cursor'), '1');
+
+  feed = [...feed, { seq: 2, type: 'conversation.started', session_id: 's2' }, { seq: 3, type: 'handoff.requested', session_id: 's2', summary: 'Clinic project', staff_online: true }];
+  clock.t = 0;
+  await relayAlerts(relayEnv, { fetchImpl, now, budgetMs: 20_000 });
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].body, /Clinic project[\s\S]*\?session=s2/);
+  assert.equal(kv.get('cursor'), '3');
+
+  feed = [{ seq: 1, type: 'lead.captured', session_id: 's9', lead: { email: 'pat@example.com' } }];
+  clock.t = 0;
+  await relayAlerts(relayEnv, { fetchImpl, now, budgetMs: 20_000 });
+  assert.equal(sent.length, 2, 'after a gateway restart the new feed is relayed');
+  assert.match(sent[1].body, /pat@example\.com/);
+  assert.deepEqual(await relayAlerts({ ...env }, { fetchImpl }), { relayed: 0, skipped: 'not configured' });
 });

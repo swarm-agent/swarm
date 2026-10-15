@@ -198,14 +198,29 @@ A page refresh keeps the conversation: the widget stores its random visitor id
 and reloads the visitor's own messages from `/api/chat/history`. That id is the
 only key to the conversation, so it is long and random and never shown.
 
-**Phone alerts.** Set `ALERTS_URL`, `ALERTS_AUTH_FILE` (one line,
-`Authorization: Bearer …`) and `CONSOLE_URL` on the gateway and it posts the
-events a person should act on (`handoff.requested`, `handoff.missed`,
-`lead.captured`, `conversation.ended`) to `ALERTS_URL/v1/event` as
-`{kind, severity, title, body, notify}`, each with a link that opens the
-console on that conversation. That is the event format of a small alert
-service such as swarm-watch, which owns the Telegram bot; the gateway never
-holds a Telegram token. Add the file as another compose secret in an override.
+**Phone alerts.** The events a person should act on (`handoff.requested`,
+`handoff.missed`, `lead.captured`, `conversation.ended`) can go to an alert
+service as `{kind, severity, title, body, notify}` on `ALERTS_URL/v1/event`,
+each with a link that opens the console on that conversation. That is the
+event format of a small alert service such as swarm-watch, which owns the
+Telegram bot; nothing here holds a Telegram token. Two ways to send them:
+
+- From the console Worker (recommended): set `ALERTS_URL`, `CONSOLE_URL`, the
+  `ALERTS_AUTH` secret and the `ALERT_STATE` KV namespace in
+  `console/wrangler.jsonc`. A once-a-minute Cron Trigger long-polls the
+  gateway's events through the tunnel and relays them within about a second,
+  so the box needs no outbound web access and the alert token stays at the edge.
+- From the gateway: set `ALERTS_URL`, `ALERTS_AUTH_FILE` and `CONSOLE_URL` on it
+  (add the file as another compose secret in an override). The box then needs
+  outbound HTTPS to the alert service.
+
+**Egress.** Restrict the box's outbound traffic at the cloud firewall to the
+model API, OS updates and the tunnel (TCP and UDP 7844 to Cloudflare's tunnel
+ranges). On Google Cloud, a private DNS zone for `googleapis.com` pointing at
+`private.googleapis.com` (199.36.153.8/30) lets Gemini through a single small
+range. An allow rule by hostname resolves to addresses, so allowing one
+Cloudflare-hosted name also allows everything else on those addresses; relay
+alerts from the console instead. Image builds then need a temporary allow.
 
 The console (`console/`) is a Worker on its own hostname behind an Access
 application for your team's emails. It verifies the Access token itself, takes

@@ -1,9 +1,13 @@
 // Staff console. Put it on its own hostname behind a Cloudflare Access
 // application that allows only your team's emails; the Worker verifies the
-// Access token as well. Deploy from this directory:
+// Access token as well. It also relays phone alerts (a once-a-minute Cron
+// Trigger long-polls the gateway's events), so the bot's host needs no
+// outbound web access. Deploy from this directory:
+//   npx wrangler kv namespace create public-chat-alert-state   (put its id below)
 //   npx wrangler secret put OPS_SECRET              (same value as the gateway's)
 //   npx wrangler secret put ACCESS_CLIENT_ID        (Access service token for the gateway's tunnel hostname)
 //   npx wrangler secret put ACCESS_CLIENT_SECRET
+//   npx wrangler secret put ALERTS_AUTH             (optional: "Authorization: Bearer ..." for ALERTS_URL)
 //   npx wrangler deploy
 {
   "name": "public-chat-console",
@@ -13,12 +17,17 @@
   "workers_dev": false,
   "preview_urls": false,
   "routes": [{ "pattern": "staff.example.com", "custom_domain": true }],
+  "triggers": { "crons": ["* * * * *"] },
+  "kv_namespaces": [{ "binding": "ALERT_STATE", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }],
   "vars": {
     "GATEWAY_URL": "https://chat-gateway.example.com",
     // Your Access team domain and the console application's Audience (AUD) tag.
     "ACCESS_TEAM_DOMAIN": "your-team.cloudflareaccess.com",
     "ACCESS_AUD": "REPLACE_WITH_THE_APPLICATION_AUD_TAG",
     // Who may use the console, as shown to visitors ("Sam, the founder").
-    "STAFF": "{\"sam@example.com\": {\"name\": \"Sam\", \"role\": \"founder\"}}"
+    "STAFF": "{\"sam@example.com\": {\"name\": \"Sam\", \"role\": \"founder\"}}",
+    // Phone alerts: an alert service taking swarm-watch's event format, and this console's URL for links.
+    "ALERTS_URL": "",
+    "CONSOLE_URL": "https://staff.example.com"
   }
 }

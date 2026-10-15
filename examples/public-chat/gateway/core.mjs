@@ -3,6 +3,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { alertFor, alertHeaders } from './alerts.mjs';
 
 export const VISITOR_ID = /^[A-Za-z0-9_-]{16,64}$/;
 
@@ -195,22 +196,11 @@ export function createEmitter({ url, secret, fetchImpl = fetch, now = Date.now }
  */
 export function createAlerter({ url, authHeader, consoleUrl = '', fetchImpl = fetch }) {
   if (!url || !authHeader) return () => {};
-  const link = (sessionId) => (consoleUrl && sessionId ? `\nOpen: ${consoleUrl.replace(/\/$/, '')}/?session=${encodeURIComponent(sessionId)}` : '');
-  const alerts = {
-    'handoff.requested': (e) => e.staff_online === false
-      ? { kind: 'chat.handoff', severity: 'info', notify: true, title: 'A visitor asked for a person (nobody online)', body: (e.summary ?? '') + link(e.session_id) }
-      : { kind: 'chat.handoff', severity: 'warning', notify: true, title: 'A visitor wants to talk now', body: `${e.summary ?? 'Visitor asked for a person'}\nAccept within 2 minutes.${link(e.session_id)}` },
-    'handoff.missed': (e) => ({ kind: 'chat.handoff', severity: 'info', notify: true, title: 'Nobody accepted a chat in time', body: 'The visitor was asked to leave their email.' + link(e.session_id) }),
-    'lead.captured': (e) => ({ kind: 'chat.lead', severity: 'info', notify: true, title: 'A visitor left their email', body: [e.lead?.name, e.lead?.email, e.lead?.need].filter(Boolean).join('\n') + link(e.session_id) }),
-    'conversation.ended': (e) => ({ kind: 'chat.ended', severity: 'info', notify: true, title: `The AI ended a chat (${e.reason})`, body: (e.note ?? '') + link(e.session_id) }),
-  };
-  const [name, ...rest] = authHeader.split(':');
-  const headers = { 'Content-Type': 'application/json', [name.trim()]: rest.join(':').trim() };
+  const headers = alertHeaders(authHeader);
   return (type, data) => {
-    const build = alerts[type];
-    if (!build) return;
-    const event = build(data);
-    fetchImpl(url.replace(/\/$/, '') + '/v1/event', { method: 'POST', headers, body: JSON.stringify({ ...event, title: event.title.slice(0, 200), body: event.body.slice(0, 2000) }), signal: AbortSignal.timeout(5000) })
+    const event = alertFor(type, data, consoleUrl);
+    if (!event) return;
+    fetchImpl(url.replace(/\/$/, '') + '/v1/event', { method: 'POST', headers, body: JSON.stringify(event), signal: AbortSignal.timeout(5000) })
       .then((res) => { if (!res.ok) console.error('alert not accepted:', res.status); })
       .catch(() => {});
   };

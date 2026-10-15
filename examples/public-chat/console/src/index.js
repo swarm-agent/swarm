@@ -4,6 +4,7 @@
 // other way gets nothing. Who you are comes from that token and the STAFF map,
 // never from the browser: the page can say "I'm available", not "I'm Sam".
 import { PAGE_HTML, PAGE_JS } from './page.js';
+import { alertFor, alertHeaders } from '../../gateway/alerts.mjs';
 
 const MAX_BODY = 8192;
 const JSON_HEADERS = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' };
@@ -124,4 +125,54 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
   }
 }
 
-export default { fetch: (request, env) => handle(request, env) };
+/**
+ * Phone-alert relay, run by a once-a-minute Cron Trigger: long-polls the
+ * gateway's event feed through the tunnel for about a minute and forwards the
+ * events a person should act on to the alert service (swarm-watch's event
+ * format). The bot's host then needs no outbound web access, and the alert
+ * token lives only in this Worker. The feed cursor is kept in KV; a first run
+ * starts from now instead of replaying old events.
+ */
+export async function relayAlerts(env, { fetchImpl = fetch, now = Date.now, budgetMs = 55_000 } = {}) {
+  if (!env.ALERTS_URL || !env.ALERTS_AUTH || !env.ALERT_STATE || !env.GATEWAY_URL) return { relayed: 0, skipped: 'not configured' };
+  const started = now();
+  const headers = { 'X-Ops-Key': env.OPS_SECRET ?? '', 'CF-Access-Client-Id': env.ACCESS_CLIENT_ID ?? '', 'CF-Access-Client-Secret': env.ACCESS_CLIENT_SECRET ?? '' };
+  const poll = async (after, wait) => {
+    const res = await fetchImpl(`${env.GATEWAY_URL}/ops/events?after=${after}&wait=${wait}`, { headers, signal: AbortSignal.timeout((wait + 10) * 1000) });
+    if (!res.ok) throw new Error(`events: ${res.status}`);
+    return res.json();
+  };
+  const stored = await env.ALERT_STATE.get('cursor');
+  let cursor = Number(stored) || 0;
+  let relayed = 0;
+  try {
+    if (stored === null) {
+      cursor = (await poll(0, 0)).latest ?? 0;
+      await env.ALERT_STATE.put('cursor', String(cursor));
+    }
+    for (;;) {
+      const wait = Math.min(25, Math.floor((budgetMs - (now() - started)) / 1000) - 5);
+      if (wait < 1) break;
+      const data = await poll(cursor, wait);
+      // The gateway restarted and its feed began again: everything in it is new.
+      if ((data.latest ?? 0) < cursor) { cursor = 0; continue; }
+      for (const event of data.events ?? []) {
+        cursor = Math.max(cursor, event.seq);
+        const alert = alertFor(event.type, event, env.CONSOLE_URL);
+        if (!alert) continue;
+        const ok = await fetchImpl(env.ALERTS_URL.replace(/\/$/, '') + '/v1/event', { method: 'POST', headers: alertHeaders(env.ALERTS_AUTH), body: JSON.stringify(alert), signal: AbortSignal.timeout(5000) })
+          .then((r) => r.ok, () => false);
+        if (ok) relayed++;
+      }
+      if (data.events?.length) await env.ALERT_STATE.put('cursor', String(cursor));
+    }
+  } catch (error) {
+    console.error('alert relay stopped:', String(error?.message ?? error).slice(0, 200));
+  }
+  return { relayed, cursor };
+}
+
+export default {
+  fetch: (request, env) => handle(request, env),
+  scheduled: (controller, env, ctx) => ctx.waitUntil(relayAlerts(env)),
+};
