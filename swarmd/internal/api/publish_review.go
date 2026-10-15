@@ -60,3 +60,50 @@ func rejectBlockingPatch(head, patch string, reviews []store.JobReview, patchID 
 	}
 	return nil
 }
+
+// Admission may reuse only durable queue-owned evidence for this exact retry.
+// It is not landing authority: preparation rechecks patch identity against the
+// newly fetched base and rejects BLOCK on every equivalent head before landing.
+func (c *controlMCPCall) requireLandAdmission(kind, worker, run string, rule publish.Rule, result map[string]any) error {
+	head, _ := result["head"].(string)
+	err := c.requireLandReview(kind, worker, run, head)
+	if err == nil {
+		return nil
+	}
+	var missing *missingLandReview
+	if !errors.As(err, &missing) {
+		return err
+	}
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok {
+		return err
+	}
+	q, loadErr := c.server.landingQueue()
+	if loadErr != nil {
+		return loadErr
+	}
+	entry, _, loadErr := q.Get(principal.AccountScopeID, controlMCPJobID(kind, worker, run))
+	if loadErr != nil {
+		return loadErr
+	}
+	evidence := entry.Review
+	if evidence == nil || evidence.ReviewID == "" || evidence.RebasedHead != head || entry.Request.Folder != rule.Folder || entry.Request.Branch != result["worktree_branch"] || entry.Request.BaseBranch != result["base_branch"] {
+		return err
+	}
+	ws := c.server.sessions.Store().WorkerStore()
+	current, loadErr := ws.CurrentValidJobReview(principal.AccountScopeID, worker, run, head)
+	if loadErr != nil {
+		return loadErr
+	}
+	if current != nil && current.Verdict == "block" {
+		return err
+	}
+	reviewed, loadErr := ws.CurrentValidJobReview(principal.AccountScopeID, worker, run, evidence.ReviewedHead)
+	if loadErr != nil {
+		return loadErr
+	}
+	if reviewed == nil || reviewed.Verdict != "ok" || reviewed.ReviewerJobID != evidence.ReviewID {
+		return err
+	}
+	return nil
+}

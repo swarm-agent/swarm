@@ -21,7 +21,7 @@ import (
 // exercises Git's actual merge-base, patch-id and rebase behavior at the queue
 // preparation boundary, with no daemon, credentials or external repository.
 func TestLandReviewRealGitRebase(t *testing.T) {
-	for _, mode := range []string{"same_patch", "conflict", "restart", "block_rebased"} {
+	for _, mode := range []string{"same_patch", "conflict", "restart", "block_rebased", "stale_base_block", "retry", "retry_block"} {
 		conflict := mode == "conflict"
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -49,6 +49,7 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 			put("file", "base\n")
 			git("add", ".")
 			git("commit", "-m", "base")
+			originalBase := git("rev-parse", "HEAD")
 			git("checkout", "-b", "agent/job")
 			put("file", "job\n")
 			git("commit", "-am", "job")
@@ -63,6 +64,15 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 			git("commit", "-m", "upstream")
 			base := git("rev-parse", "HEAD")
 			git("checkout", "agent/job")
+			blockedHead := ""
+			if mode == "stale_base_block" {
+				git("checkout", "-b", "blocked", base)
+				git("cherry-pick", reviewed)
+				blockedHead = git("rev-parse", "HEAD")
+				git("checkout", "agent/job")
+				git("update-ref", "refs/swarm/publish/dev", base)
+				git("branch", "-f", "dev", originalBase)
+			}
 			dbPath := filepath.Join(t.TempDir(), "queue")
 			db, err := store.Open(dbPath)
 			if err != nil {
@@ -77,9 +87,24 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 			land := 0
 			interrupted := false
 			hooks := publish.QueueHooks{Prepare: func(ctx context.Context, e *publish.Entry) error {
-				e.ValidateReview = func(head, patch string) error {
+				e.ValidateReview = func(head, patch, landingBase string) error {
+					if landingBase != base {
+						t.Fatal("mutable or incorrect comparison base")
+					}
+					if blockedHead != "" {
+						return rejectBlockingPatch(head, patch, []store.JobReview{{Head: blockedHead, Verdict: "block"}}, func(h string) (string, error) {
+							cmd := exec.CommandContext(ctx, "bash", "-o", "pipefail", "-c", `git diff --binary "$1...$2" | git patch-id --stable`, "patch-id", landingBase, h)
+							cmd.Dir = dir
+							cmd.Env = env
+							out, err := cmd.Output()
+							if err != nil {
+								return "", err
+							}
+							return strings.Fields(string(out))[0], nil
+						})
+					}
 					e.Review.ReviewID = "review-id"
-					if mode == "block_rebased" && head != reviewed {
+					if (mode == "block_rebased" || (mode == "retry_block" && interrupted)) && head != reviewed {
 						return reviewRequired(head)
 					}
 					return nil
@@ -109,12 +134,27 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 					interrupted = true
 					return publish.LandResult{}, context.Canceled
 				}
+				if (mode == "retry" || mode == "retry_block") && !interrupted {
+					interrupted = true
+					return publish.LandResult{}, errors.New("transient landing failure")
+				}
 				land++
 				git("checkout", "dev")
 				git("merge", "--ff-only", e.Request.Head)
 				return publish.LandResult{Commit: e.Request.Head}, nil
 			}, SendBack: func(context.Context, publish.Entry) error { return nil }}
 			err = q.Process(ctx, "account", dir, hooks)
+			if mode == "retry" || mode == "retry_block" {
+				saved, _, getErr := q.Get("account", "job")
+				if getErr != nil || saved.State != "land_failed" || saved.Review == nil {
+					t.Fatalf("missing failed receipt: %+v %v", saved, getErr)
+				}
+				queued, _, enqueueErr := q.EnqueueDelivery(publish.Entry{Account: "account", Request: saved.Request}, true)
+				if enqueueErr != nil || queued.Review == nil {
+					t.Fatalf("lost retry evidence: %+v %v", queued, enqueueErr)
+				}
+				err = q.Process(ctx, "account", dir, hooks)
+			}
 			if mode == "restart" {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("expected interruption: %v", err)
@@ -140,7 +180,7 @@ func TestLandReviewRealGitRebase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "block_rebased" {
+			if mode == "block_rebased" || mode == "stale_base_block" || mode == "retry_block" {
 				if land != 0 || entry.State != "land_failed" || !strings.Contains(entry.Reason, "needs an OK review") {
 					t.Fatalf("BLOCK ignored: %+v", entry)
 				}

@@ -26,17 +26,17 @@ type ReviewEquivalence struct {
 }
 
 type Entry struct {
-	ValidateReview func(head, patch string) error `json:"-"`
-	Checkpoint     func() error                   `json:"-"`
-	Review         *ReviewEquivalence             `json:"review_equivalence,omitempty"`
-	Account        string                         `json:"account"`
-	Request        Request                        `json:"request"`
-	State          string                         `json:"delivery_state"`
-	Commit         string                         `json:"commit,omitempty"`
-	Reason         string                         `json:"reason,omitempty"`
-	Checks         []CheckResult                  `json:"checks,omitempty"`
-	SendBacks      int                            `json:"send_backs"`
-	Attempt        int                            `json:"attempt,omitempty"`
+	ValidateReview func(head, patch, base string) error `json:"-"`
+	Checkpoint     func() error                         `json:"-"`
+	Review         *ReviewEquivalence                   `json:"review_equivalence,omitempty"`
+	Account        string                               `json:"account"`
+	Request        Request                              `json:"request"`
+	State          string                               `json:"delivery_state"`
+	Commit         string                               `json:"commit,omitempty"`
+	Reason         string                               `json:"reason,omitempty"`
+	Checks         []CheckResult                        `json:"checks,omitempty"`
+	SendBacks      int                                  `json:"send_backs"`
+	Attempt        int                                  `json:"attempt,omitempty"`
 }
 
 // ErrNotSettled defers landing until the job and any follow-up have settled.
@@ -111,6 +111,11 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 		}
 		if active(old) || old.State == "landed" || (old.State == "landing_stopped" && !retryStopped) {
 			return old, position(entries, e.Request.JobID), nil
+		}
+		// Only retain queue-owned evidence for the same source and destination.
+		// Preparation revalidates both patches against the fresh immutable base.
+		if old.Request.Folder == e.Request.Folder && old.Request.Branch == e.Request.Branch && old.Request.BaseBranch == e.Request.BaseBranch && old.Review != nil && old.Review.RebasedHead == e.Request.Head {
+			e.Review = old.Review
 		}
 		e.SendBacks = old.SendBacks
 		e.Attempt = old.Attempt

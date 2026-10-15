@@ -192,13 +192,13 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	}
 	if reviewGated(rule) {
 		ws := c.server.sessions.Store().WorkerStore()
-		e.ValidateReview = func(head, patch string) error {
+		e.ValidateReview = func(head, patch, base string) error {
 			reviews, err := ws.JobReviews(e.Account, a, b)
 			if err != nil {
 				return err
 			}
 			if err := rejectBlockingPatch(head, patch, reviews, func(reviewHead string) (string, error) {
-				res, err := m.Exec(ctx, scope, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-c", `git diff --no-ext-diff --no-textconv --binary "$1...$2" | git patch-id --stable`, "patch-id", e.Request.BaseBranch, reviewHead}, WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
+				res, err := m.Exec(ctx, scope, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-c", `git diff --no-ext-diff --no-textconv --binary "$1...$2" | git patch-id --stable`, "patch-id", base, reviewHead}, WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
 				if err != nil {
 					return "", err
 				}
@@ -295,7 +295,11 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 			if err != nil {
 				return err
 			}
-			if patch != e.Review.PatchID {
+			approvedPatch, err := patchID(e.Review.ReviewedHead, base.Commit)
+			if err != nil {
+				return err
+			}
+			if patch != e.Review.PatchID || approvedPatch != patch {
 				return reviewRequired(current)
 			}
 			reviewedHead = e.Review.ReviewedHead
@@ -311,7 +315,7 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 			e.Review = &publish.ReviewEquivalence{ReviewedHead: reviewedHead, RebasedHead: current, PatchID: reviewedPatch}
 		}
 		if e.ValidateReview != nil {
-			if err := e.ValidateReview(current, reviewedPatch); err != nil {
+			if err := e.ValidateReview(current, reviewedPatch, base.Commit); err != nil {
 				return err
 			}
 		}
@@ -423,7 +427,7 @@ func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entr
 	if reviewGated(rule) {
 		// Checks may take minutes; BLOCK on any equivalent patch wins.
 		if e.ValidateReview != nil {
-			if err := e.ValidateReview(parsedHead, reviewedPatch); err != nil {
+			if err := e.ValidateReview(parsedHead, reviewedPatch, base.Commit); err != nil {
 				return err
 			}
 		}

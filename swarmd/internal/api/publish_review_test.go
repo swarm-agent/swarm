@@ -196,6 +196,48 @@ func TestPublishJobRequiresRecordedReview(t *testing.T) {
 			}
 		}
 	}
+	// Purpose: admission must reuse queue-owned approval after transient failure,
+	// without accepting an exact-head BLOCK. Real store plus publishJob exercises
+	// the shared explicit/automatic admission boundary and re-enqueue persistence.
+	rebased := strings.Repeat("c", 40)
+	approved, err := ws.CurrentValidJobReview("acct-test", coder.ID, target.ID, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failHooks := publish.QueueHooks{Prepare: func(_ context.Context, e *publish.Entry) error {
+		e.Review = &publish.ReviewEquivalence{ReviewedHead: head, RebasedHead: rebased, PatchID: "patch", ReviewID: approved.ReviewerJobID}
+		e.Request.Head = rebased
+		return nil
+	}, Land: func(context.Context, publish.Entry) (publish.LandResult, error) {
+		return publish.LandResult{}, errors.New("transient")
+	}}
+	if err := q.Process(context.Background(), "acct-test", "/project", failHooks); err != nil {
+		t.Fatal(err)
+	}
+	rule := publish.Rule{Folder: "/project", Mode: "land", RequireReview: true}
+	result := map[string]any{"head": rebased, "worktree_branch": "agent/job", "base_branch": "dev"}
+	for _, explicit := range []bool{false, true} {
+		out, err := c.publishJob(controlMCPJobWorker, coder.ID, target.ID, controlMCPJobRefs{}, rule, result, explicit)
+		entry, _, getErr := q.Get("acct-test", jobID)
+		if err != nil || getErr != nil || out["delivery_state"] != "queued" || entry.Review == nil {
+			t.Fatalf("retry stranded: %+v %+v %v %v", out, entry, err, getErr)
+		}
+		if err := q.Process(context.Background(), "acct-test", "/project", failHooks); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := ws.RecordWorkerRun("acct-test", store.WorkerRunRecord{WorkerID: reviewer.ID, Role: store.WorkerRoleReviewer, UserID: "user-test", WorkspaceID: "workspace", Status: "succeeded", RequestSource: "direct", Input: map[string]any{"review_job": jobID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.RecordJobReview("acct-test", coder.ID, target.ID, store.JobReview{Head: rebased, Verdict: "block", ReviewerJobID: "worker/" + reviewer.ID + "/" + r.ID, RecordedAt: 10}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := c.publishJob(controlMCPJobWorker, coder.ID, target.ID, controlMCPJobRefs{}, rule, result, true)
+	entry, _, getErr := q.Get("acct-test", jobID)
+	if err != nil || getErr != nil || out["delivery_state"] != "refused" || entry.State != "land_failed" {
+		t.Fatalf("BLOCK bypassed: %+v %+v %v", out, entry, err)
+	}
 }
 
 // Purpose: rejectBlockingPatch is the preparation policy boundary: exact-head
