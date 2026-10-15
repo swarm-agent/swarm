@@ -2,6 +2,7 @@ package pebblestore
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -189,12 +190,44 @@ func boundRunes(s string, max int) string {
 // Append validates sig, numbers it and stores it durably, dropping the oldest
 // entries beyond MaxSignals in the same batch.
 func (s *SignalStore) Append(sig Signal) (Signal, error) {
+	return s.append(sig, false)
+}
+
+// AppendOnce atomically records an account/source-scoped DedupKey receipt with
+// the signal. Receipts outlive feed retention so delayed recovery cannot emit
+// the same effect again. Ordinary Append retains its recurring-event semantics.
+func (s *SignalStore) AppendOnce(sig Signal) (Signal, error) {
+	if strings.TrimSpace(sig.DedupKey) == "" {
+		return Signal{}, errors.New("idempotent signal requires dedup key")
+	}
+	return s.append(sig, true)
+}
+
+func (s *SignalStore) append(sig Signal, once bool) (Signal, error) {
 	if s == nil || s.store == nil {
 		return Signal{}, errors.New("signal store is not configured")
 	}
+	// Hash the exact caller identity before display-field normalization, which
+	// may truncate long keys and must not merge distinct operations.
+	originalDedupKey := sig.DedupKey
 	sig, err := NormalizeSignal(sig)
 	if err != nil {
 		return Signal{}, err
+	}
+	// Serialize across all SignalStore wrappers sharing the database, not just
+	// this wrapper, so sequence allocation and receipt lookup are atomic.
+	s.store.signalsMu.Lock()
+	defer s.store.signalsMu.Unlock()
+	dedupKey := ""
+	if once {
+		identity, _ := json.Marshal([]string{sig.Account, sig.Source, sig.Kind, originalDedupKey})
+		dedupKey = fmt.Sprintf("signal_receipt/%x", sha256.Sum256(identity))
+		var prior Signal
+		if found, err := s.store.GetJSON(dedupKey, &prior); err != nil {
+			return Signal{}, err
+		} else if found {
+			return prior, nil
+		}
 	}
 	var idBytes [8]byte
 	if _, err := rand.Read(idBytes[:]); err != nil {
@@ -218,6 +251,11 @@ func (s *SignalStore) Append(sig Signal) (Signal, error) {
 	defer batch.Close()
 	if err := batch.Set([]byte(signalKey(sig.Seq)), payload, nil); err != nil {
 		return Signal{}, err
+	}
+	if dedupKey != "" {
+		if err := batch.Set([]byte(dedupKey), payload, nil); err != nil {
+			return Signal{}, err
+		}
 	}
 	if err := batch.Set([]byte(keySignalSequence), uint64ToBytes(sig.Seq), nil); err != nil {
 		return Signal{}, err

@@ -31,11 +31,18 @@ import (
 
 func setupWorkerAPITestServer(t *testing.T) (*Server, *store.Store, http.Handler) {
 	t.Helper()
+	return setupWorkerAPITestServerWithCleanup(t, true)
+}
+
+func setupWorkerAPITestServerWithCleanup(t *testing.T, cleanup bool) (*Server, *store.Store, http.Handler) {
+	t.Helper()
 	db, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	if cleanup {
+		t.Cleanup(func() { _ = db.Close() })
+	}
 
 	// Seed active account memberships for test accounts with valid IdentityStore records
 	ids := store.NewIdentityStore(db)

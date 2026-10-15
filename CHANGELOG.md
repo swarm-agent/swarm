@@ -11,6 +11,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Release worker follow-up capacity atomically on interruption, fence terminal sandbox cleanup against newer work and in-flight Git, and retain shared gateway authentication for sibling containers. Docs impact: worker sandbox lifecycle guidance updated.
 
 - Reconcile isolated worker sandboxes with host memory validation and cached container generations; use one typed infrastructure interruption across command and Git recovery. Docs impact: README resource defaults aligned with worker admission.
+- Journal completion-signal idempotency receipts atomically so landing recovery cannot emit duplicate notifications; verify accepted send-back and notification recovery across real Pebble reopen. Docs impact: none.
 
 - Size sandbox memory to the host with a validated `--sandbox-memory` override, keep Go build scratch on disk and reuse configured Go caches; retry landing checks interrupted by sandbox death once without blaming worker code. Docs impact: README sandbox resource guidance.
 - Resolve unattended permission safety and waiting signals from account-bound worker receipts, not editable session metadata; reject worker authority metadata injection through V3. Docs impact: none.

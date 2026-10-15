@@ -153,8 +153,8 @@ func (c *controlMCPCall) signalPublishDurable(kind, a, b string, refs controlMCP
 		sigRefs["worker_id"], sigRefs["run_id"] = a, b
 	}
 	attrs["job_id"] = controlMCPJobID(kind, a, b)
-	dedup := signalKind + ":" + b + ":" + attrs["head"]
-	if _, err := c.server.signals.Append(pebblestore.Signal{
+	dedup := signalKind + ":" + attrs["job_id"] + ":" + attrs["head"] + ":" + attrs["send_backs"]
+	if _, err := c.server.signals.AppendOnce(pebblestore.Signal{
 		Kind: signalKind, Severity: severity, Source: pebblestore.SignalSourceSwarmd, Account: principal.AccountScopeID,
 		Summary: summary, DedupKey: dedup, Refs: sigRefs, Attrs: attrs,
 	}); err != nil {

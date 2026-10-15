@@ -5,15 +5,22 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Purpose: Queue.Process must durably journal terminal notifications and resume
-// them without relanding. JSON round trips and a hook crash exercise the exact
+// them without relanding. Pebble reopen and a hook crash exercise the exact
 // persistence/effect boundary, including a crash before acknowledgement.
 func TestPublishLandNotificationRestart(t *testing.T) {
 	for _, crash := range []bool{false, true} {
 		t.Run(map[bool]string{false: "error", true: "crash"}[crash], func(t *testing.T) {
-			store := queueMemory{}
+			path := t.TempDir()
+			store, openErr := pebblestore.Open(path)
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			t.Cleanup(func() { _ = store.Close() })
 			q := NewQueue(store)
 			_, err := q.Enqueue(Entry{Account: "a", Request: Request{Folder: "f", JobID: "j"}})
 			if err != nil {
@@ -43,6 +50,13 @@ func TestPublishLandNotificationRestart(t *testing.T) {
 					t.Fatal("expected hook failure")
 				}
 			}()
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, openErr = pebblestore.Open(path)
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
 			q = NewQueue(store)
 			pending, err := q.Pending("a")
 			if err != nil || len(pending) != 1 {
@@ -67,18 +81,23 @@ func TestPublishLandNotificationRestart(t *testing.T) {
 
 // Purpose: Queue.Process journals follow-up identity/count before dispatch.
 // Crashes before and after external acceptance must replay the same ID without
-// Prepare, while the next rejection gets a new ID. This unit boundary models
-// an idempotent dispatcher and checks durable postconditions after restart.
+// Prepare, while the next rejection gets a new ID. This unit boundary records
+// dispatch attempts only; API restart tests prove production dispatch deduplication.
 func TestPublishLandSendBackRestart(t *testing.T) {
 	for _, accepted := range []bool{false, true} {
 		t.Run(map[bool]string{false: "before-dispatch", true: "after-acceptance"}[accepted], func(t *testing.T) {
-			store := queueMemory{}
+			path := t.TempDir()
+			store, openErr := pebblestore.Open(path)
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			t.Cleanup(func() { _ = store.Close() })
 			q := NewQueue(store)
 			entry := Entry{Account: "a", Request: Request{Folder: "f", JobID: "j"}}
 			if _, err := q.Enqueue(entry); err != nil {
 				t.Fatal(err)
 			}
-			ids := map[string]bool{}
+			var ids []string
 			first := ""
 			prepares := 0
 			hooks := QueueHooks{Prepare: func(context.Context, *Entry) error { prepares++; return &SendBackError{Reason: "fix"} }, SendBack: func(_ context.Context, e Entry) error {
@@ -88,7 +107,7 @@ func TestPublishLandSendBackRestart(t *testing.T) {
 				}
 				first = e.FollowUpID
 				if accepted {
-					ids[first] = true
+					ids = append(ids, first)
 				}
 				panic("crash")
 			}}
@@ -100,6 +119,13 @@ func TestPublishLandSendBackRestart(t *testing.T) {
 				}()
 				_ = q.Process(context.Background(), "a", "f", hooks)
 			}()
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, openErr = pebblestore.Open(path)
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
 			q = NewQueue(store)
 			if _, _, err := q.EnqueueDelivery(entry, true); err != nil {
 				t.Fatal(err)
@@ -108,13 +134,17 @@ func TestPublishLandSendBackRestart(t *testing.T) {
 				if e.SendBacks == 1 && e.FollowUpID != first {
 					t.Fatal("changed ID")
 				}
-				ids[e.FollowUpID] = true
+				ids = append(ids, e.FollowUpID)
 				return nil
 			}
 			if err := q.Process(context.Background(), "a", "f", hooks); err != nil {
 				t.Fatal(err)
 			}
-			if prepares != 1 || len(ids) != 1 {
+			expected := 1
+			if accepted {
+				expected++
+			}
+			if prepares != 1 || len(ids) != expected {
 				t.Fatalf("prepares=%d ids=%v", prepares, ids)
 			}
 			if _, err := q.Enqueue(entry); err != nil {
@@ -124,7 +154,7 @@ func TestPublishLandSendBackRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			saved, _, err := q.Get("a", "j")
-			if err != nil || saved.State != "landing_stopped" || saved.SendBacks != 2 || saved.SendBackPending || len(ids) != 2 || prepares != 2 {
+			if err != nil || saved.State != "landing_stopped" || saved.SendBacks != 2 || saved.SendBackPending || len(ids) != expected+1 || ids[len(ids)-1] == first || prepares != 2 {
 				t.Fatalf("entry=%+v ids=%v prepares=%d err=%v", saved, ids, prepares, err)
 			}
 		})
