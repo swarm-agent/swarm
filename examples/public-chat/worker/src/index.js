@@ -42,7 +42,9 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
   if (url.pathname === '/api/health') return Response.json({ ok: true });
   if (!url.pathname.startsWith('/api/chat')) return new Response('not found', { status: 404 });
 
-  const origin = request.headers.get('Origin') ?? '';
+  // Browsers omit Origin on same-origin GETs (the replies poll when the widget is
+  // served by this Worker); Sec-Fetch-Site is browser-set and cannot be scripted.
+  const origin = request.headers.get('Origin') ?? (request.headers.get('Sec-Fetch-Site') === 'same-origin' ? url.origin : '');
   if (!allowedOrigins(env).includes(origin)) return Response.json({ error: 'origin not allowed' }, { status: 403 });
   const cors = { 'Access-Control-Allow-Origin': origin, Vary: 'Origin', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Cache-Control': 'no-store' };
   const reply = (status, data) => Response.json(data, { status, headers: cors });

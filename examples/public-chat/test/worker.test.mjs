@@ -32,6 +32,15 @@ test('only the site origins may call the chat, and preflight gets exact CORS', a
   assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), SITE);
 });
 
+test('a same-origin replies poll without an Origin header is allowed only for a listed origin', async () => {
+  const poll = (host, site) => new Request(`${host}/api/chat/replies?visitor_id=${VISITOR}&after=0`, { headers: { 'Sec-Fetch-Site': site } });
+  const gw = gatewayStub({ replies: [], with_person: true });
+  assert.equal((await handle(poll(SITE, 'same-origin'), env(), gw)).status, 200);
+  assert.equal((await handle(poll(SITE, 'cross-site'), env(), gw)).status, 403);
+  assert.equal((await handle(poll('https://chat.example.com', 'same-origin'), env(), gw)).status, 403);
+  assert.equal(gw.seen.length, 1);
+});
+
 test('a valid message is forwarded with the gateway key and Access service token only', async () => {
   const gw = gatewayStub();
   const res = await handle(post({ visitor_id: VISITOR, message: 'How much?', extra: 'dropped' }), env(), gw);
