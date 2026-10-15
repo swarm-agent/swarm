@@ -28,6 +28,10 @@
 !packages/sdk/src/**
 !packages/sdk/scripts/build.mjs
 !examples/headless-app/**
+!examples/public-chat/package.json
+!examples/public-chat/package-lock.json
+!examples/public-chat/playbook.json
+!examples/public-chat/gateway/**
 !containers/headless/app/**
 # Rejections must remain last, even below otherwise allowed source directories.
 **/*_test.go
