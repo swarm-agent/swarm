@@ -187,6 +187,36 @@ export function createEmitter({ url, secret, fetchImpl = fetch, now = Date.now }
 }
 
 /**
+ * Phone alerts for the events a person should act on, posted to an alert
+ * service in swarm-watch's event format ({kind, severity, title, body, notify})
+ * with its own bearer token; that service decides what reaches Telegram. Each
+ * alert links to the staff console on that conversation. Best effort: a failed
+ * alert never blocks or fails a visitor's request.
+ */
+export function createAlerter({ url, authHeader, consoleUrl = '', fetchImpl = fetch }) {
+  if (!url || !authHeader) return () => {};
+  const link = (sessionId) => (consoleUrl && sessionId ? `\nOpen: ${consoleUrl.replace(/\/$/, '')}/?session=${encodeURIComponent(sessionId)}` : '');
+  const alerts = {
+    'handoff.requested': (e) => e.staff_online === false
+      ? { kind: 'chat.handoff', severity: 'info', notify: true, title: 'A visitor asked for a person (nobody online)', body: (e.summary ?? '') + link(e.session_id) }
+      : { kind: 'chat.handoff', severity: 'warning', notify: true, title: 'A visitor wants to talk now', body: `${e.summary ?? 'Visitor asked for a person'}\nAccept within 2 minutes.${link(e.session_id)}` },
+    'handoff.missed': (e) => ({ kind: 'chat.handoff', severity: 'info', notify: true, title: 'Nobody accepted a chat in time', body: 'The visitor was asked to leave their email.' + link(e.session_id) }),
+    'lead.captured': (e) => ({ kind: 'chat.lead', severity: 'info', notify: true, title: 'A visitor left their email', body: [e.lead?.name, e.lead?.email, e.lead?.need].filter(Boolean).join('\n') + link(e.session_id) }),
+    'conversation.ended': (e) => ({ kind: 'chat.ended', severity: 'info', notify: true, title: `The AI ended a chat (${e.reason})`, body: (e.note ?? '') + link(e.session_id) }),
+  };
+  const [name, ...rest] = authHeader.split(':');
+  const headers = { 'Content-Type': 'application/json', [name.trim()]: rest.join(':').trim() };
+  return (type, data) => {
+    const build = alerts[type];
+    if (!build) return;
+    const event = build(data);
+    fetchImpl(url.replace(/\/$/, '') + '/v1/event', { method: 'POST', headers, body: JSON.stringify({ ...event, title: event.title.slice(0, 200), body: event.body.slice(0, 2000) }), signal: AbortSignal.timeout(5000) })
+      .then((res) => { if (!res.ok) console.error('alert not accepted:', res.status); })
+      .catch(() => {});
+  };
+}
+
+/**
  * The agent's client tools, bound to one conversation. Identity comes from the
  * gateway's own mapping (sessionId -> visitorId); the model supplies only the
  * business inputs, which the daemon has already checked against each schema.

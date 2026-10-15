@@ -228,6 +228,25 @@ test('the email form saves a lead for a person, with no model run', async () => 
   } finally { await g.close(); }
 });
 
+test('phone alerts: only actionable events, in the alert service format, with a console link', async () => {
+  const sent = [];
+  const alert = core.createAlerter({ url: 'https://watch.example.com/', authHeader: 'Authorization: Bearer abc:def', consoleUrl: 'https://staff.example.com', fetchImpl: async (url, init) => { sent.push({ url, init }); return new Response('{}'); } });
+  alert('conversation.started', { session_id: 's1' });
+  alert('visitor.message', { session_id: 's1' });
+  alert('handoff.requested', { session_id: 's1', summary: 'Clinic booking project', staff_online: true });
+  alert('lead.captured', { session_id: 's1', lead: { email: 'pat@example.com', need: 'Quotes' } });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(sent.length, 2, 'routine events are not alerts');
+  assert.equal(sent[0].url, 'https://watch.example.com/v1/event');
+  assert.equal(sent[0].init.headers.Authorization, 'Bearer abc:def');
+  const handoff = JSON.parse(sent[0].init.body);
+  assert.deepEqual([handoff.kind, handoff.severity, handoff.notify], ['chat.handoff', 'warning', true]);
+  assert.match(handoff.body, /Clinic booking project/);
+  assert.match(handoff.body, /Open: https:\/\/staff\.example\.com\/\?session=s1/);
+  assert.match(JSON.parse(sent[1].init.body).body, /pat@example\.com/);
+  assert.doesNotThrow(() => core.createAlerter({ url: '', authHeader: '' })('handoff.requested', {}), 'off when not configured');
+});
+
 test('a new visitor gets one conversation, the agent answers with its tools, and seq is returned', async () => {
   const g = await start();
   try {

@@ -300,7 +300,9 @@ async function main() {
   const gateway = new SwarmClient({ baseUrl: config.swarmUrl, token: await secret('SWARM_GATEWAY_TOKEN') });
   const operator = new SwarmClient({ baseUrl: config.swarmUrl, token: await secret('SWARM_OPERATOR_TOKEN') });
   const visitors = await core.createVisitorStore(join(config.dataDir, 'visitors.json'));
-  const emit = core.createEmitter({ url: env.HUB_EVENTS_URL, secret: await secret('HUB_EVENTS_SECRET') });
+  const hub = core.createEmitter({ url: env.HUB_EVENTS_URL, secret: await secret('HUB_EVENTS_SECRET') });
+  const alert = core.createAlerter({ url: env.ALERTS_URL, authHeader: await secret('ALERTS_AUTH'), consoleUrl: env.CONSOLE_URL });
+  const emit = (type, data) => { hub(type, data); alert(type, data); };
   const port = Number(env.PORT ?? 8080);
   const presence = core.createPresence({ ttlMs: Number(env.PRESENCE_TTL_MS ?? 90_000) });
   createServer(gatewayHandler({ gateway, operator, config, visitors, emit, presence })).listen(port, env.LISTEN_HOST ?? '0.0.0.0', () => {

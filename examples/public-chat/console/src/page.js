@@ -232,6 +232,9 @@ function consoleApp() {
     const { latest } = await api('/ops/events?after=0&wait=0');
     state.latest = latest;
     await Promise.all([refreshQueue(), refreshConversations()]);
+    // A phone alert links here with ?session=ID: open that conversation (Take over accepts it).
+    const linked = new URLSearchParams(location.search).get('session');
+    if (linked && /^[A-Za-z0-9_-]{1,128}$/.test(linked)) select(linked).catch((e) => log('could not open the linked chat: ' + e.message));
     setInterval(() => refreshQueue().catch(() => {}), 5000);
     listen();
   })().catch((e) => log('console failed to start: ' + e.message));

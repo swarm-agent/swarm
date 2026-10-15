@@ -198,6 +198,15 @@ A page refresh keeps the conversation: the widget stores its random visitor id
 and reloads the visitor's own messages from `/api/chat/history`. That id is the
 only key to the conversation, so it is long and random and never shown.
 
+**Phone alerts.** Set `ALERTS_URL`, `ALERTS_AUTH_FILE` (one line,
+`Authorization: Bearer …`) and `CONSOLE_URL` on the gateway and it posts the
+events a person should act on (`handoff.requested`, `handoff.missed`,
+`lead.captured`, `conversation.ended`) to `ALERTS_URL/v1/event` as
+`{kind, severity, title, body, notify}`, each with a link that opens the
+console on that conversation. That is the event format of a small alert
+service such as swarm-watch, which owns the Telegram bot; the gateway never
+holds a Telegram token. Add the file as another compose secret in an override.
+
 The console (`console/`) is a Worker on its own hostname behind an Access
 application for your team's emails. It verifies the Access token itself, takes
 the staff member's name from that login (the `STAFF` var), forwards only the
