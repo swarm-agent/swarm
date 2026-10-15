@@ -132,3 +132,71 @@ func TestPublishLandDispatchAcceptedRestart(t *testing.T) {
 		t.Fatalf("transition not recovered: %+v %v", e, err)
 	}
 }
+
+// Purpose: terminal receipts must distinguish new transitions after explicit
+// retries while deduplicating acceptance replay. Queue.Process journals identity;
+// signalPublishDurable owns publication. Real Pebble reopen tests their boundary.
+func TestPublishLandTerminalTransitionIdentity(t *testing.T) {
+	path := t.TempDir()
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	q := publish.NewQueue(db)
+	entry := publish.Entry{Account: "a", Request: publish.Request{JobID: "j", Folder: "f"}}
+	states := []string{"sent_back", "landing_stopped", "sent_back", "landing_stopped", "land_failed", "land_failed"}
+	ids := map[string]bool{}
+	for i, state := range states {
+		if _, err = q.Enqueue(entry); err != nil {
+			t.Fatal(err)
+		}
+		notify := func(_ context.Context, e publish.Entry) error {
+			r := httptest.NewRequest("POST", "/mcp", nil)
+			r = r.WithContext(context.WithValue(r.Context(), productPrincipalRequestContextKey, identity.Principal{Type: "user", UserID: "u", AccountScopeID: "a"}))
+			c := &controlMCPCall{server: &Server{signals: store.NewSignalStore(db)}, request: r}
+			return c.signalPublishDurable(controlMCPJobWorker, "worker", "run", controlMCPJobRefs{}, "job."+e.State, store.SignalSeverityInfo, "terminal", map[string]string{"notification_id": e.NotificationID})
+		}
+		hooks := publish.QueueHooks{Prepare: func(context.Context, *publish.Entry) error {
+			if state == "land_failed" {
+				return errors.New("infrastructure failure")
+			}
+			return &publish.SendBackError{Reason: "checks failed"}
+		}, SendBack: func(context.Context, publish.Entry) error { return nil }, Finished: func(ctx context.Context, e publish.Entry) error {
+			if err := notify(ctx, e); err != nil {
+				t.Fatal(err)
+			}
+			return errors.New("lost acknowledgement")
+		}}
+		if err = q.Process(context.Background(), "a", "f", hooks); err == nil {
+			t.Fatal("expected lost acknowledgement")
+		}
+		saved, _, err := q.Get("a", "j")
+		if err != nil || saved.State != state || saved.NotificationID == "" || ids[saved.NotificationID] || saved.TransitionSequence != uint64(i+1) {
+			t.Fatalf("invalid transition: %+v %v", saved, err)
+		}
+		ids[saved.NotificationID] = true
+		if err = db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		db, err = store.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q = publish.NewQueue(db)
+		hooks.Finished = notify
+		hooks.Prepare = func(context.Context, *publish.Entry) error { t.Fatal("reprepared pending transition"); return nil }
+		if err = q.Process(context.Background(), "a", "f", hooks); err != nil {
+			t.Fatal(err)
+		}
+		page, err := store.NewSignalStore(db).ListAfter(0, 100, store.SignalFilter{Account: "a"})
+		if err != nil || len(page.Signals) != i+1 {
+			t.Fatalf("transition %d: signals=%d err=%v", i, len(page.Signals), err)
+		}
+		for j, sig := range page.Signals {
+			if sig.Kind != "job."+states[j] {
+				t.Fatalf("signal %d: %+v", j, sig)
+			}
+		}
+	}
+}

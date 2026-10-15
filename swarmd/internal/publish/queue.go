@@ -37,6 +37,8 @@ type Entry struct {
 	Checks              []CheckResult `json:"checks,omitempty"`
 	SendBacks           int           `json:"send_backs"`
 	Attempt             int           `json:"attempt,omitempty"`
+	TransitionSequence  uint64        `json:"transition_sequence,omitempty"`
+	NotificationID      string        `json:"notification_id,omitempty"`
 	NotificationPending bool          `json:"notification_pending,omitempty"`
 	SendBackPending     bool          `json:"send_back_pending,omitempty"`
 	FollowUpID          string        `json:"follow_up_id,omitempty"`
@@ -123,6 +125,7 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 		}
 		e.SendBacks = old.SendBacks
 		e.Attempt = old.Attempt
+		e.TransitionSequence = old.TransitionSequence
 		if old.State == "landing_stopped" {
 			e.SendBacks = 0
 			e.Attempt++
@@ -264,6 +267,10 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 			}
 			break
 		}
+		// Journal a new identity only for a new terminal transition. Replaying
+		// pending effects must retain this identity, including across retries.
+		e.TransitionSequence++
+		e.NotificationID = fmt.Sprintf("attempt-%d-transition-%d", e.Attempt, e.TransitionSequence)
 		e.NotificationPending = true
 		if err = q.save(e); err != nil {
 			return err

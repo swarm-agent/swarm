@@ -136,7 +136,7 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if e.State == "landed" {
 				summary += " " + e.Commit
 			}
-			return c.signalPublishDurable(kind, a, b, refs, signal, severity, summary, map[string]string{"head": e.Commit, "send_backs": fmt.Sprint(e.SendBacks)})
+			return c.signalPublishDurable(kind, a, b, refs, signal, severity, summary, map[string]string{"head": e.Commit, "send_backs": fmt.Sprint(e.SendBacks), "notification_id": e.NotificationID})
 		},
 	})
 }
