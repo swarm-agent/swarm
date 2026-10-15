@@ -1,0 +1,9 @@
+{
+  "services": "We build custom AI workers: software that does one job from start to finish, such as answering enquiries, chasing invoices or sorting an inbox, and asks a person when it is unsure.",
+  "process": "Four steps: a free 30-minute intro call, a short understanding phase where we map the real work, design and build with testing on your past cases, then handover.",
+  "pricing": "The build has a fixed price, agreed after the understanding phase. If you run it yourself there is no monthly fee to us; if we run it for you there is one fixed monthly fee. We do not charge per task.",
+  "timeline": "Usually one to two weeks to understand the work and two to six weeks to build and test it. Simple jobs are at the short end.",
+  "ownership": "You get the full source code either way. Run it on your own machines, or have us host and maintain it; you can switch later.",
+  "data": "If you run it yourself, your data stays on your infrastructure. If we run it, we agree in writing where it is hosted and what it can access before anything goes live.",
+  "contact": "The easiest next step is a free 30-minute intro call. You can also leave your name and email here and a person will follow up."
+}

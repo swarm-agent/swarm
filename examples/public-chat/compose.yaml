@@ -1,0 +1,84 @@
+# Always-on public chat box: a sealed Swarm daemon, the gateway that serves it,
+# and a Cloudflare Tunnel connector. Nothing listens on the host: the tunnel
+# dials out, and the daemon's SDK port exists only on the private bots network.
+# Secrets are files under ./secrets (mode 0600, never committed).
+name: public-chat
+
+services:
+  swarm:
+    image: swarm-sealed:local # build: see containers/sealed/README.md
+    command: ["--container-sdk-port=7783"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: 2g
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=1777
+      - /run/swarmd:uid=10001,gid=10001,mode=0700
+      - /home/swarm:uid=10001,gid=10001,mode=0700
+    volumes:
+      - swarm-config:/etc/swarmd
+      - swarm-data:/var/lib/swarmd
+      - swarm-cache:/var/cache/swarmd
+      - swarm-logs:/var/log/swarmd
+      - project:/project # an empty scratch workspace, never real code
+    networks: [bots]
+    restart: unless-stopped
+
+  gateway:
+    image: public-chat-gateway:local # build: see Dockerfile in this directory
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    environment:
+      SWARM_API_URL: http://swarm:7783
+      AGENT_NAME: frontdesk
+      WORKSPACE_PATH: /project
+      DATA_DIR: /data
+      BOOKING_URL: ${BOOKING_URL:-}
+      HUB_EVENTS_URL: ${HUB_EVENTS_URL:-}
+      SWARM_GATEWAY_TOKEN_FILE: /run/secrets/swarm_gateway_token
+      SWARM_OPERATOR_TOKEN_FILE: /run/secrets/swarm_operator_token
+      GATEWAY_SECRET_FILE: /run/secrets/gateway_secret
+      OPS_SECRET_FILE: /run/secrets/ops_secret
+      HUB_EVENTS_SECRET_FILE: /run/secrets/hub_events_secret
+    secrets: [swarm_gateway_token, swarm_operator_token, gateway_secret, ops_secret, hub_events_secret]
+    volumes:
+      - gateway-data:/data
+    networks: [bots, edge]
+    depends_on: [swarm]
+    restart: unless-stopped
+
+  cloudflared:
+    # Pin an exact release from https://github.com/cloudflare/cloudflared/releases
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:?set CLOUDFLARED_VERSION to a pinned release}
+    command: ["tunnel", "--no-autoupdate", "run"]
+    env_file: [./secrets/tunnel.env] # TUNNEL_TOKEN=... from the Cloudflare dashboard
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [edge]
+    depends_on: [gateway]
+    restart: unless-stopped
+
+networks:
+  bots: {}
+  edge: {}
+
+volumes:
+  swarm-config: {}
+  swarm-data: {}
+  swarm-cache: {}
+  swarm-logs: {}
+  project: {}
+  gateway-data: {}
+
+secrets:
+  swarm_gateway_token: { file: ./secrets/swarm_gateway_token }
+  swarm_operator_token: { file: ./secrets/swarm_operator_token }
+  gateway_secret: { file: ./secrets/gateway_secret }
+  ops_secret: { file: ./secrets/ops_secret }
+  hub_events_secret: { file: ./secrets/hub_events_secret }

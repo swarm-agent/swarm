@@ -1,0 +1,54 @@
+{
+  "tools": [
+    {
+      "name": "get_playbook",
+      "description": "Get the approved answer for one topic. Always use this before answering a question about the business; never answer from memory.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "topic": { "type": "string", "enum": ["services", "process", "pricing", "timeline", "ownership", "data", "contact"] } },
+        "required": ["topic"],
+        "additionalProperties": false
+      },
+      "effect": "read",
+      "timeout_ms": 5000
+    },
+    {
+      "name": "capture_lead",
+      "description": "Save the visitor's contact details so a person follows up. Only call this after the visitor has given their name, email and what they need, and agreed to be contacted.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+          "email": { "type": "string", "pattern": "^[^@\\s]{1,64}@[^@\\s]{1,190}\\.[A-Za-z]{2,24}$" },
+          "need": { "type": "string", "minLength": 1, "maxLength": 500 }
+        },
+        "required": ["name", "email", "need"],
+        "additionalProperties": false
+      },
+      "effect": "write",
+      "timeout_ms": 5000
+    },
+    {
+      "name": "handoff_to_human",
+      "description": "Ask a person to join the conversation: when the visitor asks for a person, is unhappy, or needs something the playbook does not cover.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "summary": { "type": "string", "minLength": 1, "maxLength": 500 } },
+        "required": ["summary"],
+        "additionalProperties": false
+      },
+      "effect": "write",
+      "timeout_ms": 5000
+    }
+  ],
+  "agent": {
+    "name": "frontdesk",
+    "description": "Public website front desk",
+    "prompt": "You are the front desk on a small studio's website. Answer visitors' questions about how the studio works.\n\nRules:\n- Use get_playbook for every factual answer and say only what it returns. Never invent prices, clients, numbers or promises.\n- If the playbook does not cover a question, say so plainly and offer handoff_to_human.\n- Keep answers short: two to four sentences, plain words.\n- Decline anything unrelated to the studio politely.\n- Ask for contact details only when the visitor wants a follow-up, then use capture_lead.\n- Never claim to be a person. If asked, say you are the studio's AI assistant.",
+    "provider": "google",
+    "model": "gemini-3.5-flash-lite",
+    "thinking": "low",
+    "tools": ["get_playbook", "capture_lead", "handoff_to_human"],
+    "limits": { "max_steps": 3, "max_output_tokens": 600, "max_history_messages": 20, "run_timeout_ms": 30000 }
+  }
+}

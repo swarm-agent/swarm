@@ -1,0 +1,23 @@
+// Public chat edge. Deploy from this directory with your own Cloudflare login:
+//   npx wrangler secret put GATEWAY_SECRET          (same value as the gateway's)
+//   npx wrangler secret put ACCESS_CLIENT_ID        (Access service token for the tunnel hostname)
+//   npx wrangler secret put ACCESS_CLIENT_SECRET
+//   npx wrangler secret put TURNSTILE_SECRET        (optional: require a human check once per visitor)
+//   npx wrangler secret put TICKET_SECRET           (with TURNSTILE_SECRET: signs the 24 h visitor ticket)
+//   npx wrangler deploy
+{
+  "name": "public-chat-edge",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "vars": {
+    // Exact site origins allowed to call the chat, comma-separated.
+    "ALLOWED_ORIGINS": "https://www.example.com,https://example.com",
+    // The gateway's tunnel hostname (a Cloudflare Tunnel public hostname behind Access).
+    "GATEWAY_URL": "https://chat-gateway.example.com",
+    "CHAT_ENABLED": "true"
+  },
+  // Per-IP limit: 20 requests a minute. namespace_id is any integer unique in your account.
+  "ratelimits": [{ "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }]
+  // Optional kill switch flipped from your monitoring hub without a redeploy:
+  // "kv_namespaces": [{ "binding": "CONTROL", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }]
+}
