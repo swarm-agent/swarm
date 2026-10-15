@@ -521,8 +521,10 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 				state["run_active"] = true
 			}
 			questions, approvals := []map[string]any{}, 0
+			var waiting []string
 			for _, raw := range controlMCPList(detail["pending_permissions"]) {
 				summary := controlMCPPermissionSummary(controlMCPMap(raw))
+				waiting = append(waiting, controlMCPJobPermissionWait(controlMCPMap(raw)))
 				if summary["kind"] == "question" {
 					questions = append(questions, controlMCPPick(summary, "id", "tool_arguments"))
 				} else {
@@ -533,9 +535,10 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 			case len(questions) > 0:
 				status = "needs_input"
 				state["questions"] = questions
+				state["waiting_on"] = strings.Join(waiting, "; ")
 			case approvals > 0:
 				status = "waiting_on_approval"
-				state["waiting_on"] = "a tool call needs the machine owner's approval: Swarm's sandbox is off or permission prompts are on for this box"
+				state["waiting_on"] = strings.Join(waiting, "; ")
 			default:
 				// A follow-up from swarm_message_job runs in the job's session
 				// after its task settled: the job is working again.
@@ -592,7 +595,7 @@ func controlMCPJobNext(status string, committed bool) string {
 	case "needs_input":
 		return "the worker asked something: reply with swarm_answer_job"
 	case "waiting_on_approval":
-		return "a tool call waits for the machine owner; jobs run without prompts only while Swarm's sandbox is active"
+		return "see waiting_on for the exact tool and recovery action; deny stale approvals and retry within the job's authorized scope"
 	case "failed", "blocked", "cancelled", "superseded", "rejected":
 		return "the job did not finish: see error and the report, then give a corrected job with swarm_give_job"
 	case "pending_approval":

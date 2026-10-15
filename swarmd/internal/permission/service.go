@@ -634,6 +634,10 @@ func (s *Service) createPendingAuthorization(input AuthorizationInput, sessionID
 		Mode:              input.Mode,
 	})
 	if err != nil {
+		var denied *workerPromptDeniedError
+		if errors.As(err, &denied) {
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: err.Error(), Source: "worker_noninteractive"}, nil
+		}
 		return AuthorizationResult{}, err
 	}
 	result := AuthorizationResult{Decision: AuthorizationPending, Requirement: requirement, Reason: reason, Source: source, RulePreview: rulePreview, Record: &record}
@@ -716,6 +720,9 @@ func parsePermissionJSONMap(raw string) map[string]any {
 }
 
 func (s *Service) CreatePending(input CreateInput) (pebblestore.PermissionRecord, error) {
+	if err := s.rejectWorkerPrompt(input); err != nil {
+		return pebblestore.PermissionRecord{}, err
+	}
 	sessionID := strings.TrimSpace(input.SessionID)
 	if sessionID == "" {
 		return pebblestore.PermissionRecord{}, errors.New("session id is required")
@@ -2235,6 +2242,9 @@ func permissionStoredError(raw string) string {
 
 func (s *Service) syncNotification(record pebblestore.PermissionRecord, swarmID, originSwarmID, sourceEventType string) {
 	if strings.EqualFold(strings.TrimSpace(record.Requirement), RequirementClientTool) {
+		if worker, run := s.workerIdentity(record.SessionID); worker != "" && run != "" {
+			s.emitPermissionSignal(record, sourceEventType)
+		}
 		// A client tool call is answered by the session's app, not a person: it is
 		// neither a permission request nor, when the app reports an error, a denial.
 		// Its outcome is the tool's own result or failure in the session.
