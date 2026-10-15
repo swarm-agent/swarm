@@ -3237,7 +3237,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			} else if _, sourceErr := s.resolveProjectTaskSource(p, project, task.SourceWorkspace.Path, task.SourceWorkspace.WorkspaceID, task.SourceWorkspace.WorkspaceGeneration, true); sourceErr != nil {
 				catalogTask.SourceWorkspace.WorkspaceGeneration = 0
 			}
-			if err := reconcileTaskGitStateContext(r.Context(), db, &catalogTask); err != nil {
+			if err := reconcileTaskGitStateContext(r.Context(), db, &catalogTask, s); err != nil {
 				writeError(w, http.StatusInternalServerError, err)
 				return
 			}
@@ -3638,7 +3638,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
-		gitState := inspectTaskGitStateContext(r.Context(), *task, db)
+		gitState := inspectTaskGitStateContext(r.Context(), *task, db, s)
 		if segments[3] == "recover-integrate" {
 			s.recoverTaskDelta(w, r, p, task, selectedSession, gitState.deliveryAssessment, selection.Revision, selection.AttemptID, selection.SourceHead, selection.TargetHead)
 			return

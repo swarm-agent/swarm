@@ -192,7 +192,7 @@ func (s *Server) reconcileProjectTaskRunLifecycle(job sessionV3ExecutorJob, stat
 				}
 			}
 		}
-		gitState := inspectTaskGitState(*task, db)
+		gitState := inspectTaskGitState(*task, db, s)
 		_, err = db.UpdateProjectTask(accountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 			if t.SessionID != job.SessionID || t.ActiveAttemptID != task.ActiveAttemptID || !projectTaskCurrentRunEvent(db, accountScopeID, job, status) || (t.Status == "planning" && t.ExecutionRunID() != job.RunID) {
 				return nil

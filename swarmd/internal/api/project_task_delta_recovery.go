@@ -161,6 +161,6 @@ func (s *Server) recoverTaskDelta(w http.ResponseWriter, r *http.Request, p iden
 		return
 	}
 	// Reuse canonical ephemeral mapping; no read-side writes or polling.
-	_ = reconcileTaskGitStateContext(r.Context(), db, updated)
+	_ = reconcileTaskGitStateContext(r.Context(), db, updated, s)
 	writeJSON(w, http.StatusOK, map[string]any{"status": receipt.State, "task": sanitizeProjectTaskForClient(updated)})
 }

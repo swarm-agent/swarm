@@ -182,6 +182,40 @@ func TestInspectTaskGitStateCapturedTargetAndPatchEquivalentPromotion(t *testing
 	if err := reconcileTaskGitState(db, &task); err != nil || task.LastError != "retained conflict" || task.ActionNeeded != "repair conflict" {
 		t.Fatal("read erased actionable error")
 	}
+	// Purpose: the registered job/task read must assess a land rule's fetched
+	// target, not a local branch left behind by --sync. inspectTaskGitState and
+	// AssessTaskDelivery own this boundary. Real refs prove both true rewrites
+	// and fallback behavior without allowing a read to mutate Git or task rows.
+	t.Run("publish landing target", func(t *testing.T) {
+		if os.Geteuid() != 0 {
+			t.Skip("publish config requires root ownership; ref selection is also tested in worktree")
+		}
+		config := filepath.Join(t.TempDir(), "publish.conf")
+		if err := os.WriteFile(config, []byte(root+"\t/unused-publish-command\tland,sync\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		server.SetPublishConfig(config)
+		defer server.SetPublishConfig("")
+		landed := trimGit(run(root, "rev-parse", "HEAD"))
+		// Local release predates the recorded task base; the fetched ref has it.
+		old := trimGit(run(root, "commit-tree", base+"^{tree}", "-m", "unrelated old local"))
+		run(root, "update-ref", "refs/swarm/publish/release", landed)
+		run(root, "reset", "--hard", old)
+		assertHTTPReadOnly("integrated", false)
+		// A real target rewrite must not be hidden by the landing rule.
+		run(root, "update-ref", "refs/swarm/publish/release", old)
+		assertHTTPReadOnly("history_rewritten", false)
+		// Without a rule the fetched ref has no authority over local delivery.
+		run(root, "update-ref", "refs/swarm/publish/release", landed)
+		server.SetPublishConfig("")
+		assertHTTPReadOnly("history_rewritten", false)
+		// A land rule without its fetched ref retains local-branch behavior.
+		server.SetPublishConfig(config)
+		run(root, "update-ref", "-d", "refs/swarm/publish/release")
+		assertHTTPReadOnly("history_rewritten", false)
+		run(root, "reset", "--hard", landed)
+		assertHTTPReadOnly("integrated", false)
+	})
 	task.BaseBranch = "other"
 	mismatch := inspectTaskGitState(task, db)
 	if mismatch.gitStatus != "unknown" || mismatch.isIntegrated {

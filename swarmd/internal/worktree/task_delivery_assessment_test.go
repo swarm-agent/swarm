@@ -40,6 +40,8 @@ func TestTaskDeliveryAssessment(t *testing.T) {
 	write(filepath.Join(root, "base"), "base")
 	run(root, "add", ".")
 	run(root, "commit", "-m", "base")
+	lagging := run(root, "rev-parse", "HEAD")
+	run(root, "commit", "--allow-empty", "-m", "recorded base")
 	base := run(root, "rev-parse", "HEAD")
 	child := filepath.Join(t.TempDir(), "child")
 	run(root, "worktree", "add", "-b", "agent/task", child)
@@ -68,6 +70,41 @@ func TestTaskDeliveryAssessment(t *testing.T) {
 	if got.CandidateCommits != 1 || len(got.Files) != 1 || got.Files[0] != "change" || got.SourceOID != head || got.TargetOID != base || len(got.AllowedActions) != 1 {
 		t.Fatalf("wrong delta: %+v", got)
 	}
+	// Purpose: AssessTaskDelivery must prefer a configured landing ref without
+	// hiding genuine target rewrites or losing final movement/checkout checks.
+	// Real temporary refs are the narrowest proof of ancestry and read-only state.
+	t.Run("publish target", func(t *testing.T) {
+		old := run(root, "commit-tree", base+"^{tree}", "-m", "unrelated local")
+		run(root, "reset", "--hard", lagging)
+		run(root, "update-ref", "refs/swarm/publish/dev", base)
+		in.PreferPublishTarget = true
+		if got := check("candidate_work"); got.TargetOID != base {
+			t.Fatalf("did not observe publish base: %+v", got)
+		}
+		run(root, "update-ref", "refs/swarm/publish/dev", head)
+		check("integrated")
+		run(root, "update-ref", "refs/swarm/publish/dev", old)
+		check("history_rewritten")
+		run(root, "update-ref", "refs/swarm/publish/dev", head)
+		in.PreferPublishTarget = false
+		check("history_rewritten")
+		in.PreferPublishTarget = true
+		run(root, "update-ref", "-d", "refs/swarm/publish/dev")
+		check("history_rewritten")
+		run(root, "reset", "--hard", base)
+		check("candidate_work")
+		run(root, "update-ref", "refs/swarm/publish/dev", base)
+		got := assessDeliveryWithHook(context.Background(), in, func() {
+			run(root, "update-ref", "refs/swarm/publish/dev", head)
+		})
+		if got.Freshness != "stale" || got.ReasonCode != "heads_changed" || len(got.AllowedActions) != 0 {
+			t.Fatalf("publish target movement trusted: %+v", got)
+		}
+		run(root, "checkout", "-b", "other-target")
+		check("unavailable")
+		run(root, "checkout", "dev")
+		in.PreferPublishTarget = false
+	})
 	run(root, "commit", "--allow-empty", "-m", "advance")
 	run(root, "cherry-pick", head)
 	got = check("history_equivalent")

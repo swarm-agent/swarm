@@ -240,7 +240,7 @@ func (s *Server) ReopenProjectTask(ctx context.Context, p identity.Principal, pr
 		}
 		deltaDelivered := false
 		if task.Integration != nil && (task.Integration.State == "recovered" || task.Integration.State == "equivalent") {
-			assessment := inspectTaskGitStateContext(ctx, *task, db).deliveryAssessment
+			assessment := inspectTaskGitStateContext(ctx, *task, db, s).deliveryAssessment
 			deltaDelivered = assessment != nil && (assessment.State == "recovered" || assessment.State == "equivalent")
 		}
 		comparisonBase := task.BaseCommit
