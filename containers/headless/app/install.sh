@@ -740,8 +740,22 @@ post_update_smoke() {
   done
 }
 
+# Captured folder checks run in the project sandbox, never the publisher host.
+ensure_app_landing_checks() {
+  [[ -s $PUBLISH ]] || return 0
+  local folder publisher options encoded current payload
+  while IFS=$'\t' read -r folder publisher options; do
+    [[ ,$options, == *,land,* && -f $folder/scripts/test-app-runs.sh ]] || continue
+    encoded=$(jq -rn --arg path "$folder" '$path|@uri')
+    current=$(local_api "/v3/sandbox-environments?workspace_path=$encoded") || return 1
+    payload=$(jq -ce --arg path "$folder" '.environment.definition as $e | {workspace_path:$path, base_image:($e.base_image // "swarm-sandbox:local"), setup:($e.setup // []), env:($e.env // {}), checks:(($e.checks // []) | if index("bash scripts/test-app-runs.sh") then . else . + ["bash scripts/test-app-runs.sh"] end), check_timeout_minutes:([$e.check_timeout_minutes // 0, 10]|max)}' <<<"$current") || return 1
+    local_api /v3/sandbox-environments -X PUT -H 'Content-Type: application/json' -d "$payload" >/dev/null || return 1
+  done <"$PUBLISH"
+}
+
 update() {
   load_conf
+  ensure_app_landing_checks
   if [[ -n ${DEV_SOURCE:-} ]]; then
     echo "swarm: built from $DEV_SOURCE; not following $SWARM_REF (install.sh dev-sync off to resume)"
     finish_update
@@ -1318,6 +1332,7 @@ workspace() {
       [[ $(stat -c %u "$command") == 0 && $(( 8#$(stat -c %a "$command") & 8#022 )) == 0 ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be owned by root and writable only by root"; }
       printf '%s\t%s%s\n' "$path" "$command" "${options:+$'\t'$options}" >>"$PUBLISH.new"
       mv -f "$PUBLISH.new" "$PUBLISH"
+      ensure_app_landing_checks
       echo "Jobs in $path use publish command $command${options:+ ($options)}."
       ;;
     *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off" ;;

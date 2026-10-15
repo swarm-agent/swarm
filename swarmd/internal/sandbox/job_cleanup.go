@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -134,6 +135,17 @@ func (m *Manager) ReconcileContainers(ctx context.Context, active func(string) (
 	}
 	for _, name := range strings.Fields(string(out)) {
 		if !strings.HasPrefix(name, "swarm-sandbox-") {
+			continue
+		}
+		inspection, err := m.runner.Run(ctx, m.cfg.Engine, "inspect", name)
+		if err != nil {
+			return fmt.Errorf("inspect sandbox ownership: %w", err)
+		}
+		var items []instanceInspection
+		if err := json.Unmarshal(inspection, &items); err != nil {
+			return fmt.Errorf("decode sandbox ownership: %w", err)
+		}
+		if len(items) != 1 || !ownsInstance(m.cfg.StateDir, items[0]) {
 			continue
 		}
 		if strings.Contains(name, "-job-"+containerPrefix) || strings.Contains(name, "-review-") {

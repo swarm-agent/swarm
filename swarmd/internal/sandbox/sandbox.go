@@ -597,6 +597,7 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 	user := fmt.Sprintf("%d:%d", uid, gid)
 	args := []string{"run", "-d", "--init", "--name", name,
 		"--label", labelSandbox + "=1",
+		"--label", labelInstance + "=" + instanceIdentity(m.cfg.StateDir),
 		"--label", labelRoot + "=" + root,
 		"--label", labelSpec + "=" + spec,
 	}

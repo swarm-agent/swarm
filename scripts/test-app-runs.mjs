@@ -4,11 +4,10 @@ import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { Daemon, createRunDir, removeRunDir, ownerRequest } from './e2e/lib/daemon.mjs'
 
-const runtime = ['docker', 'podman'].find(name => {
-  try { execFileSync(name, ['info'], { stdio: 'ignore', timeout: 10000 }); return true } catch { return false }
-})
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-let step = 'arguments', daemon, dir, liveProject
+let step = 'arguments', daemon, dir, liveProject, liveRepo, previousWorkspace, liveJob, environmentCreated
+let interrupted = false
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { interrupted = true })
 const liveURL = process.argv[2] === '--live' ? process.argv[3] : null
 function check(ok, message) { if (!ok) throw new Error(message) }
 async function run(name, fn) { step = name; await fn(); console.log(`${name}: PASS`) }
@@ -39,7 +38,7 @@ try {
     }
     fs.copyFileSync(path.join(root, 'swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so'), path.join(bin, 'libfff_c.so'))
   })
-  daemon = new Daemon({ binDir: bin, runDir: dir, sandbox: runtime ? 'required' : 'off' })
+  daemon = new Daemon({ binDir: bin, runDir: dir, sandbox: 'off' })
   await run('health', () => daemon.start())
   await run('auth-bootstrap', async () => {
     const value = await api('POST', '/v1/onboarding', { username: 'app-smoke', swarm_name: 'App smoke' })
@@ -51,6 +50,8 @@ try {
     command('git', ['init', '-b', 'dev', repo])
     command('git', ['-c', 'user.name=App smoke', '-c', 'user.email=app-smoke@example.invalid', 'commit', '--allow-empty', '-m', 'Initial'], repo)
   })
+  if (liveURL) previousWorkspace = (await api('GET', '/v1/workspace/current')).workspace_path
+  if (liveURL) liveRepo = repo
   await run('workspace-register', () => api('POST', '/v1/workspace/add', { path: repo }))
   let project
   await run('project-create', async () => {
@@ -67,14 +68,25 @@ try {
   await run('busy', () => api('GET', '/v3/box/busy'))
   await run('runs', () => api('GET', '/v3/runs'))
   if (liveURL) {
+    await run('sandbox-build', async () => {
+      environmentCreated = true
+      let env = (await api('PUT', '/v3/sandbox-environments', { workspace_path: repo, base_image: 'swarm-sandbox:local', setup: [], env: {} })).environment
+      const deadline = Date.now() + 8 * 60 * 1000
+      while (env.status === 'building' && Date.now() < deadline && !interrupted) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        env = (await api('GET', `/v3/sandbox-environments?workspace_path=${encodeURIComponent(repo)}`)).environment
+      }
+      check(env.status === 'ready', `environment status=${env.status}`)
+    })
     await run('live-job', async () => {
       const workers = (await api('POST', '/v3/workers:ensure-presets', {})).workers
       const coder = workers.find(w => w.metadata?.preset === 'coder')
       check(coder?.id, 'coder preset unavailable')
       const initial = (await api('POST', `/v3/workers/${coder.id}/direct`, { prompt: 'Add a file hello.txt containing hi followed by a newline, commit it. Do not change any other files.', input: { project_id: project.id }, workspace_path: repo, idempotency_key: project.id })).run
       check(initial?.id, 'missing job ID')
+      liveJob = `/v3/workers/${coder.id}/runs/${initial.id}`
       const deadline = Date.now() + 15 * 60 * 1000
-      while (Date.now() < deadline) {
+      while (Date.now() < deadline && !interrupted) {
         const job = (await api('GET', `/v3/workers/${coder.id}/runs/${initial.id}`)).run
         if (['failed', 'cancelled', 'blocked'].includes(job.status)) throw new Error(`job ${job.status}`)
         if (['completed', 'succeeded', 'needs_review'].includes(job.status)) {
@@ -117,30 +129,24 @@ try {
   await run('stop', () => daemon.stop())
   await run('restart', () => daemon.start({ reusePorts: true }))
   await run('project-survives-restart', readProject)
-  if (runtime) await run('sandbox-build', async () => {
-    let env = (await api('PUT', '/v3/sandbox-environments', { workspace_path: repo, base_image: 'swarm-sandbox:local', setup: [], env: {} })).environment
-    const deadline = Date.now() + 8 * 60 * 1000
-    while (env.status === 'building' && Date.now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, 2000))
-      env = (await api('GET', `/v3/sandbox-environments?workspace_path=${encodeURIComponent(repo)}`)).environment
-    }
-    check(env.status === 'ready', `environment status=${env.status}: ${env.error || 'build deadline exceeded'}`)
-    console.log(`sandbox-status: ${env.status}`)
-  })
-  else console.log('sandbox-build: SKIPPED (no container runtime)')
+  console.log('sandbox-build: covered by --live')
   console.log('sandbox-command: covered by --live')
   console.log('worktree-commit-land: covered by --live')
   }
 } catch (error) {
+  console.error(`APP_RUNS_FAILED:${step}`)
   console.error(`${step}: FAIL: ${error.message}`)
   if (daemon) console.error(`daemon log tail: ${daemon.logTail(4000)}`)
   process.exitCode = 1
 } finally {
+  const cleanup = async (name, fn) => { try { await run(name, fn) } catch (error) { console.error(`${name}: FAIL: ${error.message}`); process.exitCode = 1 } }
+  if (liveJob) await cleanup('job-cancel', () => api('POST', `${liveJob}/cancel`, {}))
   if (liveProject) {
     try { await run('project-cleanup', () => api('DELETE', `/v3/projects/${liveProject}`)) } catch (error) { console.error(`project-cleanup: FAIL: ${error.message}`); process.exitCode = 1 }
   }
+  if (environmentCreated) await cleanup('environment-cleanup', () => api('DELETE', `/v3/sandbox-environments?workspace_path=${encodeURIComponent(liveRepo)}`))
+  if (liveRepo) await cleanup('workspace-cleanup', () => api('POST', '/v1/workspace/delete', { path: liveRepo }))
+  if (previousWorkspace) await cleanup('workspace-restore', () => api('POST', '/v1/workspace/select', { path: previousWorkspace }))
   if (daemon) await daemon.stop()
-  if (dir && !liveURL) removeRunDir(dir, process.env.TMPDIR)
-  // Retain live Git data until job/worktree teardown can be verified safely.
-  if (dir && liveURL) console.log(`live repository retained for inspection: ${dir}`)
+  if (dir) removeRunDir(dir, process.env.TMPDIR)
 }
