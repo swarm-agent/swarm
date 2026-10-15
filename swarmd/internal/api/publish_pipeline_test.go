@@ -87,4 +87,89 @@ func TestReviewPipelineExhaustion(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("exhaustion signals=%d", n)
 	}
+	// A rebase BLOCK at the exhausted ordinary budget must reach follow-up,
+	// not exhaustion. This fixture has no follow-up executor: its explicit
+	// error must leave the durable pending transition and budget unchanged.
+	chain.Next, chain.Rebase = "review_started", true
+	if err := db.PutJSON(pipelineKey(account, job), chain); err != nil {
+		t.Fatal(err)
+	}
+	c := &controlMCPCall{server: s, request: req, next: s.apiMux()}
+	if ready, err := c.advancePipeline(coder.ID, target.ID, controlMCPJobRefs{sessionID: target.SessionID}, publish.Rule{}, map[string]any{"head": head}); ready || err == nil {
+		t.Fatalf("expected unavailable follow-up, got %v %v", ready, err)
+	}
+	if _, err := db.GetJSON(pipelineKey(account, job), &chain); err != nil {
+		t.Fatal(err)
+	}
+	if chain.Round != 2 || chain.Next != "review_fix_pending" {
+		t.Fatalf("rebase consumed budget: %+v", chain)
+	}
+}
+
+// Purpose: the daemon's actual scoped principal must cross the direct-worker
+// HTTP authorization boundary; removing automations:write must reject it.
+// No handler is replaced: an invalid worker reaches the real not-found path.
+func TestReviewPipelinePrincipal(t *testing.T) {
+	s, _, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	c, err := s.pipelineCall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.dispatch("POST", "/v3/workers/missing/direct", nil, map[string]any{"prompt": "review"})
+	if err == nil || strings.Contains(err.Error(), "403") {
+		t.Fatalf("pipeline authorization: %v", err)
+	}
+	c, err = s.internalCall(context.Background(), "sessions:write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.dispatch("POST", "/v3/workers/missing/direct", nil, map[string]any{"prompt": "review"})
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("missing scope accepted: %v", err)
+	}
+}
+
+// Purpose: replay must repair state persisted before its receipt even on the
+// already-started early-return path. Real activity and signal stores must emit
+// exactly once, without attempting a second reviewer admission.
+func TestReviewPipelineReceiptReplay(t *testing.T) {
+	s, _, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	db := s.sessions.Store().Underlying()
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sessions.Store().CreateSessionForAccount(store.SessionSnapshot{ID: "receipt-session"}, actor.UserID, actor.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	s.signals = store.NewSignalStore(db)
+	state := ReviewPipeline{Head: strings.Repeat("a", 40), Next: "review_started", ReviewerJobID: "worker/reviewer/review"}
+	if err := db.PutJSON(pipelineKey(actor.AccountScopeID, "worker/coder/run"), state); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		c, err := s.pipelineCall(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready, err := c.advancePipeline("coder", "run", controlMCPJobRefs{sessionID: "receipt-session"}, publish.Rule{}, map[string]any{"head": state.Head})
+		if err != nil || ready {
+			t.Fatalf("replay: %v %v", ready, err)
+		}
+	}
+	page, err := s.signals.ListAfter(0, 10, store.SignalFilter{Account: actor.AccountScopeID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, sig := range page.Signals {
+		if sig.Kind == "job.review_started" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("receipts=%d", n)
+	}
 }

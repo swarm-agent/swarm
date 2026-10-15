@@ -318,12 +318,16 @@ func autoPublishNext(status string, result map[string]any) int {
 // errAutoPublishWait asks for a retry: the job's commits are not assessed yet.
 var errAutoPublishWait = errors.New("job not settled")
 
+func (s *Server) pipelineCall(ctx context.Context) (*controlMCPCall, error) {
+	return s.internalCall(ctx, "sessions:read", "sessions:write", "projects:read", "projects:write", "swarm:read", "agents:read", "automations:read", "automations:write", "signals:read")
+}
+
 func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) error {
 	workerID, runID := sig.Refs["worker_id"], sig.Refs["run_id"]
 	if !controlMCPSafeID.MatchString(workerID) || !controlMCPSafeID.MatchString(runID) {
 		return nil
 	}
-	c, err := p.server.internalCall(ctx, "sessions:read", "sessions:write", "projects:read", "projects:write", "swarm:read", "agents:read", "automations:read", "signals:read")
+	c, err := p.server.pipelineCall(ctx)
 	if err != nil {
 		return nil // no owner yet: nothing to deliver as
 	}
@@ -350,6 +354,16 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		return nil
 	}
 	if rule.Pipeline {
+		// Follow-up may already have made the coder active when the process
+		// dies before the receipt. Repair before the status gate can skip it.
+		principal, _ := PrincipalFromRequest(c.request)
+		var pending ReviewPipeline
+		if _, err := p.state.GetJSON(pipelineKey(principal.AccountScopeID, controlMCPJobID(controlMCPJobWorker, workerID, runID)), &pending); err != nil {
+			return err
+		}
+		if err := c.emitPipeline(workerID, runID, refs, pending); err != nil {
+			return err
+		}
 		status, _ := view["status"].(string)
 		switch autoPublishNext(status, result) {
 		case autoPublishSkip:
@@ -359,18 +373,23 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		}
 		ready, err := c.advancePipeline(workerID, runID, refs, rule, result)
 		if err != nil {
+			var receiptErr pipelineReceiptError
+			if errors.As(err, &receiptErr) {
+				return err
+			}
 			principal, _ := PrincipalFromRequest(c.request)
 			key := pipelineKey(principal.AccountScopeID, controlMCPJobID(controlMCPJobWorker, workerID, runID))
 			var chain ReviewPipeline
 			if _, readErr := p.state.GetJSON(key, &chain); readErr != nil {
 				return readErr
 			}
+			chain.Head = controlMCPString(result, "head")
 			chain.Next = "review_failed"
 			chain.Findings = err.Error()
 			if writeErr := p.state.PutJSON(key, chain); writeErr != nil {
 				return writeErr
 			}
-			return c.signalPublishDurable(controlMCPJobWorker, workerID, runID, refs, "job.review_failed", pebblestore.SignalSeverityWarning, "Review pipeline stopped: "+controlMCPTruncate(err.Error(), 200), map[string]string{"head": controlMCPString(result, "head")})
+			return c.emitPipeline(workerID, runID, refs, chain)
 		}
 		if !ready {
 			return nil

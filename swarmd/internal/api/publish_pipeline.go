@@ -38,6 +38,24 @@ func pipelineKey(account, job string) string {
 	return "publish_pipeline/" + url.PathEscape(account) + "/" + url.PathEscape(job)
 }
 
+// pipelineReceiptError leaves the durable transition intact for cursor replay.
+type pipelineReceiptError struct{ error }
+
+func (c *controlMCPCall) emitPipeline(worker, run string, refs controlMCPJobRefs, state ReviewPipeline) error {
+	if state.Next == "" {
+		return nil
+	}
+	severity := store.SignalSeverityInfo
+	if state.Next == "review_failed" {
+		severity = store.SignalSeverityWarning
+	}
+	err := c.signalPublishDurable(controlMCPJobWorker, worker, run, refs, "job."+state.Next, severity, "Review pipeline: "+state.Next, map[string]string{"head": state.Head, "findings": state.Findings, "reviewer_job_id": state.ReviewerJobID, "send_backs": fmt.Sprint(state.Round)})
+	if err != nil {
+		return pipelineReceiptError{err}
+	}
+	return nil
+}
+
 func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobRefs, rule publish.Rule, result map[string]any) (bool, error) {
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok {
@@ -50,13 +68,18 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if _, err := db.GetJSON(key, &state); err != nil {
 		return false, err
 	}
+	// Repair a state-before-receipt crash before any early return or new transition.
+	// Activity and signal writers both deduplicate durable receipts.
+	if err := c.emitPipeline(worker, run, refs, state); err != nil {
+		return false, err
+	}
 	head := controlMCPString(result, "head")
 	save := func(next string) error {
 		state.Next = next
 		if err := db.PutJSON(key, state); err != nil {
 			return err
 		}
-		return c.signalPublishDurable(controlMCPJobWorker, worker, run, refs, "job."+next, store.SignalSeverityInfo, "Review pipeline: "+next, map[string]string{"head": state.Head, "findings": state.Findings, "reviewer_job_id": state.ReviewerJobID, "send_backs": fmt.Sprint(state.Round)})
+		return c.emitPipeline(worker, run, refs, state)
 	}
 	if state.Next == "review_exhausted" || state.Next == "review_failed" {
 		return false, save(state.Next)
@@ -82,8 +105,10 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 			return false, err
 		}
 		if state.Next != "review_fix_pending" {
-			state.Round++
-			if state.Round >= limits.FixRounds {
+			if !state.Rebase {
+				state.Round++
+			}
+			if !state.Rebase && state.Round >= limits.FixRounds {
 				return false, save("review_exhausted")
 			}
 			if err := save("review_fix_pending"); err != nil {
