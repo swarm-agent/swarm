@@ -113,6 +113,7 @@ type Server struct {
 	runner                      runService
 	runStreams                  *runControlAllocator
 	v3RealtimeOutbox            *v3RealtimeOutboxHub
+	sessionChanges              *sessionChangeNotifier // wakes session long-polls after a V3 change commits
 	activityStreams             atomic.Int64
 	v3LiveHub                   *v3LiveHub
 	v3LivePatchEnabled          bool
@@ -356,6 +357,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		runner:               runSvc,
 		runStreams:           newRunControlAllocator(),
 		v3RealtimeOutbox:     newV3RealtimeOutboxHub(),
+		sessionChanges:       newSessionChangeNotifier(),
 		v3LiveHub:            newV3LiveHub(),
 		v3LivePatchEnabled:   v3LivePatchDefaultEnabled,
 		sessions:             sessionSvc,

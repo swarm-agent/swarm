@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -529,6 +530,12 @@ func (s *Server) handleAgentByNameV2(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		// Retention deletes conversations: an out-of-range value is refused,
+		// never clamped into a different policy.
+		if req.Limits != nil && (req.Limits.RetentionDays < 0 || req.Limits.RetentionDays > pebblestore.AgentRetentionMaxDays) {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("limits.retention_days must be 0 (keep) to %d", pebblestore.AgentRetentionMaxDays))
 			return
 		}
 		provider := ""

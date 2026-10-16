@@ -1117,6 +1117,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	// can close the stores has succeeded. Otherwise a startup error can race an
 	// eager maintenance pass and panic on an already-closed Pebble database.
 	startV3SessionRetention(bgCtx, sessionSvc)
+	startAgentSessionRetention(bgCtx, apiServer)
 	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
 	startArtifactMaintenance(bgCtx, artifactRegistry)
 	startVideoRenderRecovery(bgCtx, videoRenderSvc)

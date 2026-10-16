@@ -20,8 +20,9 @@ visitor ── your website ── your gateway ──(agent-bound token)── 
 ```
 
 - The gateway holds an **agent-bound token**. It can only create and use that one
-  agent's sessions, answer that agent's client tool calls and relay the person's
-  confirmations (see [Confirmations](#confirmations)). It cannot list
+  agent's sessions (list, wait on, end and delete them, and follow their event
+  feed), answer that agent's client tool calls and relay the person's
+  confirmations (see [Confirmations](#confirmations)). It cannot see other
   sessions, reach any other agent (including `swarm`, which has bash), approve
   anything Swarm would execute, change agents or tools, mint tokens or use MCP. If
   someone later gives the agent a built-in tool, the token stops working instead of
@@ -82,6 +83,8 @@ Every message to a sealed agent is bounded, whatever the model does:
 | New messages per end user | 20 / minute | `sdk-token --end-user-messages-per-minute` |
 | New conversations per end user | 30 / hour | `sdk-token --end-user-sessions-per-hour` |
 | Model tokens per end user per UTC day | off | `sdk-token --end-user-max-tokens-per-day` |
+| Open waits and feed long-polls per token | 32 (then 429) | fixed |
+| Conversation retention (ended or idle) | kept until deleted | agent `limits.retention_days` (1-3650) |
 | Account spend per day | off | `swarmctl setup daily-limit --usd 25` |
 
 When the daily cap is reached the daemon refuses new runs and stops running
@@ -303,6 +306,56 @@ read the agent's conversations, take them over, reply and hand back:
 
 In the SDK: `agents.createOperatorToken`, `takeOver`, `replyAsOperator`,
 `handBack` and `takeoverState`.
+
+## Waiting, session lifecycle and the event feed
+
+A gateway does not need to poll. Every route below is open to the gateway token
+for its own agent only (another agent's token gets 403); the operator token may
+use the read-only ones (wait, list, feed).
+
+| Route | Does |
+|---|---|
+| `GET /v3/sessions/{id}/wait?after=<cursor>&wait_seconds=<0-30>` | without `after`: the current state and `cursor` at once. With it: returns as soon as an event after the cursor is an assistant message, a pending tool call, the end of a run or the end of the session (`reasons`), or after the wait (`timed_out`) |
+| `GET /v3/sessions:agent?state=active\|ended\|all&updated_after=&updated_before=&cursor=&limit=` | the agent's conversations, most recently updated first, 50 per page (at most 200); page with `next_cursor` |
+| `POST /v3/sessions/{id}/end` `{"client_request_id","reason"}` | ends the conversation: no more messages (409), takeovers or operator replies; its run in flight and pending tool calls are stopped. Ending again changes nothing (`already_ended`) |
+| `DELETE /v3/sessions/{id}` | hard deletes the conversation and its messages; refused (409) while a run or tool call is in flight, so end it first |
+| `GET /v3/sessions:agent-events?after=N&limit=N&kind=message,tool&wait=S` | the agent's event feed, oldest first, like `/v3/signals` |
+
+A wait answer carries `cursor` (pass it back as `after`), `reasons`
+(`assistant_message`, `tool_call`, `run_ended`, `session_ended`),
+`timed_out`, `more` (more events follow the cursor), `ended`, `run`
+(`run_id`, `status`, `active`) and `pending_calls` (the session's pending tool
+calls). Streaming deltas, usage and run phases move the cursor without ending the
+wait. A token may hold 32 waits and feed long-polls open at once.
+
+Feed entries are `{seq, id, at, kind, session_id, data}` with kinds
+`session.created`, `message.user`, `message.assistant` (`data.source`
+`operator` for a person's reply), `tool.called`, `tool.answered`,
+`tool.failed`, `session.ended`, `run.failed` (run ID and status, never the
+reason), `takeover.started` and `takeover.ended`. Message text and tool
+arguments, results and reasons are cut to 2000 characters with
+`data.truncated`. The feed is read from the sessions' own durable change log, so
+it is only as old as that log's replay window (30 days, at least the newest
+100,000 changes on the machine); a cursor older than that, or ahead of the feed,
+comes back with `gap: true`. A deleted conversation's entries disappear with it.
+The feed is not pushed to signal sinks: it carries conversation text, which the
+signal feed never does.
+
+**Retention.** Set `limits.retention_days` on the sealed agent (in the
+`sealed-agent` file or `defineSealedAgent`) and a background pass, every 10
+minutes, hard deletes its conversations that ended or saw no activity for that
+many days, 100 per pass, oldest first. A conversation with a run or tool call in
+flight waits for the next pass. Each pass logs what it deleted; a delete that
+fails is logged and raises a `session.retention.failed` signal naming the agent.
+The default keeps conversations until deleted; the maximum is 3650 days. Only
+sealed agents are swept.
+
+In the SDK: `agents.wait`, `listSessions`, `endSession`, `deleteSession`,
+`events` and `watchEvents` (an async iterator that waits between reads and
+yields `{kind: 'gap'}` for missed entries). `converse`, `serve` and
+`pendingCalls` use `wait`. Against a daemon that predates it (it answers the
+wait route with 404 or its unknown-route refusal) they poll as before and say so
+once with `console.debug`; any other error is thrown.
 
 ## Build and run
 

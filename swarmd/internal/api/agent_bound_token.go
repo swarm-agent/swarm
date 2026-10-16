@@ -294,15 +294,23 @@ func (s *Server) agentBoundRequest(r *http.Request, rec *pebblestore.ScopedToken
 		// and its own agent's usage per end user.
 		return "", nil
 	}
+	if len(p) == 2 && p[0] == "v3" && (p[1] == "sessions:agent" || p[1] == "sessions:agent-events") && r.Method == http.MethodGet {
+		// Read-only: the agent's own conversations and their event feed; the
+		// handlers scope both to this token's agent, account and user.
+		if requested := strings.TrimSpace(r.URL.Query().Get("agent")); requested != "" && requested != agent {
+			return "", errors.New("an agent-bound token sees only its own agent")
+		}
+		return "", nil
+	}
 	if len(p) < 2 || p[0] != "v3" || p[1] != "sessions" {
 		return "", errors.New("route unavailable to an agent-bound token")
 	}
 	if len(p) == 2 {
 		if rec.AgentOperator {
-			return "", errors.New("an operator token cannot list or create sessions")
+			return "", errors.New("an operator token cannot create sessions")
 		}
 		if r.Method != http.MethodPost {
-			return "", errors.New("an agent-bound token cannot list sessions")
+			return "", errors.New("an agent-bound token lists its sessions with GET /v3/sessions:agent")
 		}
 		return checkAgentBoundCreateEndUser(r, agent)
 	}
@@ -337,7 +345,11 @@ func (s *Server) agentBoundRequest(r *http.Request, rec *pebblestore.ScopedToken
 		rest == "messages" && r.Method == http.MethodGet,
 		rest == "permissions" && r.Method == http.MethodGet,
 		rest == "confirmations" && r.Method == http.MethodGet,
-		rest == "run/stop" && r.Method == http.MethodPost:
+		rest == "wait" && r.Method == http.MethodGet,
+		rest == "run/stop" && r.Method == http.MethodPost,
+		// Session lifecycle: end the conversation, then hard delete it.
+		rest == "end" && r.Method == http.MethodPost,
+		rest == "" && r.Method == http.MethodDelete:
 		return binding.EndUser, nil
 	case len(p) == 5 && p[3] == "confirmations" && p[4] != "" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
 		// The gateway relays the person's approval or decline of a confirmed
@@ -358,6 +370,7 @@ func agentOperatorRouteError(method, rest string) error {
 	switch {
 	case rest == "" && method == http.MethodGet,
 		rest == "messages" && method == http.MethodGet,
+		rest == "wait" && method == http.MethodGet,
 		rest == "takeover" && (method == http.MethodGet || method == http.MethodPost),
 		rest == "operator-messages" && method == http.MethodPost:
 		return nil
