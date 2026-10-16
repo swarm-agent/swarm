@@ -357,7 +357,8 @@ The 178-second measurement above describes the earlier pre-rebase run only.
 
 ## App runs
 
-Run `bash scripts/test-app-runs.sh` with `TMPDIR` set. It builds the headless
+`TMPDIR` is optional; the script creates and removes its own when unset or empty.
+Run `bash scripts/test-app-runs.sh`. It builds the headless
 installer's three Go binaries, starts a separate loopback daemon with private
 state, bootstraps its owner over the public Unix-socket HTTP API, registers a
 real Git repository/project, checks busy/runs and verifies restart persistence.

@@ -746,7 +746,13 @@ ensure_app_landing_checks() {
   [[ -s $PUBLISH ]] || return 0
   local folder publisher options encoded current payload
   while IFS=$'\t' read -r folder publisher options; do
-    [[ ,$options, == *,land,* && -f $folder/scripts/test-app-runs.sh ]] || continue
+    [[ ,$options, == *,land,* ]] || continue
+    # Sync can leave the working tree behind the fetched landing base.
+    if git -C "$folder" show-ref --verify --quiet refs/swarm/publish/dev; then
+      git -C "$folder" cat-file -e refs/swarm/publish/dev:scripts/test-app-runs.sh 2>/dev/null || continue
+    else
+      [[ -f $folder/scripts/test-app-runs.sh ]] || continue
+    fi
     encoded=$(jq -rn --arg path "$folder" '$path|@uri')
     current=$(local_api "/v3/sandbox-environments?workspace_path=$encoded") || return 1
     payload=$(jq -ce --arg path "$folder" '.environment.definition as $e | {workspace_path:$path, base_image:($e.base_image // "swarm-sandbox:local"), setup:($e.setup // []), env:($e.env // {}), checks:(($e.checks // []) | if index("bash scripts/test-app-runs.sh") then . else . + ["bash scripts/test-app-runs.sh"] end), check_timeout_minutes:([$e.check_timeout_minutes // 0, 10]|max)}' <<<"$current") || return 1
