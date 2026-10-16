@@ -1,0 +1,14 @@
+[Unit]
+Description=Block every container from the GCE metadata server before Docker starts
+DefaultDependencies=no
+Before=docker.service
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/metadata-guard lock
+
+[Install]
+WantedBy=multi-user.target docker.service

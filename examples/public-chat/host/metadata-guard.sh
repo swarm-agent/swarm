@@ -7,12 +7,30 @@
 # whose name starts with $METADATA_GUARD_IMAGE (default swarm-sealed) are
 # allowed, every other container is dropped. If no such container runs, all are
 # dropped. The host itself is not affected.
+#   metadata-guard.sh lock     drop every container (run before Docker starts,
+#                              by metadata-guard-lock.service, so nothing is
+#                              open between boot and the watcher)
 #   metadata-guard.sh          apply once
 #   metadata-guard.sh watch    apply, then again after every container start
+#                              or exit (an exited Swarm's address is never
+#                              left allowed for a container that reuses it)
 set -eu
 IMAGE=${METADATA_GUARD_IMAGE:-swarm-sealed}
 CHAIN=BOT-METADATA
 META=169.254.169.254/32
+
+write_chain() {
+  {
+    echo "*filter"
+    echo ":$CHAIN - [0:0]"
+    for ip in $1; do echo "-A $CHAIN -s $ip/32 -j RETURN"; done
+    echo "-A $CHAIN -j DROP"
+    echo "COMMIT"
+  } | iptables-restore --noflush
+  iptables -N DOCKER-USER 2>/dev/null || true
+  iptables -C DOCKER-USER -d "$META" -j "$CHAIN" 2>/dev/null ||
+    iptables -I DOCKER-USER 1 -d "$META" -j "$CHAIN"
+}
 
 apply() {
   allow=""
@@ -25,19 +43,17 @@ apply() {
   done
   # One atomic replace of the chain (iptables-restore --noflush flushes only
   # the chains it declares): there is never a moment without the final DROP.
-  {
-    echo "*filter"
-    echo ":$CHAIN - [0:0]"
-    for ip in $allow; do echo "-A $CHAIN -s $ip/32 -j RETURN"; done
-    echo "-A $CHAIN -j DROP"
-    echo "COMMIT"
-  } | iptables-restore --noflush
-  iptables -C DOCKER-USER -d "$META" -j "$CHAIN" 2>/dev/null ||
-    iptables -I DOCKER-USER 1 -d "$META" -j "$CHAIN"
+  write_chain "$allow"
   logger -t metadata-guard "metadata server allowed for:${allow:- nobody}"
 }
 
+if [ "${1:-}" = lock ]; then
+  write_chain ""
+  logger -t metadata-guard "metadata server locked for every container"
+  exit 0
+fi
 apply
 if [ "${1:-}" = watch ]; then
-  docker events --filter type=container --filter event=start --format '{{.Actor.ID}}' | while read -r _; do apply; done
+  docker events --filter type=container --filter event=start --filter event=die --format '{{.Actor.ID}}' |
+    while read -r _; do apply; done
 fi

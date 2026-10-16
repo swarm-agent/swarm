@@ -161,10 +161,12 @@ of everything above.
   journal at 200 MB. Check with `journalctl -t disk-guard`.
 - **VM identity (Vertex):** on a GCE VM every container can ask the metadata
   server for the VM's token. Install `metadata-guard.sh` as
-  `/usr/local/sbin/metadata-guard` with `metadata-guard.service`: only
+  `/usr/local/sbin/metadata-guard` with `metadata-guard.service` and
+  `metadata-guard-lock.service` (blocks every container before Docker starts,
+  so nothing is open after a reboot): only
   containers running the `swarm-sealed` image may reach 169.254.169.254, the
   gateway and tunnel are dropped, and if no Swarm container runs, all are.
-  It re-applies after every container start. Check with
+  It re-applies after every container start and exit. Check with
   `journalctl -t metadata-guard` and `iptables -S BOT-METADATA`.
 
 ## Human takeover
