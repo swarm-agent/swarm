@@ -219,10 +219,10 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		raise(BoxStatusAttention, "the outbox cannot export: "+exportState.LastError)
 	}
 
-	runners := []pebblestore.RunnerStatus{}
+	runners := pebblestore.RunnerSummary{Items: []pebblestore.RunnerStatus{}, ByState: map[string]int{"idle": 0, "busy": 0, "unhealthy": 0}}
 	if s.runnerStore != nil {
 		var err error
-		runners, err = s.runnerStore.RunnerStatuses(account)
+		runners, err = s.runnerStore.RunnerSummary(account)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return
@@ -243,7 +243,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		"permissions":     map[string]any{"bypass": s.permissionBypassForAccount(account), "bypass_blocked_reason": s.permissionBypassBlockedReason()},
 		"attention":       attention,
 		"workers":         workers,
-		"runners":         map[string]any{"count": len(runners), "items": runners},
+		"runners":         runners,
 		"runs":            boxRuns(runs, s.sessions != nil),
 		"automations":     automations,
 		"workspaces":      s.boxWorkspaces(principal),

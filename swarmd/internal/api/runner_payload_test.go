@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/sandbox"
+	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"sync"
 	"testing"
@@ -186,5 +187,90 @@ func TestRunnerSecretEnvironment(t *testing.T) {
 	l, err := db.ClaimRunnerLanding("account", "one", time.Now())
 	if err != nil || l != nil {
 		t.Fatal("rejected request claimable", err)
+	}
+}
+
+// Purpose: the box summary feeding swarm_status must expose exact runner-state
+// and queue counts, without another account's statuses. Exercise the HTTP
+// summary rather than only the store aggregation.
+func TestRunnerSummaryCounts(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, state := range []string{"idle", "busy", "unhealthy"} {
+		if err := db.SetRunnerStatus("account", pebblestore.RunnerStatus{Name: state, State: state, LastSeen: 123}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{runnerStore: db}
+	w := httptest.NewRecorder()
+	s.handleBoxSummary(w, requestWithTestPrincipalForAccount(httptest.NewRequest("GET", "/v3/box/summary", nil), "owner", "account"))
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	runners := body["runners"].(map[string]any)
+	if runners["by_state"] == nil || runners["pending"] != float64(0) || runners["claimed"] != float64(0) {
+		t.Fatalf("missing counts: %v", runners)
+	}
+	states := runners["by_state"].(map[string]any)
+	for _, state := range []string{"idle", "busy", "unhealthy"} {
+		if states[state] != float64(1) {
+			t.Fatal(states)
+		}
+	}
+}
+
+// Purpose: successful join, unhealthy report and owner removal must emit the
+// monitoring signals and maintain the status inventory. Exercise the handlers
+// with real credential/signal stores, not a synthetic signal append alone.
+func TestRunnerLifecycleSignals(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	auth := pebblestore.NewClientAuthStore(db)
+	signals := pebblestore.NewSignalStore(db)
+	s := &Server{runnerStore: db, security: security.NewService(auth, nil), signals: signals}
+	token, err := auth.CreateRunnerJoinToken("account", "owner", "runner", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.handleRunners(w, httptest.NewRequest("POST", "/v3/runners/join", strings.NewReader(fmt.Sprintf(`{"token":%q}`, token))))
+	if w.Code != 201 {
+		t.Fatal(w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	s.handleRunnerWork(w, httptest.NewRequest("POST", "/v3/runners/status", strings.NewReader(`{"state":"unhealthy"}`)), &pebblestore.ScopedTokenRecord{AccountScopeID: "account", Name: "runner"})
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	s.handleRunners(w, requestWithTestPrincipalForAccount(httptest.NewRequest("DELETE", "/v3/runners/runner", nil), "owner", "account"))
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	page, err := signals.ListAfter(0, 10, pebblestore.SignalFilter{Account: "account"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Signals) != 3 {
+		t.Fatal(page)
+	}
+	for i, kind := range []string{"runner.joined", "runner.unhealthy", "runner.removed"} {
+		if page.Signals[i].Kind != kind || page.Signals[i].Refs["runner"] != "runner" {
+			t.Fatal(page)
+		}
+	}
+	summary, err := db.RunnerSummary("account")
+	if err != nil || summary.Count != 0 {
+		t.Fatal(summary, err)
 	}
 }

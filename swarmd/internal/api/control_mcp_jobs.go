@@ -1246,7 +1246,7 @@ func controlMCPStatus(c *controlMCPCall, _ map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := controlMCPPick(summary, "status", "reasons", "machine", "sandbox", "secrets_gateway", "permissions", "attention", "workers", "usage")
+	out := controlMCPPick(summary, "status", "reasons", "machine", "sandbox", "secrets_gateway", "permissions", "attention", "workers", "runners", "usage")
 	if export := controlMCPMap(summary["outbox"]); export != nil && (export["enabled"] == true || export["failing"] == true) {
 		out["outbox"] = export
 	}

@@ -167,6 +167,13 @@ func (s *Store) ClaimRunnerLanding(account, runner string, now time.Time) (*Runn
 	var result *RunnerLanding
 	err := s.mutateRunners(account, func(st *runnerState) error {
 		expireRunnerLeases(st, now.UnixMilli())
+		status := st.Statuses[runner]
+		status.Name = runner
+		status.LastSeen = now.UnixMilli()
+		if status.State == "" {
+			status.State = "idle"
+		}
+		st.Statuses[runner] = status
 		for _, l := range st.Landings {
 			if l.State == "claimed" && l.Runner == runner {
 				return errors.New("runner already has a landing")
@@ -182,6 +189,8 @@ func (s *Store) ClaimRunnerLanding(account, runner string, now time.Time) (*Runn
 				return err
 			}
 			l.State = "claimed"
+			status.State = "busy"
+			st.Statuses[runner] = status
 			l.Runner = runner
 			l.LeaseID = id
 			l.LeaseUntil = now.Add(time.Minute).UnixMilli()
@@ -208,6 +217,10 @@ func (s *Store) UpdateRunnerLanding(account, runner, id, lease, action, output s
 				rejected = true
 				return nil
 			}
+			status := st.Statuses[runner]
+			status.Name = runner
+			status.LastSeen = now.UnixMilli()
+			status.State = "busy"
 			switch action {
 			case "heartbeat":
 				l.LeaseUntil = now.Add(time.Minute).UnixMilli()
@@ -226,6 +239,7 @@ func (s *Store) UpdateRunnerLanding(account, runner, id, lease, action, output s
 				l.ExitCodes = codes
 				l.DurationMS = duration
 				l.State = "succeeded"
+				status.State = "idle"
 				for _, code := range codes {
 					if code != 0 {
 						l.State = "failed"
@@ -236,6 +250,7 @@ func (s *Store) UpdateRunnerLanding(account, runner, id, lease, action, output s
 			default:
 				return errors.New("unknown runner action")
 			}
+			st.Statuses[runner] = status
 			return nil
 		}
 		rejected = true

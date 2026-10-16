@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -60,6 +61,12 @@ func (s *Server) handleRunners(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeError(w, 401, err)
 			return
+		}
+		if s.runnerStore != nil {
+			if err := s.runnerStore.SetRunnerStatus(rec.AccountScopeID, pebblestore.RunnerStatus{Name: rec.Name, State: "idle", LastSeen: time.Now().UnixMilli()}); err != nil {
+				writeError(w, 500, err)
+				return
+			}
 		}
 		s.runnerSignal("runner.joined", rec.AccountScopeID, rec.Name)
 		writeJSON(w, 201, map[string]any{"credential": token, "name": rec.Name, "kind": "runner", "scopes": rec.Scopes})
@@ -129,6 +136,12 @@ func (s *Server) handleRunners(w http.ResponseWriter, r *http.Request) {
 				if _, err = s.security.RevokeScopedToken(p.AccountScopeID, rec.ID); err != nil {
 					writeError(w, 500, err)
 					return
+				}
+				if s.runnerStore != nil {
+					if err := s.runnerStore.RemoveRunnerStatus(rec.AccountScopeID, rec.Name); err != nil {
+						writeError(w, 500, err)
+						return
+					}
 				}
 				s.runnerSignal("runner.removed", rec.AccountScopeID, rec.Name)
 				writeJSON(w, 200, map[string]any{"revoked": true})
