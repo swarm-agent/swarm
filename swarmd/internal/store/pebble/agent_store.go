@@ -79,8 +79,9 @@ type AgentProfile struct {
 	UpdatedAt           int64              `json:"updated_at"`
 }
 
-// AgentRunLimits bounds what one message can cost. Zero means unset; sealed
-// agents get conservative defaults for unset fields.
+// AgentRunLimits bounds what one message can cost and how long the agent's
+// conversations are kept. Zero means unset; sealed agents get conservative
+// defaults for unset run fields.
 type AgentRunLimits struct {
 	// MaxSteps is the most model calls per message. On the last step the model
 	// is offered no tools, so it must answer.
@@ -92,7 +93,14 @@ type AgentRunLimits struct {
 	MaxHistoryMessages int `json:"max_history_messages,omitempty"`
 	// RunTimeoutMS ends a run that takes longer.
 	RunTimeoutMS int `json:"run_timeout_ms,omitempty"`
+	// RetentionDays deletes a sealed agent's ended or idle conversations this
+	// many days after their last activity (1 to AgentRetentionMaxDays). Zero,
+	// the default, keeps them until deleted.
+	RetentionDays int `json:"retention_days,omitempty"`
 }
+
+// AgentRetentionMaxDays is the longest retention_days an agent may set.
+const AgentRetentionMaxDays = 3650
 
 func clampLimit(value, max int) int {
 	if value < 0 {
@@ -114,6 +122,7 @@ func NormalizeAgentRunLimits(limits *AgentRunLimits) *AgentRunLimits {
 		MaxOutputTokens:    clampLimit(limits.MaxOutputTokens, 128000),
 		MaxHistoryMessages: clampLimit(limits.MaxHistoryMessages, 2000),
 		RunTimeoutMS:       clampLimit(limits.RunTimeoutMS, 30*60*1000),
+		RetentionDays:      clampLimit(limits.RetentionDays, AgentRetentionMaxDays),
 	}
 	if out == (AgentRunLimits{}) {
 		return nil

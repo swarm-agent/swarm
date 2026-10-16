@@ -118,6 +118,9 @@ func (s *Server) publishCommittedV3RealtimeOutbox(record sessionruntime.Realtime
 	if record.EndpointSeq == 0 {
 		return nil
 	}
+	if record.SessionID != "" {
+		s.sessionChanges.notify(sessionChangeKey(record.SessionID), accountChangeKey(record.AccountScopeID))
+	}
 	if s.v3RealtimeOutbox == nil {
 		s.v3RealtimeOutbox = newV3RealtimeOutboxHub()
 	}

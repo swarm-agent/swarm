@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SwarmAgentsNamespace } from '../agents.js';
+import { SwarmApiError, SwarmForbiddenError, SwarmNotFoundError } from '../errors.js';
 import type { SwarmTransport } from '../transport.js';
 
 // Purpose: the gateway and operator keys must always be minted with an expiry
@@ -49,11 +50,14 @@ test('end user on create, delivery, serve, converse and token limits', async () 
     if (path === '/v3/sessions' && options.method === 'POST') {
       return { data: { ok: true, session: { id: 's1', title: 'Visitor' }, end_user: options.body?.end_user, labels: options.body?.labels } };
     }
-    if (path.includes('/permissions?')) {
-      return { data: { ok: true, ...(sessionEndUser ? { end_user: sessionEndUser, labels: { plan: 'pro' } } : {}), permissions: [
+    if (path.startsWith('/v3/sessions/s1/wait')) {
+      // A wait with a cursor blocks on the daemon; nothing changes here.
+      if (path.includes('after=')) await new Promise((resolve) => setTimeout(resolve, 5));
+      return { data: { ok: true, session_id: 's1', cursor: 1, reasons: [], ...(sessionEndUser ? { end_user: sessionEndUser, labels: { plan: 'pro' } } : {}), pending_calls: [
         { id: 'p1', session_id: 's1', run_id: 'r1', tool_name: 'lookup_order', tool_call_arguments: '{"order_id":"ABC123","end_user":"mallory"}', requirement: 'client_tool', mode: 'auto', status: 'pending', created_at: 1, updated_at: 1 },
       ] } };
     }
+    if (path === '/v3/sessions/s1/confirmations') return { data: { ok: true, confirmations: [] } };
     if (path.endsWith('/resolve')) { resolved.push([path, options.body]); return { data: { ok: true } }; }
     if (path === '/v3/sessions/s1' && (options.method ?? 'GET') === 'GET') {
       return { data: { session: { id: 's1' }, messages: [], ...(sessionEndUser ? { end_user: sessionEndUser } : {}) } };
@@ -120,6 +124,7 @@ const confirmationRecord = {
 test('confirmations are surfaced, never auto-answered, and decided with the arguments hash', async () => {
   const calls: Array<[string, string, Record<string, any> | undefined]> = [];
   let phase: 'asked' | 'approved' | 'answered' = 'asked';
+  let cursor = 0;
   const messages: Array<Record<string, unknown>> = [];
   const transport = { request: async (path: string, options: { method?: string; body?: Record<string, any> } = {}) => {
     const method = options.method ?? 'GET';
@@ -129,11 +134,15 @@ test('confirmations are surfaced, never auto-answered, and decided with the argu
       messages.push({ id: 'u1', role: 'user', content: options.body?.content });
       return { data: {} };
     }
-    if (path.startsWith('/v3/sessions/s1/permissions?')) {
-      const permissions = phase === 'approved'
+    if (path.startsWith('/v3/sessions/s1/wait')) {
+      cursor++;
+      const asked = phase === 'asked' && messages.length > 0;
+      const pending_calls = phase === 'approved'
         ? [{ id: 'perm-x', session_id: 's1', run_id: '', tool_name: 'place_order', tool_arguments: JSON.stringify(confirmationRecord.arguments), created_at: 3 }]
         : [];
-      return { data: { permissions } };
+      const replied = messages.some((m) => m.role === 'assistant');
+      const reasons = pending_calls.length ? ['tool_call'] : asked ? ['run_ended'] : replied ? ['assistant_message', 'run_ended'] : [];
+      return { data: { session_id: 's1', cursor, reasons, pending_calls } };
     }
     if (path === '/v3/sessions/s1/confirmations') return { data: { confirmations: phase === 'asked' && messages.length > 0 ? [confirmationRecord] : [] } };
     if (method === 'POST' && path === '/v3/sessions/s1/confirmations/conf_1') {
@@ -197,7 +206,11 @@ test('confirmations carry the session end user and respect endUser', async () =>
   const transport = { request: async (path: string, options: { method?: string; body?: Record<string, unknown> } = {}) => {
     const method = options.method ?? 'GET';
     calls.push([method, path, options.body]);
-    if (path.startsWith('/v3/sessions/s1/permissions?')) return { data: { permissions: [], end_user: 'cust-42' } };
+    if (path.startsWith('/v3/sessions/s1/wait')) {
+      // A wait with a cursor blocks on the daemon; nothing changes here.
+      if (path.includes('after=')) await new Promise((resolve) => setTimeout(resolve, 5));
+      return { data: { session_id: 's1', cursor: 1, reasons: [], pending_calls: [], end_user: 'cust-42' } };
+    }
     if (path === '/v3/sessions/s1/confirmations') return { data: { confirmations: [confirmationRecord], end_user: 'cust-42', labels: { plan: 'pro' } } };
     if (path === '/v3/sessions/s1') return { data: { session: { id: 's1' }, messages: [], end_user: 'cust-42', pending_confirmation: confirmationRecord } };
     throw new Error(`unexpected ${method} ${path}`);
@@ -223,4 +236,122 @@ test('confirmations carry the session end user and respect endUser', async () =>
   await assert.rejects(agents.confirm('s1', card, {}, { endUser: 'cust-7' }), /another end user/);
   await assert.rejects(agents.reject('s1', card, {}, { endUser: 'cust-7', note: 'no' }), /another end user/);
   assert.ok(!calls.some(([method, path]) => method === 'POST'), 'a decision was sent for another end user');
+});
+
+type Call = { method: string; path: string; body?: Record<string, unknown> };
+
+function fixtureTransport(route: (call: Call) => unknown): { transport: SwarmTransport; calls: Call[] } {
+  const calls: Call[] = [];
+  const transport = { request: async (path: string, options: { method?: string; body?: Record<string, unknown> } = {}) => {
+    const call = { method: options.method ?? 'GET', path, body: options.body };
+    calls.push(call);
+    return { data: await route(call) };
+  } } as unknown as SwarmTransport;
+  return { transport, calls };
+}
+
+const pendingLookup = { id: 'perm-1', session_id: 's1', run_id: 'run-1', tool_name: 'lookup_order', tool_arguments: '{"order_id":"AB12CD"}', requirement: 'client', mode: 'ask', status: 'pending', created_at: 1, updated_at: 1 };
+
+// Purpose: converse waits on the daemon instead of polling: one immediate wait
+// for the cursor, then waits that each pass the previous cursor and a bounded
+// wait_seconds; it answers the tool call the wait reports and returns the reply
+// once a wait reports the run ended with nothing pending. It never reads the
+// permissions route. Boundary: SwarmAgentsNamespace.converse/wait over a
+// transport fixture that plays the daemon; the daemon's wake-ups are covered
+// by Go tests.
+test('converse waits for the next step and answers tool calls from the wait', async () => {
+  let waits = 0;
+  const { transport, calls } = fixtureTransport(({ method, path }) => {
+    if (path.startsWith('/v3/sessions/s1/wait')) {
+      waits++;
+      if (waits === 1) return { session_id: 's1', cursor: 5, reasons: [], pending_calls: [] };
+      if (waits === 2) return { session_id: 's1', cursor: 9, reasons: ['tool_call'], run: { run_id: 'run-1', status: 'running', active: true }, pending_calls: [pendingLookup] };
+      return { session_id: 's1', cursor: 14, reasons: ['assistant_message', 'run_ended'], run: { run_id: 'run-1', status: 'completed', active: false }, pending_calls: [] };
+    }
+    if (path === '/v3/sessions/s1' && method === 'GET') {
+      return { session: { id: 's1' }, messages: waits < 2 ? [{ id: 'm0', role: 'user', content: 'earlier' }] : [{ id: 'm0', role: 'user' }, { id: 'm1', role: 'user', content: 'where?' }, { id: 'm2', role: 'assistant', content: 'It ships tomorrow.' }] };
+    }
+    return { ok: true };
+  });
+  const agents = new SwarmAgentsNamespace(transport);
+  const seen: unknown[] = [];
+  const result = await agents.converse('s1', 'where?', { lookup_order: (args) => { seen.push(args); return { status: 'shipped' }; } });
+  assert.equal(result.reply, 'It ships tomorrow.');
+  assert.deepEqual(seen, [{ order_id: 'AB12CD' }]);
+  const waitPaths = calls.filter((c) => c.path.includes('/wait')).map((c) => c.path);
+  assert.deepEqual(waitPaths, ['/v3/sessions/s1/wait', '/v3/sessions/s1/wait?after=5&wait_seconds=25', '/v3/sessions/s1/wait?after=9&wait_seconds=25']);
+  const resolve = calls.find((c) => c.path === '/v3/sessions/s1/permissions/perm-1/resolve');
+  assert.deepEqual(resolve?.body, { action: 'allow_once', reason: '', approved_arguments: { result: { status: 'shipped' } } });
+  assert.equal(calls.some((c) => c.path.includes('/permissions?')), false, 'converse polled the permissions route');
+});
+
+// Purpose: only a daemon that predates the wait route makes the SDK poll, and
+// it says so once in a debug log; any other wait error is thrown, never
+// silently replaced by polling. The older daemon is recognised exactly: 404,
+// or its unknown-route refusals (403 for a gateway token). Boundary:
+// daemonHasNoWait via pendingCalls and serve.
+test('only an older daemon without the wait route falls back to polling', async () => {
+  const debug: unknown[] = [];
+  const original = console.debug;
+  console.debug = (...args: unknown[]) => { debug.push(args); };
+  try {
+    const older = fixtureTransport(({ path }) => {
+      if (path.includes('/wait')) throw new SwarmForbiddenError('route unavailable to an agent-bound token', {});
+      if (path.includes('/permissions?status=pending')) return { permissions: [pendingLookup] };
+      return { ok: true };
+    });
+    const agents = new SwarmAgentsNamespace(older.transport);
+    assert.equal((await agents.pendingCalls('s1', ['lookup_order'])).length, 1);
+    assert.equal((await agents.pendingCalls('s1', ['lookup_order'])).length, 1);
+    assert.equal(debug.length, 1, 'the fallback should be logged once');
+
+    for (const error of [new SwarmForbiddenError('session not found', {}), new SwarmNotFoundError('session not found', {}), new SwarmApiError('boom', { status: 500 })]) {
+      const failing = fixtureTransport(({ path }) => { if (path.includes('/wait')) throw error; return { permissions: [] }; });
+      const other = new SwarmAgentsNamespace(failing.transport);
+      await assert.rejects(other.pendingCalls('s1', ['lookup_order']), (thrown) => thrown === error);
+      await assert.rejects(other.serve('s1', {}, {}), (thrown) => thrown === error);
+      assert.equal(failing.calls.some((c) => c.path.includes('/permissions?')), false, `${error.message} fell back to polling`);
+    }
+  } finally {
+    console.debug = original;
+  }
+});
+
+// Purpose: the lifecycle and feed calls use the reviewed routes and fields:
+// paged listing filters, end with an idempotency key, the existing hard
+// delete, and the event feed's cursor, kinds and wait. watchEvents surfaces a
+// gap and then the events, waiting (not polling) between reads. Boundary:
+// SwarmAgentsNamespace over a transport fixture.
+test('session lifecycle and event feed calls use the reviewed wire shape', async () => {
+  let feedReads = 0;
+  const controller = new AbortController();
+  const { transport, calls } = fixtureTransport(({ path }) => {
+    if (path.startsWith('/v3/sessions:agent?')) return { sessions: [{ id: 's1', state: 'ended' }], next_cursor: 'c2' };
+    if (path.endsWith('/end')) return { ended: { at: 1, by: 'u' }, already_ended: false, stopped_run_id: 'run-1' };
+    if (path.startsWith('/v3/sessions:agent-events')) {
+      feedReads++;
+      if (feedReads === 1) return { events: [{ seq: 12, id: 'e', at: 1, kind: 'message.user', session_id: 's1' }], next_after: 12, latest_seq: 12, oldest_seq: 10, gap: true };
+      controller.abort();
+      return { events: [], next_after: 12, latest_seq: 12, oldest_seq: 10, gap: false };
+    }
+    return { ok: true };
+  });
+  const agents = new SwarmAgentsNamespace(transport);
+  const listed = await agents.listSessions({ state: 'ended', updatedAfter: 100, limit: 10, cursor: 'c1' });
+  assert.equal(listed.nextCursor, 'c2');
+  assert.equal(calls[0].path, '/v3/sessions:agent?state=ended&updated_after=100&cursor=c1&limit=10');
+  const ended = await agents.endSession('s/1', { reason: 'visitor left', clientRequestId: 'end-1' });
+  assert.equal(ended.stoppedRunId, 'run-1');
+  assert.deepEqual(calls[1], { method: 'POST', path: '/v3/sessions/s%2F1/end', body: { client_request_id: 'end-1', reason: 'visitor left' } });
+  await agents.deleteSession('s/1');
+  assert.deepEqual(calls[2], { method: 'DELETE', path: '/v3/sessions/s%2F1', body: undefined });
+  await agents.events({ after: 3, kinds: ['message', 'tool.failed'], waitSeconds: 40 });
+  assert.equal(calls[3].path, '/v3/sessions:agent-events?after=3&kind=message%2Ctool.failed&wait=30');
+
+  feedReads = 0;
+  const seen: string[] = [];
+  for await (const item of agents.watchEvents({ after: 3, signal: controller.signal })) seen.push(item.kind);
+  assert.deepEqual(seen, ['gap', 'message.user']);
+  const watchPaths = calls.slice(4).map((c) => c.path);
+  assert.deepEqual(watchPaths, ['/v3/sessions:agent-events?after=3&wait=25', '/v3/sessions:agent-events?after=12&wait=25']);
 });

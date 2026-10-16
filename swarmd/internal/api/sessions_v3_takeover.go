@@ -95,10 +95,16 @@ func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request,
 	if !ok {
 		return
 	}
+	if action == "start" && sessionEnded(session) {
+		writeError(w, http.StatusConflict, errSessionV3Ended)
+		return
+	}
 	now := time.Now().UnixMilli()
 	state := map[string]any{"state": "agent", "ended_at": now}
+	change := sessionChangeTakeoverEnded
 	if action == "start" {
 		state = map[string]any{"state": "human", "by": principal.UserID, "since": now}
+		change = sessionChangeTakeoverStarted
 	}
 	next := session
 	next.Metadata = cloneStringAnyMap(session.Metadata)
@@ -109,7 +115,7 @@ func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "metadata": next.Metadata, "updated_at": now})
+	eventPayload, err := json.Marshal(map[string]any{"session_id": sessionID, "metadata": next.Metadata, "updated_at": now, "change": change})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -182,6 +188,10 @@ func (s *Server) handleSessionV3OperatorMessages(w http.ResponseWriter, r *http.
 	}
 	if !found {
 		writeSessionNotFound(w)
+		return
+	}
+	if sessionEnded(session) {
+		writeError(w, http.StatusConflict, errSessionV3Ended)
 		return
 	}
 	if !sessionTakeoverActive(session) {

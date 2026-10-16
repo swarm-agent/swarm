@@ -1,6 +1,142 @@
+import { SwarmApiError } from './errors.js';
 import type { PendingPermissionRecord } from './permissions.js';
 import { SwarmSessionsNamespace } from './sessions.js';
 import type { SwarmTransport } from './transport.js';
+
+/** What a wait returned for. */
+export type SessionWaitReason = 'assistant_message' | 'tool_call' | 'run_ended' | 'session_ended';
+
+/** One answer from `agents.wait`: why it returned and the session's state now. */
+export interface SessionWait {
+  sessionId: string;
+  /** Pass back as `after` to wait for what comes next. */
+  cursor: number;
+  /** Empty when the wait ended without anything to act on (see `timedOut`). */
+  reasons: SessionWaitReason[];
+  timedOut: boolean;
+  /** More events follow the cursor: wait again at once. */
+  more: boolean;
+  /** The cursor was ahead of the session; `cursor` is where it is now. */
+  staleCursor: boolean;
+  /** The conversation was ended (`endSession`): it takes no more messages. */
+  ended: boolean;
+  run?: { run_id: string; status: string; active: boolean };
+  /** Tool calls waiting for an answer, as `GET .../permissions?status=pending` returns them. */
+  pendingCalls: PendingPermissionRecord[];
+  /** The session's end user and labels, from the stored session (gateway conversations). */
+  endUser?: string;
+  labels?: Record<string, string>;
+}
+
+/** One of an agent's conversations, as `agents.listSessions` returns it. */
+export interface AgentSession {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+  last_message_at: number;
+  state: 'active' | 'ended';
+  ended?: { at: number; by: string; reason?: string };
+  takeover?: Takeover;
+  run_active: boolean;
+}
+
+export interface ListAgentSessionsParams {
+  /** Owner only: the agent to list. A gateway token always lists its own agent. */
+  agent?: string;
+  state?: 'active' | 'ended' | 'all';
+  /** Unix milliseconds. */
+  updatedAfter?: number;
+  updatedBefore?: number;
+  /** `nextCursor` from the previous page. */
+  cursor?: string;
+  /** 1 to 200 (default 50). */
+  limit?: number;
+}
+
+export type AgentEventKind =
+  | 'session.created' | 'message.user' | 'message.assistant'
+  | 'tool.called' | 'tool.answered' | 'tool.failed'
+  | 'session.ended' | 'run.failed' | 'takeover.started' | 'takeover.ended';
+
+/**
+ * One entry in an agent's event feed. Message text and tool arguments,
+ * results and reasons are cut to 2000 characters, with `data.truncated` set.
+ */
+export interface AgentEvent {
+  /** Feed position; pass the last `next_after` back as `after`. */
+  seq: number;
+  id: string;
+  at: number;
+  kind: AgentEventKind;
+  session_id: string;
+  data?: Record<string, unknown>;
+}
+
+export interface AgentEventPage {
+  events: AgentEvent[];
+  next_after: number;
+  latest_seq: number;
+  oldest_seq: number;
+  /** Entries after your cursor were already dropped (or the cursor is ahead): resync from `next_after`. */
+  gap: boolean;
+}
+
+export interface AgentEventsParams {
+  /** Owner only: the agent to follow. A gateway or operator token always follows its own agent. */
+  agent?: string;
+  after?: number;
+  /** 1 to 500 (default 100). */
+  limit?: number;
+  /** Kind prefixes, e.g. `['message', 'tool.failed']`. */
+  kinds?: string[];
+  /** Wait up to this many seconds (max 30) for an entry when there is none. */
+  waitSeconds?: number;
+  signal?: AbortSignal;
+}
+
+/** Yielded by `watchEvents` when entries were missed (dropped by feed retention). */
+export interface AgentEventGap { kind: 'gap'; from: number; to: number }
+
+const WAIT_SECONDS = 25;
+
+// Exactly what daemons released before GET /v3/sessions/{id}/wait answer for
+// that route: 404, or these unknown-route refusals. Anything else is a real error.
+const OLDER_DAEMON_WAIT_REFUSALS = new Set([
+  'unknown sessions v3 path',
+  'route unavailable to an agent-bound token',
+  'route unavailable to an operator token',
+  'route unavailable on container SDK listener',
+]);
+
+function daemonHasNoWait(error: unknown): boolean {
+  if (!(error instanceof SwarmApiError)) return false;
+  if (error.status === 404) return error.message !== 'session not found';
+  return (error.status === 400 || error.status === 403) && OLDER_DAEMON_WAIT_REFUSALS.has(error.message);
+}
+
+/** The pending records that are calls to the tools you answer, with parsed arguments. */
+function clientToolCalls(sessionId: string, records: PendingPermissionRecord[], tools: Iterable<string>, owner: { endUser?: string; labels?: Record<string, string> }): ClientToolCall[] {
+  const names = new Set(tools);
+  const calls: ClientToolCall[] = [];
+  for (const record of records) {
+    if (!names.has(record.tool_name) || record.session_id !== sessionId) continue;
+    let args: unknown;
+    try { args = JSON.parse(record.tool_call_arguments || record.tool_arguments || '{}'); } catch { args = null; }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) continue;
+    calls.push({ kind: 'call', id: record.id, sessionId, runId: record.run_id, tool: record.tool_name, arguments: args as Record<string, unknown>, createdAt: record.created_at, ...owner });
+  }
+  return calls;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', finish); resolve(); };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+  });
+}
 
 /** A typed tool the application answers. Swarm validates and waits; it never executes it. */
 export interface ClientToolDefinition {
@@ -36,8 +172,11 @@ export interface SealedAgentDefinition {
   provider?: string;
   model?: string;
   thinking?: string;
-  /** Bounds one message's cost. Unset fields use the sealed defaults (4 model calls, 1024 output tokens, last 40 messages, 60 s). */
-  limits?: { max_steps?: number; max_output_tokens?: number; max_history_messages?: number; run_timeout_ms?: number };
+  /**
+   * Bounds one message's cost. Unset fields use the sealed defaults (4 model calls, 1024 output tokens, last 40 messages, 60 s).
+   * `retention_days` (1 to 3650; unset keeps them) deletes ended or idle conversations that many days after their last activity.
+   */
+  limits?: { max_steps?: number; max_output_tokens?: number; max_history_messages?: number; run_timeout_ms?: number; retention_days?: number };
 }
 
 /** The account's spend today and its daily cap, as the daemon enforces it. */
@@ -216,6 +355,26 @@ export interface ConverseResult {
   confirmation?: PendingConfirmation;
 }
 
+/** Options of `serve`. */
+export interface ServeOptions {
+  signal?: AbortSignal;
+  /** Poll interval, only against a daemon that predates waiting. */
+  intervalMs?: number;
+  /** Fail calls (and hide confirmations) of sessions that belong to anyone else. */
+  endUser?: string;
+  onConfirm?: ConfirmationHandler;
+}
+
+/** Options of `converse`, `confirm` and `reject`. */
+export interface TurnOptions {
+  timeoutMs?: number;
+  /** Poll interval, only against a daemon that predates waiting. */
+  pollIntervalMs?: number;
+  /** Refuse a session that belongs to anyone else before sending anything. */
+  endUser?: string;
+  onConfirm?: ConfirmationHandler;
+}
+
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
 function toolName(name: string): string {
@@ -226,9 +385,13 @@ function toolName(name: string): string {
 /** Who holds a conversation, as stored in its metadata under `takeover`. */
 export type Takeover = { state: 'human'; by: string; since: number } | { state: 'agent'; ended_at: number };
 
+function requestId(prefix: string): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `${prefix}-${crypto.randomUUID()}`;
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 10)}`;
+}
+
 function operatorRequestId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return `sdk-operator-${crypto.randomUUID()}`;
-  return `sdk-operator-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 10)}`;
+  return requestId('sdk-operator');
 }
 
 /**
@@ -236,7 +399,16 @@ function operatorRequestId(): string {
  * them needs the owner or an `admin` token: keep this in a trusted backend.
  */
 export class SwarmAgentsNamespace {
+  private olderDaemonNoted = false;
+
   constructor(private readonly transport: SwarmTransport) {}
+
+  /** Records, once, that this daemon predates waiting and the SDK polls instead. */
+  private noteOlderDaemon(): void {
+    if (this.olderDaemonNoted) return;
+    this.olderDaemonNoted = true;
+    console.debug('swarm sdk: this daemon has no GET /v3/sessions/{id}/wait (it predates it); serve and converse poll instead');
+  }
 
   async defineClientTool(definition: ClientToolDefinition): Promise<Record<string, unknown>> {
     const name = toolName(definition.name);
@@ -411,29 +583,148 @@ export class SwarmAgentsNamespace {
   }
 
   /**
+   * Waits on one conversation (`GET /v3/sessions/{id}/wait`). Without `after`
+   * it answers at once with the current state and cursor. With `after` it
+   * returns as soon as there is a new assistant message, a pending tool call,
+   * the end of a run or of the session, or after `waitSeconds` (default 25,
+   * max 30). A gateway token may wait only on its agent's sessions.
+   */
+  async wait(sessionId: string, options: { after?: number; waitSeconds?: number; signal?: AbortSignal } = {}): Promise<SessionWait> {
+    const q = new URLSearchParams();
+    let seconds = 0;
+    if (typeof options.after === 'number') {
+      q.set('after', String(options.after));
+      seconds = Math.max(0, Math.min(30, Math.floor(options.waitSeconds ?? WAIT_SECONDS)));
+      q.set('wait_seconds', String(seconds));
+    }
+    const path = `/v3/sessions/${encodeURIComponent(sessionId)}/wait${q.toString() ? `?${q.toString()}` : ''}`;
+    const res = await this.transport.request<{
+      session_id: string; cursor: number; reasons?: SessionWaitReason[] | null; timed_out?: boolean; more?: boolean;
+      stale_cursor?: boolean; ended?: boolean; run?: SessionWait['run']; pending_calls?: PendingPermissionRecord[] | null;
+      end_user?: string; labels?: Record<string, string>;
+    }>(path, { signal: options.signal, timeoutMs: (seconds + 15) * 1000 });
+    const d = res.data;
+    return {
+      sessionId: d.session_id ?? sessionId, cursor: d.cursor, reasons: d.reasons ?? [], timedOut: !!d.timed_out,
+      more: !!d.more, staleCursor: !!d.stale_cursor, ended: !!d.ended, run: d.run ?? undefined, pendingCalls: d.pending_calls ?? [],
+      ...endUserFields(d as Record<string, unknown>),
+    };
+  }
+
+  /**
    * What waits on your application in a session, limited to the tool names you
    * answer: client tool calls to run (`kind: 'call'`) and confirmed calls
-   * waiting for the person's approval (`kind: 'confirmation'`).
+   * waiting for the person's approval (`kind: 'confirmation'`). Both carry the
+   * session's `endUser` and `labels`.
    */
   async pendingCalls(sessionId: string, tools: Iterable<string>): Promise<Array<ClientToolCall | PendingConfirmation>> {
+    const names = [...tools];
+    let state: SessionWait;
+    try {
+      state = await this.wait(sessionId);
+    } catch (error) {
+      if (!daemonHasNoWait(error)) throw error;
+      this.noteOlderDaemon();
+      return this.polledItems(sessionId, names);
+    }
+    return this.waitItems(sessionId, state, names);
+  }
+
+  /** The calls and confirmations a wait reported, for the tools you answer. */
+  private async waitItems(sessionId: string, state: SessionWait, tools: string[]): Promise<Array<ClientToolCall | PendingConfirmation>> {
+    const owner = { ...(state.endUser !== undefined ? { endUser: state.endUser } : {}), ...(state.labels ? { labels: state.labels } : {}) };
+    const items: Array<ClientToolCall | PendingConfirmation> = clientToolCalls(sessionId, state.pendingCalls, tools, owner);
     const names = new Set(tools);
+    for (const confirmation of await this.confirmations(sessionId)) {
+      if (names.has(confirmation.tool)) items.push(confirmation);
+    }
+    return items;
+  }
+
+  /** pendingCalls for daemons that predate waiting (see noteOlderDaemon). */
+  private async polledItems(sessionId: string, tools: string[]): Promise<Array<ClientToolCall | PendingConfirmation>> {
     const res = await this.transport.request<{ permissions: PendingPermissionRecord[] | null; end_user?: string; labels?: Record<string, string> }>(
       `/v3/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=100`
     );
     // The end user comes with the delivery, from the stored session.
-    const owner = endUserFields(res.data as Record<string, unknown>);
-    const calls: Array<ClientToolCall | PendingConfirmation> = [];
-    for (const record of res.data.permissions ?? []) {
-      if (!names.has(record.tool_name) || record.session_id !== sessionId) continue;
-      let args: unknown;
-      try { args = JSON.parse(record.tool_call_arguments || record.tool_arguments || '{}'); } catch { args = null; }
-      if (!args || typeof args !== 'object' || Array.isArray(args)) continue;
-      calls.push({ kind: 'call', id: record.id, sessionId, runId: record.run_id, tool: record.tool_name, arguments: args as Record<string, unknown>, createdAt: record.created_at, ...owner });
-    }
+    const items: Array<ClientToolCall | PendingConfirmation> = clientToolCalls(sessionId, res.data.permissions ?? [], tools, endUserFields(res.data as Record<string, unknown>));
+    const names = new Set(tools);
     for (const confirmation of await this.confirmations(sessionId)) {
-      if (names.has(confirmation.tool)) calls.push(confirmation);
+      if (names.has(confirmation.tool)) items.push(confirmation);
     }
-    return calls;
+    return items;
+  }
+
+  /**
+   * Lists the agent's conversations, most recently updated first
+   * (`GET /v3/sessions:agent`). A gateway or operator token lists its own
+   * agent; the owner passes `agent`. Page with `nextCursor`.
+   */
+  async listSessions(params: ListAgentSessionsParams = {}): Promise<{ sessions: AgentSession[]; nextCursor?: string }> {
+    const q = new URLSearchParams();
+    if (params.agent) q.set('agent', toolName(params.agent));
+    if (params.state) q.set('state', params.state);
+    if (typeof params.updatedAfter === 'number') q.set('updated_after', String(params.updatedAfter));
+    if (typeof params.updatedBefore === 'number') q.set('updated_before', String(params.updatedBefore));
+    if (params.cursor) q.set('cursor', params.cursor);
+    if (typeof params.limit === 'number') q.set('limit', String(params.limit));
+    const res = await this.transport.request<{ sessions: AgentSession[] | null; next_cursor?: string }>(`/v3/sessions:agent${q.toString() ? `?${q.toString()}` : ''}`);
+    return { sessions: res.data.sessions ?? [], ...(res.data.next_cursor ? { nextCursor: res.data.next_cursor } : {}) };
+  }
+
+  /**
+   * Ends a conversation: it accepts no more messages, its run in flight and
+   * pending tool calls stop. Ending an ended conversation changes nothing.
+   */
+  async endSession(sessionId: string, options: { reason?: string; clientRequestId?: string } = {}): Promise<{ ended: { at: number; by: string; reason?: string }; alreadyEnded: boolean; stoppedRunId?: string }> {
+    const res = await this.transport.request<{ ended: { at: number; by: string; reason?: string }; already_ended?: boolean; stopped_run_id?: string }>(
+      `/v3/sessions/${encodeURIComponent(sessionId)}/end`,
+      { method: 'POST', body: { client_request_id: options.clientRequestId ?? requestId('sdk-end'), ...(options.reason ? { reason: options.reason } : {}) } },
+    );
+    return { ended: res.data.ended, alreadyEnded: !!res.data.already_ended, ...(res.data.stopped_run_id ? { stoppedRunId: res.data.stopped_run_id } : {}) };
+  }
+
+  /**
+   * Hard deletes a conversation and its messages. The daemon refuses (409)
+   * while a run or tool call is in flight: end the session first.
+   */
+  async deleteSession(sessionId: string): Promise<void> {
+    await this.transport.request(`/v3/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  }
+
+  /** Reads the agent's event feed after a cursor (`GET /v3/sessions:agent-events`), oldest first. */
+  async events(params: AgentEventsParams = {}): Promise<AgentEventPage> {
+    const q = new URLSearchParams();
+    if (params.agent) q.set('agent', toolName(params.agent));
+    if (typeof params.after === 'number') q.set('after', String(params.after));
+    if (typeof params.limit === 'number') q.set('limit', String(params.limit));
+    if (params.kinds?.length) q.set('kind', params.kinds.join(','));
+    const seconds = Math.max(0, Math.min(30, Math.floor(params.waitSeconds ?? 0)));
+    if (seconds > 0) q.set('wait', String(seconds));
+    const res = await this.transport.request<AgentEventPage>(`/v3/sessions:agent-events${q.toString() ? `?${q.toString()}` : ''}`, { signal: params.signal, timeoutMs: (seconds + 15) * 1000 });
+    const { events, next_after, latest_seq, oldest_seq, gap } = res.data;
+    return { events: events ?? [], next_after, latest_seq, oldest_seq, gap: !!gap };
+  }
+
+  /**
+   * Follows the agent's event feed until `signal` aborts, waiting on the
+   * daemon between entries (no polling). Yields a gap record when entries
+   * after the cursor were already dropped by the feed's retention.
+   */
+  async *watchEvents(params: Omit<AgentEventsParams, 'waitSeconds' | 'limit'> = {}): AsyncGenerator<AgentEvent | AgentEventGap> {
+    let after = params.after ?? 0;
+    while (!params.signal?.aborted) {
+      let page: AgentEventPage;
+      try {
+        page = await this.events({ ...params, after, waitSeconds: WAIT_SECONDS });
+      } catch (error) {
+        if (params.signal?.aborted) return;
+        throw error;
+      }
+      if (page.gap) yield { kind: 'gap', from: after, to: page.next_after };
+      for (const event of page.events) yield event;
+      after = page.next_after;
+    }
   }
 
   /** Confirmed tool calls in a session waiting for the person's approval (at most one). */
@@ -474,7 +765,7 @@ export class SwarmAgentsNamespace {
    * `endUser`, it refuses a session that belongs to anyone else before
    * recording the approval.
    */
-  async confirm(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+  async confirm(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: TurnOptions = {}): Promise<ConverseResult> {
     return this.followTurn(sessionId, handlers, options, async () => {
       await this.decideConfirmation(sessionId, confirmation.id, { decision: 'approve', argumentsHash: confirmation.argumentsHash });
     });
@@ -484,7 +775,7 @@ export class SwarmAgentsNamespace {
    * The person declined: the model is told "the person declined: <note>".
    * Returns the agent's reply. `endUser` works as on `confirm`.
    */
-  async reject(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { note?: string; timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+  async reject(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: TurnOptions & { note?: string } = {}): Promise<ConverseResult> {
     return this.followTurn(sessionId, handlers, options, async () => {
       await this.decideConfirmation(sessionId, confirmation.id, { decision: 'reject', note: options.note });
     });
@@ -502,39 +793,66 @@ export class SwarmAgentsNamespace {
 
   /**
    * Answers one session's client tool calls with `handlers` until `signal`
-   * aborts. Each call is answered at most once; a handler error fails the
-   * call with "tool failed" unless it is a ClientToolError. With `endUser`,
-   * a call whose session belongs to anyone else is failed unanswered, and
-   * such a confirmation is not passed to `onConfirm`.
-   * Confirmations are never answered here: `onConfirm` is called once for
-   * each (show the approval card), and `confirm` or `reject` records the
-   * person's decision.
+   * aborts or the conversation has ended, waiting on the daemon between steps
+   * (`intervalMs` applies only to daemons that predate waiting). Each call is
+   * answered at most once; a handler error fails the call with "tool failed"
+   * unless it is a ClientToolError. With `endUser`, a call whose session
+   * belongs to anyone else is failed unanswered, and such a confirmation is
+   * not passed to `onConfirm`. Confirmations are never answered here:
+   * `onConfirm` is called once for each (show the approval card), and
+   * `confirm` or `reject` records the person's decision.
    */
-  async serve(sessionId: string, handlers: Record<string, ClientToolHandler>, options: { signal?: AbortSignal; intervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<void> {
+  async serve(sessionId: string, handlers: Record<string, ClientToolHandler>, options: ServeOptions = {}): Promise<void> {
     const handled = new Set<string>();
-    const interval = Math.max(50, options.intervalMs ?? 250);
+    const tools = Object.keys(handlers);
+    let cursor: number | undefined;
     while (!options.signal?.aborted) {
-      for (const item of await this.pendingCalls(sessionId, Object.keys(handlers))) {
-        if (handled.has(item.id)) continue;
-        handled.add(item.id);
-        if (item.kind === 'confirmation') {
-          if (options.endUser === undefined || item.endUser === options.endUser) await options.onConfirm?.(item);
-          continue;
+      let state: SessionWait;
+      try {
+        state = await this.wait(sessionId, cursor === undefined ? { signal: options.signal } : { after: cursor, signal: options.signal });
+      } catch (error) {
+        if (options.signal?.aborted) return;
+        if (cursor === undefined && daemonHasNoWait(error)) {
+          this.noteOlderDaemon();
+          return this.servePolling(sessionId, handlers, handled, options);
         }
-        if (options.endUser !== undefined && item.endUser !== options.endUser) {
-          await this.fail(sessionId, item.id, 'tool failed').catch(() => undefined);
-          continue;
-        }
-        try {
-          await this.answer(sessionId, item.id, await handlers[item.tool](item.arguments, item));
-        } catch (error) {
-          await this.fail(sessionId, item.id, error instanceof ClientToolError ? error.message : 'tool failed').catch(() => undefined);
-        }
+        throw error;
       }
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, interval);
-        options.signal?.addEventListener('abort', () => { clearTimeout(timer); resolve(); }, { once: true });
-      });
+      cursor = state.cursor;
+      await this.handleItems(sessionId, await this.waitItems(sessionId, state, tools), handlers, handled, options);
+      // An ended conversation starts no more runs, so no more calls come.
+      if (state.ended && !state.run?.active) return;
+    }
+  }
+
+  /** Answers each new call once and shows each new confirmation once. */
+  private async handleItems(sessionId: string, items: Array<ClientToolCall | PendingConfirmation>, handlers: Record<string, ClientToolHandler>, handled: Set<string>, options: ServeOptions): Promise<void> {
+    for (const item of items) {
+      if (handled.has(item.id)) continue;
+      handled.add(item.id);
+      if (item.kind === 'confirmation') {
+        if (options.endUser === undefined || item.endUser === options.endUser) await options.onConfirm?.(item);
+        continue;
+      }
+      if (options.endUser !== undefined && item.endUser !== options.endUser) {
+        await this.fail(sessionId, item.id, 'tool failed').catch(() => undefined);
+        continue;
+      }
+      try {
+        await this.answer(sessionId, item.id, await handlers[item.tool](item.arguments, item));
+      } catch (error) {
+        await this.fail(sessionId, item.id, error instanceof ClientToolError ? error.message : 'tool failed').catch(() => undefined);
+      }
+    }
+  }
+
+  /** serve for daemons that predate waiting (see noteOlderDaemon). */
+  private async servePolling(sessionId: string, handlers: Record<string, ClientToolHandler>, handled: Set<string>, options: ServeOptions): Promise<void> {
+    const interval = Math.max(50, options.intervalMs ?? 250);
+    const tools = Object.keys(handlers);
+    while (!options.signal?.aborted) {
+      await this.handleItems(sessionId, await this.polledItems(sessionId, tools), handlers, handled, options);
+      await sleep(interval, options.signal);
     }
   }
 
@@ -542,12 +860,13 @@ export class SwarmAgentsNamespace {
    * Sends one user message to a sealed agent's session, answers its client
    * tool calls with `handlers` while it runs, and returns once the run has
    * finished. This is the whole loop a gateway needs per visitor message.
-   * With `endUser`, it refuses a session that belongs to anyone else before
-   * sending, and answers only that end user's calls.
-   * When the agent asks the person to approve a confirmed tool call, the
-   * result carries `confirmation`: pass it to `confirm` or `reject`.
+   * It waits on the daemon between steps; `pollIntervalMs` applies only to
+   * daemons that predate waiting. With `endUser`, it refuses a session that
+   * belongs to anyone else before sending, and answers only that end user's
+   * calls. When the agent asks the person to approve a confirmed tool call,
+   * the result carries `confirmation`: pass it to `confirm` or `reject`.
    */
-  async converse(sessionId: string, message: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+  async converse(sessionId: string, message: string, handlers: Record<string, ClientToolHandler>, options: TurnOptions = {}): Promise<ConverseResult> {
     const sessions = new SwarmSessionsNamespace(this.transport);
     return this.followTurn(sessionId, handlers, options, async () => {
       await sessions.sendMessage(sessionId, { content: message });
@@ -560,16 +879,58 @@ export class SwarmAgentsNamespace {
    * `endUser`, it refuses a session that belongs to anyone else before
    * `start` runs.
    */
-  private async followTurn(sessionId: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler }, start: () => Promise<void>): Promise<ConverseResult> {
+  private async followTurn(sessionId: string, handlers: Record<string, ClientToolHandler>, options: TurnOptions, start: () => Promise<void>): Promise<ConverseResult> {
     const sessions = new SwarmSessionsNamespace(this.transport);
     const initial = await sessions.get(sessionId);
     if (options.endUser !== undefined && initial.end_user !== options.endUser) {
       throw new Error('This conversation belongs to another end user');
     }
+    let begin: SessionWait;
+    try {
+      begin = await this.wait(sessionId);
+    } catch (error) {
+      if (!daemonHasNoWait(error)) throw error;
+      this.noteOlderDaemon();
+      return this.followTurnPolling(sessionId, initial, handlers, options, start);
+    }
+    if (begin.ended) throw new Error('The conversation has ended; start a new session');
+    const before = new Set((initial.messages ?? []).map((m: any) => m.id));
+    const earlier = ((initial.raw ?? {}) as Record<string, any>).pending_confirmation?.id;
+    const serving: ServeOptions = { onConfirm: options.onConfirm, ...(options.endUser !== undefined ? { endUser: options.endUser } : {}) };
+    const tools = Object.keys(handlers);
+    const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+    const handled = new Set<string>();
+    await start();
+    let cursor = begin.cursor;
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('The agent did not finish in time; the run may still complete');
+      const state = await this.wait(sessionId, { after: cursor, waitSeconds: Math.min(WAIT_SECONDS, Math.ceil(remaining / 1000)) });
+      cursor = state.cursor;
+      const items = await this.waitItems(sessionId, state, tools);
+      await this.handleItems(sessionId, items, handlers, handled, serving);
+      const calls = items.filter((item) => item.kind === 'call');
+      if (calls.length > 0 || state.run?.active || state.more) continue;
+      const asked = items.find((item): item is PendingConfirmation => item.kind === 'confirmation' && item.id !== earlier);
+      if (state.reasons.length === 0 && !state.ended && !asked) continue;
+      const detail = await sessions.get(sessionId);
+      const added = ((detail.messages ?? []) as Array<Record<string, any>>).filter((m) => !before.has(m.id));
+      const failure = added.find((m) => m.role === 'system' && m.metadata?.message_kind === 'run_failure');
+      if (failure) throw new Error(`The agent's run failed: ${String(failure.content ?? '').slice(0, 300)}`);
+      const reply = added.filter((m) => m.role === 'assistant').map((m) => String(m.content ?? '')).join('\n\n');
+      if (asked) return { reply, messages: added, confirmation: asked };
+      if (added.some((m) => m.role === 'assistant')) return { reply, messages: added };
+      if (state.ended) throw new Error('The conversation was ended before the agent replied');
+    }
+  }
+
+  /** followTurn for daemons that predate waiting (see noteOlderDaemon). */
+  private async followTurnPolling(sessionId: string, initial: { messages?: unknown[]; raw?: unknown }, handlers: Record<string, ClientToolHandler>, options: TurnOptions, start: () => Promise<void>): Promise<ConverseResult> {
+    const sessions = new SwarmSessionsNamespace(this.transport);
     const before = new Set((initial.messages ?? []).map((m: any) => m.id));
     const earlier = ((initial.raw ?? {}) as Record<string, any>).pending_confirmation?.id;
     const controller = new AbortController();
-    const serving = this.serve(sessionId, handlers, {
+    const serving = this.servePolling(sessionId, handlers, new Set<string>(), {
       signal: controller.signal,
       intervalMs: options.pollIntervalMs ?? 200,
       onConfirm: options.onConfirm,
@@ -594,7 +955,7 @@ export class SwarmAgentsNamespace {
           return { reply, messages: added };
         }
         if (Date.now() > deadline) throw new Error('The agent did not finish in time; the run may still complete');
-        await new Promise((resolve) => setTimeout(resolve, options.pollIntervalMs ?? 400));
+        await sleep(options.pollIntervalMs ?? 400);
       }
     } finally {
       controller.abort();

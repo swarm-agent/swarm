@@ -339,6 +339,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3PrimaryEvents(w, r, principal, sessionID)
 	case "run/stop":
 		s.handleSessionV3PrimaryRunStop(w, r, principal, sessionID)
+	case "wait":
+		s.handleSessionV3Wait(w, r, principal, sessionID)
+	case "end":
+		s.handleSessionV3End(w, r, principal, sessionID)
 	case "takeover":
 		s.handleSessionV3Takeover(w, r, principal, sessionID)
 	case "operator-messages":
@@ -1582,10 +1586,6 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 			}
 		}
 	}
-	eventType := "session.deleted"
-	if kind == "archived" {
-		eventType = "session.archived"
-	}
 	var event *pebblestore.EventEnvelope
 	if kind == "archived" {
 		event, err = s.sessions.ArchiveSessionWithEvent(session.ID)
@@ -1606,17 +1606,7 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
-	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
-		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(session.ID, head); recordErr == nil && ok && record.Event.EventType == eventType {
-			if publishErr := s.publishCommittedV3RealtimeOutbox(record); publishErr != nil {
-				// Durable commit succeeded; realtime wake is an accelerator only.
-				_ = publishErr
-			}
-		}
-	}
-	if event != nil && s.hub != nil {
-		s.hub.Publish(*event)
-	}
+	s.publishSessionV3Deleted(session.ID, event)
 	response := map[string]any{
 		"ok":         true,
 		"session_id": session.ID,
@@ -1629,6 +1619,19 @@ func (s *Server) handleSessionV3PrimaryTombstone(w http.ResponseWriter, r *http.
 		},
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// publishSessionV3Deleted wakes realtime readers after a committed hard delete.
+// The durable commit already succeeded; these wakes are accelerators only.
+func (s *Server) publishSessionV3Deleted(sessionID string, event *pebblestore.EventEnvelope) {
+	if head, headErr := s.sessions.CurrentRealtimeOutboxRevision(); headErr == nil && head > 0 {
+		if record, ok, recordErr := s.sessions.LastRealtimeOutboxForSessionAtOrBeforeEndpoint(sessionID, head); recordErr == nil && ok && record.Event.EventType == "session.deleted" {
+			_ = s.publishCommittedV3RealtimeOutbox(record)
+		}
+	}
+	if event != nil && s.hub != nil {
+		s.hub.Publish(*event)
+	}
 }
 
 func sessionIDsFromSnapshots(sessions []pebblestore.SessionSnapshot) []string {
@@ -1764,7 +1767,7 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusConflict, map[string]any{"ok": false, "error_code": "idempotency_conflict", "error": err.Error()})
 			return
 		}
-		if errors.Is(err, pebblestore.ErrWorkerConflict) {
+		if errors.Is(err, pebblestore.ErrWorkerConflict) || errors.Is(err, errSessionV3Ended) {
 			writeError(w, http.StatusConflict, err)
 			return
 		}
@@ -1816,6 +1819,9 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 	}
 	if !found {
 		return sessionruntime.SessionMutationResult{}, nil, errors.New("session not found")
+	}
+	if sessionEnded(session) {
+		return sessionruntime.SessionMutationResult{}, nil, errSessionV3Ended
 	}
 	if err := validateSessionsV3CreateMetadata(req.Metadata); err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
