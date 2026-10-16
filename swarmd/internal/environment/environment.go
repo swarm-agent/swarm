@@ -20,10 +20,15 @@ type Definition struct {
 }
 
 type Spec struct {
-	Folder     string
-	Checkout   string
-	Definition Definition
-	Commit     string
+	Account      string
+	Checks       []string
+	CheckTimeout time.Duration
+	BaseCommit   string
+	Selected     func(string)
+	Folder       string
+	Checkout     string
+	Definition   Definition
+	Commit       string
 }
 
 type ExecRequest = sandbox.ExecRequest

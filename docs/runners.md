@@ -4,15 +4,12 @@
 
 The startup configuration parser accepts `environment_provider = local|runners|auto`
 and `environment_runner_wait_seconds` (default `120`, nonnegative seconds).
-Existing configuration files retain their defaults. **Only `local` is wired into
-landing execution today.** Selecting `runners` or `auto` still fails at the API
-provider initialization boundary; it does not silently execute locally.
+Existing configuration files retain their defaults. Provider wiring is tested
+with in-process runner API handlers; this is not a live remote-runner qualification.
 
-The design below is the target contract, not an operational readiness claim.
-The configuration change alone does not implement runner support. Initial hub
-credentials and lease APIs are described below under **API**, including their
-remaining gaps. Runner mode, management commands and installer support are
-described below, including remaining service compatibility limitations.
+Runner mode, management commands and installer support are described below,
+including remaining service compatibility limitations. The target design is not
+an operational readiness claim.
 
 ## Set up a runner
 
@@ -61,6 +58,26 @@ most 120 seconds for the service to stop, and fails without activation if it is
 still active. It never stops active work. Do not treat these commands as proof of
 end-to-end landing readiness.
 
+## Choosing where landings run
+
+- `environment_provider = local` (default) uses a fresh local landing environment.
+- `environment_provider = runners` queues an `archive-v1` payload for a runner.
+- `environment_provider = auto` gives runners a chance to claim the landing, then
+  uses local execution after `environment_runner_wait_seconds` (default `120`).
+  Zero selects an immediate fallback when no claim is available.
+
+The claim wait also bounds `runners` acquisition; exhaustion reports a clear
+`environment_failed` reason rather than sending work back to the coder. Two
+lease expiries or a runner-reported payload failure are infrastructure failures.
+`auto` retries such a failure once locally. Actual check failures retain the
+normal coder send-back behavior. Delivery records expose `environment` as
+`local` or `runner:NAME`; provider selections are logged.
+
+The hub retains bounded aggregate runner output, streamed into the landing's
+bounded check output. The current protocol has batch exit codes, not per-check
+output frames: aggregate output is attached to the first check result and retained
+for any later failing check's diagnostic excerpt.
+
 ## Target design
 
 The hub owns projects, folders, job clones, the landing queue, signals, keys and
@@ -95,7 +112,7 @@ new claims.
 Claims require durable leases with a 60-second heartbeat expiry. Expiry produces
 `lease_expired` on the first attempt, allowing one retry. The second expiry
 produces `environment_failed` and `job.environment_failed` naming both attempts.
-Local fallback under `auto` remains provider work. Infrastructure failures
+Local fallback under `auto` is handled by the provider. Infrastructure failures
 never send work back to the coder. Restart recovery must reattach a result to its
 exact durable claim or rerun the landing, never accept a stale result as success.
 A runner can make landing slower, never wrong: only the hub can integrate or push.

@@ -41,6 +41,7 @@ type ReviewEquivalence struct {
 }
 
 type Entry struct {
+	Environment         string                               `json:"environment,omitempty"`
 	Proof               *Proof                               `json:"proof,omitempty"`
 	ValidateReview      func(head, patch, base string) error `json:"-"`
 	Checkpoint          func() error                         `json:"-"`
@@ -135,7 +136,7 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 		if old.Request.JobID != e.Request.JobID {
 			continue
 		}
-		if pending(old) || old.State == "landed" || (old.State == "landing_stopped" && !retryStopped) {
+		if pending(old) || old.State == "landed" || ((old.State == "landing_stopped" || old.State == "environment_failed") && !retryStopped) {
 			return old, position(entries, e.Request.JobID), nil
 		}
 		// Only retain queue-owned evidence for the same source and destination.
@@ -322,6 +323,10 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 				e.SendBackPending = true
 			} else {
 				e.State = "land_failed"
+				var infrastructure interface{ EnvironmentFailure() bool }
+				if errors.As(err, &infrastructure) && infrastructure.EnvironmentFailure() {
+					e.State = "environment_failed"
+				}
 				e.Reason = oneLine(err.Error(), 200)
 			}
 			break

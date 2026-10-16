@@ -533,6 +533,14 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 		return errors.New("landing environment provider unavailable")
 	}
 	spec.Commit = parsedHead
+	spec.BaseCommit = base.Commit
+	spec.Account = e.Account
+	spec.Checks = checks
+	spec.CheckTimeout = 20 * time.Minute
+	if checkTimeoutMinutes > 0 {
+		spec.CheckTimeout = time.Duration(checkTimeoutMinutes) * time.Minute
+	}
+	spec.Selected = func(name string) { e.Environment = name }
 	checkEnvironment, err := environments.Acquire(ctx, spec)
 	if err != nil {
 		return err
@@ -603,10 +611,14 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 }
 
 // SetEnvironmentProvider configures landing execution at startup only.
-func (s *Server) SetEnvironmentProvider(name string) error {
-	if name != "local" {
-		return fmt.Errorf("invalid environment_provider %q (valid values: local)", name)
+func (s *Server) SetEnvironmentProvider(name string, waitSeconds ...int) error {
+	if name != "local" && name != "runners" && name != "auto" {
+		return fmt.Errorf("invalid environment_provider %q (valid values: local, runners, auto)", name)
 	}
-	s.landingEnvironmentProvider = environment.Local{Manager: sandbox.Default()}
+	wait := 120 * time.Second
+	if len(waitSeconds) > 0 && waitSeconds[0] >= 0 {
+		wait = time.Duration(waitSeconds[0]) * time.Second
+	}
+	s.landingEnvironmentProvider = landingProvider{server: s, name: name, wait: wait}
 	return nil
 }

@@ -602,6 +602,7 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 				state["landed_commit"] = entry.Commit
 				state["delivery_reason"] = entry.Reason
 				state["checks"] = entry.Checks
+				state["environment"] = entry.Environment
 				if entry.Proof != nil {
 					state["proof"] = entry.Proof
 				}

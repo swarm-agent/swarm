@@ -86,6 +86,7 @@ func (s *Server) handleRunnerWork(w http.ResponseWriter, r *http.Request, rec *p
 		return
 	}
 	var req struct {
+		State      string `json:"state"`
 		LeaseID    string `json:"lease_id"`
 		Output     string `json:"output"`
 		ExitCodes  []int  `json:"exit_codes"`
@@ -95,7 +96,11 @@ func (s *Server) handleRunnerWork(w http.ResponseWriter, r *http.Request, rec *p
 		writeError(w, 400, err)
 		return
 	}
-	if err := s.runnerStore.UpdateRunnerLanding(rec.AccountScopeID, rec.Name, parts[0], req.LeaseID, parts[1], req.Output, req.ExitCodes, req.DurationMS, now); err != nil {
+	action := parts[1]
+	if action == "result" && req.State == "environment_failed" {
+		action = "environment_failed"
+	}
+	if err := s.runnerStore.UpdateRunnerLanding(rec.AccountScopeID, rec.Name, parts[0], req.LeaseID, action, req.Output, req.ExitCodes, req.DurationMS, now); err != nil {
 		writeError(w, 409, err)
 		return
 	}

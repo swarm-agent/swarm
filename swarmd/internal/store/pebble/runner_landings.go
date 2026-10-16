@@ -31,6 +31,7 @@ type RunnerLanding struct {
 	LeaseUntil      int64             `json:"lease_until"`
 	Attempts        []string          `json:"attempts"`
 	Output          string            `json:"output"`
+	OutputBytes     int64             `json:"output_bytes"`
 	ExitCodes       []int             `json:"exit_codes,omitempty"`
 	DurationMS      int64             `json:"duration_ms,omitempty"`
 }
@@ -65,12 +66,23 @@ func (s *Store) mutateRunners(account string, fn func(*runnerState) error) error
 	if _, err := s.GetJSON(key, &st); err != nil {
 		return err
 	}
+	before, err := json.Marshal(st.Landings)
+	if err != nil {
+		return err
+	}
 	previous := make(map[string]string, len(st.Landings))
 	for _, l := range st.Landings {
 		previous[l.ID] = l.State
 	}
 	if err := fn(&st); err != nil {
 		return err
+	}
+	after, err := json.Marshal(st.Landings)
+	if err != nil {
+		return err
+	}
+	if string(before) != string(after) {
+		defer s.wakeRunnerLandings()
 	}
 	data, err := json.Marshal(st)
 	if err != nil {
@@ -134,6 +146,7 @@ func (s *Store) CreateRunnerLanding(account string, l RunnerLanding) error {
 		l.LeaseUntil = 0
 		l.Attempts = nil
 		l.Output = ""
+		l.OutputBytes = 0
 		l.ExitCodes = nil
 		l.DurationMS = 0
 		st.Landings = append(st.Landings, l)
@@ -174,6 +187,9 @@ func (s *Store) ClaimRunnerLanding(account, runner string, now time.Time) (*Runn
 			status.State = "idle"
 		}
 		st.Statuses[runner] = status
+		if status.State == "unhealthy" {
+			return nil
+		}
 		for _, l := range st.Landings {
 			if l.State == "claimed" && l.Runner == runner {
 				return errors.New("runner already has a landing")
@@ -222,12 +238,19 @@ func (s *Store) UpdateRunnerLanding(account, runner, id, lease, action, output s
 			status.LastSeen = now.UnixMilli()
 			status.State = "busy"
 			switch action {
+			case "environment_failed":
+				l.State = "environment_failed"
+				l.DeliveryReason = output
+				l.LeaseID = ""
+				l.LeaseUntil = 0
+				status.State = "unhealthy"
 			case "heartbeat":
 				l.LeaseUntil = now.Add(time.Minute).UnixMilli()
 			case "output":
 				if len(output) > 64<<10 {
 					return errors.New("output chunk exceeds 64 KiB")
 				}
+				l.OutputBytes += int64(len(output))
 				l.Output += output
 				if len(l.Output) > 2<<20 {
 					l.Output = l.Output[len(l.Output)-(2<<20):]

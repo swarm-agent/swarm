@@ -23,28 +23,29 @@ type Config struct {
 	ContainerSDKHost string
 	// TailnetIdentity admits Swarm Control on the SDK listener by the tailnet
 	// policy's app capability (Tailscale Serve header) instead of an AI key.
-	TailnetIdentity         bool
-	LockPermissionPolicy    bool
-	PeerTransportPort       int
-	BypassPermissions       bool
-	RetainToolOutputHistory bool
-	LongSessionDiagnostics  bool
-	DataDir                 string
-	DBPath                  string
-	LockPath                string
-	StartupCWD              string
-	SandboxMode             string
-	SandboxImage            string
-	SandboxNetwork          string
-	SandboxRuntime          string
-	SandboxMemory           string
-	SandboxCPUs             string
-	LandingMaxConcurrent    int
-	EnvironmentProvider     string
-	SandboxCgroupParent     string
-	WorkerMaxConcurrentRuns int
-	SecretsGateway          string // off (default) | on
-	SecretsGatewayAddr      string // bridge address:port the gateway listens on
+	TailnetIdentity              bool
+	LockPermissionPolicy         bool
+	PeerTransportPort            int
+	BypassPermissions            bool
+	RetainToolOutputHistory      bool
+	LongSessionDiagnostics       bool
+	DataDir                      string
+	DBPath                       string
+	LockPath                     string
+	StartupCWD                   string
+	SandboxMode                  string
+	SandboxImage                 string
+	SandboxNetwork               string
+	SandboxRuntime               string
+	SandboxMemory                string
+	SandboxCPUs                  string
+	LandingMaxConcurrent         int
+	EnvironmentProvider          string
+	EnvironmentRunnerWaitSeconds int
+	SandboxCgroupParent          string
+	WorkerMaxConcurrentRuns      int
+	SecretsGateway               string // off (default) | on
+	SecretsGatewayAddr           string // bridge address:port the gateway listens on
 }
 
 func Parse(args []string) (Config, error) {
@@ -108,6 +109,7 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "memory cap per sandbox (empty: host-derived)")
 	fs.StringVar(&cfg.SandboxCPUs, "sandbox-cpus", startupCfg.SandboxCPUs, "CPU quota per agent container (empty: unrestricted)")
 	cfg.EnvironmentProvider = startupCfg.EnvironmentProvider
+	cfg.EnvironmentRunnerWaitSeconds = startupCfg.EnvironmentRunnerWaitSeconds
 	fs.IntVar(&cfg.LandingMaxConcurrent, "landing-max-concurrent", startupCfg.LandingMaxConcurrent, "box-wide landing limit (0: logical CPUs / 4)")
 	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")
 	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: RAM-derived)")
