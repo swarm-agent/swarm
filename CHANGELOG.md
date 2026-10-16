@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Require a recorded OK review before narrowing rebase review scope, preserve exact landing-base evidence, and bound automatic review-infrastructure admission retries. Docs impact: none.
+
 - Start Cloud Build checks concurrently over one payload, add the default-on `cloudbuild_cache` startup switch, and skip installed packages in simple apt-get setup commands; landing failure aggregation remains pending. Docs impact: docs/runners.md
 - Fix Cloud Build landing argument limits by uploading the runner script and fetching it through a small SHA256-verifying bootstrap. Docs impact: none.
 - Wire `landing_parallel` into per-folder merge trains with concurrent candidate checks, ordered pushes, suffix retesting and interrupted-push reconciliation. Docs impact: docs/runners.md

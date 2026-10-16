@@ -325,7 +325,7 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 			return err
 		}
 		for _, sig := range page.Signals {
-			if autoPublishSignal(sig.Kind, sig.Attrs["verdict"]) || (sig.Kind == "job.reviewed" && sig.Attrs["verdict"] == "block") {
+			if sig.Kind == "job.review_failed" || autoPublishSignal(sig.Kind, sig.Attrs["verdict"]) || (sig.Kind == "job.reviewed" && sig.Attrs["verdict"] == "block") {
 				// A crash after retry handoff but before cursor persistence can
 				// leave the same signal in both places. Do not duplicate it.
 				deferred := false
@@ -531,13 +531,28 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 			chain.Head = controlMCPString(result, "head")
 			chain.Next = "review_failed"
 			chain.FollowupRunID = completedPublishFollowup(refs)
-			chain.Findings = err.Error()
+			chain.Findings = "Review infrastructure failure: " + err.Error()
+			chain.InfrastructureAttempts++
+			chain.RetryAfter = time.Now().Add(30 * time.Second).UnixMilli()
 			if writeErr := p.state.PutJSON(key, chain); writeErr != nil {
 				return writeErr
 			}
-			return c.emitPipeline(workerID, runID, refs, chain)
+			if err := c.emitPipeline(workerID, runID, refs, chain); err != nil {
+				return err
+			}
+			if chain.InfrastructureAttempts < 3 {
+				return p.retry(sig, errAutoPublishWait)
+			}
+			return p.skip(sig, "review infrastructure retry budget exhausted")
 		}
 		if !ready {
+			var chain ReviewPipeline
+			if _, err := p.state.GetJSON(pipelineKey(principal.AccountScopeID, controlMCPJobID(controlMCPJobWorker, workerID, runID)), &chain); err != nil {
+				return err
+			}
+			if chain.Next == "review_failed" && strings.HasPrefix(chain.Findings, "Review infrastructure") && chain.InfrastructureAttempts < 3 {
+				return p.retry(sig, errAutoPublishWait)
+			}
 			return p.skip(sig, "review pipeline pending; awaiting review signal")
 		}
 	}
