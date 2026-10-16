@@ -20,10 +20,12 @@ type runnerArchiveWriter struct {
 	dst       io.Writer
 	remaining int64
 	size      int64
+	exceeded  bool
 }
 
 func (w *runnerArchiveWriter) Write(p []byte) (int, error) {
 	if int64(len(p)) > w.remaining {
+		w.exceeded = true
 		return 0, errors.New("runner archive exceeds 512 MiB")
 	}
 	n, err := w.dst.Write(p)
@@ -65,6 +67,9 @@ func (s *Store) buildRunnerPayload(account string, l *RunnerLanding) error {
 	cmd := sandbox.Command(ctx, "-C", l.SourceClonePath, "archive", "--format=tar.gz", l.HeadCommit)
 	cmd.Stdout = writer
 	if err := cmd.Run(); err != nil {
+		if writer.exceeded {
+			return errors.New("runner archive exceeds 512 MiB")
+		}
 		return fmt.Errorf("create runner archive: %w", err)
 	}
 	if err := f.Close(); err != nil {
