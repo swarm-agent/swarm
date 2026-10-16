@@ -216,13 +216,11 @@ Remaining work: the production provider caller (job 5c), hub environment-failure
 
 ## Cloud Build runner
 
-The provider implementation can be injected through `SetCloudBuildProvider` and
-selected with `gcp-cloudbuild` at the API startup boundary. The startup parser
-recognizes the additive `cloudbuild_*` keys below, but **ADC and runtime provider
-wiring are not yet connected in this revision**. Setting the provider in a config
-file is not operational yet.
-The REST clients require an ADC-authenticated HTTP client with the
-`https://www.googleapis.com/auth/cloud-platform` scope; never configure a key file.
+Daemon startup constructs the production provider using Application Default
+Credentials with the `https://www.googleapis.com/auth/cloud-platform` scope.
+Use the machine's attached service account or `GOOGLE_APPLICATION_CREDENTIALS`;
+never put a credential key path in `swarm.conf`. Missing credentials fail explicit
+`gcp-cloudbuild` startup; `auto` logs a warning and disables Cloud Build.
 
 For deployment, enable the Cloud Build API and provision a private storage bucket.
 The hub machine identity needs `roles/cloudbuild.builds.editor` and
@@ -230,21 +228,29 @@ The hub machine identity needs `roles/cloudbuild.builds.editor` and
 object access and `roles/logging.logWriter`; when selecting a service account,
 the submitting identity also needs permission to act as that account.
 
-Once startup wiring is available, choose `environment_provider = gcp-cloudbuild`
+Choose `environment_provider = gcp-cloudbuild`
 and supply `cloudbuild_project`, `cloudbuild_region` (`global` or a regional
 location), `cloudbuild_bucket`, `cloudbuild_machine_type`,
 `cloudbuild_timeout_minutes`, and optional `cloudbuild_service_account`.
-With an injected Cloud Build provider, `auto` tries runners, then Cloud Build,
+With project and bucket configured, `auto` tries runners, then Cloud Build,
 then local execution on infrastructure failure. Check failures are sent back,
 not retried locally. Delivery records identify `cloudbuild:BUILD_ID`.
+
+Run `swarmd config cloudbuild-check` under the daemon's identity and environment
+to verify configured bucket write/delete access and Cloud Build list access. It
+writes one small uniquely named object, deletes it, and lists builds without
+creating any. It prints `OK` or the API error. This does not verify build image
+readiness, build service-account permissions, or permission to create builds.
+Region defaults to `global`; timeout defaults to 60 minutes (valid: 1–1440).
 
 Each landing submits one build using the environment's base image. That image
 must contain bash, Python 3, curl, tar, git and GNU timeout. The build downloads
 and SHA-256 verifies the archive, runs setup and checks, and uploads results and
 a bounded 2 MiB log. The provider deletes the landing bucket prefix on release
 and on acquisition errors. Cancellation does not cancel a running Google build;
-a late upload can race cleanup, so configure a bucket lifecycle expiration as an
-additional retention safeguard until cancellation coordination is implemented.
+remote build result uploads may therefore still arrive after release. Configure
+a bucket lifecycle expiration as an additional retention safeguard. Failed daemon
+uploads are cancelled before cleanup and the prefix is swept again afterward.
 
 Cost per landing depends on actual billed build minutes and machine type, plus
 storage operations, temporary object storage, logging and applicable network

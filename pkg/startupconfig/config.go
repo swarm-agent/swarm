@@ -958,7 +958,7 @@ func validate(cfg FileConfig) error {
 
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case "cloudbuild_project", "cloudbuild_bucket", "cloudbuild_service_account", "sandbox_cpus", "sandbox_cgroup_parent", "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
+	case "cloudbuild_project", "cloudbuild_region", "cloudbuild_bucket", "cloudbuild_machine_type", "cloudbuild_service_account", "sandbox_cpus", "sandbox_cgroup_parent", "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
 		return true
 	default:
 		return false

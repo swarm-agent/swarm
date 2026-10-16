@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Automatically re-queue stopped landing jobs after completed fix rounds with a new head, preserving bounded send-backs and reporting exhausted rounds. Docs impact: none.
+- Wire Cloud Build ADC clients at daemon startup, add `swarmd config cloudbuild-check`, preserve check durations and cancel failed uploads before cleanup. Docs impact: docs/runners.md
 
 - Drain runner landings on SIGTERM, wait for idle before updates, and show current landing attribution in runner status/list. Docs impact: docs/runners.md
 - Add injectable Cloud Build landing execution, bounded results and automatic infrastructure fallback; startup configuration/ADC wiring remains pending. Docs impact: docs/runners.md

@@ -197,3 +197,24 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: ConfigureCloudBuild must fail explicit startup on missing ADC while
+// auto disables the provider. An explicit nonexistent credential file avoids
+// ambient metadata credentials at this startup boundary.
+func TestCloudBuildStartupMissingCredentials(t *testing.T) {
+	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", t.TempDir()+"/missing.json")
+	cfg := environment.CloudBuildConfig{Project: "project", Bucket: "bucket", TimeoutMinutes: 60}
+	for _, name := range []string{"gcp-cloudbuild", "auto"} {
+		s := &Server{}
+		err := s.ConfigureCloudBuild(context.Background(), name, cfg, nil)
+		if name == "gcp-cloudbuild" && (err == nil || !strings.Contains(err.Error(), "Application Default Credentials")) {
+			t.Fatalf("missing startup error: %v", err)
+		}
+		if name == "auto" && err != nil {
+			t.Fatal(err)
+		}
+		if s.cloudBuildProvider != nil {
+			t.Fatal("installed provider with missing credentials")
+		}
+	}
+}
