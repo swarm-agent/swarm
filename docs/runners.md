@@ -247,6 +247,8 @@ Positive values override the timeout in minutes (also capped at 24 hours);
 negative values are rejected at startup. The permission-only `cloudbuild-check`
 uses the same timeout resolver but has no folder timeout or build to execute.
 
+The Cloud Build step keeps the image's own `PATH` (Go and Node from the image), and the build request carries only the bucket, the object prefix and the archive hash, never credentials (the build signs in as its configured service account).
+
 Each landing submits one build using the environment's base image. That image
 must contain bash, Python 3, curl, tar, git and GNU timeout. The build downloads
 and SHA-256 verifies the archive, runs setup and checks, and uploads results and
