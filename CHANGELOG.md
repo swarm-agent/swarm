@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Persist Cloud Build landing Go build/test, module and pnpm caches with bounded, best-effort archive restore and atomic publication. Docs impact: docs/runners.md
+- Preserve OK reviews across patch-identical landing rebases and route changed patches to rebase-scoped review without consuming coder fix rounds. Docs impact: none.
 
 - Automatically retry sent-back landing jobs once per completed follow-up, even without a new commit, with durable replay protection. Docs impact: none.
 

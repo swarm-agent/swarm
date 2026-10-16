@@ -177,6 +177,12 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if err != nil {
 				return err
 			}
+			if e.State == "review_pending" {
+				_, err := c.advancePipeline(a, b, refs, rule, map[string]any{"head": e.Request.Head})
+				if err != nil {
+					return err
+				}
+			}
 			severity := pebblestore.SignalSeverityInfo
 			if e.State == "landing_stopped" || e.State == "land_failed" {
 				severity = pebblestore.SignalSeverityWarning
@@ -189,7 +195,12 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if e.State == "landed" {
 				summary += " " + e.Commit
 			}
-			return c.signalPublishDurable(kind, a, b, refs, signal, severity, summary, map[string]string{"head": e.Commit, "send_backs": fmt.Sprint(e.SendBacks), "notification_id": e.NotificationID})
+			payload := map[string]string{"head": e.Commit, "send_backs": fmt.Sprint(e.SendBacks), "notification_id": e.NotificationID}
+			if e.Review != nil && e.Review.PatchIdentical {
+				payload["review_acceptance"] = "patch-identical"
+				payload["reviewed_head"], payload["rebased_head"] = e.Review.ReviewedHead, e.Review.RebasedHead
+			}
+			return c.signalPublishDurable(kind, a, b, refs, signal, severity, summary, payload)
 		},
 	})
 }
@@ -427,6 +438,9 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			}
 		}
 		if e.Review != nil {
+			if current != e.Review.RebasedHead {
+				return reviewRequired(current)
+			}
 			patch, err := patchID(current, base.Commit)
 			if err != nil {
 				return err
@@ -461,7 +475,7 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			}
 		}
 	}
-	if rule.Pipeline {
+	if reviewGated(rule) {
 		raw, exit, readErr := git("merge-base", reviewedHead, base.Commit)
 		if readErr != nil || exit != 0 {
 			return errors.New("cannot read range-diff base")
@@ -505,11 +519,47 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	if err != nil {
 		return err
 	}
-	if rule.Pipeline && parsedHead != reviewedHead {
-		// Let Git produce only correspondence headers, never a truncated patch.
-		diff, exit, readErr := git("range-diff", "--no-color", "--no-patch", oldBase+".."+reviewedHead, base.Commit+".."+parsedHead)
-		if readErr != nil || exit != 0 || !unchangedRangeDiff(diff) {
+	deferReview := func() error {
+		e.Request.Head, e.Request.BaseCommit, e.Request.BaseBranch = parsedHead, base.Commit, base.Branch
+		e.Review = nil
+		if !rule.Pipeline {
 			return reviewRequired(parsedHead)
+		}
+		return &publish.RebaseReviewError{Reason: fmt.Sprintf("Rebase-scoped review: review only the conflict resolution and confirm the range-diff against the previously reviewed commits (%s..%s versus %s..%s).", oldBase, reviewedHead, base.Commit, parsedHead)}
+	}
+	if reviewGated(rule) && parsedHead != reviewedHead {
+		// Compare ordered per-commit stable patch IDs, not range-diff's context
+		// similarity heuristic or just the aggregate patch. Bound and fail closed
+		// on truncated output; empty commits and merges require a fresh review.
+		ids := func(base, head string) (string, error) {
+			res, err := exec(ctx, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-c", `set -e; git rev-list --reverse "$1..$2" | while read -r commit; do git show --format= --no-ext-diff --no-textconv --binary "$commit" | git patch-id --stable | cut -d ' ' -f 1; echo end; done`, "patch-ids", base, head}, WorkingDir: path, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
+			if err != nil {
+				return "", err
+			}
+			if res.ExitCode != 0 || len(res.Stdout) >= 4096 || strings.TrimSpace(res.Stdout) == "" {
+				return "", errors.New("cannot verify commit patch identities")
+			}
+			fields := strings.Fields(res.Stdout)
+			if len(fields)%2 != 0 {
+				return "", errors.New("empty or unsupported commit patch")
+			}
+			for i := 0; i < len(fields); i += 2 {
+				if _, err := publish.ParseHeadOutput(fields[i]); err != nil || fields[i+1] != "end" {
+					return "", errors.New("invalid commit patch identity")
+				}
+			}
+			return res.Stdout, nil
+		}
+		before, err := ids(oldBase, reviewedHead)
+		if err != nil {
+			return deferReview()
+		}
+		after, err := ids(base.Commit, parsedHead)
+		if err != nil {
+			return deferReview()
+		}
+		if before != after {
+			return deferReview()
 		}
 	}
 	if reviewGated(rule) && parsedHead != reviewedHead {
@@ -518,11 +568,13 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			return err
 		}
 		if patch != reviewedPatch {
-			return reviewRequired(parsedHead)
+			return deferReview()
 		}
 	}
 	if reviewGated(rule) {
 		e.Review.RebasedHead = parsedHead
+		e.Review.ReviewedBase, e.Review.RebasedBase = oldBase, base.Commit
+		e.Review.PatchIdentical = parsedHead != reviewedHead
 		if e.Checkpoint != nil {
 			if err := e.Checkpoint(); err != nil {
 				return err
