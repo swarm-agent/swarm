@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,5 +89,82 @@ func TestWorkerCloneIsolation(t *testing.T) {
 	}
 	if git(repo, "rev-parse", "HEAD") != base {
 		t.Fatal("cleanup changed folder")
+	}
+}
+
+// Requirement: allocateWorkerClone preserves folder-local authorship, while
+// missing components remain governed by the sandbox home, not clone config.
+// Real Git commits through the service helper and bash prove author/committer
+// postconditions without a daemon/provider; sandbox home setup is tested separately.
+func TestWorkerCloneGitIdentity(t *testing.T) {
+	for _, local := range []bool{true, false} {
+		t.Run(fmt.Sprint(local), func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+			t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+			for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_COUNT"} {
+				t.Setenv(key, "")
+				if err := os.Unsetenv(key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			git := func(path string, args ...string) string {
+				t.Helper()
+				out, err := runGit(path, args...)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return out
+			}
+			repo := t.TempDir()
+			git(repo, "init", "-b", "dev")
+			git(repo, "config", "--global", "user.name", "Swarm")
+			git(repo, "config", "--global", "user.email", "swarm@localhost")
+			want := "Swarm <swarm@localhost>"
+			if local {
+				git(repo, "config", "--local", "user.name", "Folder Author")
+				git(repo, "config", "--local", "user.email", "folder@example.invalid")
+				want = "Folder Author <folder@example.invalid>"
+			}
+			git(repo, "commit", "--allow-empty", "-m", "base")
+			before, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := (&Service{}).allocateSessionWorkspaceWithBranchMode(repo, true, "", "agent/identity", "worker-execution-identity", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := removeManagedWorktree(repo, a.WorkspacePath); err != nil {
+					t.Error(err)
+				}
+			})
+			for _, shell := range []bool{false, true} {
+				if shell {
+					cmd := exec.Command("bash", "-c", "git commit --allow-empty -m bash")
+					cmd.Dir = a.WorkspacePath
+					if out, err := cmd.CombinedOutput(); err != nil {
+						t.Fatalf("bash commit: %v %s", err, out)
+					}
+				} else {
+					git(a.WorkspacePath, "commit", "--allow-empty", "-m", "service")
+				}
+				if got := git(a.WorkspacePath, "log", "-1", "--format=%an <%ae>|%cn <%ce>"); got != want+"|"+want {
+					t.Fatalf("identity = %q, want %q", got, want)
+				}
+			}
+			after, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+			if err != nil || string(before) != string(after) {
+				t.Fatal("source config changed", err)
+			}
+			if !local {
+				out, err := exec.Command("git", "-C", a.WorkspacePath, "config", "--local", "--get", "user.name").CombinedOutput()
+				if err == nil || len(out) != 0 {
+					t.Fatalf("default pinned in clone: %s %v", out, err)
+				}
+			}
+		})
 	}
 }

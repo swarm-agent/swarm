@@ -840,10 +840,16 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 		fields := strings.Fields(string(out))
 		if len(fields) == 3 && fields[0] == spec {
 			if fields[1] == "true" {
+				if err := m.configureGitIdentity(ctx, name); err != nil {
+					return "", err
+				}
 				return fields[2], nil
 			}
 			if _, err := m.runner.Run(ctx, m.cfg.Engine, "start", name); err != nil {
 				return "", fmt.Errorf("start sandbox: %w", err)
+			}
+			if err := m.configureGitIdentity(ctx, name); err != nil {
+				return "", err
 			}
 			state, err := m.inspectState(ctx, name)
 			return state.StartedAt, err
@@ -868,7 +874,7 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 		return "", err
 	}
 	if err := m.configureGitIdentity(ctx, name); err != nil {
-		slog.Warn("configure sandbox Git identity failed", "error", err)
+		return "", err
 	}
 	state, err := m.inspectState(ctx, name)
 	return state.StartedAt, err

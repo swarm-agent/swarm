@@ -1,13 +1,16 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"swarm/packages/swarmd/internal/appstorage"
+	"swarm/packages/swarmd/internal/sandbox"
 )
 
 func (s *Service) allocateWorkerClone(source string, current bool, base, branch, owner string, exact bool, scopes []string, sparse bool, initialize ...func(string) error) (Allocation, error) {
@@ -60,6 +63,23 @@ func (s *Service) allocateWorkerClone(source string, current bool, base, branch,
 			return Allocation{}, err
 		}
 		return cleanup(err)
+	}
+	// Clones do not inherit local config. Copy only identity components, never
+	// hooks, credentials or unrelated source configuration. Missing components
+	// remain unset so the sandbox-home default applies to both tools and bash.
+	for _, key := range []string{"user.name", "user.email"} {
+		ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
+		value, err := sandbox.TimedGitOutput(ctx, source, nil, "config", "--local", "--get", key)
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			continue
+		}
+		if err != nil {
+			return cleanup(fmt.Errorf("read folder Git %s: %w", key, err))
+		}
+		if _, err := runGitAllocation(path, nil, "config", "--local", key, strings.TrimSuffix(string(value), "\n")); err != nil {
+			return cleanup(err)
+		}
 	}
 	// A base may be an exact retained commit rather than an advertised branch.
 	if _, err := runGitAllocation(path, nil, "fetch", "--no-tags", "--", source, head); err != nil {

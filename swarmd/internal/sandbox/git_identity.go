@@ -38,7 +38,7 @@ func (m *Manager) initializeHome(ctx context.Context, name, root string, image E
 	}
 }
 
-// configureGitIdentity runs only at creation. Fill missing global components
+// configureGitIdentity runs at creation and when adopting a container. Fill missing global components
 // in the sandbox home; Git's repository-local configuration still wins.
 func (m *Manager) configureGitIdentity(ctx context.Context, name string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)

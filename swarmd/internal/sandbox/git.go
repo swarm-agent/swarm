@@ -254,7 +254,9 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 	if cmd.Stdin != nil {
 		execArgs = append(execArgs, "-i")
 	}
-	execArgs = append(execArgs, "-w", target)
+	// Use the same home initialized for plain sandbox bash commits, never
+	// the daemon's home (or an image-specific exec default).
+	execArgs = append(execArgs, "-e", "HOME="+sandboxHome, "-w", target)
 	forwarded, err := sandboxGitEnv(env, mounts, target)
 	if err != nil {
 		return err
