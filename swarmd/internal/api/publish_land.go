@@ -25,6 +25,7 @@ func (s *Server) landingQueue() (*publish.Queue, error) {
 	}
 	if s.landQueue == nil {
 		s.landQueue = publish.NewQueue(s.sessions.Store().Underlying())
+		s.landQueue.SetParallel(s.landingParallel)
 	}
 	return s.landQueue, nil
 }
@@ -125,6 +126,35 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 	// caller context. Carry it through admission, preparation, checks and Git.
 	ctx = c.request.Context()
 	return q.Process(ctx, account, folder, publish.QueueHooks{
+		Recover: func(ctx context.Context, e publish.Entry) (bool, error) {
+			base, err := publish.Update(ctx, rule, e.Request.BaseBranch)
+			if err != nil {
+				return false, err
+			}
+			m := sandbox.Default()
+			if m == nil || !m.Active() {
+				return false, errors.New("landing requires an active sandbox")
+			}
+			scope, err := m.CommandScope(rule.Folder)
+			if err != nil {
+				return false, err
+			}
+			res, err := m.ExecDaemon(ctx, scope, sandbox.ExecRequest{Command: []string{"git", "merge-base", "--is-ancestor", e.Request.Head, base.Commit}, WorkingDir: rule.Folder, Timeout: time.Minute, MaxTimeout: time.Minute, MaxOutput: 4096})
+			if err != nil {
+				return false, err
+			}
+			if res.ExitCode > 1 {
+				return false, errors.New("cannot reconcile landing target")
+			}
+			return res.ExitCode == 0, nil
+		},
+		Stack: func(ctx context.Context, e *publish.Entry, previous *publish.Entry) error {
+			e.DeferChecks = true
+			if previous != nil {
+				e.StackBase = &previous.Request
+			}
+			return c.prepareLand(ctx, rule, e)
+		},
 		Admit: p.server.admitLanding,
 		Queued: func(ctx context.Context, e publish.Entry) error {
 			kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
@@ -149,7 +179,11 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if err := c.recordJobActivity(kind, a, b, refs, "job.landing", "", e.NotificationID); err != nil {
 				return err
 			}
-			if err := c.prepareLand(ctx, rule, e); err != nil {
+			if e.RunChecks != nil {
+				if err := e.RunChecks(); err != nil {
+					return err
+				}
+			} else if err := c.prepareLand(ctx, rule, e); err != nil {
 				return err
 			}
 			if ignoreLandProof(rule, e) {
@@ -372,7 +406,12 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	if currentBranch.ExitCode != 0 || strings.TrimSpace(currentBranch.Stdout) != e.Request.Branch {
 		return errors.New("job branch changed before landing")
 	}
-	base, err := update(ctx, rule, e.Request.BaseBranch)
+	var base publish.Base
+	if e.StackBase != nil {
+		base = publish.Base{Commit: e.StackBase.Head, Branch: e.StackBase.BaseBranch}
+	} else {
+		base, err = update(ctx, rule, e.Request.BaseBranch)
+	}
 	if err != nil {
 		return errors.New("base update failed")
 	}
@@ -398,6 +437,10 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 		return errors.New("job worktree is not clean")
 	}
 	var reviewedHead, reviewedPatch, oldBase string
+	reviewBase := base.Commit
+	if e.DeferChecks && e.Request.BaseCommit != "" {
+		reviewBase = e.Request.BaseCommit
+	}
 	patchID := func(head, base string) (string, error) {
 		// Fixed shell program; refs are separate positional arguments. Compute
 		// the whole job's patch without truncating diff bytes through tool output.
@@ -441,11 +484,15 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			if current != e.Review.RebasedHead {
 				return reviewRequired(current)
 			}
-			patch, err := patchID(current, base.Commit)
+			patch, err := patchID(current, reviewBase)
 			if err != nil {
 				return err
 			}
-			approvedPatch, err := patchID(e.Review.ReviewedHead, base.Commit)
+			approvedBase := reviewBase
+			if e.DeferChecks && e.Review.ReviewedBase != "" {
+				approvedBase = e.Review.ReviewedBase
+			}
+			approvedPatch, err := patchID(e.Review.ReviewedHead, approvedBase)
 			if err != nil {
 				return err
 			}
@@ -457,7 +504,7 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 		if err := reviewChecks[0](reviewedHead); err != nil {
 			return err
 		}
-		reviewedPatch, err = patchID(current, base.Commit)
+		reviewedPatch, err = patchID(current, reviewBase)
 		if err != nil {
 			return err
 		}
@@ -465,7 +512,7 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			e.Review = &publish.ReviewEquivalence{ReviewedHead: reviewedHead, RebasedHead: current, PatchID: reviewedPatch}
 		}
 		if e.ValidateReview != nil {
-			if err := e.ValidateReview(current, reviewedPatch, base.Commit); err != nil {
+			if err := e.ValidateReview(current, reviewedPatch, reviewBase); err != nil {
 				return err
 			}
 		}
@@ -476,7 +523,7 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 		}
 	}
 	if reviewGated(rule) {
-		raw, exit, readErr := git("merge-base", reviewedHead, base.Commit)
+		raw, exit, readErr := git("merge-base", reviewedHead, reviewBase)
 		if readErr != nil || exit != 0 {
 			return errors.New("cannot read range-diff base")
 		}
@@ -485,7 +532,11 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			return err
 		}
 	}
-	_, code, err = git("rebase", base.Commit)
+	if e.DeferChecks && e.Request.BaseCommit != "" {
+		_, code, err = git("rebase", "--onto", base.Commit, e.Request.BaseCommit)
+	} else {
+		_, code, err = git("rebase", base.Commit)
+	}
 	if err != nil {
 		return err
 	}
@@ -571,6 +622,9 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			return deferReview()
 		}
 	}
+	if e.DeferChecks {
+		e.Request.Head, e.Request.BaseCommit, e.Request.BaseBranch = parsedHead, base.Commit, base.Branch
+	}
 	if reviewGated(rule) {
 		e.Review.RebasedHead = parsedHead
 		e.Review.ReviewedBase, e.Review.RebasedBase = oldBase, base.Commit
@@ -584,87 +638,108 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	e.Request.Head = parsedHead
 	e.Request.BaseCommit = base.Commit
 	e.Request.BaseBranch = base.Branch
-	e.Checks = nil
-	if environments == nil {
-		return errors.New("landing environment provider unavailable")
-	}
-	spec.Commit = parsedHead
-	spec.BaseCommit = base.Commit
-	spec.Account = e.Account
-	spec.Checks = checks
-	spec.CheckTimeout = 20 * time.Minute
-	if checkTimeoutMinutes > 0 {
-		spec.CheckTimeout = time.Duration(checkTimeoutMinutes) * time.Minute
-	}
-	e.EnvironmentNote = ""
-	spec.Fallback = func(note string) { e.EnvironmentNote = environment.FallbackNote(note) }
-	spec.Selected = func(name string) { e.Environment = name }
-	checkEnvironment, err := environments.Acquire(ctx, spec)
-	if err != nil {
-		return err
-	}
-	defer func() { retErr = errors.Join(retErr, checkEnvironment.Release()) }()
-	checkExec := checkEnvironment.Exec
-	limit := 20 * time.Minute
-	if checkTimeoutMinutes > 0 {
-		limit = time.Duration(checkTimeoutMinutes) * time.Minute
-	}
-	// ExecRequest.Timeout is enforced by the supervisor after CPU admission.
-	// Keep only caller cancellation on ctx: a command deadline here would also
-	// charge queueing (and container acquisition) to the check's budget.
-	for i, command := range checks {
-		var output []byte
-		req := sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: publish.CheckOutputLimit, OnOutput: func(data []byte) {
-			if len(data) >= publish.CheckOutputLimit {
-				output = append(output[:0], data[len(data)-publish.CheckOutputLimit:]...)
-				return
-			}
-			if overflow := len(output) + len(data) - publish.CheckOutputLimit; overflow > 0 {
-				copy(output, output[overflow:])
-				output = output[:len(output)-overflow]
-			}
-			output = append(output, data...)
-		}}
-		res, err := checkExec(ctx, req)
-		var died *sandbox.ErrSandboxDied
-		if errors.As(err, &died) && ctx.Err() == nil {
-			output = output[:0]
-			res, err = checkExec(ctx, req)
+	runChecks := func() (retErr error) {
+		e.Checks = nil
+		if environments == nil {
+			return errors.New("landing environment provider unavailable")
 		}
-		if errors.As(err, &died) {
-			return fmt.Errorf("landing check infrastructure failure: %w", err)
+		spec.Commit = parsedHead
+		spec.BaseCommit = base.Commit
+		spec.Account = e.Account
+		spec.Checks = checks
+		spec.CheckTimeout = 20 * time.Minute
+		if checkTimeoutMinutes > 0 {
+			spec.CheckTimeout = time.Duration(checkTimeoutMinutes) * time.Minute
 		}
-		excerpt := publish.CheckOutputExcerpt(string(output))
+		e.EnvironmentNote = ""
+		spec.Fallback = func(note string) { e.EnvironmentNote = environment.FallbackNote(note) }
+		spec.Selected = func(name string) { e.Environment = name }
+		checkEnvironment, err := environments.Acquire(ctx, spec)
 		if err != nil {
-			if errors.Is(err, provider.ErrOperationTimedOut) && ctx.Err() == nil {
-				e.Checks = append(e.Checks, publish.CheckResult{ExitCode: -1, Output: excerpt})
-				return publish.ChecksSendBack(base, checks[:i+1], true, excerpt)
-			}
 			return err
 		}
-		e.Checks = append(e.Checks, publish.CheckResult{ExitCode: res.ExitCode, Output: excerpt, DurationMS: res.DurationMS})
-		if res.ExitCode != 0 {
-			return publish.ChecksSendBack(base, checks[:i+1], false, excerpt)
+		defer func() { retErr = errors.Join(retErr, checkEnvironment.Release()) }()
+		checkExec := checkEnvironment.Exec
+		limit := 20 * time.Minute
+		if checkTimeoutMinutes > 0 {
+			limit = time.Duration(checkTimeoutMinutes) * time.Minute
 		}
-	}
-	finalHead, code, err := git("rev-parse", "HEAD")
-	parsedFinalHead, parseErr := publish.ParseHeadOutput(finalHead)
-	if err != nil || code != 0 || parseErr != nil || parsedFinalHead != e.Request.Head {
-		return errors.New("checks changed the rebased head")
-	}
-	dirty, code, err = git("status", "--porcelain")
-	if err != nil || code != 0 || strings.TrimSpace(dirty) != "" {
-		return errors.New("checks left uncommitted changes")
-	}
-	if reviewGated(rule) {
-		// Checks may take minutes; BLOCK on any equivalent patch wins.
-		if e.ValidateReview != nil {
-			if err := e.ValidateReview(parsedHead, reviewedPatch, base.Commit); err != nil {
+		// ExecRequest.Timeout is enforced by the supervisor after CPU admission.
+		// Keep only caller cancellation on ctx: a command deadline here would also
+		// charge queueing (and container acquisition) to the check's budget.
+		for i, command := range checks {
+			var output []byte
+			req := sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: publish.CheckOutputLimit, OnOutput: func(data []byte) {
+				if len(data) >= publish.CheckOutputLimit {
+					output = append(output[:0], data[len(data)-publish.CheckOutputLimit:]...)
+					return
+				}
+				if overflow := len(output) + len(data) - publish.CheckOutputLimit; overflow > 0 {
+					copy(output, output[overflow:])
+					output = output[:len(output)-overflow]
+				}
+				output = append(output, data...)
+			}}
+			res, err := checkExec(ctx, req)
+			var died *sandbox.ErrSandboxDied
+			if errors.As(err, &died) && ctx.Err() == nil {
+				output = output[:0]
+				res, err = checkExec(ctx, req)
+			}
+			if errors.As(err, &died) {
+				return fmt.Errorf("landing check infrastructure failure: %w", err)
+			}
+			excerpt := publish.CheckOutputExcerpt(string(output))
+			if err != nil {
+				if errors.Is(err, provider.ErrOperationTimedOut) && ctx.Err() == nil {
+					e.Checks = append(e.Checks, publish.CheckResult{ExitCode: -1, Output: excerpt})
+					return publish.ChecksSendBack(base, checks[:i+1], true, excerpt)
+				}
 				return err
 			}
+			e.Checks = append(e.Checks, publish.CheckResult{ExitCode: res.ExitCode, Output: excerpt, DurationMS: res.DurationMS})
+			if res.ExitCode != 0 {
+				return publish.ChecksSendBack(base, checks[:i+1], false, excerpt)
+			}
 		}
-		return reviewChecks[0](reviewedHead)
+		finalHead, code, err := git("rev-parse", "HEAD")
+		parsedFinalHead, parseErr := publish.ParseHeadOutput(finalHead)
+		if err != nil || code != 0 || parseErr != nil || parsedFinalHead != e.Request.Head {
+			return errors.New("checks changed the rebased head")
+		}
+		dirty, code, err = git("status", "--porcelain")
+		if err != nil || code != 0 || strings.TrimSpace(dirty) != "" {
+			return errors.New("checks left uncommitted changes")
+		}
+		if reviewGated(rule) {
+			// Checks may take minutes; BLOCK on any equivalent patch wins.
+			if e.ValidateReview != nil {
+				if err := e.ValidateReview(parsedHead, reviewedPatch, base.Commit); err != nil {
+					return err
+				}
+			}
+			return reviewChecks[0](reviewedHead)
+		}
+		return nil
 	}
+	if e.DeferChecks {
+		e.RunChecks = runChecks
+		return nil
+	}
+	return runChecks()
+}
+
+// SetLandingParallel configures the startup-only candidate window.
+func (s *Server) SetLandingParallel(n int) error {
+	if n < 1 {
+		return errors.New("landing_parallel must be positive")
+	}
+	s.landQueueMu.Lock()
+	defer s.landQueueMu.Unlock()
+	if s.landQueue != nil {
+		return errors.New("landing queue already started")
+	}
+	s.landingParallel = n
 	return nil
 }
 

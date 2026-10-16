@@ -776,6 +776,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	if err := apiServer.ConfigureCloudBuild(bgCtx, cfg.EnvironmentProvider, environment.CloudBuildConfig{Cache: &cfg.CloudBuildCache, Project: cfg.CloudBuildProject, Region: cfg.CloudBuildRegion, Bucket: cfg.CloudBuildBucket, MachineType: cfg.CloudBuildMachineType, TimeoutMinutes: cfg.CloudBuildTimeoutMinutes, ServiceAccount: cfg.CloudBuildServiceAccount}, store); err != nil {
 		return nil, err
 	}
+	if err := apiServer.SetLandingParallel(cfg.LandingParallel); err != nil {
+		return nil, err
+	}
 	if err := apiServer.SetLandingMaxConcurrent(cfg.LandingMaxConcurrent); err != nil {
 		return nil, err
 	}
