@@ -31,6 +31,7 @@ import (
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/discovery"
+	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -759,6 +760,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
 	if err := apiServer.SetEnvironmentProvider(cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds); err != nil {
+		return nil, err
+	}
+	if err := apiServer.ConfigureCloudBuild(bgCtx, cfg.EnvironmentProvider, environment.CloudBuildConfig{Project: cfg.CloudBuildProject, Region: cfg.CloudBuildRegion, Bucket: cfg.CloudBuildBucket, MachineType: cfg.CloudBuildMachineType, TimeoutMinutes: cfg.CloudBuildTimeoutMinutes, ServiceAccount: cfg.CloudBuildServiceAccount}, store); err != nil {
 		return nil, err
 	}
 	if err := apiServer.SetLandingMaxConcurrent(cfg.LandingMaxConcurrent); err != nil {

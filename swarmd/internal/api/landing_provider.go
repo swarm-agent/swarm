@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/sandbox"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"time"
 )
 
@@ -44,6 +46,29 @@ func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (en
 		}
 		return e, err
 	}
+}
+
+// ConfigureCloudBuild resolves ADC before accepting Cloud Build landings.
+func (s *Server) ConfigureCloudBuild(ctx context.Context, name string, cfg environment.CloudBuildConfig, store *pebblestore.Store) error {
+	if name != "gcp-cloudbuild" && (name != "auto" || cfg.Project == "" || cfg.Bucket == "") {
+		return nil
+	}
+	var err error
+	var rest environment.GoogleREST
+	if cfg.Project == "" || cfg.Bucket == "" {
+		err = fmt.Errorf("cloudbuild_project and cloudbuild_bucket are required")
+	} else {
+		rest, err = environment.NewGoogleREST(ctx, cfg.Project, cfg.Region)
+	}
+	if err != nil {
+		if name == "auto" {
+			log.Printf("warning: cloud build disabled, falling back: %v", err)
+			return nil
+		}
+		return err
+	}
+	s.SetCloudBuildProvider(environment.CloudBuild{Store: store, Config: cfg, Storage: environment.GoogleStorage{REST: rest}, Builds: rest})
+	return nil
 }
 
 // SetCloudBuildProvider injects the configured provider at startup.
