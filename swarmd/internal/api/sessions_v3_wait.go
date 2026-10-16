@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -22,11 +23,13 @@ import (
 // The cursor is the session's durable event position. Without after, the
 // answer is immediate (the current state and cursor). With after, the request
 // returns as soon as an event after the cursor is a new assistant message, a
-// pending tool call, the end of a run or the end of the session, or when the
-// wait is over. Other events (streaming deltas, usage, phases) move the cursor
-// without ending the wait. Every answer carries the session's current run,
-// pending calls and ended state, read from durable records; the in-memory wake
-// only shortens the wait.
+// pending tool call (including the call a confirmation's approval creates), a
+// confirmation waiting for the person, the end of a run or the end of the
+// session, or when the wait is over. Other events (streaming deltas, usage,
+// phases) move the cursor without ending the wait. Every answer carries the
+// session's current run, pending calls, pending confirmations, end user and
+// labels, and ended state, read from durable records; the in-memory wake only
+// shortens the wait.
 
 const (
 	sessionWaitMaxSeconds = 30
@@ -46,6 +49,7 @@ const (
 	sessionWaitToolCall         = "tool_call"
 	sessionWaitRunEnded         = "run_ended"
 	sessionWaitSessionEnded     = "session_ended"
+	sessionWaitConfirmation     = "confirmation"
 )
 
 // longPollLimiter counts the long-polls each scoped token holds open.
@@ -116,6 +120,12 @@ type sessionWaitEventPayload struct {
 	RunIntent *struct {
 		Status string `json:"status"`
 	} `json:"run_intent"`
+	// Confirmation is set on the writes of runruntime.PutClientToolConfirmation.
+	Confirmation *struct {
+		Status                string `json:"status"`
+		ExecutionPermissionID string `json:"execution_permission_id"`
+		Delivered             bool   `json:"delivered"`
+	} `json:"client_tool_confirmation"`
 }
 
 func sessionRunIntentTerminal(status string) bool {
@@ -151,6 +161,16 @@ func sessionWaitReasons(event pebblestore.V3SessionEvent) []string {
 		}
 		if payload.Change == sessionChangeEnded {
 			reasons = append(reasons, sessionWaitSessionEnded)
+		}
+		if c := payload.Confirmation; c != nil && !c.Delivered {
+			switch {
+			case c.Status == runruntime.ClientToolConfirmationPending:
+				reasons = append(reasons, sessionWaitConfirmation)
+			case c.Status == runruntime.ClientToolConfirmationApproved && c.ExecutionPermissionID != "":
+				// The approval created the call the gateway now runs; it is
+				// recorded outside any run, so no permission.requested event.
+				reasons = append(reasons, sessionWaitToolCall)
+			}
 		}
 	}
 	return reasons
@@ -256,6 +276,12 @@ func (s *Server) handleSessionV3Wait(w http.ResponseWriter, r *http.Request, pri
 		}
 		break
 	}
+	// Close a confirmation that expired, or whose approved call timed out,
+	// while no timer ran (after a restart), as the confirmations read does.
+	if _, _, err := s.advanceClientToolConfirmation(sessionID, true); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	session, found, err := s.sessions.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -295,5 +321,16 @@ func (s *Server) handleSessionV3Wait(w http.ResponseWriter, r *http.Request, pri
 		pending = append(pending, records...)
 	}
 	response["pending_calls"] = pending
+	confirmations := []runruntime.ClientToolConfirmation{}
+	if c := pendingClientToolConfirmationView(session, time.Now().UnixMilli()); c != nil {
+		confirmations = append(confirmations, *c)
+	}
+	response["pending_confirmations"] = confirmations
+	// Whose conversation this is, from the stored binding, as on the
+	// permissions delivery.
+	if err := addSessionEndUserFields(response, session.Metadata); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, response)
 }

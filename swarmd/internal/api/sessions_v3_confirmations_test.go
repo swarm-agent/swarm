@@ -706,6 +706,61 @@ func TestConfirmedClientToolDefinitionIsValidated(t *testing.T) {
 	}
 }
 
+// gatewayRecord is a gateway (agent-bound) token for the fixture's agent.
+func (f *confirmationFixture) gatewayRecord() *pebblestore.ScopedTokenRecord {
+	return &pebblestore.ScopedTokenRecord{ID: "tok_gw", AgentName: "frontdesk", AccountScopeID: testPrincipal().AccountScopeID, Scopes: []string{"sessions:read", "sessions:write"}}
+}
+
+// asGateway sends a request as the gateway token: through the agent-bound
+// gate (route allow-list, limits), then the routed handler.
+func (f *confirmationFixture) asGateway(method, path, body string) (int, map[string]any) {
+	f.t.Helper()
+	gateway := f.gatewayRecord()
+	r := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(method, path, bytes.NewBufferString(body))), gateway)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	if f.server.gateAgentBoundToken(w, r, gateway) {
+		f.server.Handler().ServeHTTP(w, r)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
+}
+
+// createEndUserSession creates a session the way a gateway does, so the
+// create handler stores the end-user binding (alice, plan=pro).
+func (f *confirmationFixture) createEndUserSession(title string) string {
+	f.t.Helper()
+	workspace := f.t.TempDir()
+	bindingID := seedSessionsV3PrimaryAuthority(f.t, f.server, workspace)
+	raw, _ := json.Marshal(map[string]any{
+		"client_request_id": "create-" + title, "workspace_path": workspace, "workspace_name": filepath.Base(workspace),
+		"swarm_id": "host-swarm-id", "workspace_binding_id": bindingID, "target_kind": "host", "target_relationship": "self",
+		"title": title, "mode": sessionruntime.ModeAuto, "agent_name": "frontdesk", "end_user": "alice", "labels": map[string]string{"plan": "pro"},
+		"preference": pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"},
+	})
+	create := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewReader(raw))), f.gatewayRecord())
+	create.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(w, create)
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+		EndUser string                      `json:"end_user"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || w.Code != http.StatusOK || created.EndUser != "alice" {
+		f.t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	return created.Session.ID
+}
+
+// endUserOf returns a response's (or item's) end_user and labels.plan.
+func endUserOf(out map[string]any) (string, string) {
+	labels, _ := out["labels"].(map[string]any)
+	endUser, _ := out["end_user"].(string)
+	plan, _ := labels["plan"].(string)
+	return endUser, plan
+}
+
 // Purpose: a confirmation on a gateway session with an end user reaches that
 // gateway token with the session's stored end user and labels, and the call
 // the approval creates is delivered with the same end user, so the gateway
@@ -716,68 +771,178 @@ func TestConfirmedClientToolDefinitionIsValidated(t *testing.T) {
 // Narrowest layer: the real executor and routes with the gate in front.
 func TestConfirmationOnEndUserSessionCarriesTheEndUser(t *testing.T) {
 	f := newConfirmationFixture(t, filepath.Join(t.TempDir(), "confirm-end-user.pebble"), nil)
-	gateway := pebblestore.ScopedTokenRecord{ID: "tok_gw", AgentName: "frontdesk", AccountScopeID: testPrincipal().AccountScopeID, Scopes: []string{"sessions:read", "sessions:write"}}
-	asGateway := func(method, path, body string) (int, map[string]any) {
-		t.Helper()
-		r := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(method, path, bytes.NewBufferString(body))), &gateway)
-		r.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		if f.server.gateAgentBoundToken(w, r, &gateway) {
-			f.server.Handler().ServeHTTP(w, r)
-		}
-		var out map[string]any
-		_ = json.Unmarshal(w.Body.Bytes(), &out)
-		return w.Code, out
-	}
-
-	// The create handler stores the binding when a gateway token sends end_user.
-	workspace := t.TempDir()
-	bindingID := seedSessionsV3PrimaryAuthority(t, f.server, workspace)
-	raw, _ := json.Marshal(map[string]any{
-		"client_request_id": "create-alice", "workspace_path": workspace, "workspace_name": filepath.Base(workspace),
-		"swarm_id": "host-swarm-id", "workspace_binding_id": bindingID, "target_kind": "host", "target_relationship": "self",
-		"title": "alice", "mode": sessionruntime.ModeAuto, "agent_name": "frontdesk", "end_user": "alice", "labels": map[string]string{"plan": "pro"},
-		"preference": pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"},
-	})
-	create := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewReader(raw))), &gateway)
-	create.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	f.server.Handler().ServeHTTP(w, create)
-	var created struct {
-		Session pebblestore.SessionSnapshot `json:"session"`
-		EndUser string                      `json:"end_user"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || w.Code != http.StatusOK || created.EndUser != "alice" {
-		t.Fatalf("create: %d %s", w.Code, w.Body.String())
-	}
-	sessionID := created.Session.ID
+	sessionID := f.createEndUserSession("alice")
 	f.say(sessionID, "m1", "order 2 of AB12CD please")
 
-	owner := func(out map[string]any) (string, string) {
-		labels, _ := out["labels"].(map[string]any)
-		endUser, _ := out["end_user"].(string)
-		plan, _ := labels["plan"].(string)
-		return endUser, plan
-	}
-	code, listed := asGateway(http.MethodGet, "/v3/sessions/"+sessionID+"/confirmations", "")
+	code, listed := f.asGateway(http.MethodGet, "/v3/sessions/"+sessionID+"/confirmations", "")
 	confirmations, _ := listed["confirmations"].([]any)
 	if code != http.StatusOK || len(confirmations) != 1 {
 		t.Fatalf("gateway confirmations: %d %v", code, listed)
 	}
-	if endUser, plan := owner(listed); endUser != "alice" || plan != "pro" {
+	if endUser, plan := endUserOf(listed); endUser != "alice" || plan != "pro" {
 		t.Fatalf("confirmations end_user/labels = %q/%q, want the stored alice/pro", endUser, plan)
 	}
 	c := f.confirmation(sessionID)
-	code, decided := asGateway(http.MethodPost, "/v3/sessions/"+sessionID+"/confirmations/"+c.ID, fmt.Sprintf(`{"decision":"approve","arguments_hash":%q}`, c.ArgumentsHash))
-	if endUser, _ := owner(decided); code != http.StatusOK || endUser != "alice" {
+	code, decided := f.asGateway(http.MethodPost, "/v3/sessions/"+sessionID+"/confirmations/"+c.ID, fmt.Sprintf(`{"decision":"approve","arguments_hash":%q}`, c.ArgumentsHash))
+	if endUser, _ := endUserOf(decided); code != http.StatusOK || endUser != "alice" {
 		t.Fatalf("gateway approve: %d %v", code, decided)
 	}
-	code, delivery := asGateway(http.MethodGet, "/v3/sessions/"+sessionID+"/permissions?status=pending&limit=100", "")
+	code, delivery := f.asGateway(http.MethodGet, "/v3/sessions/"+sessionID+"/permissions?status=pending&limit=100", "")
 	calls, _ := delivery["permissions"].([]any)
 	if code != http.StatusOK || len(calls) != 1 || calls[0].(map[string]any)["tool_name"] != "place_order" {
 		t.Fatalf("approved call delivery: %d %v", code, delivery)
 	}
-	if endUser, plan := owner(delivery); endUser != "alice" || plan != "pro" {
+	if endUser, plan := endUserOf(delivery); endUser != "alice" || plan != "pro" {
 		t.Fatalf("approved call end_user/labels = %q/%q, want alice/pro", endUser, plan)
 	}
+}
+
+// waitReasons follows a session's wait from cursor (wait_seconds=0, so each
+// read answers at once) until it is caught up, and returns every reason seen,
+// the last answer and its cursor.
+func (f *confirmationFixture) waitReasons(sessionID string, cursor uint64) (map[string]bool, map[string]any, uint64) {
+	f.t.Helper()
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		code, out := f.asGateway(http.MethodGet, fmt.Sprintf("/v3/sessions/%s/wait?after=%d&wait_seconds=0", sessionID, cursor), "")
+		if code != http.StatusOK {
+			f.t.Fatalf("wait: %d %v", code, out)
+		}
+		reasons, _ := out["reasons"].([]any)
+		for _, reason := range reasons {
+			seen[reason.(string)] = true
+		}
+		next := uint64(out["cursor"].(float64))
+		if next == cursor && len(reasons) == 0 {
+			return seen, out, cursor
+		}
+		cursor = next
+	}
+	f.t.Fatal("wait never caught up")
+	return nil, nil, 0
+}
+
+// Purpose: the gateway's wait, event feed, session list and session end cover
+// confirmations and end users together. A confirmation wakes the wait
+// (reason "confirmation") and comes back in it with the stored end user; the
+// approval wakes it again with the approved call (reason "tool_call"). The
+// feed records confirmation.requested and confirmation.decided, and every
+// entry and listed session carries end_user and labels. Ending the
+// conversation closes its confirmation without starting a run (a pending one
+// expires, an approved call is failed) and a later decision is refused (409).
+// Threat: a gateway missing an approval card, running an approved write after
+// the conversation ended, or a console attributing events to the wrong visitor.
+// Boundary: handleSessionV3Wait, sessionWaitReasons, agentEventFromSessionEvent,
+// handleSessionsV3AgentSessions, handleSessionV3End,
+// closeClientToolConfirmationForEndLocked, decideClientToolConfirmation.
+// Narrowest layer: the real executor and routes behind the agent-bound gate.
+func TestGatewayWaitFeedAndEndCoverConfirmationsAndEndUsers(t *testing.T) {
+	f := newConfirmationFixture(t, filepath.Join(t.TempDir(), "confirm-wait.pebble"), nil)
+
+	// A pending confirmation wakes the wait and is in it, with the end user.
+	asked := f.createEndUserSession("asked")
+	_, first := f.asGateway(http.MethodGet, "/v3/sessions/"+asked+"/wait", "")
+	start := uint64(first["cursor"].(float64))
+	f.say(asked, "m1", "order 2 of AB12CD please")
+	seen, state, cursor := f.waitReasons(asked, start)
+	pending, _ := state["pending_confirmations"].([]any)
+	if !seen["confirmation"] || len(pending) != 1 {
+		t.Fatalf("wait reasons %v, pending_confirmations %v", seen, state["pending_confirmations"])
+	}
+	if endUser, plan := endUserOf(state); endUser != "alice" || plan != "pro" {
+		t.Fatalf("wait end_user/labels = %q/%q", endUser, plan)
+	}
+	c := f.confirmation(asked)
+	if pending[0].(map[string]any)["id"] != c.ID {
+		t.Fatalf("wait listed %v, want %s", pending[0], c.ID)
+	}
+
+	// Approving wakes the wait with the approved call.
+	if code, out := f.asGateway(http.MethodPost, "/v3/sessions/"+asked+"/confirmations/"+c.ID, fmt.Sprintf(`{"decision":"approve","arguments_hash":%q}`, c.ArgumentsHash)); code != http.StatusOK {
+		t.Fatalf("approve: %d %v", code, out)
+	}
+	seen, state, _ = f.waitReasons(asked, cursor)
+	calls, _ := state["pending_calls"].([]any)
+	if !seen["tool_call"] || len(calls) != 1 || calls[0].(map[string]any)["tool_name"] != "place_order" {
+		t.Fatalf("after approval: reasons %v, pending_calls %v", seen, state["pending_calls"])
+	}
+	if pending, _ := state["pending_confirmations"].([]any); len(pending) != 0 {
+		t.Fatalf("an approved confirmation is still pending in the wait: %v", pending)
+	}
+
+	// Ending fails the approved call; the gateway can no longer run it.
+	if code, out := f.asGateway(http.MethodPost, "/v3/sessions/"+asked+"/end", `{"client_request_id":"end-asked"}`); code != http.StatusOK {
+		t.Fatalf("end: %d %v", code, out)
+	}
+	if left := f.pendingClientCalls(asked); len(left) != 0 {
+		t.Fatalf("the approved call survived the end: %+v", left)
+	}
+	if closed := f.confirmation(asked); !closed.Delivered || closed.ContinuationRunID != "" {
+		t.Fatalf("closing after end: %+v (no run may start)", closed)
+	}
+
+	// A pending confirmation expires when the conversation ends; deciding it
+	// afterwards is refused.
+	open := f.createEndUserSession("open")
+	f.say(open, "m1", "order 2 of AB12CD please")
+	pendingOne := f.confirmation(open)
+	if code, out := f.asGateway(http.MethodPost, "/v3/sessions/"+open+"/end", `{"client_request_id":"end-open"}`); code != http.StatusOK {
+		t.Fatalf("end: %d %v", code, out)
+	}
+	if closed := f.confirmation(open); closed.Status != runruntime.ClientToolConfirmationExpired || !closed.Delivered || closed.ContinuationRunID != "" {
+		t.Fatalf("pending confirmation after end: %+v", closed)
+	}
+	if code, out := f.asGateway(http.MethodPost, "/v3/sessions/"+open+"/confirmations/"+pendingOne.ID, fmt.Sprintf(`{"decision":"approve","arguments_hash":%q}`, pendingOne.ArgumentsHash)); code != http.StatusConflict {
+		t.Fatalf("decision on an ended conversation: %d %v", code, out)
+	}
+	if got := f.callCount(); got != 2 {
+		t.Fatalf("model calls = %d, want 2 (ending started no run)", got)
+	}
+
+	// The feed and the listing carry the end user and the confirmation steps.
+	code, feed := f.asGateway(http.MethodGet, "/v3/sessions:agent-events?limit=500", "")
+	events, _ := feed["events"].([]any)
+	if code != http.StatusOK || len(events) == 0 {
+		t.Fatalf("feed: %d %v", code, feed)
+	}
+	kinds := map[string][]map[string]any{}
+	for _, raw := range events {
+		event := raw.(map[string]any)
+		if endUser, plan := endUserOf(event); endUser != "alice" || plan != "pro" {
+			t.Fatalf("feed entry without the end user: %v", event)
+		}
+		kinds[event["kind"].(string)] = append(kinds[event["kind"].(string)], event)
+	}
+	if len(kinds["session.created"]) != 2 || len(kinds["confirmation.requested"]) != 2 || len(kinds["session.ended"]) != 2 {
+		t.Fatalf("feed kinds: %v", feedKindCounts(kinds))
+	}
+	requested := kinds["confirmation.requested"][0]["data"].(map[string]any)
+	if requested["tool"] != "place_order" || requested["summary"] != "Order 2 of AB12CD" || requested["arguments"] != `{"order_id":"AB12CD","quantity":2}` {
+		t.Fatalf("confirmation.requested data: %v", requested)
+	}
+	decisions := map[string]bool{}
+	for _, event := range kinds["confirmation.decided"] {
+		decisions[event["data"].(map[string]any)["decision"].(string)] = true
+	}
+	if !decisions["approved"] || !decisions["expired"] {
+		t.Fatalf("confirmation.decided decisions: %v", decisions)
+	}
+	code, listing := f.asGateway(http.MethodGet, "/v3/sessions:agent", "")
+	sessions, _ := listing["sessions"].([]any)
+	if code != http.StatusOK || len(sessions) != 2 {
+		t.Fatalf("listing: %d %v", code, listing)
+	}
+	for _, raw := range sessions {
+		if endUser, plan := endUserOf(raw.(map[string]any)); endUser != "alice" || plan != "pro" {
+			t.Fatalf("listed session without the end user: %v", raw)
+		}
+	}
+}
+
+func feedKindCounts(kinds map[string][]map[string]any) map[string]int {
+	counts := map[string]int{}
+	for kind, events := range kinds {
+		counts[kind] = len(events)
+	}
+	return counts
 }

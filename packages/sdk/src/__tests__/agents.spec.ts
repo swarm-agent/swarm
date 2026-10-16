@@ -141,8 +141,8 @@ test('confirmations are surfaced, never auto-answered, and decided with the argu
         ? [{ id: 'perm-x', session_id: 's1', run_id: '', tool_name: 'place_order', tool_arguments: JSON.stringify(confirmationRecord.arguments), created_at: 3 }]
         : [];
       const replied = messages.some((m) => m.role === 'assistant');
-      const reasons = pending_calls.length ? ['tool_call'] : asked ? ['run_ended'] : replied ? ['assistant_message', 'run_ended'] : [];
-      return { data: { session_id: 's1', cursor, reasons, pending_calls } };
+      const reasons = pending_calls.length ? ['tool_call'] : asked ? ['confirmation', 'run_ended'] : replied ? ['assistant_message', 'run_ended'] : [];
+      return { data: { session_id: 's1', cursor, reasons, pending_calls, pending_confirmations: asked ? [confirmationRecord] : [] } };
     }
     if (path === '/v3/sessions/s1/confirmations') return { data: { confirmations: phase === 'asked' && messages.length > 0 ? [confirmationRecord] : [] } };
     if (method === 'POST' && path === '/v3/sessions/s1/confirmations/conf_1') {
@@ -179,6 +179,7 @@ test('confirmations are surfaced, never auto-answered, and decided with the argu
 
   const pending = await agents.pendingCalls('s1', ['place_order']);
   assert.deepEqual(pending.map((item) => item.kind), ['confirmation']);
+  assert.ok(!calls.some(([, p]) => p === '/v3/sessions/s1/confirmations' || p.includes('/permissions?')), 'converse or pendingCalls polled instead of waiting');
   assert.deepEqual(await agents.pendingCalls('s1', ['other_tool']), []);
 
   await assert.rejects(agents.decideConfirmation('s1', 'conf_1', { decision: 'approve' }), /argumentsHash/);
@@ -209,7 +210,7 @@ test('confirmations carry the session end user and respect endUser', async () =>
     if (path.startsWith('/v3/sessions/s1/wait')) {
       // A wait with a cursor blocks on the daemon; nothing changes here.
       if (path.includes('after=')) await new Promise((resolve) => setTimeout(resolve, 5));
-      return { data: { session_id: 's1', cursor: 1, reasons: [], pending_calls: [], end_user: 'cust-42' } };
+      return { data: { session_id: 's1', cursor: 1, reasons: [], pending_calls: [], pending_confirmations: [confirmationRecord], end_user: 'cust-42', labels: { plan: 'pro' } } };
     }
     if (path === '/v3/sessions/s1/confirmations') return { data: { confirmations: [confirmationRecord], end_user: 'cust-42', labels: { plan: 'pro' } } };
     if (path === '/v3/sessions/s1') return { data: { session: { id: 's1' }, messages: [], end_user: 'cust-42', pending_confirmation: confirmationRecord } };
@@ -236,6 +237,7 @@ test('confirmations carry the session end user and respect endUser', async () =>
   await assert.rejects(agents.confirm('s1', card, {}, { endUser: 'cust-7' }), /another end user/);
   await assert.rejects(agents.reject('s1', card, {}, { endUser: 'cust-7', note: 'no' }), /another end user/);
   assert.ok(!calls.some(([method, path]) => method === 'POST'), 'a decision was sent for another end user');
+  assert.ok(!calls.some(([, path]) => path.endsWith('/confirmations')), 'confirmations were polled although the wait carries them');
 });
 
 type Call = { method: string; path: string; body?: Record<string, unknown> };
@@ -298,10 +300,11 @@ test('only an older daemon without the wait route falls back to polling', async 
     const older = fixtureTransport(({ path }) => {
       if (path.includes('/wait')) throw new SwarmForbiddenError('route unavailable to an agent-bound token', {});
       if (path.includes('/permissions?status=pending')) return { permissions: [pendingLookup] };
+      if (path.endsWith('/confirmations')) return { confirmations: [confirmationRecord] };
       return { ok: true };
     });
     const agents = new SwarmAgentsNamespace(older.transport);
-    assert.equal((await agents.pendingCalls('s1', ['lookup_order'])).length, 1);
+    assert.deepEqual((await agents.pendingCalls('s1', ['lookup_order', 'place_order'])).map((item) => item.kind), ['call', 'confirmation'], 'polling still surfaces confirmations');
     assert.equal((await agents.pendingCalls('s1', ['lookup_order'])).length, 1);
     assert.equal(debug.length, 1, 'the fallback should be logged once');
 

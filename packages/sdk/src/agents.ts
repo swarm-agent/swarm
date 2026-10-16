@@ -4,7 +4,7 @@ import { SwarmSessionsNamespace } from './sessions.js';
 import type { SwarmTransport } from './transport.js';
 
 /** What a wait returned for. */
-export type SessionWaitReason = 'assistant_message' | 'tool_call' | 'run_ended' | 'session_ended';
+export type SessionWaitReason = 'assistant_message' | 'tool_call' | 'run_ended' | 'session_ended' | 'confirmation';
 
 /** One answer from `agents.wait`: why it returned and the session's state now. */
 export interface SessionWait {
@@ -23,6 +23,8 @@ export interface SessionWait {
   run?: { run_id: string; status: string; active: boolean };
   /** Tool calls waiting for an answer, as `GET .../permissions?status=pending` returns them. */
   pendingCalls: PendingPermissionRecord[];
+  /** Confirmed calls waiting for the person's approval (at most one); reason `confirmation` wakes a wait. */
+  pendingConfirmations: PendingConfirmation[];
   /** The session's end user and labels, from the stored session (gateway conversations). */
   endUser?: string;
   labels?: Record<string, string>;
@@ -40,6 +42,9 @@ export interface AgentSession {
   ended?: { at: number; by: string; reason?: string };
   takeover?: Takeover;
   run_active: boolean;
+  /** Set on gateway conversations, from the stored session. */
+  end_user?: string;
+  labels?: Record<string, string>;
 }
 
 export interface ListAgentSessionsParams {
@@ -58,7 +63,8 @@ export interface ListAgentSessionsParams {
 export type AgentEventKind =
   | 'session.created' | 'message.user' | 'message.assistant'
   | 'tool.called' | 'tool.answered' | 'tool.failed'
-  | 'session.ended' | 'run.failed' | 'takeover.started' | 'takeover.ended';
+  | 'session.ended' | 'run.failed' | 'takeover.started' | 'takeover.ended'
+  | 'confirmation.requested' | 'confirmation.decided';
 
 /**
  * One entry in an agent's event feed. Message text and tool arguments,
@@ -71,6 +77,9 @@ export interface AgentEvent {
   at: number;
   kind: AgentEventKind;
   session_id: string;
+  /** The conversation's end user and labels (gateway conversations), from the stored session. */
+  end_user?: string;
+  labels?: Record<string, string>;
   data?: Record<string, unknown>;
 }
 
@@ -586,8 +595,9 @@ export class SwarmAgentsNamespace {
    * Waits on one conversation (`GET /v3/sessions/{id}/wait`). Without `after`
    * it answers at once with the current state and cursor. With `after` it
    * returns as soon as there is a new assistant message, a pending tool call,
-   * the end of a run or of the session, or after `waitSeconds` (default 25,
-   * max 30). A gateway token may wait only on its agent's sessions.
+   * a confirmation waiting for the person, the end of a run or of the
+   * session, or after `waitSeconds` (default 25, max 30). A gateway token may
+   * wait only on its agent's sessions.
    */
   async wait(sessionId: string, options: { after?: number; waitSeconds?: number; signal?: AbortSignal } = {}): Promise<SessionWait> {
     const q = new URLSearchParams();
@@ -601,13 +611,15 @@ export class SwarmAgentsNamespace {
     const res = await this.transport.request<{
       session_id: string; cursor: number; reasons?: SessionWaitReason[] | null; timed_out?: boolean; more?: boolean;
       stale_cursor?: boolean; ended?: boolean; run?: SessionWait['run']; pending_calls?: PendingPermissionRecord[] | null;
-      end_user?: string; labels?: Record<string, string>;
+      pending_confirmations?: ClientToolConfirmationRecord[] | null; end_user?: string; labels?: Record<string, string>;
     }>(path, { signal: options.signal, timeoutMs: (seconds + 15) * 1000 });
     const d = res.data;
+    const owner = endUserFields(d as Record<string, unknown>);
     return {
       sessionId: d.session_id ?? sessionId, cursor: d.cursor, reasons: d.reasons ?? [], timedOut: !!d.timed_out,
       more: !!d.more, staleCursor: !!d.stale_cursor, ended: !!d.ended, run: d.run ?? undefined, pendingCalls: d.pending_calls ?? [],
-      ...endUserFields(d as Record<string, unknown>),
+      pendingConfirmations: (d.pending_confirmations ?? []).filter((record) => record.status === 'pending').map((record) => pendingConfirmation(sessionId, record, owner)),
+      ...owner,
     };
   }
 
@@ -631,14 +643,10 @@ export class SwarmAgentsNamespace {
   }
 
   /** The calls and confirmations a wait reported, for the tools you answer. */
-  private async waitItems(sessionId: string, state: SessionWait, tools: string[]): Promise<Array<ClientToolCall | PendingConfirmation>> {
+  private waitItems(sessionId: string, state: SessionWait, tools: string[]): Array<ClientToolCall | PendingConfirmation> {
     const owner = { ...(state.endUser !== undefined ? { endUser: state.endUser } : {}), ...(state.labels ? { labels: state.labels } : {}) };
-    const items: Array<ClientToolCall | PendingConfirmation> = clientToolCalls(sessionId, state.pendingCalls, tools, owner);
     const names = new Set(tools);
-    for (const confirmation of await this.confirmations(sessionId)) {
-      if (names.has(confirmation.tool)) items.push(confirmation);
-    }
-    return items;
+    return [...clientToolCalls(sessionId, state.pendingCalls, tools, owner), ...state.pendingConfirmations.filter((confirmation) => names.has(confirmation.tool))];
   }
 
   /** pendingCalls for daemons that predate waiting (see noteOlderDaemon). */
@@ -819,7 +827,7 @@ export class SwarmAgentsNamespace {
         throw error;
       }
       cursor = state.cursor;
-      await this.handleItems(sessionId, await this.waitItems(sessionId, state, tools), handlers, handled, options);
+      await this.handleItems(sessionId, this.waitItems(sessionId, state, tools), handlers, handled, options);
       // An ended conversation starts no more runs, so no more calls come.
       if (state.ended && !state.run?.active) return;
     }
@@ -907,7 +915,7 @@ export class SwarmAgentsNamespace {
       if (remaining <= 0) throw new Error('The agent did not finish in time; the run may still complete');
       const state = await this.wait(sessionId, { after: cursor, waitSeconds: Math.min(WAIT_SECONDS, Math.ceil(remaining / 1000)) });
       cursor = state.cursor;
-      const items = await this.waitItems(sessionId, state, tools);
+      const items = this.waitItems(sessionId, state, tools);
       await this.handleItems(sessionId, items, handlers, handled, serving);
       const calls = items.filter((item) => item.kind === 'call');
       if (calls.length > 0 || state.run?.active || state.more) continue;
