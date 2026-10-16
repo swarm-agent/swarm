@@ -1,6 +1,6 @@
 // Package publish delivers a job's commits as a pull request instead of a
 // local merge, for folders whose owner set a publish command on the machine
-// (`install.sh workspace publish PATH COMMAND`). Swarm never pushes by itself
+// (`swarmctl workspace publish PATH COMMAND`). Swarm never pushes by itself
 // and agents never see the command or its credentials: the daemon runs the
 // owner's command on the host with the job's branch, head and report, and
 // records the pull request it prints. Merging stays with the forge's own rules.

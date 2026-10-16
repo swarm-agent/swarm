@@ -803,7 +803,7 @@ func New(cfg config.Config) (*Daemon, error) {
 			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
 		}
 	}
-	// Jobs in folders whose owner set a publish command (install.sh workspace
+	// Jobs in folders whose owner set a publish command (swarmctl workspace
 	// publish) are delivered as pull requests; auto rules deliver them unasked.
 	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
 	// A sync rule starts each worker job from the forge's latest base branch.

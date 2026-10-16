@@ -87,7 +87,7 @@ those folders. Swarm registers each folder in place and writes the project's
 - `workspace_not_found`: the path is wrong; check it with the person.
 - `workspace_not_visible`: Swarm (its own user) cannot see inside a home
   folder and never changes its host itself. Run, as root on that machine,
-  `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh workspace add PATH`
+  `sudo swarmctl workspace add PATH`
   (the command the error names), then create the project again.
 
 Use `swarm_create_workspace` (a new, empty repository; advanced tools) only

@@ -60,7 +60,7 @@ changed) and writes the project's `project.md`, its context, from the folders'
 - `workspace_not_visible`: Swarm (its own user) cannot see a home folder and
   never changes its host itself. If the folder exists, the person, or you if
   you run on that machine, runs the command the error names as root
-  (`install.sh workspace add PATH`), then create the project again.
+  (`swarmctl workspace add PATH`), then create the project again.
 
 `swarm_list_projects` lists projects and their folders.
 `swarm_set_project_workspaces` changes a project's folders (send the full
@@ -133,7 +133,7 @@ worker's summary alone.
 
 `swarm_deliver_job` delivers a `needs_review` job. By default it is a real
 local git merge into the folder's branch, refused on conflicts. When the
-folder's owner set up publishing for it on the machine (`install.sh workspace
+folder's owner set up publishing for it on the machine (`swarmctl workspace
 publish`), delivery opens a pull request instead and the result names it.
 Swarm never pushes otherwise. Delivery is refused when the job committed
 nothing. A pull request merges under the forge's own rules; pushing anything

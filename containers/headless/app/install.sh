@@ -116,7 +116,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
-       install.sh idle-off MINUTES|off
+       swarmctl idle-off MINUTES|off|status
        install.sh auto-update [on|off] [--checks CONTEXT=APP[,...]|none] [--hook PATH]
        install.sh dev-sync /path/to/checkout | off
        install.sh channel [BRANCH]
@@ -129,8 +129,8 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
-       install.sh workspace add PATH [--for-user NAME] | remove PATH | list
-       install.sh workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off
+       swarmctl workspace add PATH [--for-user NAME] | remove PATH | list
+       swarmctl workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
                 ran sudo); used for the AI connection and workspace folders
@@ -1067,7 +1067,7 @@ SupplementaryGroups=docker
 # state directories are 0700 and nobody else is in its group).
 UMask=0007
 Environment=HOME=$SERVICE_HOME SWARM_DISABLE_MINT_REPORT=1
-# Folders whose jobs are delivered as pull requests (install.sh workspace publish).
+# Folders whose jobs are delivered as pull requests (swarmctl workspace publish).
 Environment=SWARM_PUBLISH_CONFIG=$PUBLISH
 # The installer's update state, shown in the machine summary.
 Environment=SWARM_UPDATE_STATE=$UPDATE_STATE
@@ -1172,99 +1172,23 @@ UNIT
 
 # ---- Workspaces: the person's own folders, made visible to Swarm -------------
 # Swarm runs as its own user with every home folder hidden (ProtectHome=yes),
-# so it cannot see a person's folders. `install.sh workspace add PATH`, run as
+# so it cannot see a person's folders. `swarmctl workspace add PATH`, run as
 # root by the person or by the AI setting this machine up, makes exactly that
 # folder (a Git repository or not) visible and writable to Swarm and its agent
 # sandboxes at its real path: a unit drop-in binds the folder into the
 # service, and Swarm's user gets access to that folder only (the owner keeps
 # full rights on everything Swarm creates inside). Swarm itself never changes
-# the machine; this is the installer's job, done from outside. Afterwards the
-# folder is registered in place with swarm_add_workspace (or
-# `swarmctl workspace add`); nothing is copied.
+# the machine; this is swarmctl's job, done from outside. Afterwards the
+# folder is registered in place with swarm_add_workspace; nothing is copied.
 WORKSPACES=$STATE/workspaces
 # Root-owned: FOLDER<TAB>COMMAND[<TAB>auto,sync] per line; Swarm only reads it.
 PUBLISH=$STATE/publish
 WORKSPACES_DROPIN=$UNITS/$DAEMON_UNIT.d/50-workspaces.conf
 
-# A folder Swarm may work in: absolute, no "..", an existing directory with no
-# link in its path, owned by the person it is added for (never root's, Swarm's
-# or a system account's), not a system or settings folder, not that person's
-# whole home and not inside anyone else's home.
-workspace_check() {
-  local path=$1 who=$2 real owner home top sub other uid other_home dir
-  [[ $path == /* ]] || die "path must be absolute"
-  [[ $path != *..* && $path != *$'\n'* ]] || die "path must not contain .. or newlines"
-  [[ -d $path ]] || die "$path is not a directory"
-  real=$(realpath -e "$path") || die "$path cannot be resolved"
-  [[ $real == "$path" ]] || die "$path goes through a link; use $real"
-  [[ $path != / ]] || die "$path is a system folder"
-  top=${path#/} top=${top%%/*}
-  case $top in
-    bin|boot|dev|etc|lib|lib32|lib64|libx32|proc|root|run|sbin|snap|sys|tmp|usr) die "$path is a system folder" ;;
-  esac
-  if [[ $top == var ]]; then
-    sub=${path#/var} sub=${sub#/} sub=${sub%%/*}
-    case $sub in
-      ''|cache|lib|lock|log|mail|run|spool|tmp) die "$path is a system folder" ;;
-    esac
-  fi
-  for dir in "${DATA_DIRS[@]}" "$SERVICE_HOME" "$STATE" "$OPT"; do
-    [[ $path != "$dir" && $path != "$dir"/* ]] || die "$path is Swarm's own storage"
-  done
-  case /$path/ in
-    */.*/*) die "$path is a settings or credentials folder" ;;
-  esac
-  owner=$(stat -c %U "$path")
-  [[ $owner != root && $owner != "$SERVICE_USER" ]] || die "$path must belong to a person, not $owner"
-  [[ $(id -u "$owner") -ge 1000 ]] || die "$path belongs to a system account"
-  [[ $owner == "$who" ]] || die "$path belongs to $owner, not $who (pass --for-user $owner if it is for them)"
-  home=$(person_home "$who")
-  [[ $path != "$home" && $home != "$path"/* ]] || die "$path is $who's whole home folder (or holds it); add the project folder inside it"
-  while IFS=: read -r other _ uid _ _ other_home _; do
-    [[ $other != "$who" && $uid -ge 1000 && $uid -ne 65534 && $other_home == /?* ]] || continue
-    [[ $path != "$other_home" && $path != "$other_home"/* ]] || die "$path is inside $other's home folder"
-  done < <(getent passwd)
-  WORKSPACE_OWNER=$owner
-}
 
 workspace_listed() { [[ -f $WORKSPACES ]] && grep -v '^\s*$' "$WORKSPACES" || true; }
 
-# The drop-in: ProtectHome=tmpfs hides every home folder except the bound
-# ones, which appear at their real paths, writable.
-workspace_dropin() {
-  local paths p
-  paths=$(workspace_listed)
-  if [[ -z $paths ]]; then
-    rm -f "$WORKSPACES_DROPIN"
-    rmdir "$(dirname "$WORKSPACES_DROPIN")" 2>/dev/null || true
-    return
-  fi
-  install -d -m 0755 "$(dirname "$WORKSPACES_DROPIN")"
-  {
-    echo "# Written by install.sh workspace; each folder was added by this machine's administrator."
-    echo "[Service]"
-    echo "ProtectHome=tmpfs"
-    while IFS= read -r p; do
-      echo "BindPaths=$p"
-      echo "ReadWritePaths=$p"
-    done <<<"$paths"
-  } >"$WORKSPACES_DROPIN.tmp"
-  chmod 0644 "$WORKSPACES_DROPIN.tmp"
-  mv -f "$WORKSPACES_DROPIN.tmp" "$WORKSPACES_DROPIN"
-}
-
-# Swarm's user gets rwx on the folder (and x on the folders above it, where
-# missing); the owner keeps rwx on everything Swarm creates inside.
-workspace_grant() {
-  local path=$1 owner=$2 parent
-  setfacl -R -m "u:$SERVICE_USER:rwX" "$path"
-  setfacl -R -d -m "u:$SERVICE_USER:rwX" -m "u:$owner:rwX" "$path"
-  parent=$(dirname "$path")
-  while [[ $parent != / && $parent != /home ]]; do
-    runuser -u "$SERVICE_USER" -- test -x "$parent" || setfacl -m "u:$SERVICE_USER:--x" "$parent"
-    parent=$(dirname "$parent")
-  done
-}
+# Uninstall still revokes the folder ACLs; normal administration is in swarmctl.
 workspace_revoke() {
   local path=$1 owner=$2
   setfacl -R -x "u:$SERVICE_USER" "$path" 2>/dev/null || true
@@ -1272,107 +1196,7 @@ workspace_revoke() {
   setfacl -R -d -x "u:$owner" "$path" 2>/dev/null || true
 }
 
-workspace_restart() {
-  systemctl daemon-reload
-  if systemctl is-active -q "$DAEMON_UNIT"; then
-    restart_daemon_when_idle
-    wait_daemon
-    echo "Swarm restarted with the new folder list."
-  fi
-}
 
-workspace() {
-  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
-  command -v setfacl >/dev/null || die "setfacl is missing (apt-get install acl)"
-  case ${1:-} in
-    add)
-      local who=''
-      if [[ $# == 4 && $3 == --for-user ]]; then
-        who=$4
-      else
-        [[ $# == 2 ]] || die "usage: install.sh workspace add PATH [--for-user NAME]"
-      fi
-      who=$(person "$who") || exit 1
-      workspace_check "$2" "$who"
-      install -d -m 0755 "$STATE"
-      if ! workspace_listed | grep -qxF "$2"; then
-        printf '%s\n' "$2" >>"$WORKSPACES"
-        chmod 0644 "$WORKSPACES"
-      fi
-      workspace_grant "$2" "$WORKSPACE_OWNER"
-      workspace_dropin
-      workspace_restart
-      echo "$2 is visible to Swarm (owner $WORKSPACE_OWNER). Register it in place: swarm_add_workspace $2"
-      ;;
-    remove)
-      [[ $# == 2 ]] || die "usage: install.sh workspace remove PATH"
-      [[ $2 == /* && $2 != *..* ]] || die "path must be absolute"
-      workspace_listed | grep -qxF "$2" || die "$2 is not a Swarm workspace folder on this machine"
-      grep -vxF "$2" "$WORKSPACES" >"$WORKSPACES.tmp" || true
-      mv -f "$WORKSPACES.tmp" "$WORKSPACES"
-      [[ ! -d $2 ]] || workspace_revoke "$2" "$(stat -c %U "$2")"
-      workspace_dropin
-      workspace_restart
-      echo "$2 is no longer visible to Swarm."
-      ;;
-    list)
-      [[ $# == 1 ]] || die "usage: install.sh workspace list"
-      workspace_listed
-      [[ ! -s $PUBLISH ]] || { echo "Delivered as pull requests:"; sed 's/^/  /' "$PUBLISH"; }
-      ;;
-    publish)
-      # Jobs in PATH are delivered as pull requests by COMMAND instead of a
-      # local merge; --auto delivers each finished job with commits unasked;
-      # --sync starts each job from the forge's latest base branch.
-      # --land selects fast-forward landing instead of pull requests.
-      # COMMAND runs on this machine as Swarm's user, never in a sandbox.
-      local usage="usage: install.sh workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off"
-      (( $# >= 3 )) || die "$usage"
-      local path=$2 command=$3 options='' flag line
-      shift 3
-      workspace_listed | grep -qxF "$path" || die "$path is not a Swarm workspace folder on this machine (install.sh workspace add $path)"
-      install -d -m 0755 "$STATE"
-      install -m 0644 -o root -g root /dev/null "$PUBLISH.new"
-      if [[ -f $PUBLISH ]]; then
-        while IFS= read -r line; do [[ ${line%%$'\t'*} == "$path" ]] || printf '%s\n' "$line" >>"$PUBLISH.new"; done <"$PUBLISH"
-      fi
-      if [[ $command == --off ]]; then
-        [[ $# == 0 ]] || { rm -f "$PUBLISH.new"; die "$usage"; }
-        mv -f "$PUBLISH.new" "$PUBLISH"
-        echo "Jobs in $path are merged into the folder again."
-        return
-      fi
-      for flag; do
-        case $flag in
-          --land) options+=${options:+,}land ;;
-          --pipeline) options+=${options:+,}pipeline ;;
-          --require-review) options+=${options:+,}require-review ;;
-      --require-proof) options+=${options:+,}require-proof ;;
-          --auto) options+=${options:+,}auto ;;
-          --sync) options+=${options:+,}sync ;;
-          *) rm -f "$PUBLISH.new"; die "$usage" ;;
-        esac
-      done
-      if [[ ,$options, == *,pipeline,* && ( ,$options, != *,land,* || ,$options, != *,require-review,* || ,$options, != *,auto,* ) ]]; then
-        rm -f "$PUBLISH.new"; die "--pipeline requires --land --require-review --auto"
-      fi
-      if [[ ,$options, == *,require-proof,* && ,$options, != *,land,* ]]; then
-        rm -f "$PUBLISH.new"; die "--require-proof requires --land"
-      fi
-      if [[ ,$options, == *,require-review,* && ,$options, != *,land,* ]]; then
-        rm -f "$PUBLISH.new"; die "--require-review requires --land"
-      fi
-      [[ $command == /* && $command != *..* && -f $command && -x $command ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be an absolute path to an executable file"; }
-      [[ $command != /home/* && $command != /root/* ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be outside home folders (Swarm cannot see them); /usr/local/lib is a good place"; }
-      [[ $(stat -c %u "$command") == 0 && $(( 8#$(stat -c %a "$command") & 8#022 )) == 0 ]] || { rm -f "$PUBLISH.new"; die "COMMAND must be owned by root and writable only by root"; }
-      printf '%s\t%s%s\n' "$path" "$command" "${options:+$'\t'$options}" >>"$PUBLISH.new"
-      mv -f "$PUBLISH.new" "$PUBLISH"
-      ensure_app_landing_checks
-      echo "Jobs in $path use publish command $command${options:+ ($options)}."
-      ;;
-    *) die "usage: install.sh workspace add PATH [--for-user NAME] | remove PATH | list | publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off" ;;
-  esac
-}
 
 # Wait until the app answers on its loopback port (with the Host it accepts).
 wait_ready() {
@@ -2089,43 +1913,6 @@ set_secrets_gateway() {
   echo "Secret gateway is $1."
 }
 
-# Root-owned, opt-in host policy. The daemon only reports activity and a signal.
-idle_off() {
-  [[ $EUID == 0 ]] || die "idle-off requires root"
-  local minutes=${1:-} script
-  [[ $minutes == off || $minutes =~ ^[1-9][0-9]{0,5}$ ]] || die "usage: install.sh idle-off MINUTES|off"
-  mkdir -p "$STATE" "$UNITS"
-  if [[ $minutes == off ]]; then
-    systemctl disable --now swarm-idle-off.timer
-    rm -f "$STATE/idle-off-minutes" "$STATE/idle-off-since"
-    return
-  fi
-  script=$(readlink -f "${BASH_SOURCE[0]}")
-  [[ $script == /* && -f $script ]] || die "run idle-off from the installed script"
-  install -o root -g root -m 0700 "$script" "$STATE/idle-off.sh"
-  script=$STATE/idle-off.sh
-  printf '%s\n' "$minutes" >"$STATE/idle-off-minutes"
-  rm -f "$STATE/idle-off-since"
-  cat >"$UNITS/swarm-idle-off.service" <<EOF
-[Unit]
-Description=Power off Swarm host after continuous verified idle
-[Service]
-Type=oneshot
-User=root
-ExecStart=/bin/bash "$script" idle-off-check
-EOF
-  cat >"$UNITS/swarm-idle-off.timer" <<EOF
-[Unit]
-Description=Check opt-in Swarm host idle policy
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-[Install]
-WantedBy=timers.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now swarm-idle-off.timer
-}
 
 idle_off_response_is_idle() {
   "$OPT/current/bin/node" -e '
@@ -2185,7 +1972,7 @@ main() {
     update) update ;;
     finish-update) finish_update ;;
     build-release) shift; load_conf; build_release "${1:?build-release needs a commit}" ;;
-    idle-off) shift; idle_off "$@" ;;
+    idle-off) shift; exec "$SWARMCTL" idle-off "$@" ;;
     idle-off-check) idle_off_check ;;
     auto-update) shift; auto_update "$@" ;;
     dev-sync) shift; dev_sync "$@" ;;
@@ -2207,7 +1994,7 @@ main() {
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
     secrets-gateway) shift; set_secrets_gateway "$@" ;;
     permissions) shift; set_permissions "$@" ;;
-    workspace) shift; workspace "$@" ;;
+    workspace) shift; exec "$SWARMCTL" workspace "$@" ;;
     status) status_cmd ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;

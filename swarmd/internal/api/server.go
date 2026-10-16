@@ -2245,7 +2245,7 @@ func (s *Server) handleWorkspaceRepositorySetup(w http.ResponseWriter, r *http.R
 // hidden) with what to do, instead of a dead "no such directory". Swarm never
 // changes its own host: the person, or the AI setting the machine up, makes
 // the folder visible from outside (on a headless install,
-// `install.sh workspace add PATH` as root) and adds it again. Only a missing
+// `swarmctl workspace add PATH` as root) and adds it again. Only a missing
 // or unreadable path outside Swarm's own storage qualifies. A path whose
 // parent Swarm can see and that simply is not there is answered as
 // workspace_not_found, so a typo never sends anyone to change the host.
@@ -2278,7 +2278,7 @@ func (s *Server) writeWorkspaceNotVisible(w http.ResponseWriter, path string) bo
 		"ok":    false,
 		"code":  "workspace_not_visible",
 		"path":  clean,
-		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `install.sh workspace add " + clean + "`, then try again.",
+		"error": clean + " is not visible to Swarm on this machine: either it does not exist, or it is inside a home folder, which Swarm (its own user) cannot see and never changes its host to reach. If the folder exists, make it visible as root on that machine with `swarmctl workspace add " + clean + "`, then try again.",
 	})
 	return true
 }

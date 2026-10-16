@@ -125,3 +125,52 @@ func (f fakeOwnerInfo) Mode() os.FileMode {
 	return f.FileInfo.Mode()
 }
 func (f fakeOwnerInfo) Sys() any { return &syscall.Stat_t{Uid: f.uid} }
+
+// Purpose: machineIdleResponse is the CLI's shutdown authorization boundary.
+// An incomplete, busy, or future nonzero activity response must never authorize
+// poweroff. This pure contract test is the narrowest layer and cannot touch the host.
+func TestMachineIdleResponseFailsClosed(t *testing.T) {
+	valid := `{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0,"landing":0}`
+	for _, tt := range []struct {
+		name, body string
+		want       bool
+	}{
+		{"idle", valid, true},
+		{"busy", strings.Replace(valid, "false", "true", 1), false},
+		{"missing count", `{"busy":false}`, false},
+		{"missing busy", `{}`, false},
+		{"null", strings.Replace(valid, `"sessions":0`, `"sessions":null`, 1), false},
+		{"string", strings.Replace(valid, `"sessions":0`, `"sessions":"0"`, 1), false},
+		{"active", strings.Replace(valid, `"sessions":0`, `"sessions":1`, 1), false},
+		{"future active", strings.TrimSuffix(valid, "}") + `,"environment_builds":1}`, false},
+		{"future idle", strings.TrimSuffix(valid, "}") + `,"environment_builds":0}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var response map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(tt.body), &response); err != nil {
+				t.Fatal(err)
+			}
+			if got := machineIdleResponse(response); got != tt.want {
+				t.Fatalf("idle = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// Purpose: machinePublish must reject invalid policy before any root-owned file
+// mutation or daemon call. Invalid flag dependencies and unregistered folders
+// are checked directly at the parser boundary without requiring root or services.
+func TestMachinePublishRejectsInvalidPolicy(t *testing.T) {
+	for _, args := range [][]string{
+		{"/project", "/publisher", "--pipeline"},
+		{"/project", "/publisher", "--require-review"},
+		{"/project", "/publisher", "--require-proof"},
+		{"/project", "/publisher", "--unknown"},
+		{"/project", "--off", "--land"},
+		{"/unregistered", "--off"},
+	} {
+		if err := machinePublish(args, []string{"/project"}); err == nil {
+			t.Fatalf("accepted invalid policy %q", args)
+		}
+	}
+}

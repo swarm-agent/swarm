@@ -17,7 +17,7 @@ import (
 )
 
 // Jobs in a folder whose owner set a publish command on the machine
-// (`install.sh workspace publish`) are delivered as pull requests: Swarm runs
+// (`swarmctl workspace publish`) are delivered as pull requests: Swarm runs
 // the owner's command with the job's branch and head, and records the pull
 // request it prints, instead of merging into the folder. With `auto`, a job
 // that finishes with commits is delivered without anyone calling
