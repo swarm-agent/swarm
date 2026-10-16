@@ -758,6 +758,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	if err := apiServer.SetLandingMaxConcurrent(cfg.LandingMaxConcurrent); err != nil {
+		return nil, err
+	}
 	toolRuntime.SetProjectTaskLifecycleService(apiServer)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.

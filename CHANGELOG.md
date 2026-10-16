@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Preserve landing check failure lines with context in coder send-backs and stored check results instead of only the passing output tail. Docs impact: none.
+- Admit agents by RAM without default CPU quotas or command slots, and cap landings across folders by CPU with `landing_max_concurrent`. Docs impact: containers/headless/app/README.md.
 
 - Run queued job landing with the daemon owner's trusted principal so automatic delivery can read sandbox cache limits just like explicit delivery. Docs impact: none.
 - Make landing proof verification opt-in via `require-proof` and use daemon-owned, sandbox-accessible scratch outside job workspaces. Docs impact: containers/headless/app/README.md

@@ -49,7 +49,7 @@ type FileConfig struct {
 	ProviderAPIDiagnostics       bool
 	SandboxMemory                string
 	SandboxCPUs                  string
-	SandboxCPUSlots              int
+	LandingMaxConcurrent         int
 	SandboxCgroupParent          string
 	WorkerMaxConcurrentRuns      int
 	LongSessionDiagnostics       bool
@@ -337,7 +337,7 @@ long_session_diagnostics = %t
 # Per-job sandbox memory (empty: host-derived), and box worker admission (0: auto).
 sandbox_memory = %s
 sandbox_cpus = %s
-sandbox_cpu_slots = %d
+landing_max_concurrent = %d
 sandbox_cgroup_parent = %s
 worker_max_concurrent_runs = %d
 
@@ -361,7 +361,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.SandboxCPUSlots, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -525,7 +525,7 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
-		case "sandbox_cpus", "sandbox_cpu_slots", "sandbox_cgroup_parent":
+		case "sandbox_cpus", "landing_max_concurrent", "sandbox_cgroup_parent":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
 			}
@@ -540,12 +540,12 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 					}
 				}
 				cfg.SandboxCPUs = value
-			case "sandbox_cpu_slots":
+			case "landing_max_concurrent":
 				n, err := strconv.Atoi(value)
 				if err != nil || n < 0 {
-					return FileConfig{}, nil, fmt.Errorf("invalid sandbox_cpu_slots %q", value)
+					return FileConfig{}, nil, fmt.Errorf("invalid landing_max_concurrent %q", value)
 				}
-				cfg.SandboxCPUSlots = n
+				cfg.LandingMaxConcurrent = n
 			case "sandbox_cgroup_parent":
 				cfg.SandboxCgroupParent = value
 			}
@@ -759,8 +759,8 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	if _, ok := seen["sandbox_cpus"]; !ok {
 		lines = append(lines, fmt.Sprintf("sandbox_cpus = %s", cfg.SandboxCPUs))
 	}
-	if _, ok := seen["sandbox_cpu_slots"]; !ok {
-		lines = append(lines, fmt.Sprintf("sandbox_cpu_slots = %d", cfg.SandboxCPUSlots))
+	if _, ok := seen["landing_max_concurrent"]; !ok {
+		lines = append(lines, fmt.Sprintf("landing_max_concurrent = %d", cfg.LandingMaxConcurrent))
 	}
 	if _, ok := seen["sandbox_cgroup_parent"]; !ok {
 		lines = append(lines, fmt.Sprintf("sandbox_cgroup_parent = %s", cfg.SandboxCgroupParent))

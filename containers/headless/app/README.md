@@ -275,28 +275,29 @@ This does not qualify any cloud deployment, live provider run or external post.
 
 Restart after changing these keys in the daemon startup config (`swarm.conf`):
 
-- `sandbox_cpus`: per-agent-container Docker CPU quota; empty derives
-  `max(2, logical CPUs * 0.75 / worker_max_concurrent_runs)` using resolved worker admission.
-- `sandbox_cpu_slots`: box-wide concurrent agent commands; zero derives
-  `max(1, floor(logical CPUs * 0.75 / 2))`. Every command takes a slot before
-  container acquisition. Queued commands report `waiting for a CPU slot`;
-  their execution timeout starts after admission, while run cancellation remains effective.
+- `worker_max_concurrent_runs`: concurrent agents, defaulting to three quarters
+  of host RAM divided by a 3 GiB per-run admission budget (at least one), with
+  no CPU cap. A positive setting overrides this RAM-derived default.
+- `landing_max_concurrent`: box-wide concurrent landings, defaulting to
+  `max(1, logical CPUs / 4)` rounded down. Each folder still lands one job at a
+  time. A positive setting overrides this CPU-derived default.
+- Agents have no default CPU quota or command slot queue. `sandbox_cpus` remains
+  available only as an explicit per-container override; empty means unrestricted.
 - `sandbox_cgroup_parent`: optional Docker cgroup parent. The headless installer
   supplies `--sandbox-cgroup-parent=swarm-sandbox.slice` on install and update.
 
-A 22-CPU host defaults to eight command slots; with eight workers its per-container
-quota is 2.0625 CPUs. The two-CPU floor and background descendants mean quotas alone
-are **not** a guaranteed 25% aggregate CPU reservation. The installer gives agent
-containers a lower-weight slice (CPUWeight/IOWeight 25), versus daemon weights 1000,
+A 22-CPU, 64 GiB host defaults to 16 agents and five concurrent landings.
+Landing check containers retain their existing resources and weights.
+The installer gives agent containers a lower-weight slice (CPUWeight/IOWeight 25), versus daemon weights 1000,
 and retains `ProtectControlGroups=yes`. Install/update detects Docker's cgroup
  driver: systemd uses the slice; cgroupfs explicitly clears the parent override
 and uses per-container CPU shares (256 versus daemon-command containers' 2048).
 Unknown drivers or failed detection stop installation rather than guessing.
 Outside this installer, containers still receive lower CPU shares (256).
-Derived quotas are rounded down to nine decimal places (Docker NanoCPU precision).
+Weights only affect contention; idle CPU remains available to agents.
 
 Ordinary daemon Git runs in a separate confined per-project container (CPU shares
-2048), outside agent quotas and slots; reviewer Git retains its restricted read-only
+2048), outside any explicit agent quota; reviewer Git retains its restricted read-only
 container. Worktree Git command budgets start after sandbox acquisition. Cold-start
 and engine failure can still fail explicitly; priority is not a real-time guarantee.
 

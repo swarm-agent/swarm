@@ -1052,6 +1052,8 @@ UNIT
 [Unit]
 Description=Low-priority Swarm agent commands
 [Slice]
+# Agents are admitted by RAM (worker_max_concurrent_runs); landings by CPU
+# (landing_max_concurrent). Weights affect contention, not idle CPU availability.
 CPUWeight=25
 IOWeight=25
 UNIT

@@ -55,7 +55,6 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 			return limits.ProjectCacheBytes, err
 		},
 		CPUs:               cfg.SandboxCPUs,
-		CPUSlots:           cfg.SandboxCPUSlots,
 		CgroupParent:       cfg.SandboxCgroupParent,
 		MaxWorkerRuns:      cfg.WorkerMaxConcurrentRuns,
 		ProtectedRoots:     protected,

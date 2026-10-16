@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -79,7 +80,7 @@ func (p *AutoPublisher) landPending(ctx context.Context) error {
 	var wg sync.WaitGroup
 	errorsCh := make(chan error, len(entries))
 	// Bound folder fan-out; each Process drains exactly one folder's FIFO.
-	sem := make(chan struct{}, 4)
+	sem := make(chan struct{}, p.server.landingLimit())
 	for _, entry := range entries {
 		select {
 		case sem <- struct{}{}:
@@ -188,6 +189,33 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 	})
 }
 
+// SetLandingMaxConcurrent configures startup-only box-wide check admission.
+func (s *Server) SetLandingMaxConcurrent(limit int) error {
+	if limit < 0 {
+		return errors.New("landing_max_concurrent must be non-negative")
+	}
+	s.landQueueMu.Lock()
+	defer s.landQueueMu.Unlock()
+	if s.landingSlots != nil {
+		return errors.New("landing admission already started")
+	}
+	s.landingMaxConcurrent = limit
+	return nil
+}
+
+func (s *Server) landingLimit() int {
+	s.landQueueMu.Lock()
+	defer s.landQueueMu.Unlock()
+	return s.landingLimitLocked()
+}
+
+func (s *Server) landingLimitLocked() int {
+	if s.landingMaxConcurrent > 0 {
+		return s.landingMaxConcurrent
+	}
+	return max(1, runtime.NumCPU()/4)
+}
+
 // admitLanding shares the run admission lock with drain and restart claims.
 // Queue.Process retains the durable entry while waiting, and releases only after
 // checks, Git and durable effects finish, before admitting the next entry.
@@ -196,11 +224,24 @@ func (s *Server) admitLanding(ctx context.Context, e publish.Entry) (func(), err
 	if manager == nil {
 		return nil, errors.New("landing admission unavailable")
 	}
+	s.landQueueMu.Lock()
+	if s.landingSlots == nil {
+		s.landingSlots = make(chan struct{}, s.landingLimitLocked())
+	}
+	slots := s.landingSlots
+	s.landQueueMu.Unlock()
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	lease, err := manager.Acquire(ctx, executioncapacity.AcquireRequest{AccountScopeID: e.Account, SessionID: "landing:" + e.Request.JobID, RunID: "landing:" + e.Request.JobID})
 	if err != nil {
+		<-slots
 		return nil, err
 	}
-	return func() { _ = lease.Release() }, nil
+	var once sync.Once
+	return func() { once.Do(func() { _ = lease.Release(); <-slots }) }, nil
 }
 
 func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *publish.Entry) error {

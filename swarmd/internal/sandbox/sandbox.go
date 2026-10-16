@@ -85,7 +85,6 @@ type Config struct {
 	MaxWorkerRuns     int
 	PidsLimit         int
 	CPUs              string
-	CPUSlots          int
 	CgroupParent      string
 	DNS               []string
 	IdleTimeout       time.Duration
@@ -150,9 +149,8 @@ type Scope struct {
 
 // Manager owns the per-project sandbox containers.
 type Manager struct {
-	cpuSlots chan struct{}
-	cfg      Config
-	runner   provider.CommandRunner
+	cfg    Config
+	runner provider.CommandRunner
 
 	mu      sync.Mutex
 	status  Status
@@ -912,12 +910,6 @@ func (m *Manager) exec(ctx context.Context, scope Scope, req ExecRequest, daemon
 		}
 		scope.JobCheckout = ""
 		scope.daemonGit = true
-	} else {
-		release, err := m.acquireCPUSlot(ctx, req.OnOutput)
-		if err != nil {
-			return nil, err
-		}
-		defer release()
 	}
 	result, err := m.execOnce(ctx, scope, req)
 	if errors.Is(err, provider.ErrSupervisorUnavailable) && ctx.Err() == nil {

@@ -7,13 +7,13 @@ import "testing"
 func TestCPUConfigRoundTrip(t *testing.T) {
 	cfg := Default("")
 	cfg.SandboxCPUs = "2.0625"
-	cfg.SandboxCPUSlots = 8
+	cfg.LandingMaxConcurrent = 8
 	cfg.SandboxCgroupParent = "swarm-sandbox.slice"
 	got, _, err := parseEntries(Format(cfg), Default(""))
-	if err != nil || got.SandboxCPUs != cfg.SandboxCPUs || got.SandboxCPUSlots != 8 || got.SandboxCgroupParent != cfg.SandboxCgroupParent {
+	if err != nil || got.SandboxCPUs != cfg.SandboxCPUs || got.LandingMaxConcurrent != 8 || got.SandboxCgroupParent != cfg.SandboxCgroupParent {
 		t.Fatalf("%+v %v", got, err)
 	}
-	for _, text := range []string{"sandbox_cpus = NaN", "sandbox_cpus = 0", "sandbox_cpu_slots = -1", "sandbox_cpu_slots = 2\nsandbox_cpu_slots = 3"} {
+	for _, text := range []string{"sandbox_cpus = NaN", "sandbox_cpus = 0", "landing_max_concurrent = -1", "landing_max_concurrent = 2\nlanding_max_concurrent = 3"} {
 		if _, _, err := parseEntries(text, Default("")); err == nil {
 			t.Fatal(text)
 		}

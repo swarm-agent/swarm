@@ -9,21 +9,11 @@ import (
 const gib = uint64(1 << 30)
 
 // ResourceDefaults reserves a quarter of host RAM for the OS and daemon. Each
-// admitted worker has at least a 3 GiB budget; CPU concurrency is capped at one
-// worker per two logical CPUs. Explicit install settings may override either.
-func ResourceDefaults(cpus int, memory uint64) (workers int, bytes uint64) {
-	workers = cpus / 2
-	if workers < 1 {
-		workers = 1
-	}
+// admitted worker has a 3 GiB minimum admission budget, independent of CPUs.
+// Explicit install settings may override worker admission or container memory.
+func ResourceDefaults(_ int, memory uint64) (workers int, bytes uint64) {
 	budget := memory / 4 * 3
-	byRAM := int(budget / (3 * gib))
-	if byRAM < 1 {
-		byRAM = 1
-	}
-	if workers > byRAM {
-		workers = byRAM
-	}
+	workers = max(1, int(budget/(3*gib)))
 	return workers, budget / uint64(workers)
 }
 
