@@ -40,6 +40,7 @@ type Config struct {
 	SandboxMemory                string
 	SandboxCPUs                  string
 	LandingMaxConcurrent         int
+	LandingParallel              int
 	CloudBuildProject            string
 	CloudBuildRegion             string
 	CloudBuildBucket             string
@@ -121,6 +122,7 @@ func Parse(args []string) (Config, error) {
 	cfg.CloudBuildTimeoutMinutes = startupCfg.CloudBuildTimeoutMinutes
 	cfg.CloudBuildServiceAccount = startupCfg.CloudBuildServiceAccount
 	cfg.EnvironmentProvider = startupCfg.EnvironmentProvider
+	cfg.LandingParallel = startupCfg.ResolvedLandingParallel()
 	cfg.EnvironmentRunnerWaitSeconds = startupCfg.EnvironmentRunnerWaitSeconds
 	fs.IntVar(&cfg.LandingMaxConcurrent, "landing-max-concurrent", startupCfg.LandingMaxConcurrent, "box-wide landing limit (0: logical CPUs / 4)")
 	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")

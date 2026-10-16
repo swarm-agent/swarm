@@ -15,6 +15,10 @@ an operational readiness claim.
 
 Cloud Build landings restore Go build/test results, Go modules and the pnpm store from `gs://BUCKET/cache/<folder-key>/latest.tar.gz`, keyed by a stable hash of project, account and folder. Missing or invalid archives continue cold; archives are capped at 3 GiB, saved after passing or failing checks through a temporary object and atomic copy, and restored directories are owned by the unprivileged check user. Landing cleanup remains confined to `landings/`, preserving its existing seven-day lifecycle independently of the overwritten cache objects. Checks still execute sequentially in one build in this cache-first implementation; parallel builds and the `cloudbuild_cache` startup switch remain follow-up work.
 
+## Landing parallelism configuration
+
+`landing_parallel` is a nonnegative integer reserved for per-folder merge-train width, separate from `landing_max_concurrent`; zero resolves to 8 for `gcp-cloudbuild`, `runners`, or `auto` with both Cloud Build project and bucket configured, and 1 otherwise. Explicit positive values override that default. This configuration-only increment parses and preserves the setting, but landing execution remains serial until merge-train scheduling and startup wiring are implemented.
+
 ## Set up a runner
 
 On an x86_64 Linux machine with systemd, from a checkout of the same ref as the hub:

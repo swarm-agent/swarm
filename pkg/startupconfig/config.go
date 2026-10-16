@@ -50,6 +50,7 @@ type FileConfig struct {
 	SandboxMemory                string
 	SandboxCPUs                  string
 	LandingMaxConcurrent         int
+	LandingParallel              int
 	CloudBuildProject            string
 	CloudBuildRegion             string
 	CloudBuildBucket             string
@@ -357,6 +358,7 @@ cloudbuild_timeout_minutes = %d
 cloudbuild_service_account = %s
 environment_provider = %s
 environment_runner_wait_seconds = %d
+landing_parallel = %d
 landing_max_concurrent = %d
 sandbox_cgroup_parent = %s
 worker_max_concurrent_runs = %d
@@ -381,7 +383,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.CloudBuildProject, cfg.CloudBuildRegion, cfg.CloudBuildBucket, cfg.CloudBuildMachineType, cfg.CloudBuildTimeoutMinutes, cfg.CloudBuildServiceAccount, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.CloudBuildProject, cfg.CloudBuildRegion, cfg.CloudBuildBucket, cfg.CloudBuildMachineType, cfg.CloudBuildTimeoutMinutes, cfg.CloudBuildServiceAccount, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.LandingParallel, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -579,7 +581,7 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				}
 				cfg.CloudBuildTimeoutMinutes = n
 			}
-		case "environment_provider", "environment_runner_wait_seconds", "sandbox_cpus", "landing_max_concurrent", "sandbox_cgroup_parent":
+		case "environment_provider", "environment_runner_wait_seconds", "sandbox_cpus", "landing_parallel", "landing_max_concurrent", "sandbox_cgroup_parent":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
 			}
@@ -606,6 +608,12 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 					}
 				}
 				cfg.SandboxCPUs = value
+			case "landing_parallel":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 0 {
+					return FileConfig{}, nil, fmt.Errorf("invalid landing_parallel %q", value)
+				}
+				cfg.LandingParallel = n
 			case "landing_max_concurrent":
 				n, err := strconv.Atoi(value)
 				if err != nil || n < 0 {
@@ -845,6 +853,9 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	}
 	if _, ok := seen["environment_provider"]; !ok {
 		lines = append(lines, "environment_provider = "+cfg.EnvironmentProvider)
+	}
+	if _, ok := seen["landing_parallel"]; !ok {
+		lines = append(lines, fmt.Sprintf("landing_parallel = %d", cfg.LandingParallel))
 	}
 	if _, ok := seen["landing_max_concurrent"]; !ok {
 		lines = append(lines, fmt.Sprintf("landing_max_concurrent = %d", cfg.LandingMaxConcurrent))
