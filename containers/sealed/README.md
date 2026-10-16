@@ -251,7 +251,9 @@ approved call that is still waiting for the gateway also survives a restart. The
 expiry timer does not, so after a restart an expired confirmation is closed the
 next time the gateway reads the session's confirmations, decides one, answers a
 call, or posts a message. The gateway token reaches these routes for its own
-agent's sessions; the operator token cannot. On a conversation created with an
+agent's sessions; the operator token cannot. Only the owner or the gateway token
+decides a confirmation; an SDK or client app key may read confirmations but
+gets 403 on a decision. On a conversation created with an
 `end_user`, the confirmation routes return the session's `end_user` and
 `labels` next to the confirmation, and the approved call is delivered with
 them like any other call, from the stored session.
@@ -286,7 +288,9 @@ plain route calls.
 
 A person can take a conversation from the agent, reply, and hand it back. The
 state is durable session metadata (`takeover`), so the gateway sees it on the
-session it already reads.
+session it already reads. Only a sealed agent's conversations can be taken over (409
+otherwise), and only by the owner or the agent's operator token: an SDK or
+client app key gets 403 on these routes.
 
 | Route | Does |
 |---|---|

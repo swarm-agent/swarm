@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -150,6 +151,31 @@ func seedSessionsV3PrimaryAuthority(t *testing.T, server *Server, workspacePath 
 
 func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, server *Server, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference) pebblestore.SessionSnapshot {
 	t.Helper()
+	return createSessionsV3PrimaryTestSessionForAgent(t, server, clientRequestID, title, workspacePath, pref, "swarm")
+}
+
+// seedSealedTestAgent stores the sealed agent "frontdesk" (one client tool,
+// lookup_order) in the test principal's account, for takeover tests.
+func seedSealedTestAgent(t *testing.T, server *Server) string {
+	t.Helper()
+	account := testPrincipal().AccountScopeID
+	if _, err := server.agents.PutCustomToolForAccount(account, pebblestore.AgentCustomToolDefinition{Name: "lookup_order", Kind: pebblestore.AgentCustomToolKindClient, Description: "Look up an order.", InputSchema: lookupOrderSchema, Effect: "read"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := server.agents.UpsertForAccount(account, agentruntime.UpsertInput{
+		Name: "frontdesk", Mode: agentruntime.ModeSubagent, Provider: "test-provider", Model: "test-model", Enabled: pebblestore.BoolPtr(true), Prompt: "Take orders.",
+		ToolContract: &pebblestore.AgentToolContract{Preset: "custom", Tools: map[string]pebblestore.AgentToolConfig{"lookup_order": {Enabled: pebblestore.BoolPtr(true)}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.sealedAgentError(account, "frontdesk"); err != nil {
+		t.Fatalf("fixture agent is not sealed: %v", err)
+	}
+	return "frontdesk"
+}
+
+func createSessionsV3PrimaryTestSessionForAgent(t *testing.T, server *Server, clientRequestID, title, workspacePath string, pref pebblestore.ModelPreference, agentName string) pebblestore.SessionSnapshot {
+	t.Helper()
 	bindingID := seedSessionsV3PrimaryAuthority(t, server, workspacePath)
 	payload := map[string]any{
 		"client_request_id":    clientRequestID,
@@ -161,7 +187,7 @@ func createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t *testing.T, 
 		"target_relationship":  "self",
 		"title":                title,
 		"mode":                 sessionruntime.ModeAuto,
-		"agent_name":           "swarm",
+		"agent_name":           agentName,
 		"preference":           pref,
 	}
 	raw, err := json.Marshal(payload)

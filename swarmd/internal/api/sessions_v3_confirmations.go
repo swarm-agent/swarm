@@ -77,6 +77,13 @@ func (s *Server) handleSessionV3Confirmations(w http.ResponseWriter, r *http.Req
 		}
 		s.writeConfirmationResponse(w, sessionID, map[string]any{"ok": true, "session_id": sessionID, "confirmation": current})
 	case r.Method == http.MethodPost && confirmationID != "":
+		// A decision is the person's, relayed by the gateway: only the owner or
+		// a gateway token decides (its gate has matched it to this session's
+		// agent), never an SDK, client app or operator key.
+		if rec, scoped := ScopedTokenFromRequest(r); scoped && (strings.TrimSpace(rec.AgentName) == "" || rec.AgentOperator) {
+			writeError(w, http.StatusForbidden, errors.New("only the owner or the agent's gateway token can decide a confirmation"))
+			return
+		}
 		if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return

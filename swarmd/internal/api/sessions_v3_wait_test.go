@@ -181,7 +181,7 @@ func TestSessionEndStopsTheRunAndRefusesNewTurns(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	server.v3SessionExecutor = newSessionV3Executor(server)
 	principal := testPrincipal()
-	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "end-create", "end", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	created := createSessionsV3PrimaryTestSessionForAgent(t, server, "end-create", "end", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"}, seedSealedTestAgent(t, server))
 	id := created.ID
 	_, job, err := server.acceptSessionsV3Message(principal, id, sessionsV3MessageRequest{ClientRequestID: "visitor-1", Role: "user", Content: "hello?"})
 	if err != nil || job == nil {

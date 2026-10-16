@@ -31,7 +31,7 @@ func TestSessionTakeoverHoldsRunsAndRecordsOperatorReplies(t *testing.T) {
 	// test never enqueues it, so no run starts.
 	server.v3SessionExecutor = newSessionV3Executor(server)
 	principal := testPrincipal()
-	created := createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, "takeover-create", "takeover", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"})
+	created := createSessionsV3PrimaryTestSessionForAgent(t, server, "takeover-create", "takeover", t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"}, seedSealedTestAgent(t, server))
 	id := created.ID
 
 	call := func(handler func(http.ResponseWriter, *http.Request), method, path, body string) (int, map[string]any) {
