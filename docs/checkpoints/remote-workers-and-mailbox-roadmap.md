@@ -191,7 +191,7 @@ One of the most powerful paradigms enabled by Swarm's Git worktree isolation is 
 
 ### Why This Works Cleanly in Swarm:
 - **No Workspace Pollution**: The debug session operates in its own session-owned worktree. If the AI's fix is broken, the main codebase remains 100% clean and untouched.
-- **Landing Validation**: The coder commits the fix; the landing step builds and tests once, returning failures to the job.
+- **Landing Validation**: The coder runs what the brief names and commits the fix; verification builds and tests happen once at landing, returning failures to the job.
 
 ---
 

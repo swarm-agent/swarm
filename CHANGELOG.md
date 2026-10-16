@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Allow worker Coders to run commands named by their brief while leaving self-initiated verification builds, tests and linters to landing. Docs impact: docs/checkpoints/remote-workers-and-mailbox-roadmap.md clarifies brief-required command execution.
+
 - Have worker Coders commit without running builds, tests or linters, leaving validation to the landing step once per landing and returning failures for fixes. Docs impact: docs/checkpoints/remote-workers-and-mailbox-roadmap.md now assigns build/test execution to landing.
 - Limit reviewer verdicts to fulfillment of the job brief and unrequested behavior changes; leave all builds and tests to landing after review. Docs impact: docs/reviewer.md
 - Move administrator workspace visibility, publishing policy, and idle shutdown commands into Go `swarmctl`; installer compatibility commands forward to it, and non-root calls name the required sudo command. Docs impact: update docs/checkpoints/swarm-control.md and plugins/swarm/skills/{setup,using-swarm}/SKILL.md.
