@@ -498,6 +498,7 @@ type ExecRequest struct {
 
 // ExecResult contains the output and exit code of a command execution.
 type ExecResult struct {
+	DurationMS     int64     `json:"duration_ms,omitempty"`
 	ExitCode       int       `json:"exit_code"`
 	Stdout         string    `json:"stdout"`
 	Stderr         string    `json:"stderr"`

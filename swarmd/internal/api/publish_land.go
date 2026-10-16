@@ -584,7 +584,7 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			}
 			return err
 		}
-		e.Checks = append(e.Checks, publish.CheckResult{ExitCode: res.ExitCode, Output: excerpt})
+		e.Checks = append(e.Checks, publish.CheckResult{ExitCode: res.ExitCode, Output: excerpt, DurationMS: res.DurationMS})
 		if res.ExitCode != 0 {
 			return publish.ChecksSendBack(base, checks[:i+1], false, excerpt)
 		}

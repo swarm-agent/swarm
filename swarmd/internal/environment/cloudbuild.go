@@ -337,5 +337,5 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 	if req.OnOutput != nil {
 		req.OnOutput([]byte(check.Output))
 	}
-	return &ExecResult{ExitCode: check.ExitCode, Stdout: check.Output}, nil
+	return &ExecResult{ExitCode: check.ExitCode, Stdout: check.Output, DurationMS: check.DurationMS}, nil
 }

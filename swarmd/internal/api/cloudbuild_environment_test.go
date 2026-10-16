@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -145,6 +146,18 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 			}
 			if mode == "check_failure" && (len(entry.Checks) != 2 || entry.Checks[1].ExitCode != 7 || !strings.Contains(entry.Checks[1].Output, "FAIL second")) {
 				t.Fatalf("incorrect failed check: %+v", entry.Checks)
+			}
+			// Purpose: the landing projection must preserve remote per-check timings,
+			// rather than charging polling time or discarding result.json durations.
+			if mode == "success" {
+				data, _ := json.Marshal(entry.Checks)
+				var timings []struct {
+					DurationMS int64 `json:"duration_ms"`
+				}
+				_ = json.Unmarshal(data, &timings)
+				if timings[0].DurationMS != 1 || timings[1].DurationMS != 2 {
+					t.Fatalf("lost durations: %s", data)
+				}
 			}
 			if mode == "success" && entry.Environment != "cloudbuild:test-build" {
 				t.Fatalf("environment=%q", entry.Environment)

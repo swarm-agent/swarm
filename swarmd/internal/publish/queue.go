@@ -16,8 +16,9 @@ type QueueStore interface {
 	PutJSON(string, any) error
 }
 type CheckResult struct {
-	ExitCode int    `json:"exit_code"`
-	Output   string `json:"output,omitempty"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	ExitCode   int    `json:"exit_code"`
+	Output     string `json:"output,omitempty"`
 }
 
 // Proof records daemon-observed results for immutable landing revisions.
