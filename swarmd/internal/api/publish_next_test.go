@@ -20,6 +20,7 @@ func TestAutoPublishNext(t *testing.T) {
 		{"no commits, lane unavailable", "needs_review", map[string]any{"delivery_state": "unavailable", "head": base, "base_commit": base, "commits": []any{}}, autoPublishSkip},
 		{"still running", "running", map[string]any{"head": base, "base_commit": base}, autoPublishWait},
 		{"commits not assessed yet", "needs_review", map[string]any{"delivery_state": "unavailable", "head": "2222222222222222222222222222222222222222", "base_commit": base}, autoPublishWait},
+		{"candidate after restart", "needs_review", map[string]any{"delivery_state": "candidate_work", "action_needed": "Bounded changes since captured base", "head": "2222222222222222222222222222222222222222", "base_commit": base, "commits": []any{commit, commit}}, autoPublishDeliver},
 		{"ready", "needs_review", map[string]any{"delivery_state": "ready", "head": "2222222222222222222222222222222222222222", "base_commit": base, "commits": []any{commit}}, autoPublishDeliver},
 	} {
 		if got := autoPublishNext(c.status, c.result); got != c.want {

@@ -182,6 +182,7 @@ type AutoPublisher struct {
 }
 
 const (
+	autoPublishPendingKey = "publish_meta/pending"
 	autoPublishCursorKey  = "publish_meta/cursor"
 	autoPublishMaxRetries = 20 // about an hour with backoff: a job's review settles in minutes
 )
@@ -234,15 +235,21 @@ func (p *AutoPublisher) Run(ctx context.Context) {
 }
 
 func (p *AutoPublisher) once(ctx context.Context) error {
+	var recoveryErr error
 	if p.server.publishConfig != "" {
-		if err := p.recoverReviews(ctx, p.deliver); err != nil {
-			return err
-		}
+		recoveryErr = p.recoverReviews(ctx, p.deliver)
 	}
-	return p.consume(ctx, p.deliver)
+	// A stale recovery target must not prevent new completion ingestion.
+	return errors.Join(recoveryErr, p.consume(ctx, p.deliver))
 }
 
-// consume advances the durable feed only after delivery admission completes.
+type autoPublishPending struct {
+	Signal   pebblestore.Signal `json:"signal"`
+	Attempts int                `json:"attempts"`
+}
+
+// consume advances only after admission or durable retry handoff. One broken
+// job must not hold every later completion behind its backoff.
 func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Context, pebblestore.Signal) error) error {
 	if p.server.publishConfig == "" {
 		return nil
@@ -260,7 +267,44 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 		}
 		return p.state.PutJSON(autoPublishCursorKey, max(page.LatestSeq, 1))
 	}
+	var pending []autoPublishPending
+	if _, err := p.state.GetJSON(autoPublishPendingKey, &pending); err != nil {
+		return err
+	}
+	var failures []error
+	attempt := func(sig pebblestore.Signal) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := deliver(ctx, sig)
+		if err != nil {
+			failures = append(failures, err)
+		}
+		return err
+	}
+	// Retry each deferred signal once per pass, retaining its retry budget
+	// across daemon restarts. Persist before advancing the feed cursor.
+	remaining := make([]autoPublishPending, 0, len(pending))
 	account := p.server.OutboxAccount()
+	for _, item := range pending {
+		if item.Signal.Account != account {
+			remaining = append(remaining, item)
+			continue
+		}
+		p.mu.Lock()
+		p.attempts[item.Signal.Seq] = item.Attempts
+		p.mu.Unlock()
+		if err := attempt(item.Signal); err != nil {
+			p.mu.Lock()
+			item.Attempts = p.attempts[item.Signal.Seq]
+			p.mu.Unlock()
+			remaining = append(remaining, item)
+		}
+	}
+	pending = remaining
+	if err := p.state.PutJSON(autoPublishPendingKey, pending); err != nil {
+		return err
+	}
 	for ctx.Err() == nil {
 		page, err := p.feed.ListAfter(cursor, 100, pebblestore.SignalFilter{Account: account})
 		if err != nil {
@@ -268,8 +312,28 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 		}
 		for _, sig := range page.Signals {
 			if autoPublishSignal(sig.Kind, sig.Attrs["verdict"]) || (sig.Kind == "job.reviewed" && sig.Attrs["verdict"] == "block") {
-				if err := deliver(ctx, sig); err != nil {
-					return err // retried from this signal
+				// A crash after retry handoff but before cursor persistence can
+				// leave the same signal in both places. Do not duplicate it.
+				deferred := false
+				for _, item := range pending {
+					if item.Signal.Seq == sig.Seq {
+						deferred = true
+						break
+					}
+				}
+				if !deferred {
+					if err := attempt(sig); err != nil {
+						if ctx.Err() != nil {
+							return ctx.Err()
+						}
+						p.mu.Lock()
+						tries := p.attempts[sig.Seq]
+						p.mu.Unlock()
+						pending = append(pending, autoPublishPending{Signal: sig, Attempts: tries})
+						if err := p.state.PutJSON(autoPublishPendingKey, pending); err != nil {
+							return err
+						}
+					}
 				}
 			}
 			cursor = sig.Seq
@@ -284,7 +348,7 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 			}
 		}
 		if len(page.Signals) < 100 {
-			return nil
+			return errors.Join(failures...)
 		}
 	}
 	return ctx.Err()
@@ -322,14 +386,25 @@ func (s *Server) pipelineCall(ctx context.Context) (*controlMCPCall, error) {
 	return s.internalCall(ctx, "sessions:read", "sessions:write", "projects:read", "projects:write", "swarm:read", "agents:read", "automations:read", "automations:write", "signals:read")
 }
 
+func (p *AutoPublisher) logDecision(sig pebblestore.Signal, decision, reason string) {
+	log.Printf("auto publish signal=%d job=%s %s reason=%q", sig.Seq,
+		controlMCPJobID(controlMCPJobWorker, sig.Refs["worker_id"], sig.Refs["run_id"]),
+		decision, controlMCPTruncate(reason, 200))
+}
+
+func (p *AutoPublisher) skip(sig pebblestore.Signal, reason string) error {
+	p.logDecision(sig, "skip", reason)
+	return nil
+}
+
 func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) error {
 	workerID, runID := sig.Refs["worker_id"], sig.Refs["run_id"]
 	if !controlMCPSafeID.MatchString(workerID) || !controlMCPSafeID.MatchString(runID) {
-		return nil
+		return p.skip(sig, "invalid worker or run id")
 	}
 	c, err := p.server.pipelineCall(ctx)
 	if err != nil {
-		return nil // no owner yet: nothing to deliver as
+		return p.retry(sig, err) // owner initialization may still be in progress
 	}
 	view, err := c.jobView(controlMCPJobWorker, workerID, runID, 0, false, 0)
 	if err != nil {
@@ -337,21 +412,24 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	}
 	result := controlMCPJobResultJSON(view)
 	if result["delivery_state"] == "report_only" {
-		return nil
+		return p.skip(sig, "report-only job")
 	}
 	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
 	if err != nil {
 		return p.retry(sig, err)
 	}
 	if refs.run["role"] == "reviewer" {
-		return nil
+		return p.skip(sig, "reviewer job")
 	}
 	rule, ok, err := p.server.publishRule(c.jobFolder(refs, result))
-	if err != nil || !ok || !rule.Auto {
-		return nil
+	if err != nil {
+		return p.retry(sig, err)
+	}
+	if !ok || !rule.Auto {
+		return p.skip(sig, "no automatic publish rule")
 	}
 	if sig.Kind == "job.reviewed" && !reviewGated(rule) {
-		return nil
+		return p.skip(sig, "rule does not require review")
 	}
 	if rule.Pipeline {
 		// Follow-up may already have made the coder active when the process
@@ -367,7 +445,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		status, _ := view["status"].(string)
 		switch autoPublishNext(status, result) {
 		case autoPublishSkip:
-			return nil
+			return p.skip(sig, "job has no deliverable commits")
 		case autoPublishWait:
 			return p.retry(sig, errAutoPublishWait)
 		}
@@ -392,7 +470,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 			return c.emitPipeline(workerID, runID, refs, chain)
 		}
 		if !ready {
-			return nil
+			return p.skip(sig, "review pipeline pending; awaiting review signal")
 		}
 	}
 	// A missing review must not hold the signal cursor: a later durable
@@ -401,7 +479,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		if err := c.requireLandAdmission(controlMCPJobWorker, workerID, runID, rule, result); err != nil {
 			var missing *missingLandReview
 			if errors.As(err, &missing) {
-				return nil
+				return p.skip(sig, err.Error())
 			}
 			return p.retry(sig, err)
 		}
@@ -409,7 +487,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	status, _ := view["status"].(string)
 	switch autoPublishNext(status, result) {
 	case autoPublishSkip:
-		return nil
+		return p.skip(sig, "job has no deliverable commits")
 	case autoPublishWait:
 		return p.retry(sig, errAutoPublishWait)
 	}
@@ -422,26 +500,33 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	return nil
 }
 
-// retry keeps the cursor on the job until it is delivered or has failed
-// often enough, then records the failure and moves on.
+// retry defers a job until delivered or its bounded retry budget is exhausted.
 func (p *AutoPublisher) retry(sig pebblestore.Signal, err error) error {
 	p.mu.Lock()
 	p.attempts[sig.Seq]++
 	tries := p.attempts[sig.Seq]
 	p.mu.Unlock()
 	if tries < autoPublishMaxRetries {
+		p.logDecision(sig, "wait", fmt.Sprintf("attempt %d: %v", tries, err))
 		return fmt.Errorf("auto publish %s: %w", sig.Refs["run_id"], err)
 	}
+	p.logDecision(sig, "give up", err.Error())
 	p.mu.Lock()
 	delete(p.attempts, sig.Seq)
 	p.mu.Unlock()
 	if p.server.signals != nil {
-		_, _ = p.server.signals.Append(pebblestore.Signal{
+		_, signalErr := p.server.signals.Append(pebblestore.Signal{
 			Kind: "job.publish_failed", Severity: pebblestore.SignalSeverityWarning, Source: pebblestore.SignalSourceSwarmd, Account: sig.Account,
-			Summary:  "A finished job was not delivered as a pull request: " + controlMCPTruncate(err.Error(), 200),
+			Summary:  "Automatic job delivery gave up: " + controlMCPTruncate(err.Error(), 200),
 			DedupKey: "job.publish_failed:" + sig.Refs["run_id"], Refs: sig.Refs,
 			Attrs: map[string]string{"job_id": controlMCPJobID(controlMCPJobWorker, sig.Refs["worker_id"], sig.Refs["run_id"])},
 		})
+		if signalErr != nil {
+			p.mu.Lock()
+			p.attempts[sig.Seq] = tries
+			p.mu.Unlock()
+			return signalErr
+		}
 	}
 	return nil
 }

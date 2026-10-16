@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -128,5 +131,96 @@ func TestAutoPublishReviewSignalQueuesLanding(t *testing.T) {
 	consume()
 	if calls != 3 || land != 1 {
 		t.Fatal("review signal replayed after restart")
+	}
+}
+
+// Purpose: consume must admit later completions after restart even if an older
+// signal permanently fails or waits for assessment. The real cursor, signal
+// store and landing queue are the narrowest boundary proving head-of-line
+// blocking and durable retry; discovery failure is injected, not Git landing.
+func TestAutoPublishRestartDoesNotBlockLaterJobs(t *testing.T) {
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previous)
+	for _, failure := range []error{errors.New("old job session no longer exists"), errAutoPublishWait} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			s, _, _, cleanup := setupScopedAuthTestServer(t)
+			defer cleanup()
+			s.SetPublishConfig("configured")
+			db := s.sessions.Store().Underlying()
+			feed := store.NewSignalStore(db)
+			account := s.OutboxAccount()
+			q := publish.NewQueue(db)
+			appendSignal := func(kind, run string) store.Signal {
+				t.Helper()
+				sig, err := feed.Append(store.Signal{Kind: kind, Severity: store.SignalSeverityInfo, Source: store.SignalSourceSwarmd, Account: account, Summary: "restart regression", Refs: map[string]string{"worker_id": "worker", "run_id": run}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return sig
+			}
+			start := appendSignal("test.started", "")
+			if err := db.PutJSON(autoPublishCursorKey, start.Seq); err != nil {
+				t.Fatal(err)
+			}
+			p := s.NewAutoPublisher(feed, db)
+			failedCalls := 0
+			deliver := func(ctx context.Context, sig store.Signal) error {
+				if sig.Refs["run_id"] == "old" {
+					failedCalls++
+					return p.retry(sig, failure)
+				}
+				_, err := q.Enqueue(publish.Entry{Account: account, Request: publish.Request{Folder: "/project", JobID: sig.Refs["run_id"], Branch: "agent/" + sig.Refs["run_id"], Head: strings.Repeat("a", 40), BaseBranch: "dev"}})
+				return err
+			}
+			appendSignal("worker.run.succeeded", "before")
+			if err := p.consume(context.Background(), deliver); err != nil {
+				t.Fatal(err)
+			}
+			appendSignal("worker.run.succeeded", "old")
+			appendSignal("daemon.started", "")
+			last := appendSignal("worker.run.succeeded", "after")
+			p = s.NewAutoPublisher(feed, db)
+			_ = p.consume(context.Background(), deliver)
+			for _, job := range []string{"before", "after"} {
+				e, _, err := q.Get(account, job)
+				if err != nil || e.State != "queued" {
+					t.Fatalf("%s completion not queued: state=%q err=%v", job, e.State, err)
+				}
+			}
+			var cursor uint64
+			if _, err := db.GetJSON(autoPublishCursorKey, &cursor); err != nil || cursor != last.Seq {
+				t.Fatalf("cursor=%d want %d: %v", cursor, last.Seq, err)
+			}
+			// Restart again: retry responsibility must survive cursor advancement.
+			p = s.NewAutoPublisher(feed, db)
+			_ = p.consume(context.Background(), deliver)
+			if failedCalls != 2 {
+				t.Fatalf("failed signal lost after restart: attempts=%d", failedCalls)
+			}
+			// Repeated restarts must not reset a permanent failure's budget.
+			for i := 2; i < autoPublishMaxRetries; i++ {
+				p = s.NewAutoPublisher(feed, db)
+				_ = p.consume(context.Background(), deliver)
+			}
+			p = s.NewAutoPublisher(feed, db)
+			if err := p.consume(context.Background(), deliver); err != nil {
+				t.Fatal(err)
+			}
+			p.skip(store.Signal{Refs: map[string]string{"worker_id": "worker", "run_id": "old"}}, "report-only job")
+			for _, text := range []string{"job=worker/worker/old wait reason=", "job=worker/worker/old give up reason=", "job=worker/worker/old skip reason=", failure.Error()} {
+				if !strings.Contains(logs.String(), text) {
+					t.Errorf("missing diagnostic %q", text)
+				}
+			}
+			if failedCalls != autoPublishMaxRetries {
+				t.Fatalf("retry budget reset: calls=%d", failedCalls)
+			}
+			var pending []autoPublishPending
+			if _, err := db.GetJSON(autoPublishPendingKey, &pending); err != nil || len(pending) != 0 {
+				t.Fatalf("exhausted retry retained: %+v %v", pending, err)
+			}
+		})
 	}
 }

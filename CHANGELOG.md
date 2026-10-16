@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Allow worker Coders to run commands named by their brief while leaving self-initiated verification builds, tests and linters to landing. Docs impact: docs/checkpoints/remote-workers-and-mailbox-roadmap.md clarifies brief-required command execution.
+- Prevent failed automatic-delivery signals from blocking later jobs after daemon updates; persist bounded retries and log skip, wait, and give-up reasons. Docs impact: none.
 
 - Have worker Coders commit without running builds, tests or linters, leaving validation to the landing step once per landing and returning failures for fixes. Docs impact: docs/checkpoints/remote-workers-and-mailbox-roadmap.md now assigns build/test execution to landing.
 - Limit reviewer verdicts to fulfillment of the job brief and unrequested behavior changes; leave all builds and tests to landing after review. Docs impact: docs/reviewer.md
