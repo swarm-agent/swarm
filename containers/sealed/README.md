@@ -382,6 +382,12 @@ docker run -d --name swarm-sealed --cap-drop ALL --security-opt no-new-privilege
   -p 127.0.0.1:7783:7783 swarm-sealed:local --container-sdk-port=7783
 ```
 
+A box with no internet access (a private network, as for a sealed agent)
+should set `SWARM_MODEL_CATALOG=embedded` in the daemon environment: Swarm
+then uses the model snapshot built into the binary and never fetches one, so
+setup does not fail on `models.swarmagent.dev`. Without it, first-provider
+setup needs that host. Any other value stops the daemon at start.
+
 Then set it up with `swarmctl setup identity`, `credential`, `workspace` and
 `complete` (see `containers/headless/README.md`). Every step runs through
 `docker exec`, which needs no shell. Publish the SDK port only to loopback or a
