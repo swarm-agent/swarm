@@ -146,6 +146,9 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 			if err := c.prepareLand(ctx, rule, e); err != nil {
 				return err
 			}
+			if ignoreLandProof(rule, e) {
+				return nil
+			}
 			return c.verifyLandProof(ctx, rule, e)
 		},
 		Land: func(ctx context.Context, e publish.Entry) (publish.LandResult, error) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,10 +20,15 @@ import (
 	"swarm/packages/swarmd/internal/sandbox"
 )
 
+// Proof verification is opt-in: only a folder rule with require-proof enables it.
+// Otherwise declarations and explicit proof commands cannot block landing.
 // A committed .swarm-proof.json lets a coder declare {"command":"bash repro.sh",
 // "files":["repro.sh"]}. Only newly added regular files may be carried to base;
 // copying changed product files would make the negative control meaningless.
 func (c *controlMCPCall) verifyLandProof(ctx context.Context, rule publish.Rule, e *publish.Entry) error {
+	if ignoreLandProof(rule, e) {
+		return nil
+	}
 	kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": e.Request.JobID})
 	if err != nil {
 		return err
@@ -90,7 +96,19 @@ func (w *proofGitOutput) Write(p []byte) (int, error) {
 	return w.buffer.Write(p)
 }
 
+func ignoreLandProof(rule publish.Rule, e *publish.Entry) bool {
+	if rule.RequireProof {
+		return false
+	}
+	e.Proof = nil
+	slog.Info("proof declaration ignored: folder rule has no require-proof")
+	return true
+}
+
 func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry, command, repository string, run func(context.Context, string, string, string) *publish.ProofResult) error {
+	if ignoreLandProof(rule, e) {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
 	e.Proof = nil
@@ -132,17 +150,13 @@ func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry
 		return errors.New("proof declaration exceeds limits")
 	}
 	e.Proof = proof
-	// Keep scratch inside the job clone's mounted, shared-group directory.
-	// ScratchDir's daemon-private 0700 bucket is inaccessible when the
-	// sandbox runs as a different folder owner. Never use the user's folder.
-	scratch, err := os.MkdirTemp(repository, ".swarm-proof-*")
+	// Use daemon-owned mounted scratch, not the sandbox-owned job workspace.
+	// Its shared group permits the folder-owner sandbox to access checkouts.
+	scratch, err := sandbox.SharedScratchDir(repository, ".swarm-proof-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(scratch)
-	if err := os.Chmod(scratch, os.ModeSetgid|0770); err != nil {
-		return err
-	}
 	baseDir, headDir := filepath.Join(scratch, "base"), filepath.Join(scratch, "head")
 	for _, item := range []struct{ dir, rev string }{{baseDir, e.Request.BaseCommit}, {headDir, e.Request.Head}} {
 		if _, err := proofGit(ctx, repository, "worktree", "add", "--detach", item.dir, item.rev); err != nil {

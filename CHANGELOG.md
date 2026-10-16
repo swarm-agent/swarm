@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Run queued job landing with the daemon owner's trusted principal so automatic delivery can read sandbox cache limits just like explicit delivery. Docs impact: none.
+- Make landing proof verification opt-in via `require-proof` and use daemon-owned, sandbox-accessible scratch outside job workspaces. Docs impact: containers/headless/app/README.md
 
 - Preserve Git diagnostics for landing proofs, verify from the job clone with owner-accessible scratch and sandbox execution, and clarify that proof declarations are optional unless require-proof is enabled. Docs impact: none.
 - Skip terminal non-deliverable jobs during automatic publishing and schedule durable bounded retries independently so later completions can enter landing. Docs impact: none.

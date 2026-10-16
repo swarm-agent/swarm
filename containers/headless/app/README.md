@@ -363,16 +363,17 @@ Add `--pipeline` to `install.sh workspace publish PATH COMMAND --land --require-
 `install.sh workspace publish PATH COMMAND --land --require-proof` refuses jobs
 without a reproduction; the option is off by default. `swarm_give_job`, the direct
 worker API and SDK accept a `proof` command run from the folder root. Alternatively,
-the coder commits `.swarm-proof.json`, for example
+the coder commits `.swarm-proof.json`. Verification runs only when the folder rule
+has `require-proof`; otherwise declarations and proof commands are ignored and
+cannot block landing. For example:
 `{"command":"bash repro.sh","files":["repro.sh"]}`. Only declarations added or changed by the job apply; unchanged declarations from
 previous landings are ignored. Listed files must be newly
 added regular files; they are copied from head into the disposable base checkout
 so missing scripts cannot masquerade as reproduction failures.
 
-The daemon runs the command host-side in disposable base/head checkouts with a
-minimal environment, a 20-minute combined timeout and 4 KiB output per run. This
-supports Docker-backed reproductions but executes job-authored code as the daemon
-user: only use trusted jobs on a landing-enabled folder. No provider credentials
-are passed in the environment. `swarm_get_job` reports `proof.base` and
+The daemon runs the command in the landing sandbox in disposable base/head
+checkouts in daemon-owned, group-accessible mounted scratch, never in the job
+workspace. Execution has a 20-minute combined timeout and 4 KiB output per run.
+No provider credentials are passed in the environment. `swarm_get_job` reports `proof.base` and
 `proof.head` with exact commits, exit codes and output. Base must fail, head must
 pass; timeouts and launch failures refuse landing as infrastructure errors.

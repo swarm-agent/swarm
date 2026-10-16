@@ -121,17 +121,63 @@ func RoutedArgv(ctx context.Context, env []string, args ...string) (name string,
 // sandboxed project it lives in the project's worktree bucket, which the
 // sandbox mounts; otherwise in the system temp directory.
 func ScratchDir(path, pattern string) (string, error) {
+	return scratchDir(path, pattern, false)
+}
+
+// SharedScratchDir is daemon-owned scratch accessible to the sandbox's daemon
+// group even when commands run as the folder owner. Never chmod workspace paths.
+func SharedScratchDir(path, pattern string) (string, error) {
+	return scratchDir(path, pattern, true)
+}
+
+func scratchDir(path, pattern string, shared bool) (string, error) {
 	m := Default()
 	if m != nil && (m.Active() || m.Enforced()) {
 		if scope, ok, err := m.ScopeFor(path); err == nil && ok && len(scope.Mounts) > 1 {
+			if shared {
+				base := filepath.Join(scope.Mounts[len(scope.Mounts)-1], ".swarm-shared-scratch")
+				if err := os.MkdirAll(base, 0700); err != nil {
+					return "", err
+				}
+				st, err := os.Lstat(base)
+				if err != nil {
+					return "", err
+				}
+				uid, ok := fileOwnerUID(base)
+				if !st.IsDir() || !ok || uid != os.Getuid() {
+					return "", errors.New("shared scratch must be a daemon-owned directory")
+				}
+				if err := os.Chmod(base, os.ModeSetgid|0710); err != nil {
+					return "", err
+				}
+				return sharedScratchTemp(base, pattern)
+			}
 			base := filepath.Join(scope.Mounts[len(scope.Mounts)-1], ".swarm-scratch")
 			if err := os.MkdirAll(base, 0o700); err != nil {
 				return "", err
 			}
 			return os.MkdirTemp(base, pattern)
 		}
+		if shared {
+			return "", errors.New("shared scratch requires a mounted sandbox worktree bucket")
+		}
+	}
+	if shared {
+		return sharedScratchTemp("", pattern)
 	}
 	return os.MkdirTemp("", pattern)
+}
+
+func sharedScratchTemp(base, pattern string) (string, error) {
+	dir, err := os.MkdirTemp(base, pattern)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, os.ModeSetgid|0770); err != nil {
+		_ = os.Remove(dir)
+		return "", err
+	}
+	return dir, nil
 }
 
 // RouteGit is the manager form of the package-level RouteGit.
