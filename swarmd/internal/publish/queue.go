@@ -61,6 +61,7 @@ type Entry struct {
 	NotificationID      string                               `json:"notification_id,omitempty"`
 	NotificationPending bool                                 `json:"notification_pending,omitempty"`
 	SendBackPending     bool                                 `json:"send_back_pending,omitempty"`
+	RetryFollowupRunID  string                               `json:"retry_followup_run_id,omitempty"`
 	FollowUpID          string                               `json:"follow_up_id,omitempty"`
 }
 
@@ -125,12 +126,14 @@ func (q *Queue) Enqueue(e Entry) (int, error) {
 
 const maxLandingSendBacks = 2
 
-// CanRetryFix admits a new head for an issued fix round, not a replay or a new
-// attempt. The caller must also wait for the worker follow-up to complete.
-func (e Entry) CanRetryFix(head string) bool {
+// CanRetryFix admits a new head or an unconsumed completed follow-up for an
+// issued fix round, without renewing its budget. Only callers that verified
+// follow-up completion may supply its run ID.
+func (e Entry) CanRetryFix(head string, completedRunID ...string) bool {
+	newFollowup := len(completedRunID) > 0 && completedRunID[0] != "" && completedRunID[0] != e.RetryFollowupRunID
 	return (e.State == "sent_back" || e.State == "landing_stopped") &&
 		!pending(e) && e.FollowUpID != "" && e.SendBacks <= maxLandingSendBacks &&
-		head != "" && head != e.Request.Head
+		head != "" && (head != e.Request.Head || newFollowup)
 }
 
 // EnqueueDelivery returns the actual durable receipt under the queue mutex.
@@ -151,7 +154,7 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 			continue
 		}
 		if pending(old) || old.State == "landed" || (!retryStopped &&
-			(old.State == "environment_failed" || ((old.State == "landing_stopped" || old.State == "sent_back") && !old.CanRetryFix(e.Request.Head)))) {
+			(old.State == "environment_failed" || ((old.State == "landing_stopped" || old.State == "sent_back") && !old.CanRetryFix(e.Request.Head, e.RetryFollowupRunID)))) {
 			return old, position(entries, e.Request.JobID), nil
 		}
 		// Only retain queue-owned evidence for the same source and destination.
@@ -162,7 +165,10 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 		e.SendBacks = old.SendBacks
 		e.Attempt = old.Attempt
 		e.TransitionSequence = old.TransitionSequence
-		requeuedFix = old.CanRetryFix(e.Request.Head)
+		requeuedFix = old.CanRetryFix(e.Request.Head, e.RetryFollowupRunID)
+		if e.RetryFollowupRunID == "" {
+			e.RetryFollowupRunID = old.RetryFollowupRunID
+		}
 		if old.State == "landing_stopped" && retryStopped {
 			e.SendBacks = 0
 			e.Attempt++
