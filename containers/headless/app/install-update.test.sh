@@ -16,6 +16,7 @@ set +e +o pipefail
 set -eu
 
 STATE=$work/state OPT=$work/opt SRC=$work/src CONF=$work/state/install.env
+STARTUP_CONFIG=$work/swarm.conf
 UPDATE_STATE=$OPT/update-state.json UPDATE_BAD=$STATE/update-bad
 mkdir -p "$STATE" "$OPT/releases" "$work/statuses"
 log=$work/log
@@ -256,5 +257,69 @@ for url in https://github.com/swarm-agent/swarm.git git@github.com:swarm-agent/s
 done
 git -C "$SRC" remote set-url origin https://example.com/swarm.git
 github_repo >/dev/null && fail "a non-GitHub origin was read as GitHub"
+
+# Purpose: exercise the real activation and smoke/rollback boundary when the
+# candidate daemon exits 2, including a failed reservation release. Service and
+# Docker adapters are local stand-ins; no live outage or benchmark is claimed.
+(
+  source <(sed '$d' "$here/install.sh" | sed -n '/^activate() {/,/^}/p; /^came_up() {/,/^}/p')
+  STARTUP_CONFIG=$work/swarm.conf
+  printf '# keep comment\n sandbox_cpu_slots = 0\nport = 7777\n' >"$STARTUP_CONFIG"
+  cp "$STARTUP_CONFIG" "$work/config-before"
+  chmod 0600 "$STARTUP_CONFIG"
+  release "$c5"
+  cat >"$OPT/releases/$c5/bin/swarmd" <<'DAEMON'
+#!/bin/sh
+if [ "$*" = 'config removed-keys' ]; then echo sandbox_cpu_slots; exit 0; fi
+exit 2
+DAEMON
+  INSTALLER=$work/already-built
+  printf '#!/bin/sh\nexit 0\n' >"$INSTALLER"
+  ln -sfn "$OPT/releases/$c3" "$OPT/current"
+  SWARMCTL=$work/swarmctl
+  SERVICE_USER=test SERVICE_HOME=$work
+  firewall() { :; }; register_gvisor() { :; }; choose_runtime() { SANDBOX_RUNTIME=default; }; install_units() { :; }; docker() { :; }
+  systemctl() {
+    if [[ $1 == restart && $2 == "$DAEMON_UNIT" ]]; then
+      ! grep -q 'sandbox_cpu_slots' "$STARTUP_CONFIG" || fail 'removed key present at restart'
+      "$OPT/current/bin/swarmd" || return $?
+    elif [[ $1 == is-active ]]; then
+      [[ $(running_commit) != "$c5" ]]
+    fi
+  }
+  local_api() {
+    if [[ $(running_commit) == "$c5" ]]; then return 7; fi
+    case $1 in
+      /v3/box/drain*)
+        if [[ " $* " == *' -X POST '* ]]; then printf '{"generation":"boot","ready":true}\n200'
+        elif [[ " $* " == *'release'* ]]; then return 7
+        else echo '{"reserved":true}'; fi ;;
+      /v3/box/summary) printf '{"machine":{"commit":"%s"},"sandbox":{"active":true}}' "$(running_commit)" ;;
+    esac
+  }
+  finish_update || fail 'crash-loop update did not complete rollback'
+  [[ $(state state) == rolled_back && $(running_commit) == "$c3" ]] || fail 'crash-loop did not restore previous release'
+  ! grep -q 'sandbox_cpu_slots' "$STARTUP_CONFIG" || fail 'removed key remains'
+  backups=("$STARTUP_CONFIG".removed-keys-*)
+  [[ ${#backups[@]} == 1 ]] && cmp -s "$work/config-before" "${backups[0]}" || fail 'missing exact dated backup'
+  [[ $(command stat -c %a "$STARTUP_CONFIG") == 600 ]] || fail 'config mode changed'
+  [[ $(cat "$STARTUP_CONFIG") == $'# keep comment\nport = 7777' ]] || fail 'unrelated config changed'
+  migrate_removed_startup_keys "$OPT/releases/$c5" || fail 'repeat migration failed'
+  backups=("$STARTUP_CONFIG".removed-keys-*)
+  [[ ${#backups[@]} == 1 ]] || fail 'repeat migration made another backup'
+  cp "$STARTUP_CONFIG" "$work/config-migrated"
+  # Failed candidate introspection must not modify the managed configuration.
+  migrate_removed_startup_keys "$work/missing-release" && fail 'missing candidate accepted'
+  cmp -s "$STARTUP_CONFIG" "$work/config-migrated" || fail 'failed query changed config'
+  # An asynchronously failing service can report restart success; socket smoke
+  # must still reject it within its bounded attempts.
+  ln -sfn "$OPT/releases/$c5" "$OPT/current"
+  systemctl() { return 0; }
+  came_up "$c5" true && fail 'socket-dead daemon passed smoke'
+  systemctl() { return 1; }
+  local_api() { echo '{"machine":{},"sandbox":{"active":true}}'; }
+  came_up "$c5" true && fail 'inactive service passed smoke'
+  true
+)
 
 echo "install-update: all checks passed"

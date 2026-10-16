@@ -395,6 +395,13 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 		if key == "" {
 			return FileConfig{}, nil, fmt.Errorf("line %d: key must be non-empty", lineNumber+1)
 		}
+		if revision := removedKeyRevision(key); revision != "" {
+			if _, warned := rawSeen[key]; !warned {
+				log.Printf("ignoring removed startup key %s (removed in %s)", key, revision)
+				rawSeen[key] = struct{}{}
+			}
+			continue
+		}
 		if isLegacyIgnoredKey(key) {
 			continue
 		}

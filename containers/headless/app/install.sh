@@ -88,6 +88,7 @@ SANDBOX_BRIDGE=br-swarm-sbx
 SECRETS_GATEWAY_PORT=8080
 DATA_DIRS=(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd)
 APP_CONFIG=/etc/swarmd/headless-app
+STARTUP_CONFIG=/etc/swarmd/swarm.conf
 GVISOR_LIST=/etc/apt/sources.list.d/gvisor.list
 # This installer as kept in the checkout, for the commands it prints.
 INSTALLER=$SRC/containers/headless/app/install.sh
@@ -488,6 +489,29 @@ cleanup_update_drain() {
   fi
 }
 
+# Query the candidate without loading the installed config. Preserve all other
+# lines and file ownership/mode; retain an exact dated backup before replacement.
+migrate_removed_startup_keys() (
+  local release=$1 keys key tmp backup
+  [[ -f $STARTUP_CONFIG ]] || return 0
+  [[ ! -L $STARTUP_CONFIG ]] || return 1
+  keys=$(LD_LIBRARY_PATH="$release/lib" timeout 20 "$release/bin/swarmd" config removed-keys) || return 1
+  [[ -n $keys ]] || return 0
+  while IFS= read -r key; do
+    [[ $key =~ ^[a-z][a-z0-9_]*$ ]] || return 1
+  done <<<"$keys"
+  tmp=$(mktemp "${STARTUP_CONFIG}.rewrite.XXXXXX") || return 1
+  trap 'rm -f "$tmp"' EXIT
+  cp -p "$STARTUP_CONFIG" "$tmp" || return 1
+  awk -v keys="$keys" 'BEGIN { n=split(keys,a,"\n"); for(i=1;i<=n;i++) removed[a[i]]=1 }
+    { key=$0; sub(/=.*/,"",key); gsub(/^[[:space:]]+|[[:space:]]+$/,"",key) }
+    !($0 ~ /=/ && key in removed) { print }' "$STARTUP_CONFIG" >"$tmp" || return 1
+  cmp -s "$STARTUP_CONFIG" "$tmp" && return 0
+  backup=$(mktemp "${STARTUP_CONFIG}.removed-keys-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX") || return 1
+  cp -p "$STARTUP_CONFIG" "$backup" || return 1
+  mv -f "$tmp" "$STARTUP_CONFIG"
+)
+
 activate() {
   local commit=$1 release=$OPT/releases/$1 old
   [[ -x $release/bin/swarmd ]] || die "release ${commit:0:9} is not built"
@@ -520,10 +544,8 @@ WRAPPER
   echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF" || return 1
   install_units || return 1
   ln -sfn "$release" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current" || return 1
-  if ! systemctl restart "$DAEMON_UNIT"; then
-    ln -sfn "$OPT/releases/$old" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current"
-    return 1
-  fi
+  UPDATE_SWITCHED=true
+  systemctl restart "$DAEMON_UNIT" || return 1
   systemctl restart "$APP_UNIT" || return 1
   echo "Swarm is running: ${SWARM_REF}@${commit:0:9}"
 }
@@ -717,6 +739,7 @@ came_up() {
   local commit=$1 sandboxed=$2 out running
   for _ in $(seq 1 60); do
     sleep 2
+    systemctl is-active --quiet "$DAEMON_UNIT" || continue
     out=$(local_api /v3/box/summary 2>/dev/null) || continue
     running=$(json_get machine.commit <<<"$out") || continue
     [[ -z $running || $running == "$commit" ]] || continue
@@ -885,24 +908,36 @@ finish_update() (
     done
   fi
   sandboxed=$(local_api /v3/box/summary 2>/dev/null | json_get sandbox.active || true)
-  activate "$commit" || return 1
+  if ! migrate_removed_startup_keys "$OPT/releases/$commit"; then
+    update_state failed "cannot migrate startup config; daemon left running" "$commit"
+    return 1
+  fi
+  UPDATE_SWITCHED=false
+  local activation_failed=false
+  if ! activate "$commit"; then
+    [[ $UPDATE_SWITCHED == true ]] || return 1
+    activation_failed=true
+    # Cleanup is best-effort against a potentially dead daemon, never a barrier
+    # to restoring the old release. Its boot-bound reservation is now obsolete.
+    cleanup_update_drain
+  fi
   UPDATE_DRAIN_GENERATION=''
+  UPDATE_DRAIN_CLAIM=''
   trap - EXIT INT TERM
-  verify_update_or_rollback "$commit" "$running" "$sandboxed"
+  verify_update_or_rollback "$commit" "$running" "$sandboxed" "$activation_failed"
 )
 
 # Shared acceptance/rollback decision, after activation has completed.
 verify_update_or_rollback() {
   local commit=$1 running=$2 sandboxed=$3
-  if came_up "$commit" "$sandboxed"; then
+  if [[ ${4:-false} != true ]] && came_up "$commit" "$sandboxed"; then
     rm -f "$UPDATE_BAD"
     update_state installed "${running:0:9} -> ${commit:0:9}" "$commit"
     return 0
   fi
   echo "$commit" >"$UPDATE_BAD"
   if [[ -n $running && -x $OPT/releases/$running/bin/swarmd ]]; then
-    activate "$running"
-    if came_up "$running" ''; then
+    if activate "$running" && came_up "$running" ''; then
       update_state rolled_back "${commit:0:9} did not come up; back on ${running:0:9}" "$commit"
       return 0
     fi
