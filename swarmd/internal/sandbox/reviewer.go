@@ -11,6 +11,9 @@ import (
 )
 
 func scopeContainerName(scope Scope) string {
+	if scope.landingID != "" {
+		return ContainerName(scope.Root) + "-landing-" + scope.landingID
+	}
 	if scope.daemonGit {
 		scope.daemonGit = false
 		return scopeContainerName(scope) + "-daemon-git"

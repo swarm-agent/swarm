@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"swarm/packages/swarmd/internal/environment"
 	"testing"
 	"time"
 
@@ -156,14 +157,14 @@ func TestPublishLandDaemonPrincipal(t *testing.T) {
 						t.Fatalf("unexpected preparation command %v", req.Command)
 					}
 					return &provider.ExecResult{Stdout: out}, nil
-				}, func(ctx context.Context, _ sandbox.ExecRequest) (*provider.ExecResult, error) {
+				}, landExecutorProvider{func(ctx context.Context, _ sandbox.ExecRequest) (*provider.ExecResult, error) {
 					principal, ok := identity.PrincipalFromContext(ctx)
 					if !ok || principal.UserID != actor.UserID || principal.AccountScopeID != actor.AccountScopeID {
 						return nil, identity.ErrPrincipalRequired
 					}
 					checkReached = true
 					return &provider.ExecResult{ExitCode: 1}, nil
-				}, func(context.Context, publish.Rule, string) (publish.Base, error) {
+				}}, environment.Spec{}, func(context.Context, publish.Rule, string) (publish.Base, error) {
 					return publish.Base{Commit: strings.Repeat("b", 40), Branch: "dev"}, nil
 				})
 			var sendBack *publish.SendBackError

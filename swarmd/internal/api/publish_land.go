@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/publish"
@@ -329,9 +330,7 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	err = prepareLandWorktreeWithExecutors(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
 		func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
 			return m.ExecDaemon(ctx, scope, req)
-		}, func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
-			return m.Exec(ctx, scope, req)
-		}, publish.Update, func(head string) error {
+		}, c.server.landingEnvironmentProvider, environment.Spec{Folder: rule.Folder, Checkout: path, Definition: environment.Definition{BaseImage: env.Definition.BaseImage, Setup: env.Definition.Setup, Env: env.Definition.Env}}, publish.Update, func(head string) error {
 			return c.requireLandReview(kind, a, b, head)
 		})
 	if err != nil {
@@ -349,14 +348,8 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 	return nil
 }
 
-// prepareLandWorktree keeps preparation and its verified command boundary testable.
-func prepareLandWorktree(ctx context.Context, rule publish.Rule, e *publish.Entry, path string, checks []string, checkTimeoutMinutes int,
-	exec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), update func(context.Context, publish.Rule, string) (publish.Base, error), reviewChecks ...func(string) error) error {
-	return prepareLandWorktreeWithExecutors(ctx, rule, e, path, checks, checkTimeoutMinutes, exec, exec, update, reviewChecks...)
-}
-
 func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e *publish.Entry, path string, checks []string, checkTimeoutMinutes int,
-	exec, checkExec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), update func(context.Context, publish.Rule, string) (publish.Base, error), reviewChecks ...func(string) error) error {
+	exec func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error), environments environment.Provider, spec environment.Spec, update func(context.Context, publish.Rule, string) (publish.Base, error), reviewChecks ...func(string) error) (retErr error) {
 	currentBranch, err := exec(ctx, sandbox.ExecRequest{Command: []string{"git", "branch", "--show-current"}, WorkingDir: path, Timeout: time.Minute, MaxTimeout: time.Minute, MaxOutput: 4096})
 	if err != nil {
 		return err
@@ -536,6 +529,16 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	e.Request.BaseCommit = base.Commit
 	e.Request.BaseBranch = base.Branch
 	e.Checks = nil
+	if environments == nil {
+		return errors.New("landing environment provider unavailable")
+	}
+	spec.Commit = parsedHead
+	checkEnvironment, err := environments.Acquire(ctx, spec)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, checkEnvironment.Release()) }()
+	checkExec := checkEnvironment.Exec
 	limit := 20 * time.Minute
 	if checkTimeoutMinutes > 0 {
 		limit = time.Duration(checkTimeoutMinutes) * time.Minute
@@ -596,5 +599,14 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 		}
 		return reviewChecks[0](reviewedHead)
 	}
+	return nil
+}
+
+// SetEnvironmentProvider configures landing execution at startup only.
+func (s *Server) SetEnvironmentProvider(name string) error {
+	if name != "local" {
+		return fmt.Errorf("invalid environment_provider %q (valid values: local)", name)
+	}
+	s.landingEnvironmentProvider = environment.Local{Manager: sandbox.Default()}
 	return nil
 }

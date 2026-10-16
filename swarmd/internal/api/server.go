@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/memory"
 	"swarm/packages/swarmd/internal/publish"
 	"sync"
@@ -134,6 +135,7 @@ type Server struct {
 	signals                     *pebblestore.SignalStore
 	secretsGatewayEnabled       bool
 	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
+	landingEnvironmentProvider  environment.Provider
 	envBuildMu                  sync.Mutex
 	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore

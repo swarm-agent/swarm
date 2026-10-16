@@ -139,6 +139,7 @@ type Status struct {
 type Scope struct {
 	Root      string
 	daemonGit bool
+	landingID string
 	// JobCheckout selects an independent memory cgroup for a managed worktree.
 	JobCheckout string
 	Mounts      []string

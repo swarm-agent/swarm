@@ -20,7 +20,7 @@ func WithJobCheckout(ctx context.Context, checkout string) context.Context {
 }
 
 func jobScope(ctx context.Context, scope Scope) Scope {
-	if pinned, ok := ctx.Value(jobScopeKey{}).(Scope); ok && scope.ReviewCheckout == "" {
+	if pinned, ok := ctx.Value(jobScopeKey{}).(Scope); ok && scope.ReviewCheckout == "" && scope.landingID == "" {
 		return pinned
 	}
 	return scope

@@ -758,6 +758,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
 	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	if err := apiServer.SetEnvironmentProvider(cfg.EnvironmentProvider); err != nil {
+		return nil, err
+	}
 	if err := apiServer.SetLandingMaxConcurrent(cfg.LandingMaxConcurrent); err != nil {
 		return nil, err
 	}

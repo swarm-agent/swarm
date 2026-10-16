@@ -378,3 +378,7 @@ workspace. Execution has a 20-minute combined timeout and 4 KiB output per run.
 No provider credentials are passed in the environment. `swarm_get_job` reports `proof.base` and
 `proof.head` with exact commits, exit codes and output. Base must fail, head must
 pass; timeouts and launch failures refuse landing as infrastructure errors.
+
+### Environments
+
+Landing checks run in a fresh environment from a provider and release it after the landing. The startup key `environment_provider` defaults to `local`, currently the only supported value: Docker on this machine. Runners on other machines will follow through the same provider interface. Agent bash containers are unchanged.

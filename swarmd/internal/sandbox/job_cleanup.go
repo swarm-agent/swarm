@@ -150,6 +150,17 @@ func (m *Manager) ReconcileContainers(ctx context.Context, active func(string) (
 		if len(items) != 1 || !ownsInstance(m.cfg.StateDir, items[0]) {
 			continue
 		}
+		// Landing leases never survive daemon restart. No check can still be
+		// admitted by this process, so remove their private home as well.
+		if strings.Contains(name, "-landing-") {
+			if err := m.removeJobContainer(ctx, name); err != nil {
+				return err
+			}
+			if _, err := m.runner.Run(ctx, m.cfg.Engine, "volume", "rm", name+"-home"); err != nil {
+				return err
+			}
+			continue
+		}
 		if strings.Contains(name, "-job-"+containerPrefix) || strings.Contains(name, "-review-") {
 			live, err := active(name)
 			if err != nil {
