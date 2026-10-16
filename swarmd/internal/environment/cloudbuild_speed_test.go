@@ -210,7 +210,9 @@ func TestCloudBuildFailureSpeed(t *testing.T) {
 			if mode == "create" {
 				e.children[0].createErr = &Failure{"create failed"}
 			}
-			if mode == "storage" {
+			// A setup/build failure has no check receipt; a published receipt now
+			// takes precedence over a later cache-only build failure.
+			if mode == "storage" || mode == "build" {
 				e.children[0].provider.Storage = &checkFake{objects: map[string]bool{}}
 			}
 			if _, err := e.Exec(context.Background(), ExecRequest{Command: []string{"bash", "-lc", "first"}}); err == nil {
