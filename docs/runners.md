@@ -238,6 +238,7 @@ location), `cloudbuild_bucket`, `cloudbuild_machine_type`,
 With project and bucket configured, `auto` tries runners, then Cloud Build,
 then local execution on infrastructure failure. Check failures are sent back,
 not retried locally. Delivery records identify `cloudbuild:BUILD_ID`.
+When `auto` cannot use Cloud Build, the landing runs locally and the job's environment note says why.
 
 Run `swarmd config cloudbuild-check` under the daemon's identity and environment
 to verify configured bucket metadata read, write/delete access and Cloud Build list access. It
