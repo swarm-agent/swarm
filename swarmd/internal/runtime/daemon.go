@@ -327,6 +327,14 @@ func New(cfg config.Config) (*Daemon, error) {
 		log.Printf("warning: system agent registry validation failed; Plan/AI sidechats will be unavailable until the daemon binary is corrected: %v", err)
 	}
 	modelCatalog := model.NewCatalogService(pebblestore.NewModelCatalogStore(store))
+	switch catalogMode := strings.TrimSpace(os.Getenv(model.CatalogEnv)); catalogMode {
+	case "":
+	case model.CatalogEmbedded:
+		modelCatalog.UseEmbeddedOnly()
+		log.Printf("model catalog: %s=%s, using the snapshot built into this binary; no remote fetch", model.CatalogEnv, catalogMode)
+	default:
+		return nil, fmt.Errorf("%s=%q: the only accepted value is %q", model.CatalogEnv, catalogMode, model.CatalogEmbedded)
+	}
 	modelSvc := model.NewServiceWithFavorites(
 		pebblestore.NewModelStore(store),
 		events,
