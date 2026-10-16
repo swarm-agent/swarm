@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"swarm/packages/swarmd/internal/provider"
+	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/sandbox"
 )

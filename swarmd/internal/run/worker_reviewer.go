@@ -72,7 +72,8 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if task.BaseCommit == "" || state.HeadCommit == task.BaseCommit {
 		return nil, errors.New("review job must have commits")
 	}
-	descends, err := s.host.trees.TaskCommitDescendsFrom(task.SourceWorkspace.Path, task.BaseCommit, state.HeadCommit)
+	// Unlanded commits exist only in the job clone validated above.
+	descends, err := s.host.trees.TaskCommitDescendsFrom(task.WorkspacePath, task.BaseCommit, state.HeadCommit)
 	if err != nil {
 		return nil, err
 	}

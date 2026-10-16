@@ -1,0 +1,1 @@
+{"command":"cd swarmd/internal/run && go test worker_reviewer_clone_test.go -run '^TestReviewerAncestryUsesJobClone$' -count=1","files":["swarmd/internal/run/worker_reviewer_clone_test.go"]}
