@@ -644,6 +644,15 @@ LOCAL_API_SOCKET=/var/lib/swarmd/local-transport/api.sock
 
 local_api() { local path=$1; shift; curl -fsS --max-time 20 --unix-socket "$LOCAL_API_SOCKET" "http://swarm$path" "$@"; }
 
+# True when systemd says the daemon keeps exiting: waiting to restart after a
+# crash, or failed. A daemon an operator stopped is not crashing.
+daemon_crashing() {
+  local active sub
+  active=$(systemctl show -p ActiveState --value "$DAEMON_UNIT" 2>/dev/null) || return 1
+  sub=$(systemctl show -p SubState --value "$DAEMON_UNIT" 2>/dev/null) || return 1
+  [[ $active == failed || $sub == auto-restart ]]
+}
+
 # Print one field (a.b.c) of the JSON on stdin, with the node of the running
 # release; nothing when it is absent.
 json_get() {
@@ -913,6 +922,12 @@ finish_update() (
       (( remaining >= pause )) || pause=$remaining
       sleep "$pause"
     done
+  elif (( drain_rc != 0 )) && daemon_crashing; then
+    # A daemon that keeps exiting runs nothing and can never answer a drain;
+    # waiting for it would leave the machine down for good (for example when
+    # the running release rejects its own config). Go on: the migration below
+    # and the rollback after activation still apply.
+    update_state draining "Swarm is not running (it keeps exiting); nothing to drain" "$commit"
   elif (( drain_rc != 0 )); then
     update_state blocked "cannot establish admission drain; daemon left running" "$commit"
     return 1

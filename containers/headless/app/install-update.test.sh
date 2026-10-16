@@ -140,7 +140,7 @@ grep -qx "build $c3" "$log" || fail "the update did not build while work ran"
 # These function-level cases are the narrowest layer exercising the real wait,
 # state and shared switch/rollback decisions without services or a release build.
 # Errors, malformed status and timeout must leave the running release unchanged.
-for scenario in idle becomes-idle timeout busy-missing busy-invalid server-error transport-error rollback; do
+for scenario in idle becomes-idle timeout busy-missing busy-invalid server-error transport-error crash-looping rollback; do
   (
     ln -sfn "$OPT/releases/$c1" "$OPT/current"
     : >"$log"
@@ -153,6 +153,9 @@ for scenario in idle becomes-idle timeout busy-missing busy-invalid server-error
       server-error) drain_http=500 ;;
       transport-error) drain_http=000 drain_error=7 ;;
       rollback) echo "$c3" >"$work/broken" ;;
+      crash-looping)
+        drain_http=000 drain_error=7
+        systemctl() { [[ $1 == show && " $* " == *SubState* ]] && echo auto-restart; [[ $1 == show && " $* " == *ActiveState* ]] && echo activating; return 0; } ;;
     esac
     sleep() {
       echo "sleep $1" >>"$log"
@@ -169,6 +172,11 @@ for scenario in idle becomes-idle timeout busy-missing busy-invalid server-error
         grep -qx "activate $c3" "$log" || fail "$scenario bypassed shared activation"
         grep -q 'draining the older way' "$work/fallback-out" || fail "$scenario did not explain legacy draining"
         [[ $scenario != becomes-idle ]] || { [[ $(grep -c '^busy$' "$log") == 2 ]] && grep -qx 'sleep 5' "$log"; } || fail "did not wait for idle"
+        ;;
+      crash-looping)
+        [[ $rc == 0 && $(state state) == installed && $(running_commit) == "$c3" ]] || fail "a crash-looping Swarm was left on its broken release: $(cat "$UPDATE_STATE")"
+        grep -qx "activate $c3" "$log" || fail "$scenario bypassed shared activation"
+        ! grep -qx busy "$log" || fail "$scenario used the older drain"
         ;;
       rollback)
         [[ $rc == 0 && $(state state) == rolled_back && $(running_commit) == "$c1" ]] || fail "legacy update did not roll back"
