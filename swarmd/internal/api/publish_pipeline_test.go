@@ -173,3 +173,59 @@ func TestReviewPipelineReceiptReplay(t *testing.T) {
 		t.Fatalf("receipts=%d", n)
 	}
 }
+
+// Purpose: advancePipeline must stop failed admission for the recorded head
+// across repeated sweeps, repairing exactly one durable job.review_failed
+// receipt without attempting another reviewer. Real stores and receipt ACLs
+// are the narrowest layer proving replay does not duplicate the failure.
+func TestReviewPipelineFailedAdmissionReplay(t *testing.T) {
+	s, _, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	db := s.sessions.Store().Underlying()
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.sessions.Store().CreateSessionForAccount(store.SessionSnapshot{ID: "failed-review-session"}, actor.UserID, actor.AccountScopeID); err != nil {
+		t.Fatal(err)
+	}
+	s.signals = store.NewSignalStore(db)
+	state := ReviewPipeline{Head: strings.Repeat("a", 40), Next: "review_failed", Findings: "review checkout missing"}
+	key := pipelineKey(actor.AccountScopeID, "worker/coder/run")
+	if err := db.PutJSON(key, state); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		c, err := s.pipelineCall(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ready, err := c.advancePipeline("coder", "run", controlMCPJobRefs{sessionID: "failed-review-session"}, publish.Rule{}, map[string]any{"head": state.Head})
+		if err != nil || ready {
+			t.Fatalf("failed head retried: %v %v", ready, err)
+		}
+	}
+	var after ReviewPipeline
+	if _, err := db.GetJSON(key, &after); err != nil || after != state {
+		t.Fatalf("failure state changed: %+v %v", after, err)
+	}
+	page, err := s.signals.ListAfter(0, 20, store.SignalFilter{Account: actor.AccountScopeID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := 0
+	for _, sig := range page.Signals {
+		if sig.Kind == "job.review_started" {
+			t.Fatal("failed head restarted")
+		}
+		if sig.Kind == "job.review_failed" {
+			failures++
+			if sig.Attrs["findings"] != state.Findings {
+				t.Fatal("failure reason lost")
+			}
+		}
+	}
+	if failures != 1 {
+		t.Fatalf("failure receipts=%d", failures)
+	}
+}

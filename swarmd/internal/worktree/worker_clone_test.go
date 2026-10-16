@@ -71,8 +71,25 @@ func TestWorkerCloneIsolation(t *testing.T) {
 	if git(review.WorkspacePath, "rev-parse", "HEAD") != head {
 		t.Fatal("review missed clone commit")
 	}
+	// Review admission must produce independent directory metadata and a
+	// detached HEAD; cleanup must remove only the disposable clone.
+	if info, err := os.Lstat(filepath.Join(review.WorkspacePath, ".git")); err != nil || !info.IsDir() {
+		t.Fatal("review has no independent .git", err)
+	}
+	if git(review.WorkspacePath, "branch", "--show-current") != "" {
+		t.Fatal("review is not detached")
+	}
+	if _, err := os.Stat(filepath.Join(review.WorkspacePath, ".git", "objects", "info", "alternates")); !os.IsNotExist(err) {
+		t.Fatal("review depends on shared object storage", err)
+	}
 	if err := s.RemoveReviewWorkspace(repo, review.WorkspacePath, "review-fixture", head); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(review.WorkspacePath); !os.IsNotExist(err) {
+		t.Fatal("review checkout retained", err)
+	}
+	if git(a.WorkspacePath, "rev-parse", "HEAD") != head {
+		t.Fatal("review cleanup changed job clone")
 	}
 	// Failed duplicate admission must not destroy an existing job or its commits.
 	if _, err := s.allocateSessionWorkspaceWithBranchMode(repo, true, "", "agent/job", "worker-execution-fixture", true); err == nil {

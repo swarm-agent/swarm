@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Run Cloud Build folder checks as an unprivileged user with writable workspace caches and temporary storage, retaining root-only setup and result uploads. Docs impact: none.
+- Fix automatic review sandbox mounts for detached job clones, preserve linked-worktree reviews, and durably back off failed checkout recovery while stopping failed pipeline admission for the same head. Docs impact: none.
 
 - Escape literal dollars in Cloud Build step arguments and skip the runner claim wait when no account runner credentials remain registered. Docs impact: none.
 

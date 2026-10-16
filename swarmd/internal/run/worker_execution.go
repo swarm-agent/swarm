@@ -1498,12 +1498,20 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 			continue
 		}
 		if r.Role == store.WorkerRoleReviewer {
-			snapshot, found, restoreErr := s.host.runs.sessions.GetSession(r.SessionID)
-			if restoreErr == nil && found {
-				restoreErr = s.registerReview(snapshot)
-			}
+			restored, restoreErr := restoreReviewWithBackoff(&r, time.Now(), func(next store.WorkerRunRecord) error {
+				_, err := ws.RecordWorkerRun(account, next)
+				return err
+			}, func() error {
+				snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)
+				if err != nil || !found {
+					return err // Admission without a session is handled below.
+				}
+				return s.registerReview(snapshot)
+			})
 			if restoreErr != nil {
 				failures = append(failures, restoreErr)
+			}
+			if !restored {
 				continue
 			}
 		}

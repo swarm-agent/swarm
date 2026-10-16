@@ -80,8 +80,8 @@ func (m *Manager) reviewScope(scope Scope, path string) Scope {
 	return scope
 }
 
-// reviewGitMounts protects both the checkout's .git pointer and the whole
-// common Git directory (including worktree indices/HEADs), not just refs.
+// reviewGitMounts protects the checkout's .git (directory or linked-worktree
+// pointer) and the whole source Git directory, not just refs.
 func reviewGitMounts(checkout, root string) ([]FileMount, error) {
 	common := filepath.Join(root, ".git")
 	info, err := os.Lstat(common)
@@ -89,6 +89,19 @@ func reviewGitMounts(checkout, root string) ([]FileMount, error) {
 		return nil, fmt.Errorf("review requires a project with a directory .git")
 	}
 	pointer := filepath.Join(checkout, ".git")
+	info, err = os.Lstat(pointer)
+	if err != nil {
+		return nil, fmt.Errorf("review checkout git metadata: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("review checkout git metadata must not be a symlink")
+	}
+	if info.IsDir() {
+		// Independent review clones have no shared object store. Protect their
+		// entire Git directory as well as the source; the checkout overlay alone
+		// remains writable for build outputs. Shared bucket mounts are read-only.
+		return []FileMount{{HostPath: common, Dest: common}, {HostPath: pointer, Dest: pointer}}, nil
+	}
 	data, err := os.ReadFile(pointer)
 	if err != nil {
 		return nil, fmt.Errorf("review checkout git pointer: %w", err)

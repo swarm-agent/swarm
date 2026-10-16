@@ -81,8 +81,12 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		}
 		return c.emitPipeline(worker, run, refs, state)
 	}
-	if state.Next == "review_exhausted" || state.Next == "review_failed" {
-		return false, save(state.Next)
+	if state.Next == "review_exhausted" || (state.Next == "review_failed" && state.Head == head) {
+		return false, nil
+	}
+	if state.Next == "review_failed" {
+		// A failed admission is terminal for that head, not for future commits.
+		state.Next, state.ReviewerJobID = "", ""
 	}
 	review, err := c.server.sessions.Store().WorkerStore().CurrentValidJobReview(principal.AccountScopeID, worker, run, head)
 	if err != nil {
