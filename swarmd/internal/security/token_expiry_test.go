@@ -63,7 +63,8 @@ func TestAPIMintedKeysMustExpireWithinTheirMaximum(t *testing.T) {
 	}
 }
 
-// Purpose: keys already stored without an expiry keep working (no silent
+// Purpose: keys already stored without an expiry (other than agent-bound
+// ones, refused at validation) keep working (no silent
 // breakage, no auto-revoke) but are made visible: at start the daemon raises
 // one token.never_expires warning per account listing exactly the unrevoked
 // never-expiring key ids, and nothing for an account without any. Boundary:

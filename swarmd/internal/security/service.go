@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"swarm/packages/swarmd/internal/signals"
@@ -22,6 +24,9 @@ type Service struct {
 	authStore *pebblestore.ClientAuthStore
 	events    *pebblestore.EventLog
 	signals   *signals.Emitter
+	// unexpiringAgentBoundLogged records the agent-bound tokens already logged
+	// as refused for having no expiry, so each is logged once.
+	unexpiringAgentBoundLogged sync.Map
 }
 
 type AttachStatus struct {
@@ -403,6 +408,16 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 	if record.ExpiresAt > 0 && time.Now().UnixMilli() >= record.ExpiresAt {
 		s.emitTokenDenied(record, "expired")
 		return nil, errors.New("token has expired")
+	}
+	if NeverExpires(record) && strings.TrimSpace(record.AgentName) != "" {
+		// Gateway and operator tokens sit on internet-facing hosts and are
+		// minted to expire within AgentBoundMaxLifetime; one stored without an
+		// expiry (minted before that rule) is refused, not trusted forever.
+		if _, logged := s.unexpiringAgentBoundLogged.LoadOrStore(record.ID, true); !logged {
+			log.Printf("swarmd: refusing agent-bound token %s (agent %q): it has no expiry; mint a new one, which expires within %d days", record.ID, record.AgentName, int(AgentBoundMaxLifetime/(24*time.Hour)))
+		}
+		s.emitTokenDenied(record, "agent-bound token has no expiry")
+		return nil, errors.New("agent-bound token has no expiry; mint a new one")
 	}
 	// Every ancestor must still be valid: revoking, deleting or expiring a key
 	// cuts off every key minted beneath it, however deep.
