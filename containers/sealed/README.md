@@ -107,7 +107,9 @@ pass the token's own limits, so the table stays small; past 500 000 active
 counters new ones are refused (`rate_limit_capacity_reached`). End-user counters
 belong to the agent, not the token: a rotated gateway token for the same agent
 continues the same end user's counts. The concurrent-run limit is counted from
-the runs in flight and needs no stored counter.
+the runs in flight and needs no stored counter. A confirmation decision (see
+[Confirmations](#confirmations)) starts a run, so it counts against the
+concurrent-run limit but not against the message rates.
 
 The owner changes a gateway token's limits in place, without reissuing it:
 
@@ -244,7 +246,10 @@ approved call that is still waiting for the gateway also survives a restart. The
 expiry timer does not, so after a restart an expired confirmation is closed the
 next time the gateway reads the session's confirmations, decides one, answers a
 call, or posts a message. The gateway token reaches these routes for its own
-agent's sessions; the operator token cannot.
+agent's sessions; the operator token cannot. On a conversation created with an
+`end_user`, the confirmation routes return the session's `end_user` and
+`labels` next to the confirmation, and the approved call is delivered with
+them like any other call, from the stored session.
 
 In the SDK, `converse` returns `confirmation` when the turn ended by asking.
 `confirm` and `reject` record the decision, run the approved call through your
@@ -265,9 +270,12 @@ reply(next.reply);
 ```
 
 `pendingCalls` lists confirmations as items with `kind: "confirmation"` next to
-calls (`kind: "call"`). `serve` never answers a confirmation; it calls
-`onConfirm(confirmation)` once for each. `decideConfirmation` and
-`confirmations` are the plain route calls.
+calls (`kind: "call"`); both carry `endUser` and `labels`. `serve` never
+answers a confirmation; it calls `onConfirm(confirmation)` once for each. With
+`endUser`, `converse`, `confirm` and `reject` refuse another end user's
+session before sending anything, and `serve` neither runs that end user's calls
+nor shows their confirmations. `decideConfirmation` and `confirmations` are the
+plain route calls.
 
 ## Human takeover
 

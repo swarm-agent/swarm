@@ -705,3 +705,79 @@ func TestConfirmedClientToolDefinitionIsValidated(t *testing.T) {
 		t.Fatal("legacy definitions are not confirmed by effect")
 	}
 }
+
+// Purpose: a confirmation on a gateway session with an end user reaches that
+// gateway token with the session's stored end user and labels, and the call
+// the approval creates is delivered with the same end user, so the gateway
+// runs it for the visitor who owns the session. Threat: an approved write
+// running for the wrong visitor because the confirmation lost the binding.
+// Boundary: gateAgentBoundToken, handleSessionV3Confirmations,
+// writeConfirmationResponse, handleSessionV3PrimaryPermissions.
+// Narrowest layer: the real executor and routes with the gate in front.
+func TestConfirmationOnEndUserSessionCarriesTheEndUser(t *testing.T) {
+	f := newConfirmationFixture(t, filepath.Join(t.TempDir(), "confirm-end-user.pebble"), nil)
+	gateway := pebblestore.ScopedTokenRecord{ID: "tok_gw", AgentName: "frontdesk", AccountScopeID: testPrincipal().AccountScopeID, Scopes: []string{"sessions:read", "sessions:write"}}
+	asGateway := func(method, path, body string) (int, map[string]any) {
+		t.Helper()
+		r := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(method, path, bytes.NewBufferString(body))), &gateway)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		if f.server.gateAgentBoundToken(w, r, &gateway) {
+			f.server.Handler().ServeHTTP(w, r)
+		}
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return w.Code, out
+	}
+
+	// The create handler stores the binding when a gateway token sends end_user.
+	workspace := t.TempDir()
+	bindingID := seedSessionsV3PrimaryAuthority(t, f.server, workspace)
+	raw, _ := json.Marshal(map[string]any{
+		"client_request_id": "create-alice", "workspace_path": workspace, "workspace_name": filepath.Base(workspace),
+		"swarm_id": "host-swarm-id", "workspace_binding_id": bindingID, "target_kind": "host", "target_relationship": "self",
+		"title": "alice", "mode": sessionruntime.ModeAuto, "agent_name": "frontdesk", "end_user": "alice", "labels": map[string]string{"plan": "pro"},
+		"preference": pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model"},
+	})
+	create := requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/v3/sessions", bytes.NewReader(raw))), &gateway)
+	create.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	f.server.Handler().ServeHTTP(w, create)
+	var created struct {
+		Session pebblestore.SessionSnapshot `json:"session"`
+		EndUser string                      `json:"end_user"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || w.Code != http.StatusOK || created.EndUser != "alice" {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	sessionID := created.Session.ID
+	f.say(sessionID, "m1", "order 2 of AB12CD please")
+
+	owner := func(out map[string]any) (string, string) {
+		labels, _ := out["labels"].(map[string]any)
+		endUser, _ := out["end_user"].(string)
+		plan, _ := labels["plan"].(string)
+		return endUser, plan
+	}
+	code, listed := asGateway(http.MethodGet, "/v3/sessions/"+sessionID+"/confirmations", "")
+	confirmations, _ := listed["confirmations"].([]any)
+	if code != http.StatusOK || len(confirmations) != 1 {
+		t.Fatalf("gateway confirmations: %d %v", code, listed)
+	}
+	if endUser, plan := owner(listed); endUser != "alice" || plan != "pro" {
+		t.Fatalf("confirmations end_user/labels = %q/%q, want the stored alice/pro", endUser, plan)
+	}
+	c := f.confirmation(sessionID)
+	code, decided := asGateway(http.MethodPost, "/v3/sessions/"+sessionID+"/confirmations/"+c.ID, fmt.Sprintf(`{"decision":"approve","arguments_hash":%q}`, c.ArgumentsHash))
+	if endUser, _ := owner(decided); code != http.StatusOK || endUser != "alice" {
+		t.Fatalf("gateway approve: %d %v", code, decided)
+	}
+	code, delivery := asGateway(http.MethodGet, "/v3/sessions/"+sessionID+"/permissions?status=pending&limit=100", "")
+	calls, _ := delivery["permissions"].([]any)
+	if code != http.StatusOK || len(calls) != 1 || calls[0].(map[string]any)["tool_name"] != "place_order" {
+		t.Fatalf("approved call delivery: %d %v", code, delivery)
+	}
+	if endUser, plan := owner(delivery); endUser != "alice" || plan != "pro" {
+		t.Fatalf("approved call end_user/labels = %q/%q, want alice/pro", endUser, plan)
+	}
+}

@@ -68,14 +68,14 @@ func (s *Server) handleSessionV3Confirmations(w http.ResponseWriter, r *http.Req
 			if ok && current.Status == runruntime.ClientToolConfirmationPending {
 				pending = append(pending, current)
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "confirmations": pending})
+			s.writeConfirmationResponse(w, sessionID, map[string]any{"ok": true, "session_id": sessionID, "confirmations": pending})
 			return
 		}
 		if !ok || current.ID != confirmationID {
 			writeError(w, http.StatusNotFound, errors.New("confirmation not found"))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "confirmation": current})
+		s.writeConfirmationResponse(w, sessionID, map[string]any{"ok": true, "session_id": sessionID, "confirmation": current})
 	case r.Method == http.MethodPost && confirmationID != "":
 		if found, err := s.authorizeSessionsV3PrimarySession(principal, sessionID); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -94,10 +94,26 @@ func (s *Server) handleSessionV3Confirmations(w http.ResponseWriter, r *http.Req
 			writeError(w, status, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "confirmation": decided})
+		s.writeConfirmationResponse(w, sessionID, map[string]any{"ok": true, "session_id": sessionID, "confirmation": decided})
 	default:
 		methodNotAllowed(w)
 	}
+}
+
+// writeConfirmationResponse adds the session's end user and labels, from the
+// stored binding (as on the permissions delivery), so the gateway shows the
+// card to, and runs the approved call for, the visitor who owns the session.
+func (s *Server) writeConfirmationResponse(w http.ResponseWriter, sessionID string, response map[string]any) {
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil || !found {
+		writeError(w, http.StatusInternalServerError, errors.New("session not readable"))
+		return
+	}
+	if err := addSessionEndUserFields(response, session.Metadata); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // decideClientToolConfirmation records the person's decision and moves the
