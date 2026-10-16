@@ -17,6 +17,8 @@ import (
 // in removeManagedWorktree/ResumeTrash without substituting a Git mock.
 func TestRemovalTrashRestart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	// XDG_DATA_HOME overrides HOME; never scan another test's durable trash.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	repo := t.TempDir()
@@ -102,6 +104,8 @@ func TestRemovalAdminCrashRecovery(t *testing.T) {
 	for _, phase := range []string{"identified", "pointer_removed", "admin_removed"} {
 		t.Run(phase, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
+			// XDG_DATA_HOME overrides HOME; never scan another test's durable trash.
+			t.Setenv("XDG_DATA_HOME", t.TempDir())
 			repo := t.TempDir()
 			git := func(args ...string) string {
 				t.Helper()
@@ -180,6 +184,8 @@ func TestRemovalAdminCrashRecovery(t *testing.T) {
 // retried by recovery. Real Git/files prove queue saturation cannot strand trash.
 func TestRemovalQueueDrains(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	// XDG_DATA_HOME overrides HOME; never scan another test's durable trash.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	repo := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
@@ -230,6 +236,8 @@ func TestRemovalQueueDrains(t *testing.T) {
 // source registration dependency (tested separately below).
 func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	// XDG_DATA_HOME overrides HOME; never scan another test's durable trash.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	repo := filepath.Join(t.TempDir(), "repo")
 	if err := os.Mkdir(repo, 0700); err != nil {
 		t.Fatal(err)
@@ -315,6 +323,8 @@ func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
 // shared-registration dependency while asserting both checkout and receipt removal.
 func TestTrashRecoveryCloneWithOfflineSource(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	// XDG_DATA_HOME overrides HOME; never scan another test's durable trash.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	repo := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
