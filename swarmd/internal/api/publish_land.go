@@ -212,7 +212,7 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 				return err
 			}
 			if e.State == "review_pending" {
-				_, err := c.advancePipeline(a, b, refs, rule, map[string]any{"head": e.Request.Head})
+				_, err := c.advancePipeline(a, b, refs, rule, map[string]any{"head": e.Request.Head, "base_commit": e.Request.BaseCommit})
 				if err != nil {
 					return err
 				}

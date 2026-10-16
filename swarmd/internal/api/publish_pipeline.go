@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"swarm/packages/swarmd/internal/publish"
 	store "swarm/packages/swarmd/internal/store/pebble"
@@ -27,15 +28,17 @@ func unchangedRangeDiff(output string) bool {
 // ReviewPipeline is durable per-job progress, not a second execution queue.
 // Side effects use stable request identities so replay after a crash is safe.
 type ReviewPipeline struct {
-	Round         int    `json:"round"`
-	Head          string `json:"head"`
-	Base          string `json:"base,omitempty"`
-	Verdict       string `json:"last_verdict"`
-	ReviewerJobID string `json:"reviewer_job_id"`
-	Findings      string `json:"findings,omitempty"`
-	Next          string `json:"next"`
-	Rebase        bool   `json:"rebase,omitempty"`
-	FollowupRunID string `json:"followup_run_id,omitempty"`
+	InfrastructureAttempts int    `json:"infrastructure_attempts,omitempty"`
+	RetryAfter             int64  `json:"retry_after,omitempty"`
+	Round                  int    `json:"round"`
+	Head                   string `json:"head"`
+	Base                   string `json:"base,omitempty"`
+	Verdict                string `json:"last_verdict"`
+	ReviewerJobID          string `json:"reviewer_job_id"`
+	Findings               string `json:"findings,omitempty"`
+	Next                   string `json:"next"`
+	Rebase                 bool   `json:"rebase,omitempty"`
+	FollowupRunID          string `json:"followup_run_id,omitempty"`
 }
 
 func pipelineKey(account, job string) string {
@@ -84,18 +87,23 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	head := controlMCPString(result, "head")
 	save := func(next string) error {
 		state.Next = next
+		if next == "review_failed" {
+			state.InfrastructureAttempts++
+			state.RetryAfter = time.Now().Add(30 * time.Second).UnixMilli()
+		}
 		if err := db.PutJSON(key, state); err != nil {
 			return err
 		}
 		return c.emitPipeline(worker, run, refs, state)
 	}
 	followup := completedPublishFollowup(refs)
-	if state.Next == "review_exhausted" || (state.Next == "review_failed" && state.Head == head && (followup == "" || followup == state.FollowupRunID)) {
+	if state.Next == "review_exhausted" || (state.Next == "review_failed" && state.Head == head && (followup == "" || followup == state.FollowupRunID) && (!strings.HasPrefix(state.Findings, "Review infrastructure") || state.InfrastructureAttempts >= 3 || time.Now().UnixMilli() < state.RetryAfter)) {
 		return false, nil
 	}
 	if state.Next == "review_failed" {
-		// A failed admission is terminal for this head and follow-up, not a
-		// later completed follow-up or future commits.
+		if state.Head != head || followup != "" && followup != state.FollowupRunID {
+			state.InfrastructureAttempts = 0
+		}
 		state.Next, state.ReviewerJobID = "", ""
 	}
 	review, err := c.server.sessions.Store().WorkerStore().CurrentValidJobReview(principal.AccountScopeID, worker, run, head)
@@ -160,26 +168,29 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		return false, err
 	}
 	commits := []string{base}
-	state.Rebase = entry.State == "review_pending" && entry.Request.Head == head
-	if state.Rebase {
-		brief += "\n" + entry.Reason
-	}
-	if entry.SendBacks > 0 && strings.HasPrefix(entry.Reason, "Rebase conflict:") {
-		state.Rebase = true
-		if !pipelineExactCommit(entry.Request.BaseCommit) || !pipelineExactCommit(state.Base) || !pipelineExactCommit(state.Head) {
-			state.Head, state.Verdict, state.ReviewerJobID = head, "", ""
-			state.FollowupRunID = followup
-			state.Findings = "Review infrastructure failure: exact rebase comparison commits are unavailable"
-			return false, save("review_failed")
+	// A send-back is not evidence that the old head was reviewed. Confirm the
+	// durable verdict for this job, including when review was enabled later.
+	rebased := entry.State == "review_pending" && entry.Request.Head == head ||
+		entry.SendBacks > 0 && strings.HasPrefix(entry.Reason, "Rebase conflict:")
+	state.Rebase = false
+	if rebased && state.Head != head && pipelineExactCommit(state.Head) && pipelineExactCommit(state.Base) {
+		previous, err := c.server.sessions.Store().WorkerStore().CurrentValidJobReview(principal.AccountScopeID, worker, run, state.Head)
+		if err != nil {
+			return false, err
 		}
-		base = entry.Request.BaseCommit
-		commits = []string{base, state.Base, state.Head}
-		brief += fmt.Sprintf("\nRebase-scoped review: review only the conflict resolution. Previously reviewed base: %s; previously reviewed head: %s. Confirm git range-diff %s..%s %s..%s.", state.Base, state.Head, state.Base, state.Head, base, head)
+		if previous != nil && previous.Verdict == "ok" {
+			state.Rebase = true
+			commits = []string{base, state.Base, state.Head}
+			brief += fmt.Sprintf("\nRebase-scoped review: review only the conflict resolution. Previously reviewed base: %s; previously reviewed head: %s. Confirm git range-diff %s..%s %s..%s.", state.Base, state.Head, state.Base, state.Head, base, head)
+		}
 	}
 	brief += pipelineBaseBrief(base, head)
 	requestID := "pipeline-review-" + run + "-" + head
 	if followup != "" {
 		requestID += "-" + followup
+	}
+	if state.InfrastructureAttempts > 0 {
+		requestID += fmt.Sprintf("-retry-%d", state.InfrastructureAttempts)
 	}
 	response, err := controlMCPGiveJob(c, map[string]any{"worker": "reviewer", "project": refs.projectID, "workspace": rule.Folder, "review_job": job, "review_commits": commits, "brief": brief, "idempotency_key": requestID})
 	if err != nil {
