@@ -151,7 +151,10 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if err != nil {
 		return false, err
 	}
-	state.Rebase = false
+	state.Rebase = entry.State == "review_pending" && entry.Request.Head == head
+	if state.Rebase {
+		brief += "\n" + entry.Reason
+	}
 	if entry.SendBacks > 0 && strings.HasPrefix(entry.Reason, "Rebase conflict:") {
 		state.Rebase = true
 		brief += "\nRebase-scoped review: review only the conflict resolution and confirm the range-diff against the previously reviewed commits."

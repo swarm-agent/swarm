@@ -35,11 +35,19 @@ type ProofResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
+// RebaseReviewError pauses delivery for independent review, not a coder fix.
+type RebaseReviewError struct{ Reason string }
+
+func (e *RebaseReviewError) Error() string { return e.Reason }
+
 type ReviewEquivalence struct {
-	ReviewedHead string `json:"reviewed_head"`
-	RebasedHead  string `json:"rebased_head"`
-	PatchID      string `json:"patch_id"`
-	ReviewID     string `json:"review_id"`
+	ReviewedBase   string `json:"reviewed_base,omitempty"`
+	RebasedBase    string `json:"rebased_base,omitempty"`
+	PatchIdentical bool   `json:"patch_identical,omitempty"`
+	ReviewedHead   string `json:"reviewed_head"`
+	RebasedHead    string `json:"rebased_head"`
+	PatchID        string `json:"patch_id"`
+	ReviewID       string `json:"review_id"`
 }
 
 type Entry struct {
@@ -334,7 +342,11 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 				return err
 			}
 			var back *SendBackError
-			if errors.As(err, &back) {
+			var review *RebaseReviewError
+			if errors.As(err, &review) {
+				e.State, e.Reason = "review_pending", review.Reason
+				e.Review = nil
+			} else if errors.As(err, &back) {
 				e.SendBacks++
 				e.Reason = back.Reason
 				e.State = "sent_back"
