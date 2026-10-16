@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/cockroachdb/pebble"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -44,6 +45,7 @@ type RunnerStatus struct {
 }
 
 type runnerState struct {
+	Account  string                  `json:"account"`
 	Landings []RunnerLanding         `json:"landings"`
 	Statuses map[string]RunnerStatus `json:"statuses"`
 }
@@ -59,9 +61,13 @@ func (s *Store) mutateRunners(account string, fn func(*runnerState) error) error
 		return errors.New("runner account required")
 	}
 	key := "runners:v1:" + runnerHash(account)
-	st := runnerState{Statuses: map[string]RunnerStatus{}}
+	st := runnerState{Account: account, Statuses: map[string]RunnerStatus{}}
 	if _, err := s.GetJSON(key, &st); err != nil {
 		return err
+	}
+	previous := make(map[string]string, len(st.Landings))
+	for _, l := range st.Landings {
+		previous[l.ID] = l.State
 	}
 	if err := fn(&st); err != nil {
 		return err
@@ -74,6 +80,11 @@ func (s *Store) mutateRunners(account string, fn func(*runnerState) error) error
 		return err
 	}
 	for _, l := range st.Landings {
+		if l.State == "environment_failed" && previous[l.ID] == "claimed" && len(l.Attempts) >= 2 {
+			if _, err := NewSignalStore(s).Append(Signal{Kind: "job.environment_failed", Severity: "warning", Source: "runner", Account: account, Summary: l.DeliveryReason, Refs: map[string]string{"landing": l.ID, "runners": strings.Join(l.Attempts, ", ")}}); err != nil {
+				return err
+			}
+		}
 		if l.State == "succeeded" || l.State == "failed" || l.State == "environment_failed" {
 			if err := os.Remove(s.runnerPayloadPath(account, l.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
@@ -128,6 +139,7 @@ func expireRunnerLeases(st *runnerState, now int64) {
 			l.State = "lease_expired"
 			if len(l.Attempts) >= 2 {
 				l.State = "environment_failed"
+				l.DeliveryReason = "environment failed on runners " + strings.Join(l.Attempts, ", ")
 			}
 			l.LeaseID = ""
 			l.LeaseUntil = 0

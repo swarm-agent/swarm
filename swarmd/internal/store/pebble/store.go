@@ -15,6 +15,9 @@ import (
 )
 
 type Store struct {
+	runnerExpiryOnce            sync.Once
+	runnerExpiryCancel          context.CancelFunc
+	runnerExpiryDone            chan struct{}
 	runnerWakeMu                sync.Mutex
 	runnerWake                  chan struct{}
 	db                          *pebble.DB
@@ -119,6 +122,10 @@ func secureDirectory(path string) error {
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
+	}
+	if s.runnerExpiryCancel != nil {
+		s.runnerExpiryCancel()
+		<-s.runnerExpiryDone
 	}
 	s.closed.Store(true)
 	return s.db.Close()

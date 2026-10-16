@@ -788,6 +788,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSecretServices(secretSlots, authStore)
 	apiServer.SetSignalStore(signalStore)
 	apiServer.SetRunnerStore(store)
+	store.StartRunnerLeaseExpiry(func(err error) { log.Printf("runner lease expiry failed: %v", err) })
 	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
 	signalSinks := pebblestore.NewSignalSinkStore(store)
 	apiServer.SetSignalSinkStore(signalSinks)
