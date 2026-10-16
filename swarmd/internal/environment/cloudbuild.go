@@ -54,26 +54,64 @@ func (g GoogleREST) call(ctx context.Context, method, endpoint string, body io.R
 	if g.Client == nil {
 		return nil, fmt.Errorf("Google ADC HTTP client unavailable")
 	}
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
-	if err != nil {
-		return nil, err
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	var offset int64
+	seeker, replayable := body.(io.Seeker)
+	if replayable {
+		var err error
+		offset, err = seeker.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 && body != nil {
+			if !replayable {
+				return nil, fmt.Errorf("Google API retry requires a seekable request body")
+			}
+			if _, err := seeker.Seek(offset, io.SeekStart); err != nil {
+				return nil, err
+			}
+		}
+		var reader io.Reader
+		if body != nil {
+			reader = struct{ io.Reader }{body}
+		} // transport must not close a replayable file
+		req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+		if err != nil {
+			return nil, err
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		res, err := g.Client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(res.Body, limit+1))
+		res.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if int64(len(data)) > limit {
+			return nil, fmt.Errorf("Google API response exceeds limit")
+		}
+		if res.StatusCode >= 200 && res.StatusCode < 300 {
+			return data, nil
+		}
+		apiErr := fmt.Errorf("Google API %s: HTTP %d: %s", method, res.StatusCode, strings.TrimSpace(string(data)))
+		if attempt >= 4 || (res.StatusCode != 429 && res.StatusCode < 500) {
+			return nil, apiErr
+		}
+		timer := time.NewTimer(time.Duration(1<<attempt) * time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 	}
-	res, err := g.Client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("Google API %s: HTTP %d", method, res.StatusCode)
-	}
-	data, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("Google API response exceeds limit")
-	}
-	return data, err
 }
 func (g GoogleREST) buildsURL() string {
 	root := "https://cloudbuild.googleapis.com/v1/projects/" + url.PathEscape(g.Project)
