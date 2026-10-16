@@ -14,10 +14,10 @@ func TestAutoPublishReviewerDoesNotDelayCoder(t *testing.T) {
 		{"delivery_state": "report_only", "head": "review", "commits": []any{"review"}},
 		{"delivery_state": "ready", "head": "coder", "commits": []any{"coder"}},
 	}
-	if autoPublishNext("needs_review", jobs[0]) != autoPublishSkip {
+	if autoPublishNext("needs_review", jobs[0], nil) != autoPublishSkip {
 		t.Fatal("reviewer held cursor")
 	}
-	if autoPublishNext("needs_review", jobs[1]) != autoPublishDeliver {
+	if autoPublishNext("needs_review", jobs[1], nil) != autoPublishDeliver {
 		t.Fatal("coder not immediately deliverable")
 	}
 	c := &controlMCPCall{}

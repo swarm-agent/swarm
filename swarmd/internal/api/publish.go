@@ -368,11 +368,21 @@ const (
 	autoPublishDeliver
 )
 
+type autoPublishRunState struct {
+	active, recovering, settled, workerBlocked bool
+}
+
 // autoPublishNext is what a job asks of the auto publisher: skip it when it
 // committed nothing (delivery empty, or settled with its head still at its
 // base even when the delivery assessment could not read its lane), wait while
 // it is not settled or its commits are not assessed yet, else deliver it.
-func autoPublishNext(status string, result map[string]any) int {
+func autoPublishNext(status string, result map[string]any, run *autoPublishRunState) int {
+	if status == "blocked" {
+		if run == nil || run.active || run.recovering || !run.settled || !run.workerBlocked {
+			return autoPublishWait
+		}
+		return autoPublishSkip
+	}
 	if state, _ := result["delivery_state"].(string); state == "empty" || state == "report_only" {
 		return autoPublishSkip
 	}
@@ -407,6 +417,8 @@ func (p *AutoPublisher) logDecision(sig pebblestore.Signal, decision, reason str
 		decision, controlMCPTruncate(reason, 200))
 }
 
+// skip acknowledges only this signal, never the job: later completion signals
+// must read the current job again, including after a publisher restart.
 func (p *AutoPublisher) skip(sig pebblestore.Signal, reason string) error {
 	p.mu.Lock()
 	delete(p.attempts, sig.Seq)
@@ -433,15 +445,32 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	if result["delivery_state"] == "report_only" {
 		return p.skip(sig, "report-only job")
 	}
-	if autoPublishNext(status, result) == autoPublishSkip {
+	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
+	if err != nil {
+		return p.retry(sig, err)
+	}
+	run := &autoPublishRunState{}
+	run.active, _ = view["run_active"].(bool)
+	run.recovering = controlMCPString(view, "sandbox_cleanup_error") != "" || controlMCPString(refs.run, "sandbox_cleanup_error") != ""
+	switch controlMCPString(refs.run, "status") {
+	case "succeeded", "failed", "cancelled":
+		run.settled = true
+	}
+	if status == "blocked" && refs.sessionID != "" {
+		lifecycle, ok, err := p.server.sessions.GetLifecycle(refs.sessionID)
+		if err != nil {
+			return p.retry(sig, err)
+		}
+		// task_progress blocked preserves its requested phase and reason at
+		// lifecycle finish. A snapshot without an end is not a final outcome.
+		run.workerBlocked = ok && lifecycle.EndedAt > 0 && lifecycle.Phase == "blocked" && strings.TrimSpace(lifecycle.StopReason) != ""
+		run.active = run.active || (ok && lifecycle.Active)
+	}
+	if autoPublishNext(status, result, run) == autoPublishSkip {
 		if result["delivery_state"] == "unavailable" {
 			return p.skip(sig, fmt.Sprintf("status %q: assessment unavailable (%s): %s", status, controlMCPString(result, "delivery_reason_code"), controlMCPString(result, "delivery_reason")))
 		}
 		return p.skip(sig, fmt.Sprintf("status %q: job is not deliverable", status))
-	}
-	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
-	if err != nil {
-		return p.retry(sig, err)
 	}
 	if refs.run["role"] == "reviewer" {
 		return p.skip(sig, "reviewer job")
@@ -456,6 +485,11 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	if sig.Kind == "job.reviewed" && !reviewGated(rule) {
 		return p.skip(sig, "rule does not require review")
 	}
+	// Recovery waits must not be acknowledged as missing review: without a
+	// final worker outcome this completion still needs a durable retry.
+	if status == "blocked" && autoPublishNext(status, result, run) == autoPublishWait {
+		return p.retry(sig, errAutoPublishWait)
+	}
 	if rule.Pipeline {
 		// Follow-up may already have made the coder active when the process
 		// dies before the receipt. Repair before the status gate can skip it.
@@ -467,7 +501,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		if err := c.emitPipeline(workerID, runID, refs, pending); err != nil {
 			return err
 		}
-		switch autoPublishNext(status, result) {
+		switch autoPublishNext(status, result, run) {
 		case autoPublishSkip:
 			return p.skip(sig, "job has no deliverable commits")
 		case autoPublishWait:
@@ -508,7 +542,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 			return p.retry(sig, err)
 		}
 	}
-	switch autoPublishNext(status, result) {
+	switch autoPublishNext(status, result, run) {
 	case autoPublishSkip:
 		return p.skip(sig, "job has no deliverable commits")
 	case autoPublishWait:

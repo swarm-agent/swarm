@@ -20,7 +20,7 @@ func TestAutoPublishNext(t *testing.T) {
 	}{
 		{"empty delivery", "needs_review", map[string]any{"delivery_state": "empty", "head": base, "base_commit": base}, autoPublishSkip},
 		{"no commits, lane unavailable", "needs_review", map[string]any{"delivery_state": "unavailable", "head": base, "base_commit": base, "commits": []any{}}, autoPublishSkip},
-		{"blocked", "blocked", nil, autoPublishSkip},
+		{"blocked without final outcome", "blocked", nil, autoPublishWait},
 		{"failed", "failed", nil, autoPublishSkip},
 		{"cancelled", "cancelled", nil, autoPublishSkip},
 		{"completed without commits", "completed", nil, autoPublishSkip},
@@ -30,7 +30,7 @@ func TestAutoPublishNext(t *testing.T) {
 		{"candidate after restart", "needs_review", map[string]any{"delivery_state": "candidate_work", "action_needed": "Bounded changes since captured base", "head": "2222222222222222222222222222222222222222", "base_commit": base, "commits": []any{commit, commit}}, autoPublishDeliver},
 		{"ready", "needs_review", map[string]any{"delivery_state": "ready", "head": "2222222222222222222222222222222222222222", "base_commit": base, "commits": []any{commit}}, autoPublishDeliver},
 	} {
-		if got := autoPublishNext(c.status, c.result); got != c.want {
+		if got := autoPublishNext(c.status, c.result, nil); got != c.want {
 			t.Errorf("%s: got %d, want %d", c.name, got, c.want)
 		}
 	}

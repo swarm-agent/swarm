@@ -280,7 +280,7 @@ func TestAutoPublishPendingSchedule(t *testing.T) {
 					jobStatus = status
 					result = nil
 				}
-				switch autoPublishNext(jobStatus, result) {
+				switch autoPublishNext(jobStatus, result, &autoPublishRunState{settled: true, workerBlocked: true}) {
 				case autoPublishSkip:
 					return p.skip(sig, "terminal job")
 				case autoPublishWait:
@@ -329,6 +329,97 @@ func TestAutoPublishPendingSchedule(t *testing.T) {
 			entry, _, err = q.Get(account, "old")
 			if err != nil || entry.State != "" || calls != 2 {
 				t.Fatalf("blocked job admitted or retried: %+v calls=%d %v", entry, calls, err)
+			}
+		})
+	}
+}
+
+// Purpose: consume must retain recovery waits and re-evaluate the same job on
+// a later completion even after a skip and restart. Real feed/cursor/queue
+// stores prove scheduling and non-admission of a settled worker blocker;
+// supplied job states isolate this boundary from Git and provider execution.
+func TestAutoPublishRecoverySameJob(t *testing.T) {
+	for _, initial := range []struct {
+		name string
+		run  autoPublishRunState
+		wait bool
+	}{
+		{"active recovery", autoPublishRunState{active: true, settled: true, workerBlocked: true}, true},
+		{"sandbox cleanup", autoPublishRunState{recovering: true, settled: true, workerBlocked: true}, true},
+		{"no final outcome", autoPublishRunState{workerBlocked: true}, true},
+		{"no worker blocker", autoPublishRunState{settled: true}, true},
+		{"settled worker blocker", autoPublishRunState{settled: true, workerBlocked: true}, false},
+	} {
+		t.Run(initial.name, func(t *testing.T) {
+			s, _, _, cleanup := setupScopedAuthTestServer(t)
+			defer cleanup()
+			s.SetPublishConfig("configured")
+			db := s.sessions.Store().Underlying()
+			feed := store.NewSignalStore(db)
+			account := s.OutboxAccount()
+			q := publish.NewQueue(db)
+			appendSignal := func(kind string) store.Signal {
+				t.Helper()
+				sig, err := feed.Append(store.Signal{Kind: kind, Severity: store.SignalSeverityInfo, Source: store.SignalSourceSwarmd, Account: account, Summary: "recovery regression", Refs: map[string]string{"worker_id": "worker", "run_id": "same-job"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return sig
+			}
+			start := appendSignal("test.started")
+			if err := db.PutJSON(autoPublishCursorKey, start.Seq); err != nil {
+				t.Fatal(err)
+			}
+			p := s.NewAutoPublisher(feed, db)
+			status := "blocked"
+			head := strings.Repeat("a", 40)
+			result := map[string]any{"delivery_state": "candidate_work", "head": head, "commits": []any{map[string]any{"sha": head}}}
+			calls := 0
+			deliver := func(ctx context.Context, sig store.Signal) error {
+				calls++
+				switch autoPublishNext(status, result, &initial.run) {
+				case autoPublishSkip:
+					return p.skip(sig, "settled worker blocker")
+				case autoPublishWait:
+					return p.retry(sig, errAutoPublishWait)
+				}
+				_, err := q.Enqueue(publish.Entry{Account: account, Request: publish.Request{Folder: "/project", JobID: "same-job", Branch: "agent/job", Head: head, BaseBranch: "dev"}})
+				return err
+			}
+			first := appendSignal("worker.run.succeeded")
+			err := p.consume(context.Background(), deliver)
+			if initial.wait && !errors.Is(err, errAutoPublishWait) || !initial.wait && err != nil {
+				t.Fatalf("initial decision: %v", err)
+			}
+			entry, _, err := q.Get(account, "same-job")
+			if err != nil || entry.State != "" {
+				t.Fatalf("blocked job queued: %+v %v", entry, err)
+			}
+			var pending []autoPublishPending
+			if _, err := db.GetJSON(autoPublishPendingKey, &pending); err != nil {
+				t.Fatal(err)
+			}
+			if initial.wait {
+				if len(pending) != 1 || pending[0].Signal.Seq != first.Seq {
+					t.Fatalf("recovery lost: %+v", pending)
+				}
+			} else if len(pending) != 0 {
+				t.Fatalf("settled blocker retried: %+v", pending)
+			}
+			status = "needs_review"
+			initial.run = autoPublishRunState{settled: true}
+			last := appendSignal("worker.run.succeeded")
+			p = s.NewAutoPublisher(feed, db)
+			if err := p.consume(context.Background(), deliver); err != nil {
+				t.Fatal(err)
+			}
+			entry, _, err = q.Get(account, "same-job")
+			if err != nil || entry.State != "queued" || entry.Request.Head != head || calls != 2 {
+				t.Fatalf("completion not queued: %+v calls=%d %v", entry, calls, err)
+			}
+			var cursor uint64
+			if _, err := db.GetJSON(autoPublishCursorKey, &cursor); err != nil || cursor != last.Seq {
+				t.Fatalf("cursor=%d: %v", cursor, err)
 			}
 		})
 	}
