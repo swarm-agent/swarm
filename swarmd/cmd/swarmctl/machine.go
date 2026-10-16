@@ -207,7 +207,31 @@ func machineWorkspaceCheck(path, who string) (*user.User, error) {
 	}
 	return person, nil
 }
+
+// machineWorkspaceShareGit runs as the owner: Git must not create root-owned
+// configuration or objects while workspace administration is privileged.
+func machineWorkspaceShareGit(path, owner string) error {
+	if _, err := os.Lstat(filepath.Join(path, ".git")); os.IsNotExist(err) {
+		return nil // A workspace need not be a repository.
+	} else if err != nil {
+		return err
+	}
+	return machineRun("runuser", "-u", owner, "--", "sh", "-eu", "-c", `
+cd "$1"
+git config --local core.sharedRepository group
+objects=$(git rev-parse --path-format=absolute --git-path objects)
+if [ ! -d "$objects" ] || [ -L "$objects" ]; then
+  echo "Git object directory is missing or is a symlink" >&2
+  exit 1
+fi
+find "$objects" -type d -exec chmod g+ws {} +
+`, "swarm-workspace-share", path)
+}
+
 func machineWorkspaceGrant(path, owner string) error {
+	if err := machineWorkspaceShareGit(path, owner); err != nil {
+		return err
+	}
 	if err := machineRun("setfacl", "-R", "-m", "u:swarm:rwX", path); err != nil {
 		return err
 	}
@@ -424,6 +448,23 @@ func machinePublish(args, paths []string) error {
 		st, ok := info.Sys().(*syscall.Stat_t)
 		if !ok || st.Uid != 0 || info.Mode().Perm()&0022 != 0 {
 			return fmt.Errorf("COMMAND must be owned by root and writable only by root")
+		}
+	}
+	if command != "--off" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("cannot determine folder owner")
+		}
+		owner, err := user.LookupId(strconv.FormatUint(uint64(st.Uid), 10))
+		if err != nil {
+			return err
+		}
+		if err := machineWorkspaceShareGit(path, owner.Username); err != nil {
+			return err
 		}
 	}
 	rules, err := machineLines(machineState + "/publish")
