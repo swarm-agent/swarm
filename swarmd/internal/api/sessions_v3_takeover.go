@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -68,16 +69,16 @@ func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request,
 		writeSessionNotFound(w)
 		return
 	}
-	session, found, err := s.sessions.GetSession(sessionID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	if !found {
-		writeSessionNotFound(w)
-		return
-	}
 	if r.Method == http.MethodGet {
+		session, found, err := s.sessions.GetSession(sessionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if !found {
+			writeSessionNotFound(w)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "takeover": session.Metadata[sessionTakeoverMetadataKey]})
 		return
 	}
@@ -93,6 +94,25 @@ func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request,
 	}
 	clientRequestID, ok := sessionsV3MutationClientRequestID(w, r, req.ClientRequestID, req.IdempotencyKey)
 	if !ok {
+		return
+	}
+	// Held while the metadata changes, and the session is read under it: POST
+	// .../end and confirmations write under the same lock, so a takeover can
+	// neither wipe their state nor start on a conversation that just ended.
+	unlock := runruntime.LockClientToolConfirmations(sessionID)
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if !found {
+		writeSessionNotFound(w)
 		return
 	}
 	if action == "start" && sessionEnded(session) {
@@ -133,6 +153,9 @@ func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// Stopping the run settles its pending calls, which takes the lock again.
+	unlock()
+	locked = false
 	if action == "start" && !result.Replayed {
 		s.cancelRunForTakeover(principal, sessionID)
 	}
@@ -181,6 +204,10 @@ func (s *Server) handleSessionV3OperatorMessages(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
+	// The ended and takeover checks and the append happen under the lock that
+	// end and takeover write under, so a reply cannot land after either.
+	unlock := runruntime.LockClientToolConfirmations(sessionID)
+	defer unlock()
 	session, found, err := s.sessions.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

@@ -1807,6 +1807,16 @@ func cloneSessionsV3PlanDocument(doc *pebblestore.SessionPlanDocument) (*pebbles
 }
 
 func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID string, req sessionsV3MessageRequest) (sessionruntime.SessionMutationResult, *sessionV3ExecutorJob, error) {
+	// Held from the read through the append: POST .../end, takeover and
+	// confirmations write under the same lock, so the ended and takeover state
+	// this message is admitted on are still the session's when it lands.
+	unlock := runruntime.LockClientToolConfirmations(sessionID)
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
 		return sessionruntime.SessionMutationResult{}, nil, err
@@ -1981,6 +1991,8 @@ func (s *Server) acceptSessionsV3Message(principal identity.Principal, sessionID
 		mutation.PlanSave = &pebblestore.V3PlanSaveMutation{Plan: prepared.Plan, ArchivedRevision: prepared.ArchivedRevision, Activate: prepared.Activate, ExpectedParentVersion: prepared.Plan.ParentRevision}
 	}
 	result, err = s.applySessionV3PrimaryMutation(mutation)
+	unlock()
+	locked = false
 	if err != nil {
 		return result, nil, err
 	}
