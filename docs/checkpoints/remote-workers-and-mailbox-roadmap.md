@@ -144,7 +144,7 @@ The `/workers` interface is currently focused on schedules and execution history
 | Worker: CI/CD Candidate Testbench                              Detected: 35m ago       |
 | Cause: HTTP 409 conflict detected during parallel worker review proposal.              |
 | Automated Loop: Spawned Ephemeral Coder Session (attempt 1 of 2)...                    |
-| Status: Coder isolated worktree created, re-running testbench with fix.                |
+| Status: Coder commits; landing step builds and tests once.                            |
 |                                                                                        |
 | [View Live Debug Session]   [Abort Loop]           [Manual Override]                   |
 +----------------------------------------------------------------------------------------+
@@ -179,7 +179,7 @@ One of the most powerful paradigms enabled by Swarm's Git worktree isolation is 
 |   3. Daemon spawns isolated Coder Session in a fresh Git worktree:                     |
 |      ├── Analyzes error stack trace and test output.                                   |
 |      ├── Edits source code in its isolated worktree.                                   |
-|      └── Executes testbench inside the environment (`manage_deployments exec`).        |
+|      └── Commits the fix; the landing step builds and tests once.                      |
 |                                                                                        |
 |   4. Evaluation:                                                                       |
 |      ├── PASS: Commits to branch `agent/auto-fix-...`, creates a Deliverable Card      |
@@ -191,7 +191,7 @@ One of the most powerful paradigms enabled by Swarm's Git worktree isolation is 
 
 ### Why This Works Cleanly in Swarm:
 - **No Workspace Pollution**: The debug session operates in its own session-owned worktree. If the AI's fix is broken, the main codebase remains 100% clean and untouched.
-- **Leased Environment Reuse**: The fix session leases the exact same test environment deployment (`manage_deployments action="ensure"`), runs tests inside the container/VPS, and releases the lease when done.
+- **Landing Validation**: The coder commits the fix; the landing step builds and tests once, returning failures to the job.
 
 ---
 

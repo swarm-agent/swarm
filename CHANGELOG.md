@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Have worker Coders commit without running builds, tests or linters, leaving validation to the landing step once per landing and returning failures for fixes. Docs impact: docs/checkpoints/remote-workers-and-mailbox-roadmap.md now assigns build/test execution to landing.
+
 - Allow updates from older daemons without the drain endpoint by waiting for an explicit idle busy status within the configured drain budget; keep failures blocked and skip cleanup without a drain generation. Docs impact: containers/headless/app/README.md documents the compatibility path and its admission limitation.
 
 - Add a real-process app lifecycle smoke and headless update rollback smoke, plus an exact-candidate GitHub landing gate; container/live-job qualification remains incomplete and fails closed where unsupported. Docs impact: add App runs guidance in docs/testing.md.

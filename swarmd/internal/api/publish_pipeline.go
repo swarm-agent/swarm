@@ -115,7 +115,7 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 				return false, err
 			}
 		}
-		_, err = controlMCPMessageJob(c, map[string]any{"job_id": job, "client_request_id": "pipeline-fix-" + run + "-" + head, "message": "Fix only these findings; run the focused tests for the changed behavior and the folder's landing checks; commit.\n\n" + state.Findings})
+		_, err = controlMCPMessageJob(c, map[string]any{"job_id": job, "client_request_id": "pipeline-fix-" + run + "-" + head, "message": "Fix only these findings and commit.\n\n" + state.Findings})
 		if err != nil {
 			return false, err
 		}
