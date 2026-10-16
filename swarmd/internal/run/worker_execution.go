@@ -687,7 +687,19 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 				return errors.New("missing captured review target")
 			}
 			head, _ := target["head"].(string)
-			allocation, err = h.trees.AllocateReviewWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, head)
+			reviewBase, _ := target["base"].(string)
+			commits := []string{reviewBase}
+			switch values := target["commits"].(type) {
+			case []string:
+				commits = values
+			case []any:
+				commits = nil
+				for _, value := range values {
+					text, _ := value.(string)
+					commits = append(commits, text)
+				}
+			}
+			allocation, err = h.trees.AllocateReviewWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, head, commits...)
 		} else {
 			allocation, err = h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		}

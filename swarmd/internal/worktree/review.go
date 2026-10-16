@@ -13,7 +13,10 @@ import (
 )
 
 // AllocateReviewWorkspace creates no branch or writable publication lineage.
-func (s *Service) AllocateReviewWorkspace(p identity.Principal, source, owner, head string) (Allocation, error) {
+func (s *Service) AllocateReviewWorkspace(p identity.Principal, source, owner, head string, commits ...string) (Allocation, error) {
+	if len(commits) == 0 {
+		return Allocation{}, errors.New("review requires exact base evidence")
+	}
 	if err := requirePrincipal(p); err != nil {
 		return Allocation{}, err
 	}
@@ -23,7 +26,7 @@ func (s *Service) AllocateReviewWorkspace(p identity.Principal, source, owner, h
 	}
 	// Preserve the admitted identity through sandbox cache admission.
 	ctx := identity.ContextWithPrincipal(context.Background(), p)
-	return s.allocateReviewWorkspaceContext(ctx, source, owner, head, worktreeAllocationTimeout)
+	return s.allocateReviewWorkspaceContext(ctx, source, owner, head, worktreeAllocationTimeout, commits...)
 }
 
 func (s *Service) allocateReviewWorkspace(source, owner, head string) (Allocation, error) {
@@ -34,7 +37,7 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 	return s.allocateReviewWorkspaceContext(context.Background(), source, owner, head, timeout)
 }
 
-func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, owner, head string, timeout time.Duration) (Allocation, error) {
+func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, owner, head string, timeout time.Duration, commits ...string) (Allocation, error) {
 	root, err := resolveRepositoryRootContext(ctx, source)
 	if err != nil {
 		return Allocation{}, err
@@ -64,6 +67,26 @@ func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, ow
 	}
 	if err != nil || resolved != head {
 		return Allocation{}, errors.New("review requires an exact commit")
+	}
+	// Resolve immutable evidence only in the authorized folder or managed job
+	// clone. Fetching occurs before sandbox admission; no source is writable.
+	evidence := map[string]string{}
+	if len(commits) > 4 {
+		return Allocation{}, errors.New("too many review evidence commits")
+	}
+	for _, commit := range commits {
+		if !validCommitID(commit) {
+			return Allocation{}, errors.New("review requires exact base evidence")
+		}
+		for _, source := range []string{cloneSource, root} {
+			if value, err := runGitContext(ctx, source, "rev-parse", "--verify", commit+"^{commit}"); err == nil && value == commit {
+				evidence[commit] = source
+				break
+			}
+		}
+		if evidence[commit] == "" {
+			return Allocation{}, fmt.Errorf("review evidence commit %s unavailable", commit)
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -103,7 +126,12 @@ func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, ow
 	if err := allocationErr; err != nil {
 		return Allocation{}, errors.Join(fmt.Errorf("review checkout admission: %w", err), s.CleanupReviewAdmission(root, owner))
 	}
-	for _, args := range [][]string{{"fetch", "--no-tags", "--", cloneSource, head}, {"remote", "set-url", "origin", root}, {"checkout", "--detach", head}} {
+	commands := [][]string{{"fetch", "--no-tags", "--", cloneSource, head}}
+	for _, commit := range commits {
+		commands = append(commands, []string{"fetch", "--no-tags", "--", evidence[commit], commit})
+	}
+	commands = append(commands, []string{"remote", "set-url", "origin", root}, []string{"checkout", "--detach", head})
+	for _, args := range commands {
 		if _, err := runGitAllocationGuardedContext(ctx, path, nil, timeout, "", args...); err != nil {
 			if errors.Is(err, ErrAllocationWriterUnconfirmed) {
 				return Allocation{}, err

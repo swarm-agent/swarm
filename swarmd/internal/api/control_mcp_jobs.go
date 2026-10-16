@@ -402,11 +402,15 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	// The project id travels in the run's input: Swarm runs the job as that
 	// project's task, and refuses it when the folder is not the project's.
+	input := map[string]any{"project_id": place.projectID}
+	if commits, ok := args["review_commits"].([]string); ok {
+		input["review_commits"] = commits
+	}
 	response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/direct", nil, map[string]any{
 		"prompt":          brief,
 		"review_job":      controlMCPString(args, "review_job"),
 		"proof":           controlMCPString(args, "proof"),
-		"input":           map[string]any{"project_id": place.projectID},
+		"input":           input,
 		"idempotency_key": key,
 		"workspace_path":  place.path,
 		"model_profile":   override,

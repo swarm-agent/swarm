@@ -80,16 +80,28 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if !descends {
 		return nil, errors.New("review job head does not descend from its base")
 	}
-	base := task.BaseBranch
-	if base == "" {
-		return nil, errors.New("review job has no landing base branch")
+	// The task's immutable fork is the normal review base. Pipeline rebase
+	// reviews supply their exact comparison commits; these are evidence only,
+	// never repository or publication authority, and allocation verifies them.
+	base, commits, err := reviewComparisonCommits(task.BaseCommit, r.Input)
+	if err != nil {
+		return nil, err
 	}
-	published := "refs/swarm/publish/" + base
-	cmd := sandbox.Command(ctx, "-C", task.SourceWorkspace.Path, "rev-parse", "--verify", published+"^{commit}")
-	if err := cmd.Run(); err == nil {
-		base = published
+	for _, commit := range commits {
+		available := false
+		for _, source := range []string{task.WorkspacePath, task.SourceWorkspace.Path} {
+			out, err := sandbox.Command(ctx, "-C", source, "rev-parse", "--verify", commit+"^{commit}").Output()
+			if err == nil && strings.TrimSpace(string(out)) == commit {
+				available = true
+				break
+			}
+		}
+		if !available {
+			return nil, fmt.Errorf("review infrastructure: comparison commit %s unavailable", commit)
+		}
 	}
 	report := task.PlanSummary
+
 	if len(task.Attempts) > 0 {
 		report = task.Attempts[len(task.Attempts)-1].Summary
 	}
@@ -100,7 +112,7 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if len(brief) > 24000 {
 		brief = brief[:24000]
 	}
-	captured := map[string]any{"head": state.HeadCommit, "base": base, "job": r.Input["review_job"], "brief": brief, "report": report}
+	captured := map[string]any{"head": state.HeadCommit, "base": base, "commits": commits, "job": r.Input["review_job"], "brief": brief, "report": report}
 	// Capture from the same folder definition as landing, never caller input.
 	env, found, err := store.NewSandboxEnvironmentStore(s.host.runs.sessions.Store().Underlying()).Get(task.SourceWorkspace.Path)
 	if err != nil {
@@ -214,4 +226,30 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 		}, validate, remove)
 	}
 	return sandbox.ErrSandboxRequired
+}
+
+func reviewComparisonCommits(base string, input map[string]any) (string, []string, error) {
+	commits := []string{base}
+	if raw, exists := input["review_commits"]; exists {
+		commits = nil
+		switch values := raw.(type) {
+		case []string:
+			commits = values
+		case []any:
+			for _, value := range values {
+				text, _ := value.(string)
+				commits = append(commits, text)
+			}
+		}
+		if len(commits) == 0 || len(commits) > 4 {
+			return "", nil, errors.New("review infrastructure: missing comparison commits")
+		}
+		base = commits[0]
+	}
+	for _, commit := range commits {
+		if len(commit) != 40 && len(commit) != 64 || strings.Trim(commit, "0123456789abcdef") != "" {
+			return "", nil, errors.New("review infrastructure: comparison commit must be an exact SHA")
+		}
+	}
+	return base, commits, nil
 }
