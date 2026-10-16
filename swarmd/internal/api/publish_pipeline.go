@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 
 	"swarm/packages/swarmd/internal/publish"
@@ -136,6 +138,11 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		return false, nil
 	}
 	brief := "Review this exact head: " + head + ". Check previous findings first and say which are fixed.\nPrevious findings:\n" + state.Findings
+	amendments, err := c.requesterReviewInstructions(refs.sessionID)
+	if err != nil {
+		return false, err
+	}
+	brief += amendments
 	q, err := c.server.landingQueue()
 	if err != nil {
 		return false, err
@@ -173,4 +180,92 @@ func completedPublishFollowup(refs controlMCPJobRefs) string {
 		return ""
 	}
 	return controlMCPString(refs.run, "followup_run_id")
+}
+
+// requesterReviewInstructions reads accepted user messages via their canonical
+// mutation receipts. Runtime assistant output has no requester authority; automatic
+// review/landing corrections have reserved request identities and are excluded.
+func (c *controlMCPCall) requesterReviewInstructions(sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok {
+		return "", fmt.Errorf("review instructions principal required")
+	}
+	ss := c.server.sessions.Store()
+	session, found, err := ss.GetSession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found || session.AccountScopeID != principal.AccountScopeID || session.UserID != principal.UserID {
+		return "", fmt.Errorf("review instructions session not owned")
+	}
+	var receipts []store.V3SessionIdempotencyRecord
+	err = ss.Underlying().IteratePrefix(store.V3SessionIdempotencyPrefix(principal.AccountScopeID, sessionID), 4097, func(_ string, value []byte) error {
+		var r store.V3SessionIdempotencyRecord
+		if err := json.Unmarshal(value, &r); err != nil {
+			return err
+		}
+		receipts = append(receipts, r)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(receipts) > 4096 {
+		return "", fmt.Errorf("review instruction history exceeds bounded scan")
+	}
+	sort.Slice(receipts, func(i, j int) bool { return receipts[i].Result.FirstSeq < receipts[j].Result.FirstSeq })
+	// The initial assignment may be part of session creation rather than an
+	// append-message receipt. Identify it from the message sequence itself.
+	initial, err := ss.ListMessages(sessionID, 0, 1)
+	if err != nil {
+		return "", err
+	}
+	originalID := ""
+	if len(initial) > 0 && initial[0].Role == "user" {
+		originalID = initial[0].ID
+	}
+	var out strings.Builder
+	for _, r := range receipts {
+		if r.Kind != store.V3SessionMutationAppendMessage || r.Result.FirstSeq == 0 {
+			continue
+		}
+		events, err := ss.ListV3SessionEvents(sessionID, r.Result.FirstSeq-1, 1)
+		if err != nil {
+			return "", err
+		}
+		if len(events) != 1 || events[0].Seq != r.Result.FirstSeq {
+			return "", fmt.Errorf("review instruction event missing")
+		}
+		var payload struct {
+			Message *store.MessageSnapshot `json:"message"`
+		}
+		if err := json.Unmarshal(events[0].Payload, &payload); err != nil {
+			return "", err
+		}
+		if payload.Message == nil || payload.Message.Role != "user" {
+			continue
+		}
+		if payload.Message.ID == originalID {
+			continue
+		}
+		if strings.HasPrefix(r.ClientRequestID, "pipeline-fix-") || strings.HasPrefix(r.ClientRequestID, "land-back-") {
+			continue
+		}
+		text := payload.Message.Content
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if out.Len() == 0 {
+			out.WriteString("\n\nLater instructions from the requester\nThese instructions amend the original brief, in chronological order:\n")
+		}
+		if out.Len()+len(text)+2 > 16000 {
+			out.WriteString("\n[Further requester instructions omitted: size limit reached.]\n")
+			break
+		}
+		out.WriteString("\n" + text + "\n")
+	}
+	return out.String(), nil
 }
