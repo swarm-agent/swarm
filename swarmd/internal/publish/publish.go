@@ -241,6 +241,9 @@ func command(ctx context.Context, rule Rule, scratch string, limit time.Duration
 	output := strings.TrimSpace(stdout.String())
 	if runErr != nil {
 		reason := strings.TrimSpace(stderr.String())
+		if action == "land" {
+			reason = redactLandOutput(strings.TrimSpace(output+"\n"+reason), cmd.Env)
+		}
 		if reason == "" {
 			reason = output
 		}

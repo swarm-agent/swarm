@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Show redacted landing failure diagnostics and GitHub push refusals while preserving app-runs receipts. Docs impact: none.
+
 - Fix Cloud Build's zero timeout default to use the folder check timeout plus five minutes (capped at 24 hours), align configuration checks, and report missing configuration fields. Docs impact: docs/runners.md
 - Preserve Cloud Build image PATH and workspace Go caches, record check failures without failing the step, and include bounded build-log diagnostics in landing failures. Docs impact: none.
 

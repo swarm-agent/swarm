@@ -9,14 +9,22 @@ import (
 	"time"
 )
 
-// Purpose: command and landFailure must carry only a bounded smoke step into
-// delivery_reason, never privileged logs. Real script execution is the narrowest
-// layer proving the process-output boundary, including malformed receipts.
+// Purpose: command and landFailure preserve strict smoke receipts ahead of
+// redacted diagnostics; malformed receipts cannot claim a smoke step. Local
+// script execution is the narrowest process-output boundary test.
 func TestAppRunsFailureReceipt(t *testing.T) {
-	for _, receipt := range []string{"APP_RUNS_FAILED:health", "APP_RUNS_FAILED:health secret"} {
+	testLandAppRunsFailureReceipt(t)
+}
+
+func TestLandAppRunsFailureReceipt(t *testing.T) {
+	testLandAppRunsFailureReceipt(t)
+}
+
+func testLandAppRunsFailureReceipt(t *testing.T) {
+	for _, receipt := range []string{"APP_RUNS_FAILED:health", "APP_RUNS_FAILED:health ghp_secret"} {
 		dir := t.TempDir()
 		script := filepath.Join(dir, "gate")
-		if err := os.WriteFile(script, []byte("#!/bin/sh\necho private-log >&2\necho '"+receipt+"' >&2\nexit 1\n"), 0700); err != nil {
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho ghp_privateLog >&2\necho '"+receipt+"' >&2\nexit 1\n"), 0700); err != nil {
 			t.Fatal(err)
 		}
 		output, err := command(context.Background(), Rule{Command: script, Folder: dir}, dir, time.Second, "land")
@@ -24,13 +32,13 @@ func TestAppRunsFailureReceipt(t *testing.T) {
 			t.Fatal("failed gate accepted")
 		}
 		reason := landFailure(output).Error()
-		if strings.Contains(reason, "private-log") || strings.Contains(reason, "secret") {
+		if strings.Contains(reason, "ghp_privateLog") || strings.Contains(reason, "ghp_secret") {
 			t.Fatal(reason)
 		}
 		if receipt == "APP_RUNS_FAILED:health" && reason != "app-runs landing check failed: health" {
 			t.Fatal(reason)
 		}
-		if receipt != "APP_RUNS_FAILED:health" && reason != "land command failed" {
+		if receipt != "APP_RUNS_FAILED:health" && reason != "land command failed: [REDACTED]\nAPP_RUNS_FAILED:health [REDACTED]" {
 			t.Fatal(reason)
 		}
 	}

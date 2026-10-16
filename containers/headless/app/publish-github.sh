@@ -122,10 +122,17 @@ if [[ $action == land ]]; then
   # arbitrary stderr (hooks, permissions and branch rules are real failures).
   if receipt=$(git_forge push --porcelain "$git_base/$REPO.git" "$head:refs/heads/$base" 2>"$TMPDIR/land-push-error"); then
     echo "LANDED $head"
-  elif awk -F '\t' '$1 == "!" && ($3 == "[rejected] (non-fast-forward)" || $3 == "[rejected] (fetch first)") { found=1 } END { exit !found }' <<<"$receipt"; then
-    echo MOVED
   else
-    die "fast-forward push to $base was refused"
+    # Preserve Git's diagnostic verbatim; the daemon redacts it before display.
+    cat "$TMPDIR/land-push-error" >&2
+    printf '%s\n' "$receipt" >&2
+    reason=$(awk -F '\t' '$1 == "!" { print $3; exit }' <<<"$receipt")
+    printf 'LAND_REFUSED: %s\n' "${reason:-fast-forward push to $base was refused}" >&2
+    if awk -F '\t' '$1 == "!" && ($3 == "[rejected] (non-fast-forward)" || $3 == "[rejected] (fetch first)") { found=1 } END { exit !found }' <<<"$receipt"; then
+      echo MOVED
+    else
+      die "fast-forward push to $base was refused"
+    fi
   fi
   exit 0
 fi
