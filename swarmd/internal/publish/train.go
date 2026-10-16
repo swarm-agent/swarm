@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 )
 
 // SetParallel configures the startup-only per-folder candidate window.
@@ -51,8 +50,38 @@ func (q *Queue) trainFinish(ctx context.Context, e *Entry, h QueueHooks, err err
 }
 
 // processTrain holds the folder lock, not the store lock. Only the serial push
-// lane can publish results; speculative suffix results are never reused.
+// lane can publish results. Durable enqueue wakes admission without waiting for
+// the head's checks; removing the head immediately opens a window slot. Invalid
+// suffixes are canceled and joined before their durable entries are restacked.
 func (q *Queue) processTrain(ctx context.Context, account, folder string, h QueueHooks) error {
+	key := account + "\x00" + folder
+	wake := make(chan struct{}, 1)
+	q.mu.Lock()
+	if q.wake == nil {
+		q.wake = make(map[string]chan struct{})
+	}
+	q.wake[key] = wake
+	q.mu.Unlock()
+	defer func() { q.mu.Lock(); delete(q.wake, key); q.mu.Unlock() }()
+	type candidate struct {
+		entry *Entry
+		// Stack's immutable request is separate from Prepare's mutable evidence.
+		stack             Entry
+		done              chan struct{}
+		err, admissionErr error
+		cancel            context.CancelFunc
+	}
+	var candidates []*candidate
+	drain := func() {
+		for _, c := range candidates {
+			c.cancel()
+		}
+		for _, c := range candidates {
+			<-c.done
+		}
+		candidates = nil
+	}
+	defer drain()
 	moves := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -66,6 +95,19 @@ func (q *Queue) processTrain(ctx context.Context, account, folder string, h Queu
 		}
 		var train []*Entry
 		for _, entry := range entries {
+			if len(candidates)+len(train) >= q.parallel {
+				break
+			}
+			inFlight := false
+			for _, c := range candidates {
+				if c.stack.Request.JobID == entry.Request.JobID {
+					inFlight = true
+					break
+				}
+			}
+			if inFlight {
+				continue
+			}
 			if entry.Request.Folder != folder || !pending(entry) {
 				continue
 			}
@@ -91,15 +133,14 @@ func (q *Queue) processTrain(ctx context.Context, account, folder string, h Queu
 			}
 			e.TrainReady = false
 			train = append(train, &e)
-			if len(train) == q.parallel {
-				break
-			}
 		}
-		if len(train) == 0 {
+		if len(train) == 0 && len(candidates) == 0 {
 			return nil
 		}
 		var previous *Entry
-		var candidates []*Entry
+		if len(candidates) > 0 {
+			previous = &candidates[len(candidates)-1].stack
+		}
 		for _, e := range train {
 			if e.State == "queued" && h.Queued != nil {
 				if err := h.Queued(ctx, *e); err != nil {
@@ -115,21 +156,24 @@ func (q *Queue) processTrain(ctx context.Context, account, folder string, h Queu
 				return err
 			}
 			e.Checkpoint = func() error { return q.save(*e) }
+			candidateCtx, cancel := context.WithCancel(ctx)
 			err = nil
 			if h.Stack != nil {
 				var release func()
 				if h.Admit != nil {
 					release, err = h.Admit(ctx, *e)
 					if err != nil {
+						cancel()
 						return err
 					}
 				}
-				err = h.Stack(ctx, e, previous)
+				err = h.Stack(candidateCtx, e, previous)
 				if release != nil {
 					release()
 				}
 			}
 			if err != nil {
+				cancel()
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -142,41 +186,53 @@ func (q *Queue) processTrain(ctx context.Context, account, folder string, h Queu
 				if err := q.trainFinish(ctx, e, h, err); err != nil {
 					return err
 				}
+				// A rejected stack also frees a slot, even while the head checks.
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
 				continue
 			}
 			if err := q.save(*e); err != nil {
+				cancel()
 				return err
 			}
-			candidates = append(candidates, e)
-			previous = e
-		}
-		results := make([]error, len(candidates))
-		admissionErrors := make([]error, len(candidates))
-		var wg sync.WaitGroup
-		for i, e := range candidates {
-			wg.Add(1)
-			go func(i int, e *Entry) {
-				defer wg.Done()
+			c := &candidate{entry: e, stack: Entry{Request: e.Request}, done: make(chan struct{}), cancel: cancel}
+			candidates = append(candidates, c)
+			previous = &c.stack
+			go func() {
+				defer close(c.done)
 				if h.Admit != nil {
-					release, err := h.Admit(ctx, *e)
+					release, err := h.Admit(candidateCtx, *e)
 					if err != nil {
-						admissionErrors[i] = err
+						c.admissionErr = err
 						return
 					}
 					defer release()
 				}
-				results[i] = h.Prepare(ctx, e)
-			}(i, e)
+				c.err = h.Prepare(candidateCtx, e)
+			}()
 		}
-		wg.Wait()
+		if len(candidates) == 0 {
+			continue
+		}
+		c := candidates[0]
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-wake:
+			continue
+		case <-c.done:
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		for i, e := range candidates {
-			if admissionErrors[i] != nil {
-				return admissionErrors[i]
+		{
+			e := c.entry
+			if c.admissionErr != nil {
+				return c.admissionErr
 			}
-			err := results[i]
+			err := c.err
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrNotSettled) {
 				return err
 			}
@@ -208,7 +264,8 @@ func (q *Queue) processTrain(ctx context.Context, account, folder string, h Queu
 					if moves >= 3 {
 						return errors.New("base kept moving")
 					}
-					break
+					drain()
+					continue
 				}
 				moves = 0
 				if err == nil {
@@ -218,8 +275,10 @@ func (q *Queue) processTrain(ctx context.Context, account, folder string, h Queu
 			if finishErr := q.trainFinish(ctx, e, h, err); finishErr != nil {
 				return finishErr
 			}
+			c.cancel()
+			candidates = candidates[1:]
 			if err != nil {
-				break
+				drain()
 			}
 		}
 	}
