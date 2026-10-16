@@ -4,6 +4,8 @@ import (
  "bytes"
  "context"
  "encoding/json"
+ "errors"
+ pebblestore "swarm/packages/swarmd/internal/store/pebble"
  "fmt"
  "io"
  "net/http"
@@ -111,8 +113,57 @@ type CloudBuildConfig struct {
  TimeoutMinutes int
 }
 type CloudBuild struct {
+ Store *pebblestore.Store
  Config CloudBuildConfig
  Storage CloudStorage
  Builds CloudBuilds
 }
 func (p CloudBuild) timeout() time.Duration { return time.Duration(p.Config.TimeoutMinutes)*time.Minute }
+
+func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error) {
+ if p.Storage == nil || p.Builds == nil || p.Store == nil || p.Config.Bucket == "" || p.Config.Project == "" || p.timeout() <= 0 || spec.CheckTimeout < time.Second || spec.Definition.BaseImage == "" { return nil, &Failure{"Cloud Build configuration unavailable or invalid"} }
+ id, err := pebblestore.GenerateToken(16); if err != nil { return nil, err }
+ e := &cloudEnvironment{provider:p, spec:spec, prefix:"landings/"+id+"/", started:time.Now()}
+ fail := func(err error) (Environment, error) { return nil, errors.Join(&Failure{err.Error()}, e.Release()) }
+ payload, sha, cleanup, err := p.Store.CloudBuildPayload(spec.Account,id,spec.Checkout,spec.Commit)
+ if err != nil { return fail(err) }
+ err = p.Storage.Put(ctx,p.Config.Bucket,e.prefix+"payload.tar.gz",payload)
+ err = errors.Join(err,payload.Close(),cleanup())
+ if err != nil { return fail(err) }
+ request, err := json.Marshal(struct {
+ Definition Definition `json:"definition"`
+ Checks []string `json:"checks"`
+ Timeout int `json:"timeout"`
+ Base string `json:"base"`
+ Head string `json:"head"`
+ SHA256 string `json:"sha256"`
+ }{spec.Definition,spec.Checks,int(spec.CheckTimeout/time.Second),spec.BaseCommit,spec.Commit,sha})
+ if err != nil { return fail(err) }
+ if err := p.Storage.Put(ctx,p.Config.Bucket,e.prefix+"request.json",bytes.NewReader(request)); err != nil { return fail(err) }
+ build, err := p.Builds.Create(ctx,Build{Timeout:fmt.Sprintf("%ds",int(p.timeout()/time.Second)),ServiceAccount:p.Config.ServiceAccount,Options:BuildOptions{MachineType:p.Config.MachineType,Logging:"CLOUD_LOGGING_ONLY"},Steps:[]BuildStep{{Name:spec.Definition.BaseImage,Entrypoint:"bash",Args:[]string{"-lc",cloudBuildScript(p.Config.Bucket,e.prefix,sha)}}}})
+ if err != nil { return fail(err) }; if build.ID == "" { return fail(fmt.Errorf("Cloud Build returned no build ID")) }
+ e.id = build.ID
+ if spec.Selected != nil { spec.Selected("cloudbuild:"+e.id) }
+ return e,nil
+}
+type cloudCheck struct {
+ ExitCode int `json:"exit_code"`
+ DurationMS int64 `json:"duration_ms"`
+ Output string `json:"output"`
+}
+type cloudEnvironment struct {
+ provider CloudBuild
+ spec Spec
+ prefix, id string
+ started time.Time
+ index int
+ results []cloudCheck
+}
+func (e *cloudEnvironment) Sync(context.Context,string) error { return nil }
+func (e *cloudEnvironment) Release() error {
+ ctx,cancel := context.WithTimeout(context.Background(),30*time.Second); defer cancel()
+ return e.provider.Storage.DeletePrefix(ctx,e.provider.Config.Bucket,e.prefix)
+}
+func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResult,error) {
+ return nil, &Failure{"Cloud Build result execution not implemented"}
+}
