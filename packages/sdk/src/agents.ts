@@ -470,16 +470,21 @@ export class SwarmAgentsNamespace {
 
   /**
    * The person approved: runs the confirmed call through `handlers` (with
-   * exactly the confirmation's arguments) and returns the agent's reply.
+   * exactly the confirmation's arguments) and returns the agent's reply. With
+   * `endUser`, it refuses a session that belongs to anyone else before
+   * recording the approval.
    */
-  async confirm(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+  async confirm(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
     return this.followTurn(sessionId, handlers, options, async () => {
       await this.decideConfirmation(sessionId, confirmation.id, { decision: 'approve', argumentsHash: confirmation.argumentsHash });
     });
   }
 
-  /** The person declined: the model is told "the person declined: <note>". Returns the agent's reply. */
-  async reject(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { note?: string; timeoutMs?: number; pollIntervalMs?: number; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+  /**
+   * The person declined: the model is told "the person declined: <note>".
+   * Returns the agent's reply. `endUser` works as on `confirm`.
+   */
+  async reject(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { note?: string; timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
     return this.followTurn(sessionId, handlers, options, async () => {
       await this.decideConfirmation(sessionId, confirmation.id, { decision: 'reject', note: options.note });
     });
@@ -499,7 +504,8 @@ export class SwarmAgentsNamespace {
    * Answers one session's client tool calls with `handlers` until `signal`
    * aborts. Each call is answered at most once; a handler error fails the
    * call with "tool failed" unless it is a ClientToolError. With `endUser`,
-   * a call whose session belongs to anyone else is failed unanswered.
+   * a call whose session belongs to anyone else is failed unanswered, and
+   * such a confirmation is not passed to `onConfirm`.
    * Confirmations are never answered here: `onConfirm` is called once for
    * each (show the approval card), and `confirm` or `reject` records the
    * person's decision.
@@ -512,7 +518,7 @@ export class SwarmAgentsNamespace {
         if (handled.has(item.id)) continue;
         handled.add(item.id);
         if (item.kind === 'confirmation') {
-          await options.onConfirm?.(item);
+          if (options.endUser === undefined || item.endUser === options.endUser) await options.onConfirm?.(item);
           continue;
         }
         if (options.endUser !== undefined && item.endUser !== options.endUser) {

@@ -186,3 +186,41 @@ test('confirmations are surfaced, never auto-answered, and decided with the argu
   const declined = calls.filter(([m, p]) => m === 'POST' && p === '/v3/sessions/s1/confirmations/conf_1').at(-1);
   assert.deepEqual(declined?.[2], { decision: 'reject', note: 'too expensive' });
 });
+
+// Purpose: a confirmation on an end user's session carries that end user and
+// labels (from the daemon's response, as on calls); serve with another
+// `endUser` never shows its card, and confirm/reject with another `endUser`
+// refuse before recording any decision. Boundary: SwarmAgentsNamespace over a
+// transport fixture; the daemon side is TestConfirmationOnEndUserSessionCarriesTheEndUser.
+test('confirmations carry the session end user and respect endUser', async () => {
+  const calls: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const transport = { request: async (path: string, options: { method?: string; body?: Record<string, unknown> } = {}) => {
+    const method = options.method ?? 'GET';
+    calls.push([method, path, options.body]);
+    if (path.startsWith('/v3/sessions/s1/permissions?')) return { data: { permissions: [], end_user: 'cust-42' } };
+    if (path === '/v3/sessions/s1/confirmations') return { data: { confirmations: [confirmationRecord], end_user: 'cust-42', labels: { plan: 'pro' } } };
+    if (path === '/v3/sessions/s1') return { data: { session: { id: 's1' }, messages: [], end_user: 'cust-42', pending_confirmation: confirmationRecord } };
+    throw new Error(`unexpected ${method} ${path}`);
+  } } as unknown as SwarmTransport;
+  const agents = new SwarmAgentsNamespace(transport);
+
+  const [item] = await agents.pendingCalls('s1', ['place_order']);
+  assert.equal(item.kind, 'confirmation');
+  assert.equal(item.endUser, 'cust-42');
+  assert.deepEqual(item.labels, { plan: 'pro' });
+
+  const seen: string[] = [];
+  for (const endUser of ['cust-7', 'cust-42']) {
+    const controller = new AbortController();
+    const serving = agents.serve('s1', { place_order: () => ({}) }, { signal: controller.signal, intervalMs: 50, endUser, onConfirm: (c) => { seen.push(`${endUser}:${c.id}`); } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+    await serving;
+  }
+  assert.deepEqual(seen, ['cust-42:conf_1'], 'serve showed another end user\'s confirmation');
+
+  const card = item as Extract<typeof item, { kind: 'confirmation' }>;
+  await assert.rejects(agents.confirm('s1', card, {}, { endUser: 'cust-7' }), /another end user/);
+  await assert.rejects(agents.reject('s1', card, {}, { endUser: 'cust-7', note: 'no' }), /another end user/);
+  assert.ok(!calls.some(([method, path]) => method === 'POST'), 'a decision was sent for another end user');
+});
