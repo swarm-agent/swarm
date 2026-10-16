@@ -88,8 +88,13 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 		if err != nil {
 			return nil, err
 		}
-		if entry.State == "landed" || entry.State == "landing" || entry.State == "queued" || (entry.State == "landing_stopped" && !explicit) {
+		if entry.State == "landed" || entry.State == "landing" || entry.State == "queued" {
 			return landDeliveryReceipt(entry, pos), nil
+		}
+		if !explicit && (entry.State == "sent_back" || entry.State == "landing_stopped") {
+			if controlMCPString(refs.run, "followup_status") != "completed" || !entry.CanRetryFix(controlMCPString(result, "head")) {
+				return landDeliveryReceipt(entry, pos), nil
+			}
 		}
 	}
 	if state, _ := result["delivery_state"].(string); state == "empty" {

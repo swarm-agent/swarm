@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -120,8 +121,18 @@ func (q *Queue) Enqueue(e Entry) (int, error) {
 	return pos, err
 }
 
+const maxLandingSendBacks = 2
+
+// CanRetryFix admits a new head for an issued fix round, not a replay or a new
+// attempt. The caller must also wait for the worker follow-up to complete.
+func (e Entry) CanRetryFix(head string) bool {
+	return (e.State == "sent_back" || e.State == "landing_stopped") &&
+		!pending(e) && e.FollowUpID != "" && e.SendBacks <= maxLandingSendBacks &&
+		head != "" && head != e.Request.Head
+}
+
 // EnqueueDelivery returns the actual durable receipt under the queue mutex.
-// Only explicit delivery may restart a stopped attempt; automatic replay may not.
+// Automatic fix rounds preserve the budget; only explicit delivery resets it.
 func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -132,11 +143,13 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 	if err != nil {
 		return Entry{}, 0, err
 	}
+	requeuedFix := false
 	for i, old := range entries {
 		if old.Request.JobID != e.Request.JobID {
 			continue
 		}
-		if pending(old) || old.State == "landed" || ((old.State == "landing_stopped" || old.State == "environment_failed") && !retryStopped) {
+		if pending(old) || old.State == "landed" || (!retryStopped &&
+			(old.State == "environment_failed" || ((old.State == "landing_stopped" || old.State == "sent_back") && !old.CanRetryFix(e.Request.Head)))) {
 			return old, position(entries, e.Request.JobID), nil
 		}
 		// Only retain queue-owned evidence for the same source and destination.
@@ -147,7 +160,8 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 		e.SendBacks = old.SendBacks
 		e.Attempt = old.Attempt
 		e.TransitionSequence = old.TransitionSequence
-		if old.State == "landing_stopped" {
+		requeuedFix = old.CanRetryFix(e.Request.Head)
+		if old.State == "landing_stopped" && retryStopped {
 			e.SendBacks = 0
 			e.Attempt++
 		}
@@ -161,6 +175,9 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 	entries = append(entries, e)
 	if err = q.store.PutJSON(queueKey(e.Account), entries); err != nil {
 		return Entry{}, 0, err
+	}
+	if requeuedFix {
+		log.Printf("landing re-queue job=%s head=%s", e.Request.JobID, e.Request.Head)
 	}
 	return e, position(entries, e.Request.JobID), nil
 }
@@ -313,14 +330,18 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 				e.SendBacks++
 				e.Reason = back.Reason
 				e.State = "sent_back"
-				if e.SendBacks >= 2 {
+				if e.SendBacks >= maxLandingSendBacks {
 					e.State = "landing_stopped"
 				}
 				e.FollowUpID = fmt.Sprintf("land-back-%s-%d", e.Request.JobID, e.SendBacks)
 				if e.Attempt > 0 {
 					e.FollowUpID = fmt.Sprintf("land-back-%s-attempt-%d-%d", e.Request.JobID, e.Attempt, e.SendBacks)
 				}
-				e.SendBackPending = true
+				e.SendBackPending = e.SendBacks <= maxLandingSendBacks
+				if !e.SendBackPending {
+					e.FollowUpID = ""
+					e.Reason = "Landing fix rounds exhausted: " + e.Reason
+				}
 			} else {
 				e.State = "land_failed"
 				var infrastructure interface{ EnvironmentFailure() bool }
