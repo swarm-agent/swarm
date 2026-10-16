@@ -682,6 +682,9 @@ func New(cfg config.Config) (*Daemon, error) {
 	// Claude Code drives the person's own locally signed-in, unmodified CLI;
 	// Swarm never handles Claude credentials (see provider/claudecode).
 	claudeCodeCLI := claudecode.NewCLI()
+	// Vertex AI runs Gemini with the machine's own Google identity (attached
+	// service account or GOOGLE_APPLICATION_CREDENTIALS); no key is stored.
+	vertexCredentials := google.NewApplicationDefaultCredentials()
 	providers := registry.New(
 		anthropic.NewAdapter(authStore),
 		claudecode.NewAdapter(authStore, claudeCodeCLI),
@@ -690,6 +693,7 @@ func New(cfg config.Config) (*Daemon, error) {
 		google.NewAdapter(authStore),
 		openai.NewAdapter(authStore),
 		openrouter.NewAdapter(authStore),
+		google.NewVertexAdapter(authStore, vertexCredentials),
 		exaprovider.NewAdapter(authStore),
 	)
 	providers.RegisterRunner(anthropic.NewRunner(authStore))
@@ -701,6 +705,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	providers.RegisterRunner(google.NewRunner(authStore))
 	providers.RegisterRunner(openai.NewRunner(authStore, codexClient))
 	providers.RegisterRunner(openrouter.NewRunner(authStore))
+	providers.RegisterRunner(google.NewVertexRunner(authStore, vertexCredentials))
 	modelProfileStore := pebblestore.NewModelProfileStore(store)
 	modelProfileSvc := modelprofile.NewService(modelProfileStore)
 	runSvc := run.NewService(sessionSvc, modelSvc, providers, toolRuntime, permissionSvc, agentSvc, discoverySvc, events)

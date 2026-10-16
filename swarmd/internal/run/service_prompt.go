@@ -219,7 +219,7 @@ func normalizeThinkingWithProvider(providerID, thinking string) string {
 		return normalized
 	}
 	switch providerID {
-	case "google":
+	case "google", "vertex":
 		return "xhigh"
 	case "copilot":
 		return "high"

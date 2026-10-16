@@ -166,6 +166,11 @@ sequence. A rejected model or workspace operation remains an error, and workspac
 registration does not initialize Git, commit files or opt into ignoring dirty
 content. Prepare/review the chosen repository first.
 
+On Google Cloud, `setup credential --provider vertex --project P [--location L]`
+is the key-free alternative. It runs Gemini through Vertex AI as the machine's
+attached service account and reads no stdin. See "Gemini on Vertex (no key)"
+in `containers/sealed/README.md`.
+
 `setup complete` checks persisted identity, credentials, workspace and all seven
 canonical model assignments before setting the existing onboarding-complete flag.
 It does not start agents or claim provider reachability after setup. API failures

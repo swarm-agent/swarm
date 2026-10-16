@@ -178,6 +178,68 @@ Then set it up with `swarmctl setup identity`, `credential`, `workspace` and
 `docker exec`, which needs no shell. Publish the SDK port only to loopback or a
 private network; the gateway is the only thing that should face the internet.
 
+## Gemini on Vertex (no key)
+
+Provider `vertex` runs the same Gemini models as `google`, through Vertex AI,
+signed in as the machine's own Google identity. No API key exists, and Swarm
+stores only a Google Cloud project and location. It suits a sealed swarmd in
+Docker on a GCE VM.
+
+On Google Cloud:
+
+- Attach a service account to the VM and grant it `roles/aiplatform.user` on
+  the project. Enable the Vertex AI API (`aiplatform.googleapis.com`).
+- Give the VM the `cloud-platform` access scope (`--scopes=cloud-platform`).
+  The default scopes do not cover Vertex AI, and Vertex then answers 403.
+- For a VM without internet access, turn on Private Google Access on its subnet
+  and add a private DNS zone for `googleapis.com` that points `*.googleapis.com`
+  at `private.googleapis.com` (199.36.153.8/30), with a route to that range.
+
+Swarm then needs two things from inside the container. It needs the metadata
+server at `http://169.254.169.254` for tokens (the address behind
+`metadata.google.internal`, so no DNS lookup is needed; a Docker bridge
+container reaches it). It also needs `aiplatform.googleapis.com:443`, or
+`REGION-aiplatform.googleapis.com:443` for a regional location. Swarm sends
+`Metadata-Flavor: Google`, never through a proxy, and keeps the token in memory
+until two minutes before it expires. Tokens are never stored or logged. Off
+Google Cloud, set `GOOGLE_APPLICATION_CREDENTIALS` in the daemon's environment
+to a service-account key file mounted read-only for UID 10001. When that
+variable is set, the key file is the only source: if it is unusable, requests
+fail rather than falling back to the metadata server.
+
+```sh
+docker exec swarm-sealed swarmctl setup credential --provider vertex --project my-project
+# or a region: ... --provider vertex --project my-project --location us-central1
+for role in action plan compact finder coder designer router; do
+  docker exec swarm-sealed swarmctl setup model --role "$role" \
+    --provider vertex --model gemini-3.5-flash-lite --thinking low
+done
+```
+
+`--location` defaults to `global` (host `aiplatform.googleapis.com`); a region
+such as `us-central1` uses `us-central1-aiplatform.googleapis.com`. Like an API
+key, this is the first-provider onboarding step. The daemon checks the project
+and location and fetches a token before it saves anything. If it refuses, the
+CLI prints why (for example `no GCE metadata server reachable` or `no service
+account`). The provider shows as ready only after a token fetch succeeds.
+Setup does not call Vertex itself, so a missing role shows up on the first run
+as `vertex generateContent failed status=403 (permission denied: ...)`. The API
+equivalent is `POST /v1/auth/credentials` (or `/v1/onboarding/provider/credential`)
+with `{"provider":"vertex","type":"adc","google_project":"my-project","google_location":"global","active":true}`.
+
+A sealed agent selects Vertex in its definition:
+
+```json
+"agent": {"name": "frontdesk", "prompt": "...", "provider": "vertex",
+          "model": "gemini-3.5-flash-lite", "thinking": "low", "tools": ["lookup_order"]}
+```
+
+Requests use the Gemini `generateContent` and `streamGenerateContent` schema
+with `Authorization: Bearer`. 429 and 5xx responses retry the same way as
+`google`. A 401 fetches a fresh token and retries once. Usage is recorded under
+provider `vertex`, and the spend estimate uses Google's catalog prices. Not
+supported yet: image input, service tiers, and domain-scoped project IDs.
+
 ## Red team
 
 `containers/sealed/test/run.sh` runs `redteam.ts` against a real sealed container

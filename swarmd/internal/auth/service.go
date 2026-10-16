@@ -40,21 +40,25 @@ type CodexStatus struct {
 }
 
 type CredentialStatus struct {
-	ID           string              `json:"id"`
-	Provider     string              `json:"provider"`
-	Active       bool                `json:"active"`
-	AuthType     string              `json:"auth_type"`
-	Label        string              `json:"label,omitempty"`
-	Tags         []string            `json:"tags,omitempty"`
-	UpdatedAt    int64               `json:"updated_at"`
-	CreatedAt    int64               `json:"created_at"`
-	ExpiresAt    int64               `json:"expires_at,omitempty"`
-	Last4        string              `json:"last4,omitempty"`
-	HasRefresh   bool                `json:"has_refresh_token,omitempty"`
-	HasAccountID bool                `json:"has_account_id,omitempty"`
-	StorageMode  string              `json:"storage_mode"`
-	AutoDefaults *AutoDefaultsStatus `json:"auto_defaults,omitempty"`
-	Connection   *ConnectionStatus   `json:"connection,omitempty"`
+	ID           string   `json:"id"`
+	Provider     string   `json:"provider"`
+	Active       bool     `json:"active"`
+	AuthType     string   `json:"auth_type"`
+	Label        string   `json:"label,omitempty"`
+	Tags         []string `json:"tags,omitempty"`
+	UpdatedAt    int64    `json:"updated_at"`
+	CreatedAt    int64    `json:"created_at"`
+	ExpiresAt    int64    `json:"expires_at,omitempty"`
+	Last4        string   `json:"last4,omitempty"`
+	HasRefresh   bool     `json:"has_refresh_token,omitempty"`
+	HasAccountID bool     `json:"has_account_id,omitempty"`
+	// GoogleProject and GoogleLocation are shown for adc (Vertex AI)
+	// credentials; neither is secret.
+	GoogleProject  string              `json:"google_project,omitempty"`
+	GoogleLocation string              `json:"google_location,omitempty"`
+	StorageMode    string              `json:"storage_mode"`
+	AutoDefaults   *AutoDefaultsStatus `json:"auto_defaults,omitempty"`
+	Connection     *ConnectionStatus   `json:"connection,omitempty"`
 }
 
 type ConnectionStatus struct {
@@ -115,6 +119,8 @@ type CredentialUpsertInput struct {
 	RefreshToken   string
 	ExpiresAt      int64
 	AccountID      string
+	GoogleProject  string
+	GoogleLocation string
 	Active         bool
 }
 
@@ -403,6 +409,8 @@ func (s *Service) UpsertCredential(input CredentialUpsertInput) (CredentialStatu
 		RefreshToken:   input.RefreshToken,
 		ExpiresAt:      input.ExpiresAt,
 		AccountID:      input.AccountID,
+		GoogleProject:  input.GoogleProject,
+		GoogleLocation: input.GoogleLocation,
 		SetActive:      input.Active,
 	})
 	if err != nil {
@@ -559,6 +567,9 @@ func (s *Service) credentialStatusFromRecord(record pebblestore.AuthCredentialRe
 		status.HasAccountID = strings.TrimSpace(record.AccountID) != ""
 	case pebblestore.AuthTypeAPI:
 		status.Last4 = last4(record.APIKey)
+	case pebblestore.AuthTypeADC:
+		status.GoogleProject = record.GoogleProject
+		status.GoogleLocation = record.GoogleLocation
 	}
 	return status
 }
