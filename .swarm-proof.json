@@ -1,4 +1,0 @@
-{
-  "command": "bash scripts/test-app-runs-temp.sh",
-  "files": ["scripts/test-app-runs-temp.sh"]
-}
