@@ -276,3 +276,7 @@ The configuration keys alone do not connect the daemon's Application Default
 Credentials (machine service account or workload identity) to the provider.
 Live IAM, image readiness and cancellation/cleanup qualification remain necessary
 before operational use.
+
+### First live landing
+
+The first landing that ran its checks on Cloud Build was recorded on 2026-10-16; the landing's delivery record shows `environment: cloudbuild:<build id>` and the build appears in the project's Cloud Build history.

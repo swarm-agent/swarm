@@ -8,6 +8,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Fix Cloud Build's zero timeout default to use the folder check timeout plus five minutes (capped at 24 hours), align configuration checks, and report missing configuration fields. Docs impact: docs/runners.md
 
+- docs(runners): record the first live Cloud Build landing. Docs impact: docs/runners.md
 - Automatically re-queue stopped landing jobs after completed fix rounds with a new head, preserving bounded send-backs and reporting exhausted rounds. Docs impact: none.
 - Wire Cloud Build ADC clients at daemon startup, add `swarmd config cloudbuild-check`, preserve check durations and cancel failed uploads before cleanup. Docs impact: docs/runners.md
 
