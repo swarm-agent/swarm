@@ -32,6 +32,7 @@ type ReviewPipeline struct {
 	Findings      string `json:"findings,omitempty"`
 	Next          string `json:"next"`
 	Rebase        bool   `json:"rebase,omitempty"`
+	FollowupRunID string `json:"followup_run_id,omitempty"`
 }
 
 func pipelineKey(account, job string) string {
@@ -49,7 +50,11 @@ func (c *controlMCPCall) emitPipeline(worker, run string, refs controlMCPJobRefs
 	if state.Next == "review_failed" {
 		severity = store.SignalSeverityWarning
 	}
-	err := c.signalPublishDurable(controlMCPJobWorker, worker, run, refs, "job."+state.Next, severity, "Review pipeline: "+state.Next, map[string]string{"head": state.Head, "findings": state.Findings, "reviewer_job_id": state.ReviewerJobID, "send_backs": fmt.Sprint(state.Round)})
+	receiptRound := fmt.Sprint(state.Round)
+	if state.FollowupRunID != "" {
+		receiptRound += ":" + state.FollowupRunID
+	}
+	err := c.signalPublishDurable(controlMCPJobWorker, worker, run, refs, "job."+state.Next, severity, "Review pipeline: "+state.Next, map[string]string{"head": state.Head, "findings": state.Findings, "reviewer_job_id": state.ReviewerJobID, "send_backs": receiptRound})
 	if err != nil {
 		return pipelineReceiptError{err}
 	}
@@ -81,11 +86,13 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		}
 		return c.emitPipeline(worker, run, refs, state)
 	}
-	if state.Next == "review_exhausted" || (state.Next == "review_failed" && state.Head == head) {
+	followup := completedPublishFollowup(refs)
+	if state.Next == "review_exhausted" || (state.Next == "review_failed" && state.Head == head && (followup == "" || followup == state.FollowupRunID)) {
 		return false, nil
 	}
 	if state.Next == "review_failed" {
-		// A failed admission is terminal for that head, not for future commits.
+		// A failed admission is terminal for this head and follow-up, not a
+		// later completed follow-up or future commits.
 		state.Next, state.ReviewerJobID = "", ""
 	}
 	review, err := c.server.sessions.Store().WorkerStore().CurrentValidJobReview(principal.AccountScopeID, worker, run, head)
@@ -142,14 +149,28 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		state.Rebase = true
 		brief += "\nRebase-scoped review: review only the conflict resolution and confirm the range-diff against the previously reviewed commits."
 	}
-	response, err := controlMCPGiveJob(c, map[string]any{"worker": "reviewer", "project": refs.projectID, "workspace": rule.Folder, "review_job": job, "brief": brief, "idempotency_key": "pipeline-review-" + run + "-" + head})
+	requestID := "pipeline-review-" + run + "-" + head
+	if followup != "" {
+		requestID += "-" + followup
+	}
+	response, err := controlMCPGiveJob(c, map[string]any{"worker": "reviewer", "project": refs.projectID, "workspace": rule.Folder, "review_job": job, "brief": brief, "idempotency_key": requestID})
 	if err != nil {
 		return false, err
 	}
 	state.Head, state.Verdict = head, ""
+	state.FollowupRunID = followup
 	state.ReviewerJobID = controlMCPString(controlMCPMap(response), "job_id")
 	if state.ReviewerJobID == "" {
 		return false, fmt.Errorf("pipeline review admission returned no job id")
 	}
 	return false, save("review_started")
+}
+
+// completedPublishFollowup is the durable execution identity, not the original
+// worker job ID (which stays unchanged across follow-ups).
+func completedPublishFollowup(refs controlMCPJobRefs) string {
+	if controlMCPString(refs.run, "followup_status") != "completed" {
+		return ""
+	}
+	return controlMCPString(refs.run, "followup_run_id")
 }

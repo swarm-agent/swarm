@@ -526,6 +526,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 			}
 			chain.Head = controlMCPString(result, "head")
 			chain.Next = "review_failed"
+			chain.FollowupRunID = completedPublishFollowup(refs)
 			chain.Findings = err.Error()
 			if writeErr := p.state.PutJSON(key, chain); writeErr != nil {
 				return writeErr
