@@ -114,6 +114,10 @@ func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, accou
 	if !ok || rule.Mode != "land" {
 		return errors.New("queued folder no longer has a land rule")
 	}
+	// Both automatic and explicit deliveries execute as the daemon owner.
+	// internalCall installs that principal on its request, not on the original
+	// caller context. Carry it through admission, preparation, checks and Git.
+	ctx = c.request.Context()
 	return q.Process(ctx, account, folder, publish.QueueHooks{
 		Admit: p.server.admitLanding,
 		Queued: func(ctx context.Context, e publish.Entry) error {
