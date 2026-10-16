@@ -292,14 +292,33 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 	if err != nil {
 		return fail(err)
 	}
+	script := cloudBuildScriptWithCache(p.Config.Bucket, e.prefix, sha, p.cacheKey(spec))
+	scriptSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+	if err := p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"script.sh", strings.NewReader(script)); err != nil {
+		return fail(err)
+	}
+	checkScriptSHAs := make([]string, 0)
+	if len(spec.Checks) > 1 {
+		checkScriptSHAs = make([]string, len(spec.Checks))
+		for i := range spec.Checks {
+			prefix := fmt.Sprintf("%schecks/%d/", e.prefix, i)
+			script := cloudBuildCheckScript(p.Config.Bucket, e.prefix, sha, p.cacheKey(spec), prefix, i, i == 0)
+			checkScriptSHAs[i] = fmt.Sprintf("%x", sha256.Sum256([]byte(script)))
+			if err := p.Storage.Put(uploadCtx, p.Config.Bucket, prefix+"script.sh", strings.NewReader(script)); err != nil {
+				return fail(err)
+			}
+		}
+	}
 	request, err := json.Marshal(struct {
-		Definition Definition `json:"definition"`
-		Checks     []string   `json:"checks"`
-		Timeout    int        `json:"timeout"`
-		Base       string     `json:"base"`
-		Head       string     `json:"head"`
-		SHA256     string     `json:"sha256"`
-	}{spec.Definition, spec.Checks, int(spec.CheckTimeout / time.Second), spec.BaseCommit, spec.Commit, sha})
+		Definition        Definition `json:"definition"`
+		Checks            []string   `json:"checks"`
+		Timeout           int        `json:"timeout"`
+		Base              string     `json:"base"`
+		Head              string     `json:"head"`
+		SHA256            string     `json:"sha256"`
+		ScriptSHA256      string     `json:"script_sha256"`
+		CheckScriptSHA256 []string   `json:"check_script_sha256,omitempty"`
+	}{spec.Definition, spec.Checks, int(spec.CheckTimeout / time.Second), spec.BaseCommit, spec.Commit, sha, scriptSHA, checkScriptSHAs})
 	if err != nil {
 		return fail(err)
 	}
@@ -317,8 +336,7 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 			wg.Add(1)
 			go func(i int, child *cloudEnvironment) {
 				defer wg.Done()
-				script := cloudBuildCheckScript(p.Config.Bucket, e.prefix, sha, p.cacheKey(spec), child.prefix, i, i == 0)
-				build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-c", strings.ReplaceAll(script, "$", "$$")}}}})
+				build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: cloudBuildStepArgs(p.Config.Bucket, child.prefix, checkScriptSHAs[i])}}})
 				if err == nil && build.ID == "" {
 					err = fmt.Errorf("Cloud Build returned no build ID")
 				}
@@ -338,7 +356,7 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 		}
 		return e, nil
 	}
-	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: cloudBuildCachedStepArgs(p.Config.Bucket, e.prefix, sha, p.cacheKey(spec))}}})
+	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: cloudBuildStepArgs(p.Config.Bucket, e.prefix, scriptSHA)}}})
 	if err != nil {
 		return fail(err)
 	}
@@ -475,12 +493,8 @@ func (p CloudBuild) cacheKey(spec Spec) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(p.Config.Project+"\x00"+spec.Account+"\x00"+spec.Folder)))
 }
 
-// cloudBuildCachedStepArgs escapes Cloud Build substitutions, not shell syntax.
-// Cloud Build removes the extra dollars before bash receives the original script.
-func cloudBuildCachedStepArgs(bucket, prefix, sha, key string) []string {
-	return []string{"-c", strings.ReplaceAll(cloudBuildScriptWithCache(bucket, prefix, sha, key), "$", "$$")}
-}
-
-func cloudBuildStepArgs(bucket, prefix, sha string) []string {
-	return []string{"-c", strings.ReplaceAll(cloudBuildScript(bucket, prefix, sha), "$", "$$")}
+// cloudBuildStepArgs escapes Cloud Build substitutions, not shell syntax.
+// Cloud Build removes the extra dollars before bash receives the bootstrap.
+func cloudBuildStepArgs(bucket, prefix, scriptSHA string) []string {
+	return []string{"-c", strings.ReplaceAll(cloudBuildBootstrap(bucket, prefix, scriptSHA), "$", "$$")}
 }

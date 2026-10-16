@@ -75,11 +75,11 @@ assert len(calls) == before
 	}
 }
 
-// Purpose: Cloud Build substitution escaping must retain the exact script,
-// including cache code, without consuming shell dollars.
+// Purpose: Cloud Build substitution escaping must retain the exact bootstrap;
+// the cache runner is now uploaded separately and never undergoes substitution.
 func TestCloudBuildCacheDollarRoundTrip(t *testing.T) {
-	script := cloudBuildScriptWithCache("bucket", "landing/", "sha", "folder")
-	args := cloudBuildCachedStepArgs("bucket", "landing/", "sha", "folder")
+	script := cloudBuildBootstrap("bucket", "landing/", "sha")
+	args := cloudBuildStepArgs("bucket", "landing/", "sha")
 	if len(args) != 2 || strings.ReplaceAll(args[1], "$$", "$") != script {
 		t.Fatal("substitution changed script")
 	}
