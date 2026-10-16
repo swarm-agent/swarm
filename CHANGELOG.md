@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Preserve folder Git identity in worker clones and require sandbox-home identity setup for commits. Docs impact: none.
+- Assess worker delivery from isolated job clones, preserve linked-worktree assessment, and log unavailable automatic-delivery reasons. Docs impact: none.
 
 - Preserve landing check failure lines with context in coder send-backs and stored check results instead of only the passing output tail. Docs impact: none.
 - Admit agents by RAM without default CPU quotas or command slots, and cap landings across folders by CPU with `landing_max_concurrent`. Docs impact: containers/headless/app/README.md.

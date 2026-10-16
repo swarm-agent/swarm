@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
@@ -67,6 +68,7 @@ type deliveryInspector struct {
 	// Instance-local seam for deterministic concurrent-mutation tests, never a
 	// substitute Git implementation and never used by production callers.
 	beforeFinish func()
+	targetRepo   string
 }
 
 func (d *deliveryInspector) run(path string, args ...string) (string, error) {
@@ -114,6 +116,20 @@ func (d *deliveryInspector) lane(path, branch string) (head, common string, err 
 		return "", "", &laneBranchMismatch{actual: strings.TrimPrefix(lines[3], "refs/heads/"), target: branch}
 	}
 	return lines[2], gitstatus.NormalizePath(lines[1]), nil
+}
+
+// cloneIdentity mirrors managed-clone provenance checks using the inspector's
+// bounded, sandbox-routed Git. Durable ownership is authenticated by the caller.
+func (d *deliveryInspector) cloneIdentity(in TaskDeliveryInput) bool {
+	root, err := worktreeCacheRoot(in.TargetPath)
+	if err != nil || filepath.Dir(filepath.Clean(in.SourcePath)) != root {
+		return false
+	}
+	if err := noSymlinkDirectory(filepath.Join(in.SourcePath, ".git")); err != nil {
+		return false
+	}
+	origin, err := d.run(in.SourcePath, "config", "--get", "remote.origin.url")
+	return err == nil && sameCleanPath(origin, in.TargetPath)
 }
 
 // targetLane preserves checkout ownership checks but observes the forge's
@@ -214,6 +230,9 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	if gitstatus.NormalizePath(in.SourcePath) == gitstatus.NormalizePath(in.TargetPath) {
 		return a
 	}
+	if _, err := os.Stat(in.SourcePath); errors.Is(err, os.ErrNotExist) {
+		return d.inspectionFailure(a, "clone_missing", "Captured job checkout is missing")
+	}
 	source, repo, err := d.lane(in.SourcePath, a.SourceBranch)
 	if err != nil {
 		return d.initialLaneFailure(a, err)
@@ -222,9 +241,10 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	if err != nil {
 		return d.initialLaneFailure(a, err)
 	}
-	if repo != targetRepo {
+	if repo != targetRepo && !d.cloneIdentity(in) {
 		return d.inspectionFailure(a, a.ReasonCode, a.Reason)
 	}
+	d.targetRepo = targetRepo
 	a.SourceOID, a.TargetOID = source, target
 	key := deliveryKey{a.AccountID, a.TaskID, a.SessionID, a.AttemptID, a.WorkspaceID, a.BaseOID, source, target, a.SourceBranch, a.TargetBranch, gitstatus.NormalizePath(in.SourcePath), gitstatus.NormalizePath(in.TargetPath), a.TaskRevision, a.WorkspaceGeneration, in.PreferPublishTarget}
 	deliveryFlights.Lock()
@@ -306,7 +326,7 @@ func (d *deliveryInspector) finish(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	target, targetRepo, e2 := d.targetLane(in, a.TargetBranch)
 	// Stale only on observed movement: both reads succeeded and an OID or
 	// repository differs, or a read saw another root or branch.
-	moved := (e1 == nil && e2 == nil && (source != a.SourceOID || target != a.TargetOID || sourceRepo != repo || targetRepo != repo)) || errors.Is(e1, errLaneMoved) || errors.Is(e2, errLaneMoved)
+	moved := (e1 == nil && e2 == nil && (source != a.SourceOID || target != a.TargetOID || sourceRepo != repo || targetRepo != d.targetRepo)) || errors.Is(e1, errLaneMoved) || errors.Is(e2, errLaneMoved)
 	if moved {
 		return deliveryUnknown(a, "heads_changed", "Heads moved during assessment; refresh", "stale")
 	}
@@ -329,8 +349,8 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	if err != nil || base != a.BaseOID {
 		return fail()
 	}
-	ancestor := func(left, right string) (bool, error) {
-		_, err := d.run(in.SourcePath, "merge-base", "--is-ancestor", left, right)
+	ancestorAt := func(path, left, right string) (bool, error) {
+		_, err := d.run(path, "merge-base", "--is-ancestor", left, right)
 		if err == nil {
 			return true, nil
 		}
@@ -340,6 +360,7 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 		}
 		return false, err
 	}
+	ancestor := func(left, right string) (bool, error) { return ancestorAt(in.SourcePath, left, right) }
 	if a.SourceOID == a.BaseOID {
 		return set("empty", "no_commits", "No commits since captured base")
 	}
@@ -350,7 +371,19 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	if !baseAncestor {
 		return set("ambiguous", "base_not_ancestor", "Recorded base is not an ancestor of source")
 	}
-	integrated, err := ancestor(a.SourceOID, a.TargetOID)
+	// Independent clones need not contain a target advanced since allocation.
+	// Test integration in the target only when it actually has the source object;
+	// a missing object cannot be an ancestor in this full repository.
+	integrated := false
+	_, sourceOnTarget := d.run(in.TargetPath, "rev-parse", "--verify", "--quiet", a.SourceOID+"^{commit}")
+	if sourceOnTarget == nil {
+		integrated, err = ancestorAt(in.TargetPath, a.SourceOID, a.TargetOID)
+	} else {
+		var exit *exec.ExitError
+		if !errors.As(sourceOnTarget, &exit) || exit.ExitCode() != 1 {
+			return fail()
+		}
+	}
 	if err != nil {
 		return fail()
 	}
@@ -387,7 +420,7 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 	// Exact full-tree equality is intentionally stricter than patch matching.
 	// Historical matches (including reverted matches) never authorize merging.
 	sourceTree, e1 := d.run(in.SourcePath, "rev-parse", a.SourceOID+"^{tree}")
-	targetTree, e2 := d.run(in.SourcePath, "rev-parse", a.TargetOID+"^{tree}")
+	targetTree, e2 := d.run(in.TargetPath, "rev-parse", a.TargetOID+"^{tree}")
 	if e1 != nil || e2 != nil {
 		return fail()
 	}
@@ -395,7 +428,7 @@ func (d *deliveryInspector) assess(in TaskDeliveryInput, a pebblestore.TaskDeliv
 		a.AllowedActions = []string{"recover_integrate"}
 		return set("history_equivalent", "current_tree_equal", "Current trees match; original source history is not integrated")
 	}
-	baseOnTarget, err := ancestor(a.BaseOID, a.TargetOID)
+	baseOnTarget, err := ancestorAt(in.TargetPath, a.BaseOID, a.TargetOID)
 	if err != nil {
 		return fail()
 	}

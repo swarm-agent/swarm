@@ -434,6 +434,9 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		return p.skip(sig, "report-only job")
 	}
 	if autoPublishNext(status, result) == autoPublishSkip {
+		if result["delivery_state"] == "unavailable" {
+			return p.skip(sig, fmt.Sprintf("status %q: assessment unavailable (%s): %s", status, controlMCPString(result, "delivery_reason_code"), controlMCPString(result, "delivery_reason")))
+		}
 		return p.skip(sig, fmt.Sprintf("status %q: job is not deliverable", status))
 	}
 	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)

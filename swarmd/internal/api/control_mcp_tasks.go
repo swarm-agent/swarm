@@ -291,6 +291,10 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 	if state, _ := assessment["state"].(string); state != "" {
 		out["delivery_state"] = state
 	}
+	if out["delivery_state"] == "unavailable" {
+		out["delivery_reason_code"] = assessment["reason_code"]
+		out["delivery_reason"] = assessment["reason"]
+	}
 	if dirty, _ := assessment["source_dirty"].(bool); dirty {
 		out["uncommitted_changes"] = controlMCPUncommittedFiles(assessment["source_dirty_files"])
 	}
