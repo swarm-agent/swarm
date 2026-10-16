@@ -17,6 +17,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Have worker Coders commit without running builds, tests or linters, leaving validation to the landing step once per landing and returning failures for fixes. Docs impact: docs/checkpoints/remote-workers-and-mailbox-roadmap.md now assigns build/test execution to landing.
 - Limit reviewer verdicts to fulfillment of the job brief and unrequested behavior changes; leave all builds and tests to landing after review. Docs impact: docs/reviewer.md
 - Move administrator workspace visibility, publishing policy, and idle shutdown commands into Go `swarmctl`; installer compatibility commands forward to it, and non-root calls name the required sudo command. Docs impact: update docs/checkpoints/swarm-control.md and plugins/swarm/skills/{setup,using-swarm}/SKILL.md.
+- Isolate worker and reviewer Git metadata and objects in full job clones; fetch prepared commits during serialized landing, retain Desktop worktrees, and discover/remove clones without source worktree registrations. Docs impact: containers/headless/app/README.md explains clone isolation and landing.
 
 - Allow updates from older daemons without the drain endpoint by waiting for an explicit idle busy status within the configured drain budget; keep failures blocked and skip cleanup without a drain generation. Docs impact: containers/headless/app/README.md documents the compatibility path and its admission limitation.
 

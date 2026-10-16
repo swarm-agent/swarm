@@ -137,6 +137,11 @@ func finishRemovalWithWait(entry string, receipt removalReceipt, wait time.Durat
 		if _, err := os.Lstat(checkout); !errors.Is(err, os.ErrNotExist) {
 			return errors.New("both live and trash checkout exist")
 		}
+		if info, err := os.Lstat(filepath.Join(receipt.Path, ".git")); err == nil && info.IsDir() {
+			if err := os.WriteFile(filepath.Join(entry, "clone"), nil, 0600); err != nil {
+				return err
+			}
+		}
 		if err := os.Rename(receipt.Path, checkout); err != nil {
 			return err
 		}
@@ -152,8 +157,12 @@ func finishRemovalWithWait(entry string, receipt removalReceipt, wait time.Durat
 			return err
 		}
 	}
-	if err := removeWorktreeRegistration(receipt.Source, receipt.Path); err != nil {
-		return err
+	_, cloneMarkerErr := os.Stat(filepath.Join(entry, "clone"))
+	cloneGit, cloneGitErr := os.Lstat(filepath.Join(checkout, ".git"))
+	if cloneMarkerErr != nil && !(cloneGitErr == nil && cloneGit.IsDir()) {
+		if err := removeWorktreeRegistration(receipt.Source, receipt.Path); err != nil {
+			return err
+		}
 	}
 	// Go removal never runs under the Git command deadline. If the caller's
 	// generous wait expires, deletion continues and the receipt remains retryable.
@@ -180,6 +189,9 @@ func finishRemovalWithWait(entry string, receipt removalReceipt, wait time.Durat
 				err = anchor.RemoveAll("admin-entry")
 				if err == nil {
 					err = anchor.RemoveAll("renamed")
+				}
+				if err == nil {
+					err = anchor.RemoveAll("clone")
 				}
 				if err == nil {
 					err = anchor.RemoveAll("receipt.json")

@@ -282,7 +282,7 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 			return nil
 		}
 	}
-	return prepareLandWorktreeWithExecutors(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
+	err = prepareLandWorktreeWithExecutors(ctx, rule, e, path, env.Definition.Checks, env.Definition.CheckTimeoutMinutes,
 		func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
 			return m.ExecDaemon(ctx, scope, req)
 		}, func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
@@ -290,6 +290,19 @@ func (c *controlMCPCall) prepareLand(ctx context.Context, rule publish.Rule, e *
 		}, publish.Update, func(head string) error {
 			return c.requireLandReview(kind, a, b, head)
 		})
+	if err != nil {
+		return err
+	}
+	// Only serialized landing imports job objects into the folder. Fetch an
+	// exact validated head, so a moving clone HEAD cannot change what is landed.
+	res, err := m.ExecDaemon(ctx, scope, sandbox.ExecRequest{Command: []string{"git", "fetch", "--no-tags", "--", path, e.Request.Head}, WorkingDir: rule.Folder, Timeout: 2 * time.Minute, MaxTimeout: 2 * time.Minute, MaxOutput: 4096})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return errors.New("cannot fetch prepared job commit for landing")
+	}
+	return nil
 }
 
 // prepareLandWorktree keeps preparation and its verified command boundary testable.
@@ -318,6 +331,12 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			return "", -1, err
 		}
 		return res.Stdout, res.ExitCode, nil
+	}
+	// The updated base is in the folder, not in the worker's independent repo.
+	if rule.Folder != "" {
+		if _, code, err := git("fetch", "--no-tags", "--", rule.Folder, base.Commit); err != nil || code != 0 {
+			return errors.New("cannot fetch landing base into job clone")
+		}
 	}
 	dirty, code, err := git("status", "--porcelain")
 	if err != nil {

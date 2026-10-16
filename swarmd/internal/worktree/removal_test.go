@@ -113,10 +113,17 @@ func TestRemovalAdminCrashRecovery(t *testing.T) {
 			}
 			git("init", "-b", "dev")
 			git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base")
-			a, err := (&Service{}).allocateReviewWorkspace(repo, "admin-crash", git("rev-parse", "HEAD"))
+			// Legacy Desktop worktrees still need registration crash recovery;
+			// reviewer allocation now creates a clone with no registration.
+			path, err := deterministicSessionWorktreePath(repo, sessionWorkspaceID("admin-crash"))
 			if err != nil {
 				t.Fatal(err)
 			}
+			if err := ensureWorktreeParent(repo); err != nil {
+				t.Fatal(err)
+			}
+			git("worktree", "add", "--detach", path, "HEAD")
+			a := Allocation{WorkspacePath: path}
 			data, err := os.ReadFile(filepath.Join(a.WorkspacePath, ".git"))
 			if err != nil {
 				t.Fatal(err)

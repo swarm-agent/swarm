@@ -126,8 +126,11 @@ owner (with Swarm's group), so what agents create stays the person's, while
 Swarm keeps running as `swarm`. Then register the folder in place
 (`swarm_add_workspace`, nothing copied), group folders into a project
 (`swarm_create_project`) so Swarm writes its `project.md`, and work through
-the project's orchestrator once it is ready. Agents get worktrees of the
-repository and their commits land in it. Never point work at a freshly
+the project's orchestrator once it is ready. Worker jobs and reviewers get
+independent full clones in the managed checkout directory. These use no shared
+object alternates or hardlinks, so job commits and source garbage collection
+are independent. Serialized landing fetches the prepared job commit before the
+fast-forward-only land command. Desktop and plan sessions still use worktrees. Never point work at a freshly
 initialised, empty repository in place of their code; `swarm_create_workspace`
 is only for a new project started from scratch. System folders, settings
 folders (any `.name` folder), Swarm's storage, the whole home folder and

@@ -347,6 +347,9 @@ func (s *Service) allocateSessionWorkspaceWithBranchMode(workspacePath string, u
 func (s *Service) allocateSessionWorkspaceWithOptions(workspacePath string, useCurrentBranch bool, baseBranch, configuredBranchName, sessionID string, exactBranchName bool, ownedScopes []string, sparseTask bool, initialize ...func(string) error) (Allocation, error) {
 	workspacePath = strings.TrimSpace(workspacePath)
 	sessionID = strings.TrimSpace(sessionID)
+	if strings.HasPrefix(sessionID, "worker-execution-") {
+		return s.allocateWorkerClone(workspacePath, useCurrentBranch, baseBranch, configuredBranchName, sessionID, exactBranchName, ownedScopes, sparseTask, initialize...)
+	}
 	if workspacePath == "" {
 		return Allocation{}, errors.New("workspace path is required")
 	}
@@ -835,7 +838,7 @@ func (s *Service) validateRepositoryLanePath(root, lane, expected, branch string
 	if err != nil {
 		return err
 	}
-	if laneRoot != root {
+	if laneRoot != root && !managedCloneIdentity(root, lane) {
 		return errors.New("task repository lane Git repository mismatch")
 	}
 	if !requireClean {
@@ -874,7 +877,14 @@ func (s *Service) RemoveIntegratedTaskWorkspace(parentPath, childPath, sessionID
 	if err != nil {
 		return fmt.Errorf("resolve parent repository for integrated worktree cleanup: %w", err)
 	}
-	expectedPath, err := deterministicSessionWorktreePath(parentRoot, sessionWorkspaceID(sessionID))
+	id := sessionWorkspaceID(sessionID)
+	if strings.HasPrefix(sessionID, "worker-execution-") {
+		id, err = workspaceIdentityForRequestedBranch(branchName)
+		if err != nil {
+			return err
+		}
+	}
+	expectedPath, err := deterministicSessionWorktreePath(parentRoot, id)
 	if err != nil {
 		return err
 	}
@@ -1222,6 +1232,21 @@ func (s *Service) ListManagedForPrincipal(principal identity.Principal, workspac
 			Managed:     true,
 		})
 	}
+	children, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	for _, child := range children {
+		path := filepath.Join(root, child.Name())
+		if !child.IsDir() || !managedCloneIdentity(repoRoot, path) {
+			continue
+		}
+		branch, err := currentBranch(path)
+		if err != nil {
+			return nil, err
+		}
+		managed = append(managed, ManagedWorktree{Path: path, WorkspaceID: child.Name(), Branch: branch, Detached: branch == "", Exists: true, Managed: true})
+	}
 	return managed, nil
 }
 
@@ -1460,7 +1485,14 @@ func (s *Service) VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionI
 	if err != nil {
 		return TaskWorkspaceState{}, fmt.Errorf("resolve parent repository: %w", err)
 	}
-	expectedPath, err := deterministicSessionWorktreePath(parentRoot, sessionWorkspaceID(sessionID))
+	id := sessionWorkspaceID(sessionID)
+	if strings.HasPrefix(sessionID, "worker-execution-") {
+		id, err = workspaceIdentityForRequestedBranch(branchName)
+		if err != nil {
+			return TaskWorkspaceState{}, err
+		}
+	}
+	expectedPath, err := deterministicSessionWorktreePath(parentRoot, id)
 	if err != nil {
 		return TaskWorkspaceState{}, err
 	}
@@ -1484,7 +1516,7 @@ func (s *Service) VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionI
 		return TaskWorkspaceState{}, errors.New("child worktree is outside its expected private managed path")
 	}
 	childRoot, err := resolveRepositoryRoot(actualPath)
-	if err != nil || !sameCleanPath(childRoot, parentRoot) {
+	if err != nil || (!sameCleanPath(childRoot, parentRoot) && !managedCloneIdentity(parentRoot, actualPath)) {
 		return TaskWorkspaceState{}, errors.New("child worktree does not belong to the parent repository")
 	}
 	branchName = strings.TrimSpace(branchName)
@@ -1495,11 +1527,11 @@ func (s *Service) VerifyTaskIntegrationWorkspace(parentPath, childPath, sessionI
 		return TaskWorkspaceState{}, errors.New("child lineage requires full hexadecimal commit ids")
 	}
 	for label, commit := range map[string]string{"base": baseCommit, "head": headCommit} {
-		if _, err := runGit(parentRoot, "cat-file", "-e", commit+"^{commit}"); err != nil {
+		if _, err := runGit(actualPath, "cat-file", "-e", commit+"^{commit}"); err != nil {
 			return TaskWorkspaceState{}, fmt.Errorf("invalid child %s commit: %w", label, err)
 		}
 	}
-	branchHead, err := runGit(parentRoot, "rev-parse", "--verify", "refs/heads/"+branchName+"^{commit}")
+	branchHead, err := runGit(actualPath, "rev-parse", "--verify", "refs/heads/"+branchName+"^{commit}")
 	if err != nil || branchHead != headCommit {
 		return TaskWorkspaceState{}, errors.New("child branch does not resolve to its immutable recorded HEAD")
 	}

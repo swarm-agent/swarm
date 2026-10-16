@@ -32,7 +32,29 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 	if err != nil {
 		return Allocation{}, err
 	}
+	cloneSource := root
 	resolved, err := runGit(root, "rev-parse", "--verify", head+"^{commit}")
+	if err != nil && validCommitID(head) {
+		// Reviewed commits now live only in the coder clone, not the folder.
+		cache, cacheErr := worktreeCacheRoot(root)
+		if cacheErr != nil {
+			return Allocation{}, cacheErr
+		}
+		entries, readErr := os.ReadDir(cache)
+		if readErr != nil {
+			return Allocation{}, readErr
+		}
+		for _, entry := range entries {
+			candidate := filepath.Join(cache, entry.Name())
+			if !entry.IsDir() || !managedCloneIdentity(root, candidate) {
+				continue
+			}
+			if value, readErr := runGit(candidate, "rev-parse", "--verify", head+"^{commit}"); readErr == nil && value == head {
+				cloneSource, resolved, err = candidate, value, nil
+				break
+			}
+		}
+	}
 	if err != nil || resolved != head {
 		return Allocation{}, errors.New("review requires an exact commit")
 	}
@@ -64,7 +86,7 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 	if err := guardFile.Close(); err != nil {
 		return Allocation{}, err
 	}
-	_, allocationErr := runGitAllocationGuarded(root, nil, timeout, guard, "worktree", "add", "--detach", path, head)
+	_, allocationErr := runGitAllocationGuarded(root, nil, timeout, guard, "clone", "--no-local", "--no-checkout", "--", cloneSource, path)
 	if errors.Is(allocationErr, ErrAllocationWriterUnconfirmed) {
 		return Allocation{}, allocationErr
 	}
@@ -73,6 +95,14 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 	}
 	if err := allocationErr; err != nil {
 		return Allocation{}, errors.Join(fmt.Errorf("review checkout admission: %w", err), s.CleanupReviewAdmission(root, owner))
+	}
+	for _, args := range [][]string{{"fetch", "--no-tags", "--", cloneSource, head}, {"remote", "set-url", "origin", root}, {"checkout", "--detach", head}} {
+		if _, err := runGitAllocationTimeout(path, nil, timeout, args...); err != nil {
+			if errors.Is(err, ErrAllocationWriterUnconfirmed) {
+				return Allocation{}, err
+			}
+			return Allocation{}, errors.Join(err, s.CleanupReviewAdmission(root, owner))
+		}
 	}
 	return Allocation{WorkspacePath: path, RepoRoot: root, BaseCommit: head, BaseBranch: head, BranchName: "HEAD", WorkspaceID: sessionWorkspaceID(owner)}, nil
 }
