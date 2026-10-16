@@ -225,7 +225,9 @@ func TestRemovalQueueDrains(t *testing.T) {
 
 // Requirement: service-owned periodic recovery retries a failed deletion without
 // a caller rescan. Real Git/files and an unavailable source repository exercise
-// the transient registration failure boundary; Close must stop the worker.
+// the transient registration failure boundary for retained Desktop/plan worktrees
+// in finishRemovalWithWait; Close must stop the worker. Worker clones have no
+// source registration dependency (tested separately below).
 func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := filepath.Join(t.TempDir(), "repo")
@@ -242,10 +244,16 @@ func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
 	}
 	git("init", "-b", "dev")
 	git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base")
-	a, err := (&Service{}).allocateReviewWorkspace(repo, "ticker-retry", git("rev-parse", "HEAD"))
+	root, err := worktreeCacheRoot(repo)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately use a linked worktree: review allocation now returns a clone.
+	a := struct{ WorkspacePath string }{filepath.Join(root, "ticker-retry")}
+	git("worktree", "add", "--detach", a.WorkspacePath, "HEAD")
 	entry := filepath.Join(filepath.Dir(a.WorkspacePath), ".trash", filepath.Base(a.WorkspacePath))
 	if err := os.MkdirAll(entry, 0700); err != nil {
 		t.Fatal(err)
@@ -271,14 +279,19 @@ func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	// Serialize with the first failed pass before restoring the dependency.
-	removalMu.Lock()
-	if _, err := os.Stat(filepath.Join(entry, "receipt.json")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Rename(repo+"-offline", repo); err != nil {
-		t.Fatal(err)
-	}
-	removalMu.Unlock()
+	func() {
+		removalMu.Lock()
+		defer removalMu.Unlock()
+		if _, err := os.Stat(filepath.Join(entry, "receipt.json")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(entry, "checkout", ".git")); err != nil {
+			t.Fatal("failed registration cleanup must retain checkout:", err)
+		}
+		if err := os.Rename(repo+"-offline", repo); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	for {
 		if _, err := os.Lstat(entry); os.IsNotExist(err) {
 			break
@@ -293,5 +306,59 @@ func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
 	case <-s.trashDone:
 	default:
 		t.Fatal("recovery did not stop")
+	}
+}
+
+// Requirement: durable trash recovery must delete full worker clones without
+// consulting the source repository. Real Git/files exercise resumeTrashRoot and
+// finishRemovalWithWait with an unavailable source, preventing restoration of a
+// shared-registration dependency while asserting both checkout and receipt removal.
+func TestTrashRecoveryCloneWithOfflineSource(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v %s", err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-b", "dev")
+	git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base")
+	a, err := (&Service{}).allocateReviewWorkspace(repo, "offline-clone", git("rev-parse", "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(a.WorkspacePath, ".git"))
+	if err != nil || !info.IsDir() {
+		t.Fatal("expected independent clone", err)
+	}
+	entry := filepath.Join(filepath.Dir(a.WorkspacePath), ".trash", filepath.Base(a.WorkspacePath))
+	if err := os.MkdirAll(entry, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(removalReceipt{repo, a.WorkspacePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entry, "receipt.json"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Move within the temporary directory so test cleanup also owns offline data.
+	offline := filepath.Join(t.TempDir(), "offline")
+	if err := os.Rename(repo, offline); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumeTrashRoot(filepath.Dir(filepath.Dir(a.WorkspacePath))); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{a.WorkspacePath, entry} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("cleanup left %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(offline, ".git")); err != nil {
+		t.Fatal("cleanup changed source repository:", err)
 	}
 }
