@@ -493,8 +493,12 @@ func TestVertexRefusesWhatItCannotSend(t *testing.T) {
 	})
 	request := provideriface.Request{Model: "gemini-3.5-flash-lite", Input: []map[string]any{{"role": "user", "content": "hello"}}}
 
-	media := request
-	media.MediaContract = provideriface.SessionMediaContract{Hash: "contract"}
+	// Every run attaches a media contract; a conversation without media must
+	// still be answered (only media actually present is refused).
+	contractOnly := request
+	contractOnly.MediaContract = provideriface.SessionMediaContract{Hash: "contract"}
+	media := contractOnly
+	media.Input = []map[string]any{{"role": "user", "content": []any{map[string]any{"type": "session_media", "media": provideriface.SessionMediaPayload{AssetID: "a", Modality: "image", MIMEType: "image/png", Size: 1, Bytes: []byte{1}}}}}}
 	if _, err := runner.CreateResponse(ctx, media); err == nil || !strings.Contains(err.Error(), "media") {
 		t.Fatalf("media err = %v", err)
 	}
@@ -512,6 +516,12 @@ func TestVertexRefusesWhatItCannotSend(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("vertex calls = %d, want none", calls)
+	}
+	meta.mu.Lock()
+	meta.status = http.StatusOK
+	meta.mu.Unlock()
+	if _, err := runner.CreateResponse(ctx, contractOnly); err != nil || calls != 1 {
+		t.Fatalf("contract without media: err = %v calls = %d", err, calls)
 	}
 }
 

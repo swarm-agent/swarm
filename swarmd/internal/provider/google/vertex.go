@@ -284,6 +284,8 @@ func (r *VertexRunner) CreateResponseStreaming(ctx context.Context, req provider
 // prepare resolves the account's project and location and builds the request.
 // Vertex has no Gemini API service_tier field, and session media is not
 // declared for this surface yet, so either is refused rather than dropped.
+// The run attaches a media contract to every request; only media actually in
+// the conversation is refused.
 func (r *VertexRunner) prepare(ctx context.Context, req provideriface.Request) (generateContentSurface, string, googleRequest, error) {
 	if r == nil || r.credentials == nil {
 		return generateContentSurface{}, "", googleRequest{}, errors.New("vertex runner credentials are not configured")
@@ -296,7 +298,9 @@ func (r *VertexRunner) prepare(ctx context.Context, req provideriface.Request) (
 	if err != nil {
 		return generateContentSurface{}, "", googleRequest{}, err
 	}
-	if strings.TrimSpace(req.MediaContract.Hash) != "" {
+	if _, media, err := buildGoogleContentsWithMedia(req); err != nil {
+		return generateContentSurface{}, "", googleRequest{}, err
+	} else if len(media) > 0 {
 		return generateContentSurface{}, "", googleRequest{}, errors.New("vertex does not accept session media yet")
 	}
 	requestPayload, err := buildGoogleRequest(req)
