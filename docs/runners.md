@@ -224,8 +224,11 @@ never put a credential key path in `swarm.conf`. Missing credentials fail explic
 
 For deployment, enable the Cloud Build API and provision a private storage bucket.
 The hub machine identity needs `roles/cloudbuild.builds.editor` and
-`roles/storage.objectAdmin` on that bucket. The build service account needs bucket
-object access and `roles/logging.logWriter`; when selecting a service account,
+`roles/storage.objectAdmin` and `roles/storage.legacyBucketReader` on that bucket.
+Grant the build service account `roles/storage.objectAdmin` and
+`roles/storage.legacyBucketReader` on the bucket as well: Cloud Build checks the
+logs bucket metadata (`storage.buckets.get`) when `logsBucket` is set.
+The build service account also needs `roles/logging.logWriter`; when selecting a service account,
 the submitting identity also needs permission to act as that account.
 
 Choose `environment_provider = gcp-cloudbuild`
@@ -237,8 +240,8 @@ then local execution on infrastructure failure. Check failures are sent back,
 not retried locally. Delivery records identify `cloudbuild:BUILD_ID`.
 
 Run `swarmd config cloudbuild-check` under the daemon's identity and environment
-to verify configured bucket write/delete access and Cloud Build list access. It
-writes one small uniquely named object, deletes it, and lists builds without
+to verify configured bucket metadata read, write/delete access and Cloud Build list access. It
+reads bucket metadata, writes one small uniquely named object, deletes it, and lists builds without
 creating any. It prints `OK` or the API error. This does not verify build image
 readiness, build service-account permissions, or permission to create builds.
 Region defaults to `global`; `cloudbuild_timeout_minutes` defaults to `0`, meaning

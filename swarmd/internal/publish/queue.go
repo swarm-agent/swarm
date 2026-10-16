@@ -43,6 +43,7 @@ type ReviewEquivalence struct {
 }
 
 type Entry struct {
+	EnvironmentNote     string                               `json:"environment_note,omitempty"`
 	Environment         string                               `json:"environment,omitempty"`
 	Proof               *Proof                               `json:"proof,omitempty"`
 	ValidateReview      func(head, patch, base string) error `json:"-"`

@@ -52,6 +52,16 @@ type GoogleREST struct {
 	Project, Region string
 }
 
+type googleAPIError struct {
+	method string
+	status int
+	body   string
+}
+
+func (e *googleAPIError) Error() string {
+	return fmt.Sprintf("Google API %s: HTTP %d: %s", e.method, e.status, e.body)
+}
+
 func (g GoogleREST) call(ctx context.Context, method, endpoint string, body io.Reader, limit int64) ([]byte, error) {
 	if g.Client == nil {
 		return nil, fmt.Errorf("Google ADC HTTP client unavailable")
@@ -102,7 +112,7 @@ func (g GoogleREST) call(ctx context.Context, method, endpoint string, body io.R
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
 			return data, nil
 		}
-		apiErr := fmt.Errorf("Google API %s: HTTP %d: %s", method, res.StatusCode, strings.TrimSpace(string(data)))
+		apiErr := &googleAPIError{method: method, status: res.StatusCode, body: strings.TrimSpace(string(data))}
 		if attempt >= 4 || (res.StatusCode != 429 && res.StatusCode < 500) {
 			return nil, apiErr
 		}

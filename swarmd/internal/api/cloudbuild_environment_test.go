@@ -93,7 +93,7 @@ func (f *cloudBuildFake) Get(context.Context, string) (environment.Build, error)
 // infrastructure errors. Fake remote clients keep this narrow integration test
 // hermetic; it does not claim to execute Google's service or the generated script.
 func TestCloudBuildEnvironmentLanding(t *testing.T) {
-	for _, mode := range []string{"success", "build_failure", "check_failure", "missing", "auto_missing", "upload_failure", "create_failure", "cancelled", "late_upload"} {
+	for _, mode := range []string{"success", "build_failure", "check_failure", "missing", "auto_missing", "auto_create_failure", "upload_failure", "create_failure", "cancelled", "late_upload"} {
 		t.Run(mode, func(t *testing.T) {
 			db, err := pebblestore.Open(t.TempDir())
 			if err != nil {
@@ -115,7 +115,7 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 				storage.lateUpload = true
 			case "upload_failure":
 				storage.failPut = true
-			case "create_failure":
+			case "create_failure", "auto_create_failure":
 				builds.fail = true
 			case "cancelled":
 				builds.status = "CANCELLED"
@@ -123,7 +123,7 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 			cloud := environment.CloudBuild{Store: db, Storage: storage, Builds: builds, Config: environment.CloudBuildConfig{Project: "test-project", Bucket: "test-bucket", TimeoutMinutes: 1}}
 			var p environment.Provider = cloud
 			local := &recordingLandProvider{}
-			if mode == "auto_missing" {
+			if mode == "auto_missing" || mode == "auto_create_failure" {
 				p = environment.Auto{Remote: cloud, Local: landExecutorProvider{local.Exec}}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -143,7 +143,7 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 				return publish.Base{Commit: head, Branch: "dev"}, nil
 			})
 			switch mode {
-			case "success", "auto_missing":
+			case "success", "auto_missing", "auto_create_failure":
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -195,8 +195,17 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 			if mode == "success" && entry.Environment != "cloudbuild:test-build" {
 				t.Fatalf("environment=%q", entry.Environment)
 			}
-			if mode == "auto_missing" && entry.Environment != "local" {
-				t.Fatalf("fallback=%q", entry.Environment)
+			// Purpose: the landing receipt must retain Acquire and Exec fallback
+			// reasons, not merely say local; this exercises the receipt owner.
+			if mode == "auto_missing" || mode == "auto_create_failure" {
+				if entry.Environment != "local" || !strings.Contains(entry.EnvironmentNote, "cloud build unavailable:") {
+					t.Fatalf("fallback=%q note=%q", entry.Environment, entry.EnvironmentNote)
+				}
+				if mode == "auto_create_failure" && !strings.Contains(entry.EnvironmentNote, "create failed") {
+					t.Fatalf("lost create failure: %q", entry.EnvironmentNote)
+				}
+			} else if entry.EnvironmentNote != "" {
+				t.Fatalf("unexpected fallback note: %q", entry.EnvironmentNote)
 			}
 			if len(builds.build.Steps) > 0 {
 				if builds.build.Steps[0].Args[0] != "-c" {

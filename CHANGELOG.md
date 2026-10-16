@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Expose bounded, redacted landing fallback reasons in logs and job environment notes; check Cloud Build bucket metadata access and document the required bucket-reader grant. Docs impact: docs/runners.md
+
 - Show redacted landing failure diagnostics and GitHub push refusals while preserving app-runs receipts. Docs impact: none.
 
 - Fix Cloud Build's zero timeout default to use the folder check timeout plus five minutes (capped at 24 hours), align configuration checks, and report missing configuration fields. Docs impact: docs/runners.md

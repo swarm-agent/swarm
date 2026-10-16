@@ -25,6 +25,7 @@ type Spec struct {
 	CheckTimeout time.Duration
 	BaseCommit   string
 	Selected     func(string)
+	Fallback     func(string) // bounded, redacted provider failure for the landing receipt
 	Folder       string
 	Checkout     string
 	Definition   Definition

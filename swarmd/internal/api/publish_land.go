@@ -540,6 +540,8 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	if checkTimeoutMinutes > 0 {
 		spec.CheckTimeout = time.Duration(checkTimeoutMinutes) * time.Minute
 	}
+	e.EnvironmentNote = ""
+	spec.Fallback = func(note string) { e.EnvironmentNote = environment.FallbackNote(note) }
 	spec.Selected = func(name string) { e.Environment = name }
 	checkEnvironment, err := environments.Acquire(ctx, spec)
 	if err != nil {

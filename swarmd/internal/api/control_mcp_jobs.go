@@ -603,6 +603,7 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 				state["delivery_reason"] = entry.Reason
 				state["checks"] = entry.Checks
 				state["environment"] = entry.Environment
+				state["environment_note"] = entry.EnvironmentNote
 				if entry.Proof != nil {
 					state["proof"] = entry.Proof
 				}

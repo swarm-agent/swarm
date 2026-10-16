@@ -4,7 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
+
+	"swarm/packages/swarmd/internal/privacy"
 
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -47,6 +52,9 @@ func (p Runners) Acquire(ctx context.Context, spec Spec) (Environment, error) {
 		cleanup := e.Release()
 		if ctx.Err() != nil {
 			return nil, errors.Join(ctx.Err(), cleanup)
+		}
+		if cleanup == nil && errors.Is(claimCtx.Err(), context.DeadlineExceeded) && e.last != nil && e.last.State == "pending" {
+			return nil, errors.Join(&Failure{fmt.Sprintf("no runner available within %s", wait)}, errNoRunnerAvailable)
 		}
 		return nil, errors.Join(&Failure{fmt.Sprintf("no runner claim within %s or runner unavailable: %v", wait, err)}, cleanup)
 	}
@@ -120,8 +128,53 @@ func (e *runnerEnvironment) Release() error                     { return e.store
 // not errors, and never trigger fallback. The remote batch completes before the
 // first result is exposed, so fallback cannot mix remote and local checks.
 type Auto struct {
-	Remote Provider
-	Local  Provider
+	Remote     Provider
+	Local      Provider
+	RemoteName string
+}
+
+var errNoRunnerAvailable = errors.New("no runner available")
+var noRunnerFallbackLog sync.Once
+
+// FallbackNote sanitizes before bounding, so truncated credentials cannot leak.
+func FallbackNote(note string) string {
+	note = privacy.SanitizeText(privacy.SanitizeDiagnostic(note))
+	note = strings.Join(strings.Fields(note), " ")
+	runes := []rune(note)
+	if len(runes) > 500 {
+		note = string(runes[:497]) + "..."
+	}
+	return note
+}
+
+func (p Auto) fallback(spec Spec, err error) {
+	name := p.RemoteName
+	if name == "" {
+		switch p.Remote.(type) {
+		case CloudBuild, *CloudBuild:
+			name = "cloud build"
+		case Runners, *Runners:
+			name = "runners"
+		default:
+			name = "remote provider"
+		}
+	}
+	note := FallbackNote(name + " unavailable: " + err.Error())
+	if spec.Fallback != nil {
+		spec.Fallback(note)
+	}
+	logFallback := func() {
+		target := "local"
+		if _, chained := p.Local.(Auto); chained {
+			target = "next provider"
+		}
+		log.Printf("landing environment: %s", FallbackNote(name+" unavailable, using "+target+": "+err.Error()))
+	}
+	if errors.Is(err, errNoRunnerAvailable) {
+		noRunnerFallbackLog.Do(logFallback)
+	} else {
+		logFallback()
+	}
 }
 
 func (p Auto) Acquire(ctx context.Context, spec Spec) (Environment, error) {
@@ -131,6 +184,7 @@ func (p Auto) Acquire(ctx context.Context, spec Spec) (Environment, error) {
 		if !errors.As(err, &failure) || ctx.Err() != nil {
 			return nil, err
 		}
+		p.fallback(spec, err)
 		return p.local(ctx, spec)
 	}
 	return &autoEnvironment{Environment: remote, provider: p, spec: spec}, nil
@@ -164,6 +218,7 @@ func (e *autoEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResul
 	if releaseErr := e.Environment.Release(); releaseErr != nil {
 		return nil, errors.Join(err, releaseErr)
 	}
+	e.provider.fallback(e.spec, err)
 	local, localErr := e.provider.local(ctx, e.spec)
 	if localErr != nil {
 		return nil, &Failure{localErr.Error()}

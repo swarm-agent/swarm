@@ -36,7 +36,7 @@ func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (en
 		return p.server.cloudBuildProvider.Acquire(ctx, spec)
 	case "auto":
 		if p.server.cloudBuildProvider != nil {
-			local = environment.Auto{Remote: p.server.cloudBuildProvider, Local: local}
+			local = environment.Auto{Remote: p.server.cloudBuildProvider, Local: local, RemoteName: "cloud build"}
 		}
 		return (environment.Auto{Remote: remote, Local: local}).Acquire(ctx, spec)
 	default:
