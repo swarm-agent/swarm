@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Drain runner landings on SIGTERM, wait for idle before updates, and show current landing attribution in runner status/list. Docs impact: docs/runners.md
+
 - Fix runner credential ownership and configuration-directory permissions so the unprivileged service can read its 0600 credential; retain symlink and permission rejection. Docs impact: docs/runners.md
 
 - Add runner management commands, runner-only source installation and bounded fail-closed updates; document pending service credential and idle-drain compatibility. Docs impact: docs/runners.md, containers/headless/app/README.md

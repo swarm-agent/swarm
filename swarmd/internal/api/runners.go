@@ -142,7 +142,7 @@ func (s *Server) handleRunners(w http.ResponseWriter, r *http.Request) {
 				if status.GVisor {
 					engine = "gvisor"
 				}
-				result = append(result, map[string]any{"name": rec.Name, "kind": rec.Kind, "created_at": rec.CreatedAt, "last_seen": status.LastSeen, "revoked": rec.Revoked, "state": state, "engine": engine})
+				result = append(result, map[string]any{"name": rec.Name, "kind": rec.Kind, "created_at": rec.CreatedAt, "last_seen": status.LastSeen, "revoked": rec.Revoked, "state": state, "engine": engine, "current_landing": status.CurrentLanding})
 			}
 		}
 		writeJSON(w, 200, map[string]any{"runners": result})

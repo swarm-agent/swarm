@@ -2,6 +2,7 @@
 RUNNER_STATE=/var/lib/swarm-runner-install
 RUNNER_OPT=/opt/swarm-runner
 RUNNER_CONF=/etc/swarm-runner
+RUNNER_RUNTIME_STATE=/run/swarm-runner/state
 
 runner_require_root() { [[ $EUID -eq 0 ]] || die "run as root"; }
 
@@ -72,13 +73,15 @@ update_runner() {
   ref=$(cat "$RUNNER_CONF/ref")
   [[ $ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "invalid saved runner ref"
   runner_build "$ref"
-  # No runner drain/idle handshake exists yet. Never infer idle from old logs
-  # or race a new claim. Fail closed until the operator stops the service.
+  # Wait for idle, then stop synchronously: SIGTERM drains a claim that races
+  # the idle observation. Never replace binaries under a running landing.
   while systemctl is-active --quiet swarm-runner.service; do
-    ((elapsed < 120)) || die "runner still active; automatic idle/drain handshake unavailable; release built but not activated"
+    if [[ -f $RUNNER_RUNTIME_STATE ]] && [[ $(cat "$RUNNER_RUNTIME_STATE") == idle ]]; then break; fi
+    ((elapsed < 1800)) || die "runner did not become idle within 30 minutes; release built but not activated"
     sleep 2
     elapsed=$((elapsed + 2))
   done
+  systemctl stop swarm-runner.service || die "runner stop failed; release built but not activated"
   runner_activate
   if [[ -f $RUNNER_CONF/credential ]]; then systemctl start swarm-runner.service; fi
 }

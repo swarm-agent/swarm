@@ -30,11 +30,12 @@ type runnerCLI struct {
 	root          func([]string) error
 	config, units string
 	client        *http.Client
+	stateFile     string
 }
 
 func cmdRunner(args []string) error {
 	c := runnerCLI{os.Stdin, os.Stdout, machineRequest, machineRun, machineWrite, os.Hostname, machineRoot, runnerConfig, machineUnits,
-		&http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return fmt.Errorf("runner join redirects are not allowed") }}}
+		&http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return fmt.Errorf("runner join redirects are not allowed") }}, "/run/swarm-runner/state"}
 	return c.command(args)
 }
 
@@ -115,7 +116,23 @@ func (c runnerCLI) command(args []string) error {
 		if err := c.run("systemctl", "show", runnerUnit, "--property=ActiveState,SubState,StatusText"); err != nil {
 			return err
 		}
-		return c.run("journalctl", "--unit="+runnerUnit, "--no-pager", "--lines=20")
+		env, err := os.ReadFile(filepath.Join(c.config, "runner.env"))
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(env), "\n") {
+			for key, label := range map[string]string{"SWARM_RUNNER_HUB=": "Hub", "SWARM_RUNNER_NAME=": "Name"} {
+				if strings.HasPrefix(line, key) {
+					fmt.Fprintf(c.out, "%s: %s\n", label, strings.Trim(strings.TrimPrefix(line, key), "\""))
+				}
+			}
+		}
+		state, err := os.ReadFile(c.stateFile)
+		if err != nil {
+			return fmt.Errorf("runner state unavailable: %w", err)
+		}
+		_, err = fmt.Fprintf(c.out, "Landing state: %s", state)
+		return err
 	case "join":
 		return c.join(args)
 	default:
@@ -213,7 +230,10 @@ Group=swarm-runner
 SupplementaryGroups=docker
 EnvironmentFile=/etc/swarm-runner/runner.env
 Environment=LD_LIBRARY_PATH=/opt/swarm-runner/current/lib
-ExecStart=/opt/swarm-runner/current/bin/swarmd runner --hub ${SWARM_RUNNER_HUB} --name ${SWARM_RUNNER_NAME} --credential-file /etc/swarm-runner/credential
+ExecStart=/opt/swarm-runner/current/bin/swarmd runner --hub ${SWARM_RUNNER_HUB} --name ${SWARM_RUNNER_NAME} --credential-file /etc/swarm-runner/credential --state-file /run/swarm-runner/state
+RuntimeDirectory=swarm-runner
+TimeoutStopSec=30min
+KillMode=mixed
 Restart=always
 RestartSec=5
 [Install]

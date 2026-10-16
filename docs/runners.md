@@ -47,15 +47,18 @@ with mode 0600, keeps `runner.env` root-only (0600), and sets the configuration
 directory to `root:swarm-runner` mode 0750. The service reads the credential
 directly as `swarm-runner`. `join` installs `swarm-runner.service` and enables it. A failed install after enrollment
 keeps the credential: revoke that runner on the hub before attempting enrollment
-again. Status displays systemd state and recent journal entries; it cannot yet
-provide a structured last-claim record.
+again. `sudo swarmctl runner status` displays systemd state, hub URL, runner
+name, and `/run/swarm-runner/state`: `idle` or `busy <landing id> <claimed at>`
+(the timestamp is UTC RFC3339). On the hub, `swarmctl runner list` includes the
+current landing from live claim records, not runner-supplied attribution.
 
-**Remaining compatibility gaps:** Hub listing includes health and
-engine, but current landing is not exposed by the store API. Automatic idle
-restart needs a runner drain handshake; update builds the saved ref, waits at
-most 120 seconds for the service to stop, and fails without activation if it is
-still active. It never stops active work. Do not treat these commands as proof of
-end-to-end landing readiness.
+Update builds the saved ref, waits up to 30 minutes for idle, then stops the
+service synchronously before activating and starting the new release. A claim
+racing that idle observation is drained by SIGTERM. Missing state or continued
+busy work fails without activation after the wait. Older installations need the
+updated service unit (RuntimeDirectory, state-file argument, TimeoutStopSec and
+KillMode) before automatic updates can observe idle. These commands do not
+establish end-to-end landing readiness.
 
 ## Choosing where landings run
 
@@ -176,6 +179,16 @@ It needs Docker, registered `runsc` and `runsc-build` runtimes, the installed
 Swarm sandbox image/network, and at least 2 GiB free under its work directory.
 No startup configuration keys are changed. Without `--work-dir`, it creates a
 disposable directory using the operating system temporary-directory contract.
+
+SIGTERM stops claiming immediately and lets the held landing finish and report
+its result, then exits successfully. Drain is bounded by the request's check
+timeout plus two minutes (including a 15-second result-report allowance), not
+an overall landing timeout. Reporting failures remain errors. Idle shutdown is
+immediate. The service creates `/run/swarm-runner` with `RuntimeDirectory`, passes
+`--state-file /run/swarm-runner/state`, and allows 30 minutes to stop. Its
+`KillMode=mixed` sends SIGTERM only to the runner so child commands can drain.
+Standalone invocations can opt into state reporting with `--state-file PATH`;
+the parent directory must already exist.
 
 The loop claims one request, renews its lease every 20 seconds, streams bounded
 output, and reports codes/duration and the local failing-lines excerpt. Status

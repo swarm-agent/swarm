@@ -20,6 +20,7 @@ func runnerMain(args []string) error {
 	hub := flags.String("hub", "", "hub URL")
 	credential := flags.String("credential-file", "", "invoking-user-owned 0600 bearer credential file")
 	work := flags.String("work-dir", "", "disposable landing directory (defaults to a temporary directory)")
+	state := flags.String("state-file", "", "runner state file (service uses /run/swarm-runner/state)")
 	name := flags.String("name", "", "runner display name")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -40,7 +41,7 @@ func runnerMain(args []string) error {
 		defer os.RemoveAll(dir)
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	r := runner.Runner{Hub: *hub, Credential: token, WorkDir: *work, Name: *name, Logger: logger, Engine: &runner.SandboxEngine{Log: logger.Printf}}
+	r := runner.Runner{StateFile: *state, Hub: *hub, Credential: token, WorkDir: *work, Name: *name, Logger: logger, Engine: &runner.SandboxEngine{Log: logger.Printf}}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	err = r.Run(ctx)

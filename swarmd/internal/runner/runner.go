@@ -31,6 +31,7 @@ type Engine interface {
 
 type Runner struct {
 	Hub, Credential, WorkDir, Name   string
+	StateFile                        string
 	Client                           *http.Client
 	Engine                           Engine
 	Logger                           *log.Logger
@@ -129,6 +130,9 @@ func (r *Runner) Run(ctx context.Context) error {
 	if err := os.MkdirAll(r.WorkDir, 0700); err != nil {
 		return err
 	}
+	if err := r.writeState("idle"); err != nil {
+		return err
+	}
 	var mu sync.Mutex
 	state := "idle"
 	report := func() error {
@@ -200,10 +204,36 @@ func (r *Runner) Run(ctx context.Context) error {
 		mu.Lock()
 		state = "busy"
 		mu.Unlock()
+		if err := r.writeState("busy " + claim.Landing.ID + " " + time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return err
+		}
 		if err := report(); err != nil {
 			r.log("runner busy status: %v", err)
 		}
-		err = r.runLanding(ctx, *claim.Landing)
+		// Cancellation stops admission immediately, but only bounds held work once
+		// draining begins. Reserve fifteen seconds of the grace for result delivery.
+		work, stopWork := context.WithCancel(context.WithoutCancel(ctx))
+		drained := make(chan struct{})
+		go func() {
+			select {
+			case <-drained:
+				return
+			case <-ctx.Done():
+			}
+			t := time.NewTimer(time.Duration(claim.Landing.CheckTimeout)*time.Second + 105*time.Second)
+			defer t.Stop()
+			select {
+			case <-drained:
+			case <-t.C:
+				stopWork()
+			}
+		}()
+		err = r.runLanding(work, *claim.Landing)
+		close(drained)
+		stopWork()
+		if stateErr := r.writeState("idle"); stateErr != nil {
+			err = errors.Join(err, stateErr)
+		}
 		mu.Lock()
 		state = "idle"
 		mu.Unlock()
@@ -211,7 +241,18 @@ func (r *Runner) Run(ctx context.Context) error {
 			return err
 		}
 	}
-	return ctx.Err()
+	return nil
+}
+
+func (r *Runner) writeState(state string) error {
+	if r.StateFile == "" {
+		return nil
+	}
+	// Atomic replacement prevents status readers observing a truncated busy line.
+	if err := os.WriteFile(r.StateFile+".new", []byte(state+"\n"), 0644); err != nil {
+		return err
+	}
+	return os.Rename(r.StateFile+".new", r.StateFile)
 }
 
 func (r *Runner) runLanding(ctx context.Context, l landingRequest) error {
@@ -296,7 +337,7 @@ func (r *Runner) runLanding(ctx context.Context, l landingRequest) error {
 	}
 	close(stop)
 	<-exited
-	if heartbeatErr != nil {
+	if heartbeatErr != nil && ctx.Err() == nil {
 		return heartbeatErr
 	}
 	result := update{LeaseID: l.LeaseID, ExitCodes: codes, DurationMS: time.Since(started).Milliseconds(), Output: publish.CheckOutputExcerpt(output)}
@@ -306,7 +347,7 @@ func (r *Runner) runLanding(ctx context.Context, l landingRequest) error {
 		result.Output = publish.CheckOutputExcerpt(err.Error() + "\n" + output)
 	}
 	// The hub must support an explicit environment_failed result; never fabricate check failures.
-	if e := r.put(ctx, path+"/result", result); e != nil {
+	if e := r.put(context.WithoutCancel(ctx), path+"/result", result); e != nil {
 		return e
 	}
 	r.log("runner result %s state=%s codes=%v", l.ID, result.State, codes)

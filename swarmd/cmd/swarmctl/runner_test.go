@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,7 +104,7 @@ func TestRunnerCommands(t *testing.T) {
 		t.Fatal("credential mismatch")
 	}
 	unit, _ := os.ReadFile(filepath.Join(c.units, runnerUnit))
-	for _, want := range []string{"User=swarm-runner", "SupplementaryGroups=docker", "Restart=always", "--credential-file /etc/swarm-runner/credential"} {
+	for _, want := range []string{"RuntimeDirectory=swarm-runner", "TimeoutStopSec=30min", "--state-file /run/swarm-runner/state", "User=swarm-runner", "SupplementaryGroups=docker", "Restart=always", "--credential-file /etc/swarm-runner/credential"} {
 		if !strings.Contains(string(unit), want) {
 			t.Fatalf("missing %s", want)
 		}
@@ -142,11 +141,25 @@ func TestRunnerCommands(t *testing.T) {
 	if err := c.command([]string{"join", hub.URL + "/bad"}); err == nil {
 		t.Fatal("accepted path")
 	}
-	c.out = io.Discard
+	c.config = filepath.Join(dir, "etc")
+	c.stateFile = filepath.Join(dir, "state")
+	if err := os.WriteFile(c.stateFile, []byte("busy landing-status 2026-01-01T00:00:00Z\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
 	if err := c.command([]string{"status"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(commands, ";"), "journalctl") {
+	if !strings.Contains(strings.Join(commands, ";"), "systemctl show swarm-runner.service --property=ActiveState,SubState,StatusText") {
 		t.Fatal(commands)
+	}
+	for _, want := range []string{hub.URL, "Name: worker", "busy landing-status 2026-01-01T00:00:00Z"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in %s", want, out.String())
+		}
+	}
+	c.stateFile = filepath.Join(dir, "missing")
+	if err := c.command([]string{"status"}); err == nil {
+		t.Fatal("missing state reported as success")
 	}
 }

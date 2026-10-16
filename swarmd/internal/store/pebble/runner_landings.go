@@ -37,12 +37,13 @@ type RunnerLanding struct {
 }
 
 type RunnerStatus struct {
-	Name     string `json:"name"`
-	State    string `json:"state"`
-	Reason   string `json:"reason"`
-	Docker   bool   `json:"docker"`
-	GVisor   bool   `json:"gvisor"`
-	LastSeen int64  `json:"last_seen"`
+	CurrentLanding string `json:"current_landing,omitempty"`
+	Name           string `json:"name"`
+	State          string `json:"state"`
+	Reason         string `json:"reason"`
+	Docker         bool   `json:"docker"`
+	GVisor         bool   `json:"gvisor"`
+	LastSeen       int64  `json:"last_seen"`
 }
 
 type runnerState struct {
@@ -296,11 +297,24 @@ func (s *Store) SetRunnerStatus(account string, status RunnerStatus) error {
 }
 func (s *Store) RunnerStatuses(account string) ([]RunnerStatus, error) {
 	result := []RunnerStatus{}
-	err := s.mutateRunners(account, func(st *runnerState) error {
-		for _, status := range st.Statuses {
-			result = append(result, status)
+	runnerStateMu.Lock()
+	defer runnerStateMu.Unlock()
+	if account == "" {
+		return nil, errors.New("runner account required")
+	}
+	var st runnerState
+	if _, err := s.GetJSON("runners:v1:"+runnerHash(account), &st); err != nil {
+		return nil, err
+	}
+	for _, status := range st.Statuses {
+		status.CurrentLanding = ""
+		for _, landing := range st.Landings {
+			if landing.Runner == status.Name && landing.State == "claimed" && landing.LeaseUntil > time.Now().UnixMilli() {
+				status.CurrentLanding = landing.ID
+				break
+			}
 		}
-		return nil
-	})
-	return result, err
+		result = append(result, status)
+	}
+	return result, nil
 }

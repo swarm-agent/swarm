@@ -10,6 +10,7 @@ source <(sed '$d' "$here/install.sh")
 source "$here/runner-install.sh"
 RUNNER_STATE=$work/state RUNNER_OPT=$work/opt RUNNER_CONF=$work/etc
 CONF=$work/hub.env SWARMCTL=$work/swarmctl
+RUNNER_RUNTIME_STATE=$work/runtime-state
 log=$work/log
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # Replace only the privilege guard; all filesystem writes stay in the fixture.
@@ -52,4 +53,15 @@ systemctl() { [[ $1 == is-active ]]; }
 sleep() { :; } # bounded wait control, not a workload or benchmark
 if (update_runner) >"$work/error" 2>&1; then fail 'active runner updated'; fi
 grep -q 'not activated' "$work/error" || fail 'missing timeout error'
+# A busy runner becomes idle before stop/activation/start; stop also closes the
+# race where a new landing was claimed after the idle observation.
+echo 'busy landing 2026-01-01T00:00:00Z' >"$RUNNER_RUNTIME_STATE"
+systemctl() { echo "systemctl $*" >>"$log"; return 0; }
+sleep() { echo idle >"$RUNNER_RUNTIME_STATE"; echo waited >>"$log"; }
+: >"$log"
+update_runner
+[[ $(cat "$log") == $'build dev\nsystemctl is-active --quiet swarm-runner.service\nwaited\nsystemctl is-active --quiet swarm-runner.service\nsystemctl stop swarm-runner.service\nsystemctl start swarm-runner.service' ]] || fail 'unexpected wait/stop/start order'
+grep -q waited "$log" || fail 'did not wait for idle'
+grep -q 'systemctl stop swarm-runner.service' "$log" || fail 'did not stop before activation'
+grep -q 'systemctl start swarm-runner.service' "$log" || fail 'did not restart'
 echo 'runner installer tests passed'
