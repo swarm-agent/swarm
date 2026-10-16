@@ -181,7 +181,7 @@ func TestPublishLandSendBackInstructions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(command) < 4096 && len(reason) > 4096 {
+		if len(reason) > len(command)+16*1024+1024 {
 			t.Fatal("output exceeded budget")
 		}
 	}

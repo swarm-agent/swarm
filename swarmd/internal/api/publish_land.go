@@ -503,32 +503,38 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	// Keep only caller cancellation on ctx: a command deadline here would also
 	// charge queueing (and container acquisition) to the check's budget.
 	for i, command := range checks {
-		var tail string
-		req := sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: 4096, OnOutput: func(data []byte) {
-			tail += string(data)
-			if len(tail) > 4096 {
-				tail = tail[len(tail)-4096:]
+		var output []byte
+		req := sandbox.ExecRequest{Command: []string{"bash", "-lc", command}, WorkingDir: path, Timeout: limit, MaxTimeout: 60 * time.Minute, MaxOutput: publish.CheckOutputLimit, OnOutput: func(data []byte) {
+			if len(data) >= publish.CheckOutputLimit {
+				output = append(output[:0], data[len(data)-publish.CheckOutputLimit:]...)
+				return
 			}
+			if overflow := len(output) + len(data) - publish.CheckOutputLimit; overflow > 0 {
+				copy(output, output[overflow:])
+				output = output[:len(output)-overflow]
+			}
+			output = append(output, data...)
 		}}
 		res, err := checkExec(ctx, req)
 		var died *sandbox.ErrSandboxDied
 		if errors.As(err, &died) && ctx.Err() == nil {
-			tail = ""
+			output = output[:0]
 			res, err = checkExec(ctx, req)
 		}
 		if errors.As(err, &died) {
 			return fmt.Errorf("landing check infrastructure failure: %w", err)
 		}
+		excerpt := publish.CheckOutputExcerpt(string(output))
 		if err != nil {
 			if errors.Is(err, provider.ErrOperationTimedOut) && ctx.Err() == nil {
-				e.Checks = append(e.Checks, publish.CheckResult{ExitCode: -1, Output: tail})
-				return publish.ChecksSendBack(base, checks[:i+1], true, tail)
+				e.Checks = append(e.Checks, publish.CheckResult{ExitCode: -1, Output: excerpt})
+				return publish.ChecksSendBack(base, checks[:i+1], true, excerpt)
 			}
 			return err
 		}
-		e.Checks = append(e.Checks, publish.CheckResult{ExitCode: res.ExitCode, Output: tail})
+		e.Checks = append(e.Checks, publish.CheckResult{ExitCode: res.ExitCode, Output: excerpt})
 		if res.ExitCode != 0 {
-			return publish.ChecksSendBack(base, checks[:i+1], false, tail)
+			return publish.ChecksSendBack(base, checks[:i+1], false, excerpt)
 		}
 	}
 	finalHead, code, err := git("rev-parse", "HEAD")
