@@ -99,6 +99,7 @@ type QueueHooks struct {
 	SendBack func(context.Context, Entry) error // canonical worker follow-up
 }
 type Queue struct {
+	wake     map[string]chan struct{}
 	parallel int
 	store    QueueStore
 	mu       sync.Mutex
@@ -199,6 +200,12 @@ func (q *Queue) EnqueueDelivery(e Entry, retryStopped bool) (Entry, int, error) 
 	entries = append(entries, e)
 	if err = q.store.PutJSON(queueKey(e.Account), entries); err != nil {
 		return Entry{}, 0, err
+	}
+	if ch := q.wake[e.Account+"\x00"+e.Request.Folder]; ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 	if requeuedFix {
 		log.Printf("landing re-queue job=%s head=%s", e.Request.JobID, e.Request.Head)
