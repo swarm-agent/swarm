@@ -31,6 +31,11 @@ const (
 
 	AgentClientToolDefaultTimeoutMS = 30_000
 	AgentClientToolMaxTimeoutMS     = 300_000
+
+	// A confirmed client tool (Confirm) waits this long for the person to
+	// approve or decline a call before the model is told nobody answered.
+	AgentClientToolDefaultConfirmTimeoutMS = 15 * 60 * 1000
+	AgentClientToolMaxConfirmTimeoutMS     = 24 * 60 * 60 * 1000
 )
 
 type AgentToolScope struct {
@@ -125,7 +130,12 @@ type AgentCustomToolDefinition struct {
 	InputSchema map[string]any `json:"input_schema,omitempty"`
 	Effect      string         `json:"effect,omitempty"`
 	TimeoutMS   int            `json:"timeout_ms,omitempty"`
-	UpdatedAt   int64          `json:"updated_at"`
+	// Confirm makes every call wait for the person to approve it before the
+	// client is asked to run it. Unset means: confirm write tools only.
+	Confirm *bool `json:"confirm,omitempty"`
+	// ConfirmTimeoutMS is how long a call waits for that decision.
+	ConfirmTimeoutMS int   `json:"confirm_timeout_ms,omitempty"`
+	UpdatedAt        int64 `json:"updated_at"`
 }
 
 func BoolPtr(value bool) *bool {
@@ -307,14 +317,16 @@ func NormalizeAgentCustomToolKind(value string) string {
 
 func CloneAgentCustomToolDefinition(definition AgentCustomToolDefinition) AgentCustomToolDefinition {
 	return AgentCustomToolDefinition{
-		Name:        strings.TrimSpace(definition.Name),
-		Kind:        strings.TrimSpace(definition.Kind),
-		Description: strings.TrimSpace(definition.Description),
-		Command:     strings.TrimSpace(definition.Command),
-		InputSchema: cloneJSONObject(definition.InputSchema),
-		Effect:      strings.TrimSpace(definition.Effect),
-		TimeoutMS:   definition.TimeoutMS,
-		UpdatedAt:   definition.UpdatedAt,
+		Name:             strings.TrimSpace(definition.Name),
+		Kind:             strings.TrimSpace(definition.Kind),
+		Description:      strings.TrimSpace(definition.Description),
+		Command:          strings.TrimSpace(definition.Command),
+		InputSchema:      cloneJSONObject(definition.InputSchema),
+		Effect:           strings.TrimSpace(definition.Effect),
+		TimeoutMS:        definition.TimeoutMS,
+		Confirm:          CloneBoolPtr(definition.Confirm),
+		ConfirmTimeoutMS: definition.ConfirmTimeoutMS,
+		UpdatedAt:        definition.UpdatedAt,
 	}
 }
 
@@ -353,10 +365,21 @@ func NormalizeAgentCustomToolDefinition(definition AgentCustomToolDefinition) Ag
 		if definition.TimeoutMS > AgentClientToolMaxTimeoutMS {
 			definition.TimeoutMS = AgentClientToolMaxTimeoutMS
 		}
+		confirm := ClientToolRequiresConfirmation(definition)
+		definition.Confirm = BoolPtr(confirm)
+		if !confirm {
+			definition.ConfirmTimeoutMS = 0
+		} else if definition.ConfirmTimeoutMS <= 0 {
+			definition.ConfirmTimeoutMS = AgentClientToolDefaultConfirmTimeoutMS
+		} else if definition.ConfirmTimeoutMS > AgentClientToolMaxConfirmTimeoutMS {
+			definition.ConfirmTimeoutMS = AgentClientToolMaxConfirmTimeoutMS
+		}
 	} else {
 		definition.InputSchema = nil
 		definition.Effect = ""
 		definition.TimeoutMS = 0
+		definition.Confirm = nil
+		definition.ConfirmTimeoutMS = 0
 	}
 	if definition.UpdatedAt < 0 {
 		definition.UpdatedAt = 0
@@ -1004,4 +1027,31 @@ func decodeKeyTail(key, prefix string) string {
 		return raw
 	}
 	return strings.TrimSpace(decoded)
+}
+
+// ClientToolRequiresConfirmation reports whether calls to a client tool wait
+// for the person's approval before the client runs them. An explicit Confirm
+// wins; otherwise write tools are confirmed and read tools are not (also for
+// definitions saved before Confirm existed).
+func ClientToolRequiresConfirmation(definition AgentCustomToolDefinition) bool {
+	if NormalizeAgentCustomToolKind(definition.Kind) != AgentCustomToolKindClient {
+		return false
+	}
+	if definition.Confirm != nil {
+		return *definition.Confirm
+	}
+	return strings.EqualFold(strings.TrimSpace(definition.Effect), AgentCustomToolEffectWrite)
+}
+
+// ClientToolConfirmTimeoutMS is how long a confirmed client tool's call waits
+// for the person's decision.
+func ClientToolConfirmTimeoutMS(definition AgentCustomToolDefinition) int {
+	ms := definition.ConfirmTimeoutMS
+	if ms <= 0 {
+		ms = AgentClientToolDefaultConfirmTimeoutMS
+	}
+	if ms > AgentClientToolMaxConfirmTimeoutMS {
+		ms = AgentClientToolMaxConfirmTimeoutMS
+	}
+	return ms
 }

@@ -343,6 +343,8 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 		s.handleSessionV3Takeover(w, r, principal, sessionID)
 	case "operator-messages":
 		s.handleSessionV3OperatorMessages(w, r, principal, sessionID)
+	case "confirmations":
+		s.handleSessionV3Confirmations(w, r, principal, sessionID, "")
 	case "run/stream":
 		s.handleSessionV3PrimaryRunStreamControl(w, r, sessionID, principal)
 	case "context/clear":
@@ -479,6 +481,10 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 				return
 			}
 			s.handleSessionV3PrimaryPlanMode(w, r, principal, sessionID, strings.TrimPrefix(subpath, "plan-mode/"))
+			return
+		}
+		if strings.HasPrefix(subpath, "confirmations/") {
+			s.handleSessionV3Confirmations(w, r, principal, sessionID, strings.TrimPrefix(subpath, "confirmations/"))
 			return
 		}
 		if strings.HasPrefix(subpath, "permissions/") && strings.HasSuffix(subpath, "/resolve") {
@@ -1743,6 +1749,15 @@ func (s *Server) handleSessionV3PrimaryMessages(w http.ResponseWriter, r *http.R
 	}
 	req.ClientRequestID = clientRequestID
 	req.IdempotencyKey = clientRequestID
+	if found, authErr := s.authorizeSessionsV3PrimarySession(principal, sessionID); authErr == nil && found {
+		// Close a confirmation that expired or was answered while no timer ran
+		// (after a restart), so its outcome precedes this message. This
+		// message's run carries it; no extra run is started.
+		if _, _, settleErr := s.advanceClientToolConfirmation(sessionID, false); settleErr != nil {
+			writeError(w, http.StatusInternalServerError, settleErr)
+			return
+		}
+	}
 	result, enqueueJob, err := s.acceptSessionsV3Message(principal, sessionID, req)
 	if err != nil {
 		if errors.Is(err, sessionruntime.ErrSessionIdempotencyConflict) {
@@ -2998,6 +3013,7 @@ func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, 
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	s.settleClientToolConfirmationAfterAnswer(sessionID, record)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "permission": record, "saved_rule": savedRule, "mutation": mutation, "published": published})
 }
 
@@ -3045,6 +3061,9 @@ func (s *Server) handleSessionV3PrimaryPermissionResolveAll(w http.ResponseWrite
 		if published {
 			mutations = append(mutations, mutation)
 		}
+	}
+	for _, record := range resolved {
+		s.settleClientToolConfirmationAfterAnswer(sessionID, record)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(resolved), "resolved": resolved, "mutations": mutations})
 }
@@ -3504,6 +3523,9 @@ func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession, fields gitSt
 		"applied_seq":              hydrated.AppliedSeq,
 		"high_watermark":           hydrated.HighWatermark,
 		"snapshot_endpoint_cursor": hydrated.SnapshotEndpointCursor,
+	}
+	if pending := pendingClientToolConfirmationView(hydrated.Session, time.Now().UnixMilli()); pending != nil {
+		response["pending_confirmation"] = pending
 	}
 	if hydrated.HasActivePlan {
 		response["active_plan"] = hydrated.ActivePlan

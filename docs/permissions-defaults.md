@@ -112,7 +112,7 @@ whose compiled contract pre-approves the action.
 | `manage_artifact` | generate_image, generate_video(_story), chain_video, generate_audio | spends money (media providers) | ask; **overlay: Swarm, Orchestrator, Image, Video** | unchanged | Listed for the owner (trusted workers rely on the overlay). |
 | `manage_video` | all | reads, writes app state; start_transcription spends and reaches the network | allow | unchanged | Studio acceptance remains the gate; transcription listed for the owner. |
 | `artifact_v3_author` | all | writes the managed artifact project | ask by default; overlay: Designer | unchanged | Managed storage only. |
-| Custom tools | — | fixed command or client tool | ask; client tools wait for the client | unchanged | — |
+| Custom tools | — | fixed command or client tool | ask; client tools wait for the client; confirmed client tools (write by default) first wait for the person's approval | unchanged | See `containers/sealed/README.md` (Confirmations). |
 
 ## What changed
 

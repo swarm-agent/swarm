@@ -901,6 +901,11 @@ func (s *Service) putCustomToolForAccount(accountScopeID string, definition pebb
 		if _, err := CompileClientToolSchema(definition.InputSchema); err != nil {
 			return pebblestore.AgentCustomToolDefinition{}, err
 		}
+		if pebblestore.ClientToolRequiresConfirmation(definition) {
+			if _, err := ConfirmedClientToolSchema(definition.InputSchema); err != nil {
+				return pebblestore.AgentCustomToolDefinition{}, err
+			}
+		}
 	}
 	if s.reservedToolName != nil && s.reservedToolName(definition.Name) {
 		return pebblestore.AgentCustomToolDefinition{}, fmt.Errorf("custom tool name %q is a built-in tool", definition.Name)

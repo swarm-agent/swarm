@@ -761,7 +761,14 @@ func (s *Service) executeProviderManagedToolCall(ctx context.Context, config pro
 		gatedResults[0].Error = publicationErr.Error()
 		approvedCalls = nil
 	}
-	if publicationErr == nil && canonicalToolName(call.Name) != mediaInspectToolName && !publication {
+	confirmDefinition, needsConfirmation := s.clientToolConfirmationRequired(config.sessionID, call.Name)
+	if publicationErr == nil && needsConfirmation {
+		// A confirmed client tool is never offered to the client here: the call
+		// becomes a pending confirmation and nothing executes until the person
+		// approves it (see client_tool_confirmation.go).
+		gatedResults[0] = s.requestClientToolConfirmation(config, config.sessionID, call, confirmDefinition)
+		approvedCalls = nil
+	} else if publicationErr == nil && canonicalToolName(call.Name) != mediaInspectToolName && !publication {
 		if toolName == "manage_projects" {
 			ctx = identity.ContextWithPrincipal(ctx, providerManagedExecutionPrincipal(ctx, config))
 		}

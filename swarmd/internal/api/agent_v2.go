@@ -82,6 +82,8 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 			InputSchema map[string]any `json:"input_schema"`
 			Effect      string         `json:"effect"`
 			TimeoutMS   int            `json:"timeout_ms"`
+			Confirm     *bool          `json:"confirm"`
+			ConfirmMS   int            `json:"confirm_timeout_ms"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -92,13 +94,15 @@ func (s *Server) handleCustomToolByNameV2(w http.ResponseWriter, r *http.Request
 			return
 		}
 		stored, err := s.agents.PutCustomToolForAccount(principal.AccountScopeID, pebblestore.AgentCustomToolDefinition{
-			Name:        name,
-			Kind:        req.Kind,
-			Description: req.Description,
-			Command:     req.Command,
-			InputSchema: req.InputSchema,
-			Effect:      req.Effect,
-			TimeoutMS:   req.TimeoutMS,
+			Name:             name,
+			Kind:             req.Kind,
+			Description:      req.Description,
+			Command:          req.Command,
+			InputSchema:      req.InputSchema,
+			Effect:           req.Effect,
+			TimeoutMS:        req.TimeoutMS,
+			Confirm:          req.Confirm,
+			ConfirmTimeoutMS: req.ConfirmMS,
 		})
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
