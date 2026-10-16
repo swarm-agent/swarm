@@ -11,6 +11,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "runner" {
+		if err := runnerMain(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "swarmd runner: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	// Introspection must work even when the installed config cannot be parsed.
 	if len(os.Args) == 3 && os.Args[1] == "config" && os.Args[2] == "removed-keys" {
 		for _, key := range startupconfig.RemovedKeys() {

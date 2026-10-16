@@ -11,8 +11,8 @@ provider initialization boundary; it does not silently execute locally.
 The design below is the target contract, not an operational readiness claim.
 The configuration change alone does not implement runner support. Initial hub
 credentials and lease APIs are described below under **API**, including their
-remaining gaps. Runner execution, management commands and installer support
-remain unavailable.
+remaining gaps. Runner mode is implemented below; management commands and
+installer support remain separate work.
 
 ## Target design
 
@@ -98,3 +98,33 @@ Runner-only routes:
 Lease expiry is reconciled during claim/report mutations. The first expiry allows one retry; the second becomes `environment_failed`. Stale lease IDs cannot mutate a replacement claim. No provider creates these requests yet.
 
 Remaining work: bundled source construction and size enforcement, long-poll notification, proactive expiry and environment-failure signals, secret-free environment validation, and complete HTTP/restart coverage. This is not a ready-to-use remote landing provider.
+
+## Runner mode
+
+`swarmd runner --hub URL --credential-file PATH [--work-dir DIR] [--name NAME]`
+starts an outbound-only landing worker, not the daemon. The credential is a raw
+bearer token in a root-owned regular file with no group/other permissions;
+symlinks are refused. Use HTTPS or an explicitly protected private transport.
+It needs Docker, registered `runsc` and `runsc-build` runtimes, the installed
+Swarm sandbox image/network, and at least 2 GiB free under its work directory.
+No startup configuration keys are changed. Without `--work-dir`, it creates a
+disposable directory using the operating system temporary-directory contract.
+
+The loop claims one request, renews its lease every 20 seconds, streams bounded
+output, and reports codes/duration and the local failing-lines excerpt. Status
+is reported at startup, transitions, and every 60 seconds; engine/disk failures
+stop new claims. Environment images reuse the local definition hash and sandbox
+builder. A fresh local landing sandbox checks out the bundle head and runs each
+check with `bash -lc`. Request directories, containers and home volumes are
+released after use; definition-keyed images may be reused. It never starts
+agents, receives provider keys, integrates commits, pushes, or listens inbound.
+
+Compatibility gap at this revision: the hub bundle endpoint still returns 503,
+and its result decoder cannot persist `state: "environment_failed"`. Runner
+mode sends that explicit state with no invented check codes; an old hub rejects
+it and the runner exits rather than claiming success. The parallel hub work
+must implement this result contract and bundle delivery. The current runner
+expects a self-contained Git bundle, not an archive or incremental bundle with
+missing prerequisites, and uses a disposable `project/checkout` layout; exact
+hub-local absolute-path layout parity is not represented in the claim schema.
+Fake-hub tests exercise the loop, not live Docker or hub interoperability.
