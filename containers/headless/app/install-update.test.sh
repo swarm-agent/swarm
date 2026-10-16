@@ -81,6 +81,13 @@ local_api() {
 }
 systemctl() { return 0; }
 sleep() { :; }
+# Docker records what it was asked; its help names the flag current Docker has.
+docker() {
+  echo "docker $*" >>"$log"
+  [[ " $* " == *" --help "* ]] && echo "${docker_prune_flag:---max-used-space} bytes"
+  return 0
+}
+stale() { local c; c=$(printf "%s" "$1" | sha1sum | cut -c1-40); mkdir -p "$OPT/releases/$c/bin"; echo "$c"; }
 # The fetched installer: finish-update is recorded, build-release builds.
 INSTALLER=$work/installer
 cat >"$INSTALLER" <<EOF
@@ -182,21 +189,35 @@ done
 rm -f "$work/broken" "$UPDATE_BAD"
 ln -sfn "$OPT/releases/$c1" "$OPT/current"
 
-# 4. Once nothing runs, it switches and reports it.
+# 4. Once nothing runs, it switches and reports it. Then old releases and
+# their sandbox images go, the running one and the one before it stay, and
+# Docker's build cache is trimmed.
 busy=false
+old1=$(stale old1) old2=$(stale old2)
+mkdir -p "$OPT/releases/not-a-release"
+: >"$log"
 finish_update
 [[ $(state state) == installed && $(running_commit) == "$c3" ]] || fail "the idle machine did not switch: $(cat "$UPDATE_STATE")"
 grep -qx "installed $c3 test-box" "$work/hook-log" || fail "the hook was not told of the install"
+[[ ! -e $OPT/releases/$old1 && ! -e $OPT/releases/$old2 ]] || fail "old releases were kept after an update"
+[[ -x $OPT/releases/$c3/bin/swarmd && -x $OPT/releases/$c1/bin/swarmd ]] || fail "the running release or the one before it was removed"
+[[ -d $OPT/releases/not-a-release ]] || fail "a directory that is not a release was removed"
+grep -qx "docker image rm swarm-sandbox:$old1" "$log" || fail "an old release's sandbox image was kept"
+grep -qx "docker builder prune -af --max-used-space 8gb" "$log" || fail "build cache was not trimmed after an update: $(grep docker "$log")"
 finish_update
 [[ $(state state) == current ]] || fail "an up-to-date machine is not current"
 
 # 5. A build that does not come up goes back to the one before, and that
-# commit is never tried again.
+# commit is never tried again. Nothing is cleaned up after a rollback.
 c4=$(commit four)
 reviewed "$c4" success
 echo "$c4" >"$work/broken"
+old3=$(stale old3)
 run_update
+: >"$log"
 finish_update
+[[ -d $OPT/releases/$old3 ]] || fail "releases were removed after a rollback"
+! grep -q "builder prune" "$log" || fail "build cache was trimmed after a rollback"
 [[ $(state state) == rolled_back && $(running_commit) == "$c3" && $(cat "$UPDATE_BAD") == "$c4" ]] || fail "a broken build was not rolled back: $(cat "$UPDATE_STATE")"
 grep -qx "rolled_back $c4 test-box" "$work/hook-log" || fail "the hook was not told of the rollback"
 activations=$(grep -c "^activate" "$log")
@@ -208,8 +229,10 @@ c5=$(commit five)
 reviewed "$c5" success
 touch "$work/build-fails"
 run_update
+: >"$log"
 (finish_update) || true
 [[ $(state state) == failed && $(running_commit) == "$c3" ]] || fail "a failed build changed the running build: $(cat "$UPDATE_STATE")"
+[[ -d $OPT/releases/$old3 ]] && ! grep -q "builder prune" "$log" || fail "something was cleaned up after a failed build"
 rm "$work/build-fails"
 
 # 7. A release merge that adds nothing to a reviewed dev commit counts as it;
@@ -320,6 +343,23 @@ DAEMON
   local_api() { echo '{"machine":{},"sandbox":{"active":true}}'; }
   came_up "$c5" true && fail 'inactive service passed smoke'
   true
+)
+
+# 12. Build cache settings: none keeps it, a bad value is refused without
+# failing, older Docker gets its older flag; no running release, no pruning.
+(
+  : >"$log"
+  BUILD_CACHE_MAX=none prune_build_cache
+  ! grep -q "builder prune -af" "$log" || fail "BUILD_CACHE_MAX=none still trimmed"
+  BUILD_CACHE_MAX=lots prune_build_cache 2>/dev/null || fail "a bad BUILD_CACHE_MAX failed the caller"
+  ! grep -q "builder prune -af" "$log" || fail "a bad BUILD_CACHE_MAX still trimmed"
+  docker_prune_flag=--keep-storage BUILD_CACHE_MAX=2gb prune_build_cache
+  grep -qx "docker builder prune -af --keep-storage 2gb" "$log" || fail "older Docker did not get --keep-storage"
+  OPT=$work/empty-opt
+  mkdir -p "$OPT/releases"
+  lone=$(stale lone)
+  prune_releases
+  [[ -d $OPT/releases/$lone ]] || fail "releases were removed with no running release"
 )
 
 echo "install-update: all checks passed"

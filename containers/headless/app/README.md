@@ -92,6 +92,14 @@ retries that commit. The machine summary shows the state (`machine.update`)
 and what runs (`busy`); `auto-update on --hook PATH` also tells a root-owned
 command when a commit is installed, blocked or rolled back, and `--checks`
 names other checks (`none` for a fork without them).
+**Disk.** After a build comes up (an update, or `install.sh up`), the installer
+removes older releases under `/opt/swarm/releases` with their
+`swarm-sandbox:COMMIT` images, keeping the running build, the one before it
+(for rollback) and a build waiting to start, and trims Docker's build cache to
+`BUILD_CACHE_MAX` in `install.env` (default `8gb`, `none` keeps it all). Nothing
+is removed after a failed or rolled-back update. A trimmed cache can make the
+next build start from scratch and take longer; the running build is not
+affected.
 **Channels.** The installer follows `main`, the released build; `--ref dev`
 follows development, which changes several times a day.
 `install.sh channel` shows the branch and `install.sh channel dev` (or `main`)

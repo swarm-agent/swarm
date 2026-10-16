@@ -447,6 +447,7 @@ up() {
   commit=$(git -C "$SRC" rev-parse HEAD)
   build_release "$commit"
   activate "$commit"
+  clean_up_after_switch
 }
 
 # The commit the services run (the release $OPT/current points at).
@@ -551,9 +552,11 @@ WRAPPER
 }
 
 # Keep the running release, the one before it and any built release waiting
-# to start; remove the others and their sandbox images.
+# to start; remove the others and their sandbox images. Without a running
+# release nothing is removed.
 prune_releases() {
   local keep=() dir commit
+  [[ -n $(running_commit) ]] || return 0
   for dir in "$OPT/current" "$OPT/previous"; do
     [[ -e $dir ]] && keep+=("$(basename "$(readlink -f "$dir")")")
   done
@@ -561,10 +564,36 @@ prune_releases() {
   for dir in "$OPT/releases"/*; do
     [[ -d $dir ]] || continue
     commit=$(basename "$dir")
+    [[ $commit =~ ^[0-9a-f]{40}$ ]] || continue
     [[ " ${keep[*]} " == *" $commit "* ]] && continue
     rm -rf "$dir"
     docker image rm "swarm-sandbox:$commit" >/dev/null 2>&1 || true
   done
+}
+
+# Trim Docker's build cache to BUILD_CACHE_MAX (install.env; default 8gb,
+# none keeps it all), newest kept first, and remove dangling images. Every
+# build adds cache that nothing else removes.
+prune_build_cache() {
+  local max=${BUILD_CACHE_MAX:-8gb}
+  [[ $max == none ]] && return 0
+  if [[ ! $max =~ ^[0-9]+(b|kb|mb|gb)$ ]]; then
+    echo "BUILD_CACHE_MAX must look like 8gb, or none; Docker build cache left as it is" >&2
+    return 0
+  fi
+  if docker builder prune --help 2>/dev/null | grep -q -- --max-used-space; then
+    docker builder prune -af --max-used-space "$max" >/dev/null 2>&1 || true
+  else
+    docker builder prune -af --keep-storage "$max" >/dev/null 2>&1 || true
+  fi
+  docker image prune -f >/dev/null 2>&1 || true
+}
+
+# After a release has been switched to and came up: remove old releases and
+# trim build cache, so updates cannot fill the disk. Never fails the caller.
+clean_up_after_switch() {
+  prune_releases || true
+  prune_build_cache || true
 }
 
 # Development: build the committed HEAD of a checkout on this machine instead
@@ -933,6 +962,7 @@ verify_update_or_rollback() {
   if [[ ${4:-false} != true ]] && came_up "$commit" "$sandboxed"; then
     rm -f "$UPDATE_BAD"
     update_state installed "${running:0:9} -> ${commit:0:9}" "$commit"
+    clean_up_after_switch
     return 0
   fi
   echo "$commit" >"$UPDATE_BAD"

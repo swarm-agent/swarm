@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- The box installer no longer fills the disk with old builds. After a build comes up (an update, or `install.sh up`) it removes older releases under `/opt/swarm/releases` and their `swarm-sandbox:COMMIT` images, keeping the running build, the one before it and a build waiting to start, and trims Docker build cache to `BUILD_CACHE_MAX` (`install.env`, default `8gb`, `none` to keep it). `prune_releases` existed but was never called, so every update left a release and its build cache behind (one box reached 44 releases and about 47 GB of build cache). Nothing is removed after a failed or rolled-back update, or when no release is running. Docs impact: containers/headless/app/README.md.
 - Run Cloud Build folder checks as an unprivileged user with writable workspace caches and temporary storage, retaining root-only setup and result uploads. Docs impact: none.
 - Fix automatic review sandbox mounts for detached job clones, preserve linked-worktree reviews, and durably back off failed checkout recovery while stopping failed pipeline admission for the same head. Docs impact: none.
 
