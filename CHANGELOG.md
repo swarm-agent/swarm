@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Preserve Git diagnostics for landing proofs, verify from the job clone with owner-accessible scratch and sandbox execution, and clarify that proof declarations are optional unless require-proof is enabled. Docs impact: none.
+- Skip terminal non-deliverable jobs during automatic publishing and schedule durable bounded retries independently so later completions can enter landing. Docs impact: none.
 
 - Allow worker Coders to run commands named by their brief while leaving self-initiated verification builds, tests and linters to landing. Docs impact: docs/checkpoints/remote-workers-and-mailbox-roadmap.md clarifies brief-required command execution.
 - Prevent failed automatic-delivery signals from blocking later jobs after daemon updates; persist bounded retries and log skip, wait, and give-up reasons. Docs impact: none.

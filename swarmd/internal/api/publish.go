@@ -184,7 +184,8 @@ type AutoPublisher struct {
 const (
 	autoPublishPendingKey = "publish_meta/pending"
 	autoPublishCursorKey  = "publish_meta/cursor"
-	autoPublishMaxRetries = 20 // about an hour with backoff: a job's review settles in minutes
+	autoPublishMaxRetries = 20
+	autoPublishRetryDelay = 90 * time.Second // at most about 30 minutes of assessment waits
 )
 
 // NewAutoPublisher reads the machine's signal feed from the last delivered
@@ -213,16 +214,12 @@ func (p *AutoPublisher) Run(ctx context.Context) {
 		}
 	}()
 	defer func() { <-landingDone }()
-	failures := 0
 	for {
-		wait := 30 * time.Second
 		if err := p.once(ctx); err != nil && ctx.Err() == nil {
-			failures++
-			wait = min(time.Duration(1<<min(failures, 7))*5*time.Second, 5*time.Minute)
-		} else {
-			failures = 0
+			log.Printf("auto publish ingestion: %v", err)
 		}
-		timer := time.NewTimer(wait)
+		// Retry deadlines belong to individual signals, not the feed.
+		timer := time.NewTimer(30 * time.Second)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -235,17 +232,19 @@ func (p *AutoPublisher) Run(ctx context.Context) {
 }
 
 func (p *AutoPublisher) once(ctx context.Context) error {
+	consumeErr := p.consume(ctx, p.deliver)
 	var recoveryErr error
 	if p.server.publishConfig != "" {
 		recoveryErr = p.recoverReviews(ctx, p.deliver)
 	}
-	// A stale recovery target must not prevent new completion ingestion.
-	return errors.Join(recoveryErr, p.consume(ctx, p.deliver))
+	// New completion ingestion takes priority over stale recovery targets.
+	return errors.Join(consumeErr, recoveryErr)
 }
 
 type autoPublishPending struct {
-	Signal   pebblestore.Signal `json:"signal"`
-	Attempts int                `json:"attempts"`
+	Signal      pebblestore.Signal `json:"signal"`
+	Attempts    int                `json:"attempts"`
+	NextAttempt time.Time          `json:"next_attempt,omitempty"`
 }
 
 // consume advances only after admission or durable retry handoff. One broken
@@ -282,28 +281,34 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 		}
 		return err
 	}
-	// Retry each deferred signal once per pass, retaining its retry budget
-	// across daemon restarts. Persist before advancing the feed cursor.
-	remaining := make([]autoPublishPending, 0, len(pending))
+	// Ingest new completions before retrying old work. Each durable retry has
+	// its own deadline; unrelated feed activity must not exhaust its budget.
+	retries := len(pending)
 	account := p.server.OutboxAccount()
-	for _, item := range pending {
-		if item.Signal.Account != account {
-			remaining = append(remaining, item)
-			continue
-		}
-		p.mu.Lock()
-		p.attempts[item.Signal.Seq] = item.Attempts
-		p.mu.Unlock()
-		if err := attempt(item.Signal); err != nil {
+	retryPending := func() error {
+		remaining := make([]autoPublishPending, 0, len(pending))
+		for _, item := range pending[:retries] {
+			if time.Now().Before(item.NextAttempt) {
+				remaining = append(remaining, item)
+				continue
+			}
+			if item.Signal.Account != account {
+				remaining = append(remaining, item)
+				continue
+			}
 			p.mu.Lock()
-			item.Attempts = p.attempts[item.Signal.Seq]
+			p.attempts[item.Signal.Seq] = item.Attempts
 			p.mu.Unlock()
-			remaining = append(remaining, item)
+			if err := attempt(item.Signal); err != nil {
+				p.mu.Lock()
+				item.Attempts = p.attempts[item.Signal.Seq]
+				item.NextAttempt = time.Now().Add(autoPublishRetryDelay)
+				p.mu.Unlock()
+				remaining = append(remaining, item)
+			}
 		}
-	}
-	pending = remaining
-	if err := p.state.PutJSON(autoPublishPendingKey, pending); err != nil {
-		return err
+		pending = append(remaining, pending[retries:]...)
+		return p.state.PutJSON(autoPublishPendingKey, pending)
 	}
 	for ctx.Err() == nil {
 		page, err := p.feed.ListAfter(cursor, 100, pebblestore.SignalFilter{Account: account})
@@ -329,7 +334,7 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 						p.mu.Lock()
 						tries := p.attempts[sig.Seq]
 						p.mu.Unlock()
-						pending = append(pending, autoPublishPending{Signal: sig, Attempts: tries})
+						pending = append(pending, autoPublishPending{Signal: sig, Attempts: tries, NextAttempt: time.Now().Add(autoPublishRetryDelay)})
 						if err := p.state.PutJSON(autoPublishPendingKey, pending); err != nil {
 							return err
 						}
@@ -348,6 +353,9 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 			}
 		}
 		if len(page.Signals) < 100 {
+			if err := retryPending(); err != nil {
+				return err
+			}
 			return errors.Join(failures...)
 		}
 	}
@@ -373,10 +381,17 @@ func autoPublishNext(status string, result map[string]any) int {
 	if status == "needs_review" && head != "" && head == base {
 		return autoPublishSkip
 	}
-	if status != "needs_review" || !controlMCPJobHasCommits(result) {
+	switch status {
+	case "in_progress", "running":
 		return autoPublishWait
+	case "needs_review":
+		if !controlMCPJobHasCommits(result) {
+			return autoPublishWait
+		}
+		return autoPublishDeliver
+	default:
+		return autoPublishSkip
 	}
-	return autoPublishDeliver
 }
 
 // errAutoPublishWait asks for a retry: the job's commits are not assessed yet.
@@ -393,6 +408,9 @@ func (p *AutoPublisher) logDecision(sig pebblestore.Signal, decision, reason str
 }
 
 func (p *AutoPublisher) skip(sig pebblestore.Signal, reason string) error {
+	p.mu.Lock()
+	delete(p.attempts, sig.Seq)
+	p.mu.Unlock()
 	p.logDecision(sig, "skip", reason)
 	return nil
 }
@@ -411,8 +429,12 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		return p.retry(sig, err)
 	}
 	result := controlMCPJobResultJSON(view)
+	status, _ := view["status"].(string)
 	if result["delivery_state"] == "report_only" {
 		return p.skip(sig, "report-only job")
+	}
+	if autoPublishNext(status, result) == autoPublishSkip {
+		return p.skip(sig, fmt.Sprintf("status %q: job is not deliverable", status))
 	}
 	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
 	if err != nil {
@@ -442,7 +464,6 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		if err := c.emitPipeline(workerID, runID, refs, pending); err != nil {
 			return err
 		}
-		status, _ := view["status"].(string)
 		switch autoPublishNext(status, result) {
 		case autoPublishSkip:
 			return p.skip(sig, "job has no deliverable commits")
@@ -484,7 +505,6 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 			return p.retry(sig, err)
 		}
 	}
-	status, _ := view["status"].(string)
 	switch autoPublishNext(status, result) {
 	case autoPublishSkip:
 		return p.skip(sig, "job has no deliverable commits")
@@ -497,6 +517,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	p.mu.Lock()
 	delete(p.attempts, sig.Seq)
 	p.mu.Unlock()
+	p.logDecision(sig, "deliver", "job admitted for publishing")
 	return nil
 }
 

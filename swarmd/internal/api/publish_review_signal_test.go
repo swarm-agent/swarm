@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/publish"
@@ -193,6 +194,21 @@ func TestAutoPublishRestartDoesNotBlockLaterJobs(t *testing.T) {
 			if _, err := db.GetJSON(autoPublishCursorKey, &cursor); err != nil || cursor != last.Seq {
 				t.Fatalf("cursor=%d want %d: %v", cursor, last.Seq, err)
 			}
+			// Advance durable deadlines without sleeping; restart must retain budgets.
+			due := func() {
+				t.Helper()
+				var pending []autoPublishPending
+				if _, err := db.GetJSON(autoPublishPendingKey, &pending); err != nil {
+					t.Fatal(err)
+				}
+				for i := range pending {
+					pending[i].NextAttempt = time.Time{}
+				}
+				if err := db.PutJSON(autoPublishPendingKey, pending); err != nil {
+					t.Fatal(err)
+				}
+			}
+			due()
 			// Restart again: retry responsibility must survive cursor advancement.
 			p = s.NewAutoPublisher(feed, db)
 			_ = p.consume(context.Background(), deliver)
@@ -201,6 +217,7 @@ func TestAutoPublishRestartDoesNotBlockLaterJobs(t *testing.T) {
 			}
 			// Repeated restarts must not reset a permanent failure's budget.
 			for i := 2; i < autoPublishMaxRetries; i++ {
+				due()
 				p = s.NewAutoPublisher(feed, db)
 				_ = p.consume(context.Background(), deliver)
 			}
@@ -220,6 +237,98 @@ func TestAutoPublishRestartDoesNotBlockLaterJobs(t *testing.T) {
 			var pending []autoPublishPending
 			if _, err := db.GetJSON(autoPublishPendingKey, &pending); err != nil || len(pending) != 0 {
 				t.Fatalf("exhausted retry retained: %+v %v", pending, err)
+			}
+		})
+	}
+}
+
+// Purpose: consume and autoPublishNext must skip terminal jobs and admit later
+// completions while an older signal remains durably pending. Real signal,
+// cursor and queue stores are the narrowest scheduling boundary; discovery is
+// supplied as job views, and no Git landing or provider execution is claimed.
+func TestAutoPublishPendingSchedule(t *testing.T) {
+	for _, kind := range []string{"worker.run.succeeded", "job.reviewed"} {
+		t.Run(kind, func(t *testing.T) {
+			s, _, _, cleanup := setupScopedAuthTestServer(t)
+			defer cleanup()
+			s.SetPublishConfig("configured")
+			db := s.sessions.Store().Underlying()
+			feed := store.NewSignalStore(db)
+			account := s.OutboxAccount()
+			q := publish.NewQueue(db)
+			appendSignal := func(kind, run string) store.Signal {
+				t.Helper()
+				sig, err := feed.Append(store.Signal{Kind: kind, Severity: store.SignalSeverityInfo, Source: store.SignalSourceSwarmd, Account: account, Summary: "pending schedule regression", Refs: map[string]string{"worker_id": "worker", "run_id": run}, Attrs: map[string]string{"verdict": "ok"}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return sig
+			}
+			start := appendSignal("test.started", "")
+			if err := db.PutJSON(autoPublishCursorKey, start.Seq); err != nil {
+				t.Fatal(err)
+			}
+			p := s.NewAutoPublisher(feed, db)
+			status := "in_progress"
+			calls := 0
+			head := strings.Repeat("a", 40)
+			deliver := func(ctx context.Context, sig store.Signal) error {
+				jobStatus := "needs_review"
+				result := map[string]any{"head": head, "commits": []any{map[string]any{"sha": head}}, "delivery_state": "candidate_work"}
+				if sig.Refs["run_id"] == "old" {
+					calls++
+					jobStatus = status
+					result = nil
+				}
+				switch autoPublishNext(jobStatus, result) {
+				case autoPublishSkip:
+					return p.skip(sig, "terminal job")
+				case autoPublishWait:
+					return p.retry(sig, errAutoPublishWait)
+				}
+				_, err := q.Enqueue(publish.Entry{Account: account, Request: publish.Request{Folder: "/project", JobID: sig.Refs["run_id"], Branch: "agent/" + sig.Refs["run_id"], Head: head, BaseBranch: "dev"}})
+				return err
+			}
+			old := appendSignal("worker.run.succeeded", "old")
+			if err := p.consume(context.Background(), deliver); !errors.Is(err, errAutoPublishWait) {
+				t.Fatalf("initial wait: %v", err)
+			}
+			// The old job becomes blocked during backoff; a later completion is
+			// ingested after restart while that old signal is still pending.
+			status = "blocked"
+			last := appendSignal(kind, "later")
+			p = s.NewAutoPublisher(feed, db)
+			if err := p.consume(context.Background(), deliver); err != nil {
+				t.Fatal(err)
+			}
+			entry, _, err := q.Get(account, "later")
+			if err != nil || entry.State != "queued" || entry.Request.Head != head {
+				t.Fatalf("later job not queued: %+v %v", entry, err)
+			}
+			var pending []autoPublishPending
+			if _, err := db.GetJSON(autoPublishPendingKey, &pending); err != nil {
+				t.Fatal(err)
+			}
+			if len(pending) != 1 || pending[0].Signal.Seq != old.Seq || pending[0].Attempts != 1 || calls != 1 {
+				t.Fatalf("retry schedule not preserved: %+v calls=%d", pending, calls)
+			}
+			var cursor uint64
+			if _, err := db.GetJSON(autoPublishCursorKey, &cursor); err != nil || cursor != last.Seq {
+				t.Fatalf("cursor=%d: %v", cursor, err)
+			}
+			pending[0].NextAttempt = time.Time{}
+			if err := db.PutJSON(autoPublishPendingKey, pending); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.consume(context.Background(), deliver); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db.GetJSON(autoPublishPendingKey, &pending); err != nil || len(pending) != 0 {
+				t.Fatalf("blocked job still pending: %+v %v", pending, err)
+			}
+			entry, _, err = q.Get(account, "old")
+			if err != nil || entry.State != "" || calls != 2 {
+				t.Fatalf("blocked job admitted or retried: %+v calls=%d %v", entry, calls, err)
 			}
 		})
 	}
