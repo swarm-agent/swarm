@@ -203,8 +203,9 @@ it; its own maxima are unchanged (1 day for session keys, 30 days with
 `--agent`, 365 days with `--monitor` or `--ai-access`). In the SDK the expiry is
 a required parameter of `createGatewayToken`, `createOperatorToken`
 (`expiresInSeconds`), `auth.createScopedToken` and `auth.createAIKey`
-(`expires_in_seconds`). Keys stored before this rule keep working until
-revoked: `GET /v3/auth/tokens` and `swarmctl setup sdk-tokens` mark them
+(`expires_in_seconds`). A gateway or operator token stored before this rule
+is refused when used (a `token.denied` signal and one daemon log line): mint
+a new one. Other keys stored before this rule keep working until revoked: `GET /v3/auth/tokens` and `swarmctl setup sdk-tokens` mark them
 `"never_expires": true`, and at each start the daemon raises one
 `token.never_expires` warning signal per account listing their IDs. Nothing is
 revoked automatically. Trigger worker, remote transport and runner credentials

@@ -537,7 +537,8 @@ func New(cfg config.Config) (*Daemon, error) {
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStoreWithSecretStore(store, secretStore), events)
 	securitySvc.SetSignalEmitter(signalEmitter)
-	// Keys stored without an expiry keep working; the owner is told which.
+	// Keys stored without an expiry keep working (agent-bound ones are refused
+	// when used); the owner is told which.
 	if ids, err := securitySvc.WarnNeverExpiringTokens(); err != nil {
 		log.Printf("swarmd could not check stored keys for missing expiry: %v", err)
 	} else if len(ids) > 0 {
