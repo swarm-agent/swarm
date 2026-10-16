@@ -48,7 +48,7 @@ func (r imageResolver) SandboxEnvironment(string) (sandbox.EnvironmentImage, boo
 var commitID = regexp.MustCompile(`^[a-fA-F0-9]{40,64}$`)
 
 func (eng *SandboxEngine) Execute(ctx context.Context, l store.RunnerLanding, dir string, emit func([]byte) error) (codes []int, err error) {
-	if !commitID.MatchString(l.HeadCommit) || l.CheckTimeout <= 0 || len(l.Checks) == 0 {
+	if !commitID.MatchString(l.HeadCommit) || !commitID.MatchString(l.BaseCommit) || l.CheckTimeout <= 0 || len(l.Checks) == 0 {
 		return nil, errors.New("invalid landing definition")
 	}
 	// Credentials stay outside this disposable project mount. Root processes use
@@ -59,7 +59,7 @@ func (eng *SandboxEngine) Execute(ctx context.Context, l store.RunnerLanding, di
 		if err = os.Chown(dir, uid, gid); err != nil {
 			return nil, err
 		}
-		if err = os.Chown(filepath.Join(dir, "source.bundle"), uid, gid); err != nil {
+		if err = os.Chown(filepath.Join(dir, "source.tar.gz"), uid, gid); err != nil {
 			return nil, err
 		}
 	}
@@ -72,7 +72,7 @@ func (eng *SandboxEngine) Execute(ctx context.Context, l store.RunnerLanding, di
 	if err = os.Chown(project, uid, gid); err != nil {
 		return nil, err
 	}
-	if err = os.Rename(filepath.Join(dir, "source.bundle"), filepath.Join(project, "source.bundle")); err != nil {
+	if err = os.Rename(filepath.Join(dir, "source.tar.gz"), filepath.Join(project, "source.tar.gz")); err != nil {
 		return nil, err
 	}
 	m, err := sandbox.NewManager(ctx, sandbox.Config{Mode: sandbox.ModeRequired, Runtime: "runsc", UID: uid, GID: gid, StateDir: filepath.Join(dir, "state")}, nil)
@@ -99,20 +99,21 @@ func (eng *SandboxEngine) Execute(ctx context.Context, l store.RunnerLanding, di
 	defer func() { err = errors.Join(err, landing.Release()) }()
 	checkout := filepath.Join(project, "checkout")
 	// All repository parsing happens inside the fresh sandbox, never on the host.
-	for _, args := range [][]string{{"git", "clone", "--no-checkout", "--", filepath.Join(project, "source.bundle"), checkout}, {"git", "-C", checkout, "checkout", "--detach", l.HeadCommit}} {
+	for _, args := range archiveCommands(project, checkout) {
 		result, e := landing.Exec(ctx, sandbox.ExecRequest{Command: args, WorkingDir: project, Timeout: 5 * time.Minute, MaxTimeout: 5 * time.Minute, MaxOutput: 64 << 10})
 		if e != nil {
 			return nil, e
 		}
 		if result.ExitCode != 0 {
-			return nil, fmt.Errorf("bundle checkout exited %d", result.ExitCode)
+			return nil, fmt.Errorf("archive preparation exited %d", result.ExitCode)
 		}
 	}
+	checkEnv := landingEnv(l)
 	for i, check := range l.Checks {
 		var mu sync.Mutex
 		var streamErr error
 		checkCtx, cancel := context.WithTimeout(ctx, time.Duration(l.CheckTimeout)*time.Second)
-		result, e := landing.Exec(checkCtx, sandbox.ExecRequest{Command: []string{"bash", "-lc", check}, WorkingDir: checkout, Env: l.Env, Timeout: time.Duration(l.CheckTimeout) * time.Second, MaxTimeout: time.Duration(l.CheckTimeout) * time.Second, MaxOutput: 2 << 20, OnOutput: func(p []byte) {
+		result, e := landing.Exec(checkCtx, sandbox.ExecRequest{Command: []string{"bash", "-lc", check}, WorkingDir: checkout, Env: checkEnv, Timeout: time.Duration(l.CheckTimeout) * time.Second, MaxTimeout: time.Duration(l.CheckTimeout) * time.Second, MaxOutput: 2 << 20, OnOutput: func(p []byte) {
 			mu.Lock()
 			defer mu.Unlock()
 			if streamErr == nil {
@@ -146,4 +147,26 @@ func (eng *SandboxEngine) Execute(ctx context.Context, l store.RunnerLanding, di
 		}
 	}
 	return codes, nil
+}
+
+// archiveCommands run only inside the disposable sandbox. No repository
+// history is transported; the single local commit exists for repository-aware checks.
+func archiveCommands(project, checkout string) [][]string {
+	return [][]string{
+		{"mkdir", "--", checkout},
+		{"tar", "--extract", "--gzip", "--file", filepath.Join(project, "source.tar.gz"), "--directory", checkout, "--no-same-owner", "--no-same-permissions", "--exclude=.git"},
+		{"git", "-C", checkout, "init", "--template="},
+		{"git", "-C", checkout, "add", "--force", "--all"},
+		{"git", "-C", checkout, "-c", "user.name=Swarm Runner", "-c", "user.email=runner@swarm.local", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "Landing archive tree"},
+	}
+}
+
+func landingEnv(l store.RunnerLanding) map[string]string {
+	env := make(map[string]string, len(l.Env)+2)
+	for k, v := range l.Env {
+		env[k] = v
+	}
+	env["SWARM_LANDING_HEAD"] = l.HeadCommit
+	env["SWARM_LANDING_BASE"] = l.BaseCommit
+	return env
 }

@@ -4,6 +4,8 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +35,15 @@ type Runner struct {
 	Engine                           Engine
 	Logger                           *log.Logger
 	heartbeat, statusInterval, retry time.Duration
+}
+
+// landingRequest extends the hub landing with its archive transport metadata.
+// Keep this wire contract local while the hub persistence change lands separately.
+type landingRequest struct {
+	store.RunnerLanding
+	PayloadFormat string `json:"payload_format"`
+	ArchiveSHA256 string `json:"archive_sha256"`
+	ArchiveBytes  int64  `json:"archive_bytes"`
 }
 
 type update struct {
@@ -170,7 +181,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			continue
 		}
 		var claim struct {
-			Landing *store.RunnerLanding `json:"landing"`
+			Landing *landingRequest `json:"landing"`
 		}
 		if resp.StatusCode != 204 {
 			err = json.NewDecoder(io.LimitReader(resp.Body, 128<<10)).Decode(&claim)
@@ -203,7 +214,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (r *Runner) runLanding(ctx context.Context, l store.RunnerLanding) error {
+func (r *Runner) runLanding(ctx context.Context, l landingRequest) error {
 	started := time.Now()
 	path := "/v3/runners/landings/" + url.PathEscape(l.ID)
 	work, cancel := context.WithCancel(ctx)
@@ -253,24 +264,32 @@ func (r *Runner) runLanding(ctx context.Context, l store.RunnerLanding) error {
 	var codes []int
 	if err == nil {
 		err = func() error {
-			resp, e := r.request(work, http.MethodGet, path+"/bundle", nil)
+			digest, e := hex.DecodeString(l.ArchiveSHA256)
+			if l.PayloadFormat != "archive-v1" || e != nil || len(digest) != sha256.Size || l.ArchiveBytes <= 0 || l.ArchiveBytes > 512<<20 {
+				return errors.New("invalid archive-v1 payload metadata")
+			}
+			resp, e := r.request(work, http.MethodGet, path+"/payload", nil)
 			if e != nil {
-				return fmt.Errorf("fetch bundle: %w", e)
+				return fmt.Errorf("fetch payload: %w", e)
 			}
 			defer resp.Body.Close()
-			f, e := os.OpenFile(dir+"/source.bundle", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+			f, e := os.OpenFile(dir+"/source.tar.gz", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 			if e != nil {
 				return e
 			}
-			n, e := io.Copy(f, io.LimitReader(resp.Body, (512<<20)+1))
+			hash := sha256.New()
+			n, e := io.Copy(io.MultiWriter(f, hash), io.LimitReader(resp.Body, l.ArchiveBytes+1))
 			e = errors.Join(e, f.Close())
 			if e != nil {
 				return e
 			}
-			if n > 512<<20 {
-				return errors.New("bundle exceeds 512 MiB")
+			if n != l.ArchiveBytes {
+				return errors.New("payload archive_bytes mismatch")
 			}
-			codes, e = r.Engine.Execute(work, l, dir, emit)
+			if !bytes.Equal(hash.Sum(nil), digest) {
+				return errors.New("payload archive_sha256 mismatch")
+			}
+			codes, e = r.Engine.Execute(work, l.RunnerLanding, dir, emit)
 			return e
 		}()
 		err = errors.Join(err, os.RemoveAll(dir))

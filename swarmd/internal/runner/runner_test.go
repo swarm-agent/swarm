@@ -2,8 +2,10 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,7 +31,7 @@ func (e *fakeEngine) Health(context.Context, string) (bool, bool, error) {
 }
 func (e *fakeEngine) Execute(ctx context.Context, l store.RunnerLanding, dir string, emit func([]byte) error) ([]int, error) {
 	e.calls++
-	if _, err := os.ReadFile(filepath.Join(dir, "source.bundle")); err != nil {
+	if _, err := os.ReadFile(filepath.Join(dir, "source.tar.gz")); err != nil {
 		return nil, err
 	}
 	select {
@@ -47,13 +49,13 @@ func (e *fakeEngine) Execute(ctx context.Context, l store.RunnerLanding, dir str
 	return codes, nil
 }
 
-// Purpose: Runner.Run must carry a lease through bundle, execution, bounded
+// Purpose: Runner.Run must carry a lease through verified archive payload, execution, bounded
 // output and result, renew it while running, and remove disposable files.
 // httptest plus the Engine boundary is the narrowest deterministic loop test;
 // it does not claim Docker/gVisor isolation or live hub compatibility.
 func TestRunnerLifecycle(t *testing.T) {
-	for _, bundleFails := range []bool{false, true} {
-		t.Run(map[bool]string{false: "checks", true: "bundle_failure"}[bundleFails], func(t *testing.T) {
+	for _, scenario := range []string{"checks", "fetch_failure", "sha_mismatch", "size_mismatch", "unsupported_format"} {
+		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			heartbeat := make(chan struct{})
@@ -70,12 +72,24 @@ func TestRunnerLifecycle(t *testing.T) {
 				switch {
 				case r.URL.Path == "/v3/runners/status":
 				case r.URL.Path == "/v3/runners/claim":
-					json.NewEncoder(w).Encode(map[string]any{"landing": store.RunnerLanding{ID: "test-landing", LeaseID: "test-lease", Checks: []string{"true", "true"}}})
-				case strings.HasSuffix(r.URL.Path, "/bundle"):
-					if bundleFails {
+					hash := fmt.Sprintf("%x", sha256.Sum256([]byte("archive bytes")))
+					if scenario == "sha_mismatch" {
+						hash = strings.Repeat("0", 64)
+					}
+					size := 13
+					if scenario == "size_mismatch" {
+						size++
+					}
+					format := "archive-v1"
+					if scenario == "unsupported_format" {
+						format = "bundle"
+					}
+					json.NewEncoder(w).Encode(map[string]any{"landing": map[string]any{"id": "test-landing", "lease_id": "test-lease", "checks": []string{"true", "true"}, "payload_format": format, "archive_sha256": hash, "archive_bytes": size}})
+				case strings.HasSuffix(r.URL.Path, "/payload"):
+					if scenario == "fetch_failure" {
 						w.WriteHeader(503)
 					} else {
-						w.Write([]byte("bundle"))
+						w.Write([]byte("archive bytes"))
 					}
 				case strings.HasSuffix(r.URL.Path, "/heartbeat"):
 					once.Do(func() { close(heartbeat) })
@@ -101,9 +115,13 @@ func TestRunnerLifecycle(t *testing.T) {
 			if got.LeaseID != "test-lease" {
 				t.Fatal("result not delivered")
 			}
-			if bundleFails {
-				if got.State != "environment_failed" || len(got.ExitCodes) != 0 || engine.calls != 0 {
-					t.Fatalf("bundle failure misclassified: %+v", got)
+			if scenario != "checks" {
+				reason := map[string]string{"fetch_failure": "fetch payload", "sha_mismatch": "archive_sha256 mismatch", "size_mismatch": "archive_bytes mismatch", "unsupported_format": "invalid archive-v1"}[scenario]
+				if !strings.Contains(got.Output, reason) {
+					t.Fatalf("missing failure reason %q: %+v", reason, got)
+				}
+				if got.State != "environment_failed" || len(got.ExitCodes) != 0 || engine.calls != 0 || got.Output == "" || chunks != 0 {
+					t.Fatalf("payload failure misclassified: %+v", got)
 				}
 			} else {
 				if len(got.ExitCodes) != 2 || chunks != 2 || engine.calls != 1 {

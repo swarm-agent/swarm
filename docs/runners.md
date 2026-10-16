@@ -93,11 +93,11 @@ Runner-only routes:
 - `PUT /v3/runners/landings/ID/output` (`runners:report`): `{lease_id, output}` appends at most 64 KiB, retaining the newest 2 MiB.
 - `PUT /v3/runners/landings/ID/result` (`runners:report`): `{lease_id, exit_codes, duration_ms}` terminates a live lease. Exit codes must match the check count.
 - `PUT /v3/runners/status` (`runners:report`): `{state, reason, docker, gvisor}`, where state is idle, busy, or unhealthy.
-- `GET /v3/runners/landings/ID/bundle` is reserved for `runners:claim` but currently returns 503: bundle creation and delivery are not implemented.
+- `GET /v3/runners/landings/ID/payload` (`runners:claim`): source archive (`git archive --format=tar.gz`) of the rebased head tree. The obsolete `/bundle` route returns 410 Gone.
 
 Lease expiry is reconciled during claim/report mutations. The first expiry allows one retry; the second becomes `environment_failed`. Stale lease IDs cannot mutate a replacement claim. No provider creates these requests yet.
 
-Remaining work: bundled source construction and size enforcement, long-poll notification, proactive expiry and environment-failure signals, secret-free environment validation, and complete HTTP/restart coverage. This is not a ready-to-use remote landing provider.
+Hub-side work is landing separately: archive source construction and size enforcement, long-poll notification, proactive expiry and environment-failure signals, secret-free environment validation, and complete HTTP/restart coverage. This is not a ready-to-use remote landing provider.
 
 ## Runner mode
 
@@ -114,17 +114,20 @@ The loop claims one request, renews its lease every 20 seconds, streams bounded
 output, and reports codes/duration and the local failing-lines excerpt. Status
 is reported at startup, transitions, and every 60 seconds; engine/disk failures
 stop new claims. Environment images reuse the local definition hash and sandbox
-builder. A fresh local landing sandbox checks out the bundle head and runs each
+builder. A fresh local landing sandbox unpacks the verified archive and runs each
 check with `bash -lc`. Request directories, containers and home volumes are
 released after use; definition-keyed images may be reused. It never starts
 agents, receives provider keys, integrates commits, pushes, or listens inbound.
 
-Compatibility gap at this revision: the hub bundle endpoint still returns 503,
-and its result decoder cannot persist `state: "environment_failed"`. Runner
-mode sends that explicit state with no invented check codes; an old hub rejects
-it and the runner exits rather than claiming success. The parallel hub work
-must implement this result contract and bundle delivery. The current runner
-expects a self-contained Git bundle, not an archive or incremental bundle with
-missing prerequisites, and uses a disposable `project/checkout` layout; exact
-hub-local absolute-path layout parity is not represented in the claim schema.
-Fake-hub tests exercise the loop, not live Docker or hub interoperability.
+Claims must carry `payload_format: "archive-v1"`, `base_commit`, `head_commit`,
+`archive_sha256` and `archive_bytes`. The runner fetches `/payload`, verifies
+its exact byte count and SHA-256 (maximum 512 MiB), then extracts it inside the
+fresh container at `project/checkout`. It initializes a repository and commits
+the tree once for repository-aware checks; this local commit is not the real
+head. Checks receive the real IDs as `SWARM_LANDING_HEAD` and
+`SWARM_LANDING_BASE`, overriding any same-named definition variables. No Git
+history is transferred. Payload fetch, integrity, or preparation failures report
+`state: "environment_failed"` with the reason in output and no check codes.
+There is no bundle fallback. Hub payload delivery and environment-failure result
+support land separately; incompatible hubs cause an explicit error, not success.
+Fake-hub and archive preparation tests do not prove live Docker/hub interoperability.
