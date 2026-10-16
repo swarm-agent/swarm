@@ -12,7 +12,9 @@ import * as core from './core.mjs';
 
 const MAX_BODY = 8192;
 
-export function gatewayHandler({ gateway, operator, config, visitors, emit: sendEvent, presence = core.createPresence(), feed = core.createFeed(), now = Date.now }) {
+export function gatewayHandler({ gateway, operator, config, visitors, emit: sendEvent, presence = core.createPresence(), feed = core.createFeed(), blocks = core.blocklist(), now = Date.now }) {
+  const agentLabel = config.agentLabel || 'AI worker';
+  const blockDays = config.blockDays ?? 30;
   const perVisitor = core.createLimiter({ limit: config.visitorMessagesPerWindow, windowMs: config.visitorWindowMs, now });
   const acceptTimeoutMs = config.acceptTimeoutMs ?? 120_000;
   const alertsPerVisitor = config.alertsPerVisitor ?? 3;
@@ -69,17 +71,21 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     return visitors.touch(visitorId, { session_id: session.id, messages: 0 });
   };
 
-  async function chat(body) {
+  async function chat(body, net) {
     const problem = core.messageProblem(body, config.maxMessageChars);
     if (problem) return [400, { status: 'invalid', error: problem }];
     if (!perVisitor(body.visitor_id)) return [429, { status: 'slow_down' }];
-    // Ended by the agent (end_conversation): no daemon call, no model run, until a person reopens it.
-    if (visitors.get(body.visitor_id)?.ended) return [200, { status: 'ended' }];
+    // A person blocked this visitor's network: nothing reaches the daemon.
+    if (blocks.blocked(net)) return [200, { status: 'blocked' }];
+    // Ended by the agent (end_conversation) or a person (resolve, block): no daemon
+    // call, no model run, until a person reopens it.
+    const closed = visitors.get(body.visitor_id)?.ended;
+    if (closed) return [200, { status: 'ended', reason: closed.reason }];
     const spend = await gateway.agents.spendToday();
     if (spend.limit_exceeded) return [503, { status: 'resting' }];
     const visitor = await conversation(body.visitor_id);
     if (visitor.messages >= config.maxConversationMessages) return [200, { status: 'conversation_full', booking_url: config.bookingUrl }];
-    await visitors.touch(body.visitor_id, { messages: visitor.messages + 1 });
+    await visitors.touch(body.visitor_id, { messages: visitor.messages + 1, ...(net ? { net } : {}) });
     const sessionId = visitor.session_id;
     const detail = await gateway.sessions.get(sessionId);
     if (core.takeoverOf(detail)?.state === 'human') {
@@ -90,11 +96,16 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     }
     const endConversation = (ended) => visitors.touch(body.visitor_id, { ended });
     const setPerson = (person) => visitors.touch(body.visitor_id, { person });
-    const handlers = core.toolHandlers({ playbook: config.playbook, dataDir: config.dataDir, bookingUrl: config.bookingUrl, emit, sessionId, visitorId: body.visitor_id, endConversation, presence, setPerson, visitors, now });
+    const setProposal = (proposal) => visitors.touch(body.visitor_id, { proposal });
+    const handlers = core.toolHandlers({ playbook: config.playbook, dataDir: config.dataDir, bookingUrl: config.bookingUrl, emit, sessionId, visitorId: body.visitor_id, endConversation, presence, setPerson, setProposal, visitors, now });
     const { reply, messages } = await waitForSlot(() => gateway.agents.converse(sessionId, body.message, handlers, { timeoutMs: config.replyTimeoutMs }));
     // seq lets the widget poll for a person's later replies without repeating this one.
-    const status = visitors.get(body.visitor_id)?.ended ? 'ended' : 'answered';
-    return [200, { status, reply, seq: core.latestReplySeq(messages), person: core.publicPerson(await personOf(body.visitor_id)) }];
+    const after = visitors.get(body.visitor_id);
+    const status = after?.ended ? 'ended' : 'answered';
+    const answer = { status, reply, seq: core.latestReplySeq(messages), person: core.publicPerson(await personOf(body.visitor_id)) };
+    // The card appears with the reply that filled it in, and stays until sent or dismissed.
+    if (after?.proposal) answer.proposal = core.publicProposal(after.proposal);
+    return [200, answer];
   }
 
   // The widget after a page refresh: this visitor's own conversation, text only.
@@ -105,12 +116,17 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     const messages = (detail.messages ?? [])
       .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.metadata?.visible !== false && String(m.content ?? '').trim())
       .slice(-50)
-      .map((m) => ({ seq: Number(m.global_seq ?? m.seq ?? 0), from: m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent', text: String(m.content) }));
-    return [200, { messages, with_person: core.takeoverOf(detail)?.state === 'human', person: core.publicPerson(await personOf(visitorId)), ended: Boolean(visitor.ended), contact_saved: Boolean(visitor.contact) }];
+      .map((m) => {
+        const from = m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent';
+        const author = from === 'person' && core.authorOf(m, visitor.authors);
+        return { seq: Number(m.global_seq ?? m.seq ?? 0), from, text: String(m.content), ...(author ? { name: author.name } : {}) };
+      });
+    return [200, { messages, with_person: core.takeoverOf(detail)?.state === 'human', person: core.publicPerson(await personOf(visitorId)), ended: Boolean(visitor.ended), ended_reason: visitor.ended?.reason ?? null, contact_saved: Boolean(visitor.contact), proposal: core.publicProposal(visitor.proposal) }];
   }
 
   // The "leave your email" form: saved for a person to follow up, no model run.
-  async function contact(body) {
+  async function contact(body, net) {
+    if (blocks.blocked(net)) return [200, { status: 'blocked' }];
     const email = typeof body?.email === 'string' ? body.email.trim() : '';
     const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 100) : '';
     const note = typeof body?.note === 'string' ? body.note.trim().slice(0, 500) : '';
@@ -121,12 +137,31 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     // Each save alerts staff, so one visitor gets a few, not a stream.
     if ((visitor.contacts ?? 0) >= alertsPerVisitor) return [429, { status: 'slow_down' }];
     await visitors.touch(body.visitor_id, { contacts: (visitor.contacts ?? 0) + 1 });
-    await core.saveLead({ dataDir: config.dataDir, emit, visitors, sessionId: visitor.session_id, visitorId: body.visitor_id, lead: { name, email, need: note }, source: 'form', now });
-    return [200, { status: 'saved' }];
+    const fromCard = body.from_proposal === true && Boolean(visitor.proposal);
+    await core.saveLead({ dataDir: config.dataDir, emit, visitors, sessionId: visitor.session_id, visitorId: body.visitor_id, lead: { name, email, need: note }, source: fromCard ? 'proposal' : 'form', now });
+    if (!fromCard) return [200, { status: 'saved' }];
+    // The visitor checked and sent the card the agent filled in: that is the goal of
+    // the chat, so it closes politely. A person can still reopen it from the console.
+    await visitors.touch(body.visitor_id, { proposal: null, ended: { reason: 'lead_saved', at: now() } });
+    emit('conversation.resolved', { session_id: visitor.session_id, visitor_id: body.visitor_id, reason: 'lead_saved' });
+    return [200, { status: 'saved', ended: true }];
+  }
+
+  // "Not now" on the card: it goes away and the chat carries on. No model run.
+  async function proposalAnswer(body, net) {
+    if (blocks.blocked(net)) return [200, { status: 'blocked' }];
+    if (!body || typeof body.visitor_id !== 'string' || !core.VISITOR_ID.test(body.visitor_id) || body.accept !== false) return [400, { status: 'invalid', error: 'visitor_id and accept: false are required' }];
+    if (!perVisitor(body.visitor_id)) return [429, { status: 'slow_down' }];
+    const visitor = visitors.get(body.visitor_id);
+    if (!visitor?.proposal) return [200, { status: 'declined' }];
+    await visitors.touch(body.visitor_id, { proposal: null });
+    emit('lead.declined', { session_id: visitor.session_id, visitor_id: body.visitor_id });
+    return [200, { status: 'declined' }];
   }
 
   // The visitor's answer to the agent's offer (the Yes / No thanks buttons): no model run.
-  async function personRequest(body) {
+  async function personRequest(body, net) {
+    if (blocks.blocked(net)) return [200, { status: 'blocked' }];
     if (!body || typeof body.visitor_id !== 'string' || !core.VISITOR_ID.test(body.visitor_id) || typeof body.accept !== 'boolean') return [400, { status: 'invalid', error: 'visitor_id and accept are required' }];
     if (!perVisitor(body.visitor_id)) return [429, { status: 'slow_down' }];
     const visitor = visitors.get(body.visitor_id);
@@ -156,6 +191,13 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
       if (!text(body?.id) || !text(body?.name) || !text(body?.role) || typeof body?.available !== 'boolean') return [400, { error: 'id, name, role and available are required' }];
       return [200, { online: body.available ? presence.beat(body) : presence.leave(body.id) }];
     }
+    if (path === '/ops/blocks') return [200, { blocks: blocks.list() }];
+    if (path === '/ops/unblock') {
+      if (typeof body?.net !== 'string' || !core.NET.test(body.net)) return [400, { error: 'net is required' }];
+      const removed = await blocks.remove(body.net);
+      if (removed) emit('visitor.unblocked', { net: body.net, by: body?.name });
+      return [200, { unblocked: removed }];
+    }
     if (path === '/ops/queue') {
       const waiting = [];
       for (const v of visitors.list()) {
@@ -169,7 +211,12 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     if (path === '/ops/transcript') {
       const detail = await operator.sessions.get(sessionId);
       const visitor = visitors.get(visitors.bySession(sessionId));
-      return [200, { takeover: core.takeoverOf(detail), ended: visitor?.ended ?? null, contact: visitor?.contact ?? null, messages: (detail.messages ?? []).filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ id: m.id, role: m.role, from: m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent', text: m.content, seq: m.global_seq })) }];
+      const messages = (detail.messages ?? []).filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => {
+        const from = m.metadata?.source === 'operator' ? 'person' : m.role === 'user' ? 'visitor' : 'agent';
+        const author = from === 'person' && core.authorOf(m, visitor?.authors);
+        return { id: m.id, role: m.role, from, text: m.content, seq: m.global_seq, ...(author ? { author } : {}) };
+      });
+      return [200, { takeover: core.takeoverOf(detail), ended: visitor?.ended ?? null, contact: visitor?.contact ?? null, proposal: core.publicProposal(visitor?.proposal), agent_label: agentLabel, blocked: Boolean(visitor?.net && blocks.blocked(visitor.net)), can_block_network: Boolean(visitor?.net), messages }];
     }
     if (path === '/ops/takeover') return [200, { takeover: await operator.agents.takeOver(sessionId) }];
     if (path === '/ops/accept') {
@@ -193,13 +240,41 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
       // The visitor starts a fresh conversation: the agent would otherwise read its
       // own goodbye in the history and keep treating the chat as closed.
       const visitorId = visitors.bySession(sessionId);
-      await visitors.touch(visitorId, { ended: null, person: null, session_id: null, messages: 0, previous_session_id: sessionId });
+      const net = visitors.get(visitorId)?.net;
+      if (net) await blocks.remove(net);
+      await visitors.touch(visitorId, { ended: null, person: null, proposal: null, session_id: null, messages: 0, previous_session_id: sessionId });
       emit('conversation.reopened', { session_id: sessionId, visitor_id: visitorId });
       return [200, { reopened: true }];
     }
+    if (path === '/ops/resolve' || path === '/ops/block') {
+      // A person closes the chat: done (resolve) or abusive (block, which also
+      // blocks the visitor's network for blockDays). Only reopen undoes either.
+      const visitorId = visitors.bySession(sessionId);
+      const visitor = visitors.get(visitorId);
+      const by = typeof body?.name === 'string' ? body.name.slice(0, 40) : undefined;
+      const reason = path === '/ops/block' ? 'blocked' : 'resolved';
+      if (core.takeoverOf(await operator.sessions.get(sessionId))?.state === 'human') await operator.agents.handBack(sessionId);
+      await visitors.touch(visitorId, { ended: { reason, at: now(), by }, person: null, proposal: null });
+      let network = false;
+      if (reason === 'blocked' && visitor?.net) {
+        await blocks.add(visitor.net, { until: now() + blockDays * 86_400_000, session_id: sessionId, visitor_id: visitorId, by });
+        network = true;
+      }
+      emit(reason === 'blocked' ? 'visitor.blocked' : 'conversation.resolved', { session_id: sessionId, visitor_id: visitorId, reason, by, network });
+      return [200, { ended: true, reason, network }];
+    }
     if (path === '/ops/reply') {
       if (typeof body?.content !== 'string' || !body.content.trim() || body.content.length > 4000) return [400, { error: 'content is required (at most 4000 characters)' }];
-      return [200, { message: await operator.agents.replyAsOperator(sessionId, body.content) }];
+      const message = await operator.agents.replyAsOperator(sessionId, body.content);
+      // Remember who sent it (the console adds the name from the verified login),
+      // so the console and the widget can show a name instead of "a person".
+      const key = message?.id ?? message?.global_seq;
+      if (key !== undefined && typeof body?.name === 'string' && body.name.trim()) {
+        const visitorId = visitors.bySession(sessionId);
+        const authors = Object.entries({ ...(visitors.get(visitorId)?.authors ?? {}), [String(key)]: { name: body.name.slice(0, 40), role: typeof body.role === 'string' ? body.role.slice(0, 40) : '' } }).slice(-200);
+        await visitors.touch(visitorId, { authors: Object.fromEntries(authors) });
+      }
+      return [200, { message }];
     }
     return [404, { error: 'not found' }];
   }
@@ -225,14 +300,17 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     }
     if (req.method === 'GET' && url.pathname === '/chat/status') {
       const staff = presence.online();
-      return json(res, 200, { staff_online: staff.length > 0, staff });
+      return json(res, 200, { staff_online: staff.length > 0, staff, agent_label: agentLabel });
     }
     if (inflight >= config.maxInflight) return json(res, 503, { status: 'busy' });
+    // The edge's keyed hash of the visitor's IP, for blocking; only trusted with the gateway key.
+    const netHeader = isOps ? undefined : req.headers['x-visitor-net'];
+    const net = typeof netHeader === 'string' && core.NET.test(netHeader) ? netHeader : undefined;
     inflight++;
     try {
       if (req.method === 'POST' && url.pathname === '/chat') {
         const body = await readBody(req);
-        const [status, data] = await chat(body);
+        const [status, data] = await chat(body, net);
         return json(res, status, data);
       }
       if (req.method === 'GET' && url.pathname === '/chat/history') {
@@ -240,11 +318,15 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
         return json(res, status, data);
       }
       if (req.method === 'POST' && url.pathname === '/chat/contact') {
-        const [status, data] = await contact(await readBody(req));
+        const [status, data] = await contact(await readBody(req), net);
         return json(res, status, data);
       }
       if (req.method === 'POST' && url.pathname === '/chat/person') {
-        const [status, data] = await personRequest(await readBody(req));
+        const [status, data] = await personRequest(await readBody(req), net);
+        return json(res, status, data);
+      }
+      if (req.method === 'POST' && url.pathname === '/chat/proposal') {
+        const [status, data] = await proposalAnswer(await readBody(req), net);
         return json(res, status, data);
       }
       if (req.method === 'GET' && url.pathname === '/chat/replies') {
@@ -252,7 +334,7 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
         const visitor = core.VISITOR_ID.test(visitorId) ? visitors.get(visitorId) : undefined;
         if (!visitor) return json(res, 200, { replies: [] });
         const detail = await gateway.sessions.get(visitor.session_id);
-        return json(res, 200, { with_person: core.takeoverOf(detail)?.state === 'human', person: core.publicPerson(await personOf(visitorId)), replies: core.repliesAfter(detail, Number(url.searchParams.get('after') ?? 0)) });
+        return json(res, 200, { with_person: core.takeoverOf(detail)?.state === 'human', person: core.publicPerson(await personOf(visitorId)), ended_reason: visitor.ended?.reason ?? null, replies: core.repliesAfter(detail, Number(url.searchParams.get('after') ?? 0), visitor.authors) });
       }
       if (isOps && (req.method === 'GET' || req.method === 'POST')) {
         const body = req.method === 'POST' ? await readBody(req) : {};
@@ -301,17 +383,20 @@ async function main() {
     replyTimeoutMs: Number(env.REPLY_TIMEOUT_MS ?? 45_000),
     acceptTimeoutMs: Number(env.ACCEPT_TIMEOUT_MS ?? 120_000),
     alertsPerVisitor: Number(env.ALERTS_PER_VISITOR ?? 3),
+    agentLabel: env.AGENT_LABEL ?? 'AI worker',
+    blockDays: Number(env.BLOCK_DAYS ?? 30),
   };
   if (config.gatewaySecret.length < 32 || config.opsSecret.length < 32) throw new Error('GATEWAY_SECRET_FILE and OPS_SECRET_FILE must each hold at least 32 characters');
   const gateway = new SwarmClient({ baseUrl: config.swarmUrl, token: await secret('SWARM_GATEWAY_TOKEN') });
   const operator = new SwarmClient({ baseUrl: config.swarmUrl, token: await secret('SWARM_OPERATOR_TOKEN') });
   const visitors = await core.createVisitorStore(join(config.dataDir, 'visitors.json'));
+  const blocks = await core.createBlocklist(join(config.dataDir, 'blocks.json'));
   const hub = core.createEmitter({ url: env.HUB_EVENTS_URL, secret: await secret('HUB_EVENTS_SECRET') });
   const alert = core.createAlerter({ url: env.ALERTS_URL, authHeader: await secret('ALERTS_AUTH'), consoleUrl: env.CONSOLE_URL });
   const emit = (type, data) => { hub(type, data); alert(type, data); };
   const port = Number(env.PORT ?? 8080);
   const presence = core.createPresence({ ttlMs: Number(env.PRESENCE_TTL_MS ?? 90_000) });
-  createServer(gatewayHandler({ gateway, operator, config, visitors, emit, presence })).listen(port, env.LISTEN_HOST ?? '0.0.0.0', () => {
+  createServer(gatewayHandler({ gateway, operator, config, visitors, emit, presence, blocks })).listen(port, env.LISTEN_HOST ?? '0.0.0.0', () => {
     console.log(`public chat gateway listening on ${port} for agent ${config.agentName}`);
   });
 }

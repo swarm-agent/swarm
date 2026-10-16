@@ -14,7 +14,7 @@ const GATEWAY_KEY = 'g'.repeat(40);
 const OPS_KEY = 'o'.repeat(40);
 const VISITOR = 'visitor_abcdefghijklmnop';
 
-function fakeClients({ takeover, spentOut = false, converseError, endsWith, offerWith, busyTimes = 0 } = {}) {
+function fakeClients({ takeover, spentOut = false, converseError, endsWith, offerWith, proposeWith, busyTimes = 0 } = {}) {
   const calls = [];
   let endOnce = endsWith;
   let busyLeft = busyTimes;
@@ -38,6 +38,11 @@ function fakeClients({ takeover, spentOut = false, converseError, endsWith, offe
           endOnce = undefined;
           return { reply: 'Goodbye.', messages: [{ role: 'assistant', global_seq: 9, content: 'Goodbye.' }] };
         }
+        if (proposeWith) {
+          // The "model" fills in the lead card for the visitor to check.
+          await handlers.propose_lead(proposeWith);
+          return { reply: 'Please check the card and press Send.', messages: [{ role: 'assistant', global_seq: 9, content: 'Please check the card and press Send.' }] };
+        }
         if (offerWith) {
           // The "model" offers a person; what it says depends on the tool's answer.
           const offer = await handlers.offer_person(offerWith);
@@ -53,7 +58,12 @@ function fakeClients({ takeover, spentOut = false, converseError, endsWith, offe
     agents: {
       takeOver: async (id) => { calls.push(['takeOver', id]); return { state: 'human' }; },
       handBack: async (id) => { calls.push(['handBack', id]); return { state: 'agent' }; },
-      replyAsOperator: async (id, content) => { calls.push(['reply', id, content]); return { role: 'assistant' }; },
+      replyAsOperator: async (id, content) => {
+        calls.push(['reply', id, content]);
+        const message = { id: 'op' + messages.length, role: 'assistant', global_seq: 20 + messages.length, content, metadata: { source: 'operator' } };
+        messages.push(message);
+        return message;
+      },
     },
   };
   return { gateway, operator, calls };
@@ -69,15 +79,15 @@ async function start(options = {}) {
     playbook: { pricing: 'Fixed price.' }, gatewaySecret: GATEWAY_KEY, opsSecret: OPS_KEY,
     maxMessageChars: 2000, visitorMessagesPerWindow: options.perVisitor ?? 20, visitorWindowMs: 60_000,
     maxConversationMessages: options.maxConversation ?? 30, maxInflight: 8, replyTimeoutMs: 1000,
-    acceptTimeoutMs: 120_000, busyWaitMs: 300, busyRetryMs: 20,
+    acceptTimeoutMs: 120_000, busyWaitMs: 300, busyRetryMs: 20, agentLabel: options.agentLabel,
   };
   const now = options.now ?? Date.now;
   const presence = core.createPresence({ ttlMs: 60_000, now });
   const server = createServer(gatewayHandler({ gateway, operator, config, visitors, emit: (type, data) => events.push([type, data]), presence, now }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const call = (path, { method = 'POST', key = GATEWAY_KEY, ops = false, body } = {}) => fetch(base + path, {
-    method, headers: { 'Content-Type': 'application/json', [ops ? 'X-Ops-Key' : 'X-Gateway-Key']: key }, body: body === undefined ? undefined : JSON.stringify(body),
+  const call = (path, { method = 'POST', key = GATEWAY_KEY, ops = false, body, headers = {} } = {}) => fetch(base + path, {
+    method, headers: { 'Content-Type': 'application/json', [ops ? 'X-Ops-Key' : 'X-Gateway-Key']: key, ...headers }, body: body === undefined ? undefined : JSON.stringify(body),
   }).then(async (res) => ({ status: res.status, data: await res.json() }));
   return { call, calls, events, visitors, dataDir, close: () => new Promise((r) => server.close(r)) };
 }
@@ -103,7 +113,7 @@ test('end_conversation is a hard stop: later messages get no daemon call until a
 
     const before = g.calls.length;
     const again = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'please?' } });
-    assert.deepEqual(again.data, { status: 'ended' });
+    assert.deepEqual(again.data, { status: 'ended', reason: 'abuse' });
     assert.equal(g.calls.length, before, 'no session read, send or model run after the stop');
 
     const transcript = await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY });
@@ -124,10 +134,10 @@ test('a person is offered only when someone is online; Yes queues the visitor an
   try {
     const away = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'Can I talk to someone?' } });
     assert.deepEqual([away.data.reply, away.data.person], ['Nobody is online.', null]);
-    assert.deepEqual((await g.call('/chat/status', { method: 'GET' })).data, { staff_online: false, staff: [] });
+    assert.deepEqual((await g.call('/chat/status', { method: 'GET' })).data, { staff_online: false, staff: [], agent_label: 'AI worker' });
 
     assert.equal((await ops('/ops/presence', { id: 'staff-1', name: 'Sam', role: 'founder', available: true })).status, 200);
-    assert.deepEqual((await g.call('/chat/status', { method: 'GET' })).data, { staff_online: true, staff: [{ name: 'Sam', role: 'founder' }] });
+    assert.deepEqual((await g.call('/chat/status', { method: 'GET' })).data, { staff_online: true, staff: [{ name: 'Sam', role: 'founder' }], agent_label: 'AI worker' });
     const offered = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'Can I talk to someone?' } });
     assert.deepEqual(offered.data.person, { state: 'offered', name: 'Sam', role: 'founder' });
 
@@ -271,7 +281,7 @@ test('a new visitor gets one conversation, the agent answers with its tools, and
     await g.call('/chat', { body: { visitor_id: VISITOR, message: 'And timing?' } });
     assert.equal(g.calls.filter(([op]) => op === 'create').length, 1, 'one session per visitor');
     assert.deepEqual(g.calls.find(([op]) => op === 'create')[1], { agent_name: 'frontdesk', workspace_path: '/project', title: 'Visitor visitor_' });
-    assert.deepEqual(g.calls.find(([op]) => op === 'converse')[3], ['capture_lead', 'end_conversation', 'get_playbook', 'handoff_to_human', 'offer_person']);
+    assert.deepEqual(g.calls.find(([op]) => op === 'converse')[3], ['capture_lead', 'end_conversation', 'get_playbook', 'handoff_to_human', 'offer_person', 'propose_lead']);
     assert.equal(g.visitors.get(VISITOR).messages, 2);
     assert.deepEqual(g.events.map(([type]) => type), ['conversation.started']);
   } finally { await g.close(); }
@@ -380,4 +390,108 @@ test('visitor store persists with mode 0600 and replies are split by sender', as
   ] };
   assert.deepEqual(core.repliesAfter(detail, 2), [{ id: '3', seq: 3, from: 'person', text: 'person' }]);
   assert.equal(core.latestReplySeq(detail.messages), 3);
+});
+
+test("a person's replies carry the name the console sent, in the transcript, the polled replies and the history", async () => {
+  const g = await start({ agentLabel: 'Remy (AI)' });
+  try {
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'can I talk to someone?' } });
+    await g.call('/ops/accept', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Roy', role: 'founder' } });
+    await g.call('/ops/reply', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', content: 'Hey, Roy here', name: 'Roy', role: 'founder' } });
+    await g.call('/ops/reply', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', content: 'No name on this one' } });
+    const t = (await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY })).data;
+    assert.equal(t.agent_label, 'Remy (AI)');
+    const people = t.messages.filter((m) => m.from === 'person');
+    assert.deepEqual(people.map((m) => m.author?.name), ['Roy', undefined]);
+    const replies = (await g.call('/chat/replies?visitor_id=' + VISITOR + '&after=9', { method: 'GET' })).data.replies;
+    assert.deepEqual(replies.map((r) => [r.text, r.name]), [['Hey, Roy here', 'Roy'], ['No name on this one', undefined]]);
+    const history = (await g.call('/chat/history?visitor_id=' + VISITOR, { method: 'GET' })).data;
+    assert.equal(history.messages.find((m) => m.text === 'Hey, Roy here').name, 'Roy');
+    assert.equal((await g.call('/chat/status', { method: 'GET' })).data.agent_label, 'Remy (AI)');
+  } finally { await g.close(); }
+});
+
+test('resolve closes the chat politely without a model run; reopen starts a fresh one', async () => {
+  const g = await start();
+  try {
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'thanks, that is all' } });
+    const done = await g.call('/ops/resolve', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Roy' } });
+    assert.deepEqual(done.data, { ended: true, reason: 'resolved', network: false });
+    assert.equal(g.visitors.get(VISITOR).ended.by, 'Roy');
+    assert.ok(g.events.some(([type]) => type === 'conversation.resolved'));
+    const before = g.calls.length;
+    assert.deepEqual((await g.call('/chat', { body: { visitor_id: VISITOR, message: 'one more thing' } })).data, { status: 'ended', reason: 'resolved' });
+    assert.equal(g.calls.length, before);
+    assert.equal((await g.call('/chat/history?visitor_id=' + VISITOR, { method: 'GET' })).data.ended_reason, 'resolved');
+    await g.call('/ops/reopen', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1' } });
+    assert.equal((await g.call('/chat', { body: { visitor_id: VISITOR, message: 'one more thing' } })).data.status, 'answered');
+  } finally { await g.close(); }
+});
+
+test("block closes the chat and refuses the visitor's network for every route until unblocked", async () => {
+  const g = await start();
+  const net = { 'X-Visitor-Net': 'net_abcdefghijkl' };
+  const other = 'visitor_zyxwvutsrqponmlk';
+  try {
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'abuse' }, headers: net });
+    const blocked = await g.call('/ops/block', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Roy' } });
+    assert.deepEqual(blocked.data, { ended: true, reason: 'blocked', network: true });
+    const before = g.calls.length;
+    // A fresh browser on the same network gets nowhere, on any route that reaches staff or the model.
+    assert.deepEqual((await g.call('/chat', { body: { visitor_id: other, message: 'hi again' }, headers: net })).data, { status: 'blocked' });
+    assert.deepEqual((await g.call('/chat/person', { body: { visitor_id: other, accept: true }, headers: net })).data, { status: 'blocked' });
+    assert.deepEqual((await g.call('/chat/contact', { body: { visitor_id: other, email: 'a@b.co' }, headers: net })).data, { status: 'blocked' });
+    assert.equal(g.calls.length, before, 'no daemon call for a blocked network');
+    // A different network is unaffected; a header from the ops side is ignored.
+    assert.equal((await g.call('/chat', { body: { visitor_id: other, message: 'hi' }, headers: { 'X-Visitor-Net': 'net_somewhereelse' } })).data.status, 'answered');
+    const list = (await g.call('/ops/blocks', { method: 'GET', ops: true, key: OPS_KEY })).data.blocks;
+    assert.equal(list.length, 1);
+    assert.equal(list[0].net, 'net_abcdefghijkl');
+    assert.equal(list[0].by, 'Roy');
+    assert.ok(list[0].until > Date.now() + 29 * 86_400_000);
+    assert.equal((await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY })).data.blocked, true);
+    assert.equal((await g.call('/ops/unblock', { ops: true, key: OPS_KEY, body: { net: 'bad net!' } })).status, 400);
+    assert.deepEqual((await g.call('/ops/unblock', { ops: true, key: OPS_KEY, body: { net: 'net_abcdefghijkl' } })).data, { unblocked: true });
+    assert.equal((await g.call('/chat', { body: { visitor_id: 'visitor_newbrowser000000', message: 'hi' }, headers: net })).data.status, 'answered');
+  } finally { await g.close(); }
+});
+
+test('a blocked network lapses after its days', async () => {
+  let t = Date.now();
+  const list = core.blocklist(new Map(), undefined, { now: () => t });
+  await list.add('net_abcdefghijkl', { until: t + 1000 });
+  assert.equal(list.blocked('net_abcdefghijkl'), true);
+  t += 1001;
+  assert.equal(list.blocked('net_abcdefghijkl'), false);
+  assert.deepEqual(list.list(), []);
+});
+
+test('the agent can only fill in the lead card; the visitor sends it, which saves the lead and closes the chat', async () => {
+  const card = { name: 'Dana', email: 'dana@firm.example', need: 'Moves client intake details into the case system by hand, about an hour a day.' };
+  const g = await start({ proposeWith: card });
+  try {
+    const first = await g.call('/chat', { body: { visitor_id: VISITOR, message: 'we copy intake forms into our case system' } });
+    assert.deepEqual(first.data.proposal, card);
+    assert.equal(await readFile(join(g.dataDir, 'leads.jsonl'), 'utf8').catch(() => ''), '', 'nothing is saved before the visitor sends it');
+    // "Not now" removes the card and the chat carries on.
+    assert.deepEqual((await g.call('/chat/proposal', { body: { visitor_id: VISITOR, accept: false } })).data, { status: 'declined' });
+    assert.equal(g.visitors.get(VISITOR).proposal, null);
+    assert.equal(g.visitors.get(VISITOR).ended, undefined);
+    // Filled in again and sent (with the visitor's edits): saved, then closed.
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: "ok, let's do it" } });
+    const sent = await g.call('/chat/contact', { body: { visitor_id: VISITOR, name: 'Dana K', email: card.email, note: card.need, from_proposal: true } });
+    assert.deepEqual(sent.data, { status: 'saved', ended: true });
+    const lead = JSON.parse((await readFile(join(g.dataDir, 'leads.jsonl'), 'utf8')).trim().split('\n').pop());
+    assert.equal(lead.source, 'proposal');
+    assert.equal(lead.name, 'Dana K');
+    assert.equal(g.visitors.get(VISITOR).ended.reason, 'lead_saved');
+    assert.deepEqual((await g.call('/chat', { body: { visitor_id: VISITOR, message: 'thanks' } })).data, { status: 'ended', reason: 'lead_saved' });
+    // The ordinary form (no card) still saves without closing anything.
+    const g2 = await start();
+    try {
+      await g2.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+      assert.deepEqual((await g2.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'a@b.co', from_proposal: true } })).data, { status: 'saved' });
+      assert.equal(g2.visitors.get(VISITOR).ended, undefined);
+    } finally { await g2.close(); }
+  } finally { await g.close(); }
 });

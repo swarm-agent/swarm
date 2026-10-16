@@ -147,11 +147,76 @@ export function takeoverOf(detail) {
   return takeover && typeof takeover === 'object' ? takeover : undefined;
 }
 
-/** Replies the visitor should see after `afterSeq`: the agent's and a person's. */
-export function repliesAfter(detail, afterSeq = 0) {
+/** Who sent a person's reply, from the names the gateway recorded at send time. */
+export function authorOf(message, authors) {
+  const key = message?.id ?? message?.global_seq;
+  return key !== undefined && authors && Object.hasOwn(authors, String(key)) ? authors[String(key)] : undefined;
+}
+
+/** Replies the visitor should see after `afterSeq`: the agent's and a person's (with the person's name). */
+export function repliesAfter(detail, afterSeq = 0, authors = {}) {
   return (detail?.messages ?? [])
     .filter((m) => m.role === 'assistant' && Number(m.global_seq ?? m.seq ?? 0) > afterSeq && m.metadata?.visible !== false)
-    .map((m) => ({ id: m.id, seq: Number(m.global_seq ?? m.seq ?? 0), from: m.metadata?.source === 'operator' ? 'person' : 'agent', text: String(m.content ?? '') }));
+    .map((m) => {
+      const person = m.metadata?.source === 'operator';
+      const reply = { id: m.id, seq: Number(m.global_seq ?? m.seq ?? 0), from: person ? 'person' : 'agent', text: String(m.content ?? '') };
+      const author = person && authorOf(m, authors);
+      return author ? { ...reply, name: author.name } : reply;
+    });
+}
+
+/**
+ * Networks a person blocked from the chat, keyed by the edge's keyed hash of the
+ * visitor's IP (the gateway never sees the address). An entry lapses at `until`.
+ * Persisted as one JSON file (mode 0600), bounded.
+ */
+export const NET = /^[A-Za-z0-9_-]{8,64}$/;
+export async function createBlocklist(file, options = {}) {
+  let saved = {};
+  try {
+    if (file) saved = JSON.parse(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  return blocklist(new Map(Object.entries(saved)), file, options);
+}
+
+/** The block list itself; without a file (tests, the default) it lives in memory only. */
+export function blocklist(blocks = new Map(), file = undefined, { max = 10_000, now = Date.now } = {}) {
+  let writing = Promise.resolve();
+  const save = () => {
+    if (!file) return writing;
+    writing = writing.then(async () => {
+      const tmp = `${file}.tmp`;
+      await writeFile(tmp, JSON.stringify(Object.fromEntries(blocks)), { mode: 0o600 });
+      await rename(tmp, file);
+    });
+    return writing;
+  };
+  const live = () => {
+    const t = now();
+    let changed = false;
+    for (const [net, b] of blocks) if (b.until <= t) { blocks.delete(net); changed = true; }
+    if (changed) save();
+    return blocks;
+  };
+  return {
+    blocked: (net) => typeof net === 'string' && live().has(net),
+    async add(net, entry) {
+      blocks.delete(net);
+      blocks.set(net, { ...entry, at: now() });
+      while (blocks.size > max) blocks.delete(blocks.keys().next().value);
+      await save();
+    },
+    async remove(net) { const had = blocks.delete(net); if (had) await save(); return had; },
+    list: () => [...live()].map(([net, b]) => ({ net, ...b })),
+    flush: () => writing,
+  };
+}
+
+/** The lead card the agent filled in, as the widget shows it for the visitor to check. */
+export function publicProposal(proposal) {
+  return proposal ? { name: proposal.name ?? '', email: proposal.email ?? '', need: proposal.need ?? '' } : null;
 }
 
 /** A person's hand-off state as the widget sees it: no summaries or internal notes. */
@@ -226,8 +291,16 @@ export async function saveLead({ dataDir, emit, visitors, sessionId, visitorId, 
   emit('lead.captured', { session_id: sessionId, visitor_id: visitorId, source, lead });
 }
 
-export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, endConversation, presence, setPerson, visitors, now = Date.now }) {
+export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, visitorId, endConversation, presence, setPerson, setProposal, visitors, now = Date.now }) {
   return {
+    // Fills in a contact card the page shows the visitor to check, edit and send.
+    // Nothing is saved until the visitor presses Send: the agent can only suggest.
+    propose_lead: async ({ name, email, need }) => {
+      if (!setProposal) throw new Error('propose_lead is not available here');
+      await setProposal({ name: name ?? '', email: email ?? '', need, at: now() });
+      emit('lead.proposed', { session_id: sessionId, visitor_id: visitorId });
+      return { shown: true, next: 'The page now shows the visitor a card with these details to check, fill in and send. In one short sentence, ask them to check it and press Send. Do not repeat the details.' };
+    },
     get_playbook: async ({ topic }) => {
       if (!Object.hasOwn(playbook, topic)) throw new Error(`No playbook entry for ${topic}`);
       return { topic, answer: playbook[topic] };
@@ -239,10 +312,10 @@ export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, v
     // Asks whether someone is online; if so the page shows the visitor a Yes button.
     offer_person: async ({ summary }) => {
       const [staff] = presence.online();
-      if (!staff) return { available: false, next: 'Nobody from the team is online right now. Offer to take the visitor\'s name, email and need with capture_lead so a person follows up.' };
+      if (!staff) return { available: false, next: 'Nobody from the team is online right now. Offer to have a person follow up by email: use propose_lead if you have it (the visitor checks and sends a card), otherwise ask for their name, email and need and save them with capture_lead.' };
       await setPerson({ state: 'offered', name: staff.name, role: staff.role, summary, since: now() });
       emit('person.offered', { session_id: sessionId, visitor_id: visitorId, summary });
-      return { available: true, name: staff.name, role: staff.role, next: `In one short sentence, ask whether they would like to talk to ${staff.name}, the ${staff.role}, now. The page shows them a Yes button. If they say yes in words, call handoff_to_human.` };
+      return { available: true, name: staff.name, role: staff.role, next: `The page now shows the visitor a one-tap card to bring ${staff.name}, the ${staff.role}, into this chat. In one short sentence, point them to it. If they say yes in words instead, call handoff_to_human.` };
     },
     handoff_to_human: async ({ summary }) => {
       const [staff] = presence.online();
@@ -250,7 +323,7 @@ export function toolHandlers({ playbook, dataDir, bookingUrl, emit, sessionId, v
       emit('handoff.requested', { session_id: sessionId, visitor_id: visitorId, summary, staff_online: Boolean(staff) });
       return staff
         ? { requested: true, waiting: true, name: staff.name, next: `Tell the visitor ${staff.name} has been asked to join and will appear in this chat shortly.` }
-        : { requested: true, waiting: false, booking_url: bookingUrl, next: 'Nobody is online right now. Say a person will follow up, and offer to take their name and email with capture_lead.' };
+        : { requested: true, waiting: false, booking_url: bookingUrl, next: 'Nobody is online right now. Say a person will follow up by email: use propose_lead if you have it, otherwise offer to take their name and email with capture_lead.' };
     },
     // A hard stop the model can trigger but not undo: the gateway refuses every
     // later message from this visitor without a model run until a person reopens it.

@@ -28,6 +28,10 @@ const ROUTES = {
   'POST /ops/takeover': ['session_id'],
   'POST /ops/handback': ['session_id'],
   'POST /ops/reopen': ['session_id'],
+  'POST /ops/resolve': ['session_id'],
+  'POST /ops/block': ['session_id'],
+  'GET /ops/blocks': null,
+  'POST /ops/unblock': ['net'],
 };
 
 const json = (status, data) => new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
@@ -104,7 +108,7 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     body = Object.fromEntries(ROUTES[route].filter((k) => Object.hasOwn(given, k)).map((k) => [k, given[k]]));
     // Identity is added here, from the verified login.
     if (url.pathname === '/ops/presence') Object.assign(body, { id: await staffId(email), name: staff.name, role: staff.role });
-    if (url.pathname === '/ops/accept') Object.assign(body, { name: staff.name, role: staff.role });
+    if (['/ops/accept', '/ops/reply', '/ops/resolve', '/ops/block', '/ops/unblock'].includes(url.pathname)) Object.assign(body, { name: staff.name, role: staff.role });
   }
   const search = request.method === 'GET' ? url.search : '';
   try {

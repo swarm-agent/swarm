@@ -17,6 +17,7 @@ export const PAGE_HTML = `<!doctype html>
   .dot.on { background:var(--ok); }
   button { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); cursor:pointer; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button.danger { border-color:#f1c4c4; color:#b42318; }
   button:disabled { opacity:.45; cursor:default; }
   a.button { display:inline-block; padding:6px 12px; border-radius:8px; border:1px solid var(--accent); color:var(--accent); text-decoration:none; }
   #contact { margin:6px 0 10px; padding:8px 10px; background:#f0f4ff; border-radius:8px; }
@@ -36,6 +37,7 @@ export const PAGE_HTML = `<!doctype html>
   .msg.agent { background:#eef0f3; }
   .msg.person { background:#e8edff; }
   .msg b { display:block; font-size:11px; opacity:.7; }
+  #card { margin:6px 0 10px; padding:8px 10px; background:#fff7ed; border-radius:8px; }
   textarea { width:100%; min-height:70px; font:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical; }
   .empty { color:var(--mute); }
   @media (max-width:800px) { main { grid-template-columns:1fr; } }
@@ -51,12 +53,14 @@ export const PAGE_HTML = `<!doctype html>
   <div class="stack">
     <section><h2>Waiting for a person</h2><div id="queue" class="empty">Nobody waiting.</div></section>
     <section><h2>Recent conversations</h2><div id="convs" class="empty">None yet.</div></section>
+    <section><h2>Blocked</h2><div id="blocks" class="empty">Nobody blocked.</div></section>
   </div>
   <div class="stack">
     <section>
       <div class="row"><h2 id="title">Select a conversation</h2>
-        <span><button id="takeover" disabled>Take over</button> <button id="handback" disabled>Hand back</button> <button id="reopen" disabled>Reopen</button> <a id="mail" class="button" hidden>Email them</a></span></div>
+        <span><button id="takeover" disabled>Take over</button> <button id="handback" disabled>Hand back</button> <button id="resolve" disabled>Resolve</button> <button id="block" class="danger" disabled>Block</button> <button id="reopen" disabled>Reopen</button> <a id="mail" class="button" hidden>Email them</a></span></div>
       <div id="contact" class="empty" hidden></div>
+      <div id="card" hidden></div>
       <div id="transcript"></div>
       <div style="margin-top:10px"><textarea id="reply" placeholder="Reply as yourself (take over first)" disabled></textarea>
       <div class="row" style="margin-top:8px"><small id="state" class="empty"></small><button id="send" class="primary" disabled>Send</button></div></div>
@@ -69,6 +73,7 @@ export const PAGE_HTML = `<!doctype html>
 
 function consoleApp() {
   const $ = (s) => document.querySelector(s);
+  const ENDED = { resolved: 'Resolved', blocked: 'Blocked', lead_saved: 'Left their details', abuse: 'Ended by the AI (abuse)', cannot_help: 'Ended by the AI' };
   const state = { latest: 0, selected: null, available: false, beat: null, me: null, queue: [], audio: null };
   const api = async (path, body) => {
     const res = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -145,11 +150,29 @@ function consoleApp() {
       const item = el('div', 'item' + (v.session_id === state.selected ? ' sel' : ''));
       const tags = [v.messages + ' msgs', ago(v.last_at)];
       if (v.person) tags.push(v.person.state);
-      if (v.ended) tags.push('ended: ' + v.ended.reason);
+      if (v.ended) tags.push(ENDED[v.ended.reason] || 'ended: ' + v.ended.reason);
       if (v.contact) tags.push('email left');
       item.append(el('div', '', 'Visitor ' + v.visitor_id.slice(0, 8)), el('small', '', tags.join(' · ')));
       item.addEventListener('click', () => select(v.session_id));
       c.append(item);
+    }
+  }
+
+  // ---- blocked networks: each lapses on its own after 30 days, or unblock here
+  async function refreshBlocks() {
+    const { blocks } = await api('/ops/blocks');
+    const box = $('#blocks');
+    box.replaceChildren();
+    box.className = blocks.length ? '' : 'empty';
+    if (!blocks.length) box.textContent = 'Nobody blocked.';
+    for (const b of blocks.sort((x, y) => y.at - x.at)) {
+      const item = el('div', 'item');
+      item.append(el('div', '', 'Visitor ' + String(b.visitor_id || '?').slice(0, 8)), el('small', '', [b.by ? 'by ' + b.by : '', 'until ' + new Date(b.until).toLocaleDateString()].filter(Boolean).join(' · ')));
+      const undo = el('button', '', 'Unblock');
+      undo.addEventListener('click', async (e) => { e.stopPropagation(); await api('/ops/unblock', { net: b.net }); log('unblocked ' + String(b.visitor_id).slice(0, 8)); refreshBlocks(); });
+      item.append(undo);
+      if (b.session_id) item.addEventListener('click', () => select(b.session_id));
+      box.append(item);
     }
   }
 
@@ -167,10 +190,17 @@ function consoleApp() {
     const t = await api('/ops/transcript?session_id=' + encodeURIComponent(state.selected));
     const human = t.takeover?.state === 'human';
     $('#title').textContent = 'Conversation ' + state.selected.slice(0, 8);
-    $('#state').textContent = (human ? 'You hold this conversation' : 'The AI worker is answering') + (t.ended ? ' · ended (' + t.ended.reason + ')' : '');
-    $('#takeover').disabled = human;
+    const agent = t.agent_label || 'AI worker';
+    $('#state').textContent = t.ended ? (ENDED[t.ended.reason] || 'Ended (' + t.ended.reason + ')') + (t.ended.by ? ' by ' + t.ended.by : '') + (t.blocked ? ' · network blocked' : '')
+      : human ? 'You hold this conversation' : agent + ' is answering';
+    $('#takeover').disabled = human || Boolean(t.ended);
     $('#handback').disabled = !human;
+    $('#resolve').disabled = Boolean(t.ended);
+    $('#block').disabled = t.ended?.reason === 'blocked';
     $('#reopen').disabled = !t.ended;
+    // The card the agent filled in, while it waits for the visitor to send it.
+    $('#card').hidden = !t.proposal;
+    if (t.proposal) $('#card').textContent = 'Waiting for the visitor to send the card: ' + [t.proposal.name, t.proposal.email, t.proposal.need].filter(Boolean).join(' · ');
     // Contact details the visitor left (form or the agent's capture_lead): reply by email.
     const contact = t.contact;
     $('#contact').hidden = !contact;
@@ -187,7 +217,8 @@ function consoleApp() {
     const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
     box.replaceChildren(...t.messages.map((m) => {
       const d = el('div', 'msg ' + m.from);
-      d.append(el('b', '', m.from === 'person' ? 'Person' : m.from === 'agent' ? 'AI worker' : 'Visitor'), document.createTextNode(m.text));
+      const who = m.from === 'person' ? (m.author ? m.author.name + (m.author.role ? ' · ' + m.author.role : '') : 'A person') : m.from === 'agent' ? agent : 'Visitor';
+      d.append(el('b', '', who), document.createTextNode(m.text));
       return d;
     }));
     if (atBottom) box.scrollTop = box.scrollHeight;
@@ -195,7 +226,14 @@ function consoleApp() {
   const act = (path) => async () => { if (!state.selected) return; await api(path, { session_id: state.selected }); await refreshTranscript(); refreshConversations(); };
   $('#takeover').addEventListener('click', act('/ops/accept'));
   $('#handback').addEventListener('click', act('/ops/handback'));
-  $('#reopen').addEventListener('click', act('/ops/reopen'));
+  $('#reopen').addEventListener('click', async () => { await act('/ops/reopen')(); refreshBlocks().catch(() => {}); });
+  $('#resolve').addEventListener('click', act('/ops/resolve'));
+  $('#block').addEventListener('click', async () => {
+    if (!state.selected || !confirm('Block this visitor? The chat closes, and their network cannot use the chat for 30 days. You can unblock them from the Blocked list.')) return;
+    const { network } = await api('/ops/block', { session_id: state.selected });
+    log('blocked ' + state.selected.slice(0, 8) + (network ? ' and their network' : ' (no network known: this browser only)'));
+    await refreshTranscript(); refreshConversations(); refreshBlocks().catch(() => {});
+  });
   async function send() {
     const content = $('#reply').value.trim();
     if (!content || !state.selected) return;
@@ -231,7 +269,7 @@ function consoleApp() {
     $('#who').textContent = state.me.name + ' · ' + state.me.role;
     const { latest } = await api('/ops/events?after=0&wait=0');
     state.latest = latest;
-    await Promise.all([refreshQueue(), refreshConversations()]);
+    await Promise.all([refreshQueue(), refreshConversations(), refreshBlocks()]);
     // A phone alert links here with ?session=ID: open that conversation (Take over accepts it).
     const linked = new URLSearchParams(location.search).get('session');
     if (linked && /^[A-Za-z0-9_-]{1,128}$/.test(linked)) select(linked).catch((e) => log('could not open the linked chat: ' + e.message));

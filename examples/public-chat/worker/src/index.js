@@ -70,6 +70,10 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     'CF-Access-Client-Id': env.ACCESS_CLIENT_ID ?? '',
     'CF-Access-Client-Secret': env.ACCESS_CLIENT_SECRET ?? '',
   };
+  // A keyed hash of the visitor's IP, so staff can block a network: the gateway
+  // gets a stable token, never the address. Off when no secret is configured.
+  const netSecret = env.NET_SECRET || env.TICKET_SECRET;
+  if (netSecret && ip !== 'unknown') gatewayHeaders['X-Visitor-Net'] = (await hmac(netSecret, `net:${ip}`)).slice(0, 22);
   const forward = async (path, init) => {
     try {
       const res = await fetchImpl(env.GATEWAY_URL + path, { ...init, headers: gatewayHeaders, signal: AbortSignal.timeout(55_000) });
@@ -95,17 +99,17 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     if (!VISITOR_ID.test(visitorId)) return reply(400, { error: 'invalid query' });
     return forward(`/chat/history?visitor_id=${visitorId}`, { method: 'GET' });
   }
-  const SIDE_ROUTES = { '/api/chat/person': ['visitor_id', 'accept'], '/api/chat/contact': ['visitor_id', 'email', 'name', 'note'] };
+  const SIDE_ROUTES = { '/api/chat/person': ['visitor_id', 'accept'], '/api/chat/contact': ['visitor_id', 'email', 'name', 'note', 'from_proposal'], '/api/chat/proposal': ['visitor_id', 'accept'] };
   if (request.method !== 'POST' || (url.pathname !== '/api/chat' && !Object.hasOwn(SIDE_ROUTES, url.pathname))) return reply(404, { error: 'not found' });
   if (Number(request.headers.get('Content-Length') ?? 0) > MAX_BODY) return reply(413, { error: 'too large' });
   if (Object.hasOwn(SIDE_ROUTES, url.pathname)) {
-    // The Yes / No thanks buttons and the email form: forwarded with only their own fields.
+    // The Talk to a person button, the email form and the lead card: forwarded with only their own fields.
     const raw = await request.text();
     if (raw.length > MAX_BODY) return reply(413, { error: 'too large' });
     let body;
     try { body = JSON.parse(raw); } catch { return reply(400, { error: 'invalid json' }); }
     if (!VISITOR_ID.test(String(body?.visitor_id ?? ''))) return reply(400, { error: 'invalid visitor_id' });
-    if (url.pathname === '/api/chat/person' && typeof body.accept !== 'boolean') return reply(400, { error: 'accept is required' });
+    if ((url.pathname === '/api/chat/person' || url.pathname === '/api/chat/proposal') && typeof body.accept !== 'boolean') return reply(400, { error: 'accept is required' });
     // These can alert staff, so they need the ticket a verified first message earned.
     if (humanCheck && !(await ticketValid(env.TICKET_SECRET, body.visitor_id, body.ticket, now()))) return reply(403, { status: 'verify', error: 'human check required' });
     const fields = Object.fromEntries(SIDE_ROUTES[url.pathname].filter((k) => Object.hasOwn(body, k)).map((k) => [k, body[k]]));

@@ -143,3 +143,27 @@ test('REQUIRE_TURNSTILE without its secrets pauses the chat instead of skipping 
   assert.deepEqual([res.status, await res.json()], [503, { status: 'unavailable', fallback: true }]);
   assert.equal(gw.seen.length, 0);
 });
+
+test('the gateway gets a keyed hash of the visitor network, never the address, and the card routes keep only their fields', async () => {
+  const gw = gatewayStub({ status: 'saved' });
+  await handle(post({ visitor_id: VISITOR, message: 'hi' }), env({ NET_SECRET: 'net-secret' }), gw);
+  const net = gw.seen.at(-1).init.headers['X-Visitor-Net'];
+  assert.match(net, /^[A-Za-z0-9_-]{22}$/);
+  assert.ok(!JSON.stringify(gw.seen.at(-1).init).includes('203.0.113.9'), 'the IP itself is not forwarded');
+  // Same network, same token; another network, another token; no secret, no header.
+  await handle(post({ visitor_id: VISITOR, message: 'again' }), env({ NET_SECRET: 'net-secret' }), gw);
+  assert.equal(gw.seen.at(-1).init.headers['X-Visitor-Net'], net);
+  const elsewhere = new Request('https://chat.example.com/api/chat', { method: 'POST', headers: { Origin: SITE, 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.7' }, body: JSON.stringify({ visitor_id: VISITOR, message: 'hi' }) });
+  await handle(elsewhere, env({ NET_SECRET: 'net-secret' }), gw);
+  assert.notEqual(gw.seen.at(-1).init.headers['X-Visitor-Net'], net);
+  await handle(post({ visitor_id: VISITOR, message: 'hi' }), env(), gw);
+  assert.equal(gw.seen.at(-1).init.headers['X-Visitor-Net'], undefined);
+
+  const side = (path, body) => new Request('https://chat.example.com' + path, { method: 'POST', headers: { Origin: SITE, 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.9' }, body: JSON.stringify(body) });
+  await handle(side('/api/chat/contact', { visitor_id: VISITOR, email: 'a@b.co', name: 'Dana', note: 'intake', from_proposal: true, extra: 'x' }), env(), gw);
+  assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, email: 'a@b.co', name: 'Dana', note: 'intake', from_proposal: true });
+  await handle(side('/api/chat/proposal', { visitor_id: VISITOR, accept: false, note: 'x' }), env(), gw);
+  assert.equal(gw.seen.at(-1).url, 'https://gw.example.com/chat/proposal');
+  assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, accept: false });
+  assert.equal((await handle(side('/api/chat/proposal', { visitor_id: VISITOR }), env(), gw)).status, 400);
+});
