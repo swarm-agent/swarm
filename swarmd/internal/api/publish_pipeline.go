@@ -29,6 +29,7 @@ func unchangedRangeDiff(output string) bool {
 type ReviewPipeline struct {
 	Round         int    `json:"round"`
 	Head          string `json:"head"`
+	Base          string `json:"base,omitempty"`
 	Verdict       string `json:"last_verdict"`
 	ReviewerJobID string `json:"reviewer_job_id"`
 	Findings      string `json:"findings,omitempty"`
@@ -137,6 +138,13 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if state.Head == head && state.ReviewerJobID != "" {
 		return false, nil
 	}
+	base := controlMCPString(result, "base_commit")
+	if !pipelineExactCommit(base) {
+		state.Head, state.Verdict, state.ReviewerJobID = head, "", ""
+		state.FollowupRunID = followup
+		state.Findings = "Review infrastructure failure: exact landing base commit is unavailable"
+		return false, save("review_failed")
+	}
 	brief := "Review this exact head: " + head + ". Check previous findings first and say which are fixed.\nPrevious findings:\n" + state.Findings
 	amendments, err := c.requesterReviewInstructions(refs.sessionID)
 	if err != nil {
@@ -157,8 +165,16 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	}
 	if entry.SendBacks > 0 && strings.HasPrefix(entry.Reason, "Rebase conflict:") {
 		state.Rebase = true
-		brief += "\nRebase-scoped review: review only the conflict resolution and confirm the range-diff against the previously reviewed commits."
+		if !pipelineExactCommit(entry.Request.BaseCommit) || !pipelineExactCommit(state.Base) || !pipelineExactCommit(state.Head) {
+			state.Head, state.Verdict, state.ReviewerJobID = head, "", ""
+			state.FollowupRunID = followup
+			state.Findings = "Review infrastructure failure: exact rebase comparison commits are unavailable"
+			return false, save("review_failed")
+		}
+		base = entry.Request.BaseCommit
+		brief += fmt.Sprintf("\nRebase-scoped review: review only the conflict resolution. Previously reviewed base: %s; previously reviewed head: %s. Confirm git range-diff %s..%s %s..%s.", state.Base, state.Head, state.Base, state.Head, base, head)
 	}
+	brief += pipelineBaseBrief(base, head)
 	requestID := "pipeline-review-" + run + "-" + head
 	if followup != "" {
 		requestID += "-" + followup
@@ -167,7 +183,7 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if err != nil {
 		return false, err
 	}
-	state.Head, state.Verdict = head, ""
+	state.Head, state.Base, state.Verdict = head, base, ""
 	state.FollowupRunID = followup
 	state.ReviewerJobID = controlMCPString(controlMCPMap(response), "job_id")
 	if state.ReviewerJobID == "" {
@@ -271,4 +287,21 @@ func (c *controlMCPCall) requesterReviewInstructions(sessionID string) (string, 
 		out.WriteString("\n" + text + "\n")
 	}
 	return out.String(), nil
+}
+
+// pipelineExactCommit excludes moving refs and option-like input from review evidence.
+func pipelineExactCommit(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func pipelineBaseBrief(base, head string) string {
+	return fmt.Sprintf("\nExact landing base commit: %s. Assess git diff %s...%s; use these immutable SHAs rather than a moving landing-base ref.", base, base, head)
 }
