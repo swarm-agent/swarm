@@ -5,6 +5,27 @@ import (
 	"encoding/json"
 )
 
+// cloudBuildBootstrap fetches the integrity-bound runner using the same metadata
+// token and stdin curl configuration as the payload transfer. Only this small
+// bootstrap goes through Cloud Build argument substitution.
+func cloudBuildBootstrap(bucket, prefix, sha string) string {
+	data, _ := json.Marshal(map[string]string{"bucket": bucket, "prefix": prefix, "sha256": sha})
+	return "set -euo pipefail\npython3 - '" + base64.StdEncoding.EncodeToString(data) + "' <<'SWARM_BOOT'\n" + cloudBuildBootstrapPython + "\nSWARM_BOOT\n"
+}
+
+const cloudBuildBootstrapPython = `import base64, hashlib, json, os, subprocess, sys, tempfile, urllib.parse, urllib.request
+cfg = json.loads(base64.b64decode(sys.argv[1]))
+req = urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', headers={'Metadata-Flavor':'Google'})
+with urllib.request.urlopen(req, timeout=30) as r: token = json.load(r)['access_token']
+url = 'https://storage.googleapis.com/storage/v1/b/' + urllib.parse.quote(cfg['bucket'], safe='') + '/o/' + urllib.parse.quote(cfg['prefix']+'script.sh', safe='') + '?alt=media'
+with tempfile.TemporaryDirectory() as directory:
+    path = os.path.join(directory, 'script.sh')
+    subprocess.run(['curl','--fail','--silent','--show-error','--max-time','300','--config','-','-o',path,url], input=('header = "Authorization: Bearer '+token+'"\n').encode(), check=True, stdout=subprocess.DEVNULL)
+    with open(path, 'rb') as f: digest = hashlib.sha256(f.read()).hexdigest()
+    if digest != cfg['sha256']: raise ValueError('script SHA256 mismatch')
+    subprocess.run(['bash',path], check=True)
+`
+
 // cloudBuildScript requires bash, python3, curl, tar, git and GNU timeout in the
 // chosen base image, plus useradd and runuser. Infrastructure errors escape;
 // check exit codes are data.

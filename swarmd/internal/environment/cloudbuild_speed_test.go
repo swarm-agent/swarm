@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -38,7 +39,22 @@ func (b *speedBuilds) Get(_ context.Context, id string) (Build, error) {
 	return Build{ID: id, Status: "SUCCESS"}, nil
 }
 
-type speedStorage struct{ checkFake }
+type speedStorage struct {
+	checkFake
+	scripts map[string]string
+}
+
+func (s *speedStorage) Put(ctx context.Context, bucket, object string, r io.Reader) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	if s.scripts == nil {
+		s.scripts = make(map[string]string)
+	}
+	s.scripts[object] = string(data)
+	return s.checkFake.Put(ctx, bucket, object, strings.NewReader(string(data)))
+}
 
 func (s *speedStorage) Get(_ context.Context, _, object string) ([]byte, error) {
 	if strings.Contains(object, "checks/0/") {
@@ -84,7 +100,7 @@ func TestCloudBuildParallelSpeed(t *testing.T) {
 	git("init")
 	git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture")
 	head := git("rev-parse", "HEAD")
-	storage := &speedStorage{checkFake{objects: map[string]bool{}}}
+	storage := &speedStorage{checkFake: checkFake{objects: map[string]bool{}}}
 	builds := &speedBuilds{ready: make(chan struct{})}
 	p := CloudBuild{Store: db, Storage: storage, Builds: builds, Config: CloudBuildConfig{Project: "project", Bucket: "bucket"}}
 	e, err := p.Acquire(ctx, Spec{Account: "account", Folder: "folder", Checkout: dir, Commit: head, Checks: []string{"first", "second"}, CheckTimeout: time.Minute, Definition: Definition{BaseImage: "image"}})
@@ -107,7 +123,8 @@ func TestCloudBuildParallelSpeed(t *testing.T) {
 	saves := 0
 	prefix := ""
 	for _, b := range builds.builds {
-		cfg := speedScriptConfig(t, strings.ReplaceAll(b.Steps[0].Args[1], "$$", "$"))
+		bootstrap := speedScriptConfig(t, strings.ReplaceAll(b.Steps[0].Args[1], "$$", "$"))
+		cfg := speedScriptConfig(t, storage.scripts[bootstrap["prefix"].(string)+"script.sh"])
 		if prefix != "" && cfg["prefix"] != prefix {
 			t.Fatal("builds use different payloads")
 		}
@@ -146,8 +163,8 @@ func TestCloudBuildScriptSpeed(t *testing.T) {
 	if cfg["cache_key"] != "" {
 		t.Fatal("cache enabled")
 	}
-	args := cloudBuildCachedStepArgs("bucket", "prefix/", "sha", "")
-	if strings.ReplaceAll(args[1], "$$", "$") != script {
+	args := cloudBuildStepArgs("bucket", "prefix/", "sha")
+	if strings.ReplaceAll(args[1], "$$", "$") != cloudBuildBootstrap("bucket", "prefix/", "sha") {
 		t.Fatal("dollar round trip")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -184,7 +201,7 @@ func TestCloudBuildFailureSpeed(t *testing.T) {
 	for _, mode := range []string{"create", "build", "storage"} {
 		t.Run(mode, func(t *testing.T) {
 			builds := &failureSpeedBuilds{mode: mode}
-			storage := &speedStorage{checkFake{objects: map[string]bool{}}}
+			storage := &speedStorage{checkFake: checkFake{objects: map[string]bool{}}}
 			p := CloudBuild{Builds: builds, Storage: storage}
 			e := &cloudEnvironment{spec: Spec{Checks: []string{"first", "second"}}}
 			for i, command := range e.spec.Checks {

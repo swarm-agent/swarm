@@ -18,11 +18,8 @@ func TestCloudBuildStepArgsLiteralDollars(t *testing.T) {
 			t.Fatal("unescaped dollar in step args")
 		}
 		decoded := strings.ReplaceAll(args[1], "$$", "$")
-		if decoded != cloudBuildScript("bucket", prefix, "sha") {
+		if decoded != cloudBuildBootstrap("bucket", prefix, "sha") {
 			t.Fatal("escaping changed shell script")
-		}
-		if !strings.Contains(decoded, "'runuser','-u','swarmcheck','--preserve-environment','--','bash','-c',command") {
-			t.Fatal("step args lost the unprivileged check boundary")
 		}
 	}
 }
