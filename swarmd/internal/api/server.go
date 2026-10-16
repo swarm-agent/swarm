@@ -269,6 +269,7 @@ type swarmService interface {
 
 type permissionService interface {
 	ListPermissions(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
+	GetPermission(sessionID, permissionID string) (pebblestore.PermissionRecord, bool, error)
 	ListPending(sessionID string, limit int) ([]pebblestore.PermissionRecord, error)
 	ListPendingSummaries(accountScopeID, principalID string, limit int) ([]pebblestore.PermissionSummary, error)
 	PendingCount(sessionID string) (int, error)

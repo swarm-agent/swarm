@@ -160,6 +160,13 @@ func containerSDKRouteAllowed(r *http.Request) bool {
 	if len(p) == 4 && p[3] == "operator-messages" {
 		return r.Method == http.MethodPost
 	}
+	// Confirmations of client tool calls: read them, approve or decline one.
+	if len(p) == 4 && p[3] == "confirmations" {
+		return r.Method == http.MethodGet
+	}
+	if len(p) == 5 && p[3] == "confirmations" && p[4] != "" && p[4] != "." && p[4] != ".." {
+		return r.Method == http.MethodGet || r.Method == http.MethodPost
+	}
 	if len(p) == 5 && p[3] == "run" && p[4] == "stop" {
 		return r.Method == http.MethodPost
 	}

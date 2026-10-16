@@ -20,7 +20,8 @@ visitor ── your website ── your gateway ──(agent-bound token)── 
 ```
 
 - The gateway holds an **agent-bound token**. It can only create and use that one
-  agent's sessions and answer that agent's client tool calls. It cannot list
+  agent's sessions, answer that agent's client tool calls and relay the person's
+  confirmations (see [Confirmations](#confirmations)). It cannot list
   sessions, reach any other agent (including `swarm`, which has bash), approve
   anything Swarm would execute, change agents or tools, mint tokens or use MCP. If
   someone later gives the agent a built-in tool, the token stops working instead of
@@ -203,6 +204,70 @@ revoked: `GET /v3/auth/tokens` and `swarmctl setup sdk-tokens` mark them
 `token.never_expires` warning signal per account listing their IDs. Nothing is
 revoked automatically. Trigger worker, remote transport and runner credentials
 are minted without an expiry by their own features and are marked the same way.
+
+## Confirmations
+
+A client tool that makes changes waits for the person to approve each call
+before the gateway runs it. Write tools (`"effect": "write"`) are confirmed by
+default; set `"confirm": false` to turn that off, or `"confirm": true` on a read
+tool. `"confirm_timeout_ms"` is how long a call waits for the decision (default
+900000, 15 minutes; at most one day).
+
+1. The model calls the tool. Swarm offers confirmed tools with one extra
+   required argument, `summary`: one sentence for the person. Swarm validates
+   the call, checks the permission policy, and stores a pending confirmation on
+   the session: the tool, the arguments without `summary`, their hash
+   (`arguments_hash`, `sha256:` of their canonical JSON), the summary and
+   `expires_at`. Nothing reaches the gateway as a call to run. The run ends
+   without another model call, so waiting costs no tokens.
+2. The gateway shows an approval card. It finds the confirmation with
+   `GET /v3/sessions/{id}/confirmations` (also `pending_confirmation` on
+   `GET /v3/sessions/{id}`).
+3. It sends the person's decision:
+   `POST /v3/sessions/{id}/confirmations/{cid}`
+   `{"decision": "approve" | "reject", "note": "...", "arguments_hash": "..."}`.
+   An approval must carry the `arguments_hash` of the arguments on the card, so
+   it can only run those arguments.
+4. On approval the call becomes an ordinary pending client tool call with
+   exactly those arguments, which the gateway answers as usual (with the
+   visitor's identity). Its result or failure goes to the model. A decline
+   gives the model the tool error `the person declined: <note>`. If nobody
+   decides in time, the model is told nobody answered and a late approval is
+   refused (409). Each outcome is added to the conversation as that tool's
+   result, and a new run lets the model react.
+
+A session has at most one open confirmation; while it is open, another
+confirmed call fails with a tool error. Repeating a decision returns the
+current state; a different decision is a conflict (409). The state is durable
+session metadata (`client_tool_confirmation`), so it survives a restart. An
+approved call that is still waiting for the gateway also survives a restart. The
+expiry timer does not, so after a restart an expired confirmation is closed the
+next time the gateway reads the session's confirmations, decides one, answers a
+call, or posts a message. The gateway token reaches these routes for its own
+agent's sessions; the operator token cannot.
+
+In the SDK, `converse` returns `confirmation` when the turn ended by asking.
+`confirm` and `reject` record the decision, run the approved call through your
+handlers and return the agent's next reply:
+
+```ts
+const turn = await gateway.agents.converse(sessionId, text, handlers);
+if (turn.confirmation) {
+  // Show turn.confirmation.summary and .arguments with Approve / Decline.
+  await saveCard(visitor, turn.confirmation);
+}
+// Later, when the visitor clicks:
+const card = await loadCard(visitor);
+const next = approved
+  ? await gateway.agents.confirm(sessionId, card, handlers)
+  : await gateway.agents.reject(sessionId, card, handlers, { note: 'Not now' });
+reply(next.reply);
+```
+
+`pendingCalls` lists confirmations as items with `kind: "confirmation"` next to
+calls (`kind: "call"`). `serve` never answers a confirmation; it calls
+`onConfirm(confirmation)` once for each. `decideConfirmation` and
+`confirmations` are the plain route calls.
 
 ## Human takeover
 

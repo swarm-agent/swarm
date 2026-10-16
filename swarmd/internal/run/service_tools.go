@@ -1785,6 +1785,15 @@ func (s *Service) gateToolCalls(ctx context.Context, sessionID, runID string, st
 			}
 		}
 		clientTool, isClientTool := s.clientToolForAccount(accountScopeID, toolCalls[i].Name)
+		if isClientTool && pebblestore.ClientToolRequiresConfirmation(clientTool) {
+			// Confirmed client tools are handled before gating, on the V3
+			// provider path only (requestClientToolConfirmation). Any other path
+			// would hand the call to the client unconfirmed, so it is refused.
+			message := "this tool needs the person's confirmation, which only V3 sessions support"
+			decisions[i].Result.Output = permissionOutputPayload(false, "error", message, toolCalls[i].Name, toolCalls[i].Arguments)
+			decisions[i].Result.Error = message
+			continue
+		}
 		if isClientTool {
 			// Reject before anything is recorded or waited on: the client only
 			// ever sees calls that match the tool's declared schema.

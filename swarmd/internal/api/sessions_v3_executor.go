@@ -2759,7 +2759,7 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		"model":    modelName,
 		"result":   sessionV3ProviderResponseDiagnostic(response, loopResult.FinalContent, loopResult.DurableFlushCount),
 	})
-	if loopResult.TerminalPlanHandled {
+	if loopResult.TerminalPlanHandled || loopResult.AwaitingConfirmation {
 		return sessionV3AssistantResponse{
 			LifecycleOnly:                 true,
 			StartNextCheckpoint:           loopResult.StartNextCheckpoint,
@@ -3563,6 +3563,9 @@ type sessionV3ProviderLoopResult struct {
 	FinalStartSeq       uint64
 	TerminalPlanHandled bool
 	StartNextCheckpoint bool
+	// AwaitingConfirmation: the run asked the person to confirm a client tool
+	// call and ends here; the outcome starts the next run.
+	AwaitingConfirmation bool
 }
 
 func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, runner provideriface.Runner, baseReq provideriface.Request, sink *sessionV3DurableProgressSink, planContextGuard *runruntime.PlanContextGuard) (sessionV3ProviderLoopResult, error) {
@@ -4016,6 +4019,11 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		}
 		if len(input) == 0 {
 			return sessionV3ProviderLoopResult{}, errors.New("v3 provider continuation input is empty after tool execution")
+		}
+		if e.sessionV3RunAwaitsClientToolConfirmation(job) {
+			// Nothing more happens until the person decides: no further model
+			// call, so the wait costs no tokens.
+			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), AwaitingConfirmation: true}, nil
 		}
 		if terminal, ok := sessionsV3ProviderTerminalPlanToolResult(toolResults); ok && e.sessionV3TerminalPlanPublished(job, terminal) {
 			return sessionV3ProviderLoopResult{Response: provideriface.Response{StopReason: "stop"}, FinalRequest: baseReq, DurableFlushCount: sink.AssistantFlushCount(), FinalStreamID: streamState.StreamID(), FinalStep: streamState.Step(), FinalOffsetEnd: streamState.OffsetEnd(), FinalStartSeq: sink.AssistantStartSeq(streamState.StreamID()), TerminalPlanHandled: true}, nil

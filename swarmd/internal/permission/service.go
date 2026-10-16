@@ -394,6 +394,14 @@ func (s *Service) ListPermissions(sessionID string, limit int) ([]pebblestore.Pe
 	return s.store.ListPermissions(sessionID, limit)
 }
 
+// GetPermission returns one of a session's permission records.
+func (s *Service) GetPermission(sessionID, permissionID string) (pebblestore.PermissionRecord, bool, error) {
+	if s == nil || s.store == nil {
+		return pebblestore.PermissionRecord{}, false, errors.New("permission service is not configured")
+	}
+	return s.store.GetPermission(strings.TrimSpace(sessionID), strings.TrimSpace(permissionID))
+}
+
 func (s *Service) ListPending(sessionID string, limit int) ([]pebblestore.PermissionRecord, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {

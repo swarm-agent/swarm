@@ -21,6 +21,10 @@ type sealedAgentFile struct {
 		InputSchema map[string]any `json:"input_schema"`
 		Effect      string         `json:"effect,omitempty"`
 		TimeoutMS   int            `json:"timeout_ms,omitempty"`
+		// Confirm (default: true for write tools) makes each call wait for the
+		// person's approval; ConfirmTimeoutMS bounds that wait (default 15 min).
+		Confirm          *bool `json:"confirm,omitempty"`
+		ConfirmTimeoutMS int   `json:"confirm_timeout_ms,omitempty"`
 	} `json:"tools"`
 	Agent struct {
 		Name        string   `json:"name"`
@@ -88,6 +92,12 @@ func runSetupSealedAgent(args []string, input io.Reader, output io.Writer) error
 	defer client.CloseIdleConnections()
 	for _, tool := range file.Tools {
 		body := map[string]any{"kind": "client", "description": tool.Description, "input_schema": tool.InputSchema, "effect": tool.Effect, "timeout_ms": tool.TimeoutMS}
+		if tool.Confirm != nil {
+			body["confirm"] = *tool.Confirm
+		}
+		if tool.ConfirmTimeoutMS > 0 {
+			body["confirm_timeout_ms"] = tool.ConfirmTimeoutMS
+		}
 		if err := setupRequest(client, http.MethodPut, "/v2/custom-tools/"+url.PathEscape(tool.Name), body, &map[string]any{}); err != nil {
 			return fmt.Errorf("tool %s: %w", tool.Name, err)
 		}

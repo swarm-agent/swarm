@@ -8,10 +8,19 @@ export interface ClientToolDefinition {
   description: string;
   /** JSON Schema for the arguments; must be `type: "object"` with only local `$ref`s. */
   input_schema: Record<string, unknown>;
-  /** `write` marks a tool with external effects (confirm with a person before running it). */
+  /** `write` marks a tool with external effects. Write tools are confirmed by default (see `confirm`). */
   effect?: 'read' | 'write';
   /** How long a call waits for an answer before the model gets "client tool timed out" (max 300000). */
   timeout_ms?: number;
+  /**
+   * Each call waits for the person to approve it before your handler runs it.
+   * Default: true for write tools, false for read tools. The model must add a
+   * one-sentence `summary` argument for the approval card; your handler never
+   * receives it.
+   */
+  confirm?: boolean;
+  /** How long a call waits for the person's decision before the model is told nobody answered (default 900000 = 15 min, max 1 day). */
+  confirm_timeout_ms?: number;
 }
 
 /**
@@ -41,6 +50,7 @@ export interface SpendToday {
 
 /** A pending client tool call your application must answer. */
 export interface ClientToolCall {
+  kind: 'call';
   /** Pass to `answer`/`fail`. */
   id: string;
   sessionId: string;
@@ -122,6 +132,68 @@ function endUserFields(data: Record<string, unknown> | undefined): { endUser?: s
   return out;
 }
 
+/**
+ * A call to a confirmed client tool, waiting for the person's approval. Show
+ * `summary` and `arguments` on a card, then call `confirm` or `reject`.
+ * Nothing has run yet; after approval the same call reaches your handler with
+ * exactly these `arguments`.
+ */
+export interface PendingConfirmation {
+  kind: 'confirmation';
+  /** Pass to `confirm`/`reject`/`decideConfirmation`. */
+  id: string;
+  sessionId: string;
+  runId: string;
+  tool: string;
+  /** The model's one-sentence description of what approving will do. */
+  summary: string;
+  /** What your handler will receive on approval (validated against the tool's schema). */
+  arguments: Record<string, unknown>;
+  /** `sha256:<hex>` of the arguments; an approval must send it back. */
+  argumentsHash: string;
+  createdAt: number;
+  /** After this (unix ms) the model is told nobody answered. */
+  expiresAt: number;
+  /** The session's end user and labels, from the stored session (as on `ClientToolCall`). */
+  endUser?: string;
+  labels?: Record<string, string>;
+}
+
+/** A confirmation as the daemon stores it, in any state. */
+export interface ClientToolConfirmationRecord {
+  id: string;
+  kind: 'confirmation';
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  tool: string;
+  summary: string;
+  arguments: Record<string, unknown>;
+  arguments_hash: string;
+  run_id: string;
+  call_id: string;
+  created_at: number;
+  expires_at: number;
+  decided_at?: number;
+  note?: string;
+  execution_call_id: string;
+  execution_permission_id?: string;
+  execution_deadline?: number;
+  delivered?: boolean;
+  delivered_at?: number;
+  outcome_message_id?: string;
+  continuation_run_id?: string;
+}
+
+/** Called once for each confirmation `serve` sees: show the approval card from here. */
+export type ConfirmationHandler = (confirmation: PendingConfirmation) => Promise<void> | void;
+
+function pendingConfirmation(sessionId: string, record: ClientToolConfirmationRecord, owner: { endUser?: string; labels?: Record<string, string> }): PendingConfirmation {
+  return {
+    kind: 'confirmation', id: record.id, sessionId, runId: record.run_id, tool: record.tool, summary: record.summary,
+    arguments: record.arguments ?? {}, argumentsHash: record.arguments_hash, createdAt: record.created_at, expiresAt: record.expires_at,
+    ...owner,
+  };
+}
+
 /** Throw from a handler to send this message to the model; other errors send "tool failed". */
 export class ClientToolError extends Error {
   constructor(message: string) {
@@ -136,6 +208,12 @@ export type ClientToolHandler = (args: Record<string, unknown>, call: ClientTool
 export interface ConverseResult {
   reply: string;
   messages: Array<Record<string, any>>;
+  /**
+   * Set when the turn ended waiting for the person to approve a confirmed
+   * tool call: show it, then call `confirm` or `reject` (each returns the
+   * agent's next reply). `reply` holds whatever the agent said before asking.
+   */
+  confirmation?: PendingConfirmation;
 }
 
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
@@ -170,6 +248,8 @@ export class SwarmAgentsNamespace {
         input_schema: definition.input_schema,
         effect: definition.effect ?? 'read',
         ...(definition.timeout_ms !== undefined ? { timeout_ms: definition.timeout_ms } : {}),
+        ...(definition.confirm !== undefined ? { confirm: definition.confirm } : {}),
+        ...(definition.confirm_timeout_ms !== undefined ? { confirm_timeout_ms: definition.confirm_timeout_ms } : {}),
       },
     });
     return res.data.custom_tool;
@@ -330,23 +410,79 @@ export class SwarmAgentsNamespace {
     await this.transport.request(`/v2/custom-tools/${toolName(name)}`, { method: 'DELETE' });
   }
 
-  /** Client tool calls waiting in a session, limited to the tool names you answer. */
-  async pendingCalls(sessionId: string, tools: Iterable<string>): Promise<ClientToolCall[]> {
+  /**
+   * What waits on your application in a session, limited to the tool names you
+   * answer: client tool calls to run (`kind: 'call'`) and confirmed calls
+   * waiting for the person's approval (`kind: 'confirmation'`).
+   */
+  async pendingCalls(sessionId: string, tools: Iterable<string>): Promise<Array<ClientToolCall | PendingConfirmation>> {
     const names = new Set(tools);
     const res = await this.transport.request<{ permissions: PendingPermissionRecord[] | null; end_user?: string; labels?: Record<string, string> }>(
       `/v3/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=100`
     );
     // The end user comes with the delivery, from the stored session.
     const owner = endUserFields(res.data as Record<string, unknown>);
-    const calls: ClientToolCall[] = [];
+    const calls: Array<ClientToolCall | PendingConfirmation> = [];
     for (const record of res.data.permissions ?? []) {
       if (!names.has(record.tool_name) || record.session_id !== sessionId) continue;
       let args: unknown;
       try { args = JSON.parse(record.tool_call_arguments || record.tool_arguments || '{}'); } catch { args = null; }
       if (!args || typeof args !== 'object' || Array.isArray(args)) continue;
-      calls.push({ id: record.id, sessionId, runId: record.run_id, tool: record.tool_name, arguments: args as Record<string, unknown>, createdAt: record.created_at, ...owner });
+      calls.push({ kind: 'call', id: record.id, sessionId, runId: record.run_id, tool: record.tool_name, arguments: args as Record<string, unknown>, createdAt: record.created_at, ...owner });
+    }
+    for (const confirmation of await this.confirmations(sessionId)) {
+      if (names.has(confirmation.tool)) calls.push(confirmation);
     }
     return calls;
+  }
+
+  /** Confirmed tool calls in a session waiting for the person's approval (at most one). */
+  async confirmations(sessionId: string): Promise<PendingConfirmation[]> {
+    const res = await this.transport.request<{ confirmations: ClientToolConfirmationRecord[] | null; end_user?: string; labels?: Record<string, string> }>(
+      `/v3/sessions/${encodeURIComponent(sessionId)}/confirmations`
+    );
+    const owner = endUserFields(res.data as Record<string, unknown>);
+    return (res.data.confirmations ?? []).filter((record) => record.status === 'pending').map((record) => pendingConfirmation(sessionId, record, owner));
+  }
+
+  /**
+   * Records the person's decision on a confirmation and returns its new state.
+   * Approving needs the hash of the arguments the person was shown; the call
+   * then waits for your handler like any other. `confirm` and `reject` do this
+   * and also wait for the agent's reply.
+   */
+  async decideConfirmation(sessionId: string, confirmationId: string, decision: { decision: 'approve' | 'reject'; argumentsHash?: string; note?: string }): Promise<ClientToolConfirmationRecord> {
+    if (typeof confirmationId !== 'string' || !confirmationId) throw new Error('confirmationId is required');
+    if (decision.decision === 'approve' && !decision.argumentsHash) throw new Error('approving needs the argumentsHash the person was shown');
+    const res = await this.transport.request<{ confirmation: ClientToolConfirmationRecord }>(
+      `/v3/sessions/${encodeURIComponent(sessionId)}/confirmations/${encodeURIComponent(confirmationId)}`,
+      {
+        method: 'POST',
+        body: {
+          decision: decision.decision,
+          ...(decision.argumentsHash ? { arguments_hash: decision.argumentsHash } : {}),
+          ...(decision.note ? { note: decision.note } : {}),
+        },
+      }
+    );
+    return res.data.confirmation;
+  }
+
+  /**
+   * The person approved: runs the confirmed call through `handlers` (with
+   * exactly the confirmation's arguments) and returns the agent's reply.
+   */
+  async confirm(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+    return this.followTurn(sessionId, handlers, options, async () => {
+      await this.decideConfirmation(sessionId, confirmation.id, { decision: 'approve', argumentsHash: confirmation.argumentsHash });
+    });
+  }
+
+  /** The person declined: the model is told "the person declined: <note>". Returns the agent's reply. */
+  async reject(sessionId: string, confirmation: PendingConfirmation, handlers: Record<string, ClientToolHandler>, options: { note?: string; timeoutMs?: number; pollIntervalMs?: number; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+    return this.followTurn(sessionId, handlers, options, async () => {
+      await this.decideConfirmation(sessionId, confirmation.id, { decision: 'reject', note: options.note });
+    });
   }
 
   /** Returns `result` (any JSON value) to the model as the tool's output. */
@@ -364,22 +500,29 @@ export class SwarmAgentsNamespace {
    * aborts. Each call is answered at most once; a handler error fails the
    * call with "tool failed" unless it is a ClientToolError. With `endUser`,
    * a call whose session belongs to anyone else is failed unanswered.
+   * Confirmations are never answered here: `onConfirm` is called once for
+   * each (show the approval card), and `confirm` or `reject` records the
+   * person's decision.
    */
-  async serve(sessionId: string, handlers: Record<string, ClientToolHandler>, options: { signal?: AbortSignal; intervalMs?: number; endUser?: string } = {}): Promise<void> {
+  async serve(sessionId: string, handlers: Record<string, ClientToolHandler>, options: { signal?: AbortSignal; intervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<void> {
     const handled = new Set<string>();
     const interval = Math.max(50, options.intervalMs ?? 250);
     while (!options.signal?.aborted) {
-      for (const call of await this.pendingCalls(sessionId, Object.keys(handlers))) {
-        if (handled.has(call.id)) continue;
-        handled.add(call.id);
-        if (options.endUser !== undefined && call.endUser !== options.endUser) {
-          await this.fail(sessionId, call.id, 'tool failed').catch(() => undefined);
+      for (const item of await this.pendingCalls(sessionId, Object.keys(handlers))) {
+        if (handled.has(item.id)) continue;
+        handled.add(item.id);
+        if (item.kind === 'confirmation') {
+          await options.onConfirm?.(item);
+          continue;
+        }
+        if (options.endUser !== undefined && item.endUser !== options.endUser) {
+          await this.fail(sessionId, item.id, 'tool failed').catch(() => undefined);
           continue;
         }
         try {
-          await this.answer(sessionId, call.id, await handlers[call.tool](call.arguments, call));
+          await this.answer(sessionId, item.id, await handlers[item.tool](item.arguments, item));
         } catch (error) {
-          await this.fail(sessionId, call.id, error instanceof ClientToolError ? error.message : 'tool failed').catch(() => undefined);
+          await this.fail(sessionId, item.id, error instanceof ClientToolError ? error.message : 'tool failed').catch(() => undefined);
         }
       }
       await new Promise<void>((resolve) => {
@@ -395,28 +538,54 @@ export class SwarmAgentsNamespace {
    * finished. This is the whole loop a gateway needs per visitor message.
    * With `endUser`, it refuses a session that belongs to anyone else before
    * sending, and answers only that end user's calls.
+   * When the agent asks the person to approve a confirmed tool call, the
+   * result carries `confirmation`: pass it to `confirm` or `reject`.
    */
-  async converse(sessionId: string, message: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string } = {}): Promise<ConverseResult> {
+  async converse(sessionId: string, message: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler } = {}): Promise<ConverseResult> {
+    const sessions = new SwarmSessionsNamespace(this.transport);
+    return this.followTurn(sessionId, handlers, options, async () => {
+      await sessions.sendMessage(sessionId, { content: message });
+    });
+  }
+
+  /**
+   * Starts a turn with `start`, answers client tool calls while it runs, and
+   * returns once the agent has replied or has asked for a confirmation. With
+   * `endUser`, it refuses a session that belongs to anyone else before
+   * `start` runs.
+   */
+  private async followTurn(sessionId: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string; onConfirm?: ConfirmationHandler }, start: () => Promise<void>): Promise<ConverseResult> {
     const sessions = new SwarmSessionsNamespace(this.transport);
     const initial = await sessions.get(sessionId);
     if (options.endUser !== undefined && initial.end_user !== options.endUser) {
       throw new Error('This conversation belongs to another end user');
     }
     const before = new Set((initial.messages ?? []).map((m: any) => m.id));
+    const earlier = ((initial.raw ?? {}) as Record<string, any>).pending_confirmation?.id;
     const controller = new AbortController();
-    const serving = this.serve(sessionId, handlers, { signal: controller.signal, intervalMs: options.pollIntervalMs ?? 200, ...(options.endUser !== undefined ? { endUser: options.endUser } : {}) });
+    const serving = this.serve(sessionId, handlers, {
+      signal: controller.signal,
+      intervalMs: options.pollIntervalMs ?? 200,
+      onConfirm: options.onConfirm,
+      ...(options.endUser !== undefined ? { endUser: options.endUser } : {}),
+    });
     const deadline = Date.now() + (options.timeoutMs ?? 120_000);
     try {
-      await sessions.sendMessage(sessionId, { content: message });
+      await start();
       for (;;) {
         const detail = await sessions.get(sessionId);
         const raw = (detail.raw ?? {}) as Record<string, any>;
         const added = ((detail.messages ?? []) as Array<Record<string, any>>).filter((m) => !before.has(m.id));
         const pending = Array.isArray(raw.pending_permissions) ? raw.pending_permissions.length : 0;
         const failure = added.find((m) => m.role === 'system' && m.metadata?.message_kind === 'run_failure');
+        const reply = added.filter((m) => m.role === 'assistant').map((m) => String(m.content ?? '')).join('\n\n');
         if (!raw.active_run_intent && failure) throw new Error(`The agent's run failed: ${String(failure.content ?? '').slice(0, 300)}`);
+        const asked = raw.pending_confirmation as ClientToolConfirmationRecord | undefined;
+        if (!raw.active_run_intent && asked?.id && asked.id !== earlier) {
+          return { reply, messages: added, confirmation: pendingConfirmation(sessionId, asked, endUserFields(raw)) };
+        }
         if (!raw.active_run_intent && pending === 0 && added.some((m) => m.role === 'assistant')) {
-          return { reply: added.filter((m) => m.role === 'assistant').map((m) => String(m.content ?? '')).join('\n\n'), messages: added };
+          return { reply, messages: added };
         }
         if (Date.now() > deadline) throw new Error('The agent did not finish in time; the run may still complete');
         await new Promise((resolve) => setTimeout(resolve, options.pollIntervalMs ?? 400));

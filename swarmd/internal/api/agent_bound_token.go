@@ -336,7 +336,13 @@ func (s *Server) agentBoundRequest(r *http.Request, rec *pebblestore.ScopedToken
 	case rest == "" && r.Method == http.MethodGet,
 		rest == "messages" && r.Method == http.MethodGet,
 		rest == "permissions" && r.Method == http.MethodGet,
+		rest == "confirmations" && r.Method == http.MethodGet,
 		rest == "run/stop" && r.Method == http.MethodPost:
+		return binding.EndUser, nil
+	case len(p) == 5 && p[3] == "confirmations" && p[4] != "" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+		// The gateway relays the person's approval or decline of a confirmed
+		// client tool call in this session (the handler checks the ID belongs
+		// to it and that an approval carries the shown arguments' hash).
 		return binding.EndUser, nil
 	case len(p) == 6 && p[3] == "permissions" && p[5] == "resolve" && r.Method == http.MethodPost:
 		return binding.EndUser, s.checkAgentBoundResolve(rec.AccountScopeID, sessionID, p[4])
@@ -495,6 +501,9 @@ func (s *Server) gateAgentBoundToken(w http.ResponseWriter, r *http.Request, rec
 			buckets = append(buckets, rateBucket{key: endUserBucketKey(rec.AccountScopeID, agent, endUser, "messages"), capacity: agentBoundRateFor(rec.EndUserMessagesPerMinute, agentBoundDefaultEndUserMessagesPerMinute), window: time.Minute,
 				code: limitCodeEndUserMessages, scope: "end_user", message: "this end user's message rate limit reached"})
 		}
+	case strings.Contains(path, "/confirmations/"):
+		// A decision starts the run that tells the model the outcome: it is
+		// held to the concurrent-run limit below, not to the message rate.
 	default:
 		return true
 	}

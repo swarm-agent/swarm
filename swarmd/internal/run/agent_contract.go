@@ -80,6 +80,19 @@ func (s *Service) customAgentToolDefinitionsForAccount(accountScopeID string) []
 		}
 		if customTool.Kind == pebblestore.AgentCustomToolKindClient {
 			parameters = customTool.InputSchema
+			if pebblestore.ClientToolRequiresConfirmation(customTool) {
+				// The model must say, in one sentence, what the person is asked
+				// to approve; Swarm strips it before the client sees the call.
+				confirmed, err := agentruntime.ConfirmedClientToolSchema(customTool.InputSchema)
+				if err != nil {
+					runRequestDebugEvent("custom_tool_inventory_error", map[string]any{
+						"stage":          "confirmed_schema",
+						"error_category": "invalid_confirmed_schema",
+					})
+					continue
+				}
+				parameters = confirmed
+			}
 		}
 		definitions = append(definitions, tool.Definition{
 			Type:        "function",
