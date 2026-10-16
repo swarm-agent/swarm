@@ -187,6 +187,7 @@ func runSetupSDKTokens(args []string, output io.Writer) error {
 			ExpiresAt         int64    `json:"expires_at"`
 			LastUsedAt        int64    `json:"last_used_at"`
 			Revoked           bool     `json:"revoked"`
+			NeverExpires      bool     `json:"never_expires"`
 		} `json:"tokens"`
 	}
 	if err := setupRequest(client, http.MethodGet, "/v3/auth/tokens", nil, &result); err != nil {
@@ -204,10 +205,15 @@ func runSetupSDKTokens(args []string, output io.Writer) error {
 		ExpiresAt         int64    `json:"expires_at"`
 		LastUsedAt        int64    `json:"last_used_at,omitempty"`
 		Revoked           bool     `json:"revoked"`
+		// NeverExpires marks a key stored without an expiry (minted before
+		// every key had to expire, or a worker, remote or runner
+		// credential); it keeps working until revoked.
+		NeverExpires bool `json:"never_expires,omitempty"`
 	}
 	tokens := make([]listed, 0, len(result.Tokens))
 	for _, token := range result.Tokens {
-		item := listed{ID: token.ID, Name: token.Name, Kind: "scoped", Scopes: token.Scopes, CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt, LastUsedAt: token.LastUsedAt, Revoked: token.Revoked}
+		item := listed{ID: token.ID, Name: token.Name, Kind: "scoped", Scopes: token.Scopes, CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt, LastUsedAt: token.LastUsedAt, Revoked: token.Revoked,
+			NeverExpires: token.NeverExpires}
 		switch {
 		case token.AgentName != "" && token.AgentOperator:
 			item.Kind, item.Scopes = "operator:"+token.AgentName, nil

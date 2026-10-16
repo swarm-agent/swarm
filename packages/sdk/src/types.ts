@@ -50,6 +50,8 @@ export interface ScopedTokenRecord {
   worker_id?: string;
   worker_name?: string;
   expires_at?: number;
+  /** True for a key stored without an expiry (minted before every key had to expire, or a worker, remote or runner credential). It works until revoked. */
+  never_expires?: boolean;
   last_used_at?: number;
   created_at: number;
   revoked?: boolean;
@@ -61,7 +63,8 @@ export interface CreateScopedTokenParams {
   scopes: TokenScope[];
   worker_id?: string;
   worker_name?: string;
-  expires_in_seconds?: number;
+  /** Required: every key expires, within 365 days (31536000 seconds). */
+  expires_in_seconds: number;
 }
 
 export interface CreateScopedTokenResult {

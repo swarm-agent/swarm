@@ -133,19 +133,53 @@ func (s *Service) AuditDenied(method, path, remoteAddr, reason, suppliedToken st
 	_, _ = s.events.Append("system:security", "security.attach.denied", "attach", payload, "", "")
 }
 
-func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
-	return s.CreateScopedTokenUnder(nil, name, scopes, accountScopeID, userID, expiresIn, workerID, workerName)
+// Lifetime bounds for keys an API caller mints (POST /v3/auth/tokens: client,
+// SDK, monitoring and AI keys, and gateway/operator tokens). Every such key
+// must expire; there is no default lifetime.
+const (
+	// ScopedTokenMaxLifetime caps client, SDK, monitoring and AI keys.
+	ScopedTokenMaxLifetime = 365 * 24 * time.Hour
+	// AgentBoundMaxLifetime caps gateway and operator tokens, which sit on
+	// internet-facing hosts.
+	AgentBoundMaxLifetime = 30 * 24 * time.Hour
+)
+
+// requireLifetime refuses a missing, zero, negative or over-limit lifetime.
+func requireLifetime(expiresIn, max time.Duration) error {
+	if expiresIn <= 0 {
+		return errors.New("an expiry is required: every key must expire")
+	}
+	if expiresIn > max {
+		return fmt.Errorf("a key of this kind expires within %d days at most", int64(max/(24*time.Hour)))
+	}
+	return nil
 }
 
-// CreateScopedTokenUnder mints a token on behalf of the scoped token parent
-// (nil: the owner). A token never outlives its parent: its lifetime is capped
-// at the parent's, and it stops validating once the parent is revoked, expired
-// or deleted.
+// CreateScopedToken mints a credential bound to a resource that owns its
+// lifecycle (a trigger worker's deploy token, the remote transport's device
+// token); expiresIn 0 means it lasts until revoked. Keys an API caller asks
+// for go through CreateScopedTokenUnder, which requires an expiry.
+func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
+	return s.createScopedTokenRecord(nil, name, scopes, accountScopeID, userID, expiresIn, bindWorker(workerID, workerName))
+}
+
+// CreateScopedTokenUnder mints a key an API caller asked for, on behalf of the
+// scoped token parent (nil: the owner). It must expire within
+// ScopedTokenMaxLifetime. A token never outlives its parent: its lifetime is
+// capped at the parent's, and it stops validating once the parent is revoked,
+// expired or deleted.
 func (s *Service) CreateScopedTokenUnder(parent *pebblestore.ScopedTokenRecord, name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
-	return s.createScopedTokenRecord(parent, name, scopes, accountScopeID, userID, expiresIn, func(record *pebblestore.ScopedTokenRecord) {
+	if err := requireLifetime(expiresIn, ScopedTokenMaxLifetime); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
+	}
+	return s.createScopedTokenRecord(parent, name, scopes, accountScopeID, userID, expiresIn, bindWorker(workerID, workerName))
+}
+
+func bindWorker(workerID, workerName string) func(*pebblestore.ScopedTokenRecord) {
+	return func(record *pebblestore.ScopedTokenRecord) {
 		record.WorkerID = strings.TrimSpace(workerID)
 		record.WorkerName = strings.TrimSpace(workerName)
-	})
+	}
 }
 
 // AgentBoundLimits bounds what an agent-bound token may start; zero fields
@@ -160,7 +194,8 @@ type AgentBoundLimits struct {
 }
 
 // CreateAgentBoundToken mints a session token limited to one sealed agent's
-// sessions. The caller must have checked the agent is sealed.
+// sessions. The caller must have checked the agent is sealed. It must expire
+// within AgentBoundMaxLifetime.
 func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string, limits AgentBoundLimits) (string, pebblestore.ScopedTokenRecord, error) {
 	return s.CreateAgentBoundTokenUnder(nil, name, accountScopeID, userID, expiresIn, agentName, limits)
 }
@@ -170,6 +205,9 @@ func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, exp
 func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenRecord, name, accountScopeID, userID string, expiresIn time.Duration, agentName string, limits AgentBoundLimits) (string, pebblestore.ScopedTokenRecord, error) {
 	if strings.TrimSpace(agentName) == "" {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("agent name is required")
+	}
+	if err := requireLifetime(expiresIn, AgentBoundMaxLifetime); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
 	}
 	if limits.MessagesPerMinute < 0 || limits.MessagesPerMinute > 6000 || limits.SessionsPerHour < 0 || limits.SessionsPerHour > 100000 ||
 		limits.MaxConcurrentRuns < 0 || limits.MaxConcurrentRuns > 64 {

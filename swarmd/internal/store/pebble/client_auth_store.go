@@ -213,7 +213,19 @@ func (s *ClientAuthStore) ListScopedTokens(accountScopeID string) ([]ScopedToken
 	if s == nil || s.secretStore == nil {
 		return nil, fmt.Errorf("secret store is not configured")
 	}
-	prefix := KeyAuthScopedTokenPrefixForAccount(accountScopeID)
+	return s.listScopedTokensWithPrefix(KeyAuthScopedTokenPrefixForAccount(accountScopeID))
+}
+
+// ListAllScopedTokens lists every account's scoped tokens, for machine-wide
+// startup checks.
+func (s *ClientAuthStore) ListAllScopedTokens() ([]ScopedTokenRecord, error) {
+	if s == nil || s.secretStore == nil {
+		return nil, fmt.Errorf("secret store is not configured")
+	}
+	return s.listScopedTokensWithPrefix(KeyAuthScopedTokenPrefix)
+}
+
+func (s *ClientAuthStore) listScopedTokensWithPrefix(prefix string) ([]ScopedTokenRecord, error) {
 	var records []ScopedTokenRecord
 	err := iteratePrefixFromReader(s.secretStore.db, prefix, 0, func(key string, value []byte) error {
 		var rec ScopedTokenRecord
