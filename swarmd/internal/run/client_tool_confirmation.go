@@ -232,6 +232,10 @@ func (s *Service) requestClientToolConfirmation(config providerToolInvokerConfig
 		}
 		return fail("denied", reason)
 	}
+	if ended, isMap := session.Metadata["ended"].(map[string]any); isMap && ended["at"] != nil {
+		// The API ends a conversation under the same lock (POST .../end).
+		return fail("error", "the conversation has ended")
+	}
 	if existing, found := ClientToolConfirmationFromSession(session); found && existing.Open() {
 		return fail("error", "another action in this conversation is waiting for the person's confirmation; wait for its outcome before asking for another")
 	}

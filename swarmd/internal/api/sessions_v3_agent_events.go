@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -28,8 +29,11 @@ import (
 // least DefaultV3RealtimeMinimumRecords rows). A cursor older than that window
 // is reported as a gap, like the signal feed.
 //
-// Entries are bounded: message text and tool arguments, results and reasons
-// are cut to agentEventTextMaxRunes with truncated set.
+// Entries are bounded: message text, tool arguments, results and reasons, and
+// confirmation summaries, arguments and notes are cut to
+// agentEventTextMaxRunes with truncated set. Each entry of a gateway
+// conversation carries the session's end_user and labels from the stored
+// binding, never from the model.
 
 const (
 	agentEventsDefaultLimit = 100
@@ -53,16 +57,23 @@ const (
 	agentEventRunFailed        = "run.failed"
 	agentEventTakeoverStarted  = "takeover.started"
 	agentEventTakeoverEnded    = "takeover.ended"
+	// A confirmed client tool call waiting for the person, and their decision
+	// (approved, rejected, or expired when nobody answered or the
+	// conversation ended).
+	agentEventConfirmationRequested = "confirmation.requested"
+	agentEventConfirmationDecided   = "confirmation.decided"
 )
 
 type agentEvent struct {
 	// Seq is the feed position; pass the last next_after back as after.
-	Seq       uint64         `json:"seq"`
-	ID        string         `json:"id"`
-	At        int64          `json:"at"`
-	Kind      string         `json:"kind"`
-	SessionID string         `json:"session_id"`
-	Data      map[string]any `json:"data,omitempty"`
+	Seq       uint64            `json:"seq"`
+	ID        string            `json:"id"`
+	At        int64             `json:"at"`
+	Kind      string            `json:"kind"`
+	SessionID string            `json:"session_id"`
+	EndUser   string            `json:"end_user,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
+	Data      map[string]any    `json:"data,omitempty"`
 }
 
 type agentEventsPage struct {
@@ -102,7 +113,21 @@ type agentEventPayload struct {
 		RunID  string `json:"run_id"`
 		Status string `json:"status"`
 	} `json:"run_intent"`
-	Permission *agentEventPermission `json:"permission"`
+	Permission   *agentEventPermission   `json:"permission"`
+	Confirmation *agentEventConfirmation `json:"client_tool_confirmation"`
+}
+
+// agentEventConfirmation is the part of a confirmation write the feed shows.
+type agentEventConfirmation struct {
+	ID                    string         `json:"id"`
+	Status                string         `json:"status"`
+	Tool                  string         `json:"tool"`
+	Summary               string         `json:"summary"`
+	Arguments             map[string]any `json:"arguments"`
+	RunID                 string         `json:"run_id"`
+	Note                  string         `json:"note"`
+	ExecutionPermissionID string         `json:"execution_permission_id"`
+	Delivered             bool           `json:"delivered"`
 }
 
 // boundAgentEventText cuts text to agentEventTextMaxRunes and reports whether it did.
@@ -167,6 +192,28 @@ func agentEventFromSessionEvent(event pebblestore.V3SessionEvent) (string, map[s
 	case sessionChangeTakeoverEnded:
 		return agentEventTakeoverEnded, map[string]any{}, true
 	}
+	if c := payload.Confirmation; c != nil && strings.TrimSpace(c.ID) != "" {
+		// Each transition is its own write; only the request and the decision
+		// are feed entries (the approved call and the outcome show as tool
+		// and message entries).
+		if c.Delivered || c.ExecutionPermissionID != "" {
+			return "", nil, false
+		}
+		data := map[string]any{"confirmation_id": c.ID, "tool": c.Tool}
+		if c.Status == runruntime.ClientToolConfirmationPending {
+			data["run_id"] = c.RunID
+			setBoundedAgentEventText(data, "summary", c.Summary)
+			if raw, err := json.Marshal(c.Arguments); err == nil {
+				setBoundedAgentEventText(data, "arguments", string(raw))
+			}
+			return agentEventConfirmationRequested, data, true
+		}
+		data["decision"] = c.Status
+		if c.Note != "" {
+			setBoundedAgentEventText(data, "note", c.Note)
+		}
+		return agentEventConfirmationDecided, data, true
+	}
 	if message := payload.Message; message != nil && strings.TrimSpace(message.Content) != "" {
 		data := map[string]any{"message_id": message.ID}
 		switch strings.ToLower(strings.TrimSpace(message.Role)) {
@@ -227,21 +274,30 @@ func (s *Server) listAgentEvents(account, user, agent string, after uint64, limi
 	if page.OldestSeq > 0 && after+1 < page.OldestSeq {
 		page.Gap = true
 	}
-	agents := map[string]string{} // session ID -> agent name ("" when gone)
-	agentOf := func(sessionID string) (string, error) {
-		if name, ok := agents[sessionID]; ok {
-			return name, nil
+	type feedSession struct {
+		agent   string // "" when the session is gone or not the caller's
+		binding pebblestore.SessionEndUser
+	}
+	sessions := map[string]feedSession{}
+	sessionOf := func(sessionID string) (feedSession, error) {
+		if known, ok := sessions[sessionID]; ok {
+			return known, nil
 		}
 		session, found, err := s.sessions.GetSession(sessionID)
 		if err != nil {
-			return "", err
+			return feedSession{}, err
 		}
-		name := ""
+		var known feedSession
 		if found && session.AccountScopeID == account && session.UserID == user {
-			name = sessionsV3MetadataString(session.Metadata, "agent_name")
+			known.agent = sessionsV3MetadataString(session.Metadata, "agent_name")
+			binding, _, err := pebblestore.SessionEndUserFromMetadata(session.Metadata)
+			if err != nil {
+				return feedSession{}, err
+			}
+			known.binding = binding
 		}
-		agents[sessionID] = name
-		return name, nil
+		sessions[sessionID] = known
+		return known, nil
 	}
 	scanned := 0
 	cursor := after
@@ -254,18 +310,19 @@ func (s *Server) listAgentEvents(account, user, agent string, after uint64, limi
 			scanned++
 			cursor = record.EndpointSeq
 			page.NextAfter = record.EndpointSeq
-			name, err := agentOf(record.SessionID)
+			known, err := sessionOf(record.SessionID)
 			if err != nil {
 				return agentEventsPage{}, err
 			}
-			if name != agent {
+			if known.agent != agent {
 				continue
 			}
 			kind, data, ok := agentEventFromSessionEvent(record.Event)
 			if !ok || !agentEventKindVisible(kind, kinds) {
 				continue
 			}
-			page.Events = append(page.Events, agentEvent{Seq: record.EndpointSeq, ID: record.Event.ID, At: record.Event.TsUnixMs, Kind: kind, SessionID: record.SessionID, Data: data})
+			page.Events = append(page.Events, agentEvent{Seq: record.EndpointSeq, ID: record.Event.ID, At: record.Event.TsUnixMs, Kind: kind, SessionID: record.SessionID,
+				EndUser: known.binding.EndUser, Labels: known.binding.Labels, Data: data})
 			if len(page.Events) >= limit || scanned >= agentEventsMaxScan {
 				break
 			}

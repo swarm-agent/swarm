@@ -227,7 +227,8 @@ tool. `"confirm_timeout_ms"` is how long a call waits for the decision (default
    without another model call, so waiting costs no tokens.
 2. The gateway shows an approval card. It finds the confirmation with
    `GET /v3/sessions/{id}/confirmations` (also `pending_confirmation` on
-   `GET /v3/sessions/{id}`).
+   `GET /v3/sessions/{id}`, and `pending_confirmations` on the session's wait,
+   which wakes with reason `confirmation`).
 3. It sends the person's decision:
    `POST /v3/sessions/{id}/confirmations/{cid}`
    `{"decision": "approve" | "reject", "note": "...", "arguments_hash": "..."}`.
@@ -315,26 +316,34 @@ use the read-only ones (wait, list, feed).
 
 | Route | Does |
 |---|---|
-| `GET /v3/sessions/{id}/wait?after=<cursor>&wait_seconds=<0-30>` | without `after`: the current state and `cursor` at once. With it: returns as soon as an event after the cursor is an assistant message, a pending tool call, the end of a run or the end of the session (`reasons`), or after the wait (`timed_out`) |
+| `GET /v3/sessions/{id}/wait?after=<cursor>&wait_seconds=<0-30>` | without `after`: the current state and `cursor` at once. With it: returns as soon as an event after the cursor is an assistant message, a pending tool call, a confirmation waiting for the person, the end of a run or the end of the session (`reasons`), or after the wait (`timed_out`) |
 | `GET /v3/sessions:agent?state=active\|ended\|all&updated_after=&updated_before=&cursor=&limit=` | the agent's conversations, most recently updated first, 50 per page (at most 200); page with `next_cursor` |
-| `POST /v3/sessions/{id}/end` `{"client_request_id","reason"}` | ends the conversation: no more messages (409), takeovers or operator replies; its run in flight and pending tool calls are stopped. Ending again changes nothing (`already_ended`) |
+| `POST /v3/sessions/{id}/end` `{"client_request_id","reason"}` | ends the conversation: no more messages (409), takeovers, operator replies or confirmation decisions (409); its run in flight and pending tool calls are stopped, and an open confirmation is closed without starting a run (a pending one expires; the call an approval created is failed). Ending again changes nothing (`already_ended`) |
 | `DELETE /v3/sessions/{id}` | hard deletes the conversation and its messages; refused (409) while a run or tool call is in flight, so end it first |
 | `GET /v3/sessions:agent-events?after=N&limit=N&kind=message,tool&wait=S` | the agent's event feed, oldest first, like `/v3/signals` |
 
 A wait answer carries `cursor` (pass it back as `after`), `reasons`
-(`assistant_message`, `tool_call`, `run_ended`, `session_ended`),
-`timed_out`, `more` (more events follow the cursor), `ended`, `run`
-(`run_id`, `status`, `active`) and `pending_calls` (the session's pending tool
-calls). Streaming deltas, usage and run phases move the cursor without ending the
+(`assistant_message`, `tool_call`, `confirmation`, `run_ended`,
+`session_ended`), `timed_out`, `more` (more events follow the cursor),
+`ended`, `run` (`run_id`, `status`, `active`), `pending_calls` (the
+session's pending tool calls, including the call an approved confirmation
+created, which wakes the wait as `tool_call`), `pending_confirmations` (the
+confirmation waiting for the person, if any) and, on a conversation created with
+an `end_user`, `end_user` and `labels` from the stored session. Streaming deltas, usage and run phases move the cursor without ending the
 wait. A token may hold 32 waits and feed long-polls open at once.
 
-Feed entries are `{seq, id, at, kind, session_id, data}` with kinds
+Feed entries are `{seq, id, at, kind, session_id, end_user, labels, data}`
+(`end_user` and `labels` only on conversations created with them) with kinds
 `session.created`, `message.user`, `message.assistant` (`data.source`
 `operator` for a person's reply), `tool.called`, `tool.answered`,
-`tool.failed`, `session.ended`, `run.failed` (run ID and status, never the
-reason), `takeover.started` and `takeover.ended`. Message text and tool
-arguments, results and reasons are cut to 2000 characters with
-`data.truncated`. The feed is read from the sessions' own durable change log, so
+`tool.failed`, `confirmation.requested` (`confirmation_id`, `tool`,
+`summary`, `arguments`, `run_id`), `confirmation.decided` (`decision`:
+`approved`, `rejected` or `expired`, and the person's `note`),
+`session.ended`, `run.failed` (run ID and status, never the reason),
+`takeover.started` and `takeover.ended`. Message text, tool arguments,
+results and reasons, and confirmation summaries, arguments and notes are cut to
+2000 characters with `data.truncated`. Listed sessions also carry `end_user`
+and `labels`. The feed is read from the sessions' own durable change log, so
 it is only as old as that log's replay window (30 days, at least the newest
 100,000 changes on the machine); a cursor older than that, or ahead of the feed,
 comes back with `gap: true`. A deleted conversation's entries disappear with it.
@@ -353,9 +362,11 @@ sealed agents are swept.
 In the SDK: `agents.wait`, `listSessions`, `endSession`, `deleteSession`,
 `events` and `watchEvents` (an async iterator that waits between reads and
 yields `{kind: 'gap'}` for missed entries). `converse`, `serve` and
-`pendingCalls` use `wait`. Against a daemon that predates it (it answers the
-wait route with 404 or its unknown-route refusal) they poll as before and say so
-once with `console.debug`; any other error is thrown.
+`pendingCalls`, `confirm` and `reject` use `wait`, which also carries the
+pending confirmations, so nothing polls for them. Against a daemon that predates
+it (it answers the wait route with 404 or its unknown-route refusal) they poll as
+before (the permissions and confirmations routes) and say so once with
+`console.debug`; any other error is thrown.
 
 ## Build and run
 

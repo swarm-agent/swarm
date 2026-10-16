@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
+	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -26,8 +27,10 @@ import (
 // An agent-bound token reaches these for its own agent only (see
 // agentBoundRequestError); the owner names the agent. Ending is durable
 // session metadata ("ended": {at, by, reason}) written through
-// ApplySessionMutation: afterwards the session accepts no messages, takeovers
-// or operator replies, and its run in flight is stopped.
+// ApplySessionMutation: afterwards the session accepts no messages, takeovers,
+// operator replies or confirmation decisions, its open confirmation is closed
+// (expired, or its approved call failed) without starting a run, and its run
+// in flight is stopped.
 
 const (
 	sessionEndedMetadataKey      = "ended"
@@ -101,6 +104,15 @@ func (s *Server) handleSessionV3End(w http.ResponseWriter, r *http.Request, prin
 	if !ok {
 		return
 	}
+	// Held while the metadata changes, so a confirmation written at the same
+	// time cannot overwrite the ended state (or the other way round).
+	unlock := runruntime.LockClientToolConfirmations(sessionID)
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 	session, found, err := s.requireSessionV3Access(principal, sessionID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -153,8 +165,16 @@ func (s *Server) handleSessionV3End(w http.ResponseWriter, r *http.Request, prin
 		response["ended"] = state
 		response["mutation"] = result
 	}
-	// Stopping is repeated on every call, so retrying end after a failed stop
-	// finishes the job.
+	// Closing an open confirmation and stopping are repeated on every call, so
+	// retrying end after a failure finishes the job.
+	if err := s.closeClientToolConfirmationForEndLocked(sessionID); err != nil {
+		response["ok"] = false
+		response["error"] = "the conversation ended but its confirmation could not be closed: " + err.Error()
+		writeJSON(w, http.StatusInternalServerError, response)
+		return
+	}
+	unlock()
+	locked = false
 	runID, stopErr := s.stopActiveSessionRun(principal, sessionID, "the conversation was ended")
 	if runID != "" {
 		response["stopped_run_id"] = runID
@@ -348,6 +368,10 @@ func (s *Server) handleSessionsV3AgentSessions(w http.ResponseWriter, r *http.Re
 		}
 		if takeover, ok := session.Metadata[sessionTakeoverMetadataKey].(map[string]any); ok {
 			item["takeover"] = takeover
+		}
+		if err := addSessionEndUserFields(item, session.Metadata); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
 		}
 		_, active, err := s.sessions.GetSessionActiveRunIntent(session.ID)
 		if err != nil {

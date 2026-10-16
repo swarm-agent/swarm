@@ -138,6 +138,14 @@ func (s *Server) decideClientToolConfirmation(sessionID, confirmationID string, 
 	if !ok || current.ID != confirmationID {
 		return runruntime.ClientToolConfirmation{}, http.StatusNotFound, errors.New("confirmation not found")
 	}
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil || !found {
+		return runruntime.ClientToolConfirmation{}, http.StatusNotFound, errors.New("session not found")
+	}
+	if sessionEnded(session) {
+		// Ending closed the confirmation; nothing may run or start a run now.
+		return runruntime.ClientToolConfirmation{}, http.StatusConflict, errSessionV3Ended
+	}
 	if current.Status != runruntime.ClientToolConfirmationPending {
 		if current.Status == want {
 			return current, http.StatusOK, nil
@@ -154,10 +162,6 @@ func (s *Server) decideClientToolConfirmation(sessionID, confirmationID string, 
 		if _, err := current.VerifyArguments(); err != nil {
 			return runruntime.ClientToolConfirmation{}, http.StatusConflict, err
 		}
-	}
-	session, found, err := s.sessions.GetSession(sessionID)
-	if err != nil || !found {
-		return runruntime.ClientToolConfirmation{}, http.StatusNotFound, errors.New("session not found")
 	}
 	now := time.Now().UnixMilli()
 	current.Status = want
@@ -243,6 +247,43 @@ func (s *Server) advanceClientToolConfirmationLocked(sessionID string, startRun 
 	}
 	s.stopClientToolConfirmationTimer(sessionID)
 	return delivered, true, nil
+}
+
+// closeClientToolConfirmationForEndLocked closes the session's open
+// confirmation when the conversation ends: a pending one expires, and the
+// call an approval created is failed so no gateway can still run it. The
+// outcome is recorded without starting a run. The caller holds
+// LockClientToolConfirmations.
+func (s *Server) closeClientToolConfirmationForEndLocked(sessionID string) error {
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil || !found {
+		return err
+	}
+	c, ok := runruntime.ClientToolConfirmationFromSession(session)
+	if !ok || !c.Open() {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	switch {
+	case c.Status == runruntime.ClientToolConfirmationPending:
+		c.Status = runruntime.ClientToolConfirmationExpired
+		c.DecidedAt = now
+		if err := runruntime.PutClientToolConfirmation(s.applySessionV3PrimaryMutation, session, c, now); err != nil {
+			return err
+		}
+	case c.Status == runruntime.ClientToolConfirmationApproved && c.ExecutionPermissionID != "" && s.perm != nil:
+		record, found, err := s.perm.GetPermission(sessionID, c.ExecutionPermissionID)
+		if err != nil {
+			return err
+		}
+		if found && strings.EqualFold(record.Status, pebblestore.PermissionStatusPending) {
+			if _, err := s.perm.Resolve(sessionID, record.ID, "deny", "the conversation was ended"); err != nil {
+				return err
+			}
+		}
+	}
+	_, _, err = s.advanceClientToolConfirmationLocked(sessionID, false)
+	return err
 }
 
 // confirmedClientToolDefinition returns the tool a confirmation names, if it
@@ -332,7 +373,7 @@ func (s *Server) deliverClientToolConfirmationOutcome(session pebblestore.Sessio
 	sum := sha256.Sum256([]byte(session.ID + "\x00" + requestID))
 	message := pebblestore.MessageSnapshot{ID: "v3msg_confirmation_" + hex.EncodeToString(sum[:16]), Role: "tool", Content: content, CreatedAt: now, Metadata: metadata}
 	var runIntent *pebblestore.V3SessionRunIntent
-	if startRun {
+	if startRun && !sessionEnded(session) {
 		status, reason := sessionruntime.RunIntentPendingExecutor, ""
 		if sessionTakeoverActive(session) {
 			status, reason = sessionruntime.RunIntentDispatchBlocked, sessionTakeoverBlockedReason
