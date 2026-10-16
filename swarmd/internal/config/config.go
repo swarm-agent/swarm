@@ -41,6 +41,7 @@ type Config struct {
 	SandboxCPUs                  string
 	LandingMaxConcurrent         int
 	LandingParallel              int
+	CloudBuildCache              bool
 	CloudBuildProject            string
 	CloudBuildRegion             string
 	CloudBuildBucket             string
@@ -115,6 +116,7 @@ func Parse(args []string) (Config, error) {
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
 	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "memory cap per sandbox (empty: host-derived)")
 	fs.StringVar(&cfg.SandboxCPUs, "sandbox-cpus", startupCfg.SandboxCPUs, "CPU quota per agent container (empty: unrestricted)")
+	cfg.CloudBuildCache = startupCfg.CloudBuildCache
 	cfg.CloudBuildProject = startupCfg.CloudBuildProject
 	cfg.CloudBuildRegion = startupCfg.CloudBuildRegion
 	cfg.CloudBuildBucket = startupCfg.CloudBuildBucket

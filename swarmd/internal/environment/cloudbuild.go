@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"sync"
 	"time"
 )
 
@@ -305,6 +306,38 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 	if err := p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"request.json", bytes.NewReader(request)); err != nil {
 		return fail(err)
 	}
+	if len(spec.Checks) > 1 {
+		e.children = make([]*cloudEnvironment, len(spec.Checks))
+		var wg sync.WaitGroup
+		for i, command := range spec.Checks {
+			childSpec := spec
+			childSpec.Checks = []string{command}
+			child := &cloudEnvironment{provider: p, spec: childSpec, prefix: fmt.Sprintf("%schecks/%d/", e.prefix, i), started: e.started, timeout: timeout}
+			e.children[i] = child
+			wg.Add(1)
+			go func(i int, child *cloudEnvironment) {
+				defer wg.Done()
+				script := cloudBuildCheckScript(p.Config.Bucket, e.prefix, sha, p.cacheKey(spec), child.prefix, i, i == 0)
+				build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-c", strings.ReplaceAll(script, "$", "$$")}}}})
+				if err == nil && build.ID == "" {
+					err = fmt.Errorf("Cloud Build returned no build ID")
+				}
+				if err != nil {
+					child.createErr = &Failure{fmt.Sprintf("Cloud Build check %d: %s", i+1, err)}
+				}
+				child.id = build.ID
+			}(i, child)
+		}
+		wg.Wait()
+		if spec.Selected != nil {
+			ids := make([]string, len(e.children))
+			for i, child := range e.children {
+				ids[i] = child.id
+			}
+			spec.Selected("cloudbuild:" + strings.Join(ids, ","))
+		}
+		return e, nil
+	}
 	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: cloudBuildCachedStepArgs(p.Config.Bucket, e.prefix, sha, p.cacheKey(spec))}}})
 	if err != nil {
 		return fail(err)
@@ -332,6 +365,10 @@ type cloudEnvironment struct {
 	timeout    time.Duration
 	index      int
 	results    []cloudCheck
+	children   []*cloudEnvironment
+	createErr  error
+	outcomes   []*ExecResult
+	errors     []error
 }
 
 func (e *cloudEnvironment) Sync(context.Context, string) error { return nil }
@@ -343,6 +380,32 @@ func (e *cloudEnvironment) Release() error {
 func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResult, error) {
 	if e.index >= len(e.spec.Checks) || len(req.Command) != 3 || req.Command[0] != "bash" || req.Command[1] != "-lc" || req.Command[2] != e.spec.Checks[e.index] {
 		return nil, &Failure{"Cloud Build check sequence mismatch"}
+	}
+	if e.children != nil {
+		// Drain every build before exposing a failure: the landing caller may
+		// release the shared payload immediately after the first failed check.
+		if e.outcomes == nil {
+			e.outcomes = make([]*ExecResult, len(e.children))
+			e.errors = make([]error, len(e.children))
+			var wg sync.WaitGroup
+			for i, child := range e.children {
+				wg.Add(1)
+				go func(i int, child *cloudEnvironment) {
+					defer wg.Done()
+					e.outcomes[i], e.errors[i] = child.Exec(ctx, ExecRequest{Command: []string{"bash", "-lc", child.spec.Checks[0]}})
+				}(i, child)
+			}
+			wg.Wait()
+		}
+		i := e.index
+		e.index++
+		if e.outcomes[i] != nil && req.OnOutput != nil {
+			req.OnOutput([]byte(e.outcomes[i].Stdout))
+		}
+		return e.outcomes[i], e.errors[i]
+	}
+	if e.createErr != nil {
+		return nil, e.createErr
 	}
 	for e.results == nil {
 		b, err := e.provider.Builds.Get(ctx, e.id)

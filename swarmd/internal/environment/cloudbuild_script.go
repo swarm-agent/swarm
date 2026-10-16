@@ -13,7 +13,11 @@ func cloudBuildScript(bucket, prefix, sha string) string {
 }
 
 func cloudBuildScriptWithCache(bucket, prefix, sha, key string) string {
-	data, _ := json.Marshal(map[string]string{"bucket": bucket, "prefix": prefix, "sha256": sha, "cache_key": key})
+	return cloudBuildCheckScript(bucket, prefix, sha, key, prefix, -1, true)
+}
+
+func cloudBuildCheckScript(bucket, prefix, sha, key, resultPrefix string, index int, save bool) string {
+	data, _ := json.Marshal(map[string]any{"bucket": bucket, "prefix": prefix, "sha256": sha, "cache_key": key, "result_prefix": resultPrefix, "check_index": index, "cache_save": save})
 	return "set -euo pipefail\nIMAGE_PATH=\"$PATH\"\nexport IMAGE_PATH\nexport GOPATH=/workspace/go\nexport GOCACHE=/workspace/.cache/go-build\nexport GOMODCACHE=/workspace/go/pkg/mod\npython3 - '" + base64.StdEncoding.EncodeToString(data) + "' <<'SWARM_PY'\n" + cloudBuildPython + "\nSWARM_PY\n"
 }
 
@@ -24,7 +28,7 @@ def token():
     req = urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', headers={'Metadata-Flavor':'Google'})
     with urllib.request.urlopen(req, timeout=30) as r: return json.load(r)['access_token']
 def transfer(name, path, upload=False, object_name=None):
-    obj = object_name if object_name is not None else cfg['prefix'] + name
+    obj = object_name if object_name is not None else (cfg.get('result_prefix', cfg['prefix']) if upload else cfg['prefix']) + name
     if upload:
         url = 'https://storage.googleapis.com/upload/storage/v1/b/' + urllib.parse.quote(cfg['bucket'], safe='') + '/o?uploadType=media&name=' + urllib.parse.quote(obj, safe='')
     else:
@@ -121,6 +125,7 @@ if digest is None:
     digest = h.hexdigest()
 if digest != cfg['sha256']: raise RuntimeError('payload sha256 mismatch')
 with open(root+'/request.json') as f: request = json.load(f)
+if cfg.get('check_index', -1) >= 0: request['checks'] = [request['checks'][cfg['check_index']]]
 os.mkdir(root+'/src')
 subprocess.run(['tar','-xzf',root+'/payload.tar.gz','-C',root+'/src'],check=True)
 os.chdir(root+'/src')
@@ -137,7 +142,10 @@ for path in cache_env.values(): os.makedirs(path, exist_ok=True)
 if cfg.get('cache_key'): restore_cache()
 def login_command(command):
     return 'export PATH="$IMAGE_PATH:$PATH"; ' + command
+` + cloudBuildSetupPython + `
 for command in request['definition'].get('Setup') or []:
+    command = needed_setup(command)
+    if command is None: continue
     subprocess.run(['bash','-lc',login_command(command)],env=env,check=True,timeout=request['timeout'])
 subprocess.run(['git','init'],check=True)
 subprocess.run(['git','add','-A'],check=True)
@@ -180,7 +188,7 @@ for command in request['checks']:
         before.append(line)
     code = proc.wait()
     checks.append({'exit_code':code,'duration_ms':int((time.monotonic()-start)*1000),'output':(failures+b'\n'+tail).decode('utf-8','replace')})
-if cfg.get('cache_key'): save_cache()
+if cfg.get('cache_key') and cfg.get('cache_save', True): save_cache()
 with open(root+'/result.json','w') as f: json.dump({'checks':checks},f)
 try:
     with open(root+'/output.log','wb') as f: f.write(output)

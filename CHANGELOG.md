@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Start Cloud Build checks concurrently over one payload, add the default-on `cloudbuild_cache` startup switch, and skip installed packages in simple apt-get setup commands; landing failure aggregation remains pending. Docs impact: docs/runners.md
+
 - Persist Cloud Build landing Go build/test, module and pnpm caches with bounded, best-effort archive restore and atomic publication. Docs impact: docs/runners.md
 - Preserve OK reviews across patch-identical landing rebases and route changed patches to rebase-scoped review without consuming coder fix rounds. Docs impact: none.
 - Include immutable landing-base and rebase comparison SHAs in pipeline review briefs, and classify missing base metadata as review infrastructure failure. Docs impact: none.
