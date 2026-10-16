@@ -13,8 +13,10 @@ import (
 )
 
 // Purpose: cloudBuildScript must preserve image tools across login shells and
-// record failing checks without aborting. Execute its setup/check body with real
-// shells in a temporary workspace; only remote transfers are replaced locally.
+// record failing checks without aborting, and route every check through runuser
+// with writable workspace paths. Execute the setup/check body with real shells;
+// account/ownership operations and the runuser boundary are intercepted so this
+// focused test needs neither root nor cloud access. It does not prove OS isolation.
 func TestCloudBuildScriptLoginPathAndCheckFailure(t *testing.T) {
 	script := cloudBuildScript("bucket", "prefix/", "sha")
 	for _, want := range []string{`IMAGE_PATH="$PATH"`, "export IMAGE_PATH", "export GOPATH=/workspace/go", "export GOCACHE=/workspace/.cache/go-build", "export GOMODCACHE=/workspace/go/pkg/mod"} {
@@ -22,16 +24,65 @@ func TestCloudBuildScriptLoginPathAndCheckFailure(t *testing.T) {
 			t.Errorf("missing %s", want)
 		}
 	}
+	// Extraction precedes setup and privilege switching; no global user switch
+	// can accidentally move archive handling or the Python uploader under checks.
+	extract := strings.Index(script, "subprocess.run(['tar','-xzf'")
+	setup := strings.Index(script, "for command in request['definition'].get('Setup')")
+	checks := strings.Index(script, "for command in request['checks']:")
+	upload := strings.Index(script, "with open(root+'/result.json','w')")
+	if extract < 0 || setup <= extract || checks <= setup || upload <= checks || strings.Count(script, "'runuser'") != 1 {
+		t.Fatal("root operations crossed the per-check privilege boundary")
+	}
 	root := t.TempDir()
 	tool := filepath.Join(root, "image-tool")
 	if err := os.WriteFile(tool, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	body := cloudBuildPython[strings.Index(cloudBuildPython, "env = os.environ.copy()"):]
-	prelude := `import collections, json, os, re, subprocess, time
+	prelude := `import collections, json, os, re, subprocess, time, types
 root = os.getcwd()
-def transfer(*args): pass
-request = {'definition': {'Setup': ['image-tool']}, 'timeout': 5, 'head': 'head', 'base': 'base', 'checks': ['image-tool; exit 7', 'image-tool']}
+real_run, real_popen = subprocess.run, subprocess.Popen
+operations = []
+class Accounts:
+    created = False
+    def getpwnam(self, name):
+        assert name == 'swarmcheck'
+        if not self.created: raise KeyError(name)
+        return types.SimpleNamespace(pw_uid=10001, pw_gid=10001)
+pwd = Accounts()
+def run(args, **kwargs):
+    operations.append(args[0])
+    assert 'runuser' not in args, args
+    if args[0] == 'useradd':
+        assert args == ['useradd','-m','-u','10001','-d',root+'/home/swarmcheck','swarmcheck']
+        pwd.created = True
+        return
+    if args[0] == 'chown':
+        assert args[:3] == ['chown','-R','10001:10001']
+        assert set(args[3:]) == {root+'/src', root+'/home/swarmcheck', *cache_env.values()}
+        return
+    return real_run(args, **kwargs)
+def popen(args, **kwargs):
+    if args[0] != 'timeout':
+        assert args[0] in ('bash', 'git'), args
+        return real_popen(args, **kwargs)
+    assert operations == ['bash', 'git', 'git', 'git', 'useradd', 'chown'], operations
+    assert args[:10] == ['timeout','--kill-after=5s','5s','runuser','-u','swarmcheck','--preserve-environment','--','bash','-c'], args
+    env = kwargs['env']
+    assert env['HOME'] == root+'/home/swarmcheck'
+    assert env['PATH'].split(':')[0] == os.environ['IMAGE_PATH']
+    for key, value in cache_env.items():
+        assert env[key] == value and os.path.isdir(value), (key, value)
+    assert env['SWARM_LANDING_HEAD'] == 'head' and env['SWARM_LANDING_BASE'] == 'base'
+    check_calls.append(args[-1])
+    return real_popen(args[:3]+args[8:], **kwargs)
+subprocess.run, subprocess.Popen = run, popen
+check_calls = []
+def transfer(name, path, upload):
+    assert upload and name in ('output.log', 'result.json')
+    assert check_calls == request['checks'], check_calls
+    assert os.path.isfile(path)
+request = {'definition': {'Setup': ['image-tool'], 'Env': {'TMPDIR': '/not-used', 'HOME': '/not-used', 'GOCACHE': '/not-used'}}, 'timeout': 5, 'head': 'head', 'base': 'base', 'checks': ['image-tool; exit 7', 'image-tool']}
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
