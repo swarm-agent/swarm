@@ -146,6 +146,7 @@ type Server struct {
 	outboxStatus                func() outbox.Status
 	publishConfig               string
 	landingSlots                chan struct{}
+	landingParallel             int
 	landingMaxConcurrent        int
 	landQueueMu                 sync.Mutex
 	landQueue                   *publish.Queue

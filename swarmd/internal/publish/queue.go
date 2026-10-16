@@ -51,6 +51,10 @@ type ReviewEquivalence struct {
 }
 
 type Entry struct {
+	TrainReady          bool                                 `json:"train_ready,omitempty"`
+	StackBase           *Request                             `json:"-"`
+	DeferChecks         bool                                 `json:"-"`
+	RunChecks           func() error                         `json:"-"`
 	EnvironmentNote     string                               `json:"environment_note,omitempty"`
 	Environment         string                               `json:"environment,omitempty"`
 	Proof               *Proof                               `json:"proof,omitempty"`
@@ -82,6 +86,9 @@ type SendBackError struct{ Reason string }
 func (e *SendBackError) Error() string { return e.Reason }
 
 type QueueHooks struct {
+	Recover func(context.Context, Entry) (bool, error)
+	// Stack prepares an immutable candidate on the preceding candidate, without checks.
+	Stack func(context.Context, *Entry, *Entry) error
 	// Admit fences each entry before any durable transition or external work.
 	// A failed admission leaves the entry pending for the next scheduler/restart.
 	Admit    func(context.Context, Entry) (func(), error)
@@ -92,9 +99,10 @@ type QueueHooks struct {
 	SendBack func(context.Context, Entry) error // canonical worker follow-up
 }
 type Queue struct {
-	store   QueueStore
-	mu      sync.Mutex
-	folders map[string]*sync.Mutex
+	parallel int
+	store    QueueStore
+	mu       sync.Mutex
+	folders  map[string]*sync.Mutex
 }
 
 func NewQueue(s QueueStore) *Queue { return &Queue{store: s, folders: map[string]*sync.Mutex{}} }
@@ -240,6 +248,9 @@ func (q *Queue) Process(ctx context.Context, account, folder string, h QueueHook
 	q.mu.Unlock()
 	lock.Lock()
 	defer lock.Unlock()
+	if q.parallel > 1 {
+		return q.processTrain(ctx, account, folder, h)
+	}
 	var release func()
 	defer func() {
 		if release != nil {

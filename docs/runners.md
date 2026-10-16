@@ -17,7 +17,7 @@ Cloud Build landings restore Go build/test results, Go modules and the pnpm stor
 
 ## Landing parallelism configuration
 
-`landing_parallel` is a nonnegative integer reserved for per-folder merge-train width, separate from `landing_max_concurrent`; zero resolves to 8 for `gcp-cloudbuild`, `runners`, or `auto` with both Cloud Build project and bucket configured, and 1 otherwise. Explicit positive values override that default. This configuration-only increment parses and preserves the setting, but landing execution remains serial until merge-train scheduling and startup wiring are implemented.
+`landing_parallel` controls per-folder merge-train width, separate from the box-wide `landing_max_concurrent` admission limit; zero resolves to 8 for `gcp-cloudbuild`, `runners`, or `auto` with both Cloud Build project and bucket configured, and 1 otherwise, while positive values override that default. Candidates stack in queue order and run checks in separate environments concurrently, but push only in order; a failed candidate or moved target causes the remaining jobs to restack and retest. Width 1 retains serial execution, and interrupted trains reconcile tested pushes against the target before resuming unfinished jobs.
 
 ## Set up a runner
 
