@@ -17,8 +17,11 @@ META=169.254.169.254/32
 apply() {
   allow=""
   for id in $(docker ps -q); do
-    case $(docker inspect -f "{{.Config.Image}}" "$id") in "$IMAGE"*) ;; *) continue ;; esac
-    allow="$allow $(docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}" "$id")"
+    # A container that already exited is skipped (it holds no address).
+    image=$(docker inspect -f "{{.Config.Image}}" "$id" 2>/dev/null) || continue
+    case $image in "$IMAGE"*) ;; *) continue ;; esac
+    ips=$(docker inspect -f "{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}" "$id" 2>/dev/null) || continue
+    allow="$allow $ips"
   done
   # One atomic replace of the chain (iptables-restore --noflush flushes only
   # the chains it declares): there is never a moment without the final DROP.
@@ -36,5 +39,5 @@ apply() {
 
 apply
 if [ "${1:-}" = watch ]; then
-  docker events --filter type=container --filter event=start --format '{{.ID}}' | while read -r _; do apply; done
+  docker events --filter type=container --filter event=start --format '{{.Actor.ID}}' | while read -r _; do apply; done
 fi
