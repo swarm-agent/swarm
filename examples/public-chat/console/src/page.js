@@ -38,6 +38,11 @@ export const PAGE_HTML = `<!doctype html>
   .msg.person { background:#e8edff; }
   .msg b { display:block; font-size:11px; opacity:.7; }
   #card { margin:6px 0 10px; padding:8px 10px; background:#fff7ed; border-radius:8px; }
+  #vtyping { font-size:12px; color:var(--mute); padding:2px 4px 0; display:flex; align-items:center; gap:6px; }
+  #vtyping[hidden] { display:none; }
+  #vtyping i { width:5px; height:5px; border-radius:50%; background:var(--mute); animation:tdot 1.1s infinite; }
+  #vtyping i:nth-child(2) { animation-delay:.15s; } #vtyping i:nth-child(3) { animation-delay:.3s; }
+  @keyframes tdot { 0%,60%,100% { opacity:.3; } 30% { opacity:1; } }
   textarea { width:100%; min-height:70px; font:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical; }
   .empty { color:var(--mute); }
   @media (max-width:800px) { main { grid-template-columns:1fr; } }
@@ -62,6 +67,7 @@ export const PAGE_HTML = `<!doctype html>
       <div id="contact" class="empty" hidden></div>
       <div id="card" hidden></div>
       <div id="transcript"></div>
+      <div id="vtyping" hidden><i></i><i></i><i></i> Visitor is typing…</div>
       <div style="margin-top:10px"><textarea id="reply" placeholder="Reply as yourself (take over first)" disabled></textarea>
       <div class="row" style="margin-top:8px"><small id="state" class="empty"></small><button id="send" class="primary" disabled>Send</button></div></div>
     </section>
@@ -211,6 +217,7 @@ function consoleApp() {
       $('#mail').href = 'mailto:' + encodeURIComponent(contact.email) + '?subject=' + encodeURIComponent('Following up on your chat')
         + '&body=' + encodeURIComponent((contact.name ? 'Hi ' + contact.name + ',' : 'Hi,') + '\n\n' + (last ? 'You asked: "' + last.text.slice(0, 300) + '"\n\n' : ''));
     }
+    $('#vtyping').hidden = !t.visitor_typing;
     $('#reply').disabled = !human;
     $('#send').disabled = !human;
     const box = $('#transcript');
@@ -238,11 +245,18 @@ function consoleApp() {
     const content = $('#reply').value.trim();
     if (!content || !state.selected) return;
     $('#send').disabled = true;
-    try { await api('/ops/reply', { session_id: state.selected, content }); $('#reply').value = ''; await refreshTranscript(); }
+    try { await api('/ops/reply', { session_id: state.selected, content }); $('#reply').value = ''; typedAt = 0; await refreshTranscript(); }
     catch (e) { log('reply failed: ' + e.message); }
     finally { $('#send').disabled = false; }
   }
   $('#send').addEventListener('click', send);
+  // While you type a reply, the visitor sees "<your name> is typing" (sent at most every 3 s).
+  let typedAt = 0;
+  $('#reply').addEventListener('input', () => {
+    if (!state.selected || !$('#reply').value.trim() || Date.now() - typedAt < 3000) return;
+    typedAt = Date.now();
+    api('/ops/typing', { session_id: state.selected }).catch(() => {});
+  });
   $('#reply').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
 
   // ---- live events: long poll; the gateway answers as soon as something happens
@@ -252,11 +266,16 @@ function consoleApp() {
         const { events, latest } = await api('/ops/events?after=' + state.latest + '&wait=25');
         state.latest = latest;
         for (const e of events) {
+          // Typing marks only refresh the open conversation; they are not worth a log line.
+          if (e.type === 'visitor.typing' || e.type === 'person.typing' || e.type === 'person.replied') {
+            if (e.session_id === state.selected) refreshTranscript().catch(() => {});
+            continue;
+          }
           log(e.type + (e.session_id ? ' ' + e.session_id.slice(0, 8) : '') + (e.summary ? ' — ' + e.summary : '') + (e.reason ? ' — ' + e.reason : ''));
           if (e.type === 'handoff.requested' && e.staff_online !== false) alertNewChat(e.summary);
           if (e.session_id && e.session_id === state.selected) refreshTranscript().catch(() => {});
         }
-        if (events.length) { refreshQueue().catch(() => {}); refreshConversations().catch(() => {}); }
+        if (events.some((e) => !/typing|replied/.test(e.type))) { refreshQueue().catch(() => {}); refreshConversations().catch(() => {}); }
       } catch (e) {
         if (e.status === 403) { log('signed out: reload the page'); setAvailable(false); return; }
         await new Promise((r) => setTimeout(r, 3000));

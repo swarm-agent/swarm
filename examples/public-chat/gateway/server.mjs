@@ -12,7 +12,11 @@ import * as core from './core.mjs';
 
 const MAX_BODY = 8192;
 
-export function gatewayHandler({ gateway, operator, config, visitors, emit: sendEvent, presence = core.createPresence(), feed = core.createFeed(), blocks = core.blocklist(), now = Date.now }) {
+export function gatewayHandler({ gateway, operator, config, visitors, emit: sendEvent, presence = core.createPresence(), feed = core.createFeed(), blocks = core.blocklist(), typing: typingStore, now = Date.now }) {
+  const typing = typingStore ?? core.createTyping({ now });
+  // Typing marks are ephemeral: they go to the console feed (to wake listeners), never to the hub or alerts.
+  const notify = (type, data) => feed.push(type, data);
+  const typingLimit = core.createLimiter({ limit: config.typingPerMinute ?? 40, windowMs: 60_000, now });
   const agentLabel = config.agentLabel || 'AI worker';
   const blockDays = config.blockDays ?? 30;
   const perVisitor = core.createLimiter({ limit: config.visitorMessagesPerWindow, windowMs: config.visitorWindowMs, now });
@@ -90,6 +94,7 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     const detail = await gateway.sessions.get(sessionId);
     if (core.takeoverOf(detail)?.state === 'human') {
       // A person holds the conversation: the daemon keeps the message and starts no run.
+      typing.clearVisitor(sessionId);
       await gateway.sessions.sendMessage(sessionId, { content: body.message });
       emit('visitor.message', { session_id: sessionId, visitor_id: body.visitor_id });
       return [200, { status: 'with_person', seq: core.latestReplySeq(detail.messages), person: core.publicPerson(await personOf(body.visitor_id)) }];
@@ -145,6 +150,50 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     await visitors.touch(body.visitor_id, { proposal: null, ended: { reason: 'lead_saved', at: now() } });
     emit('conversation.resolved', { session_id: visitor.session_id, visitor_id: body.visitor_id, reason: 'lead_saved' });
     return [200, { status: 'saved', ended: true }];
+  }
+
+  // The visitor is typing to a person: shown in the console. Ignored unless a person
+  // is involved, so it never reaches the model and costs nothing.
+  async function visitorTyping(body, net) {
+    if (blocks.blocked(net)) return [200, { ok: false }];
+    if (!body || typeof body.visitor_id !== 'string' || !core.VISITOR_ID.test(body.visitor_id)) return [400, { error: 'visitor_id is required' }];
+    if (!typingLimit(body.visitor_id)) return [429, { status: 'slow_down' }];
+    const visitor = visitors.get(body.visitor_id);
+    if (!visitor?.session_id || visitor.ended || !visitor.person) return [200, { ok: false }];
+    if (typing.visitor(visitor.session_id)) notify('visitor.typing', { session_id: visitor.session_id });
+    return [200, { ok: true }];
+  }
+
+  // Replies for the widget: a person's and the agent's, who is typing, and the hand-off
+  // state. With wait=N it is held open (up to 25 s) until any of that changes from what
+  // the widget already shows (typing=<name>, state=<person state>), so replies and
+  // typing arrive at once without polling.
+  async function replies(url) {
+    const visitorId = url.searchParams.get('visitor_id') ?? '';
+    if (!core.VISITOR_ID.test(visitorId) || !visitors.get(visitorId)?.session_id) return [200, { replies: [] }];
+    const after = Number(url.searchParams.get('after') ?? 0);
+    const waitMs = Math.min(Math.max(Number(url.searchParams.get('wait') ?? 0) || 0, 0), 25) * 1000;
+    const shownTyping = url.searchParams.get('typing') ?? '';
+    const shownState = url.searchParams.get('state') ?? '';
+    const deadline = now() + waitMs;
+    let cursor = feed.latest();
+    const snapshot = async () => {
+      const visitor = visitors.get(visitorId);
+      const detail = await gateway.sessions.get(visitor.session_id);
+      const person = core.publicPerson(await personOf(visitorId));
+      const staff = typing.staffOf(visitor.session_id);
+      return { sessionId: visitor.session_id, until: staff?.until, data: { with_person: core.takeoverOf(detail)?.state === 'human', person, typing: staff ? { name: staff.name } : null, ended_reason: visitor.ended?.reason ?? null, replies: core.repliesAfter(detail, Number.isFinite(after) ? after : 0, visitor.authors) } };
+    };
+    const changed = ({ data }) => data.replies.length > 0 || Boolean(data.ended_reason) || (data.typing?.name ?? '') !== shownTyping || (data.person?.state ?? '') !== shownState;
+    let snap = await snapshot();
+    while (!changed(snap) && now() < deadline) {
+      // Wake on an event about this conversation, or when a typing mark lapses.
+      const lapse = snap.until ? snap.until - now() + 50 : Infinity;
+      const events = await feed.wait(cursor, Math.max(0, Math.min(deadline - now(), lapse)));
+      cursor = feed.latest();
+      if (events.some((e) => e.session_id === snap.sessionId) || (snap.until && now() >= snap.until)) snap = await snapshot();
+    }
+    return [200, snap.data];
   }
 
   // "Not now" on the card: it goes away and the chat carries on. No model run.
@@ -216,7 +265,13 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
         const author = from === 'person' && core.authorOf(m, visitor?.authors);
         return { id: m.id, role: m.role, from, text: m.content, seq: m.global_seq, ...(author ? { author } : {}) };
       });
-      return [200, { takeover: core.takeoverOf(detail), ended: visitor?.ended ?? null, contact: visitor?.contact ?? null, proposal: core.publicProposal(visitor?.proposal), agent_label: agentLabel, blocked: Boolean(visitor?.net && blocks.blocked(visitor.net)), can_block_network: Boolean(visitor?.net), messages }];
+      return [200, { visitor_typing: typing.visitorTyping(sessionId), takeover: core.takeoverOf(detail), ended: visitor?.ended ?? null, contact: visitor?.contact ?? null, proposal: core.publicProposal(visitor?.proposal), agent_label: agentLabel, blocked: Boolean(visitor?.net && blocks.blocked(visitor.net)), can_block_network: Boolean(visitor?.net), messages }];
+    }
+    if (path === '/ops/typing') {
+      const name = typeof body?.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 40) : '';
+      if (!name) return [400, { error: 'name is required' }];
+      if (typing.staff(sessionId, name)) notify('person.typing', { session_id: sessionId, name });
+      return [200, { ok: true }];
     }
     if (path === '/ops/takeover') return [200, { takeover: await operator.agents.takeOver(sessionId) }];
     if (path === '/ops/accept') {
@@ -266,6 +321,8 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
     if (path === '/ops/reply') {
       if (typeof body?.content !== 'string' || !body.content.trim() || body.content.length > 4000) return [400, { error: 'content is required (at most 4000 characters)' }];
       const message = await operator.agents.replyAsOperator(sessionId, body.content);
+      typing.clearStaff(sessionId);
+      notify('person.replied', { session_id: sessionId });
       // Remember who sent it (the console adds the name from the verified login),
       // so the console and the widget can show a name instead of "a person".
       const key = message?.id ?? message?.global_seq;
@@ -302,6 +359,16 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
       const staff = presence.online();
       return json(res, 200, { staff_online: staff.length > 0, staff, agent_label: agentLabel });
     }
+    if (req.method === 'GET' && url.pathname === '/chat/replies') {
+      // Held open up to 25 s, so outside the in-flight limit (like the console feed).
+      try {
+        const [status, data] = await replies(url);
+        return json(res, status, data);
+      } catch (error) {
+        console.error('gateway request failed:', error?.status ?? '', String(error?.message ?? error).slice(0, 300));
+        return json(res, 502, { status: 'error' });
+      }
+    }
     if (inflight >= config.maxInflight) return json(res, 503, { status: 'busy' });
     // The edge's keyed hash of the visitor's IP, for blocking; only trusted with the gateway key.
     const netHeader = isOps ? undefined : req.headers['x-visitor-net'];
@@ -325,16 +392,13 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
         const [status, data] = await personRequest(await readBody(req), net);
         return json(res, status, data);
       }
+      if (req.method === 'POST' && url.pathname === '/chat/typing') {
+        const [status, data] = await visitorTyping(await readBody(req), net);
+        return json(res, status, data);
+      }
       if (req.method === 'POST' && url.pathname === '/chat/proposal') {
         const [status, data] = await proposalAnswer(await readBody(req), net);
         return json(res, status, data);
-      }
-      if (req.method === 'GET' && url.pathname === '/chat/replies') {
-        const visitorId = url.searchParams.get('visitor_id') ?? '';
-        const visitor = core.VISITOR_ID.test(visitorId) ? visitors.get(visitorId) : undefined;
-        if (!visitor) return json(res, 200, { replies: [] });
-        const detail = await gateway.sessions.get(visitor.session_id);
-        return json(res, 200, { with_person: core.takeoverOf(detail)?.state === 'human', person: core.publicPerson(await personOf(visitorId)), ended_reason: visitor.ended?.reason ?? null, replies: core.repliesAfter(detail, Number(url.searchParams.get('after') ?? 0), visitor.authors) });
       }
       if (isOps && (req.method === 'GET' || req.method === 'POST')) {
         const body = req.method === 'POST' ? await readBody(req) : {};

@@ -495,3 +495,52 @@ test('the agent can only fill in the lead card; the visitor sends it, which save
     } finally { await g2.close(); }
   } finally { await g.close(); }
 });
+
+test('typing is shown both ways only while a person is in the chat, and lapses on its own', async () => {
+  let t = Date.now();
+  const typing = core.createTyping({ ttlMs: 1000, now: () => t });
+  assert.equal(typing.staff('s1', 'Sam'), true, 'a new mark');
+  assert.equal(typing.staff('s1', 'Sam'), false, 'a refresh is not news');
+  assert.equal(typing.staffOf('s1').name, 'Sam');
+  t += 1001;
+  assert.equal(typing.staffOf('s1'), undefined);
+  assert.equal(typing.visitor('s1'), true);
+  typing.clearVisitor('s1');
+  assert.equal(typing.visitorTyping('s1'), false);
+
+  const g = await start();
+  try {
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+    // No person involved yet: a visitor typing mark is ignored.
+    assert.deepEqual((await g.call('/chat/typing', { body: { visitor_id: VISITOR } })).data, { ok: false });
+    await g.call('/ops/accept', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Sam', role: 'founder' } });
+    assert.deepEqual((await g.call('/chat/typing', { body: { visitor_id: VISITOR } })).data, { ok: true });
+    assert.equal((await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY })).data.visitor_typing, true);
+    assert.equal((await g.call('/ops/typing', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1' } })).status, 400, 'a name is required');
+  } finally { await g.close(); }
+});
+
+test('the replies request is held open and answers as soon as a person types or replies', async () => {
+  const g = await start();
+  try {
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'can I talk to someone?' } });
+    await g.call('/ops/accept', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Sam', role: 'founder' } });
+    const q = (extra) => `/chat/replies?visitor_id=${VISITOR}&after=9&state=joined&wait=5${extra}`;
+    // Nothing new: it waits; a typing mark from the console wakes it at once.
+    const t0 = Date.now();
+    const waiting = g.call(q(''), { method: 'GET' });
+    setTimeout(() => g.call('/ops/typing', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Sam' } }), 150);
+    const typed = (await waiting).data;
+    assert.deepEqual(typed.typing, { name: 'Sam' });
+    assert.deepEqual(typed.replies, []);
+    assert.ok(Date.now() - t0 < 2000, 'answered on the typing mark, not at the timeout');
+    // Already showing "Sam is typing": the next reply wakes it, and typing clears.
+    const next = g.call(q('&typing=Sam'), { method: 'GET' });
+    setTimeout(() => g.call('/ops/reply', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', content: 'Hi, Sam here', name: 'Sam', role: 'founder' } }), 150);
+    const replied = (await next).data;
+    assert.deepEqual(replied.replies.map((r) => [r.text, r.name]), [['Hi, Sam here', 'Sam']]);
+    assert.equal(replied.typing, null);
+    // Without wait it answers at once, as before.
+    assert.equal((await g.call(`/chat/replies?visitor_id=${VISITOR}&after=99`, { method: 'GET' })).status, 200);
+  } finally { await g.close(); }
+});

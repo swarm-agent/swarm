@@ -167,3 +167,21 @@ test('the gateway gets a keyed hash of the visitor network, never the address, a
   assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, accept: false });
   assert.equal((await handle(side('/api/chat/proposal', { visitor_id: VISITOR }), env(), gw)).status, 400);
 });
+
+test('the replies poll passes only checked wait, typing and state; typing needs the ticket but not the IP limit', async () => {
+  const gw = gatewayStub({ replies: [] });
+  const get = (qs) => new Request('https://chat.example.com/api/chat/replies?' + qs, { headers: { Origin: SITE, 'CF-Connecting-IP': '203.0.113.9' } });
+  await handle(get(`visitor_id=${VISITOR}&after=3&wait=99&typing=Sam&state=joined&x=1`), env(), gw);
+  const u = new URL(gw.seen.at(-1).url);
+  assert.deepEqual(Object.fromEntries(u.searchParams), { visitor_id: VISITOR, after: '3', wait: '25', typing: 'Sam', state: 'joined' });
+  assert.equal((await handle(get(`visitor_id=${VISITOR}&state=hacked`), env(), gw)).status, 400);
+  assert.equal((await handle(get(`visitor_id=${VISITOR}&typing=%3Cscript%3E`), env(), gw)).status, 400);
+
+  let limited = 0;
+  const RATE_LIMITER = { limit: async () => { limited++; return { success: false }; } };
+  const typing = new Request('https://chat.example.com/api/chat/typing', { method: 'POST', headers: { Origin: SITE, 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.9' }, body: JSON.stringify({ visitor_id: VISITOR, extra: 1 }) });
+  const res = await handle(typing, env({ RATE_LIMITER }), gw);
+  assert.equal(res.status, 200);
+  assert.equal(limited, 0, 'typing skips the per-IP limit');
+  assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR });
+});

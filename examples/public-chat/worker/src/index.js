@@ -55,7 +55,10 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     return reply(503, { status: 'paused', fallback: true });
   }
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
-  if (env.RATE_LIMITER) {
+  // Typing marks come every few seconds while someone types; the gateway limits them per
+  // visitor (and ignores them unless a person is in the chat), so they skip the per-IP limit.
+  const isTyping = url.pathname === '/api/chat/typing';
+  if (env.RATE_LIMITER && !isTyping) {
     const { success } = await env.RATE_LIMITER.limit({ key: ip });
     if (!success) return reply(429, { status: 'slow_down' });
   }
@@ -89,7 +92,13 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     const visitorId = url.searchParams.get('visitor_id') ?? '';
     const after = Number(url.searchParams.get('after') ?? 0);
     if (!VISITOR_ID.test(visitorId) || !Number.isFinite(after)) return reply(400, { error: 'invalid query' });
-    return forward(`/chat/replies?visitor_id=${visitorId}&after=${after}`, { method: 'GET' });
+    // Held open by the gateway (wait, up to 25 s) until a reply, a typing change or a state change.
+    const wait = Math.min(Math.max(Math.trunc(Number(url.searchParams.get('wait') ?? 0)) || 0, 0), 25);
+    const typing = (url.searchParams.get('typing') ?? '').slice(0, 40);
+    const state = url.searchParams.get('state') ?? '';
+    if (!/^[\p{L}\p{N} .'-]*$/u.test(typing) || !/^(|offered|waiting|joined|missed)$/.test(state)) return reply(400, { error: 'invalid query' });
+    const q = new URLSearchParams({ visitor_id: visitorId, after: String(after), wait: String(wait), typing, state });
+    return forward(`/chat/replies?${q}`, { method: 'GET' });
   }
   // Whether someone from the team is online, for the widget's header.
   if (request.method === 'GET' && url.pathname === '/api/chat/status') return forward('/chat/status', { method: 'GET' });
@@ -99,7 +108,7 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
     if (!VISITOR_ID.test(visitorId)) return reply(400, { error: 'invalid query' });
     return forward(`/chat/history?visitor_id=${visitorId}`, { method: 'GET' });
   }
-  const SIDE_ROUTES = { '/api/chat/person': ['visitor_id', 'accept'], '/api/chat/contact': ['visitor_id', 'email', 'name', 'note', 'from_proposal'], '/api/chat/proposal': ['visitor_id', 'accept'] };
+  const SIDE_ROUTES = { '/api/chat/person': ['visitor_id', 'accept'], '/api/chat/contact': ['visitor_id', 'email', 'name', 'note', 'from_proposal'], '/api/chat/proposal': ['visitor_id', 'accept'], '/api/chat/typing': ['visitor_id'] };
   if (request.method !== 'POST' || (url.pathname !== '/api/chat' && !Object.hasOwn(SIDE_ROUTES, url.pathname))) return reply(404, { error: 'not found' });
   if (Number(request.headers.get('Content-Length') ?? 0) > MAX_BODY) return reply(413, { error: 'too large' });
   if (Object.hasOwn(SIDE_ROUTES, url.pathname)) {

@@ -81,6 +81,8 @@ test('identity comes from the login, bodies are cut to reviewed fields, and othe
   await handle(req('/ops/unblock', { jwt, method: 'POST', body: { net: 'net_abcdefghijkl', session_id: 's1' } }), env, s);
   assert.deepEqual(JSON.parse(s.seen.at(-1).init.body), { net: 'net_abcdefghijkl', name: 'Sam', role: 'founder' });
   assert.equal(s.seen.at(-1).url, 'https://gw.example.com/ops/unblock');
+  await handle(req('/ops/typing', { jwt, method: 'POST', body: { session_id: 's1', name: 'Mallory' } }), env, s);
+  assert.deepEqual(JSON.parse(s.seen.at(-1).init.body), { session_id: 's1', name: 'Sam', role: 'founder' });
   await handle(req('/ops/blocks', { jwt }), env, s);
   assert.equal(s.seen.at(-1).url, 'https://gw.example.com/ops/blocks');
   await handle(req('/ops/accept', { jwt, method: 'POST', body: { session_id: 's1', name: 'Mallory' } }), env, s);

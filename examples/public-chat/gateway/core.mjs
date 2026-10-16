@@ -214,6 +214,44 @@ export function blocklist(blocks = new Map(), file = undefined, { max = 10_000, 
   };
 }
 
+/**
+ * Who is typing in a conversation right now: a staff member (by name) or the
+ * visitor. Memory only; each mark lapses after ttlMs unless refreshed, so a
+ * closed tab stops "typing" on its own. mark() says whether the state is new
+ * (worth waking listeners for) rather than a refresh of an existing one.
+ */
+export function createTyping({ ttlMs = 6000, max = 5000, now = Date.now } = {}) {
+  const sessions = new Map();
+  const get = (sessionId) => {
+    const s = sessions.get(sessionId);
+    if (!s) return {};
+    const t = now();
+    if (s.staff && s.staff.until <= t) delete s.staff;
+    if (s.visitor && s.visitor <= t) delete s.visitor;
+    if (!s.staff && !s.visitor) sessions.delete(sessionId);
+    return s;
+  };
+  const mark = (sessionId, update) => {
+    const s = get(sessionId);
+    const fresh = update.staff ? s.staff?.name !== update.staff : !s.visitor;
+    if (update.staff) s.staff = { name: update.staff, until: now() + ttlMs };
+    else s.visitor = now() + ttlMs;
+    sessions.delete(sessionId);
+    sessions.set(sessionId, s);
+    while (sessions.size > max) sessions.delete(sessions.keys().next().value);
+    return fresh;
+  };
+  return {
+    staff: (sessionId, name) => mark(sessionId, { staff: name }),
+    visitor: (sessionId) => mark(sessionId, {}),
+    clearStaff(sessionId) { const s = sessions.get(sessionId); if (s) delete s.staff; },
+    clearVisitor(sessionId) { const s = sessions.get(sessionId); if (s) delete s.visitor; },
+    /** The staff member typing in this conversation, with when it lapses, or undefined. */
+    staffOf: (sessionId) => get(sessionId).staff,
+    visitorTyping: (sessionId) => Boolean(get(sessionId).visitor),
+  };
+}
+
 /** The lead card the agent filled in, as the widget shows it for the visitor to check. */
 export function publicProposal(proposal) {
   return proposal ? { name: proposal.name ?? '', email: proposal.email ?? '', need: proposal.need ?? '' } : null;
