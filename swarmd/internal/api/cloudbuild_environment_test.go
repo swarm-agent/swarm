@@ -23,13 +23,21 @@ func TestCloudBuildEnvironmentSelection(t *testing.T) {
 }
 
 type cloudStorageFake struct {
-	objects map[string][]byte
-	result  string
-	deleted int
-	failPut bool
+	objects               map[string][]byte
+	result                string
+	deleted               int
+	failPut               bool
+	uploadContext         context.Context
+	lateUpload            bool
+	cancelledBeforeDelete bool
 }
 
-func (f *cloudStorageFake) Put(_ context.Context, _, name string, r io.Reader) error {
+func (f *cloudStorageFake) Put(ctx context.Context, _, name string, r io.Reader) error {
+	f.uploadContext = ctx
+	if f.lateUpload {
+		f.objects[name] = []byte("late")
+		return context.Canceled
+	}
 	if f.failPut {
 		return fmt.Errorf("upload failed")
 	}
@@ -45,10 +53,16 @@ func (f *cloudStorageFake) Get(context.Context, string, string) ([]byte, error) 
 }
 func (f *cloudStorageFake) DeletePrefix(_ context.Context, _, prefix string) error {
 	f.deleted++
+	if f.lateUpload && f.deleted == 1 {
+		f.cancelledBeforeDelete = f.uploadContext.Err() != nil
+	}
 	for k := range f.objects {
 		if strings.HasPrefix(k, prefix) {
 			delete(f.objects, k)
 		}
+	}
+	if f.lateUpload && f.deleted == 1 {
+		f.objects[prefix+"late"] = []byte("late completion")
 	}
 	return nil
 }
@@ -75,7 +89,7 @@ func (f *cloudBuildFake) Get(context.Context, string) (environment.Build, error)
 // infrastructure errors. Fake remote clients keep this narrow integration test
 // hermetic; it does not claim to execute Google's service or the generated script.
 func TestCloudBuildEnvironmentLanding(t *testing.T) {
-	for _, mode := range []string{"success", "check_failure", "missing", "auto_missing", "upload_failure", "create_failure", "cancelled"} {
+	for _, mode := range []string{"success", "check_failure", "missing", "auto_missing", "upload_failure", "create_failure", "cancelled", "late_upload"} {
 		t.Run(mode, func(t *testing.T) {
 			db, err := pebblestore.Open(t.TempDir())
 			if err != nil {
@@ -90,6 +104,8 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 				storage.result = `{"checks":[{"exit_code":0,"duration_ms":1,"output":"first"},{"exit_code":7,"duration_ms":2,"output":"FAIL second"}]}`
 			case "missing", "auto_missing":
 				storage.result = ""
+			case "late_upload":
+				storage.lateUpload = true
 			case "upload_failure":
 				storage.failPut = true
 			case "create_failure":
@@ -137,6 +153,11 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 				if !errors.As(err, &failure) {
 					t.Fatalf("expected environment failure: %v", err)
 				}
+			}
+			// Purpose: Acquire failure must cancel uploads before prefix deletion and
+			// sweep again for a late completion; fake storage injects that exact ordering.
+			if mode == "late_upload" && !storage.cancelledBeforeDelete {
+				t.Error("upload context still active during cleanup")
 			}
 			if storage.deleted == 0 || len(storage.objects) != 0 {
 				t.Fatalf("prefix not cleaned: %+v", storage)

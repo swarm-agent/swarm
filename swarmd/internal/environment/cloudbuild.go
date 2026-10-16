@@ -226,12 +226,19 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 		return nil, err
 	}
 	e := &cloudEnvironment{provider: p, spec: spec, prefix: "landings/" + id + "/", started: time.Now()}
-	fail := func(err error) (Environment, error) { return nil, errors.Join(&Failure{err.Error()}, e.Release()) }
+	uploadCtx, cancelUpload := context.WithCancel(ctx)
+	defer cancelUpload()
+	fail := func(err error) (Environment, error) {
+		cancelUpload()
+		first := e.Release()
+		// Sweep once more after cancellation for an upload committed during cleanup.
+		return nil, errors.Join(&Failure{err.Error()}, first, e.Release())
+	}
 	payload, sha, cleanup, err := p.Store.CloudBuildPayload(spec.Account, id, spec.Checkout, spec.Commit)
 	if err != nil {
 		return fail(err)
 	}
-	err = p.Storage.Put(ctx, p.Config.Bucket, e.prefix+"payload.tar.gz", payload)
+	err = p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"payload.tar.gz", payload)
 	err = errors.Join(err, payload.Close(), cleanup())
 	if err != nil {
 		return fail(err)
@@ -247,7 +254,7 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 	if err != nil {
 		return fail(err)
 	}
-	if err := p.Storage.Put(ctx, p.Config.Bucket, e.prefix+"request.json", bytes.NewReader(request)); err != nil {
+	if err := p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"request.json", bytes.NewReader(request)); err != nil {
 		return fail(err)
 	}
 	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(p.timeout()/time.Second)), ServiceAccount: p.Config.ServiceAccount, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "CLOUD_LOGGING_ONLY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-lc", cloudBuildScript(p.Config.Bucket, e.prefix, sha)}}}})
