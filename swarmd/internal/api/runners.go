@@ -20,7 +20,7 @@ func runnerRouteScope(r *http.Request) string {
 	if !strings.HasPrefix(r.URL.Path, "/v3/runners/landings/") || len(parts) != 2 || parts[0] == "" || parts[0] == "." || parts[0] == ".." {
 		return ""
 	}
-	if r.Method == "GET" && parts[1] == "bundle" {
+	if r.Method == "GET" && (parts[1] == "bundle" || parts[1] == "payload") {
 		return "runners:claim"
 	}
 	if r.Method == "PUT" && (parts[1] == "heartbeat" || parts[1] == "output" || parts[1] == "result") {

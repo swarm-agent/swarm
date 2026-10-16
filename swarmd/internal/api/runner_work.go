@@ -49,7 +49,23 @@ func (s *Server) handleRunnerWork(w http.ResponseWriter, r *http.Request, rec *p
 		return
 	}
 	if parts[1] == "bundle" {
-		writeError(w, 503, errors.New("runner bundle delivery is not configured"))
+		writeError(w, http.StatusGone, errors.New("runner bundles retired; use payload"))
+		return
+	}
+	if parts[1] == "payload" {
+		f, err := s.runnerStore.OpenRunnerPayload(rec.AccountScopeID, rec.Name, parts[0], now)
+		if err != nil {
+			writeError(w, 403, err)
+			return
+		}
+		defer f.Close()
+		info, err := f.Stat()
+		if err != nil {
+			writeError(w, 500, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/gzip")
+		http.ServeContent(w, r, "source.tar.gz", info.ModTime(), f)
 		return
 	}
 	var req struct {

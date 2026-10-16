@@ -80,7 +80,8 @@ func TestRunnerLeases(t *testing.T) {
 	}
 	defer db.Close()
 	now := time.Unix(1000, 0)
-	err = db.CreateRunnerLanding("account", pebblestore.RunnerLanding{ID: "landing", BaseCommit: "base", HeadCommit: "head", Checks: []string{"check"}, CheckTimeout: 60})
+	source, head := runnerSource(t)
+	err = db.CreateRunnerLanding("account", pebblestore.RunnerLanding{ID: "landing", SourceClonePath: source, BaseCommit: head, HeadCommit: head, Checks: []string{"check"}, CheckTimeout: 60})
 	if err != nil {
 		t.Fatal(err)
 	}

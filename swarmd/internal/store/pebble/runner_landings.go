@@ -4,28 +4,34 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/cockroachdb/pebble"
+	"os"
 	"sync"
 	"time"
 )
 
 type RunnerLanding struct {
-	ID           string            `json:"id"`
-	Account      string            `json:"-"`
-	BaseImage    string            `json:"base_image"`
-	Setup        []string          `json:"setup"`
-	Env          map[string]string `json:"env"`
-	Checks       []string          `json:"checks"`
-	CheckTimeout int               `json:"check_timeout_seconds"`
-	BaseCommit   string            `json:"base_commit"`
-	HeadCommit   string            `json:"head_commit"`
-	State        string            `json:"state"`
-	Runner       string            `json:"runner"`
-	LeaseID      string            `json:"lease_id"`
-	LeaseUntil   int64             `json:"lease_until"`
-	Attempts     []string          `json:"attempts"`
-	Output       string            `json:"output"`
-	ExitCodes    []int             `json:"exit_codes,omitempty"`
-	DurationMS   int64             `json:"duration_ms,omitempty"`
+	SourceClonePath string            `json:"source_clone_path,omitempty"`
+	PayloadFormat   string            `json:"payload_format"`
+	ArchiveSHA256   string            `json:"archive_sha256"`
+	ArchiveBytes    int64             `json:"archive_bytes"`
+	DeliveryReason  string            `json:"delivery_reason,omitempty"`
+	ID              string            `json:"id"`
+	Account         string            `json:"-"`
+	BaseImage       string            `json:"base_image"`
+	Setup           []string          `json:"setup"`
+	Env             map[string]string `json:"env"`
+	Checks          []string          `json:"checks"`
+	CheckTimeout    int               `json:"check_timeout_seconds"`
+	BaseCommit      string            `json:"base_commit"`
+	HeadCommit      string            `json:"head_commit"`
+	State           string            `json:"state"`
+	Runner          string            `json:"runner"`
+	LeaseID         string            `json:"lease_id"`
+	LeaseUntil      int64             `json:"lease_until"`
+	Attempts        []string          `json:"attempts"`
+	Output          string            `json:"output"`
+	ExitCodes       []int             `json:"exit_codes,omitempty"`
+	DurationMS      int64             `json:"duration_ms,omitempty"`
 }
 
 type RunnerStatus struct {
@@ -64,7 +70,17 @@ func (s *Store) mutateRunners(account string, fn func(*runnerState) error) error
 	if err != nil {
 		return err
 	}
-	return s.db.Set([]byte(key), data, pebble.Sync)
+	if err := s.db.Set([]byte(key), data, pebble.Sync); err != nil {
+		return err
+	}
+	for _, l := range st.Landings {
+		if l.State == "succeeded" || l.State == "failed" || l.State == "environment_failed" {
+			if err := os.Remove(s.runnerPayloadPath(account, l.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // CreateRunnerLanding is provider-only. Callers must supply a sanitized folder
@@ -73,13 +89,19 @@ func (s *Store) CreateRunnerLanding(account string, l RunnerLanding) error {
 	if l.ID == "" || l.BaseCommit == "" || l.HeadCommit == "" || len(l.Checks) == 0 || l.CheckTimeout <= 0 {
 		return errors.New("incomplete runner landing")
 	}
-	return s.mutateRunners(account, func(st *runnerState) error {
+	var creationErr error
+	err := s.mutateRunners(account, func(st *runnerState) error {
 		for _, old := range st.Landings {
 			if old.ID == l.ID {
 				return errors.New("landing already exists")
 			}
 		}
 		l.State = "pending"
+		if err := s.buildRunnerPayload(account, &l); err != nil {
+			creationErr = err
+			l.State = "environment_failed"
+			l.DeliveryReason = err.Error()
+		}
 		l.Runner = ""
 		l.LeaseID = ""
 		l.LeaseUntil = 0
@@ -90,6 +112,10 @@ func (s *Store) CreateRunnerLanding(account string, l RunnerLanding) error {
 		st.Landings = append(st.Landings, l)
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	return creationErr
 }
 
 func expireRunnerLeases(st *runnerState, now int64) {
