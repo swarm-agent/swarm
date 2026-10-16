@@ -213,3 +213,41 @@ separate work; incompatible hubs cause an explicit error, not success.
 Fake-hub and archive preparation tests do not prove live Docker/hub interoperability.
 
 Remaining work: the production provider caller (job 5c), hub environment-failure result support, and full live/restart qualification. Focused tests exercise real-clone archives, ownership, cleanup, the size-limiting writer, concurrent waiters, fake-clock expiry, secret rejection and monitoring. They do not establish crash-atomic archive/request/signal persistence or live remote execution. This is not a ready-to-use remote landing provider.
+
+## Cloud Build runner
+
+The provider implementation can be injected through `SetCloudBuildProvider` and
+selected with `gcp-cloudbuild` at the API startup boundary. **Startup configuration
+and ADC wiring are not yet connected in this revision:** the prerequisite
+`cloudbuild_*` keys and `golang.org/x/oauth2/google` dependency are absent from
+this checkout. Setting the provider in a config file is not operational yet.
+The REST clients require an ADC-authenticated HTTP client with the
+`https://www.googleapis.com/auth/cloud-platform` scope; never configure a key file.
+
+For deployment, enable the Cloud Build API and provision a private storage bucket.
+The hub machine identity needs `roles/cloudbuild.builds.editor` and
+`roles/storage.objectAdmin` on that bucket. The build service account needs bucket
+object access and `roles/logging.logWriter`; when selecting a service account,
+the submitting identity also needs permission to act as that account.
+
+Once startup wiring is available, choose `environment_provider = gcp-cloudbuild`
+and supply `cloudbuild_project`, `cloudbuild_region` (`global` or a regional
+location), `cloudbuild_bucket`, `cloudbuild_machine_type`,
+`cloudbuild_timeout_minutes`, and optional `cloudbuild_service_account`.
+With an injected Cloud Build provider, `auto` tries runners, then Cloud Build,
+then local execution on infrastructure failure. Check failures are sent back,
+not retried locally. Delivery records identify `cloudbuild:BUILD_ID`.
+
+Each landing submits one build using the environment's base image. That image
+must contain bash, Python 3, curl, tar, git and GNU timeout. The build downloads
+and SHA-256 verifies the archive, runs setup and checks, and uploads results and
+a bounded 2 MiB log. The provider deletes the landing bucket prefix on release
+and on acquisition errors. Cancellation does not cancel a running Google build;
+a late upload can race cleanup, so configure a bucket lifecycle expiration as an
+additional retention safeguard until cancellation coordination is implemented.
+
+Cost per landing depends on actual billed build minutes and machine type, plus
+storage operations, temporary object storage, logging and applicable network
+charges. Use current Google Cloud pricing and your billing records; no fixed
+per-landing price or live performance measurement is asserted here. Fake-client
+tests verify mapping, fallback and cleanup calls, not cloud IAM or image readiness.

@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Drain runner landings on SIGTERM, wait for idle before updates, and show current landing attribution in runner status/list. Docs impact: docs/runners.md
+- Add injectable Cloud Build landing execution, bounded results and automatic infrastructure fallback; startup configuration/ADC wiring remains pending. Docs impact: docs/runners.md
 
 - Fix runner credential ownership and configuration-directory permissions so the unprivileged service can read its 0600 credential; retain symlink and permission rejection. Docs impact: docs/runners.md
 
