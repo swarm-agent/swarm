@@ -717,7 +717,7 @@ function ScopedTokensSection() {
   const [mintName, setMintName] = useState('')
   const [mintWorkerId, setMintWorkerId] = useState('')
   const [mintWorkerName, setMintWorkerName] = useState('')
-  const [mintExpires, setMintExpires] = useState<'0' | '2592000' | '7776000' | '31536000'>('2592000')
+  const [mintExpires, setMintExpires] = useState<'2592000' | '7776000' | '31536000'>('2592000')
   const [mintResult, setMintResult] = useState<{ token: string; name: string } | null>(null)
   const [minting, setMinting] = useState(false)
   const [mintError, setMintError] = useState<string | null>(null)
@@ -747,7 +747,7 @@ function ScopedTokensSection() {
     setMinting(true)
     setMintError(null)
     try {
-      const expiresInSeconds = parseInt(mintExpires, 10) || undefined
+      const expiresInSeconds = parseInt(mintExpires, 10)
       const res = await createScopedToken({
         name,
         scopes: ['automations:trigger'],
@@ -855,7 +855,6 @@ function ScopedTokensSection() {
                 <option value="2592000">30 days</option>
                 <option value="7776000">90 days</option>
                 <option value="31536000">1 year</option>
-                <option value="0">Never expires</option>
               </select>
             </div>
           </div>

@@ -116,6 +116,22 @@ real bash. In the SDK, `client.agents.defineClientTool`, `defineSealedAgent` and
 calls with `client.agents.serve(sessionId, handlers)`, or with `pendingCalls`,
 `answer` and `fail`.
 
+Every key minted over `POST /v3/auth/tokens` must expire. A request without
+`expires_in_seconds`, or with 0 or less, is refused with 400 (there is no
+default lifetime), and so is one over the kind's maximum: 30 days (2592000) for
+gateway and operator tokens, 365 days (31536000) for client, SDK, monitoring and
+AI keys. `swarmctl setup sdk-token` still defaults to one hour and always sends
+it; its own maxima are unchanged (1 day for session keys, 30 days with
+`--agent`, 365 days with `--monitor` or `--ai-access`). In the SDK the expiry is
+a required parameter of `createGatewayToken`, `createOperatorToken`
+(`expiresInSeconds`), `auth.createScopedToken` and `auth.createAIKey`
+(`expires_in_seconds`). Keys stored before this rule keep working until
+revoked: `GET /v3/auth/tokens` and `swarmctl setup sdk-tokens` mark them
+`"never_expires": true`, and at each start the daemon raises one
+`token.never_expires` warning signal per account listing their IDs. Nothing is
+revoked automatically. Trigger worker, remote transport and runner credentials
+are minted without an expiry by their own features and are marked the same way.
+
 ## Human takeover
 
 A person can take a conversation from the agent, reply, and hand it back. The

@@ -55,6 +55,7 @@ export class SwarmAuthNamespace {
 
   /**
    * Creates a new scoped deploy token with granular permission scopes.
+   * `expires_in_seconds` is required: every key expires, within 365 days.
    * Returns the plaintext token (prefixed with 'swk_') along with the token record.
    * Store the token securely—it cannot be retrieved again in plaintext!
    */
@@ -79,10 +80,10 @@ export class SwarmAuthNamespace {
    * their own browser); neither may approve tool calls or manage anything. `full`
    * keys are for an AI the owner trusts to run the box: they also approve
    * tool calls and manage models, workers, limits, custom agents and client app
-   * keys. Every level reaches only `/mcp`. Lifetime
-   * defaults to 30 days (at most 365). Owner only.
+   * keys. Every level reaches only `/mcp`. `expires_in_seconds` is
+   * required (at most 365 days, 31536000 seconds); there is no default. Owner only.
    */
-  async createAIKey(params: { name: string; access: 'read' | 'write' | 'full'; expires_in_seconds?: number }): Promise<CreateScopedTokenResult> {
+  async createAIKey(params: { name: string; access: 'read' | 'write' | 'full'; expires_in_seconds: number }): Promise<CreateScopedTokenResult> {
     const res = await this.transport.request<CreateScopedTokenResult>('/v3/auth/tokens', {
       method: 'POST',
       body: { name: params.name, ai_access: params.access, expires_in_seconds: params.expires_in_seconds },

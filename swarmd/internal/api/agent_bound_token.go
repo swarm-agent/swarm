@@ -25,9 +25,6 @@ import (
 
 const agentBoundCreateBodyLimit = 1 << 20
 
-// agentBoundMaxLifetime caps a gateway token; it is always minted with an expiry.
-const agentBoundMaxLifetime = 30 * 24 * time.Hour
-
 // agentBoundCreateFields is everything an agent-bound token may send when it
 // creates a session. Anything else (project, parent, model, preference,
 // metadata, session ID, worktree, swarm or target routing) is refused, so a new

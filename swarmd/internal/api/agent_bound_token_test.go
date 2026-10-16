@@ -28,7 +28,7 @@ var lookupOrderSchema = map[string]any{
 // Purpose: a gateway token lives on an internet-facing host, so it must always
 // expire, within 30 days. A missing, zero, negative or longer lifetime is
 // refused at mint time with nothing created; 30 days exactly is accepted.
-// Boundary: Server.handleAuthTokens agent-bound branch and agentBoundMaxLifetime.
+// Boundary: Server.handleAuthTokens agent-bound branch and security.AgentBoundMaxLifetime.
 // Narrowest layer: the owner-only mint handler with a real sealed agent.
 func TestAgentBoundTokenMustExpireWithinThirtyDays(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)

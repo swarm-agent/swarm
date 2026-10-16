@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -30,10 +31,28 @@ type createScopedTokenRequest struct {
 	AIAccess string `json:"ai_access,omitempty"`
 }
 
-const (
-	aiKeyDefaultLifetime = 30 * 24 * time.Hour
-	aiKeyMaxLifetime     = 365 * 24 * time.Hour
-)
+// scopedTokenListItem is a stored token as GET /v3/auth/tokens lists it, with
+// never_expires set on one stored without an expiry (minted before expiry was
+// required, or a trigger worker, remote transport or runner credential).
+type scopedTokenListItem struct {
+	pebblestore.ScopedTokenRecord
+	NeverExpires bool `json:"never_expires,omitempty"`
+}
+
+// requestedLifetime is the lifetime a mint request asks for. Every key an API
+// caller mints must expire: a missing, zero or negative expires_in_seconds is
+// refused, never defaulted, and so is one over the kind's maximum.
+func requestedLifetime(seconds int64, kind string, max time.Duration) (time.Duration, error) {
+	maxSeconds := int64(max / time.Second)
+	days := maxSeconds / 86400
+	if seconds <= 0 {
+		return 0, fmt.Errorf("expires_in_seconds is required: every key must expire (%s lasts at most %d days, %d seconds)", kind, days, maxSeconds)
+	}
+	if seconds > maxSeconds {
+		return 0, fmt.Errorf("%s lasts at most %d days: expires_in_seconds must be at most %d", kind, days, maxSeconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
 
 // aiKeyScopes are the API scopes plus Swarm Control levels for an AI key.
 // Read keys see and call only read tools, including the machine's status, its
@@ -95,12 +114,13 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
-		if tokens == nil {
-			tokens = []pebblestore.ScopedTokenRecord{}
+		items := make([]scopedTokenListItem, 0, len(tokens))
+		for _, token := range tokens {
+			items = append(items, scopedTokenListItem{ScopedTokenRecord: token, NeverExpires: security.NeverExpires(token)})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     true,
-			"tokens": tokens,
+			"tokens": items,
 		})
 
 	case http.MethodPost:
@@ -115,9 +135,17 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		expiresIn := time.Duration(0)
-		if req.ExpiresInSeconds > 0 {
-			expiresIn = time.Duration(req.ExpiresInSeconds) * time.Second
+		kind, maxLifetime := "a client key", security.ScopedTokenMaxLifetime
+		if strings.TrimSpace(req.AIAccess) != "" {
+			kind = "an AI key"
+		} else if strings.TrimSpace(req.AgentName) != "" {
+			// A gateway or operator token sits on an internet-facing host.
+			kind, maxLifetime = "an agent-bound token", security.AgentBoundMaxLifetime
+		}
+		expiresIn, lifetimeErr := requestedLifetime(req.ExpiresInSeconds, kind, maxLifetime)
+		if lifetimeErr != nil {
+			writeError(w, http.StatusBadRequest, lifetimeErr)
+			return
 		}
 
 		// A key minted with a scoped token (an admin key, or a full AI key's
@@ -138,22 +166,10 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, scopeErr)
 				return
 			}
-			if expiresIn == 0 {
-				expiresIn = aiKeyDefaultLifetime
-			}
-			if expiresIn > aiKeyMaxLifetime {
-				writeError(w, http.StatusBadRequest, errors.New("an AI key lasts at most 365 days"))
-				return
-			}
 			rawToken, record, err = s.security.CreateScopedTokenUnder(parent, req.Name, scopes, accountScopeID, principal.UserID, expiresIn, "", "")
 		} else if agentName := strings.TrimSpace(req.AgentName); agentName != "" {
 			if len(req.Scopes) > 0 || req.WorkerID != "" || req.WorkerName != "" {
 				writeError(w, http.StatusBadRequest, errors.New("an agent-bound token takes no scopes or worker"))
-				return
-			}
-			// A gateway token sits on an internet-facing host: it must expire.
-			if expiresIn <= 0 || expiresIn > agentBoundMaxLifetime {
-				writeError(w, http.StatusBadRequest, errors.New("an agent-bound token needs expires_in_seconds of at most 30 days"))
 				return
 			}
 			if sealedErr := s.sealedAgentError(accountScopeID, agentName); sealedErr != nil {
