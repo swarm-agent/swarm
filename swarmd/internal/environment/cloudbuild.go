@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"sync"
@@ -376,17 +379,18 @@ type cloudCheck struct {
 	Output     string `json:"output"`
 }
 type cloudEnvironment struct {
-	provider   CloudBuild
-	spec       Spec
-	prefix, id string
-	started    time.Time
-	timeout    time.Duration
-	index      int
-	results    []cloudCheck
-	children   []*cloudEnvironment
-	createErr  error
-	outcomes   []*ExecResult
-	errors     []error
+	provider     CloudBuild
+	spec         Spec
+	prefix, id   string
+	started      time.Time
+	timeout      time.Duration
+	index        int
+	results      []cloudCheck
+	children     []*cloudEnvironment
+	phaseSummary string
+	createErr    error
+	outcomes     []*ExecResult
+	errors       []error
 }
 
 func (e *cloudEnvironment) Sync(context.Context, string) error { return nil }
@@ -400,7 +404,7 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 		return nil, &Failure{"Cloud Build check sequence mismatch"}
 	}
 	if e.children != nil {
-		// Drain every build before exposing a failure: the landing caller may
+		// Drain every check receipt before exposing a failure: the landing caller may
 		// release the shared payload immediately after the first failed check.
 		if e.outcomes == nil {
 			e.outcomes = make([]*ExecResult, len(e.children))
@@ -414,6 +418,15 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 				}(i, child)
 			}
 			wg.Wait()
+			var summaries []string
+			for i, child := range e.children {
+				if child.phaseSummary != "" {
+					summaries = append(summaries, fmt.Sprintf("check_%d{%s}", i, child.phaseSummary))
+				}
+			}
+			if len(summaries) > 0 {
+				log.Printf("Cloud Build landing phases: %s", strings.Join(summaries, " "))
+			}
 		}
 		i := e.index
 		e.index++
@@ -426,7 +439,15 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 		return nil, e.createErr
 	}
 	for e.results == nil {
-		b, err := e.provider.Builds.Get(ctx, e.id)
+		// The receipt is authoritative even if the remaining cache work fails.
+		data, resultErr := e.provider.Storage.Get(ctx, e.provider.Config.Bucket, e.prefix+"result.json")
+		var b Build
+		var err error
+		if resultErr == nil {
+			b.Status = "RESULT_READY"
+		} else {
+			b, err = e.provider.Builds.Get(ctx, e.id)
+		}
 		failure := func(reason string) (*ExecResult, error) {
 			return nil, &Failure{fmt.Sprintf("cloudbuild:%s status=%s: %s", e.id, b.Status, reason)}
 		}
@@ -434,13 +455,17 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 			return failure(err.Error())
 		}
 		switch b.Status {
-		case "SUCCESS":
-			data, err := e.provider.Storage.Get(ctx, e.provider.Config.Bucket, e.prefix+"result.json")
+		case "SUCCESS", "RESULT_READY":
+			if resultErr != nil {
+				// Cover publication racing the terminal build status read.
+				data, err = e.provider.Storage.Get(ctx, e.provider.Config.Bucket, e.prefix+"result.json")
+			}
 			if err != nil {
 				return failure("result.json unavailable: " + err.Error())
 			}
 			var result struct {
-				Checks []cloudCheck `json:"checks"`
+				Checks []cloudCheck        `json:"checks"`
+				Phases map[string]*float64 `json:"phases"`
 			}
 			if err := json.Unmarshal(data, &result); err != nil {
 				return failure("invalid result.json")
@@ -453,12 +478,40 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 					return failure("invalid check result")
 				}
 			}
+			if len(result.Phases) > len(e.spec.Checks)+8 {
+				return failure("too many phase timings")
+			}
+			var names []string
+			for name, seconds := range result.Phases {
+				if name == "" || len(name) > 64 || strings.IndexFunc(name, func(r rune) bool { return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') }) >= 0 || (seconds != nil && (*seconds < 0 || math.IsInf(*seconds, 0) || math.IsNaN(*seconds))) {
+					return failure("invalid phase timing")
+				}
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			var summary []string
+			for _, name := range names {
+				value := "pending"
+				if seconds := result.Phases[name]; seconds != nil {
+					value = fmt.Sprintf("%.3fs", *seconds)
+				}
+				summary = append(summary, name+"="+value)
+			}
+			e.phaseSummary = strings.Join(summary, " ")
+			if e.phaseSummary != "" {
+				for i := range result.Checks {
+					result.Checks[i].Output += "\nCloud Build phases: " + e.phaseSummary
+				}
+				if !strings.Contains(e.prefix, "/checks/") {
+					log.Printf("Cloud Build landing %s phases: %s", e.id, e.phaseSummary)
+				}
+			}
 			e.results = result.Checks
 		case "QUEUED", "PENDING", "WORKING":
 			if time.Since(e.started) > e.timeout {
 				return failure("build wait exceeded configured timeout")
 			}
-			timer := time.NewTimer(10 * time.Second)
+			timer := time.NewTimer(2 * time.Second)
 			select {
 			case <-ctx.Done():
 				timer.Stop()

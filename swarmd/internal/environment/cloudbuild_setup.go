@@ -18,7 +18,10 @@ const cloudBuildSetupPython = `def needed_setup(command):
         else: return command
     if not packages: return command
     missing = []
+    tools = {'build-essential': ('gcc', 'g++', 'make'), 'bzip2': ('bzip2',),
+             'git': ('git',), 'curl': ('curl',), 'jq': ('jq',), 'zstd': ('zstd',)}
     for package in packages:
+        if package in tools and all(shutil.which(tool) for tool in tools[package]): continue
         status = subprocess.run(['dpkg', '-s', package], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) if shutil.which('dpkg') else None
         if status is None or status.returncode != 0 or b'Status: install ok installed' not in status.stdout:
             missing.append(package)

@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Admit new landings into running merge trains and refill freed slots immediately, preserving ordered tested pushes and suffix restacking. Docs impact: none.
+- Cloud Build landings consume check receipts before cache saving, report phase timings, overlap payload/cache restoration, skip satisfied setup packages, and use quiet Git plus unchanged-cache detection and optional parallel zstd compression. Docs impact: none.
 
 - Require a recorded OK review before narrowing rebase review scope, preserve exact landing-base evidence, and bound automatic review-infrastructure admission retries. Docs impact: none.
 
