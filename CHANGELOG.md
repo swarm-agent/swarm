@@ -19,6 +19,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Preserve OK reviews across patch-identical landing rebases and route changed patches to rebase-scoped review without consuming coder fix rounds. Docs impact: none.
 - Include immutable landing-base and rebase comparison SHAs in pipeline review briefs, and classify missing base metadata as review infrastructure failure. Docs impact: none.
 
+- A sealed agent never gets workspace rule files in its prompt. A gateway may name a workspace when it creates a session; the agent now runs on its own definition only, so that workspace's `AGENTS.md`, project context and account memory never reach a public chat on any run path. Ordinary agents are unchanged. Docs impact: none.
 - Automatically retry sent-back landing jobs once per completed follow-up, even without a new commit, with durable replay protection. Docs impact: none.
 - Add and preserve the `landing_parallel` startup setting with provider-sensitive defaults as configuration groundwork; merge-train execution is not yet enabled. Docs impact: docs/runners.md
 

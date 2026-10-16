@@ -395,9 +395,16 @@ func executionCapacityInstructions(snap executioncapacity.Snapshot) string {
 
 func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.WorkspaceScope, discoveryRoots []string, agentProfile pebblestore.AgentProfile, userInstructions string) string {
 	blocks := make([]string, 0, 7)
+	// A sealed agent has only its own definition: whatever workspace its
+	// session names (a gateway may pass one), no rule files, project context or
+	// account memory from it reach the prompt.
+	sealed := s.agents != nil && s.agents.SealedAgentError(scope.Principal.AccountScopeID, agentProfile.Name) == nil
 	// Check memory eligibility before any system-profile reconciliation can
 	// normalize a supplied mode to primary.
-	accountMemory := s.accountMemoryPromptBlock(scope, agentProfile)
+	accountMemory := ""
+	if !sealed {
+		accountMemory = s.accountMemoryPromptBlock(scope, agentProfile)
+	}
 	isOrchestrator := agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name)
 	if isOrchestrator {
 		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
@@ -463,11 +470,11 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 		blocks = append(blocks, strings.TrimSpace(strings.Join(lines, "\n")))
 	}
 
-	if isOrchestrator {
+	if isOrchestrator && !sealed {
 		if projectBlock := s.projectContextPromptBlock(scope); projectBlock != "" {
 			blocks = append(blocks, projectBlock)
 		}
-	} else if s.discovery != nil {
+	} else if !isOrchestrator && !sealed && s.discovery != nil {
 		scanRoots := normalizeInstructionDiscoveryRoots(discoveryRoots)
 		if len(scanRoots) == 0 {
 			scanRoots = normalizeInstructionDiscoveryRoots(scope.Roots)
