@@ -393,21 +393,21 @@ test('visitor store persists with mode 0600 and replies are split by sender', as
 });
 
 test("a person's replies carry the name the console sent, in the transcript, the polled replies and the history", async () => {
-  const g = await start({ agentLabel: 'Remy (AI)' });
+  const g = await start({ agentLabel: 'Ada (AI)' });
   try {
     await g.call('/chat', { body: { visitor_id: VISITOR, message: 'can I talk to someone?' } });
-    await g.call('/ops/accept', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Roy', role: 'founder' } });
-    await g.call('/ops/reply', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', content: 'Hey, Roy here', name: 'Roy', role: 'founder' } });
+    await g.call('/ops/accept', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Sam', role: 'founder' } });
+    await g.call('/ops/reply', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', content: 'Hey, Sam here', name: 'Sam', role: 'founder' } });
     await g.call('/ops/reply', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', content: 'No name on this one' } });
     const t = (await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY })).data;
-    assert.equal(t.agent_label, 'Remy (AI)');
+    assert.equal(t.agent_label, 'Ada (AI)');
     const people = t.messages.filter((m) => m.from === 'person');
-    assert.deepEqual(people.map((m) => m.author?.name), ['Roy', undefined]);
+    assert.deepEqual(people.map((m) => m.author?.name), ['Sam', undefined]);
     const replies = (await g.call('/chat/replies?visitor_id=' + VISITOR + '&after=9', { method: 'GET' })).data.replies;
-    assert.deepEqual(replies.map((r) => [r.text, r.name]), [['Hey, Roy here', 'Roy'], ['No name on this one', undefined]]);
+    assert.deepEqual(replies.map((r) => [r.text, r.name]), [['Hey, Sam here', 'Sam'], ['No name on this one', undefined]]);
     const history = (await g.call('/chat/history?visitor_id=' + VISITOR, { method: 'GET' })).data;
-    assert.equal(history.messages.find((m) => m.text === 'Hey, Roy here').name, 'Roy');
-    assert.equal((await g.call('/chat/status', { method: 'GET' })).data.agent_label, 'Remy (AI)');
+    assert.equal(history.messages.find((m) => m.text === 'Hey, Sam here').name, 'Sam');
+    assert.equal((await g.call('/chat/status', { method: 'GET' })).data.agent_label, 'Ada (AI)');
   } finally { await g.close(); }
 });
 
@@ -415,9 +415,9 @@ test('resolve closes the chat politely without a model run; reopen starts a fres
   const g = await start();
   try {
     await g.call('/chat', { body: { visitor_id: VISITOR, message: 'thanks, that is all' } });
-    const done = await g.call('/ops/resolve', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Roy' } });
+    const done = await g.call('/ops/resolve', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Sam' } });
     assert.deepEqual(done.data, { ended: true, reason: 'resolved', network: false });
-    assert.equal(g.visitors.get(VISITOR).ended.by, 'Roy');
+    assert.equal(g.visitors.get(VISITOR).ended.by, 'Sam');
     assert.ok(g.events.some(([type]) => type === 'conversation.resolved'));
     const before = g.calls.length;
     assert.deepEqual((await g.call('/chat', { body: { visitor_id: VISITOR, message: 'one more thing' } })).data, { status: 'ended', reason: 'resolved' });
@@ -434,7 +434,7 @@ test("block closes the chat and refuses the visitor's network for every route un
   const other = 'visitor_zyxwvutsrqponmlk';
   try {
     await g.call('/chat', { body: { visitor_id: VISITOR, message: 'abuse' }, headers: net });
-    const blocked = await g.call('/ops/block', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Roy' } });
+    const blocked = await g.call('/ops/block', { ops: true, key: OPS_KEY, body: { session_id: 'sess-1', name: 'Sam' } });
     assert.deepEqual(blocked.data, { ended: true, reason: 'blocked', network: true });
     const before = g.calls.length;
     // A fresh browser on the same network gets nowhere, on any route that reaches staff or the model.
@@ -447,7 +447,7 @@ test("block closes the chat and refuses the visitor's network for every route un
     const list = (await g.call('/ops/blocks', { method: 'GET', ops: true, key: OPS_KEY })).data.blocks;
     assert.equal(list.length, 1);
     assert.equal(list[0].net, 'net_abcdefghijkl');
-    assert.equal(list[0].by, 'Roy');
+    assert.equal(list[0].by, 'Sam');
     assert.ok(list[0].until > Date.now() + 29 * 86_400_000);
     assert.equal((await g.call('/ops/transcript?session_id=sess-1', { method: 'GET', ops: true, key: OPS_KEY })).data.blocked, true);
     assert.equal((await g.call('/ops/unblock', { ops: true, key: OPS_KEY, body: { net: 'bad net!' } })).status, 400);
