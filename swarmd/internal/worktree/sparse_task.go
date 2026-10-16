@@ -73,7 +73,11 @@ func runGitAllocationTimeout(path string, stdin []byte, timeout time.Duration, a
 }
 
 func runGitAllocationGuarded(path string, stdin []byte, timeout time.Duration, guard string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return runGitAllocationGuardedContext(context.Background(), path, stdin, timeout, guard, args...)
+}
+
+func runGitAllocationGuardedContext(ctx context.Context, path string, stdin []byte, timeout time.Duration, guard string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", path}, args...)...)
 	cmd.WaitDelay = time.Second

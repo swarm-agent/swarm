@@ -109,6 +109,10 @@ func (s *Service) allocateWorkerClone(source string, current bool, base, branch,
 // managedCloneIdentity is a consistency check, not authorization: callers must
 // first bind the exact managed path to durable session ownership.
 func managedCloneIdentity(source, lane string) bool {
+	return managedCloneIdentityContext(context.Background(), source, lane)
+}
+
+func managedCloneIdentityContext(ctx context.Context, source, lane string) bool {
 	root, err := worktreeCacheRoot(source)
 	if err != nil || filepath.Dir(filepath.Clean(lane)) != root {
 		return false
@@ -116,10 +120,10 @@ func managedCloneIdentity(source, lane string) bool {
 	if err := noSymlinkDirectory(filepath.Join(lane, ".git")); err != nil {
 		return false
 	}
-	top, err := resolveRepositoryRoot(lane)
+	top, err := resolveRepositoryRootContext(ctx, lane)
 	if err != nil || !sameCleanPath(top, lane) {
 		return false
 	}
-	origin, err := runGit(lane, "config", "--get", "remote.origin.url")
+	origin, err := runGitContext(ctx, lane, "config", "--get", "remote.origin.url")
 	return err == nil && sameCleanPath(strings.TrimSpace(origin), source)
 }

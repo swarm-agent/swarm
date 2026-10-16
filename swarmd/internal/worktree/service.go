@@ -1392,11 +1392,12 @@ func (s *Service) resolveWorkspaceConfigPathForPrincipalOptional(principal ident
 			return "", false, fmt.Errorf("resolve workspace scope: %w", err)
 		}
 		if scope.Matched && strings.TrimSpace(scope.WorkspacePath) != "" {
-			requestedIdentity, err := RepositoryIdentity(trimmed)
+			ctx := identity.ContextWithPrincipal(context.Background(), principal)
+			requestedIdentity, err := repositoryIdentityContext(ctx, trimmed)
 			if err != nil {
 				return "", false, err
 			}
-			savedIdentity, err := RepositoryIdentity(scope.WorkspacePath)
+			savedIdentity, err := repositoryIdentityContext(ctx, scope.WorkspacePath)
 			if err != nil {
 				return "", false, err
 			}
@@ -1445,9 +1446,13 @@ func requirePrincipal(principal identity.Principal) error {
 }
 
 func resolveRepositoryRoot(workspacePath string) (string, error) {
+	return resolveRepositoryRootContext(context.Background(), workspacePath)
+}
+
+func resolveRepositoryRootContext(ctx context.Context, workspacePath string) (string, error) {
 	// In linked worktrees, --show-toplevel points at the active worktree path.
 	// Anchor deterministic worktree paths under the shared repository root instead.
-	commonDir, err := runGit(workspacePath, "rev-parse", "--git-common-dir")
+	commonDir, err := runGitContext(ctx, workspacePath, "rev-parse", "--git-common-dir")
 	if err != nil {
 		if isNotGitRepositoryError(err) {
 			return "", errors.New(gitRepositoryRequiredError)
@@ -1466,7 +1471,7 @@ func resolveRepositoryRoot(workspacePath string) (string, error) {
 		return root, nil
 	}
 
-	root, err := runGit(workspacePath, "rev-parse", "--show-toplevel")
+	root, err := runGitContext(ctx, workspacePath, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("resolve repository root: %w", err)
 	}
@@ -1839,7 +1844,15 @@ func runGitRaw(path string, args ...string) (string, error) {
 }
 
 func runGitWithEnv(path string, env []string, args ...string) (string, error) {
-	ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
+	return runGitWithEnvContext(context.Background(), path, env, args...)
+}
+
+func runGitContext(ctx context.Context, path string, args ...string) (string, error) {
+	return runGitWithEnvContext(ctx, path, nil, args...)
+}
+
+func runGitWithEnvContext(ctx context.Context, path string, env []string, args ...string) (string, error) {
+	ctx = sandbox.WithGitCommandTimeout(ctx, gitCommandTimeout)
 	out, err := sandbox.GitCombinedOutput(ctx, path, env, args...)
 	if errors.Is(err, sandbox.ErrInterrupted) {
 		return "", err

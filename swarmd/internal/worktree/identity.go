@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,10 @@ import (
 // RepositoryIdentity resolves Git authority, not path ancestry or a catalog label.
 // It deliberately requires a committed non-bare checkout at its exact root.
 func RepositoryIdentity(path string) (string, error) {
+	return repositoryIdentityContext(context.Background(), path)
+}
+
+func repositoryIdentityContext(ctx context.Context, path string) (string, error) {
 	path, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", err
@@ -20,7 +25,7 @@ func RepositoryIdentity(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	top, err := runGit(path, "rev-parse", "--show-toplevel")
+	top, err := runGitContext(ctx, path, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}
@@ -31,10 +36,10 @@ func RepositoryIdentity(path string) (string, error) {
 	if filepath.Clean(top) != filepath.Clean(path) {
 		return "", errors.New("workspace must identify the exact Git checkout root")
 	}
-	if _, err = runGit(path, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
+	if _, err = runGitContext(ctx, path, "rev-parse", "--verify", "HEAD^{commit}"); err != nil {
 		return "", err
 	}
-	common, err := runGit(path, "rev-parse", "--git-common-dir")
+	common, err := runGitContext(ctx, path, "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}

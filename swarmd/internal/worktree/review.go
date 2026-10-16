@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +21,9 @@ func (s *Service) AllocateReviewWorkspace(p identity.Principal, source, owner, h
 	if err != nil {
 		return Allocation{}, err
 	}
-	return s.allocateReviewWorkspace(source, owner, head)
+	// Preserve the admitted identity through sandbox cache admission.
+	ctx := identity.ContextWithPrincipal(context.Background(), p)
+	return s.allocateReviewWorkspaceContext(ctx, source, owner, head, worktreeAllocationTimeout)
 }
 
 func (s *Service) allocateReviewWorkspace(source, owner, head string) (Allocation, error) {
@@ -28,12 +31,16 @@ func (s *Service) allocateReviewWorkspace(source, owner, head string) (Allocatio
 }
 
 func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, timeout time.Duration) (Allocation, error) {
-	root, err := resolveRepositoryRoot(source)
+	return s.allocateReviewWorkspaceContext(context.Background(), source, owner, head, timeout)
+}
+
+func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, owner, head string, timeout time.Duration) (Allocation, error) {
+	root, err := resolveRepositoryRootContext(ctx, source)
 	if err != nil {
 		return Allocation{}, err
 	}
 	cloneSource := root
-	resolved, err := runGit(root, "rev-parse", "--verify", head+"^{commit}")
+	resolved, err := runGitContext(ctx, root, "rev-parse", "--verify", head+"^{commit}")
 	if err != nil && validCommitID(head) {
 		// Reviewed commits now live only in the coder clone, not the folder.
 		cache, cacheErr := worktreeCacheRoot(root)
@@ -46,10 +53,10 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 		}
 		for _, entry := range entries {
 			candidate := filepath.Join(cache, entry.Name())
-			if !entry.IsDir() || !managedCloneIdentity(root, candidate) {
+			if !entry.IsDir() || !managedCloneIdentityContext(ctx, root, candidate) {
 				continue
 			}
-			if value, readErr := runGit(candidate, "rev-parse", "--verify", head+"^{commit}"); readErr == nil && value == head {
+			if value, readErr := runGitContext(ctx, candidate, "rev-parse", "--verify", head+"^{commit}"); readErr == nil && value == head {
 				cloneSource, resolved, err = candidate, value, nil
 				break
 			}
@@ -86,7 +93,7 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 	if err := guardFile.Close(); err != nil {
 		return Allocation{}, err
 	}
-	_, allocationErr := runGitAllocationGuarded(root, nil, timeout, guard, "clone", "--no-local", "--no-checkout", "--", cloneSource, path)
+	_, allocationErr := runGitAllocationGuardedContext(ctx, root, nil, timeout, guard, "clone", "--no-local", "--no-checkout", "--", cloneSource, path)
 	if errors.Is(allocationErr, ErrAllocationWriterUnconfirmed) {
 		return Allocation{}, allocationErr
 	}
@@ -97,7 +104,7 @@ func (s *Service) allocateReviewWorkspaceTimeout(source, owner, head string, tim
 		return Allocation{}, errors.Join(fmt.Errorf("review checkout admission: %w", err), s.CleanupReviewAdmission(root, owner))
 	}
 	for _, args := range [][]string{{"fetch", "--no-tags", "--", cloneSource, head}, {"remote", "set-url", "origin", root}, {"checkout", "--detach", head}} {
-		if _, err := runGitAllocationTimeout(path, nil, timeout, args...); err != nil {
+		if _, err := runGitAllocationGuardedContext(ctx, path, nil, timeout, "", args...); err != nil {
 			if errors.Is(err, ErrAllocationWriterUnconfirmed) {
 				return Allocation{}, err
 			}
