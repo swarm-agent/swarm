@@ -1354,7 +1354,11 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			RefreshToken string   `json:"refresh_token"`
 			ExpiresAt    int64    `json:"expires_at"`
 			AccountID    string   `json:"account_id"`
-			Active       bool     `json:"active"`
+			// adc (Vertex AI) credentials name a Google Cloud project and
+			// location instead of carrying a secret.
+			GoogleProject  string `json:"google_project"`
+			GoogleLocation string `json:"google_location"`
+			Active         bool   `json:"active"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -1371,15 +1375,17 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 				return
 			} else if firstRun {
 				status, acceptErr := s.acceptFirstOnboardingProviderCredential(r.Context(), principal, onboardingProviderCredentialRequest{
-					Provider:     provider,
-					Type:         req.Type,
-					Label:        req.Label,
-					Tags:         append([]string(nil), req.Tags...),
-					APIKey:       req.APIKey,
-					AccessToken:  req.AccessToken,
-					RefreshToken: req.RefreshToken,
-					ExpiresAt:    req.ExpiresAt,
-					AccountID:    req.AccountID,
+					Provider:       provider,
+					Type:           req.Type,
+					Label:          req.Label,
+					Tags:           append([]string(nil), req.Tags...),
+					APIKey:         req.APIKey,
+					AccessToken:    req.AccessToken,
+					RefreshToken:   req.RefreshToken,
+					ExpiresAt:      req.ExpiresAt,
+					AccountID:      req.AccountID,
+					GoogleProject:  req.GoogleProject,
+					GoogleLocation: req.GoogleLocation,
 				})
 				if acceptErr != nil {
 					writeError(w, http.StatusBadRequest, acceptErr)
@@ -1402,19 +1408,23 @@ func (s *Server) handleAuthCredentials(w http.ResponseWriter, r *http.Request) {
 			RefreshToken:   req.RefreshToken,
 			ExpiresAt:      req.ExpiresAt,
 			AccountID:      req.AccountID,
+			GoogleProject:  req.GoogleProject,
+			GoogleLocation: req.GoogleLocation,
 			Active:         false,
 		}
 		connection, verifyErr := s.verifyCredentialMaterialForAccount(r.Context(), accountScopeID, provideriface.AuthCredential{
-			ID:           strings.ToLower(strings.TrimSpace(input.ID)),
-			Provider:     provider,
-			Type:         input.Type,
-			Label:        input.Label,
-			Tags:         append([]string(nil), input.Tags...),
-			APIKey:       input.APIKey,
-			AccessToken:  input.AccessToken,
-			RefreshToken: input.RefreshToken,
-			ExpiresAt:    input.ExpiresAt,
-			AccountID:    input.AccountID,
+			ID:             strings.ToLower(strings.TrimSpace(input.ID)),
+			Provider:       provider,
+			Type:           input.Type,
+			Label:          input.Label,
+			Tags:           append([]string(nil), input.Tags...),
+			APIKey:         input.APIKey,
+			AccessToken:    input.AccessToken,
+			RefreshToken:   input.RefreshToken,
+			ExpiresAt:      input.ExpiresAt,
+			AccountID:      input.AccountID,
+			GoogleProject:  input.GoogleProject,
+			GoogleLocation: input.GoogleLocation,
 		})
 		if verifyErr != nil {
 			writeError(w, http.StatusInternalServerError, verifyErr)

@@ -44,9 +44,11 @@ var catalogProviderCanonicalIDs = map[string]string{
 // catalogProviderModelSources names runtime providers that serve another
 // provider's model catalog. Lookups read the source provider's records and
 // recommendations and return them keyed to the requesting provider. Claude Code
-// runs Anthropic models through the local CLI.
+// runs Anthropic models through the local CLI; Vertex runs Google's Gemini
+// models through Vertex AI.
 var catalogProviderModelSources = map[string]string{
 	"claudecode": "anthropic",
+	"vertex":     "google",
 }
 
 // catalogModelSource returns the provider whose records serve providerID and

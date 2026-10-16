@@ -18,6 +18,11 @@ const (
 	AuthTypeOAuth = "oauth"
 	AuthTypeCLI   = "cli"
 	AuthTypeGH    = "gh"
+	// AuthTypeADC selects Google Application Default Credentials: the
+	// machine's own Google identity (an attached service account, or a
+	// service-account key file named by GOOGLE_APPLICATION_CREDENTIALS). The
+	// record stores only the Google Cloud project and location, never a secret.
+	AuthTypeADC = "adc"
 
 	CodexAuthTypeAPI   = AuthTypeAPI
 	CodexAuthTypeOAuth = AuthTypeOAuth
@@ -26,17 +31,21 @@ const (
 )
 
 type AuthCredentialRecord struct {
-	ID             string                          `json:"id"`
-	Provider       string                          `json:"provider"`
-	AccountScopeID string                          `json:"account_scope_id"`
-	Type           string                          `json:"type"`
-	Label          string                          `json:"label,omitempty"`
-	Tags           []string                        `json:"tags,omitempty"`
-	APIKey         string                          `json:"api_key,omitempty"`
-	AccessToken    string                          `json:"access_token,omitempty"`
-	RefreshToken   string                          `json:"refresh_token,omitempty"`
-	ExpiresAt      int64                           `json:"expires_at,omitempty"`
-	AccountID      string                          `json:"account_id,omitempty"`
+	ID             string   `json:"id"`
+	Provider       string   `json:"provider"`
+	AccountScopeID string   `json:"account_scope_id"`
+	Type           string   `json:"type"`
+	Label          string   `json:"label,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	APIKey         string   `json:"api_key,omitempty"`
+	AccessToken    string   `json:"access_token,omitempty"`
+	RefreshToken   string   `json:"refresh_token,omitempty"`
+	ExpiresAt      int64    `json:"expires_at,omitempty"`
+	AccountID      string   `json:"account_id,omitempty"`
+	// GoogleProject and GoogleLocation are the Google Cloud project and Vertex
+	// AI location of an adc credential. Neither is secret.
+	GoogleProject  string                          `json:"google_project,omitempty"`
+	GoogleLocation string                          `json:"google_location,omitempty"`
 	Managed        bool                            `json:"managed,omitempty"`
 	OwnerSwarmID   string                          `json:"owner_swarm_id,omitempty"`
 	Connection     *AuthCredentialConnectionRecord `json:"connection,omitempty"`
@@ -66,6 +75,8 @@ type AuthCredentialInput struct {
 	RefreshToken   string
 	ExpiresAt      int64
 	AccountID      string
+	GoogleProject  string
+	GoogleLocation string
 	SetActive      bool
 }
 
@@ -325,6 +336,14 @@ func (s *AuthStore) UpsertCredential(input AuthCredentialInput) (AuthCredentialR
 	case AuthTypeCLI, AuthTypeGH:
 		// CLI-backed Copilot auth sources intentionally persist only the selected
 		// source metadata; runtime credential material is resolved at use time.
+	case AuthTypeADC:
+		// The machine's Google identity supplies tokens at use time; the record
+		// names only where to send requests.
+		next.GoogleProject = strings.TrimSpace(input.GoogleProject)
+		next.GoogleLocation = strings.ToLower(strings.TrimSpace(input.GoogleLocation))
+		if next.GoogleProject == "" {
+			return AuthCredentialRecord{}, fmt.Errorf("adc credentials require google_project")
+		}
 	default:
 		return AuthCredentialRecord{}, fmt.Errorf("unsupported auth type %q", authType)
 	}
@@ -899,6 +918,8 @@ func normalizeCredentialRecord(record AuthCredentialRecord) AuthCredentialRecord
 	record.AccessToken = strings.TrimSpace(record.AccessToken)
 	record.RefreshToken = strings.TrimSpace(record.RefreshToken)
 	record.AccountID = strings.TrimSpace(record.AccountID)
+	record.GoogleProject = strings.TrimSpace(record.GoogleProject)
+	record.GoogleLocation = strings.ToLower(strings.TrimSpace(record.GoogleLocation))
 	record.Managed = record.Managed
 	record.OwnerSwarmID = strings.TrimSpace(record.OwnerSwarmID)
 	record.Connection = normalizeCredentialConnection(record.Connection)
@@ -914,7 +935,7 @@ func normalizeCredentialRecord(record AuthCredentialRecord) AuthCredentialRecord
 func normalizeAuthType(authType, apiKey, accessToken, refreshToken string) string {
 	normalized := strings.ToLower(strings.TrimSpace(authType))
 	switch normalized {
-	case AuthTypeAPI, AuthTypeOAuth, AuthTypeCLI, AuthTypeGH:
+	case AuthTypeAPI, AuthTypeOAuth, AuthTypeCLI, AuthTypeGH, AuthTypeADC:
 		return normalized
 	}
 	if strings.TrimSpace(accessToken) != "" || strings.TrimSpace(refreshToken) != "" {
@@ -967,6 +988,8 @@ func sameCredentialBinding(current, next AuthCredentialRecord) bool {
 			current.AccountID == next.AccountID
 	case AuthTypeCLI, AuthTypeGH:
 		return true
+	case AuthTypeADC:
+		return current.GoogleProject == next.GoogleProject && current.GoogleLocation == next.GoogleLocation
 	default:
 		return current.APIKey == next.APIKey
 	}

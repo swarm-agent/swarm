@@ -6223,7 +6223,7 @@ func normalizeSessionV3ThinkingWithProvider(providerID, thinking string) string 
 		return normalized
 	}
 	switch strings.ToLower(strings.TrimSpace(providerID)) {
-	case "google":
+	case "google", "vertex":
 		return "xhigh"
 	case "copilot", "fireworks", "openrouter":
 		return "high"

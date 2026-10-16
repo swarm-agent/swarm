@@ -45,6 +45,8 @@ func (s *Server) acceptFirstOnboardingProviderCredential(ctx context.Context, pr
 		RefreshToken:   req.RefreshToken,
 		ExpiresAt:      req.ExpiresAt,
 		AccountID:      req.AccountID,
+		GoogleProject:  req.GoogleProject,
+		GoogleLocation: req.GoogleLocation,
 		Active:         false,
 	}
 
@@ -52,15 +54,17 @@ func (s *Server) acceptFirstOnboardingProviderCredential(ctx context.Context, pr
 	if provider != "openai" {
 		var verifyErr error
 		connection, verifyErr = s.verifyCredentialMaterialForAccount(ctx, accountScopeID, provideriface.AuthCredential{
-			Provider:     provider,
-			Type:         input.Type,
-			Label:        input.Label,
-			Tags:         append([]string(nil), input.Tags...),
-			APIKey:       input.APIKey,
-			AccessToken:  input.AccessToken,
-			RefreshToken: input.RefreshToken,
-			ExpiresAt:    input.ExpiresAt,
-			AccountID:    input.AccountID,
+			Provider:       provider,
+			Type:           input.Type,
+			Label:          input.Label,
+			Tags:           append([]string(nil), input.Tags...),
+			APIKey:         input.APIKey,
+			AccessToken:    input.AccessToken,
+			RefreshToken:   input.RefreshToken,
+			ExpiresAt:      input.ExpiresAt,
+			AccountID:      input.AccountID,
+			GoogleProject:  input.GoogleProject,
+			GoogleLocation: input.GoogleLocation,
 		})
 		if verifyErr != nil {
 			return auth.CredentialStatus{}, verifyErr

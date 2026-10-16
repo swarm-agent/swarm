@@ -132,7 +132,11 @@ type onboardingProviderCredentialRequest struct {
 	RefreshToken string   `json:"refresh_token"`
 	ExpiresAt    int64    `json:"expires_at"`
 	AccountID    string   `json:"account_id"`
-	Active       *bool    `json:"active,omitempty"`
+	// GoogleProject and GoogleLocation configure an adc (Vertex AI)
+	// credential; they carry no secret.
+	GoogleProject  string `json:"google_project"`
+	GoogleLocation string `json:"google_location"`
+	Active         *bool  `json:"active,omitempty"`
 }
 
 type tailscalePeerStatusWire struct {

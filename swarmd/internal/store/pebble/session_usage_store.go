@@ -214,6 +214,8 @@ func formatProviderDisplayName(provider string) string {
 	switch strings.ToLower(provider) {
 	case "google":
 		return "Google Gemini"
+	case "vertex":
+		return "Google Vertex AI"
 	case "codex":
 		return "Codex"
 	case "anthropic":

@@ -641,7 +641,7 @@ func (s *Server) buildPricingMap() map[string]catalogPricingLookup {
 	}
 
 	if s.model != nil {
-		providers := []string{"anthropic", "codex", "fireworks", "google", "openai", "openrouter", "copilot"}
+		providers := []string{"anthropic", "codex", "fireworks", "google", "openai", "openrouter", "copilot", "vertex"}
 		for _, provID := range providers {
 			records, err := s.model.ListCatalog(provID, 1000)
 			if err != nil {
@@ -761,7 +761,7 @@ func computeTokenPrice(rec pebblestore.SessionTurnUsageSnapshot, p catalogPricin
 		switch provider {
 		case "anthropic":
 			cachedRate = inputRate * 0.10 // 90% discount for prompt cache read
-		case "google":
+		case "google", "vertex":
 			cachedRate = inputRate * 0.10 // 90% discount for cached content
 		case "openai", "openrouter":
 			cachedRate = inputRate * 0.50 // 50% discount for cached tokens
@@ -772,7 +772,7 @@ func computeTokenPrice(rec pebblestore.SessionTurnUsageSnapshot, p catalogPricin
 
 	var uncachedInput int64
 	switch provider {
-	case "openai", "google":
+	case "openai", "google", "vertex":
 		// Prompt tokens include cached tokens; subtract cache reads
 		if rec.InputTokens >= rec.CacheReadTokens {
 			uncachedInput = rec.InputTokens - rec.CacheReadTokens
@@ -807,6 +807,8 @@ func formatProviderDisplayName(prov string) string {
 		return "Fireworks AI"
 	case "google":
 		return "Google Gemini"
+	case "vertex":
+		return "Google Vertex AI"
 	case "openai":
 		return "OpenAI (API)"
 	case "openrouter":
