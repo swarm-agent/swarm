@@ -89,6 +89,19 @@ if [[ "${1:-}" == "--self-test" ]]; then
   echo '[path-check] self-test PASS'
 fi
 
+# A protected push sets SWARM_CHECK_BASE (scripts/check-prepush.sh): each scan
+# below then runs unchanged over only the lines added since that base, so
+# reviewed content already on the target branch is not judged again.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-check-range.sh"
+if swarm_check_range_enabled; then
+  range_tree="$(mktemp -d "${TMPDIR:-/tmp}/swarm-path-check.XXXXXX")"
+  trap 'rm -rf "${range_tree}"' EXIT
+  swarm_check_range_tree "${range_tree}" || exit 1
+  echo "[path-check] judging only lines added in $(swarm_check_range_label)"
+  cd "${range_tree}"
+fi
+
 echo "[path-check] scanning non-test runtime code and scripts for hardcoded absolute paths"
 runtime_hits="$(
   {

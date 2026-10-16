@@ -28,9 +28,8 @@ scan_paths=(
   "scripts/lib-lane.sh"
   "swarmd/scripts/dev-up.sh"
 )
-if (( "$#" > 0 )); then
-  scan_paths+=("$@")
-fi
+# Explicit paths (self-test fixtures) are always scanned whole.
+extra_paths=("$@")
 
 rg_common=(
   --line-number
@@ -93,9 +92,32 @@ filter_allowed() {
     || true
 }
 
+range_root=""
+# A protected push sets SWARM_CHECK_BASE (scripts/check-prepush.sh): the
+# repository scopes are then searched, unchanged, over only the lines added
+# since that base. Paths passed as arguments (self-test fixtures) are still
+# scanned whole.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib-check-range.sh"
+if swarm_check_range_enabled; then
+  range_root="$(mktemp -d "${TMPDIR:-/tmp}/swarm-storage-check.XXXXXX")"
+  trap 'rm -rf "${range_root}"' EXIT
+  swarm_check_range_tree "${range_root}" || exit 1
+  echo "[storage-path-check] judging only lines added in $(swarm_check_range_label)"
+fi
+
 run_scan() {
   local pattern="$1"
-  (rg "${rg_common[@]}" "${pattern}" "${scan_paths[@]}" 2>/dev/null || true) | filter_allowed
+  if [[ -z "${range_root}" ]]; then
+    (rg "${rg_common[@]}" "${pattern}" "${scan_paths[@]}" "${extra_paths[@]}" 2>/dev/null || true) | filter_allowed
+    return
+  fi
+  {
+    (cd "${range_root}" && rg "${rg_common[@]}" "${pattern}" "${scan_paths[@]}" 2>/dev/null || true)
+    if (( ${#extra_paths[@]} > 0 )); then
+      rg "${rg_common[@]}" "${pattern}" "${extra_paths[@]}" 2>/dev/null || true
+    fi
+  } | filter_allowed
 }
 
 has_failures=0
@@ -192,7 +214,7 @@ if [[ "${self_test}" == "1" ]]; then
     [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
   done
   tmp_dir="$(mktemp -d -t swarm-storage-gate.XXXXXX)"
-  trap 'rm -rf "${tmp_dir}"' EXIT
+  trap 'rm -rf "${tmp_dir}" ${range_root:+"${range_root}"}' EXIT
   fixture="${tmp_dir}/bad-storage.sh"
   cat >"${fixture}" <<'EOF'
 #!/usr/bin/env bash
