@@ -47,12 +47,7 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 		Runtime: cfg.SandboxRuntime,
 		Memory:  cfg.SandboxMemory,
 		ProjectCacheLimit: func(ctx context.Context) (uint64, error) {
-			principal, ok := identity.PrincipalFromContext(ctx)
-			if !ok {
-				return 0, identity.ErrPrincipalRequired
-			}
-			limits, err := db.GetLimits(principal.AccountScopeID)
-			return limits.ProjectCacheBytes, err
+			return projectCacheLimit(ctx, db)
 		},
 		CPUs:               cfg.SandboxCPUs,
 		CgroupParent:       cfg.SandboxCgroupParent,
@@ -74,6 +69,16 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 		Bucket:        appstorage.WorktreeBucketName,
 	})
 	return manager, nil
+}
+
+func projectCacheLimit(ctx context.Context, db *pebblestore.Store) (uint64, error) {
+	principal, ok := identity.PrincipalFromContext(ctx)
+	if !ok {
+		// Daemon automation has no principal; this soft cache cap is not an auth boundary.
+		return sandbox.DefaultProjectCacheBytes, nil
+	}
+	limits, err := db.GetLimits(principal.AccountScopeID)
+	return limits.ProjectCacheBytes, err
 }
 
 // protectedDaemonPaths returns the daemon's storage roots (never inside,
