@@ -15,9 +15,11 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Human takeover of a conversation, for example a public sealed agent's: the
-// owner (never an agent-bound token, whose gate refuses these routes) pauses
-// the agent, replies as a person and hands the conversation back.
+// Human takeover of a sealed agent's conversation: the owner, or the agent's
+// operator token, pauses the agent, replies as a person and hands the
+// conversation back (sessionTakeoverRefused). No other key reaches these
+// routes: not the gateway token (its gate refuses them), not an SDK or client
+// app key.
 //
 //   - State lives in session metadata under "takeover" ({state: "human", by,
 //     since} or {state: "agent", ended_at}); a gateway reads it from the session.
@@ -53,6 +55,22 @@ func sessionTakeoverActive(session pebblestore.SessionSnapshot) bool {
 	return ok && raw["state"] == "human"
 }
 
+// sessionTakeoverRefused writes the refusal and reports true unless r may use
+// the takeover routes on session: the caller is the owner (no scoped key) or
+// an agent-bound operator token (its gate has matched it to this session's
+// agent), and the session is a sealed agent's conversation.
+func (s *Server) sessionTakeoverRefused(w http.ResponseWriter, r *http.Request, session pebblestore.SessionSnapshot) bool {
+	if rec, scoped := ScopedTokenFromRequest(r); scoped && (strings.TrimSpace(rec.AgentName) == "" || !rec.AgentOperator) {
+		writeError(w, http.StatusForbidden, errors.New("only the owner or the agent's operator token can take over a conversation"))
+		return true
+	}
+	if err := s.sealedAgentError(session.AccountScopeID, sessionsV3MetadataString(session.Metadata, "agent_name")); err != nil {
+		writeError(w, http.StatusConflict, errors.New("only a sealed agent's conversation can be taken over"))
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		methodNotAllowed(w)
@@ -77,6 +95,9 @@ func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request,
 		}
 		if !found {
 			writeSessionNotFound(w)
+			return
+		}
+		if s.sessionTakeoverRefused(w, r, session) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "takeover": session.Metadata[sessionTakeoverMetadataKey]})
@@ -113,6 +134,9 @@ func (s *Server) handleSessionV3Takeover(w http.ResponseWriter, r *http.Request,
 	}
 	if !found {
 		writeSessionNotFound(w)
+		return
+	}
+	if s.sessionTakeoverRefused(w, r, session) {
 		return
 	}
 	if action == "start" && sessionEnded(session) {
@@ -215,6 +239,9 @@ func (s *Server) handleSessionV3OperatorMessages(w http.ResponseWriter, r *http.
 	}
 	if !found {
 		writeSessionNotFound(w)
+		return
+	}
+	if s.sessionTakeoverRefused(w, r, session) {
 		return
 	}
 	if sessionEnded(session) {

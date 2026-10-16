@@ -153,23 +153,20 @@ func containerSDKRouteAllowed(r *http.Request) bool {
 	if len(p) == 4 && p[3] == "messages" {
 		return r.Method == http.MethodPost
 	}
-	// Waiting for the session's next assistant message, tool call or run end.
+	// Waiting for the session's next assistant message, tool call or run end
+	// (the handler admits only the key's own account and user's sessions).
 	if len(p) == 4 && p[3] == "wait" {
 		return r.Method == http.MethodGet
 	}
-	// Human takeover; an agent-bound token reaches these only as an operator token.
-	if len(p) == 4 && p[3] == "takeover" {
-		return r.Method == http.MethodGet || r.Method == http.MethodPost
-	}
-	if len(p) == 4 && p[3] == "operator-messages" {
-		return r.Method == http.MethodPost
-	}
-	// Confirmations of client tool calls: read them, approve or decline one.
+	// Confirmations of client tool calls: read them. Deciding one is for the
+	// agent's gateway token, and takeover and operator replies for its
+	// operator token; agent-bound tokens have their own gate
+	// (agentBoundRequest), so no key that reaches this list gets them.
 	if len(p) == 4 && p[3] == "confirmations" {
 		return r.Method == http.MethodGet
 	}
 	if len(p) == 5 && p[3] == "confirmations" && p[4] != "" && p[4] != "." && p[4] != ".." {
-		return r.Method == http.MethodGet || r.Method == http.MethodPost
+		return r.Method == http.MethodGet
 	}
 	if len(p) == 5 && p[3] == "run" && p[4] == "stop" {
 		return r.Method == http.MethodPost

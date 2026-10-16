@@ -33,8 +33,9 @@ func TestSessionTakeoverWritesUnderTheConfirmationLock(t *testing.T) {
 	server, _, _, _, _ := newRoutedSessionTestServerWithSwarmStore(t)
 	server.v3SessionExecutor = newSessionV3Executor(server)
 	principal := testPrincipal()
+	agent := seedSealedTestAgent(t, server)
 	newSession := func(name string) string {
-		return createSessionsV3PrimaryTestSessionWithWorkspaceAndPreference(t, server, name+"-create", name, t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"}).ID
+		return createSessionsV3PrimaryTestSessionForAgent(t, server, name+"-create", name, t.TempDir(), pebblestore.ModelPreference{Provider: "test-provider", Model: "test-model", Thinking: "medium"}, agent).ID
 	}
 	get := func(id string) pebblestore.SessionSnapshot {
 		t.Helper()
