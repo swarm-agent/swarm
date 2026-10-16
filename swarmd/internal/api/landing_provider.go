@@ -25,7 +25,7 @@ func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (en
 		}
 	}
 	var local environment.Provider = environment.Local{Manager: sandbox.Default()}
-	remote := environment.Runners{Store: p.server.runnerStore, Wait: p.wait}
+	remote := environment.Runners{Store: p.server.runnerStore, Wait: p.wait, Credentials: p.server.security}
 	switch p.name {
 	case "runners":
 		return remote.Acquire(ctx, spec)

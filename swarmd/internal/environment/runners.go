@@ -24,11 +24,33 @@ func (e *Failure) Error() string            { return "landing environment failed
 type Runners struct {
 	Store *pebblestore.Store
 	Wait  time.Duration
+	// Credentials uses the configured secret store when separate from Store.
+	Credentials interface {
+		ListScopedTokens(string) ([]pebblestore.ScopedTokenRecord, error)
+	}
 }
 
 func (p Runners) Acquire(ctx context.Context, spec Spec) (Environment, error) {
 	if p.Store == nil {
 		return nil, &Failure{"runner store unavailable"}
+	}
+	credentials := p.Credentials
+	if credentials == nil {
+		credentials = pebblestore.NewClientAuthStore(p.Store)
+	}
+	records, err := credentials.ListScopedTokens(spec.Account)
+	if err != nil {
+		return nil, &Failure{fmt.Sprintf("list runner credentials: %v", err)}
+	}
+	registered := false
+	for _, rec := range records {
+		if rec.AccountScopeID == spec.Account && rec.Kind == "runner" && !rec.Revoked {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		return nil, errors.Join(&Failure{"no runner available"}, errNoRunnerAvailable)
 	}
 	id, err := pebblestore.GenerateToken(16)
 	if err != nil {

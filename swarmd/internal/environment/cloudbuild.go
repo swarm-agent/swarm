@@ -302,7 +302,7 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 	if err := p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"request.json", bytes.NewReader(request)); err != nil {
 		return fail(err)
 	}
-	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-c", cloudBuildScript(p.Config.Bucket, e.prefix, sha)}}}})
+	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: cloudBuildStepArgs(p.Config.Bucket, e.prefix, sha)}}})
 	if err != nil {
 		return fail(err)
 	}
@@ -399,4 +399,10 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 		req.OnOutput([]byte(check.Output))
 	}
 	return &ExecResult{ExitCode: check.ExitCode, Stdout: check.Output, DurationMS: check.DurationMS}, nil
+}
+
+// cloudBuildStepArgs escapes Cloud Build substitutions, not shell syntax. Cloud
+// Build removes the extra dollars before bash receives the original script.
+func cloudBuildStepArgs(bucket, prefix, sha string) []string {
+	return []string{"-c", strings.ReplaceAll(cloudBuildScript(bucket, prefix, sha), "$", "$$")}
 }

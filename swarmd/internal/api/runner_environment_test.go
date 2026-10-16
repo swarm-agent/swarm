@@ -48,6 +48,7 @@ func TestRunnerEnvironmentResultsAndFallback(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			if mode == "results" || mode == "payload_failure" {
+				registerEnvironmentRunner(t, db, "account", "test-runner")
 				go func() {
 					rec := &pebblestore.ScopedTokenRecord{AccountScopeID: "account", Name: "test-runner"}
 					w := httptest.NewRecorder()
@@ -84,7 +85,7 @@ func TestRunnerEnvironmentResultsAndFallback(t *testing.T) {
 			env, err := p.Acquire(ctx, spec)
 			if mode == "no_runner" {
 				var failure *environment.Failure
-				if !errors.As(err, &failure) || !strings.Contains(err.Error(), "no runner claim") {
+				if !errors.As(err, &failure) || !strings.Contains(err.Error(), "no runner available") {
 					t.Fatalf("expected clear infrastructure failure: %v", err)
 				}
 				return
@@ -155,6 +156,7 @@ func TestRunnerEnvironmentExpiryAndQueue(t *testing.T) {
 	defer cancel()
 	spec := environment.Spec{Account: "account", Checkout: source, Commit: head, BaseCommit: head, Checks: []string{"first", "second"}, CheckTimeout: time.Minute}
 	local := &recordingLandProvider{}
+	registerEnvironmentRunner(t, db, "account", "first")
 	p := environment.Auto{Remote: environment.Runners{Store: db, Wait: time.Second}, Local: landExecutorProvider{local.Exec}}
 	claimed := make(chan *pebblestore.RunnerLanding, 1)
 	go func() {
@@ -224,6 +226,7 @@ func TestRunnerEnvironmentLanding(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	s := &Server{runnerStore: db}
+	registerEnvironmentRunner(t, db, "account", "landing-runner")
 	done := make(chan error, 1)
 	go func() {
 		rec := &pebblestore.ScopedTokenRecord{AccountScopeID: "account", Name: "landing-runner"}
@@ -274,5 +277,81 @@ func TestRunnerEnvironmentLanding(t *testing.T) {
 	}
 	if len(entry.Checks) != 2 || entry.Checks[0].Output != "landing output" || entry.Checks[0].ExitCode != 0 || entry.Checks[1].ExitCode != 0 || entry.Environment != "runner:landing-runner" {
 		t.Fatalf("wrong landing results: %+v", entry)
+	}
+}
+
+func registerEnvironmentRunner(t *testing.T, db *pebblestore.Store, account, name string) pebblestore.ScopedTokenRecord {
+	t.Helper()
+	auth := pebblestore.NewClientAuthStore(db)
+	token, err := auth.CreateRunnerJoinToken(account, "user", name, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rec, err := auth.ConsumeRunnerJoinToken(token, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+// Purpose: Runners.Acquire must skip its claim wait only when the account has no
+// registered credentials, not merely no connected runner. Real credentials and
+// payload creation prove the provider boundary, removal and account isolation.
+func TestRunnerEnvironmentRegistrationWait(t *testing.T) {
+	source, head := runnerSource(t)
+	for _, mode := range []string{"empty", "removed", "revoked", "other_account", "registered"} {
+		t.Run(mode, func(t *testing.T) {
+			db, err := pebblestore.Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			auth := pebblestore.NewClientAuthStore(db)
+			if mode != "empty" {
+				account := "account"
+				if mode == "other_account" {
+					account = "other"
+				}
+				rec := registerEnvironmentRunner(t, db, account, "runner")
+				if mode == "removed" {
+					if err := auth.DeleteScopedToken(account, rec.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if mode == "revoked" {
+					if _, err := auth.RevokeScopedToken(account, rec.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			wait := 100 * time.Millisecond
+			if mode != "registered" {
+				wait = time.Minute
+			}
+			wake := db.RunnerLandingWake()
+			start := time.Now()
+			env, err := (environment.Runners{Store: db, Wait: wait}).Acquire(ctx, environment.Spec{Account: "account", Checkout: source, BaseCommit: head, Commit: head, Checks: []string{"true"}, CheckTimeout: time.Minute})
+			elapsed := time.Since(start)
+			var failure *environment.Failure
+			if env != nil || !errors.As(err, &failure) || !strings.Contains(err.Error(), "no runner available") {
+				t.Fatalf("unexpected result: %v %v", env, err)
+			}
+			if mode == "registered" {
+				if elapsed < wait || !strings.Contains(err.Error(), "within") {
+					t.Fatalf("registered runner did not wait: %s: %v", elapsed, err)
+				}
+			} else {
+				if ctx.Err() != nil || elapsed >= time.Second {
+					t.Fatalf("empty registry waited: %s: %v", elapsed, err)
+				}
+				select {
+				case <-wake:
+					t.Fatal("empty registry mutated landing state")
+				default:
+				}
+			}
+		})
 	}
 }

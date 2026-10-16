@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Escape literal dollars in Cloud Build step arguments and skip the runner claim wait when no account runner credentials remain registered. Docs impact: none.
+
 - Expose bounded, redacted landing fallback reasons in logs and job environment notes; check Cloud Build bucket metadata access and document the required bucket-reader grant. Docs impact: docs/runners.md
 
 - Show redacted landing failure diagnostics and GitHub push refusals while preserving app-runs receipts. Docs impact: none.
