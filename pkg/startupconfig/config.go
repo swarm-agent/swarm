@@ -50,6 +50,12 @@ type FileConfig struct {
 	SandboxMemory                string
 	SandboxCPUs                  string
 	LandingMaxConcurrent         int
+	CloudBuildProject            string
+	CloudBuildRegion             string
+	CloudBuildBucket             string
+	CloudBuildMachineType        string
+	CloudBuildTimeoutMinutes     int
+	CloudBuildServiceAccount     string
 	EnvironmentProvider          string
 	EnvironmentRunnerWaitSeconds int
 	SandboxCgroupParent          string
@@ -147,6 +153,8 @@ func Default(path string) FileConfig {
 	return FileConfig{
 		Path:                         path,
 		EnvironmentProvider:          "local",
+		CloudBuildRegion:             "global",
+		CloudBuildMachineType:        "e2-highcpu-8",
 		EnvironmentRunnerWaitSeconds: 120,
 		DevMode:                      false,
 		DevRoot:                      "",
@@ -341,6 +349,12 @@ long_session_diagnostics = %t
 # Per-job sandbox memory (empty: host-derived), and box worker admission (0: auto).
 sandbox_memory = %s
 sandbox_cpus = %s
+cloudbuild_project = %s
+cloudbuild_region = %s
+cloudbuild_bucket = %s
+cloudbuild_machine_type = %s
+cloudbuild_timeout_minutes = %d
+cloudbuild_service_account = %s
 environment_provider = %s
 environment_runner_wait_seconds = %d
 landing_max_concurrent = %d
@@ -367,7 +381,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.CloudBuildProject, cfg.CloudBuildRegion, cfg.CloudBuildBucket, cfg.CloudBuildMachineType, cfg.CloudBuildTimeoutMinutes, cfg.CloudBuildServiceAccount, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -406,7 +420,7 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			continue
 		}
 		if key == "environment_provider" && value == "" {
-			return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, auto)", value)
+			return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, gcp-cloudbuild, auto)", value)
 		}
 		if !allowsEmptyValue(key) && value == "" {
 			return FileConfig{}, nil, fmt.Errorf("line %d: value for %q must be non-empty", lineNumber+1, key)
@@ -541,6 +555,30 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
+		case "cloudbuild_project", "cloudbuild_region", "cloudbuild_bucket", "cloudbuild_machine_type", "cloudbuild_timeout_minutes", "cloudbuild_service_account":
+			if _, exists := rawSeen[key]; exists {
+				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
+			}
+			rawSeen[key] = struct{}{}
+			seen[key] = struct{}{}
+			switch key {
+			case "cloudbuild_project":
+				cfg.CloudBuildProject = value
+			case "cloudbuild_region":
+				cfg.CloudBuildRegion = value
+			case "cloudbuild_bucket":
+				cfg.CloudBuildBucket = value
+			case "cloudbuild_machine_type":
+				cfg.CloudBuildMachineType = value
+			case "cloudbuild_service_account":
+				cfg.CloudBuildServiceAccount = value
+			case "cloudbuild_timeout_minutes":
+				n, err := strconv.Atoi(value)
+				if err != nil || n < 0 || n > 1440 {
+					return FileConfig{}, nil, fmt.Errorf("invalid cloudbuild_timeout_minutes %q (expected 0-1440)", value)
+				}
+				cfg.CloudBuildTimeoutMinutes = n
+			}
 		case "environment_provider", "environment_runner_wait_seconds", "sandbox_cpus", "landing_max_concurrent", "sandbox_cgroup_parent":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
@@ -549,8 +587,8 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			seen[key] = struct{}{}
 			switch key {
 			case "environment_provider":
-				if value != "local" && value != "runners" && value != "auto" {
-					return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, auto)", value)
+				if value != "local" && value != "runners" && value != "gcp-cloudbuild" && value != "auto" {
+					return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, gcp-cloudbuild, auto)", value)
 				}
 				cfg.EnvironmentProvider = value
 			case "environment_runner_wait_seconds":
@@ -715,6 +753,9 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 	if _, ok := seen["advertise_port"]; !ok {
 		cfg.AdvertisePort = cfg.Port
 	}
+	if cfg.EnvironmentProvider == "gcp-cloudbuild" && (cfg.CloudBuildProject == "" || cfg.CloudBuildBucket == "") {
+		return FileConfig{}, nil, errors.New("gcp-cloudbuild requires cloudbuild_project and cloudbuild_bucket")
+	}
 	return cfg, seen, nil
 }
 
@@ -789,6 +830,18 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	}
 	if _, ok := seen["environment_runner_wait_seconds"]; !ok {
 		lines = append(lines, fmt.Sprintf("environment_runner_wait_seconds = %d", cfg.EnvironmentRunnerWaitSeconds))
+	}
+	for _, entry := range []struct{ key, value string }{
+		{"cloudbuild_project", cfg.CloudBuildProject},
+		{"cloudbuild_region", cfg.CloudBuildRegion},
+		{"cloudbuild_bucket", cfg.CloudBuildBucket},
+		{"cloudbuild_machine_type", cfg.CloudBuildMachineType},
+		{"cloudbuild_timeout_minutes", strconv.Itoa(cfg.CloudBuildTimeoutMinutes)},
+		{"cloudbuild_service_account", cfg.CloudBuildServiceAccount},
+	} {
+		if _, ok := seen[entry.key]; !ok {
+			lines = append(lines, entry.key+" = "+entry.value)
+		}
 	}
 	if _, ok := seen["environment_provider"]; !ok {
 		lines = append(lines, "environment_provider = "+cfg.EnvironmentProvider)
@@ -905,7 +958,7 @@ func validate(cfg FileConfig) error {
 
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case "sandbox_cpus", "sandbox_cgroup_parent", "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
+	case "cloudbuild_project", "cloudbuild_bucket", "cloudbuild_service_account", "sandbox_cpus", "sandbox_cgroup_parent", "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
 		return true
 	default:
 		return false

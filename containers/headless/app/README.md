@@ -393,3 +393,9 @@ Runner management commands and `install.sh runner --ref main` are available;
 see [Set up a runner](../../../docs/runners.md#set-up-a-runner) for exact commands,
 private-tailnet guidance and remaining credential/service and idle-update gaps.
 Do not configure `runners` or `auto` until the execution implementation lands.
+
+Cloud Build startup configuration and an injectable execution provider are
+available, but daemon ADC/provider wiring remains incomplete; selecting
+`gcp-cloudbuild` in configuration alone is not operational. See [Cloud Build runner](../../../docs/runners.md#cloud-build-runner)
+for the keys, intended Google Cloud prerequisites, generated-build contract,
+cost considerations and remaining implementation gaps.

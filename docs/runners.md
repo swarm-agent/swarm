@@ -2,7 +2,7 @@
 
 ## Implementation status
 
-The startup configuration parser accepts `environment_provider = local|runners|auto`
+The startup configuration parser accepts `environment_provider = local|runners|gcp-cloudbuild|auto`
 and `environment_runner_wait_seconds` (default `120`, nonnegative seconds).
 Existing configuration files retain their defaults. Provider wiring is tested
 with in-process runner API handlers; this is not a live remote-runner qualification.
@@ -217,10 +217,10 @@ Remaining work: the production provider caller (job 5c), hub environment-failure
 ## Cloud Build runner
 
 The provider implementation can be injected through `SetCloudBuildProvider` and
-selected with `gcp-cloudbuild` at the API startup boundary. **Startup configuration
-and ADC wiring are not yet connected in this revision:** the prerequisite
-`cloudbuild_*` keys and `golang.org/x/oauth2/google` dependency are absent from
-this checkout. Setting the provider in a config file is not operational yet.
+selected with `gcp-cloudbuild` at the API startup boundary. The startup parser
+recognizes the additive `cloudbuild_*` keys below, but **ADC and runtime provider
+wiring are not yet connected in this revision**. Setting the provider in a config
+file is not operational yet.
 The REST clients require an ADC-authenticated HTTP client with the
 `https://www.googleapis.com/auth/cloud-platform` scope; never configure a key file.
 
@@ -251,3 +251,18 @@ storage operations, temporary object storage, logging and applicable network
 charges. Use current Google Cloud pricing and your billing records; no fixed
 per-landing price or live performance measurement is asserted here. Fake-client
 tests verify mapping, fallback and cleanup calls, not cloud IAM or image readiness.
+The additive startup keys are:
+
+| Key | Default / meaning |
+| --- | --- |
+| `cloudbuild_project` | Required project when selecting `gcp-cloudbuild` |
+| `cloudbuild_bucket` | Required bucket when selecting `gcp-cloudbuild` |
+| `cloudbuild_region` | `global` |
+| `cloudbuild_machine_type` | `e2-highcpu-8` |
+| `cloudbuild_timeout_minutes` | `0`: reserved for the folder check timeout plus five minutes; explicit values 1–1440 |
+| `cloudbuild_service_account` | Optional build service account resource name |
+
+The configuration keys alone do not connect the daemon's Application Default
+Credentials (machine service account or workload identity) to the provider.
+Live IAM, image readiness and cancellation/cleanup qualification remain necessary
+before operational use.
