@@ -133,6 +133,7 @@ type Server struct {
 	storageHub                  *storagehub.Service
 	secretSlots                 *pebblestore.SecretSlotStore
 	signals                     *pebblestore.SignalStore
+	runnerStore                 *pebblestore.Store
 	secretsGatewayEnabled       bool
 	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
 	landingEnvironmentProvider  environment.Provider
@@ -4334,6 +4335,22 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Runner bearer credentials never inherit a cookie or local-owner bypass,
+		// including otherwise public routes.
+		if token := extractAttachToken(r); token != "" {
+			rec, err := s.security.ValidateScopedToken(token)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, err)
+				return
+			}
+			if rec != nil && rec.Kind == "runner" {
+				if !gateRunnerKey(w, r, rec) {
+					return
+				}
+				next.ServeHTTP(w, requestWithScopedToken(r, rec))
+				return
+			}
+		}
 		if s.isAuthExemptRequest(r) {
 			next.ServeHTTP(w, r)
 			return
@@ -4371,7 +4388,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					}
 					reqWithAuth := requestWithActorContext(r, actor)
 					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) {
+					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !gateRunnerKey(w, reqWithAuth, scopedRec) {
 						return
 					}
 					next.ServeHTTP(w, reqWithAuth)
@@ -4414,7 +4431,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			reqWithAuth := requestWithActorContext(r, actor)
 			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) {
+			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !gateRunnerKey(w, reqWithAuth, scopedRec) {
 				return
 			}
 			next.ServeHTTP(w, reqWithAuth)
@@ -4451,6 +4468,8 @@ func extractAttachToken(r *http.Request) string {
 
 func (s *Server) isAuthExemptRequest(r *http.Request) bool {
 	switch r.URL.Path {
+	case "/v3/runners/join":
+		return r.Method == http.MethodPost
 	case "/healthz", "/readyz":
 		return true
 	case "/v1/auth/desktop/session":

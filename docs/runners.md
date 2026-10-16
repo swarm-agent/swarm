@@ -9,8 +9,10 @@ landing execution today.** Selecting `runners` or `auto` still fails at the API
 provider initialization boundary; it does not silently execute locally.
 
 The design below is the target contract, not an operational readiness claim.
-Runner credentials, transport, leases, execution, management commands and installer
-support are not implemented by the configuration change.
+The configuration change alone does not implement runner support. Initial hub
+credentials and lease APIs are described below under **API**, including their
+remaining gaps. Runner execution, management commands and installer support
+remain unavailable.
 
 ## Target design
 
@@ -71,3 +73,28 @@ container, then kill a runner mid-check and observe durable environment failure,
 retry and local fallback under `auto` without coder send-back. Also verify
 revocation, credential scope refusals, transfer size limits and restart recovery.
 Parser tests alone establish none of these properties.
+
+## API
+
+Runner hub support is under development; local landing checks are unchanged.
+
+Owner-only routes (scoped keys are refused):
+
+- `POST /v3/runners/join-tokens`, body `{name}`: returns a single-use join token, valid for 15 minutes.
+- `GET /v3/runners`: credential metadata, excluding hashes and secrets.
+- `DELETE /v3/runners/NAME`: revoke the named credential.
+
+`POST /v3/runners/join`, body `{token}`, exchanges the join token for a long-lived credential returned once. Credentials have kind `runner` and exactly `runners:claim` and `runners:report` scopes. They cannot access other product routes.
+
+Runner-only routes:
+
+- `POST /v3/runners/claim` (`runners:claim`): claims at most one request, with a 60-second lease. Currently returns immediately, including when no request exists.
+- `PUT /v3/runners/landings/ID/heartbeat` (`runners:report`): `{lease_id}` extends a live lease.
+- `PUT /v3/runners/landings/ID/output` (`runners:report`): `{lease_id, output}` appends at most 64 KiB, retaining the newest 2 MiB.
+- `PUT /v3/runners/landings/ID/result` (`runners:report`): `{lease_id, exit_codes, duration_ms}` terminates a live lease. Exit codes must match the check count.
+- `PUT /v3/runners/status` (`runners:report`): `{state, reason, docker, gvisor}`, where state is idle, busy, or unhealthy.
+- `GET /v3/runners/landings/ID/bundle` is reserved for `runners:claim` but currently returns 503: bundle creation and delivery are not implemented.
+
+Lease expiry is reconciled during claim/report mutations. The first expiry allows one retry; the second becomes `environment_failed`. Stale lease IDs cannot mutate a replacement claim. No provider creates these requests yet.
+
+Remaining work: bundled source construction and size enforcement, long-poll notification, proactive expiry and environment-failure signals, secret-free environment validation, and complete HTTP/restart coverage. This is not a ready-to-use remote landing provider.

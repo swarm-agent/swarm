@@ -787,6 +787,7 @@ func New(cfg config.Config) (*Daemon, error) {
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
 	apiServer.SetSignalStore(signalStore)
+	apiServer.SetRunnerStore(store)
 	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
 	signalSinks := pebblestore.NewSignalSinkStore(store)
 	apiServer.SetSignalSinkStore(signalSinks)

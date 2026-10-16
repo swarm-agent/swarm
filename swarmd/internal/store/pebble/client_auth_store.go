@@ -105,6 +105,7 @@ func generateToken(size int) (string, error) {
 }
 
 type ScopedTokenRecord struct {
+	Kind           string   `json:"kind,omitempty"`
 	ID             string   `json:"id"`
 	Name           string   `json:"name"`
 	TokenHash      string   `json:"token_hash"`

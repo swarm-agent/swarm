@@ -29,6 +29,9 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("invalid scoped bearer token"))
 			return
 		}
+		if !gateRunnerKey(w, r, rec) {
+			return
+		}
 		actor, err := s.identitySessions.ActorForUserID(rec.UserID)
 		if err != nil || !isCompleteProductActor(actor) || actor.UserID != rec.UserID || actor.AccountScopeID != rec.AccountScopeID {
 			writeError(w, http.StatusUnauthorized, errors.New("scoped token identity unavailable"))
