@@ -163,3 +163,28 @@ func TestRunnerLongPollClaim(t *testing.T) {
 		t.Fatal("cancelled claim stuck")
 	}
 }
+
+// Purpose: CreateRunnerLanding must reject secret-bearing env before either
+// persistence or archive creation. Account slot metadata is the authority;
+// actual secret values are never loaded to validate a runner request.
+func TestRunnerSecretEnvironment(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := pebblestore.NewSecretSlotStore(db).UpsertSlot("account", "API_TOKEN", "", []string{"api.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	source, head := runnerSource(t)
+	for i, env := range []map[string]string{{"API_TOKEN": "anything"}, {"SAFE": "prefix swarm-secret://API_TOKEN suffix"}, {"SAFE": "${API_TOKEN}"}} {
+		err := db.CreateRunnerLanding("account", pebblestore.RunnerLanding{ID: fmt.Sprintf("secret-%d", i), SourceClonePath: source, BaseCommit: head, HeadCommit: head, Checks: []string{"check"}, CheckTimeout: 60, Env: env})
+		if err == nil || !strings.Contains(err.Error(), "secret") {
+			t.Fatalf("secret env accepted: %v", err)
+		}
+	}
+	l, err := db.ClaimRunnerLanding("account", "one", time.Now())
+	if err != nil || l != nil {
+		t.Fatal("rejected request claimable", err)
+	}
+}

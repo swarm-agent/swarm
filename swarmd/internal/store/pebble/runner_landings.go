@@ -100,8 +100,24 @@ func (s *Store) CreateRunnerLanding(account string, l RunnerLanding) error {
 	if l.ID == "" || l.BaseCommit == "" || l.HeadCommit == "" || len(l.Checks) == 0 || l.CheckTimeout <= 0 {
 		return errors.New("incomplete runner landing")
 	}
+	// Conservatively exclude all account slot names: source clones need not be
+	// the granted folder itself, and no secret capability belongs on a runner.
+	slots, err := NewSecretSlotStore(s).ListSlots(account)
+	if err != nil {
+		return err
+	}
+	for key, value := range l.Env {
+		if strings.Contains(key, "swarm-secret://") || strings.Contains(value, "swarm-secret://") {
+			return errors.New("runner environment must not contain secret stand-ins")
+		}
+		for _, slot := range slots {
+			if strings.Contains(key, slot.Name) || strings.Contains(value, slot.Name) {
+				return errors.New("runner environment must not contain secret names")
+			}
+		}
+	}
 	var creationErr error
-	err := s.mutateRunners(account, func(st *runnerState) error {
+	err = s.mutateRunners(account, func(st *runnerState) error {
 		for _, old := range st.Landings {
 			if old.ID == l.ID {
 				return errors.New("landing already exists")
