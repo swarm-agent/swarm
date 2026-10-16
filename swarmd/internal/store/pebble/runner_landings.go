@@ -115,6 +115,9 @@ func (s *Store) CreateRunnerLanding(account string, l RunnerLanding) error {
 	if err != nil {
 		return err
 	}
+	if creationErr == nil {
+		s.wakeRunnerLandings()
+	}
 	return creationErr
 }
 

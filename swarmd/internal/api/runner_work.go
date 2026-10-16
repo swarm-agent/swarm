@@ -17,13 +17,30 @@ func (s *Server) handleRunnerWork(w http.ResponseWriter, r *http.Request, rec *p
 	}
 	now := time.Now()
 	if r.URL.Path == "/v3/runners/claim" {
-		landing, err := s.runnerStore.ClaimRunnerLanding(rec.AccountScopeID, rec.Name, now)
-		if err != nil {
-			writeError(w, 409, err)
-			return
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		for {
+			wake := s.runnerStore.RunnerLandingWake()
+			landing, err := s.runnerStore.ClaimRunnerLanding(rec.AccountScopeID, rec.Name, time.Now())
+			if err != nil {
+				writeError(w, 409, err)
+				return
+			}
+			if landing != nil {
+				landing.SourceClonePath = ""
+				writeJSON(w, 200, map[string]any{"landing": landing})
+				return
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-timer.C:
+				writeJSON(w, 200, map[string]any{"landing": nil})
+				return
+			case <-wake:
+			}
 		}
-		writeJSON(w, 200, map[string]any{"landing": landing})
-		return
+
 	}
 	if r.URL.Path == "/v3/runners/status" {
 		var status pebblestore.RunnerStatus

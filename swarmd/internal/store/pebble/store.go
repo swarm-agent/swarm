@@ -15,6 +15,8 @@ import (
 )
 
 type Store struct {
+	runnerWakeMu                sync.Mutex
+	runnerWake                  chan struct{}
 	db                          *pebble.DB
 	path                        string
 	closed                      atomic.Bool

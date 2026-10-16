@@ -11,6 +11,7 @@ import (
 	"strings"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+	"sync"
 	"testing"
 	"time"
 )
@@ -108,5 +109,57 @@ func TestRunnerPayloadArchive(t *testing.T) {
 	s.handleRunnerWork(w, httptest.NewRequest("GET", "/v3/runners/landings/archive/bundle", nil), &pebblestore.ScopedTokenRecord{AccountScopeID: "account", Name: "one"})
 	if w.Code != 410 {
 		t.Fatal(w.Code)
+	}
+}
+
+// Purpose: claim must wait for creation, with only one of two waiting runners
+// receiving a durable lease. The handler/store boundary proves wakeup and
+// exclusivity together; cancellation must release the unsuccessful waiter.
+func TestRunnerLongPollClaim(t *testing.T) {
+	db, err := pebblestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, head := runnerSource(t)
+	s := &Server{runnerStore: db}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	results := make(chan *httptest.ResponseRecorder, 2)
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
+	for _, name := range []string{"one", "two"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			w := httptest.NewRecorder()
+			s.handleRunnerWork(w, httptest.NewRequest("POST", "/v3/runners/claim", nil).WithContext(ctx), &pebblestore.ScopedTokenRecord{AccountScopeID: "account", Name: name})
+			results <- w
+		}(name)
+	}
+	select {
+	case <-results:
+		t.Fatal("claim returned before work existed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := db.CreateRunnerLanding("account", pebblestore.RunnerLanding{ID: "wait", SourceClonePath: source, BaseCommit: head, HeadCommit: head, Checks: []string{"check"}, CheckTimeout: 60}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case w := <-results:
+		if w.Code != 200 || !strings.Contains(w.Body.String(), `"state":"claimed"`) {
+			t.Fatal(w.Body.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("claim did not wake")
+	}
+	cancel()
+	select {
+	case w := <-results:
+		if strings.Contains(w.Body.String(), `"state":"claimed"`) {
+			t.Fatal("double claim")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled claim stuck")
 	}
 }
