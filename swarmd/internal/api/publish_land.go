@@ -28,7 +28,7 @@ func (s *Server) landingQueue() (*publish.Queue, error) {
 	}
 	return s.landQueue, nil
 }
-func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, retryStopped bool) (map[string]any, error) {
+func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, retryStopped bool, completedRunID ...string) (map[string]any, error) {
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok {
 		return nil, errors.New("principal required")
@@ -37,7 +37,11 @@ func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, ret
 	if err != nil {
 		return nil, err
 	}
-	entry, pos, err := q.EnqueueDelivery(publish.Entry{Account: principal.AccountScopeID, Request: req}, retryStopped)
+	retryRunID := ""
+	if len(completedRunID) > 0 {
+		retryRunID = completedRunID[0]
+	}
+	entry, pos, err := q.EnqueueDelivery(publish.Entry{Account: principal.AccountScopeID, Request: req, RetryFollowupRunID: retryRunID}, retryStopped)
 	if err != nil {
 		return nil, err
 	}

@@ -64,6 +64,10 @@ func controlMCPJobResultJSON(view map[string]any) map[string]any {
 // the job's task and in the activity feed.
 func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, rule publish.Rule, result map[string]any, explicit bool) (map[string]any, error) {
 	jobID := controlMCPJobID(kind, a, b)
+	completedFollowupRunID := ""
+	if controlMCPString(refs.run, "followup_status") == "completed" {
+		completedFollowupRunID = controlMCPString(refs.run, "followup_run_id")
+	}
 	if result["delivery_state"] == "report_only" {
 		return nil, errors.New("report-only jobs cannot be published")
 	}
@@ -92,7 +96,7 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 			return landDeliveryReceipt(entry, pos), nil
 		}
 		if !explicit && (entry.State == "sent_back" || entry.State == "landing_stopped") {
-			if controlMCPString(refs.run, "followup_status") != "completed" || !entry.CanRetryFix(controlMCPString(result, "head")) {
+			if controlMCPString(refs.run, "followup_status") != "completed" || !entry.CanRetryFix(controlMCPString(result, "head"), completedFollowupRunID) {
 				return landDeliveryReceipt(entry, pos), nil
 			}
 		}
@@ -115,7 +119,7 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 		title = "Swarm job " + jobID
 	}
 	if rule.Mode == "land" {
-		return c.enqueueLand(rule, publish.Request{Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report}, explicit)
+		return c.enqueueLand(rule, publish.Request{Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report}, explicit, completedFollowupRunID)
 	}
 	res, err := publish.Run(c.request.Context(), rule, publish.Request{
 		Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report,
