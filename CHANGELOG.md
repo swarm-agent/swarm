@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Add outbound `swarmd runner` landing execution with sandbox reuse, lease heartbeats, health gating, bounded output and fake-hub tests; hub bundle/environment-failure compatibility remains pending. Docs impact: docs/runners.md
+- Add runner hub source archives, bounded long-poll claims, proactive lease expiry, secret-free environment validation, and runner status counts. Local landing execution is unchanged. Docs impact: docs/runners.md
 
 - Add canonical runner provider names and runner wait configuration with parser tests; document the runner design and pending execution implementation. Docs impact: containers/headless/app/README.md, docs/runners.md
 - Ignore retired startup keys with a warning, migrate headless update configs with dated backups, and restore the previous build after daemon restart or smoke failures even when drain cleanup fails. Docs impact: none.

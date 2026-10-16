@@ -32,8 +32,8 @@ acquisition context ends. `auto` waits up to `environment_runner_wait_seconds`
 for a runner, then uses local execution.
 
 The hub sends the folder environment definition (base image, setup and environment),
-checks and timeout, and a routed-Git-produced bundle of base..head with a shallow
-base tree. Transfers must reject payloads above 512 MiB and exclude secrets, keys
+checks and timeout, and a routed-Git-produced `archive-v1` source archive of the
+rebased head tree (not Git history). Transfers must reject payloads above 512 MiB and exclude secrets, keys
 and stand-ins. A runner builds/reuses an image by definition hash, unpacks the
 exact commit into a fresh container, and executes checks with `bash -lc` using
 the local provider's working-directory layout and timeout.
@@ -46,8 +46,9 @@ runner disk below 2 GiB or unavailable Docker makes a runner unhealthy and stops
 new claims.
 
 Claims require durable leases with a 60-second heartbeat expiry. Expiry produces
-`environment_failed` and `job.environment_failed` naming the runner, retries once
-on another runner, then falls back locally under `auto`. Infrastructure failures
+`lease_expired` on the first attempt, allowing one retry. The second expiry
+produces `environment_failed` and `job.environment_failed` naming both attempts.
+Local fallback under `auto` remains provider work. Infrastructure failures
 never send work back to the coder. Restart recovery must reattach a result to its
 exact durable claim or rerun the landing, never accept a stale result as success.
 A runner can make landing slower, never wrong: only the hub can integrate or push.
@@ -88,16 +89,19 @@ Owner-only routes (scoped keys are refused):
 
 Runner-only routes:
 
-- `POST /v3/runners/claim` (`runners:claim`): claims at most one request, with a 60-second lease. Currently returns immediately, including when no request exists.
+- `POST /v3/runners/claim` (`runners:claim`): claims at most one request, with a 60-second lease. Waits up to 30 seconds when no request exists, wakes on creation, and returns `{landing: null}` on timeout.
 - `PUT /v3/runners/landings/ID/heartbeat` (`runners:report`): `{lease_id}` extends a live lease.
 - `PUT /v3/runners/landings/ID/output` (`runners:report`): `{lease_id, output}` appends at most 64 KiB, retaining the newest 2 MiB.
 - `PUT /v3/runners/landings/ID/result` (`runners:report`): `{lease_id, exit_codes, duration_ms}` terminates a live lease. Exit codes must match the check count.
 - `PUT /v3/runners/status` (`runners:report`): `{state, reason, docker, gvisor}`, where state is idle, busy, or unhealthy.
-- `GET /v3/runners/landings/ID/payload` (`runners:claim`): source archive (`git archive --format=tar.gz`) of the rebased head tree. The obsolete `/bundle` route returns 410 Gone.
+- `GET /v3/runners/landings/ID/payload` (`runners:claim`): serves the gzip archive only to the current claiming runner in the same account with an unexpired lease.
+- `GET /v3/runners/landings/ID/bundle` returns 410 Gone; use `payload`.
 
-Lease expiry is reconciled during claim/report mutations. The first expiry allows one retry; the second becomes `environment_failed`. Stale lease IDs cannot mutate a replacement claim. No provider creates these requests yet.
+The creator supplies `source_clone_path`, `base_commit`, and `head_commit`. Creation runs routed `git archive --format=tar.gz <head_commit>` and persists `payload_format: "archive-v1"`, `archive_sha256`, and `archive_bytes`. Payloads live in private daemon-owned request directories beneath the store, never the source clone. The compressed archive cap is 512 MiB; creation failures are recorded as `environment_failed` with a clear `delivery_reason`. Terminal requests have their archive removed. Runners needing Git initialize a repository and commit this tree; the runner implementation must expose the original head as `SWARM_LANDING_HEAD`.
 
-Hub-side work is landing separately: archive source construction and size enforcement, long-poll notification, proactive expiry and environment-failure signals, secret-free environment validation, and complete HTTP/restart coverage. This is not a ready-to-use remote landing provider.
+A daemon ticker proactively reconciles 60-second leases. The first expiry becomes claimable `lease_expired`; the second becomes `environment_failed`, with signal `job.environment_failed` and `delivery_reason: "environment failed on runners A, B"`. Stale lease IDs cannot mutate a replacement claim. No provider creates these requests yet.
+
+Environment validation rejects account secret slot names in keys or values and all `swarm-secret://` stand-ins before creating an archive or request. This intentionally excludes all account slots, not only currently granted folder slots. `swarm_status` includes runner counts by state, last seen in each runner item, and pending/claimed counts. Join, removal and unhealthy reports emit their respective runner signals.
 
 ## Runner mode
 
@@ -128,6 +132,8 @@ head. Checks receive the real IDs as `SWARM_LANDING_HEAD` and
 `SWARM_LANDING_BASE`, overriding any same-named definition variables. No Git
 history is transferred. Payload fetch, integrity, or preparation failures report
 `state: "environment_failed"` with the reason in output and no check codes.
-There is no bundle fallback. Hub payload delivery and environment-failure result
-support land separately; incompatible hubs cause an explicit error, not success.
+There is no bundle fallback. Hub environment-failure result support remains
+separate work; incompatible hubs cause an explicit error, not success.
 Fake-hub and archive preparation tests do not prove live Docker/hub interoperability.
+
+Remaining work: the production provider caller (job 5c), hub environment-failure result support, and full live/restart qualification. Focused tests exercise real-clone archives, ownership, cleanup, the size-limiting writer, concurrent waiters, fake-clock expiry, secret rejection and monitoring. They do not establish crash-atomic archive/request/signal persistence or live remote execution. This is not a ready-to-use remote landing provider.
