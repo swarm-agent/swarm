@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/sandbox"
 )
@@ -31,14 +32,47 @@ func (c *controlMCPCall) verifyLandProof(ctx context.Context, rule publish.Rule,
 		return err
 	}
 	command, _ := controlMCPMap(refs.run["input"])["proof"].(string)
-	return verifyPublishProof(ctx, rule, e, command)
+	view, err := c.jobView(kind, a, b, 0, false, 0)
+	if err != nil {
+		return err
+	}
+	path, _ := controlMCPJobResultJSON(view)["workspace_path"].(string)
+	if path == "" {
+		return errors.New("job worktree is unavailable")
+	}
+	m := sandbox.Default()
+	if m == nil || !m.Active() {
+		return errors.New("landing proof requires an active sandbox")
+	}
+	scope, err := m.CommandScope(path)
+	if err != nil {
+		return err
+	}
+	if scope.Root != rule.Folder {
+		return errors.New("job sandbox does not belong to publish folder")
+	}
+	return verifyPublishProof(ctx, rule, e, command, path, func(ctx context.Context, dir, commit, command string) *publish.ProofResult {
+		return runSandboxProof(ctx, dir, commit, command, func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+			return m.ExecDaemon(ctx, scope, req)
+		})
+	})
 }
 
 func proofGit(ctx context.Context, folder string, args ...string) ([]byte, error) {
 	cmd := sandbox.Command(ctx, append([]string{"-C", folder}, args...)...)
 	out := &proofGitOutput{}
 	cmd.Stdout = out
+	stderr := &proofGitOutput{}
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
+		diagnostic := strings.TrimSpace(string(stderr.Bytes()))
+		lines := strings.Split(diagnostic, "\n")
+		if len(lines) > 8 {
+			diagnostic = strings.Join(lines[len(lines)-8:], "\n")
+		}
+		if diagnostic != "" {
+			return nil, fmt.Errorf("%s: %w", diagnostic, err)
+		}
 		return nil, err
 	}
 	return out.Bytes(), nil
@@ -56,7 +90,7 @@ func (w *proofGitOutput) Write(p []byte) (int, error) {
 	return w.buffer.Write(p)
 }
 
-func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry, command string) error {
+func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry, command, repository string, run func(context.Context, string, string, string) *publish.ProofResult) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
 	e.Proof = nil
@@ -64,12 +98,12 @@ func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry
 	// A committed declaration applies only when this job introduces or changes
 	// it. An unchanged declaration inherited from an earlier landing is not this
 	// job's proof (nor a source of files for an explicit API proof command).
-	names, err := proofGit(ctx, rule.Folder, "diff", "--no-ext-diff", "--no-renames", "--name-only", "--diff-filter=AM", e.Request.BaseCommit, e.Request.Head, "--", ".swarm-proof.json")
+	names, err := proofGit(ctx, repository, "diff", "--no-ext-diff", "--no-renames", "--name-only", "--diff-filter=AM", e.Request.BaseCommit, e.Request.Head, "--", ".swarm-proof.json")
 	if err != nil {
 		return fmt.Errorf("proof declaration: %w", err)
 	}
 	if strings.TrimSpace(string(names)) != "" {
-		data, err := proofGit(ctx, rule.Folder, "show", e.Request.Head+":.swarm-proof.json")
+		data, err := proofGit(ctx, repository, "show", e.Request.Head+":.swarm-proof.json")
 		if err != nil {
 			return err
 		}
@@ -98,20 +132,26 @@ func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry
 		return errors.New("proof declaration exceeds limits")
 	}
 	e.Proof = proof
-	scratch, err := sandbox.ScratchDir(rule.Folder, "swarm-proof-*")
+	// Keep scratch inside the job clone's mounted, shared-group directory.
+	// ScratchDir's daemon-private 0700 bucket is inaccessible when the
+	// sandbox runs as a different folder owner. Never use the user's folder.
+	scratch, err := os.MkdirTemp(repository, ".swarm-proof-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(scratch)
+	if err := os.Chmod(scratch, os.ModeSetgid|0770); err != nil {
+		return err
+	}
 	baseDir, headDir := filepath.Join(scratch, "base"), filepath.Join(scratch, "head")
 	for _, item := range []struct{ dir, rev string }{{baseDir, e.Request.BaseCommit}, {headDir, e.Request.Head}} {
-		if _, err := proofGit(ctx, rule.Folder, "worktree", "add", "--detach", item.dir, item.rev); err != nil {
+		if _, err := proofGit(ctx, repository, "worktree", "add", "--detach", item.dir, item.rev); err != nil {
 			return fmt.Errorf("proof checkout: %w", err)
 		}
 		defer func(dir string) {
 			cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			_, _ = proofGit(cleanup, rule.Folder, "worktree", "remove", "--force", dir)
+			_, _ = proofGit(cleanup, repository, "worktree", "remove", "--force", dir)
 		}(item.dir)
 	}
 	for _, name := range proof.Files {
@@ -119,21 +159,21 @@ func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry
 			return errors.New("proof files must be relative regular file paths")
 		}
 		// Git metadata, not a host-followed symlink, establishes the file type.
-		tree, err := proofGit(ctx, rule.Folder, "ls-tree", e.Request.Head, "--", name)
+		tree, err := proofGit(ctx, repository, "ls-tree", e.Request.Head, "--", name)
 		if err != nil {
 			return err
 		}
 		if !strings.HasPrefix(string(tree), "100644 blob ") && !strings.HasPrefix(string(tree), "100755 blob ") {
 			return errors.New("proof file must be a committed regular file")
 		}
-		existing, err := proofGit(ctx, rule.Folder, "ls-tree", e.Request.BaseCommit, "--", name)
+		existing, err := proofGit(ctx, repository, "ls-tree", e.Request.BaseCommit, "--", name)
 		if err != nil {
 			return err
 		}
 		if len(existing) != 0 {
 			return errors.New("proof files copied to base must be newly added, not changed product files")
 		}
-		data, err := proofGit(ctx, rule.Folder, "show", e.Request.Head+":"+name)
+		data, err := proofGit(ctx, repository, "show", e.Request.Head+":"+name)
 		if err != nil {
 			return err
 		}
@@ -153,17 +193,17 @@ func verifyPublishProof(ctx context.Context, rule publish.Rule, e *publish.Entry
 				return err
 			}
 			if os.IsNotExist(err) {
-				if err := os.Mkdir(parent, 0700); err != nil {
+				if err := os.Mkdir(parent, 0770); err != nil {
 					return err
 				}
 			}
 		}
-		if err := os.WriteFile(filepath.Join(baseDir, name), data, 0700); err != nil {
+		if err := os.WriteFile(filepath.Join(baseDir, name), data, 0770); err != nil {
 			return err
 		}
 	}
-	proof.Base = runProof(ctx, baseDir, e.Request.BaseCommit, proof.Command)
-	proof.Head = runProof(ctx, headDir, e.Request.Head, proof.Command)
+	proof.Base = run(ctx, baseDir, e.Request.BaseCommit, proof.Command)
+	proof.Head = run(ctx, headDir, e.Request.Head, proof.Command)
 	if e.Checkpoint != nil {
 		if err := e.Checkpoint(); err != nil {
 			return err
@@ -231,6 +271,33 @@ func runProof(ctx context.Context, dir, commit, command string) *publish.ProofRe
 		}
 	} else {
 		result.Error = err.Error()
+	}
+	return result
+}
+
+// Proof commands are untrusted job code, executed only in the landing sandbox.
+func runSandboxProof(ctx context.Context, dir, commit, command string, execute func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error)) *publish.ProofResult {
+	result := &publish.ProofResult{Commit: commit, ExitCode: -1}
+	out, err := execute(ctx, sandbox.ExecRequest{Command: []string{"bash", "-o", "pipefail", "-lc", command}, WorkingDir: dir, Timeout: 10 * time.Minute, MaxTimeout: 10 * time.Minute, MaxOutput: 4096})
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if ctx.Err() != nil {
+		result.Error = ctx.Err().Error()
+		return result
+	}
+	if out == nil {
+		result.Error = "proof executor returned no result"
+		return result
+	}
+	result.ExitCode = out.ExitCode
+	output := &proofOutput{}
+	_, _ = output.Write([]byte(out.Stdout))
+	_, _ = output.Write([]byte(out.Stderr))
+	result.Output = string(output.data)
+	if out.ExitCode < 0 || out.ExitCode == 126 || out.ExitCode == 127 {
+		result.Error = "proof command unavailable or interrupted"
 	}
 	return result
 }

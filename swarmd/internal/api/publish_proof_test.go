@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/publish"
+	"swarm/packages/swarmd/internal/sandbox"
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -54,6 +56,14 @@ func TestPublishProofRealGit(t *testing.T) {
 			git("add", ".")
 			git("commit", "-m", "base")
 			base := git("rev-parse", "HEAD")
+			folder := dir
+			// Model repo-per-job: the folder retains only base; proof commits
+			// exist exclusively in the independent job clone before landing.
+			if tc.manifest {
+				clone := filepath.Join(t.TempDir(), "job")
+				git("clone", "--no-local", folder, clone)
+				dir = clone
+			}
 			git("checkout", "-b", "agent/job")
 			put("value", "fixed")
 			if tc.manifest {
@@ -76,7 +86,16 @@ func TestPublishProofRealGit(t *testing.T) {
 			landed := false
 			err = q.Process(ctx, "account", dir, publish.QueueHooks{
 				Prepare: func(ctx context.Context, e *publish.Entry) error {
-					return verifyPublishProof(ctx, publish.Rule{Folder: dir, RequireProof: tc.required}, e, tc.command)
+					return verifyPublishProof(ctx, publish.Rule{Folder: folder, RequireProof: tc.required}, e, tc.command, dir, func(ctx context.Context, checkout, commit, command string) *publish.ProofResult {
+						// Both checkouts must be inside the mounted job repository,
+						// accessible to its shared group but not other users.
+						parent := filepath.Dir(checkout)
+						st, err := os.Stat(parent)
+						if err != nil || filepath.Dir(parent) != dir || st.Mode().Perm() != 0770 || st.Mode()&os.ModeSetgid == 0 {
+							t.Fatalf("inaccessible proof scratch: %v %v", st, err)
+						}
+						return runProof(ctx, checkout, commit, command)
+					})
 				},
 				Land: func(ctx context.Context, e publish.Entry) (publish.LandResult, error) {
 					// Real compare-and-swap integration; refusal must leave dev at base.
@@ -128,7 +147,7 @@ func TestPublishProofRealGit(t *testing.T) {
 					}
 					err = laterQueue.Process(ctx, "account", dir, publish.QueueHooks{
 						Prepare: func(ctx context.Context, e *publish.Entry) error {
-							return verifyPublishProof(ctx, publish.Rule{Folder: dir, RequireProof: required}, e, "")
+							return verifyPublishProof(ctx, publish.Rule{Folder: dir, RequireProof: required}, e, "", dir, runProof)
 						},
 						Land: func(ctx context.Context, e publish.Entry) (publish.LandResult, error) {
 							git("update-ref", "refs/heads/dev", e.Request.Head, e.Request.BaseCommit)
@@ -183,5 +202,42 @@ func TestPublishProofExecutionBounds(t *testing.T) {
 	got = runProof(stopped, t.TempDir(), "revision", "true")
 	if got.Error == "" || got.ExitCode != -1 {
 		t.Fatalf("cancellation treated as proof: %+v", got)
+	}
+}
+
+// Requirement: proofGit must retain Git's diagnostic on checkout failure rather
+// than only exit 128. A real invalid revision is the narrowest Git boundary test.
+func TestPublishProofGitDiagnostic(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	dir := t.TempDir()
+	if out, err := exec.CommandContext(ctx, "git", "-C", dir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("init: %v %s", err, out)
+	}
+	_, err := proofGit(ctx, dir, "worktree", "add", "--detach", filepath.Join(t.TempDir(), "checkout"), "missing-proof-revision")
+	if err == nil || !strings.Contains(err.Error(), "fatal:") || !strings.Contains(err.Error(), "missing-proof-revision") {
+		t.Fatalf("lost Git diagnostic: %v", err)
+	}
+}
+
+// Requirement: runSandboxProof must pass the login-shell contract and bounded
+// execution to the landing executor, and never count executor failure as a
+// negative control. This adapter test does not claim Docker-backed execution.
+func TestPublishProofSandboxContract(t *testing.T) {
+	ctx := context.Background()
+	got := runSandboxProof(ctx, "checkout", "revision", "false", func(ctx context.Context, req sandbox.ExecRequest) (*provider.ExecResult, error) {
+		if strings.Join(req.Command, " ") != "bash -o pipefail -lc false" || req.WorkingDir != "checkout" || req.MaxOutput != 4096 || req.Timeout != 10*time.Minute {
+			t.Fatalf("wrong sandbox request: %+v", req)
+		}
+		return &provider.ExecResult{ExitCode: 1, Stdout: strings.Repeat("x", 5000)}, nil
+	})
+	if got.Error != "" || got.ExitCode != 1 || len(got.Output) != 4096 {
+		t.Fatalf("wrong result: %+v", got)
+	}
+	got = runSandboxProof(ctx, "checkout", "revision", "false", func(context.Context, sandbox.ExecRequest) (*provider.ExecResult, error) {
+		return nil, context.DeadlineExceeded
+	})
+	if got.Error == "" || got.ExitCode != -1 {
+		t.Fatalf("infrastructure counted as reproduction: %+v", got)
 	}
 }

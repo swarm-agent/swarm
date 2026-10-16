@@ -1417,7 +1417,7 @@ func controlMCPJobTools() []controlMCPTool {
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),
-				"proof":           controlMCPStringProp("Reproduction command from folder root: must fail at landing base and pass at job head. Commit new reproduction files and list them in .swarm-proof.json files.", 1, 8192),
+				"proof":           controlMCPStringProp("Optional unless the folder rule has require-proof. Reproduction command from folder root must run under bash -lc in the landing sandbox, fail at landing base and pass at job head. If adding .swarm-proof.json, commit new reproduction files and list them in files.", 1, 8192),
 				"review_job":      controlMCPStringProp("Required only for reviewer workers: worker/<worker>/<run> of a job in the same project with commits. Reviews its exact head in a disposable detached checkout; report-only, never delivered.", 1, 700),
 				"model":           controlMCPWorkerModelSchema(false),
 				"project":         project,
