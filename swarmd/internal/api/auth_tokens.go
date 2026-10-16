@@ -24,6 +24,10 @@ type createScopedTokenRequest struct {
 	MessagesPerMinute int    `json:"messages_per_minute,omitempty"`
 	SessionsPerHour   int    `json:"sessions_per_hour,omitempty"`
 	MaxConcurrentRuns int    `json:"max_concurrent_runs,omitempty"`
+	// Per-end-user limits (sessions created with an end_user); zero is the default.
+	EndUserMessagesPerMinute int   `json:"end_user_messages_per_minute,omitempty"`
+	EndUserSessionsPerHour   int   `json:"end_user_sessions_per_hour,omitempty"`
+	EndUserMaxTokensPerDay   int64 `json:"end_user_max_tokens_per_day,omitempty"`
 	// Operator (with agent_name) mints the human-takeover token for that agent.
 	Operator bool `json:"operator,omitempty"`
 	// AIAccess mints an AI key for Swarm Control (/mcp): "read", "write" or "full".
@@ -176,7 +180,8 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, sealedErr)
 				return
 			}
-			rawToken, record, err = s.security.CreateAgentBoundTokenUnder(parent, req.Name, accountScopeID, principal.UserID, expiresIn, agentName, security.AgentBoundLimits{MessagesPerMinute: req.MessagesPerMinute, SessionsPerHour: req.SessionsPerHour, MaxConcurrentRuns: req.MaxConcurrentRuns, Operator: req.Operator})
+			rawToken, record, err = s.security.CreateAgentBoundTokenUnder(parent, req.Name, accountScopeID, principal.UserID, expiresIn, agentName, security.AgentBoundLimits{MessagesPerMinute: req.MessagesPerMinute, SessionsPerHour: req.SessionsPerHour, MaxConcurrentRuns: req.MaxConcurrentRuns,
+				EndUserMessagesPerMinute: req.EndUserMessagesPerMinute, EndUserSessionsPerHour: req.EndUserSessionsPerHour, EndUserMaxTokensPerDay: req.EndUserMaxTokensPerDay, Operator: req.Operator})
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err)
 				return
@@ -200,7 +205,54 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// updateTokenLimitsRequest changes the fields it names on a gateway token.
+type updateTokenLimitsRequest struct {
+	MessagesPerMinute        *int   `json:"messages_per_minute"`
+	SessionsPerHour          *int   `json:"sessions_per_hour"`
+	MaxConcurrentRuns        *int   `json:"max_concurrent_runs"`
+	EndUserMessagesPerMinute *int   `json:"end_user_messages_per_minute"`
+	EndUserSessionsPerHour   *int   `json:"end_user_sessions_per_hour"`
+	EndUserMaxTokensPerDay   *int64 `json:"end_user_max_tokens_per_day"`
+}
+
+// handleAuthTokenLimits is POST /v3/auth/tokens/{id}/limits (owner or admin
+// key): edit a gateway token's limits without reissuing it.
+func (s *Server) handleAuthTokenLimits(w http.ResponseWriter, r *http.Request, accountScopeID, tokenID string) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	var req updateTokenLimitsRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("invalid json payload: send only limit fields"))
+		return
+	}
+	if req == (updateTokenLimitsRequest{}) {
+		writeError(w, http.StatusBadRequest, errors.New("no limit to change"))
+		return
+	}
+	record, err := s.security.UpdateAgentBoundLimits(accountScopeID, tokenID, security.AgentBoundLimitsUpdate{
+		MessagesPerMinute: req.MessagesPerMinute, SessionsPerHour: req.SessionsPerHour, MaxConcurrentRuns: req.MaxConcurrentRuns,
+		EndUserMessagesPerMinute: req.EndUserMessagesPerMinute, EndUserSessionsPerHour: req.EndUserSessionsPerHour, EndUserMaxTokensPerDay: req.EndUserMaxTokensPerDay,
+	})
+	if errors.Is(err, security.ErrScopedTokenNotFound) {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "record": record})
+}
+
 func (s *Server) handleAuthTokenSubpath(w http.ResponseWriter, r *http.Request, accountScopeID, subpath string) {
+	if tokenID, ok := strings.CutSuffix(subpath, "/limits"); ok && tokenID != "" && !strings.Contains(tokenID, "/") {
+		s.handleAuthTokenLimits(w, r, accountScopeID, tokenID)
+		return
+	}
 	tokenID := subpath
 	isRevoke := false
 	if strings.HasSuffix(tokenID, "/revoke") {

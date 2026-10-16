@@ -188,6 +188,11 @@ type AgentBoundLimits struct {
 	MessagesPerMinute int
 	SessionsPerHour   int
 	MaxConcurrentRuns int
+	// Per end user (sessions created with an end_user): messages per minute,
+	// new sessions per hour and, when set, model tokens per UTC day.
+	EndUserMessagesPerMinute int
+	EndUserSessionsPerHour   int
+	EndUserMaxTokensPerDay   int64
 	// Operator mints the human-takeover token (read, take over, reply, hand
 	// back) instead of the gateway token; it starts no runs.
 	Operator bool
@@ -209,17 +214,97 @@ func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenReco
 	if err := requireLifetime(expiresIn, AgentBoundMaxLifetime); err != nil {
 		return "", pebblestore.ScopedTokenRecord{}, err
 	}
-	if limits.MessagesPerMinute < 0 || limits.MessagesPerMinute > 6000 || limits.SessionsPerHour < 0 || limits.SessionsPerHour > 100000 ||
-		limits.MaxConcurrentRuns < 0 || limits.MaxConcurrentRuns > 64 {
-		return "", pebblestore.ScopedTokenRecord{}, errors.New("rate limits out of range")
+	if err := limits.validate(); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
 	}
 	return s.createScopedTokenRecord(parent, name, []string{"sessions:read", "sessions:write"}, accountScopeID, userID, expiresIn, func(record *pebblestore.ScopedTokenRecord) {
 		record.AgentName = strings.TrimSpace(agentName)
-		record.MessagesPerMinute = limits.MessagesPerMinute
-		record.SessionsPerHour = limits.SessionsPerHour
-		record.MaxConcurrentRuns = limits.MaxConcurrentRuns
+		limits.apply(record)
 		record.AgentOperator = limits.Operator
 	})
+}
+
+// Bounds for agent-bound token limits; zero always means the daemon default.
+const (
+	maxAgentBoundMessagesPerMinute = 6000
+	maxAgentBoundSessionsPerHour   = 100000
+	maxAgentBoundConcurrentRuns    = 64
+	maxEndUserTokensPerDay         = 1_000_000_000
+)
+
+func (l AgentBoundLimits) validate() error {
+	if l.MessagesPerMinute < 0 || l.MessagesPerMinute > maxAgentBoundMessagesPerMinute || l.SessionsPerHour < 0 || l.SessionsPerHour > maxAgentBoundSessionsPerHour ||
+		l.MaxConcurrentRuns < 0 || l.MaxConcurrentRuns > maxAgentBoundConcurrentRuns {
+		return errors.New("rate limits out of range")
+	}
+	if l.EndUserMessagesPerMinute < 0 || l.EndUserMessagesPerMinute > maxAgentBoundMessagesPerMinute || l.EndUserSessionsPerHour < 0 || l.EndUserSessionsPerHour > maxAgentBoundSessionsPerHour ||
+		l.EndUserMaxTokensPerDay < 0 || l.EndUserMaxTokensPerDay > maxEndUserTokensPerDay {
+		return errors.New("end-user limits out of range")
+	}
+	return nil
+}
+
+func (l AgentBoundLimits) apply(record *pebblestore.ScopedTokenRecord) {
+	record.MessagesPerMinute = l.MessagesPerMinute
+	record.SessionsPerHour = l.SessionsPerHour
+	record.MaxConcurrentRuns = l.MaxConcurrentRuns
+	record.EndUserMessagesPerMinute = l.EndUserMessagesPerMinute
+	record.EndUserSessionsPerHour = l.EndUserSessionsPerHour
+	record.EndUserMaxTokensPerDay = l.EndUserMaxTokensPerDay
+}
+
+// AgentBoundLimitsUpdate changes the fields that are set and keeps the rest.
+type AgentBoundLimitsUpdate struct {
+	MessagesPerMinute        *int
+	SessionsPerHour          *int
+	MaxConcurrentRuns        *int
+	EndUserMessagesPerMinute *int
+	EndUserSessionsPerHour   *int
+	EndUserMaxTokensPerDay   *int64
+}
+
+// ErrScopedTokenNotFound reports a token ID that is not in the account.
+var ErrScopedTokenNotFound = errors.New("scoped token not found")
+
+// UpdateAgentBoundLimits changes a gateway token's limits; they apply from the
+// token's next request. Operator tokens start no runs and have no limits.
+func (s *Service) UpdateAgentBoundLimits(accountScopeID, tokenID string, update AgentBoundLimitsUpdate) (pebblestore.ScopedTokenRecord, error) {
+	if s == nil || s.authStore == nil {
+		return pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
+	}
+	record, found, err := s.authStore.GetScopedToken(accountScopeID, tokenID)
+	if err != nil {
+		return pebblestore.ScopedTokenRecord{}, err
+	}
+	if !found || record.AccountScopeID != accountScopeID {
+		return pebblestore.ScopedTokenRecord{}, ErrScopedTokenNotFound
+	}
+	if strings.TrimSpace(record.AgentName) == "" || record.AgentOperator {
+		return pebblestore.ScopedTokenRecord{}, errors.New("only a gateway token has limits")
+	}
+	if record.Revoked {
+		return pebblestore.ScopedTokenRecord{}, errors.New("the token is revoked")
+	}
+	limits := AgentBoundLimits{MessagesPerMinute: record.MessagesPerMinute, SessionsPerHour: record.SessionsPerHour, MaxConcurrentRuns: record.MaxConcurrentRuns,
+		EndUserMessagesPerMinute: record.EndUserMessagesPerMinute, EndUserSessionsPerHour: record.EndUserSessionsPerHour, EndUserMaxTokensPerDay: record.EndUserMaxTokensPerDay}
+	for dst, src := range map[*int]*int{&limits.MessagesPerMinute: update.MessagesPerMinute, &limits.SessionsPerHour: update.SessionsPerHour, &limits.MaxConcurrentRuns: update.MaxConcurrentRuns,
+		&limits.EndUserMessagesPerMinute: update.EndUserMessagesPerMinute, &limits.EndUserSessionsPerHour: update.EndUserSessionsPerHour} {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	if update.EndUserMaxTokensPerDay != nil {
+		limits.EndUserMaxTokensPerDay = *update.EndUserMaxTokensPerDay
+	}
+	if err := limits.validate(); err != nil {
+		return pebblestore.ScopedTokenRecord{}, err
+	}
+	limits.apply(&record)
+	if err := s.authStore.PutScopedToken(record); err != nil {
+		return pebblestore.ScopedTokenRecord{}, err
+	}
+	s.emitTokenLifecycle("token.limits_updated", record)
+	return record, nil
 }
 
 func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord, name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, bind func(*pebblestore.ScopedTokenRecord)) (string, pebblestore.ScopedTokenRecord, error) {

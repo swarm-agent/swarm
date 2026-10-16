@@ -121,6 +121,11 @@ type ScopedTokenRecord struct {
 	MessagesPerMinute int `json:"messages_per_minute,omitempty"`
 	SessionsPerHour   int `json:"sessions_per_hour,omitempty"`
 	MaxConcurrentRuns int `json:"max_concurrent_runs,omitempty"`
+	// Per-end-user limits for a gateway token's sessions that carry an
+	// end_user; zero means the daemon default (no daily token cap).
+	EndUserMessagesPerMinute int   `json:"end_user_messages_per_minute,omitempty"`
+	EndUserSessionsPerHour   int   `json:"end_user_sessions_per_hour,omitempty"`
+	EndUserMaxTokensPerDay   int64 `json:"end_user_max_tokens_per_day,omitempty"`
 	// AgentOperator makes an agent-bound token the human-takeover key for the
 	// agent's conversations instead of the gateway key (see agentOperatorRouteError).
 	AgentOperator bool  `json:"agent_operator,omitempty"`

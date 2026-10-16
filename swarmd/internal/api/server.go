@@ -131,6 +131,7 @@ type Server struct {
 	perm                        permissionService
 	notifications               notificationService
 	storageHub                  *storagehub.Service
+	agentBoundLimits            *agentBoundRateLimiter // gateway and end-user rate limits, kept in the daemon store; nil refuses them
 	secretSlots                 *pebblestore.SecretSlotStore
 	signals                     *pebblestore.SignalStore
 	runnerStore                 *pebblestore.Store
@@ -401,6 +402,7 @@ func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *
 		}
 	}
 	if sessionSvc != nil && sessionSvc.Store() != nil && sessionSvc.Store().Underlying() != nil {
+		server.agentBoundLimits = newAgentBoundRateLimiter(pebblestore.NewRateLimitStore(sessionSvc.Store().Underlying()))
 		if notificationSvc != nil {
 			server.storageHub = storagehub.NewService(sessionSvc.Store().Underlying(), notificationSvc)
 		}

@@ -28,6 +28,9 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 	if len(args) > 0 && (args[0] == "sdk-token" || args[0] == "revoke-sdk-token") {
 		return runSetupSDKToken(args, output)
 	}
+	if len(args) > 0 && args[0] == "sdk-token-limits" {
+		return runSetupSDKTokenLimits(args, output)
+	}
 	if len(args) > 0 && args[0] == "sdk-tokens" {
 		return runSetupSDKTokens(args, output)
 	}
@@ -41,7 +44,7 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 		return runSetupSealedAgent(args, input, output)
 	}
 	if len(args) == 0 {
-		return errors.New("usage: swarmctl setup <status|identity|credential|codex-login|model|workspace|complete|sealed-agent|daily-limit|sdk-token|sdk-tokens|revoke-sdk-token> --help")
+		return errors.New("usage: swarmctl setup <status|identity|credential|codex-login|model|workspace|complete|sealed-agent|daily-limit|sdk-token|sdk-token-limits|sdk-tokens|revoke-sdk-token> --help")
 	}
 	fs := flag.NewFlagSet("setup "+args[0], flag.ContinueOnError)
 	// Do not echo unknown arguments: a mistaken --api-key SECRET must not leak.

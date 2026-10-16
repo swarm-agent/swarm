@@ -32,3 +32,75 @@ test('gateway, operator and takeover calls use the reviewed wire shape', async (
   assert.equal(calls[4][2]?.action, 'end');
   assert.match(String(calls[4][2]?.client_request_id), /^sdk-operator-/);
 });
+
+// Purpose: a gateway names the end user when it creates a conversation and
+// gets that end user back with every client tool call, from the delivery the
+// daemon builds from the stored session, never from the model's arguments;
+// serve/converse with `endUser` refuse to act on another end user's session;
+// the per-end-user limits are sent on mint and on update with the daemon's
+// field names. Boundary: SwarmAgentsNamespace over a transport fixture; the
+// daemon's own enforcement is covered by Go tests.
+test('end user on create, delivery, serve, converse and token limits', async () => {
+  const calls: Array<[string, string, Record<string, unknown> | undefined]> = [];
+  const resolved: Array<[string, Record<string, unknown> | undefined]> = [];
+  let sessionEndUser: string | undefined = 'cust-42';
+  const transport = { request: async (path: string, options: { method?: string; body?: Record<string, unknown> } = {}) => {
+    calls.push([options.method ?? 'GET', path, options.body]);
+    if (path === '/v3/sessions' && options.method === 'POST') {
+      return { data: { ok: true, session: { id: 's1', title: 'Visitor' }, end_user: options.body?.end_user, labels: options.body?.labels } };
+    }
+    if (path.includes('/permissions?')) {
+      return { data: { ok: true, ...(sessionEndUser ? { end_user: sessionEndUser, labels: { plan: 'pro' } } : {}), permissions: [
+        { id: 'p1', session_id: 's1', run_id: 'r1', tool_name: 'lookup_order', tool_call_arguments: '{"order_id":"ABC123","end_user":"mallory"}', requirement: 'client_tool', mode: 'auto', status: 'pending', created_at: 1, updated_at: 1 },
+      ] } };
+    }
+    if (path.endsWith('/resolve')) { resolved.push([path, options.body]); return { data: { ok: true } }; }
+    if (path === '/v3/sessions/s1' && (options.method ?? 'GET') === 'GET') {
+      return { data: { session: { id: 's1' }, messages: [], ...(sessionEndUser ? { end_user: sessionEndUser } : {}) } };
+    }
+    if (path.startsWith('/v3/sessions:end-user-usage')) {
+      return { data: { ok: true, date: '2026-10-16', truncated: false, end_users: [{ end_user: 'cust-42', recorded: true, usage: { total_tokens: 110, input_tokens: 90, output_tokens: 20, receipt_count: 2 } }] } };
+    }
+    return { data: { token: 'swk_x', record: { id: 'tok_1' } } };
+  } } as unknown as SwarmTransport;
+  const agents = new SwarmAgentsNamespace(transport);
+
+  const started = await agents.startConversation('frontdesk', { endUser: 'cust-42', labels: { plan: 'pro' }, clientRequestId: 'visit-1' });
+  assert.deepEqual(started, { sessionId: 's1', endUser: 'cust-42', labels: { plan: 'pro' } });
+  assert.equal(calls[0][2]?.end_user, 'cust-42');
+  assert.deepEqual(calls[0][2]?.labels, { plan: 'pro' });
+  assert.equal(calls[0][2]?.client_request_id, 'visit-1');
+
+  const pending = await agents.pendingCalls('s1', ['lookup_order']);
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].endUser, 'cust-42', 'the end user comes from the delivery, not the model arguments');
+  assert.deepEqual(pending[0].labels, { plan: 'pro' });
+  assert.equal(pending[0].arguments.end_user, 'mallory');
+
+  // serve with another end user fails the call without running the handler.
+  let ran = 0;
+  const controller = new AbortController();
+  const serving = agents.serve('s1', { lookup_order: () => { ran++; return { ok: true }; } }, { signal: controller.signal, intervalMs: 50, endUser: 'cust-7' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  controller.abort();
+  await serving;
+  assert.equal(ran, 0);
+  assert.equal(resolved[0][1]?.action, 'deny');
+
+  await assert.rejects(agents.converse('s1', 'hi', {}, { endUser: 'cust-7' }), /another end user/);
+  sessionEndUser = undefined;
+  await assert.rejects(agents.converse('s1', 'hi', {}, { endUser: 'cust-42' }), /another end user/);
+  assert.equal(calls.filter(([method, path]) => method === 'POST' && path === '/v3/sessions/s1/messages').length, 0, 'converse sent a message to the wrong end user');
+
+  await agents.createGatewayToken('frontdesk', { expiresInSeconds: 3600, endUserMessagesPerMinute: 10, endUserSessionsPerHour: 5, endUserMaxTokensPerDay: 20000 });
+  const mint = calls.find(([, path, body]) => path === '/v3/auth/tokens' && body?.end_user_messages_per_minute !== undefined);
+  assert.deepEqual(mint?.[2], { name: 'frontdesk gateway', agent_name: 'frontdesk', expires_in_seconds: 3600, end_user_messages_per_minute: 10, end_user_sessions_per_hour: 5, end_user_max_tokens_per_day: 20000 });
+  await agents.updateGatewayTokenLimits('tok/1', { endUserMaxTokensPerDay: 0, messagesPerMinute: 60 });
+  assert.deepEqual(calls[calls.length - 1], ['POST', '/v3/auth/tokens/tok%2F1/limits', { messages_per_minute: 60, end_user_max_tokens_per_day: 0 }]);
+  await assert.rejects(agents.updateGatewayTokenLimits('tok_1', {}), /at least one limit/);
+  await assert.rejects(agents.createGatewayToken('frontdesk', { expiresInSeconds: 3600, endUserMessagesPerMinute: -1 }), /non-negative/);
+
+  const usage = await agents.endUserUsage({ endUser: 'cust-42', date: '2026-10-16' });
+  assert.equal(calls[calls.length - 1][1], '/v3/sessions:end-user-usage?end_user=cust-42&date=2026-10-16');
+  assert.deepEqual(usage.endUsers.map((row) => [row.endUser, row.usage.total_tokens]), [['cust-42', 110]]);
+});

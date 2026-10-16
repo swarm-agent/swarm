@@ -49,6 +49,77 @@ export interface ClientToolCall {
   /** Already validated by Swarm against the tool's input_schema. */
   arguments: Record<string, unknown>;
   createdAt: number;
+  /**
+   * The session's end user, as your gateway set it at create time. It comes
+   * from the stored session, never from the model: decide whose data the call
+   * may see from this, not from `arguments`.
+   */
+  endUser?: string;
+  labels?: Record<string, string>;
+}
+
+/** A gateway token's limits; omitted fields keep the daemon defaults (or, on update, their current value). */
+export interface GatewayTokenLimits {
+  /** Messages (model runs) the token may start per minute (default 120). */
+  messagesPerMinute?: number;
+  /** New conversations per hour (default 300). */
+  sessionsPerHour?: number;
+  /** Model runs at once across the agent's conversations (default 4, 1-64). */
+  maxConcurrentRuns?: number;
+  /** Messages per minute for one end user's conversations (default 20). */
+  endUserMessagesPerMinute?: number;
+  /** New conversations per hour for one end user (default 30). */
+  endUserSessionsPerHour?: number;
+  /** Model tokens one end user may use per UTC day (default: no cap). */
+  endUserMaxTokensPerDay?: number;
+}
+
+/** One end user's model usage for a UTC day, from the provider receipts of their sessions. */
+export interface EndUserUsage {
+  endUser: string;
+  /** False when nothing was recorded for them that day. */
+  recorded: boolean;
+  usage: { total_tokens: number; input_tokens: number; output_tokens: number; receipt_count: number } & Record<string, unknown>;
+}
+
+/**
+ * `code` on a 429 from a gateway token: `token_*` is the token's own limit,
+ * `end_user_*` one end user's. Retry after `Retry-After` seconds.
+ */
+export type GatewayLimitCode =
+  | 'token_messages_rate_limited'
+  | 'token_sessions_rate_limited'
+  | 'token_concurrent_runs_limited'
+  | 'end_user_messages_rate_limited'
+  | 'end_user_sessions_rate_limited'
+  | 'end_user_daily_tokens_exceeded'
+  | 'rate_limit_capacity_reached';
+
+const LIMIT_FIELDS: Array<[keyof GatewayTokenLimits, string]> = [
+  ['messagesPerMinute', 'messages_per_minute'],
+  ['sessionsPerHour', 'sessions_per_hour'],
+  ['maxConcurrentRuns', 'max_concurrent_runs'],
+  ['endUserMessagesPerMinute', 'end_user_messages_per_minute'],
+  ['endUserSessionsPerHour', 'end_user_sessions_per_hour'],
+  ['endUserMaxTokensPerDay', 'end_user_max_tokens_per_day'],
+];
+
+function limitBody(limits: GatewayTokenLimits, keepZero: boolean): Record<string, number> {
+  const body: Record<string, number> = {};
+  for (const [key, field] of LIMIT_FIELDS) {
+    const value = limits[key];
+    if (value === undefined || (!keepZero && !value)) continue;
+    if (!Number.isInteger(value) || value < 0) throw new Error(`${key} must be a non-negative integer`);
+    body[field] = value;
+  }
+  return body;
+}
+
+function endUserFields(data: Record<string, unknown> | undefined): { endUser?: string; labels?: Record<string, string> } {
+  const out: { endUser?: string; labels?: Record<string, string> } = {};
+  if (typeof data?.end_user === 'string') out.endUser = data.end_user;
+  if (data?.labels && typeof data.labels === 'object' && !Array.isArray(data.labels)) out.labels = data.labels as Record<string, string>;
+  return out;
 }
 
 /** Throw from a handler to send this message to the model; other errors send "tool failed". */
@@ -131,19 +202,70 @@ export class SwarmAgentsNamespace {
    * it stops working if the agent is given any built-in tool. Owner only.
    * The daemon requires an expiry of at most 30 days (2592000 seconds).
    */
-  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds: number; messagesPerMinute?: number; sessionsPerHour?: number; maxConcurrentRuns?: number }): Promise<{ token: string; record: Record<string, unknown> }> {
+  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds: number } & GatewayTokenLimits): Promise<{ token: string; record: Record<string, unknown> }> {
     const agent = toolName(agentName);
     const res = await this.transport.request<{ token: string; record: Record<string, unknown> }>('/v3/auth/tokens', {
       method: 'POST',
       body: {
         name: options.name ?? `${agent} gateway`, agent_name: agent,
         expires_in_seconds: options.expiresInSeconds,
-        ...(options.messagesPerMinute ? { messages_per_minute: options.messagesPerMinute } : {}),
-        ...(options.sessionsPerHour ? { sessions_per_hour: options.sessionsPerHour } : {}),
-        ...(options.maxConcurrentRuns ? { max_concurrent_runs: options.maxConcurrentRuns } : {}),
+        ...limitBody(options, false),
       },
     });
     return { token: res.data.token, record: res.data.record };
+  }
+
+  /**
+   * Changes a gateway token's limits in place (owner only); fields you omit
+   * keep their value, 0 restores the default. Applies from its next request.
+   */
+  async updateGatewayTokenLimits(tokenId: string, limits: GatewayTokenLimits): Promise<Record<string, unknown>> {
+    if (typeof tokenId !== 'string' || !tokenId) throw new Error('tokenId is required');
+    const body = limitBody(limits, true);
+    if (Object.keys(body).length === 0) throw new Error('give at least one limit to change');
+    const res = await this.transport.request<{ record: Record<string, unknown> }>(`/v3/auth/tokens/${encodeURIComponent(tokenId)}/limits`, { method: 'POST', body });
+    return res.data.record;
+  }
+
+  /**
+   * Creates a conversation with a sealed agent for one end user (gateway
+   * token). `endUser` is stored with the session once and cannot change; the
+   * model never sees it. Pass the same `clientRequestId` to retry safely.
+   */
+  async startConversation(agentName: string, options: { endUser?: string; labels?: Record<string, string>; title?: string; clientRequestId?: string; workspacePath?: string; workspaceId?: string } = {}): Promise<{ sessionId: string; endUser?: string; labels?: Record<string, string> }> {
+    const agent = toolName(agentName);
+    const session = await new SwarmSessionsNamespace(this.transport).create({
+      agent_name: agent,
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.clientRequestId !== undefined ? { client_request_id: options.clientRequestId } : {}),
+      ...(options.workspacePath !== undefined ? { workspace_path: options.workspacePath } : {}),
+      ...(options.workspaceId !== undefined ? { workspace_id: options.workspaceId } : {}),
+      ...(options.endUser !== undefined ? { end_user: options.endUser } : {}),
+      ...(options.labels !== undefined ? { labels: options.labels } : {}),
+    });
+    if (options.endUser !== undefined && session.end_user !== options.endUser) {
+      throw new Error('the daemon did not confirm the conversation\'s end user');
+    }
+    return { sessionId: session.id, ...(session.end_user !== undefined ? { endUser: session.end_user } : {}), ...(session.labels ? { labels: session.labels } : {}) };
+  }
+
+  /**
+   * One UTC day's model usage of the agent's conversations, by end user (a
+   * gateway token reads its own agent; the owner passes `agentName`).
+   */
+  async endUserUsage(options: { endUser?: string; date?: string; limit?: number; agentName?: string } = {}): Promise<{ date: string; endUsers: EndUserUsage[]; truncated: boolean }> {
+    const query = new URLSearchParams();
+    if (options.agentName) query.set('agent_name', toolName(options.agentName));
+    if (options.endUser !== undefined) query.set('end_user', options.endUser);
+    if (options.date) query.set('date', options.date);
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const res = await this.transport.request<{ date: string; truncated: boolean; end_users: Array<{ end_user: string; recorded: boolean; usage: EndUserUsage['usage'] }> }>(`/v3/sessions:end-user-usage${suffix}`);
+    return {
+      date: res.data.date,
+      truncated: Boolean(res.data.truncated),
+      endUsers: (res.data.end_users ?? []).map((row) => ({ endUser: row.end_user, recorded: row.recorded, usage: row.usage })),
+    };
   }
 
   /** Today's spend against the daily cap. A gateway token may read it. */
@@ -211,16 +333,18 @@ export class SwarmAgentsNamespace {
   /** Client tool calls waiting in a session, limited to the tool names you answer. */
   async pendingCalls(sessionId: string, tools: Iterable<string>): Promise<ClientToolCall[]> {
     const names = new Set(tools);
-    const res = await this.transport.request<{ permissions: PendingPermissionRecord[] | null }>(
+    const res = await this.transport.request<{ permissions: PendingPermissionRecord[] | null; end_user?: string; labels?: Record<string, string> }>(
       `/v3/sessions/${encodeURIComponent(sessionId)}/permissions?status=pending&limit=100`
     );
+    // The end user comes with the delivery, from the stored session.
+    const owner = endUserFields(res.data as Record<string, unknown>);
     const calls: ClientToolCall[] = [];
     for (const record of res.data.permissions ?? []) {
       if (!names.has(record.tool_name) || record.session_id !== sessionId) continue;
       let args: unknown;
       try { args = JSON.parse(record.tool_call_arguments || record.tool_arguments || '{}'); } catch { args = null; }
       if (!args || typeof args !== 'object' || Array.isArray(args)) continue;
-      calls.push({ id: record.id, sessionId, runId: record.run_id, tool: record.tool_name, arguments: args as Record<string, unknown>, createdAt: record.created_at });
+      calls.push({ id: record.id, sessionId, runId: record.run_id, tool: record.tool_name, arguments: args as Record<string, unknown>, createdAt: record.created_at, ...owner });
     }
     return calls;
   }
@@ -238,15 +362,20 @@ export class SwarmAgentsNamespace {
   /**
    * Answers one session's client tool calls with `handlers` until `signal`
    * aborts. Each call is answered at most once; a handler error fails the
-   * call with "tool failed" unless it is a ClientToolError.
+   * call with "tool failed" unless it is a ClientToolError. With `endUser`,
+   * a call whose session belongs to anyone else is failed unanswered.
    */
-  async serve(sessionId: string, handlers: Record<string, ClientToolHandler>, options: { signal?: AbortSignal; intervalMs?: number } = {}): Promise<void> {
+  async serve(sessionId: string, handlers: Record<string, ClientToolHandler>, options: { signal?: AbortSignal; intervalMs?: number; endUser?: string } = {}): Promise<void> {
     const handled = new Set<string>();
     const interval = Math.max(50, options.intervalMs ?? 250);
     while (!options.signal?.aborted) {
       for (const call of await this.pendingCalls(sessionId, Object.keys(handlers))) {
         if (handled.has(call.id)) continue;
         handled.add(call.id);
+        if (options.endUser !== undefined && call.endUser !== options.endUser) {
+          await this.fail(sessionId, call.id, 'tool failed').catch(() => undefined);
+          continue;
+        }
         try {
           await this.answer(sessionId, call.id, await handlers[call.tool](call.arguments, call));
         } catch (error) {
@@ -264,12 +393,18 @@ export class SwarmAgentsNamespace {
    * Sends one user message to a sealed agent's session, answers its client
    * tool calls with `handlers` while it runs, and returns once the run has
    * finished. This is the whole loop a gateway needs per visitor message.
+   * With `endUser`, it refuses a session that belongs to anyone else before
+   * sending, and answers only that end user's calls.
    */
-  async converse(sessionId: string, message: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number } = {}): Promise<ConverseResult> {
+  async converse(sessionId: string, message: string, handlers: Record<string, ClientToolHandler>, options: { timeoutMs?: number; pollIntervalMs?: number; endUser?: string } = {}): Promise<ConverseResult> {
     const sessions = new SwarmSessionsNamespace(this.transport);
-    const before = new Set(((await sessions.get(sessionId)).messages ?? []).map((m: any) => m.id));
+    const initial = await sessions.get(sessionId);
+    if (options.endUser !== undefined && initial.end_user !== options.endUser) {
+      throw new Error('This conversation belongs to another end user');
+    }
+    const before = new Set((initial.messages ?? []).map((m: any) => m.id));
     const controller = new AbortController();
-    const serving = this.serve(sessionId, handlers, { signal: controller.signal, intervalMs: options.pollIntervalMs ?? 200 });
+    const serving = this.serve(sessionId, handlers, { signal: controller.signal, intervalMs: options.pollIntervalMs ?? 200, ...(options.endUser !== undefined ? { endUser: options.endUser } : {}) });
     const deadline = Date.now() + (options.timeoutMs ?? 120_000);
     try {
       await sessions.sendMessage(sessionId, { content: message });

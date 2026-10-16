@@ -41,6 +41,7 @@ visitor ── your website ── your gateway ──(agent-bound token)── 
 | Tools are checked when they run, not just when offered | any built-in tool, invented tool or other agent's tool the model names | `TestSessionsV3RefusesToolsTheAgentWasNotOffered`, `TestRunTurnRefusesToolsTheRunDidNotOffer`, red team |
 | Schema and size checks on client tool arguments | malformed, extra-field, oversized and wrong-type arguments | `TestSessionsV3ClientToolIsAnsweredByTheClient`, red team |
 | Agent-bound token (default-deny) | a leaked gateway token reaching the machine | `TestAgentBoundTokenIsDefaultDeny`, red team |
+| End user stored at create time, delivered with each call | the model choosing whose data a tool call sees; one visitor using up everyone's limits | `TestSessionsV3EndUserIsSetOnceByTheGateway`, `TestClientToolDeliveryCarriesTheStoredEndUser`, `TestAgentBoundEndUserLimitsAreEnforcedAndDistinct` |
 | User-only messages | forged assistant or system turns | `TestSessionsV3MessageRejectsCallerAssistantAndSystemTurns`, red team |
 | No shell in the image | command execution, even if the layers above fail | mutant run below |
 | Workspace scope plus separate path approvals | file access outside the scratch workspace | mutant run below |
@@ -77,12 +78,83 @@ Every message to a sealed agent is bounded, whatever the model does:
 | New messages per gateway token | 120 / minute | `sdk-token --messages-per-minute` |
 | New conversations per gateway token | 300 / hour | `sdk-token --sessions-per-hour` |
 | Model runs at once (the agent's conversations, per gateway token) | 4 | `sdk-token --max-concurrent-runs` (1-64) |
+| New messages per end user | 20 / minute | `sdk-token --end-user-messages-per-minute` |
+| New conversations per end user | 30 / hour | `sdk-token --end-user-sessions-per-hour` |
+| Model tokens per end user per UTC day | off | `sdk-token --end-user-max-tokens-per-day` |
 | Account spend per day | off | `swarmctl setup daily-limit --usd 25` |
 
 When the daily cap is reached the daemon refuses new runs and stops running
 ones. A gateway token can read today's spend (`agents.spendToday()`) but cannot
-change the cap. Visitor-level limits (per person, per IP address, bursts,
-budget) belong in the gateway.
+change the cap. The end-user limits apply only to conversations the gateway
+created with an `end_user` (below); a conversation without one counts against
+the token's limits only. Limits by IP address or other signals the daemon cannot
+see still belong in the gateway.
+
+A refused request gets `429` with `Retry-After` (also `retry_after_seconds` in
+the body), `limit_scope` (`token` or `end_user`) and a `code`:
+`token_messages_rate_limited`, `token_sessions_rate_limited`,
+`token_concurrent_runs_limited`, `end_user_messages_rate_limited`,
+`end_user_sessions_rate_limited` or `end_user_daily_tokens_exceeded` (Retry-After
+runs to UTC midnight). A request refused by one limit spends nothing from the
+others. The daily token cap is checked before each message from the end user's
+recorded receipts; a run already going finishes.
+
+The message and conversation counters are stored in the daemon's database, so a
+restart does not reset them. Each counter is deleted once it has refilled (at
+most an hour after its last use), and new ones are only created by requests that
+pass the token's own limits, so the table stays small; past 500 000 active
+counters new ones are refused (`rate_limit_capacity_reached`). End-user counters
+belong to the agent, not the token: a rotated gateway token for the same agent
+continues the same end user's counts. The concurrent-run limit is counted from
+the runs in flight and needs no stored counter.
+
+The owner changes a gateway token's limits in place, without reissuing it:
+
+```sh
+docker exec swarm-sealed swarmctl setup sdk-token-limits --id "$TOKEN_ID" \
+   --end-user-messages-per-minute 10 --end-user-max-tokens-per-day 200000
+```
+
+`POST /v3/auth/tokens/{id}/limits` takes any of `messages_per_minute`,
+`sessions_per_hour`, `max_concurrent_runs`, `end_user_messages_per_minute`,
+`end_user_sessions_per_hour` and `end_user_max_tokens_per_day`; fields left out
+keep their value and `0` restores the default. SDK:
+`agents.updateGatewayTokenLimits(tokenId, limits)`. A gateway token cannot call
+it. `swarmctl setup sdk-tokens` lists each gateway token's limits.
+
+## End users
+
+The gateway can tell Swarm whose conversation a session is, so it does not have
+to keep its own map from session to customer:
+
+```ts
+const { sessionId } = await gateway.agents.startConversation('frontdesk', {
+  endUser: 'cust_8f2c', labels: { plan: 'pro' }, clientRequestId: visitId,
+});
+await gateway.agents.converse(sessionId, text, handlers, { endUser: 'cust_8f2c' });
+// handlers get call.endUser and call.labels with every client tool call.
+```
+
+- `end_user` (on `POST /v3/sessions`) is an opaque id of 1-128 letters, digits
+  and `. _ : @ + = -`, compared case-sensitively. `labels` is at most 16 entries:
+  lowercase identifier keys (up to 64 characters) and printable values up to 256
+  characters. Use your own ids, not e-mail addresses or names.
+- Only a gateway token may set them, only for its own agent, and only when the
+  session is created. Retrying the create with a different `end_user` is a
+  `409`; the metadata route refuses the `swarm_v3_end_user` key; nothing the
+  model writes can change them. They are never sent to the model.
+- Session reads (`GET /v3/sessions/{id}` and the create response) return
+  `end_user` and `labels`, and so does `GET /v3/sessions/{id}/permissions`, which
+  is what `pendingCalls` reads: each `ClientToolCall` carries `endUser` and
+  `labels` taken from the stored session. Decide whose data a call may see from
+  `call.endUser`, never from the tool's arguments. `serve` and `converse` with
+  `endUser` refuse a session that belongs to anyone else.
+- `GET /v3/sessions:end-user-usage` returns one UTC day's model usage of the
+  agent's conversations grouped by end user (`date=YYYY-MM-DD`, default today;
+  `end_user=` for one; `limit`, default 100, max 1000). A gateway token reads its
+  own agent; the owner passes `agent_name`. The figures are the projections of
+  the provider receipts (tokens, costs by pricing source), not estimates. SDK:
+  `agents.endUserUsage({ endUser, date })`.
 
 ## Define a sealed agent
 
@@ -108,8 +180,8 @@ docker exec -i swarm-sealed swarmctl setup sealed-agent --stdin < frontdesk.json
 The token is refused unless the agent is sealed, and it must expire within 30
 days (`--expires-in-seconds`, or `expiresInSeconds` in the SDK). When it creates
 a session it may send only `agent_name`, `client_request_id`,
-`idempotency_key`, `title`, `mode`, `workspace_path` and `workspace_id`; any
-other field is refused. Tool names cannot reuse built-in
+`idempotency_key`, `title`, `mode`, `workspace_path`, `workspace_id`, `end_user`
+and `labels`; any other field is refused. Tool names cannot reuse built-in
 names: the runtime runs built-ins first, so a custom tool named `bash` would run
 real bash. In the SDK, `client.agents.defineClientTool`, `defineSealedAgent` and
 `createGatewayToken` do the same from a trusted owner backend. The gateway answers

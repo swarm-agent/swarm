@@ -46,9 +46,10 @@ func (s *Service) emitTokenLifecycle(kind string, record pebblestore.ScopedToken
 	}
 	refs, attrs := tokenSignalFields(record)
 	summary := map[string]string{
-		"token.minted":  "Key created: ",
-		"token.revoked": "Key revoked: ",
-		"token.deleted": "Key deleted: ",
+		"token.minted":         "Key created: ",
+		"token.revoked":        "Key revoked: ",
+		"token.deleted":        "Key deleted: ",
+		"token.limits_updated": "Key limits changed: ",
 	}[kind] + firstNonEmptyString(record.Name, record.ID)
 	s.signals.Emit(pebblestore.Signal{
 		Kind:     kind,
