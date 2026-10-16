@@ -119,3 +119,55 @@ func TestSetupSDKTokenAlwaysSendsAnExpiry(t *testing.T) {
 		t.Fatalf("an over-limit lifetime reached the daemon: %v", bodies[4:])
 	}
 }
+
+// Requirement: the per-end-user limits are set when a gateway token is minted
+// (sdk-token --end-user-*) and changed in place later (sdk-token-limits),
+// which sends only the limits named, so an edit never resets the others; the
+// flags are refused on non-gateway keys. runSetupSDKToken and
+// runSetupSDKTokenLimits are the authority; the fixture records each body.
+func TestSetupSDKTokenEndUserLimits(t *testing.T) {
+	var bodies []map[string]any
+	var paths []string
+	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies, paths = append(bodies, body), append(paths, r.Method+" "+r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, "/limits") {
+			fmt.Fprint(w, `{"ok":true,"record":{"id":"tok-gw","agent_name":"frontdesk","token_hash":"HASH-SECRET","end_user_messages_per_minute":7}}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true,"token":"swk_test","record":{"id":"tok-gw"}}`)
+	})
+	var out bytes.Buffer
+	if err := runSetup([]string{"sdk-token", "--socket", socket, "--agent", "frontdesk", "--name", "gw", "--expires-in-seconds", "3600",
+		"--end-user-messages-per-minute", "10", "--end-user-sessions-per-hour", "5", "--end-user-max-tokens-per-day", "20000"}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if paths[0] != "POST /v3/auth/tokens" || bodies[0]["end_user_messages_per_minute"] != float64(10) || bodies[0]["end_user_sessions_per_hour"] != float64(5) || bodies[0]["end_user_max_tokens_per_day"] != float64(20000) {
+		t.Fatalf("mint sent %s %v", paths[0], bodies[0])
+	}
+	out.Reset()
+	if err := runSetup([]string{"sdk-token-limits", "--socket", socket, "--id", "tok-gw", "--end-user-messages-per-minute", "7"}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if paths[1] != "POST /v3/auth/tokens/tok-gw/limits" || len(bodies[1]) != 1 || bodies[1]["end_user_messages_per_minute"] != float64(7) {
+		t.Fatalf("limits edit sent %s %v (want only the named limit)", paths[1], bodies[1])
+	}
+	if strings.Contains(out.String(), "HASH") {
+		t.Fatalf("limits output exposed the token hash: %s", out.String())
+	}
+	for _, args := range [][]string{
+		{"sdk-token", "--socket", socket, "--name", "gw", "--expires-in-seconds", "3600", "--end-user-messages-per-minute", "10"},
+		{"sdk-token", "--socket", socket, "--agent", "frontdesk", "--operator", "--name", "hub", "--expires-in-seconds", "3600", "--end-user-sessions-per-hour", "5"},
+		{"sdk-token-limits", "--socket", socket, "--id", "tok-gw"},
+		{"sdk-token-limits", "--socket", socket, "--end-user-messages-per-minute", "7"},
+		{"sdk-token-limits", "--socket", socket, "--id", "tok-gw", "--end-user-max-tokens-per-day", "-1"},
+	} {
+		if err := runSetup(args, strings.NewReader(""), &bytes.Buffer{}); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+	if len(paths) != 2 {
+		t.Fatalf("a refused command reached the daemon: %v", paths)
+	}
+}

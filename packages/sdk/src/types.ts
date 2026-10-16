@@ -324,6 +324,9 @@ export interface SessionRecord {
   archived?: boolean;
   archived_at?: number;
   last_run_id?: string;
+  /** Set when a gateway created the session for an end user. */
+  end_user?: string;
+  labels?: Record<string, string>;
 }
 
 export interface CreateSessionParams {
@@ -336,6 +339,14 @@ export interface CreateSessionParams {
   mode?: 'auto' | 'plan';
   client_request_id?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * Whose conversation this is (your customer or visitor id): 1-128 letters,
+   * digits and `. _ : @ + = -`. Only a gateway token may set it, once; the model
+   * never sees it, and per-end-user limits and usage use it.
+   */
+  end_user?: string;
+  /** Up to 16 labels stored with the session (keys: lowercase identifiers; values: up to 256 characters). */
+  labels?: Record<string, string>;
 }
 
 export interface ListSessionsParams {
@@ -368,6 +379,9 @@ export interface SessionDetail {
   messages?: SessionMessage[];
   last_run_id?: string;
   active_plan?: unknown;
+  /** Set when a gateway created the session for an end user. */
+  end_user?: string;
+  labels?: Record<string, string>;
   raw?: Record<string, unknown>;
 }
 

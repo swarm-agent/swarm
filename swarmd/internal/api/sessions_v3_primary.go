@@ -67,6 +67,10 @@ type sessionsV3CreateRequest struct {
 	WorktreeExistingPath           string                        `json:"worktree_existing_path,omitempty"`
 	Metadata                       map[string]any                `json:"metadata,omitempty"`
 	ModelProfile                   *sessionsV3ModelProfileChoice `json:"model_profile,omitempty"`
+	// EndUser and Labels say whose conversation this is; only a gateway
+	// (agent-bound) token sets them, at create time (sessionsV3EndUserBinding).
+	EndUser string            `json:"end_user,omitempty"`
+	Labels  map[string]string `json:"labels,omitempty"`
 }
 
 type sessionsV3ModelProfileInline struct {
@@ -315,7 +319,12 @@ func (s *Server) handleSessionV3PrimaryByID(w http.ResponseWriter, r *http.Reque
 			writeSessionNotFound(w)
 			return
 		}
-		writeJSON(w, http.StatusOK, sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session)))
+		response := sessionsV3HydratedResponse(hydrated, gitStatusResponseForSession(hydrated.Session))
+		if err := addSessionEndUserFields(response, hydrated.Session.Metadata); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
 	case "repositories":
 		s.handleSessionV3Repositories(w, r, principal, sessionID)
 	case "archive":
@@ -1019,6 +1028,14 @@ func (s *Server) createSessionsV3Primary(w http.ResponseWriter, r *http.Request,
 	}
 	if appBinding, ok := r.Context().Value(applicationAgentContextKey{}).(applicationAgentBinding); ok {
 		session.Metadata[applicationAgentBindingKey] = appBinding
+	}
+	if req.EndUser != "" || len(req.Labels) > 0 {
+		binding, err := sessionsV3EndUserBinding(r, resolvedAgent.Name, req.EndUser, req.Labels)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		session.Metadata[pebblestore.SessionEndUserMetadataKey] = binding
 	}
 	if req.ProjectID != "" {
 		session.Metadata["swarm_v3_project_id"] = req.ProjectID
@@ -2521,6 +2538,10 @@ func (s *Server) handleSessionV3PrimaryMetadata(w http.ResponseWriter, r *http.R
 	}
 	next := session
 	for key := range req.Metadata {
+		if strings.EqualFold(strings.TrimSpace(key), pebblestore.SessionEndUserMetadataKey) {
+			writeError(w, http.StatusBadRequest, errors.New("a session's end user is set when it is created and cannot change"))
+			return
+		}
 		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "worker_") && isProtectedSessionsV3MetadataKey(key) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("metadata key %q is reserved for primary authority state", key))
 			return
@@ -2915,7 +2936,19 @@ func (s *Server) handleSessionV3PrimaryPermissions(w http.ResponseWriter, r *htt
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "session_id": sessionID, "count": len(records), "permissions": records})
+	response := map[string]any{"ok": true, "session_id": sessionID, "count": len(records), "permissions": records}
+	// A gateway answering these calls gets the session's end user with them,
+	// from the stored binding, never from the model's tool arguments.
+	session, found, err := s.sessions.GetSession(sessionID)
+	if err != nil || !found {
+		writeError(w, http.StatusInternalServerError, errors.New("session not readable"))
+		return
+	}
+	if err := addSessionEndUserFields(response, session.Metadata); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleSessionV3PrimaryPermissionResolve(w http.ResponseWriter, r *http.Request, principal identity.Principal, sessionID, permissionID string) {
@@ -3437,14 +3470,18 @@ func sessionV3CreateResultResponse(result sessionruntime.SessionMutationResult) 
 	if strings.TrimSpace(result.SessionID) == "" {
 		return nil, errors.New("created sessions v3 session_id was not returned")
 	}
-	return map[string]any{
+	response := map[string]any{
 		"ok":              true,
 		"session_id":      result.SessionID,
 		"session":         result.Session,
 		"projection":      result.Projection,
 		"mutation":        sessionV3MutationResultResponse(result),
 		"realtime_outbox": result.RealtimeOutbox,
-	}, nil
+	}
+	if err := addSessionEndUserFields(response, result.Session.Metadata); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 func sessionsV3HydratedResponse(hydrated sessionsV3HydratedSession, fields gitStatusResponseFields) map[string]any {
@@ -4540,6 +4577,7 @@ func sessionsV3AuthorityInt(authority map[string]any, keys ...string) int {
 func isProtectedSessionsV3MetadataKey(key string) bool {
 	switch strings.ToLower(strings.TrimSpace(key)) {
 	case applicationAgentBindingKey,
+		pebblestore.SessionEndUserMetadataKey,
 		pebblestore.SessionPurposeMetadataKey,
 		pebblestore.SessionPurposeWorkspaceMetadataKey,
 		"swarm_v3_project_id",
