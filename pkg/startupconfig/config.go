@@ -51,6 +51,7 @@ type FileConfig struct {
 	SandboxCPUs                  string
 	LandingMaxConcurrent         int
 	LandingParallel              int
+	CloudBuildCache              bool
 	CloudBuildProject            string
 	CloudBuildRegion             string
 	CloudBuildBucket             string
@@ -154,6 +155,7 @@ func Default(path string) FileConfig {
 	return FileConfig{
 		Path:                         path,
 		EnvironmentProvider:          "local",
+		CloudBuildCache:              true,
 		CloudBuildRegion:             "global",
 		CloudBuildMachineType:        "e2-highcpu-8",
 		EnvironmentRunnerWaitSeconds: 120,
@@ -356,6 +358,7 @@ cloudbuild_bucket = %s
 cloudbuild_machine_type = %s
 cloudbuild_timeout_minutes = %d
 cloudbuild_service_account = %s
+cloudbuild_cache = %t
 environment_provider = %s
 environment_runner_wait_seconds = %d
 landing_parallel = %d
@@ -383,7 +386,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.CloudBuildProject, cfg.CloudBuildRegion, cfg.CloudBuildBucket, cfg.CloudBuildMachineType, cfg.CloudBuildTimeoutMinutes, cfg.CloudBuildServiceAccount, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.LandingParallel, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.CloudBuildProject, cfg.CloudBuildRegion, cfg.CloudBuildBucket, cfg.CloudBuildMachineType, cfg.CloudBuildTimeoutMinutes, cfg.CloudBuildServiceAccount, cfg.CloudBuildCache, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.LandingParallel, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -557,13 +560,19 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
-		case "cloudbuild_project", "cloudbuild_region", "cloudbuild_bucket", "cloudbuild_machine_type", "cloudbuild_timeout_minutes", "cloudbuild_service_account":
+		case "cloudbuild_project", "cloudbuild_region", "cloudbuild_bucket", "cloudbuild_machine_type", "cloudbuild_timeout_minutes", "cloudbuild_service_account", "cloudbuild_cache":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
 			}
 			rawSeen[key] = struct{}{}
 			seen[key] = struct{}{}
 			switch key {
+			case "cloudbuild_cache":
+				v, err := strconv.ParseBool(value)
+				if err != nil {
+					return FileConfig{}, nil, fmt.Errorf("invalid cloudbuild_cache %q: %w", value, err)
+				}
+				cfg.CloudBuildCache = v
 			case "cloudbuild_project":
 				cfg.CloudBuildProject = value
 			case "cloudbuild_region":
@@ -840,6 +849,7 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 		lines = append(lines, fmt.Sprintf("environment_runner_wait_seconds = %d", cfg.EnvironmentRunnerWaitSeconds))
 	}
 	for _, entry := range []struct{ key, value string }{
+		{"cloudbuild_cache", strconv.FormatBool(cfg.CloudBuildCache)},
 		{"cloudbuild_project", cfg.CloudBuildProject},
 		{"cloudbuild_region", cfg.CloudBuildRegion},
 		{"cloudbuild_bucket", cfg.CloudBuildBucket},
