@@ -232,7 +232,7 @@ test('after a refresh the visitor gets their own history back, and only theirs',
 test('the email form saves a lead for a person, with no model run', async () => {
   const g = await start();
   try {
-    assert.equal((await g.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'a@b.co' } })).status, 404, 'needs a conversation first');
+    assert.equal((await g.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'a@example.com' } })).status, 404, 'needs a conversation first');
     await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
     const runs = g.calls.filter(([op]) => op === 'converse').length;
     for (const email of ['', 'no-at-sign', 'a@b', 'two@@example.com', 'x'.repeat(70) + '@example.com']) {
@@ -440,7 +440,7 @@ test("block closes the chat and refuses the visitor's network for every route un
     // A fresh browser on the same network gets nowhere, on any route that reaches staff or the model.
     assert.deepEqual((await g.call('/chat', { body: { visitor_id: other, message: 'hi again' }, headers: net })).data, { status: 'blocked' });
     assert.deepEqual((await g.call('/chat/person', { body: { visitor_id: other, accept: true }, headers: net })).data, { status: 'blocked' });
-    assert.deepEqual((await g.call('/chat/contact', { body: { visitor_id: other, email: 'a@b.co' }, headers: net })).data, { status: 'blocked' });
+    assert.deepEqual((await g.call('/chat/contact', { body: { visitor_id: other, email: 'a@example.com' }, headers: net })).data, { status: 'blocked' });
     assert.equal(g.calls.length, before, 'no daemon call for a blocked network');
     // A different network is unaffected; a header from the ops side is ignored.
     assert.equal((await g.call('/chat', { body: { visitor_id: other, message: 'hi' }, headers: { 'X-Visitor-Net': 'net_somewhereelse' } })).data.status, 'answered');
@@ -490,7 +490,7 @@ test('the agent can only fill in the lead card; the visitor sends it, which save
     const g2 = await start();
     try {
       await g2.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
-      assert.deepEqual((await g2.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'a@b.co', from_proposal: true } })).data, { status: 'saved' });
+      assert.deepEqual((await g2.call('/chat/contact', { body: { visitor_id: VISITOR, email: 'a@example.com', from_proposal: true } })).data, { status: 'saved' });
       assert.equal(g2.visitors.get(VISITOR).ended, undefined);
     } finally { await g2.close(); }
   } finally { await g.close(); }

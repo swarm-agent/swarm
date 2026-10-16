@@ -160,8 +160,8 @@ test('the gateway gets a keyed hash of the visitor network, never the address, a
   assert.equal(gw.seen.at(-1).init.headers['X-Visitor-Net'], undefined);
 
   const side = (path, body) => new Request('https://chat.example.com' + path, { method: 'POST', headers: { Origin: SITE, 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.9' }, body: JSON.stringify(body) });
-  await handle(side('/api/chat/contact', { visitor_id: VISITOR, email: 'a@b.co', name: 'Dana', note: 'intake', from_proposal: true, extra: 'x' }), env(), gw);
-  assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, email: 'a@b.co', name: 'Dana', note: 'intake', from_proposal: true });
+  await handle(side('/api/chat/contact', { visitor_id: VISITOR, email: 'a@example.com', name: 'Dana', note: 'intake', from_proposal: true, extra: 'x' }), env(), gw);
+  assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, email: 'a@example.com', name: 'Dana', note: 'intake', from_proposal: true });
   await handle(side('/api/chat/proposal', { visitor_id: VISITOR, accept: false, note: 'x' }), env(), gw);
   assert.equal(gw.seen.at(-1).url, 'https://gw.example.com/chat/proposal');
   assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR, accept: false });
