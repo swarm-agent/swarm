@@ -26,6 +26,8 @@ type CloudBuilds interface {
 	Get(context.Context, string) (Build, error)
 }
 type Build struct {
+	LogsBucket     string       `json:"logsBucket,omitempty"`
+	StatusDetail   string       `json:"statusDetail,omitempty"`
 	ID             string       `json:"id,omitempty"`
 	Status         string       `json:"status,omitempty"`
 	Steps          []BuildStep  `json:"steps,omitempty"`
@@ -290,7 +292,7 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 	if err := p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"request.json", bytes.NewReader(request)); err != nil {
 		return fail(err)
 	}
-	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "CLOUD_LOGGING_ONLY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-lc", cloudBuildScript(p.Config.Bucket, e.prefix, sha)}}}})
+	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-c", cloudBuildScript(p.Config.Bucket, e.prefix, sha)}}}})
 	if err != nil {
 		return fail(err)
 	}
@@ -370,7 +372,15 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 			case <-timer.C:
 			}
 		default:
-			return failure("build did not complete successfully")
+			detail := b.StatusDetail
+			if logs, ok := e.provider.Builds.(interface {
+				LogTail(context.Context, Build) (string, error)
+			}); ok {
+				if tail, err := logs.LogTail(ctx, b); err == nil && strings.TrimSpace(tail) != "" {
+					detail = tail
+				}
+			}
+			return failure("build did not complete successfully\n" + boundedBuildTail(detail, 8192-len(e.id)-len(b.Status)-150))
 		}
 	}
 	check := e.results[e.index]

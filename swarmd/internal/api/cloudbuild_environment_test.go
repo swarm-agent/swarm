@@ -80,6 +80,10 @@ func (f *cloudBuildFake) Create(_ context.Context, b environment.Build) (environ
 	}
 	return environment.Build{ID: "test-build"}, nil
 }
+func (f *cloudBuildFake) LogTail(context.Context, environment.Build) (string, error) {
+	return "setup: go: command not found", nil
+}
+
 func (f *cloudBuildFake) Get(context.Context, string) (environment.Build, error) {
 	return environment.Build{ID: "test-build", Status: f.status}, nil
 }
@@ -89,7 +93,7 @@ func (f *cloudBuildFake) Get(context.Context, string) (environment.Build, error)
 // infrastructure errors. Fake remote clients keep this narrow integration test
 // hermetic; it does not claim to execute Google's service or the generated script.
 func TestCloudBuildEnvironmentLanding(t *testing.T) {
-	for _, mode := range []string{"success", "check_failure", "missing", "auto_missing", "upload_failure", "create_failure", "cancelled", "late_upload"} {
+	for _, mode := range []string{"success", "build_failure", "check_failure", "missing", "auto_missing", "upload_failure", "create_failure", "cancelled", "late_upload"} {
 		t.Run(mode, func(t *testing.T) {
 			db, err := pebblestore.Open(t.TempDir())
 			if err != nil {
@@ -100,6 +104,9 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 			storage := &cloudStorageFake{objects: map[string][]byte{}, result: `{"checks":[{"exit_code":0,"duration_ms":1,"output":"first"},{"exit_code":0,"duration_ms":2,"output":"second"}]}`}
 			builds := &cloudBuildFake{status: "SUCCESS"}
 			switch mode {
+			case "build_failure":
+				builds.status = "FAILURE"
+				storage.result = ""
 			case "check_failure":
 				storage.result = `{"checks":[{"exit_code":0,"duration_ms":1,"output":"first"},{"exit_code":7,"duration_ms":2,"output":"FAIL second"}]}`
 			case "missing", "auto_missing":
@@ -154,6 +161,11 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 					t.Fatalf("expected environment failure: %v", err)
 				}
 			}
+			// Purpose: the landing boundary must propagate build-log diagnostics
+			// as its environment failure reason when result.json is absent.
+			if mode == "build_failure" && (err == nil || !strings.Contains(err.Error(), "setup: go: command not found")) {
+				t.Fatalf("lost build log reason: %v", err)
+			}
 			// Purpose: Acquire failure must cancel uploads before prefix deletion and
 			// sweep again for a late completion; fake storage injects that exact ordering.
 			if mode == "late_upload" && !storage.cancelledBeforeDelete {
@@ -187,6 +199,9 @@ func TestCloudBuildEnvironmentLanding(t *testing.T) {
 				t.Fatalf("fallback=%q", entry.Environment)
 			}
 			if len(builds.build.Steps) > 0 {
+				if builds.build.Steps[0].Args[0] != "-c" {
+					t.Fatal("step must capture image PATH before a login shell")
+				}
 				script := builds.build.Steps[0].Args[1]
 				for _, s := range []string{"sha256 mismatch", "for command in request['checks']", "transfer('result.json'", "transfer('output.log'"} {
 					if !strings.Contains(script, s) {

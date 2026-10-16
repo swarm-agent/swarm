@@ -9,7 +9,7 @@ import (
 // chosen base image. Infrastructure errors escape; check exit codes are data.
 func cloudBuildScript(bucket, prefix, sha string) string {
 	data, _ := json.Marshal(map[string]string{"bucket": bucket, "prefix": prefix, "sha256": sha})
-	return "set -euo pipefail\npython3 - '" + base64.StdEncoding.EncodeToString(data) + "' <<'SWARM_PY'\n" + cloudBuildPython + "\nSWARM_PY\n"
+	return "set -euo pipefail\nIMAGE_PATH=\"$PATH\"\nexport IMAGE_PATH\nexport GOPATH=/workspace/go\nexport GOCACHE=/workspace/.cache/go-build\nexport GOMODCACHE=/workspace/go/pkg/mod\npython3 - '" + base64.StdEncoding.EncodeToString(data) + "' <<'SWARM_PY'\n" + cloudBuildPython + "\nSWARM_PY\n"
 }
 
 const cloudBuildPython = `import base64, collections, hashlib, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
@@ -44,8 +44,13 @@ subprocess.run(['tar','-xzf',root+'/payload.tar.gz','-C',root+'/src'],check=True
 os.chdir(root+'/src')
 env = os.environ.copy()
 env.update(request['definition'].get('Env') or {})
+# The image path is captured before any login shell or definition overrides.
+env['IMAGE_PATH'] = os.environ['IMAGE_PATH']
+env.update({'GOPATH': root+'/go', 'GOCACHE': root+'/.cache/go-build', 'GOMODCACHE': root+'/go/pkg/mod'})
+def login_command(command):
+    return 'export PATH="$IMAGE_PATH:$PATH"; ' + command
 for command in request['definition'].get('Setup') or []:
-    subprocess.run(['bash','-lc',command],env=env,check=True,timeout=request['timeout'])
+    subprocess.run(['bash','-lc',login_command(command)],env=env,check=True,timeout=request['timeout'])
 subprocess.run(['git','init'],check=True)
 subprocess.run(['git','add','-A'],check=True)
 subprocess.run(['git','-c','user.name=Swarm Landing','-c','user.email=landing@swarm.local','commit','--allow-empty','-m','Landing tree'],check=True)
@@ -58,7 +63,7 @@ markers = re.compile(rb'FAIL|error:|panic:|fatal:|AssertionError|FAILED|Error:')
 # retaining only bounded tails and failure-marker context.
 for command in request['checks']:
     start = time.monotonic()
-    proc = subprocess.Popen(['timeout','--kill-after=5s',str(request['timeout'])+'s','bash','-lc',command],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(['timeout','--kill-after=5s',str(request['timeout'])+'s','bash','-lc',login_command(command)],env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     tail = bytearray(); failures = bytearray(); before = collections.deque(maxlen=3); after = 0
     while True:
         line = proc.stdout.readline(4096)
@@ -73,7 +78,10 @@ for command in request['checks']:
     code = proc.wait()
     checks.append({'exit_code':code,'duration_ms':int((time.monotonic()-start)*1000),'output':(failures+b'\n'+tail).decode('utf-8','replace')})
 with open(root+'/result.json','w') as f: json.dump({'checks':checks},f)
-with open(root+'/output.log','wb') as f: f.write(output)
-transfer('output.log',root+'/output.log',True)
+try:
+    with open(root+'/output.log','wb') as f: f.write(output)
+    transfer('output.log',root+'/output.log',True)
+except Exception as err:
+    print('Warning: output.log unavailable: '+str(err), file=sys.stderr)
 transfer('result.json',root+'/result.json',True)
 `
