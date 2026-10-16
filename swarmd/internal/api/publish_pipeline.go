@@ -159,6 +159,7 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if err != nil {
 		return false, err
 	}
+	commits := []string{base}
 	state.Rebase = entry.State == "review_pending" && entry.Request.Head == head
 	if state.Rebase {
 		brief += "\n" + entry.Reason
@@ -172,6 +173,7 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 			return false, save("review_failed")
 		}
 		base = entry.Request.BaseCommit
+		commits = []string{base, state.Base, state.Head}
 		brief += fmt.Sprintf("\nRebase-scoped review: review only the conflict resolution. Previously reviewed base: %s; previously reviewed head: %s. Confirm git range-diff %s..%s %s..%s.", state.Base, state.Head, state.Base, state.Head, base, head)
 	}
 	brief += pipelineBaseBrief(base, head)
@@ -179,9 +181,12 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if followup != "" {
 		requestID += "-" + followup
 	}
-	response, err := controlMCPGiveJob(c, map[string]any{"worker": "reviewer", "project": refs.projectID, "workspace": rule.Folder, "review_job": job, "brief": brief, "idempotency_key": requestID})
+	response, err := controlMCPGiveJob(c, map[string]any{"worker": "reviewer", "project": refs.projectID, "workspace": rule.Folder, "review_job": job, "review_commits": commits, "brief": brief, "idempotency_key": requestID})
 	if err != nil {
-		return false, err
+		state.Head, state.Base, state.Verdict, state.ReviewerJobID = head, base, "", ""
+		state.FollowupRunID = followup
+		state.Findings = "Review infrastructure admission failed: " + err.Error()
+		return false, save("review_failed")
 	}
 	state.Head, state.Base, state.Verdict = head, base, ""
 	state.FollowupRunID = followup
