@@ -159,6 +159,13 @@ of everything above.
   cache and untagged images above 70% used, and logs at crit above 85%; and
   `journald-size.conf` in `/etc/systemd/journald.conf.d/`, which caps the
   journal at 200 MB. Check with `journalctl -t disk-guard`.
+- **VM identity (Vertex):** on a GCE VM every container can ask the metadata
+  server for the VM's token. Install `metadata-guard.sh` as
+  `/usr/local/sbin/metadata-guard` with `metadata-guard.service`: only
+  containers running the `swarm-sealed` image may reach 169.254.169.254, the
+  gateway and tunnel are dropped, and if no Swarm container runs, all are.
+  It re-applies after every container start. Check with
+  `journalctl -t metadata-guard` and `iptables -S BOT-METADATA`.
 
 ## Human takeover
 

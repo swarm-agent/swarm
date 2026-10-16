@@ -1,0 +1,12 @@
+[Unit]
+Description=Only Swarm containers may reach the GCE metadata server (VM identity)
+After=docker.service
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/sbin/metadata-guard watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
