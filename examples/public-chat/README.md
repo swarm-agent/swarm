@@ -152,6 +152,13 @@ of everything above.
   `X-Signature: sha256=<HMAC of the body>` using `hub_events_secret`.
 - **Fallback:** if the box is unreachable, paused or over budget, the Worker
   says so and the widget shows its fallback text instead of breaking.
+- **Disk:** container logs rotate (10 MB × 3 per service, set in
+  `compose.yaml`). On the host, install the files in `host/`:
+  `disk-guard.sh` as `/usr/local/sbin/disk-guard` with its hourly
+  `disk-guard.timer`, which drops week-old build cache, prunes all build
+  cache and untagged images above 70% used, and logs at crit above 85%; and
+  `journald-size.conf` in `/etc/systemd/journald.conf.d/`, which caps the
+  journal at 200 MB. Check with `journalctl -t disk-guard`.
 
 ## Human takeover
 

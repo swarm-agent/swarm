@@ -1,0 +1,8 @@
+[Unit]
+Description=Prune Docker build cache and warn before the disk fills
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/disk-guard

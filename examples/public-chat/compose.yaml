@@ -4,6 +4,11 @@
 # Secrets are files under ./secrets (mode 0600, never committed).
 name: public-chat
 
+# Container logs rotate at 10 MB, three files per service, so they can never fill the disk.
+x-logging: &logging
+  driver: local
+  options: { max-size: 10m, max-file: "3" }
+
 services:
   swarm:
     image: swarm-sealed:local # build: see containers/sealed/README.md
@@ -25,6 +30,7 @@ services:
       - project:/project # an empty scratch workspace, never real code
     networks: [bots]
     restart: unless-stopped
+    logging: *logging
 
   gateway:
     image: public-chat-gateway:local # build: see Dockerfile in this directory
@@ -51,6 +57,7 @@ services:
     networks: [bots, edge]
     depends_on: [swarm]
     restart: unless-stopped
+    logging: *logging
 
   cloudflared:
     # Pin an exact release from https://github.com/cloudflare/cloudflared/releases
@@ -63,6 +70,7 @@ services:
     networks: [edge]
     depends_on: [gateway]
     restart: unless-stopped
+    logging: *logging
 
 networks:
   bots: {}
