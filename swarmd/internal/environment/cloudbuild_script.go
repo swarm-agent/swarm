@@ -9,18 +9,22 @@ import (
 // chosen base image, plus useradd and runuser. Infrastructure errors escape;
 // check exit codes are data.
 func cloudBuildScript(bucket, prefix, sha string) string {
-	data, _ := json.Marshal(map[string]string{"bucket": bucket, "prefix": prefix, "sha256": sha})
+	return cloudBuildScriptWithCache(bucket, prefix, sha, "")
+}
+
+func cloudBuildScriptWithCache(bucket, prefix, sha, key string) string {
+	data, _ := json.Marshal(map[string]string{"bucket": bucket, "prefix": prefix, "sha256": sha, "cache_key": key})
 	return "set -euo pipefail\nIMAGE_PATH=\"$PATH\"\nexport IMAGE_PATH\nexport GOPATH=/workspace/go\nexport GOCACHE=/workspace/.cache/go-build\nexport GOMODCACHE=/workspace/go/pkg/mod\npython3 - '" + base64.StdEncoding.EncodeToString(data) + "' <<'SWARM_PY'\n" + cloudBuildPython + "\nSWARM_PY\n"
 }
 
-const cloudBuildPython = `import base64, collections, hashlib, json, os, pwd, re, subprocess, sys, time, urllib.parse, urllib.request
+const cloudBuildPython = `import base64, collections, hashlib, json, os, pwd, re, subprocess, sys, time, urllib.parse, urllib.request, shutil, tarfile, uuid
 cfg = json.loads(base64.b64decode(sys.argv[1]))
 root = '/workspace'
 def token():
     req = urllib.request.Request('http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token', headers={'Metadata-Flavor':'Google'})
     with urllib.request.urlopen(req, timeout=30) as r: return json.load(r)['access_token']
-def transfer(name, path, upload=False):
-    obj = cfg['prefix'] + name
+def transfer(name, path, upload=False, object_name=None):
+    obj = object_name if object_name is not None else cfg['prefix'] + name
     if upload:
         url = 'https://storage.googleapis.com/upload/storage/v1/b/' + urllib.parse.quote(cfg['bucket'], safe='') + '/o?uploadType=media&name=' + urllib.parse.quote(obj, safe='')
     else:
@@ -28,7 +32,84 @@ def transfer(name, path, upload=False):
     # Token is passed through stdin configuration, not argv or output.
     args = ['curl','--fail','--silent','--show-error','--max-time','300','--config','-']
     args += ['-X','POST','--data-binary','@'+path] if upload else ['-o',path]
+    if object_name is not None and not upload: args += ['--max-filesize', str(3 * 1024**3)]
     subprocess.run(args + [url], input=('header = "Authorization: Bearer '+token()+'"\n').encode(), check=True, stdout=subprocess.DEVNULL)
+def cache_publish(source, destination):
+    base = 'https://storage.googleapis.com/storage/v1/b/' + urllib.parse.quote(cfg['bucket'], safe='') + '/o/'
+    url = base + urllib.parse.quote(source, safe='') + '/copyTo/b/' + urllib.parse.quote(cfg['bucket'], safe='') + '/o/' + urllib.parse.quote(destination, safe='')
+    req = urllib.request.Request(url, data=b'', method='POST', headers={'Authorization':'Bearer '+token()})
+    with urllib.request.urlopen(req, timeout=300) as response: response.read()
+    req = urllib.request.Request(base+urllib.parse.quote(source, safe=''), method='DELETE', headers={'Authorization':'Bearer '+token()})
+    with urllib.request.urlopen(req, timeout=30) as response: response.read()
+# Persistent cache helpers
+CACHE_LIMIT = 3 * 1024**3
+cache_paths = ('.cache/go-build', 'go/pkg/mod', '.cache/pnpm')
+def cache_object(): return 'cache/'+cfg['cache_key']+'/latest.tar.gz'
+def cold_cache():
+    for name in cache_paths:
+        path = root+'/'+name
+        if os.path.islink(path): os.unlink(path)
+        elif os.path.exists(path): shutil.rmtree(path)
+        os.makedirs(path, exist_ok=True)
+def restore_cache():
+    archive_path = root+'/restore-cache.tar.gz'
+    try:
+        transfer('', archive_path, object_name=cache_object())
+        if os.path.getsize(archive_path) > CACHE_LIMIT: raise ValueError('cache too large')
+        with tarfile.open(archive_path, 'r:gz') as archive:
+            size = 0
+            members = []
+            for member in archive:
+                name = member.name.rstrip('/')
+                if ('..' in name.split('/') or not any(name == p or name.startswith(p+'/') for p in cache_paths)
+                    or not (member.isfile() or member.isdir())):
+                    raise ValueError('unsafe cache entry')
+                size += member.size
+                if size > CACHE_LIMIT or len(members) >= 500000: raise ValueError('expanded cache too large')
+                members.append(member)
+            cold_cache()
+            # Only validated regular files/directories, never links or devices.
+            for member in members:
+                path = root+'/'+member.name
+                if member.isdir(): os.makedirs(path, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with archive.extractfile(member) as source, open(path,'wb') as dest:
+                        shutil.copyfileobj(source, dest)
+                    os.chmod(path, member.mode & 0o777)
+                    os.utime(path, (member.mtime, member.mtime))
+        print('Cloud Build cache restored')
+    except Exception as err:
+        cold_cache()
+        print('Cloud Build cache miss or invalid archive; continuing cold: '+str(err))
+    finally:
+        if os.path.exists(archive_path): os.unlink(archive_path)
+def save_cache():
+    archive_path = root+'/save-cache.tar.gz'
+    try:
+        size = 0
+        for name in cache_paths:
+            for directory, dirs, files in os.walk(root+'/'+name, followlinks=False):
+                for file in files:
+                    size += os.lstat(os.path.join(directory,file)).st_size
+                    if size > CACHE_LIMIT:
+                        print('Cloud Build cache exceeds size cap; skipping upload')
+                        return
+        with tarfile.open(archive_path, 'w:gz', compresslevel=1) as archive:
+            archive.dereference = False
+            for name in cache_paths:
+                archive.add(root+'/'+name, arcname=name, filter=lambda m: m if m.isfile() or m.isdir() else None)
+        if os.path.getsize(archive_path) > CACHE_LIMIT:
+            print('Cloud Build cache archive exceeds size cap; skipping upload')
+            return
+        temporary = 'cache/'+cfg['cache_key']+'/tmp-'+uuid.uuid4().hex+'.tar.gz'
+        transfer('', archive_path, True, object_name=temporary)
+        cache_publish(temporary, cache_object())
+    except Exception as err:
+        print('Cloud Build cache save failed; continuing: '+str(err))
+    finally:
+        if os.path.exists(archive_path): os.unlink(archive_path)
+# End persistent cache helpers
 transfer('payload.tar.gz', root+'/payload.tar.gz')
 transfer('request.json', root+'/request.json')
 with open(root+'/payload.tar.gz','rb') as f:
@@ -53,6 +134,7 @@ cache_env = {'GOPATH': root+'/go', 'GOCACHE': root+'/.cache/go-build', 'GOMODCAC
              'PNPM_HOME': root+'/.local/share/pnpm'}
 env.update(cache_env)
 for path in cache_env.values(): os.makedirs(path, exist_ok=True)
+if cfg.get('cache_key'): restore_cache()
 def login_command(command):
     return 'export PATH="$IMAGE_PATH:$PATH"; ' + command
 for command in request['definition'].get('Setup') or []:
@@ -98,6 +180,7 @@ for command in request['checks']:
         before.append(line)
     code = proc.wait()
     checks.append({'exit_code':code,'duration_ms':int((time.monotonic()-start)*1000),'output':(failures+b'\n'+tail).decode('utf-8','replace')})
+if cfg.get('cache_key'): save_cache()
 with open(root+'/result.json','w') as f: json.dump({'checks':checks},f)
 try:
     with open(root+'/output.log','wb') as f: f.write(output)

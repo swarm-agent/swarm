@@ -11,6 +11,10 @@ Runner mode, management commands and installer support are described below,
 including remaining service compatibility limitations. The target design is not
 an operational readiness claim.
 
+## Cloud Build landing cache
+
+Cloud Build landings restore Go build/test results, Go modules and the pnpm store from `gs://BUCKET/cache/<folder-key>/latest.tar.gz`, keyed by a stable hash of project, account and folder. Missing or invalid archives continue cold; archives are capped at 3 GiB, saved after passing or failing checks through a temporary object and atomic copy, and restored directories are owned by the unprivileged check user. Landing cleanup remains confined to `landings/`, preserving its existing seven-day lifecycle independently of the overwritten cache objects. Checks still execute sequentially in one build in this cache-first implementation; parallel builds and the `cloudbuild_cache` startup switch remain follow-up work.
+
 ## Set up a runner
 
 On an x86_64 Linux machine with systemd, from a checkout of the same ref as the hub:

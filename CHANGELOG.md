@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Persist Cloud Build landing Go build/test, module and pnpm caches with bounded, best-effort archive restore and atomic publication. Docs impact: docs/runners.md
+
 - Automatically retry sent-back landing jobs once per completed follow-up, even without a new commit, with durable replay protection. Docs impact: none.
 
 - A gateway's waits, event feed and session lifecycle now cover end users and confirmations. `GET /v3/sessions/{id}/wait` wakes with reason `confirmation` when a confirmed call waits for the person and with `tool_call` when an approval creates the call to run, and returns `pending_confirmations`, `end_user` and `labels`, so `serve`, `converse`, `confirm` and `reject` in the SDK no longer read the confirmations route between waits (they still do when polling an older daemon). The agent event feed adds `confirmation.requested` and `confirmation.decided`, and its entries and the `GET /v3/sessions:agent` listing carry the conversation's `end_user` and `labels`. Ending a conversation closes its open confirmation without starting a run (a pending one expires, the call an approval created is failed), a confirmation decision on an ended conversation is refused with 409, and a run can no longer ask for a confirmation once the conversation has ended. Docs impact: containers/sealed/README.md.
