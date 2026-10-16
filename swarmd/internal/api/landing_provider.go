@@ -22,12 +22,20 @@ func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (en
 			selected(name)
 		}
 	}
-	local := environment.Local{Manager: sandbox.Default()}
+	var local environment.Provider = environment.Local{Manager: sandbox.Default()}
 	remote := environment.Runners{Store: p.server.runnerStore, Wait: p.wait}
 	switch p.name {
 	case "runners":
 		return remote.Acquire(ctx, spec)
+	case "gcp-cloudbuild":
+		if p.server.cloudBuildProvider == nil {
+			return nil, &environment.Failure{Reason: "Cloud Build is not configured"}
+		}
+		return p.server.cloudBuildProvider.Acquire(ctx, spec)
 	case "auto":
+		if p.server.cloudBuildProvider != nil {
+			local = environment.Auto{Remote: p.server.cloudBuildProvider, Local: local}
+		}
 		return (environment.Auto{Remote: remote, Local: local}).Acquire(ctx, spec)
 	default:
 		e, err := local.Acquire(ctx, spec)
@@ -37,3 +45,6 @@ func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (en
 		return e, err
 	}
 }
+
+// SetCloudBuildProvider injects the configured provider at startup.
+func (s *Server) SetCloudBuildProvider(p environment.Provider) { s.cloudBuildProvider = p }

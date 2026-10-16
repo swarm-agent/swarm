@@ -120,7 +120,7 @@ func (e *runnerEnvironment) Release() error                     { return e.store
 // not errors, and never trigger fallback. The remote batch completes before the
 // first result is exposed, so fallback cannot mix remote and local checks.
 type Auto struct {
-	Remote Runners
+	Remote Provider
 	Local  Provider
 }
 
@@ -140,7 +140,8 @@ func (p Auto) local(ctx context.Context, spec Spec) (Environment, error) {
 	if err != nil {
 		return nil, &Failure{err.Error()}
 	}
-	if spec.Selected != nil {
+	_, chained := p.Local.(Auto)
+	if spec.Selected != nil && !chained {
 		spec.Selected("local")
 	}
 	return e, nil

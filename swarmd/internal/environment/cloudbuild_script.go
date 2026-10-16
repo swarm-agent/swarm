@@ -1,16 +1,17 @@
 package environment
 
 import (
- "encoding/base64"
- "encoding/json"
+	"encoding/base64"
+	"encoding/json"
 )
 
 // cloudBuildScript requires bash, python3, curl, tar, git and GNU timeout in the
 // chosen base image. Infrastructure errors escape; check exit codes are data.
 func cloudBuildScript(bucket, prefix, sha string) string {
- data, _ := json.Marshal(map[string]string{"bucket": bucket, "prefix": prefix, "sha256": sha})
- return "set -euo pipefail\npython3 - '"+base64.StdEncoding.EncodeToString(data)+"' <<'SWARM_PY'\n"+cloudBuildPython+"\nSWARM_PY\n"
+	data, _ := json.Marshal(map[string]string{"bucket": bucket, "prefix": prefix, "sha256": sha})
+	return "set -euo pipefail\npython3 - '" + base64.StdEncoding.EncodeToString(data) + "' <<'SWARM_PY'\n" + cloudBuildPython + "\nSWARM_PY\n"
 }
+
 const cloudBuildPython = `import base64, collections, hashlib, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 cfg = json.loads(base64.b64decode(sys.argv[1]))
 root = '/workspace'

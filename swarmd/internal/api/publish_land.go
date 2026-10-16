@@ -612,8 +612,8 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 
 // SetEnvironmentProvider configures landing execution at startup only.
 func (s *Server) SetEnvironmentProvider(name string, waitSeconds ...int) error {
-	if name != "local" && name != "runners" && name != "auto" {
-		return fmt.Errorf("invalid environment_provider %q (valid values: local, runners, auto)", name)
+	if name != "local" && name != "runners" && name != "auto" && name != "gcp-cloudbuild" {
+		return fmt.Errorf("invalid environment_provider %q (valid values: local, runners, auto, gcp-cloudbuild)", name)
 	}
 	wait := 120 * time.Second
 	if len(waitSeconds) > 0 && waitSeconds[0] >= 0 {

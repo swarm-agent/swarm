@@ -137,6 +137,7 @@ type Server struct {
 	secretsGatewayEnabled       bool
 	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
 	landingEnvironmentProvider  environment.Provider
+	cloudBuildProvider          environment.Provider
 	envBuildMu                  sync.Mutex
 	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore
