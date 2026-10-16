@@ -41,6 +41,7 @@ func TestCloudBuildScriptLoginPathAndCheckFailure(t *testing.T) {
 	body := cloudBuildPython[strings.Index(cloudBuildPython, "env = os.environ.copy()"):]
 	prelude := `import collections, json, os, re, subprocess, time, types
 root = os.getcwd()
+cfg = {}
 real_run, real_popen = subprocess.run, subprocess.Popen
 operations = []
 class Accounts:

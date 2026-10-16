@@ -3,6 +3,7 @@ package environment
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -217,6 +218,8 @@ func (g GoogleStorage) DeletePrefix(ctx context.Context, bucket, prefix string) 
 type CloudBuildConfig struct {
 	Project, Region, Bucket, MachineType, ServiceAccount string
 	TimeoutMinutes                                       int
+	// Cache is enabled when nil. A false value disables remote cache operations.
+	Cache *bool
 }
 type CloudBuild struct {
 	Store   *pebblestore.Store
@@ -302,7 +305,7 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 	if err := p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"request.json", bytes.NewReader(request)); err != nil {
 		return fail(err)
 	}
-	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: cloudBuildStepArgs(p.Config.Bucket, e.prefix, sha)}}})
+	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, LogsBucket: "gs://" + p.Config.Bucket, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "LEGACY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: cloudBuildCachedStepArgs(p.Config.Bucket, e.prefix, sha, p.cacheKey(spec))}}})
 	if err != nil {
 		return fail(err)
 	}
@@ -401,8 +404,20 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 	return &ExecResult{ExitCode: check.ExitCode, Stdout: check.Output, DurationMS: check.DurationMS}, nil
 }
 
-// cloudBuildStepArgs escapes Cloud Build substitutions, not shell syntax. Cloud
-// Build removes the extra dollars before bash receives the original script.
+func (p CloudBuild) cacheKey(spec Spec) string {
+	if spec.Folder == "" || (p.Config.Cache != nil && !*p.Config.Cache) {
+		return ""
+	}
+	// Account and project namespace the folder without exposing identifiers.
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(p.Config.Project+"\x00"+spec.Account+"\x00"+spec.Folder)))
+}
+
+// cloudBuildCachedStepArgs escapes Cloud Build substitutions, not shell syntax.
+// Cloud Build removes the extra dollars before bash receives the original script.
+func cloudBuildCachedStepArgs(bucket, prefix, sha, key string) []string {
+	return []string{"-c", strings.ReplaceAll(cloudBuildScriptWithCache(bucket, prefix, sha, key), "$", "$$")}
+}
+
 func cloudBuildStepArgs(bucket, prefix, sha string) []string {
 	return []string{"-c", strings.ReplaceAll(cloudBuildScript(bucket, prefix, sha), "$", "$$")}
 }
