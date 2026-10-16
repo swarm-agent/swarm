@@ -6,6 +6,8 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add canonical runner provider names and runner wait configuration with parser tests; document the runner design and pending execution implementation. Docs impact: containers/headless/app/README.md, docs/runners.md
+
 - Preserve folder Git identity in worker clones and require sandbox-home identity setup for commits. Docs impact: none.
 - Assess worker delivery from isolated job clones, preserve linked-worktree assessment, and log unavailable automatic-delivery reasons. Docs impact: none.
 - Run landing checks in a fresh, released provider environment; default `environment_provider` to local Docker. Docs impact: containers/headless/app/README.md.

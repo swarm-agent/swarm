@@ -51,6 +51,7 @@ type FileConfig struct {
 	SandboxCPUs                  string
 	LandingMaxConcurrent         int
 	EnvironmentProvider          string
+	EnvironmentRunnerWaitSeconds int
 	SandboxCgroupParent          string
 	WorkerMaxConcurrentRuns      int
 	LongSessionDiagnostics       bool
@@ -146,6 +147,7 @@ func Default(path string) FileConfig {
 	return FileConfig{
 		Path:                         path,
 		EnvironmentProvider:          "local",
+		EnvironmentRunnerWaitSeconds: 120,
 		DevMode:                      false,
 		DevRoot:                      "",
 		Host:                         DefaultHost,
@@ -340,6 +342,7 @@ long_session_diagnostics = %t
 sandbox_memory = %s
 sandbox_cpus = %s
 environment_provider = %s
+environment_runner_wait_seconds = %d
 landing_max_concurrent = %d
 sandbox_cgroup_parent = %s
 worker_max_concurrent_runs = %d
@@ -364,7 +367,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.EnvironmentProvider, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -396,7 +399,7 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			continue
 		}
 		if key == "environment_provider" && value == "" {
-			return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local)", value)
+			return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, auto)", value)
 		}
 		if !allowsEmptyValue(key) && value == "" {
 			return FileConfig{}, nil, fmt.Errorf("line %d: value for %q must be non-empty", lineNumber+1, key)
@@ -531,7 +534,7 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
-		case "environment_provider", "sandbox_cpus", "landing_max_concurrent", "sandbox_cgroup_parent":
+		case "environment_provider", "environment_runner_wait_seconds", "sandbox_cpus", "landing_max_concurrent", "sandbox_cgroup_parent":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
 			}
@@ -539,10 +542,17 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 			seen[key] = struct{}{}
 			switch key {
 			case "environment_provider":
-				if value != "local" {
-					return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local)", value)
+				if value != "local" && value != "runners" && value != "auto" {
+					return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, auto)", value)
 				}
 				cfg.EnvironmentProvider = value
+			case "environment_runner_wait_seconds":
+				n, err := strconv.Atoi(value)
+				// Bound conversion to time.Duration seconds on every architecture.
+				if err != nil || n < 0 || int64(n) > 9223372036 {
+					return FileConfig{}, nil, fmt.Errorf("invalid environment_runner_wait_seconds %q", value)
+				}
+				cfg.EnvironmentRunnerWaitSeconds = n
 			case "sandbox_cpus":
 				if value != "" {
 					n, err := strconv.ParseFloat(value, 64)
@@ -769,6 +779,9 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	}
 	if _, ok := seen["sandbox_cpus"]; !ok {
 		lines = append(lines, fmt.Sprintf("sandbox_cpus = %s", cfg.SandboxCPUs))
+	}
+	if _, ok := seen["environment_runner_wait_seconds"]; !ok {
+		lines = append(lines, fmt.Sprintf("environment_runner_wait_seconds = %d", cfg.EnvironmentRunnerWaitSeconds))
 	}
 	if _, ok := seen["environment_provider"]; !ok {
 		lines = append(lines, "environment_provider = "+cfg.EnvironmentProvider)

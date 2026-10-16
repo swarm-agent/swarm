@@ -381,4 +381,15 @@ pass; timeouts and launch failures refuse landing as infrastructure errors.
 
 ### Environments
 
-Landing checks run in a fresh environment from a provider and release it after the landing. The startup key `environment_provider` defaults to `local`, currently the only supported value: Docker on this machine. Runners on other machines will follow through the same provider interface. Agent bash containers are unchanged.
+Landing checks run in a fresh environment from a provider and release it after the landing. The startup key `environment_provider` defaults to `local`, currently the only operational provider: Docker on this machine. The parser also recognizes `runners` and `auto`, but landing initialization still rejects them until runner execution is implemented. The canonical `environment_runner_wait_seconds` key defaults to 120 seconds. Agent bash containers are unchanged.
+
+## Runners
+
+Runner execution is planned, not yet operational. Only `environment_provider = local`
+is currently wired into landing execution. See [the runner design](../../../docs/runners.md)
+for the security, lease and recovery contract and implementation gaps.
+
+The planned join workflow is `swarmctl runner token` on the hub, followed by
+`swarmctl runner join HUB_URL` on the other machine with the token supplied on
+stdin. These commands and the runner-only installer/service are not yet available.
+Do not configure `runners` or `auto` until the execution implementation lands.
