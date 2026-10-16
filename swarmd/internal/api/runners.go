@@ -117,10 +117,32 @@ func (s *Server) handleRunners(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, err)
 			return
 		}
+		statuses := map[string]pebblestore.RunnerStatus{}
+		if s.runnerStore != nil {
+			rows, err := s.runnerStore.RunnerStatuses(p.AccountScopeID)
+			if err != nil {
+				writeError(w, 500, err)
+				return
+			}
+			for _, row := range rows {
+				statuses[row.Name] = row
+			}
+		}
 		result := []map[string]any{}
 		for _, rec := range records {
 			if rec.Kind == "runner" {
-				result = append(result, map[string]any{"name": rec.Name, "kind": rec.Kind, "created_at": rec.CreatedAt, "last_seen": rec.LastUsedAt, "revoked": rec.Revoked})
+				status := statuses[rec.Name]
+				state, engine := status.State, "unknown"
+				if state == "" || time.Now().UnixMilli()-status.LastSeen > 90000 {
+					state = "unhealthy"
+				}
+				if status.Docker {
+					engine = "docker"
+				}
+				if status.GVisor {
+					engine = "gvisor"
+				}
+				result = append(result, map[string]any{"name": rec.Name, "kind": rec.Kind, "created_at": rec.CreatedAt, "last_seen": status.LastSeen, "revoked": rec.Revoked, "state": state, "engine": engine})
 			}
 		}
 		writeJSON(w, 200, map[string]any{"runners": result})

@@ -11,8 +11,55 @@ provider initialization boundary; it does not silently execute locally.
 The design below is the target contract, not an operational readiness claim.
 The configuration change alone does not implement runner support. Initial hub
 credentials and lease APIs are described below under **API**, including their
-remaining gaps. Runner mode is implemented below; management commands and
-installer support remain separate work.
+remaining gaps. Runner mode, management commands and installer support are
+described below, including remaining service compatibility limitations.
+
+## Set up a runner
+
+On an x86_64 Linux machine with systemd, from a checkout of the same ref as the hub:
+
+```sh
+sudo bash containers/headless/app/install.sh runner --ref main
+```
+
+This installs Docker (keeps an existing Docker with buildx), attempts gVisor,
+builds the binaries from source, and creates the Docker-enabled `swarm-runner`
+service account. It does not create projects, a setup page, AI keys or a tailnet.
+Use a private tailnet with HTTPS to reach the hub; do not expose the owner socket.
+
+On the hub, mint a one-use token valid for 15 minutes, naming the runner:
+
+```sh
+sudo swarmctl runner token --name worker-one
+sudo swarmctl runner list
+sudo swarmctl runner remove worker-one
+```
+
+Transfer the token privately (not as a command-line argument). On the runner:
+
+```sh
+sudo swarmctl runner join https://hub.example --name worker-one < join-token
+sudo swarmctl runner status
+sudo bash /var/lib/swarm-runner-install/src/containers/headless/app/install.sh update
+```
+
+`token` and `join` default their name to the local hostname; because the hub
+binds tokens to names, use matching `--name` values on different hosts.
+`join` saves `/etc/swarm-runner/credential` and `runner.env` root-only (0600),
+installs `swarm-runner.service`, and enables it. A failed install after enrollment
+keeps the credential: revoke that runner on the hub before attempting enrollment
+again. Status displays systemd state and recent journal entries; it cannot yet
+provide a structured last-claim record.
+
+**Remaining compatibility gaps:** systemd `LoadCredential` hands credentials to
+the service user, but the current runner binary requires a root-owned credential.
+Unprivileged service startup needs a follow-up in `swarmd/cmd/swarmd/runner.go`
+(outside the management-command change). Hub listing now includes health and
+engine, but current landing is not exposed by the store API. Automatic idle
+restart needs a runner drain handshake; update builds the saved ref, waits at
+most 120 seconds for the service to stop, and fails without activation if it is
+still active. It never stops active work. Do not treat these commands as proof of
+end-to-end landing readiness.
 
 ## Target design
 

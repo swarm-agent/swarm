@@ -45,6 +45,11 @@ COPY examples/headless-app/package.json examples/headless-app/package-lock.json 
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY examples/headless-app ./
 
+FROM scratch AS runner-export
+COPY --from=daemon /out/bin/ /bin/
+COPY --from=daemon /out/lib/ /lib/
+COPY LICENSE THIRD_PARTY_NOTICES.md containers/headless/FFF-LICENSE /doc/
+
 FROM scratch
 COPY --from=daemon /out/bin/ /bin/
 COPY --from=daemon /out/lib/ /lib/

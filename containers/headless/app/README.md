@@ -389,7 +389,7 @@ Runner execution is planned, not yet operational. Only `environment_provider = l
 is currently wired into landing execution. See [the runner design](../../../docs/runners.md)
 for the security, lease and recovery contract and implementation gaps.
 
-The planned join workflow is `swarmctl runner token` on the hub, followed by
-`swarmctl runner join HUB_URL` on the other machine with the token supplied on
-stdin. These commands and the runner-only installer/service are not yet available.
+Runner management commands and `install.sh runner --ref main` are available;
+see [Set up a runner](../../../docs/runners.md#set-up-a-runner) for exact commands,
+private-tailnet guidance and remaining credential/service and idle-update gaps.
 Do not configure `runners` or `auto` until the execution implementation lands.

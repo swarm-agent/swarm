@@ -44,6 +44,8 @@ func main() {
 		err = cmdAuth(os.Args[2:])
 	case "model":
 		err = cmdModel(os.Args[2:])
+	case "runner":
+		err = cmdRunner(os.Args[2:])
 	case "workspace":
 		err = cmdWorkspace(os.Args[2:])
 	case "idle-off":
@@ -84,6 +86,7 @@ func usage() {
 	fmt.Println("  swarmctl workspace resolve [--cwd PATH] [--addr URL]")
 	fmt.Println("  swarmctl workspace add PATH [--for-user NAME] | remove PATH | list  # root")
 	fmt.Println("  swarmctl workspace publish PATH COMMAND [--land] [--auto] [--sync] [--require-review] [--require-proof] [--pipeline] | publish PATH --off  # root")
+	fmt.Println("  swarmctl runner token [--name NAME] | list | remove NAME | join HUB_URL [--name NAME] | status")
 	fmt.Println("  swarmctl idle-off MINUTES|off|status  # root")
 	fmt.Println("  swarmctl context sources [--cwd PATH] [--addr URL]")
 	fmt.Println("  swarmctl session list [--limit N] [--addr URL]")

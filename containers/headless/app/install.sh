@@ -2012,7 +2012,14 @@ main() {
     -*) install_all "$@" ;;
     reinstall) shift; reinstall_all "$@" ;;
     uninstall) shift; uninstall_all "$@" ;;
-    update) update ;;
+    runner) shift; source "$(dirname "${BASH_SOURCE[0]}")/runner-install.sh"; install_runner "$@" ;;
+    update)
+      if [[ -f /etc/swarm-runner/ref ]]; then
+        source "$(dirname "${BASH_SOURCE[0]}")/runner-install.sh"
+        update_runner
+      else
+        update
+      fi ;;
     finish-update) finish_update ;;
     build-release) shift; load_conf; build_release "${1:?build-release needs a commit}" ;;
     idle-off) shift; exec "$SWARMCTL" idle-off "$@" ;;
