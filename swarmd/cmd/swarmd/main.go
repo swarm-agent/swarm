@@ -64,8 +64,16 @@ func cloudBuildCheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	if cfg.CloudBuildProject == "" || cfg.CloudBuildBucket == "" {
-		return fmt.Errorf("cloudbuild_project and cloudbuild_bucket are required")
+	if cfg.CloudBuildProject == "" {
+		return fmt.Errorf("cloudbuild_project is required")
+	}
+	if cfg.CloudBuildBucket == "" {
+		return fmt.Errorf("cloudbuild_bucket is required")
+	}
+	// This permission-only probe has no folder check timeout. Use the same
+	// resolver as Acquire; zero is valid and is derived per landing there.
+	if _, err := environment.ResolveCloudBuildTimeout(cfg.CloudBuildTimeoutMinutes, 0); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()

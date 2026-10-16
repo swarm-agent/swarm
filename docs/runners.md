@@ -241,7 +241,11 @@ to verify configured bucket write/delete access and Cloud Build list access. It
 writes one small uniquely named object, deletes it, and lists builds without
 creating any. It prints `OK` or the API error. This does not verify build image
 readiness, build service-account permissions, or permission to create builds.
-Region defaults to `global`; timeout defaults to 60 minutes (valid: 1–1440).
+Region defaults to `global`; `cloudbuild_timeout_minutes` defaults to `0`, meaning
+that landing's folder check timeout plus five minutes, capped at 24 hours.
+Positive values override the timeout in minutes (also capped at 24 hours);
+negative values are rejected at startup. The permission-only `cloudbuild-check`
+uses the same timeout resolver but has no folder timeout or build to execute.
 
 Each landing submits one build using the environment's base image. That image
 must contain bash, Python 3, curl, tar, git and GNU timeout. The build downloads
@@ -265,7 +269,7 @@ The additive startup keys are:
 | `cloudbuild_bucket` | Required bucket when selecting `gcp-cloudbuild` |
 | `cloudbuild_region` | `global` |
 | `cloudbuild_machine_type` | `e2-highcpu-8` |
-| `cloudbuild_timeout_minutes` | `0`: reserved for the folder check timeout plus five minutes; explicit values 1–1440 |
+| `cloudbuild_timeout_minutes` | `0`: folder check timeout plus five minutes; positive values override in minutes; capped at 1440 |
 | `cloudbuild_service_account` | Optional build service account resource name |
 
 The configuration keys alone do not connect the daemon's Application Default

@@ -213,19 +213,52 @@ type CloudBuild struct {
 	Builds  CloudBuilds
 }
 
-func (p CloudBuild) timeout() time.Duration {
-	return time.Duration(p.Config.TimeoutMinutes) * time.Minute
+// ResolveCloudBuildTimeout resolves zero from the folder's check timeout and
+// caps the result before duration arithmetic to avoid overflow.
+// A permission-only probe has no folder and supplies a zero check timeout.
+func ResolveCloudBuildTimeout(minutes int, checkTimeout time.Duration) (time.Duration, error) {
+	if minutes < 0 {
+		return 0, fmt.Errorf("cloudbuild_timeout_minutes must be non-negative (0 uses the folder check timeout plus 5 minutes)")
+	}
+	const maximum = 24 * time.Hour
+	if minutes > 0 {
+		if minutes >= 1440 {
+			return maximum, nil
+		}
+		return time.Duration(minutes) * time.Minute, nil
+	}
+	if checkTimeout >= maximum-5*time.Minute {
+		return maximum, nil
+	}
+	return checkTimeout + 5*time.Minute, nil
 }
 
 func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error) {
-	if p.Storage == nil || p.Builds == nil || p.Store == nil || p.Config.Bucket == "" || p.Config.Project == "" || p.timeout() <= 0 || spec.CheckTimeout < time.Second || spec.Definition.BaseImage == "" {
-		return nil, &Failure{"Cloud Build configuration unavailable or invalid"}
+	for _, field := range []struct {
+		invalid bool
+		name    string
+	}{
+		{p.Config.Project == "", "cloudbuild_project"},
+		{p.Config.Bucket == "", "cloudbuild_bucket"},
+		{p.Storage == nil, "storage client"},
+		{p.Builds == nil, "builds client"},
+		{p.Store == nil, "store"},
+		{spec.CheckTimeout < time.Second, "CheckTimeout (must be at least one second)"},
+		{spec.Definition.BaseImage == "", "BaseImage"},
+	} {
+		if field.invalid {
+			return nil, &Failure{"Cloud Build configuration unavailable or invalid: " + field.name}
+		}
+	}
+	timeout, err := ResolveCloudBuildTimeout(p.Config.TimeoutMinutes, spec.CheckTimeout)
+	if err != nil {
+		return nil, &Failure{err.Error()}
 	}
 	id, err := pebblestore.GenerateToken(16)
 	if err != nil {
 		return nil, err
 	}
-	e := &cloudEnvironment{provider: p, spec: spec, prefix: "landings/" + id + "/", started: time.Now()}
+	e := &cloudEnvironment{provider: p, spec: spec, prefix: "landings/" + id + "/", started: time.Now(), timeout: timeout}
 	uploadCtx, cancelUpload := context.WithCancel(ctx)
 	defer cancelUpload()
 	fail := func(err error) (Environment, error) {
@@ -257,7 +290,7 @@ func (p CloudBuild) Acquire(ctx context.Context, spec Spec) (Environment, error)
 	if err := p.Storage.Put(uploadCtx, p.Config.Bucket, e.prefix+"request.json", bytes.NewReader(request)); err != nil {
 		return fail(err)
 	}
-	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(p.timeout()/time.Second)), ServiceAccount: p.Config.ServiceAccount, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "CLOUD_LOGGING_ONLY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-lc", cloudBuildScript(p.Config.Bucket, e.prefix, sha)}}}})
+	build, err := p.Builds.Create(ctx, Build{Timeout: fmt.Sprintf("%ds", int(timeout/time.Second)), ServiceAccount: p.Config.ServiceAccount, Options: BuildOptions{MachineType: p.Config.MachineType, Logging: "CLOUD_LOGGING_ONLY"}, Steps: []BuildStep{{Name: spec.Definition.BaseImage, Entrypoint: "bash", Args: []string{"-lc", cloudBuildScript(p.Config.Bucket, e.prefix, sha)}}}})
 	if err != nil {
 		return fail(err)
 	}
@@ -281,6 +314,7 @@ type cloudEnvironment struct {
 	spec       Spec
 	prefix, id string
 	started    time.Time
+	timeout    time.Duration
 	index      int
 	results    []cloudCheck
 }
@@ -325,7 +359,7 @@ func (e *cloudEnvironment) Exec(ctx context.Context, req ExecRequest) (*ExecResu
 			}
 			e.results = result.Checks
 		case "QUEUED", "PENDING", "WORKING":
-			if time.Since(e.started) > e.provider.timeout() {
+			if time.Since(e.started) > e.timeout {
 				return failure("build wait exceeded configured timeout")
 			}
 			timer := time.NewTimer(10 * time.Second)

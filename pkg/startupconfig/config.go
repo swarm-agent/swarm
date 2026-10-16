@@ -574,8 +574,8 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				cfg.CloudBuildServiceAccount = value
 			case "cloudbuild_timeout_minutes":
 				n, err := strconv.Atoi(value)
-				if err != nil || n < 0 || n > 1440 {
-					return FileConfig{}, nil, fmt.Errorf("invalid cloudbuild_timeout_minutes %q (expected 0-1440)", value)
+				if err != nil || n < 0 {
+					return FileConfig{}, nil, fmt.Errorf("invalid cloudbuild_timeout_minutes %q (expected a non-negative integer; 0 uses the folder check timeout plus 5 minutes, capped at 1440)", value)
 				}
 				cfg.CloudBuildTimeoutMinutes = n
 			}

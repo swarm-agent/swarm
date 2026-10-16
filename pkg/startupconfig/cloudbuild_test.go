@@ -52,3 +52,22 @@ func TestCloudBuildConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Purpose: parseEntries is the startup boundary that must accept the installer
+// default and reject negative timeouts with an actionable field-specific error,
+// before any landing or remote operation can begin.
+func TestCloudBuildTimeoutStartup(t *testing.T) {
+	for _, value := range []string{"0", "1441"} {
+		cfg, _, err := parseEntries("cloudbuild_timeout_minutes = "+value, Default(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value == "0" && cfg.CloudBuildTimeoutMinutes != 0 {
+			t.Fatal("lost automatic timeout")
+		}
+	}
+	_, _, err := parseEntries("cloudbuild_timeout_minutes = -1", Default(""))
+	if err == nil || !strings.Contains(err.Error(), "cloudbuild_timeout_minutes") || !strings.Contains(err.Error(), "non-negative") {
+		t.Fatalf("expected actionable startup error, got %v", err)
+	}
+}
