@@ -14,6 +14,16 @@ log=$work/log
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # Replace only the privilege guard; all filesystem writes stay in the fixture.
 runner_require_root() { :; }
+# Account creation is recorded, so ownership flags are asserted rather than
+# applied to nonexistent host accounts; modes use the real install command.
+install() {
+  echo "install $*" >>"$log"
+  local args=()
+  while (($#)); do
+    case $1 in -o|-g) shift 2 ;; *) args+=("$1"); shift ;; esac
+  done
+  command install "${args[@]}"
+}
 uname() { echo x86_64; }
 snap() { return 1; }
 apt-get() { echo "apt $*" >>"$log"; }
@@ -28,6 +38,8 @@ runner_build() { echo "build $*" >>"$log"; RUNNER_RELEASE=$RUNNER_OPT/releases/t
 install_runner --ref dev >"$work/output"
 [[ $(cat "$RUNNER_CONF/ref") == dev ]] || fail ref
 [[ $(stat -c %a "$RUNNER_CONF/ref") == 600 ]] || fail mode
+[[ $(stat -c %a "$RUNNER_CONF") == 750 ]] || fail directory-mode
+grep -q "install -d -o root -g swarm-runner -m 0750 $RUNNER_CONF" "$log" || fail directory-owner
 [[ $(readlink "$RUNNER_OPT/current") == "$RUNNER_RELEASE" ]] || fail release
 ! grep -q 'docker.io' "$log" || fail 'reinstalled working Docker'
 grep -q 'usermod -aG docker swarm-runner' "$log" || fail user

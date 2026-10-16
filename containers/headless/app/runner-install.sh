@@ -56,7 +56,7 @@ install_runner() {
   register_gvisor
   id swarm-runner >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/swarm-runner --create-home --shell /usr/sbin/nologin swarm-runner
   usermod -aG docker swarm-runner
-  install -d -m 0700 "$RUNNER_CONF"
+  install -d -o root -g swarm-runner -m 0750 "$RUNNER_CONF"
   runner_build "$ref"
   runner_activate
   printf '%s\n' "$ref" >"$RUNNER_CONF/ref"

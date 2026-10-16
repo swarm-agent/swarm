@@ -105,12 +105,12 @@ func TestRunnerCommands(t *testing.T) {
 		t.Fatal("credential mismatch")
 	}
 	unit, _ := os.ReadFile(filepath.Join(c.units, runnerUnit))
-	for _, want := range []string{"User=swarm-runner", "SupplementaryGroups=docker", "LoadCredential=runner:", "Restart=always", "--credential-file %d/runner"} {
+	for _, want := range []string{"User=swarm-runner", "SupplementaryGroups=docker", "Restart=always", "--credential-file /etc/swarm-runner/credential"} {
 		if !strings.Contains(string(unit), want) {
 			t.Fatalf("missing %s", want)
 		}
 	}
-	if strings.Join(commands, ";") != "systemctl daemon-reload;systemctl enable --now swarm-runner.service" {
+	if strings.Join(commands, ";") != "chown root:swarm-runner "+c.config+";chmod 0750 "+c.config+";chown swarm-runner:swarm-runner "+filepath.Join(c.config, "credential")+";systemctl daemon-reload;systemctl enable --now swarm-runner.service" {
 		t.Fatal(commands)
 	}
 	n := len(calls)

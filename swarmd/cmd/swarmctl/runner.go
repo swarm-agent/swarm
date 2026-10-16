@@ -185,6 +185,17 @@ func (c runnerCLI) join(args []string) error {
 	if err = c.write(filepath.Join(c.config, "credential"), result.Credential+"\n", 0600); err != nil {
 		return err
 	}
+	// Keep the directory root-controlled while allowing the service account to
+	// traverse it and read only its own private credential.
+	if err = c.run("chown", "root:swarm-runner", c.config); err != nil {
+		return err
+	}
+	if err = c.run("chmod", "0750", c.config); err != nil {
+		return err
+	}
+	if err = c.run("chown", "swarm-runner:swarm-runner", filepath.Join(c.config, "credential")); err != nil {
+		return err
+	}
 	if result.Name != name {
 		return fmt.Errorf("token belongs to runner %q, not %q; credential saved, revoke it on the hub before retrying", result.Name, name)
 	}
@@ -202,8 +213,7 @@ Group=swarm-runner
 SupplementaryGroups=docker
 EnvironmentFile=/etc/swarm-runner/runner.env
 Environment=LD_LIBRARY_PATH=/opt/swarm-runner/current/lib
-LoadCredential=runner:/etc/swarm-runner/credential
-ExecStart=/opt/swarm-runner/current/bin/swarmd runner --hub ${SWARM_RUNNER_HUB} --name ${SWARM_RUNNER_NAME} --credential-file %d/runner
+ExecStart=/opt/swarm-runner/current/bin/swarmd runner --hub ${SWARM_RUNNER_HUB} --name ${SWARM_RUNNER_NAME} --credential-file /etc/swarm-runner/credential
 Restart=always
 RestartSec=5
 [Install]

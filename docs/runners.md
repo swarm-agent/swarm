@@ -42,16 +42,15 @@ sudo bash /var/lib/swarm-runner-install/src/containers/headless/app/install.sh u
 
 `token` and `join` default their name to the local hostname; because the hub
 binds tokens to names, use matching `--name` values on different hosts.
-`join` saves `/etc/swarm-runner/credential` and `runner.env` root-only (0600),
-installs `swarm-runner.service`, and enables it. A failed install after enrollment
+`join` saves `/etc/swarm-runner/credential` as `swarm-runner:swarm-runner`
+with mode 0600, keeps `runner.env` root-only (0600), and sets the configuration
+directory to `root:swarm-runner` mode 0750. The service reads the credential
+directly as `swarm-runner`. `join` installs `swarm-runner.service` and enables it. A failed install after enrollment
 keeps the credential: revoke that runner on the hub before attempting enrollment
 again. Status displays systemd state and recent journal entries; it cannot yet
 provide a structured last-claim record.
 
-**Remaining compatibility gaps:** systemd `LoadCredential` hands credentials to
-the service user, but the current runner binary requires a root-owned credential.
-Unprivileged service startup needs a follow-up in `swarmd/cmd/swarmd/runner.go`
-(outside the management-command change). Hub listing now includes health and
+**Remaining compatibility gaps:** Hub listing includes health and
 engine, but current landing is not exposed by the store API. Automatic idle
 restart needs a runner drain handshake; update builds the saved ref, waits at
 most 120 seconds for the service to stop, and fails without activation if it is
@@ -171,7 +170,7 @@ Environment validation rejects account secret slot names in keys or values and a
 
 `swarmd runner --hub URL --credential-file PATH [--work-dir DIR] [--name NAME]`
 starts an outbound-only landing worker, not the daemon. The credential is a raw
-bearer token in a root-owned regular file with no group/other permissions;
+bearer token in a regular file owned by the invoking effective user, mode 0600;
 symlinks are refused. Use HTTPS or an explicitly protected private transport.
 It needs Docker, registered `runsc` and `runsc-build` runtimes, the installed
 Swarm sandbox image/network, and at least 2 GiB free under its work directory.

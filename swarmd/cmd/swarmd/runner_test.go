@@ -22,12 +22,14 @@ func TestRunnerCredentialPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	token, err := readRunnerCredential(path)
-	if os.Getuid() == 0 {
-		if err != nil || token != "test-only-token" {
-			t.Fatalf("private root credential: %q %v", token, err)
-		}
-	} else if err == nil {
-		t.Fatal("accepted non-root owner")
+	if err != nil || token != "test-only-token" {
+		t.Fatalf("private invoking-user credential: %q %v", token, err)
+	}
+	if err := os.Chmod(path, 0400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRunnerCredential(path); err == nil {
+		t.Fatal("accepted mode other than 0600")
 	}
 	link := filepath.Join(dir, "link")
 	if err := os.Symlink(path, link); err != nil {
