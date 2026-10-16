@@ -326,8 +326,15 @@ admission without interrupting running work. `DELETE /v3/box/drain` or
 attempts cancellation. Expiry and cancellation emit end signals. A new request
 after either starts a fresh deadline. Readiness carries a daemon generation;
 the installer verifies that same generation and readiness immediately before restart. An unavailable status endpoint
-never authorizes activation. Older daemons without the drain API require a
-separately supervised upgrade rather than an unsafe idle fallback.
+never authorizes activation. If the running daemon answers the initial drain POST
+with HTTP 404, the installer records that it is draining the older way and polls
+`/v3/box/busy` within the same `UPDATE_DRAIN_SECONDS` budget. Only an explicit
+`busy: false` permits the shared activation and rollback path. A missing or
+unavailable busy endpoint, invalid status, or timeout blocks the update and leaves
+the daemon running. Other drain errors do not enable this fallback. Older daemons
+cannot fence new admissions, so this compatibility path retains the old idle-check
+race; avoid starting new work during the upgrade. No drain cleanup or reservation
+is attempted when no generation was established.
 
 Owner/admin clients can request the same fence with `swarm_request_update`
 (MCP, optional `max_seconds`) or `POST /v3/box/drain` with JSON

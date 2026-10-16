@@ -61,8 +61,20 @@ reviewed() { echo "[$(status ai-review "$2" swarm-go-ai-review[bot])]" >"$work/s
 busy=false
 local_api() {
   case $1 in
-    /v3/box/drain*) printf '{"generation":"test-boot","draining":true,"ready":%s,"timed_out":%s}' "$([[ $busy == true ]] && echo false || echo true)" "$busy" ;;
-    /v3/box/busy) printf '{"busy":%s,"sessions":%s,"worker_runs":0,"environment_builds":0}' "$busy" "$([[ $busy == true ]] && echo 1 || echo 0)" ;;
+    /v3/box/drain*)
+      echo "drain $*" >>"$log"
+      if [[ ${drain_http:-200} != 200 ]]; then
+        printf '\n%s' "$drain_http"
+        return "${drain_error:-22}"
+      fi
+      printf '{"generation":"test-boot","draining":true,"ready":%s,"timed_out":%s}' "$([[ $busy == true ]] && echo false || echo true)" "$busy"
+      [[ " $* " != *' -w '* ]] || printf '\n200'
+      ;;
+    /v3/box/busy)
+      echo busy >>"$log"
+      [[ ${busy_error:-0} == 0 ]] || return "$busy_error"
+      printf '{"busy":%s,"sessions":%s,"worker_runs":0,"environment_builds":0}' "$busy" "$([[ $busy == true ]] && echo 1 || echo 0)"
+      ;;
     /v3/box/summary) printf '{"machine":{"commit":"%s"},"sandbox":{"active":true}}' "$(running_commit)" ;;
   esac
 }
@@ -114,6 +126,60 @@ finish_update && fail 'busy drain unexpectedly activated'
 [[ $(state state) == blocked && $(running_commit) == "$c1" ]] || fail "Swarm was restarted while work ran: $(cat "$UPDATE_STATE")"
 grep -q "^activate" "$log" && fail "activated while busy"
 grep -qx "build $c3" "$log" || fail "the update did not build while work ran"
+
+# Compatibility invariant: finish_update may use the older busy endpoint only
+# after an HTTP 404, and cleanup_update_drain must not touch an unowned drain.
+# These function-level cases are the narrowest layer exercising the real wait,
+# state and shared switch/rollback decisions without services or a release build.
+# Errors, malformed status and timeout must leave the running release unchanged.
+for scenario in idle becomes-idle timeout busy-missing busy-invalid server-error transport-error rollback; do
+  (
+    ln -sfn "$OPT/releases/$c1" "$OPT/current"
+    : >"$log"
+    drain_http=404 drain_error=22 busy=false busy_error=0
+    UPDATE_DRAIN_SECONDS=10
+    case $scenario in
+      becomes-idle | timeout) busy=true ;;
+      busy-missing) busy_error=22 ;;
+      busy-invalid) busy=null ;;
+      server-error) drain_http=500 ;;
+      transport-error) drain_http=000 drain_error=7 ;;
+      rollback) echo "$c3" >"$work/broken" ;;
+    esac
+    sleep() {
+      echo "sleep $1" >>"$log"
+      SECONDS=$((SECONDS + $1))
+      [[ $scenario != becomes-idle ]] || busy=false
+    }
+    rc=0
+    finish_update >"$work/fallback-out" 2>"$work/fallback-err" || rc=$?
+    [[ ! -s $work/fallback-err ]] || fail "$scenario emitted errors: $(cat "$work/fallback-err")"
+    [[ $(grep -c '^drain ' "$log") == 1 ]] || fail "$scenario tried to clean up or reserve a missing drain"
+    case $scenario in
+      idle | becomes-idle)
+        [[ $rc == 0 && $(state state) == installed && $(running_commit) == "$c3" ]] || fail "$scenario did not switch"
+        grep -qx "activate $c3" "$log" || fail "$scenario bypassed shared activation"
+        grep -q 'draining the older way' "$work/fallback-out" || fail "$scenario did not explain legacy draining"
+        [[ $scenario != becomes-idle ]] || { [[ $(grep -c '^busy$' "$log") == 2 ]] && grep -qx 'sleep 5' "$log"; } || fail "did not wait for idle"
+        ;;
+      rollback)
+        [[ $rc == 0 && $(state state) == rolled_back && $(running_commit) == "$c1" ]] || fail "legacy update did not roll back"
+        grep -qx "activate $c3" "$log" && grep -qx "activate $c1" "$log" || fail "legacy rollback bypassed activation"
+        ;;
+      *)
+        [[ $rc != 0 && $(state state) == blocked && $(running_commit) == "$c1" ]] || fail "$scenario did not block safely"
+        ! grep -q '^activate ' "$log" || fail "$scenario activated"
+        case $scenario in
+          server-error | transport-error) ! grep -qx busy "$log" || fail "$scenario used fallback" ;;
+          busy-missing) [[ $(state reason) == *'busy endpoint missing or unavailable; daemon left running'* ]] || fail "missing busy message" ;;
+          timeout) [[ $(state reason) == *'timed out'* ]] || fail "missing timeout message" ;;
+        esac
+        ;;
+    esac
+  )
+done
+rm -f "$work/broken" "$UPDATE_BAD"
+ln -sfn "$OPT/releases/$c1" "$OPT/current"
 
 # 4. Once nothing runs, it switches and reports it.
 busy=false

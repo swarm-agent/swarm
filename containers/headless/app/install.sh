@@ -480,6 +480,7 @@ build_release() {
 # agent run in progress). The release that ran before stays as
 # $OPT/previous, so an update that does not come up can go back to it.
 cleanup_update_drain() {
+  [[ -n ${UPDATE_DRAIN_GENERATION:-} ]] || return 0
   if [[ -n ${UPDATE_DRAIN_CLAIM:-} ]]; then
     local_api /v3/box/drain -X PUT -H 'Content-Type: application/json' -d "{\"generation\":\"$UPDATE_DRAIN_GENERATION\",\"claim\":\"$UPDATE_DRAIN_CLAIM\",\"release\":true}" >/dev/null || echo 'swarm: reservation cleanup failed; operator intervention required' >&2
   else
@@ -817,34 +818,66 @@ finish_update() (
     update_state failed "building ${commit:0:9} failed; Swarm keeps running ${running:0:9} and tries again at the next update" "$commit"
     return 1
   fi
-  local drain limit=${UPDATE_DRAIN_SECONDS:-7200}
+  local drain drain_rc=0 limit=${UPDATE_DRAIN_SECONDS:-7200}
   [[ $limit =~ ^[0-9]+$ && $limit -ge 1 && $limit -le 86400 ]] || die "UPDATE_DRAIN_SECONDS must be 1..86400"
   UPDATE_DRAIN_GENERATION=''
   UPDATE_DRAIN_CLAIM=''
   trap 'cleanup_update_drain' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
-  drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit}") || {
+  # Capture HTTP status separately from curl's exit code: only a real 404
+  # permits the older idle check, never a transport/auth/server failure.
+  drain=$(local_api /v3/box/drain -X POST -H 'Content-Type: application/json' -d "{\"max_seconds\":$limit}" -w $'\n%{http_code}' 2>/dev/null) || drain_rc=$?
+  if [[ $drain_rc == 22 && ${drain##*$'\n'} == 404 ]]; then
+    local deadline=$((SECONDS + limit)) remaining pause request_timeout busy_status
+    update_state draining "draining the older way (no drain endpoint on the running daemon)" "$commit"
+    while :; do
+      remaining=$((deadline - SECONDS))
+      if (( remaining <= 0 )); then
+        update_state blocked "older drain timed out; running jobs were not stopped" "$commit"
+        return 1
+      fi
+      request_timeout=20
+      (( remaining >= request_timeout )) || request_timeout=$remaining
+      why=$(local_api /v3/box/busy --max-time "$request_timeout" 2>/dev/null) || {
+        update_state blocked "older drain busy endpoint missing or unavailable; daemon left running" "$commit"
+        return 1
+      }
+      busy_status=$(json_get busy <<<"$why" || true)
+      if [[ $busy_status != true && $busy_status != false ]]; then
+        update_state blocked "older drain busy status invalid; daemon left running" "$commit"
+        return 1
+      fi
+      (( SECONDS < deadline )) || continue
+      [[ $busy_status == false ]] && break
+      remaining=$((deadline - SECONDS))
+      pause=5
+      (( remaining >= pause )) || pause=$remaining
+      sleep "$pause"
+    done
+  elif (( drain_rc != 0 )); then
     update_state blocked "cannot establish admission drain; daemon left running" "$commit"
     return 1
-  }
-  UPDATE_DRAIN_GENERATION=$(json_get generation <<<"$drain")
-  [[ -n $UPDATE_DRAIN_GENERATION ]] || return 1
-  while :; do
-    [[ $(json_get generation <<<"$drain") == "$UPDATE_DRAIN_GENERATION" ]] || return 1
-    [[ $(json_get ready <<<"$drain") == true ]] && break
-    if [[ $(json_get timed_out <<<"$drain") == true ]]; then
-      update_state blocked "drain timed out; running jobs were not stopped: $drain" "$commit"
-      return 1
-    fi
-    [[ $(json_get draining <<<"$drain") == true ]] || return 1
-    update_state draining "waiting for existing runs: $drain" "$commit"
-    sleep 5
-    drain=$(local_api /v3/box/drain) || {
-      update_state blocked "drain status unavailable; daemon left running" "$commit"
-      return 1
-    }
-  done
+  else
+    drain=${drain%$'\n'*}
+    UPDATE_DRAIN_GENERATION=$(json_get generation <<<"$drain")
+    [[ -n $UPDATE_DRAIN_GENERATION ]] || return 1
+    while :; do
+      [[ $(json_get generation <<<"$drain") == "$UPDATE_DRAIN_GENERATION" ]] || return 1
+      [[ $(json_get ready <<<"$drain") == true ]] && break
+      if [[ $(json_get timed_out <<<"$drain") == true ]]; then
+        update_state blocked "drain timed out; running jobs were not stopped: $drain" "$commit"
+        return 1
+      fi
+      [[ $(json_get draining <<<"$drain") == true ]] || return 1
+      update_state draining "waiting for existing runs: $drain" "$commit"
+      sleep 5
+      drain=$(local_api /v3/box/drain) || {
+        update_state blocked "drain status unavailable; daemon left running" "$commit"
+        return 1
+      }
+    done
+  fi
   sandboxed=$(local_api /v3/box/summary 2>/dev/null | json_get sandbox.active || true)
   activate "$commit" || return 1
   UPDATE_DRAIN_GENERATION=''
