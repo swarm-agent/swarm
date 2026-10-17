@@ -19,7 +19,38 @@ import (
 )
 
 // SandboxEngine reuses the local landing build, isolation and supervised exec paths.
-type SandboxEngine struct{ Log func(string, ...any) }
+type SandboxEngine struct {
+	Log     func(string, ...any)
+	lanesMu sync.Mutex
+	lanes   map[string][]bool
+}
+
+// The runner bounds concurrent Execute calls by Slots, so the pool grows only
+// to observed concurrency. Failed sandbox cleanup retires a lane rather than
+// allowing a still-running container to access another landing's source.
+func (eng *SandboxEngine) acquireLane(root string) (string, func(bool)) {
+	eng.lanesMu.Lock()
+	defer eng.lanesMu.Unlock()
+	if eng.lanes == nil {
+		eng.lanes = make(map[string][]bool)
+	}
+	lanes := eng.lanes[root]
+	i := 0
+	for i < len(lanes) && lanes[i] {
+		i++
+	}
+	if i == len(lanes) {
+		lanes = append(lanes, true)
+	} else {
+		lanes[i] = true
+	}
+	eng.lanes[root] = lanes
+	return filepath.Join(root, "lanes", fmt.Sprintf("%d", i)), func(safe bool) {
+		eng.lanesMu.Lock()
+		defer eng.lanesMu.Unlock()
+		eng.lanes[root][i] = !safe
+	}
+}
 
 func (*SandboxEngine) Health(ctx context.Context, dir string) (bool, bool, error) {
 	out, err := (&provider.OSCommandRunner{}).Run(ctx, "docker", "info", "--format", "{{json .Runtimes}}")
@@ -102,6 +133,16 @@ func runnerCacheVolumes(hash string, env map[string]string) []sandbox.NamedVolum
 }
 
 func (eng *SandboxEngine) executeChecks(ctx context.Context, l store.RunnerLanding, dir string, uid, gid int, acquire func(context.Context, string) (checkLanding, error), emit func([]byte) error) ([]int, error) {
+	// Request directories are direct children of the runner work directory.
+	lane, releaseLane := eng.acquireLane(filepath.Dir(dir))
+	var safetyMu sync.Mutex
+	safe := true
+	defer func() { releaseLane(safe) }()
+	unsafe := func() {
+		safetyMu.Lock()
+		safe = false
+		safetyMu.Unlock()
+	}
 	ctx, cancelAll := context.WithCancel(ctx)
 	defer cancelAll()
 	var outputMu sync.Mutex
@@ -123,7 +164,7 @@ func (eng *SandboxEngine) executeChecks(ctx context.Context, l store.RunnerLandi
 		wg.Add(1)
 		go func(i int, check string) {
 			defer wg.Done()
-			codes[i], errs[i] = eng.executeCheck(ctx, l, dir, uid, gid, i, check, acquire, output)
+			codes[i], errs[i] = eng.executeCheck(ctx, l, dir, filepath.Join(lane, fmt.Sprintf("check-%d", i)), uid, gid, check, acquire, output, unsafe)
 			if errs[i] != nil {
 				cancelAll()
 			}
@@ -140,13 +181,23 @@ func (eng *SandboxEngine) executeChecks(ctx context.Context, l store.RunnerLandi
 	return codes, errors.Join(append([]error{streamErr}, errs...)...)
 }
 
-func (eng *SandboxEngine) executeCheck(ctx context.Context, l store.RunnerLanding, dir string, uid, gid, i int, check string, acquire func(context.Context, string) (checkLanding, error), output func([]byte)) (code int, err error) {
-	project := filepath.Join(dir, fmt.Sprintf("project-%d", i))
-	if err := os.Mkdir(project, 0700); err != nil {
+func (eng *SandboxEngine) executeCheck(ctx context.Context, l store.RunnerLanding, dir, project string, uid, gid int, check string, acquire func(context.Context, string) (checkLanding, error), output func([]byte), unsafe func()) (code int, err error) {
+	if err := os.MkdirAll(project, 0700); err != nil {
 		return 0, err
 	}
 	if err := os.Chown(project, uid, gid); err != nil {
 		return 0, err
+	}
+	// Preserve the project inode and ownership, but discard all untrusted files
+	// from its previous landing before copying the verified archive.
+	entries, err := os.ReadDir(project)
+	if err != nil {
+		return 0, err
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(project, entry.Name())); err != nil {
+			return 0, err
+		}
 	}
 	// Each sandbox gets an independent archive file, not a shared writable inode.
 	source, err := os.Open(filepath.Join(dir, "source.tar.gz"))
@@ -165,9 +216,17 @@ func (eng *SandboxEngine) executeCheck(ctx context.Context, l store.RunnerLandin
 	}
 	landing, err := acquire(ctx, project)
 	if err != nil {
+		// Acquisition can include a failed attempt to remove a partial sandbox.
+		unsafe()
 		return 0, err
 	}
-	defer func() { err = errors.Join(err, landing.Release()) }()
+	defer func() {
+		releaseErr := landing.Release()
+		if releaseErr != nil {
+			unsafe()
+		}
+		err = errors.Join(err, releaseErr)
+	}()
 	checkout := filepath.Join(project, "checkout")
 	// All repository parsing happens inside the fresh sandbox, never on the host.
 	for _, args := range archiveCommands(project, checkout) {
