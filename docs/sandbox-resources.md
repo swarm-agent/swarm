@@ -37,3 +37,20 @@ name; `cache_error` means the size could not be measured, not a measured zero.
 Real Docker cache tests skip explicitly when Docker or the local test image is
 missing. They do not pull images. No speedup or timing is claimed without running
 the actual requested package in both containers.
+
+## Runner landing sandboxes
+
+The landing runner sizes each check sandbox from host RAM (`MemTotal` in
+`/proc/meminfo`), its configured `--slots` count (concurrent landings; default 1,
+allowed 1–16), and that landing's check count. In
+`swarmd/internal/runner/engine.go`, the per-check memory limit in bytes is
+`max(2 GiB, (RAM / 4 * 3) / (max(1, slots) * max(1, checks)))`, using integer
+arithmetic: roughly 75% of host RAM divided among those workers, with a 2 GiB
+floor. That floor can make the combined limits exceed the 75% budget. Failure
+to read valid host memory information rejects execution rather than using a
+fallback.
+
+Each check's CPU limit is `runtime.NumCPU()`, the whole-machine CPU count visible
+to the runner, not a fraction divided by slots or checks. After sizing and before
+creating the sandbox manager, the runner logs one line per landing to stderr
+(with a timestamp): `runner landing <id> sandbox memory=<bytes> cpus=<count>`.
