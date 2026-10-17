@@ -5,6 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +23,33 @@ type Landing struct {
 	released bool
 }
 
+// NamedVolume is a persistent, read-write Docker volume. Landing release never removes it.
+type NamedVolume struct{ Name, Dest string }
+
+var landingVolumeName = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,127}$`)
+
+func validateLandingVolumes(checkout string, volumes []NamedVolume) error {
+	checkout = filepath.Clean(checkout)
+	for _, v := range volumes {
+		if !landingVolumeName.MatchString(v.Name) || !filepath.IsAbs(v.Dest) || filepath.Clean(v.Dest) != v.Dest || strings.ContainsAny(v.Dest, ",\x00\n\r") {
+			return errors.New("invalid landing volume name or destination")
+		}
+		// Reject overlap in either direction so a volume cannot hide the checkout.
+		if v.Dest == checkout || strings.HasPrefix(v.Dest, checkout+"/") || v.Dest == "/" || strings.HasPrefix(checkout, v.Dest+"/") {
+			return errors.New("landing volume overlaps checkout")
+		}
+	}
+	return nil
+}
+
 func (m *Manager) AcquireLanding(ctx context.Context, folder, checkout string) (*Landing, error) {
+	return m.AcquireLandingWithVolumes(ctx, folder, checkout, nil)
+}
+
+func (m *Manager) AcquireLandingWithVolumes(ctx context.Context, folder, checkout string, volumes []NamedVolume) (*Landing, error) {
+	if err := validateLandingVolumes(checkout, volumes); err != nil {
+		return nil, err
+	}
 	if m == nil || !m.Active() {
 		return nil, ErrInactive
 	}
@@ -36,6 +65,7 @@ func (m *Manager) AcquireLanding(ctx context.Context, folder, checkout string) (
 		return nil, err
 	}
 	scope.landingID = hex.EncodeToString(id[:])
+	scope.landingVolumes = append([]NamedVolume(nil), volumes...)
 	l := &Landing{manager: m, scope: scope}
 	b, err := m.acquire(ctx, scope)
 	if err != nil {

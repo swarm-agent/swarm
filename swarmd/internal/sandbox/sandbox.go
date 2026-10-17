@@ -137,9 +137,10 @@ type Status struct {
 // Scope is one project's sandbox: Root identifies it and Mounts are the host
 // directories bind-mounted at the same paths.
 type Scope struct {
-	Root      string
-	daemonGit bool
-	landingID string
+	Root           string
+	daemonGit      bool
+	landingID      string
+	landingVolumes []NamedVolume
 	// JobCheckout selects an independent memory cgroup for a managed worktree.
 	JobCheckout string
 	Mounts      []string
@@ -786,7 +787,7 @@ func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (
 		// whose command deadline has already expired.
 		ensureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ensureTimeout)
 		var startedAt string
-		startedAt, err = m.ensure(ensureCtx, name, root, spec, mounts, secret, image, scope.ReviewCheckout)
+		startedAt, err = m.ensureWithVolumes(ensureCtx, name, root, spec, mounts, secret, image, scope.landingVolumes, scope.ReviewCheckout)
 		cancel()
 		m.mu.Lock()
 		if err == nil {
@@ -832,6 +833,10 @@ func (m *Manager) release(b *box) {
 }
 
 func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage, reviewCheckouts ...string) (string, error) {
+	return m.ensureWithVolumes(ctx, name, root, spec, mounts, secret, image, nil, reviewCheckouts...)
+}
+
+func (m *Manager) ensureWithVolumes(ctx context.Context, name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage, volumes []NamedVolume, reviewCheckouts ...string) (string, error) {
 	reviewCheckout := ""
 	if len(reviewCheckouts) > 0 {
 		reviewCheckout = reviewCheckouts[0]
@@ -864,7 +869,14 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 	if err := m.initializeProjectCache(ctx, root); err != nil {
 		return "", err
 	}
-	if _, err := m.runner.Run(ctx, m.cfg.Engine, m.scopeRunArgs(name, root, spec, mounts, secret, image, reviewCheckout)...); err != nil {
+	args := m.scopeRunArgs(name, root, spec, mounts, secret, image, reviewCheckout)
+	// Insert options before the run arguments, leaving the image command intact.
+	extra := []string{args[0]}
+	for _, v := range volumes {
+		extra = append(extra, "--mount", "type=volume,src="+v.Name+",dst="+v.Dest)
+	}
+	args = append(extra, args[1:]...)
+	if _, err := m.runner.Run(ctx, m.cfg.Engine, args...); err != nil {
 		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	m.initializeHome(ctx, name, root, image)
