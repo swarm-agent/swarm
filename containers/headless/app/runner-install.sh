@@ -109,6 +109,9 @@ install_runner() {
   runner_configure_capacity
   runner_build "$ref"
   runner_activate
+  if [[ -f $RUNNER_CONF/credential ]]; then
+    "$RUNNER_RELEASE/bin/swarmctl" runner unit || die "runner unit refresh failed"
+  fi
   printf '%s\n' "$ref" >"$RUNNER_CONF/ref"
   chmod 0600 "$RUNNER_CONF/ref"
   echo 'On the hub: sudo swarmctl runner token --name RUNNER_NAME'
@@ -143,6 +146,9 @@ update_runner() (
     systemctl stop swarm-runner.service || die "runner stop failed; release built but not activated"
   fi
   runner_activate
+  if [[ -f $RUNNER_CONF/credential ]]; then
+    "$RUNNER_RELEASE/bin/swarmctl" runner unit || die "runner unit refresh failed"
+  fi
   if [[ $service_present == yes && -f $RUNNER_CONF/credential ]]; then systemctl start swarm-runner.service; fi
 )
 
