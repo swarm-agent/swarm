@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +23,7 @@ import (
 
 // SandboxEngine reuses the local landing build, isolation and supervised exec paths.
 type SandboxEngine struct {
+	Slots   int // Concurrent landings; zero defaults to one.
 	Log     func(string, ...any)
 	lanesMu sync.Mutex
 	lanes   map[string][]bool
@@ -95,7 +99,20 @@ func (eng *SandboxEngine) Execute(ctx context.Context, l store.RunnerLanding, di
 			return nil, err
 		}
 	}
-	m, err := sandbox.NewManager(ctx, sandbox.Config{Mode: sandbox.ModeRequired, Runtime: "runsc", UID: uid, GID: gid, StateDir: filepath.Join(dir, "state")}, nil)
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return nil, fmt.Errorf("runner host memory detection: %w", err)
+	}
+	ram, err := runnerMemoryFromMeminfo(f)
+	f.Close()
+	if err != nil {
+		return nil, fmt.Errorf("runner host memory detection: %w", err)
+	}
+	cfg := eng.sandboxConfig(ram, runtime.NumCPU(), len(l.Checks), uid, gid, dir)
+	if eng.Log != nil {
+		eng.Log("runner landing %s sandbox memory=%s cpus=%s", l.ID, cfg.Memory, cfg.CPUs)
+	}
+	m, err := sandbox.NewManager(ctx, cfg, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +132,37 @@ func (eng *SandboxEngine) Execute(ctx context.Context, l store.RunnerLanding, di
 	return eng.executeChecks(ctx, l, dir, uid, gid, func(ctx context.Context, project string) (checkLanding, error) {
 		return m.AcquireLandingWithVolumes(ctx, project, project, runnerCacheVolumes(hash, l.Env))
 	}, emit)
+}
+
+// sandboxConfig sizes the parallel check sandboxes, not interactive agent boxes.
+func (eng *SandboxEngine) sandboxConfig(ram uint64, cpus, checks, uid, gid int, dir string) sandbox.Config {
+	workers := max(1, eng.Slots) * max(1, checks)
+	memory := max(uint64(2<<30), ram/4*3/uint64(workers))
+	return sandbox.Config{
+		Mode: sandbox.ModeRequired, Runtime: "runsc", UID: uid, GID: gid,
+		StateDir: filepath.Join(dir, "state"), MaxWorkerRuns: workers,
+		Memory: strconv.FormatUint(memory, 10), CPUs: strconv.Itoa(cpus),
+	}
+}
+
+// The sandbox package's host memory reader is private. Keep the same physical
+// MemTotal contract here rather than introducing a fallback memory authority.
+func runnerMemoryFromMeminfo(r io.Reader) (uint64, error) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) == 3 && fields[0] == "MemTotal:" && fields[2] == "kB" {
+			kb, err := strconv.ParseUint(fields[1], 10, 64)
+			if err != nil || kb == 0 || kb > ^uint64(0)/1024 {
+				return 0, errors.New("invalid MemTotal")
+			}
+			return kb * 1024, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return 0, errors.New("MemTotal missing from host memory information")
 }
 
 type checkLanding interface {

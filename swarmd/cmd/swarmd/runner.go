@@ -45,7 +45,7 @@ func runnerMain(args []string) error {
 		defer os.RemoveAll(dir)
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	r := runner.Runner{Slots: *slots, StateFile: *state, Hub: *hub, Credential: token, WorkDir: *work, Name: *name, Logger: logger, Engine: &runner.SandboxEngine{Log: logger.Printf}}
+	r := runner.Runner{Slots: *slots, StateFile: *state, Hub: *hub, Credential: token, WorkDir: *work, Name: *name, Logger: logger, Engine: &runner.SandboxEngine{Slots: *slots, Log: logger.Printf}}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	err = r.Run(ctx)
