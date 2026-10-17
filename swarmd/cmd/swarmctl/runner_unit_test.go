@@ -13,11 +13,17 @@ import (
 // credentials or installer-owned sandbox policy. This CLI/filesystem boundary
 // proves upgrade and idempotency without privileged host writes or systemd.
 func TestRunnerUnit(t *testing.T) {
+	// Exercise the defaults used by cmdRunner, then relocate that exact path
+	// beneath a temp root: a lower-priority vendor unit cannot replace /etc's unit.
+	defaults := newRunnerCLI()
+	if defaults.units != "/etc/systemd/system" {
+		t.Fatalf("production runner unit directory = %q, want /etc/systemd/system", defaults.units)
+	}
 	root := t.TempDir()
 	var out bytes.Buffer
 	var calls []string
 	writes := 0
-	c := runnerCLI{config: filepath.Join(root, "config"), units: filepath.Join(root, "units"), out: &out,
+	c := runnerCLI{config: filepath.Join(root, "config"), units: filepath.Join(root, defaults.units), out: &out,
 		root: func(args []string) error {
 			if strings.Join(args, " ") != "runner unit" {
 				t.Fatal(args)

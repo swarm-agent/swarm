@@ -34,9 +34,12 @@ type runnerCLI struct {
 }
 
 func cmdRunner(args []string) error {
-	c := runnerCLI{os.Stdin, os.Stdout, machineRequest, machineRun, machineWrite, os.Hostname, machineRoot, runnerConfig, machineUnits,
+	return newRunnerCLI().command(args)
+}
+
+func newRunnerCLI() runnerCLI {
+	return runnerCLI{os.Stdin, os.Stdout, machineRequest, machineRun, machineWrite, os.Hostname, machineRoot, runnerConfig, "/etc/systemd/system",
 		&http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return fmt.Errorf("runner join redirects are not allowed") }}, "/run/swarm-runner/state"}
-	return c.command(args)
 }
 
 var runnerCLIName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
