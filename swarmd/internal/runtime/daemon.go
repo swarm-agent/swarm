@@ -488,7 +488,7 @@ func New(cfg config.Config) (*Daemon, error) {
 				}
 				_, active, err := pebblestore.NewSessionStore(store).GetV3SessionActiveRunIntent(r.SessionID)
 				return !active, err
-			}); err != nil {
+			}); err != nil && !errors.Is(err, sandbox.ErrCleanupDeferred) {
 				log.Printf("cleanup terminal worker sandbox: %v", err)
 				if saveErr := pebblestore.NewWorkerStore(store).SetSandboxCleanupError(r, err.Error()); saveErr != nil {
 					log.Printf("record sandbox cleanup: %v", saveErr)

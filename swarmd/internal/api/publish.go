@@ -14,6 +14,7 @@ import (
 
 	"swarm/packages/swarmd/internal/outbox"
 	"swarm/packages/swarmd/internal/publish"
+	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -122,6 +123,10 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 	if rule.Mode == "land" {
 		return c.enqueueLand(rule, publish.Request{Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report}, explicit, completedFollowupRunID)
 	}
+	if err := importJobHead(c.request.Context(), rule.Folder, controlMCPString(result, "workspace_path"), head); err != nil {
+		c.signalPublish(kind, a, b, refs, "job.publish_failed", pebblestore.SignalSeverityWarning, "Opening the job's pull request failed: "+controlMCPTruncate(err.Error(), 200), map[string]string{"head": head})
+		return nil, controlMCPToolFailure("%s", controlMCPTruncate(err.Error(), 400))
+	}
 	res, err := publish.Run(c.request.Context(), rule, publish.Request{
 		Folder: rule.Folder, JobID: jobID, Branch: branch, Head: head, BaseBranch: base, Title: title, Body: report,
 	})
@@ -144,6 +149,27 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 		"head":         head,
 		"next":         "the folder publishes jobs as pull requests: the result is on the forge, merged by its own rules; a follow-up (swarm_message_job) and another delivery update the same pull request",
 	}, nil
+}
+
+// importJobHead brings a job's exact head commit into the folder, which the
+// publish command pushes from: a worker job commits in its own clone of the
+// folder, not in the folder. Git runs routed like all daemon Git on a folder.
+func importJobHead(ctx context.Context, folder, clone, head string) error {
+	git := func(args ...string) error {
+		ctx := sandbox.WithGitCommandTimeout(ctx, 2*time.Minute)
+		_, err := sandbox.TimedGitOutput(ctx, folder, nil, append([]string{"-c", "safe.directory=" + folder}, args...)...)
+		return err
+	}
+	if git("cat-file", "-e", head+"^{commit}") == nil {
+		return nil
+	}
+	if strings.TrimSpace(clone) == "" {
+		return fmt.Errorf("publish: commit %s is not in %s and the job's worktree is unknown", head, folder)
+	}
+	if err := git("fetch", "--quiet", "--no-tags", "--", clone, head); err != nil {
+		return fmt.Errorf("publish: cannot bring commit %s from the job's worktree into %s: %w", head, folder, err)
+	}
+	return nil
 }
 
 func (c *controlMCPCall) signalPublish(kind, a, b string, refs controlMCPJobRefs, signalKind, severity, summary string, attrs map[string]string) {

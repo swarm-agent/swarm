@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"log"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -49,6 +50,10 @@ func cleanupTerminalSandboxes(ctx context.Context, m *sandbox.Manager, db *pebbl
 			} else {
 				err = m.EndJob(ctx, snap.WorktreeRootPath, terminal)
 			}
+		}
+		// A deferral confirms nothing either way: the next sweep retries it.
+		if errors.Is(err, sandbox.ErrCleanupDeferred) {
+			continue
 		}
 		message := ""
 		if err != nil {

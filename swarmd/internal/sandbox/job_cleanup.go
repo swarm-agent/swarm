@@ -83,6 +83,11 @@ func (m *Manager) removeJobContainerFenced(ctx context.Context, name string, exp
 	}
 	if b.inflight != 0 || b.preparing != 0 || b.changing != nil {
 		m.mu.Unlock()
+		// A finished job's daemon Git (its result, a delivery) may still be
+		// starting here: the terminal sweep retries once it is done.
+		if fenced {
+			return ErrCleanupDeferred
+		}
 		return fmt.Errorf("job sandbox still has active commands")
 	}
 	b.changing = make(chan struct{})
