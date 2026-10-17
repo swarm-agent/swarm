@@ -5,8 +5,8 @@
 // relays phone alerts, each labelled with the bot's name.
 //
 // BOTS (a JSON var) lists the bots, in display order:
-//   [{ "id": "arrange-prod", "name": "arrange.digital", "env": "production",
-//      "binding": "GW_ARRANGE_PROD", "ops_secret": "OPS_ARRANGE_PROD" }, ...]
+//   [{ "id": "shop-prod", "name": "shop.example.com", "env": "production",
+//      "binding": "GW_SHOP_PROD", "ops_secret": "OPS_SHOP_PROD" }, ...]
 //   binding    a Workers VPC service binding that reaches the gateway privately
 //              (no public hostname); or "url" with ACCESS_CLIENT_ID/SECRET for a
 //              gateway behind a Cloudflare Tunnel hostname protected by Access

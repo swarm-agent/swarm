@@ -46,18 +46,18 @@ function kv() {
 }
 
 function makeEnv(extra = {}) {
-  const arrange = gatewayBinding('frontdesk');
+  const shop = gatewayBinding('frontdesk');
   const swarm = gatewayBinding('swarm');
   return {
     ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD,
     STAFF: JSON.stringify({ 'sam@example.com': { name: 'Sam', role: 'founder', on_call: true }, 'ana@example.com': { name: 'Ana', role: 'support' } }),
     BOTS: JSON.stringify([
-      { id: 'arrange-prod', name: 'arrange.digital', env: 'production', binding: 'GW_ARRANGE', ops_secret: 'OPS_ARRANGE' },
-      { id: 'swarm-staging', name: 'swarmagent.dev', env: 'staging', binding: 'GW_SWARM', ops_secret: 'OPS_SWARM' },
-      { id: 'nameflow-staging', name: 'NameFlow', env: 'staging', kind: 'status', url: 'https://status.example.com/hq', key_secret: 'NF_KEY' },
+      { id: 'shop-prod', name: 'shop.example.com', env: 'production', binding: 'GW_SHOP', ops_secret: 'OPS_SHOP' },
+      { id: 'docs-staging', name: 'docs.example.com', env: 'staging', binding: 'GW_SWARM', ops_secret: 'OPS_SWARM' },
+      { id: 'desk-staging', name: 'Help desk', env: 'staging', kind: 'status', url: 'https://status.example.com/hq', key_secret: 'DESK_KEY' },
       { id: 'BAD id', name: 'dropped' },
     ]),
-    GW_ARRANGE: arrange, GW_SWARM: swarm, OPS_ARRANGE: 'ops-a', OPS_SWARM: 'ops-s', NF_KEY: 'nf-key',
+    GW_SHOP: shop, GW_SWARM: swarm, OPS_SHOP: 'ops-shop', OPS_SWARM: 'ops-s', DESK_KEY: 'desk-key',
     HQ_STATE: kv(), ...extra,
   };
 }
@@ -69,7 +69,7 @@ const req = async (path, { method = 'GET', body, email = 'sam@example.com', orig
 
 test('bots are read from config; malformed entries are dropped', () => {
   const bots = botsFrom(makeEnv());
-  assert.deepEqual(bots.map((b) => b.id), ['arrange-prod', 'swarm-staging', 'nameflow-staging']);
+  assert.deepEqual(bots.map((b) => b.id), ['shop-prod', 'docs-staging', 'desk-staging']);
   assert.equal(bots[2].kind, 'status');
 });
 
@@ -79,27 +79,27 @@ test('only a listed staff login gets in, and ops calls go to the chosen bot with
   const list = await (await handle(await req('/bots'), env, { fetchImpl })).json();
   assert.equal(list.bots.length, 3);
   assert.equal(list.bots[0].binding, undefined, 'bindings and secret names stay server-side');
-  const q = await handle(await req('/ops/queue?bot=swarm-staging'), env, { fetchImpl });
+  const q = await handle(await req('/ops/queue?bot=docs-staging'), env, { fetchImpl });
   assert.equal(q.status, 200);
   assert.equal(env.GW_SWARM.seen[0].url, 'http://gateway:8080/ops/queue');
   assert.equal(env.GW_SWARM.seen[0].headers['X-Ops-Key'], 'ops-s');
-  assert.equal(env.GW_ARRANGE.seen.length, 0);
-  const reply = await handle(await req('/ops/reply', { method: 'POST', body: { bot: 'arrange-prod', session_id: 's1', content: 'hi', name: 'Spoofed' } }), env, { fetchImpl });
+  assert.equal(env.GW_SHOP.seen.length, 0);
+  const reply = await handle(await req('/ops/reply', { method: 'POST', body: { bot: 'shop-prod', session_id: 's1', content: 'hi', name: 'Spoofed' } }), env, { fetchImpl });
   assert.equal(reply.status, 200);
-  assert.deepEqual(env.GW_ARRANGE.seen[0].body, { session_id: 's1', content: 'hi', name: 'Sam', role: 'founder' });
+  assert.deepEqual(env.GW_SHOP.seen[0].body, { session_id: 's1', content: 'hi', name: 'Sam', role: 'founder' });
   assert.equal((await handle(await req('/ops/queue?bot=nope'), env, { fetchImpl })).status, 404);
-  assert.equal((await handle(await req('/ops/queue?bot=nameflow-staging'), env, { fetchImpl })).status, 400);
-  assert.equal((await handle(await req('/ops/queue?bot=swarm-staging', { origin: 'https://evil.example' }), env, { fetchImpl })).status, 403);
+  assert.equal((await handle(await req('/ops/queue?bot=desk-staging'), env, { fetchImpl })).status, 400);
+  assert.equal((await handle(await req('/ops/queue?bot=docs-staging', { origin: 'https://evil.example' }), env, { fetchImpl })).status, 403);
 });
 
 test('the overview reads every bot; a status-only bot uses its bearer key', async () => {
   const data = await (await handle(await req('/bots/summary'), makeEnv(), { fetchImpl })).json();
   assert.equal(data.bots.length, 3);
   assert.equal(data.bots[1].summary.conversations.waiting_for_person, 2);
-  assert.equal(data.bots[2].summary.auth, 'Bearer nf-key');
+  assert.equal(data.bots[2].summary.auth, 'Bearer desk-key');
   assert.ok(data.bots.every((b) => b.up));
   const old = makeEnv();
-  old.GW_ARRANGE = { fetch: async () => new Response('not found', { status: 404 }) };
+  old.GW_SHOP = { fetch: async () => new Response('not found', { status: 404 }) };
   const o = await (await handle(await req('/bots/summary'), old, { fetchImpl })).json();
   assert.equal(o.bots[0].up, true);
   assert.equal(o.bots[0].summary, null);
@@ -111,13 +111,13 @@ test('hours: validated, stored, one schedule for all or a bot its own', async ()
   const bad = await handle(await req('/hours', { method: 'POST', body: { all: { mode: 'hours', tz: 'Mars/Base', week: {} } } }), env, { fetchImpl });
   assert.equal(bad.status, 400);
   const week = { mon: [['09:00', '17:00']], tue: [], wed: [], thu: [], fri: [], sat: [], sun: [] };
-  const ok = await handle(await req('/hours', { method: 'POST', body: { all: { mode: 'hours', tz: 'Asia/Jerusalem', week }, bots: { 'swarm-staging': { own: true, schedule: { mode: 'always', tz: 'UTC', week: {} } } } } }), env, { fetchImpl });
+  const ok = await handle(await req('/hours', { method: 'POST', body: { all: { mode: 'hours', tz: 'Asia/Jerusalem', week }, bots: { 'docs-staging': { own: true, schedule: { mode: 'always', tz: 'UTC', week: {} } } } } }), env, { fetchImpl });
   assert.equal(ok.status, 200);
   const got = await (await handle(await req('/hours'), env, { fetchImpl })).json();
   assert.equal(got.hours.all.mode, 'hours');
-  assert.equal(got.hours.bots['swarm-staging'].own, true);
-  assert.equal(got.hours.bots['arrange-prod'].own, false);
-  assert.equal(got.on_call_now['swarm-staging'], true);
+  assert.equal(got.hours.bots['docs-staging'].own, true);
+  assert.equal(got.hours.bots['shop-prod'].own, false);
+  assert.equal(got.on_call_now['docs-staging'], true);
 });
 
 test('schedules: ranges in the schedule time zone, off and always', () => {
@@ -137,16 +137,16 @@ test('schedules: ranges in the schedule time zone, off and always', () => {
 
 test('applyHours signs on-call staff in during hours and out only where it signed them in', async () => {
   const env = makeEnv();
-  await env.HQ_STATE.put('hours', JSON.stringify({ all: { mode: 'always', tz: 'UTC', week: {} }, bots: { 'swarm-staging': { own: true, schedule: { mode: 'off', tz: 'UTC', week: {} } } } }));
+  await env.HQ_STATE.put('hours', JSON.stringify({ all: { mode: 'always', tz: 'UTC', week: {} }, bots: { 'docs-staging': { own: true, schedule: { mode: 'off', tz: 'UTC', week: {} } } } }));
   await applyHours(env, { fetchImpl });
   const samId = await staffId('sam@example.com');
-  assert.deepEqual(env.GW_ARRANGE.seen.map((s) => s.body), [{ id: samId, name: 'Sam', role: 'founder', available: true }], 'only on_call staff, only where on call');
+  assert.deepEqual(env.GW_SHOP.seen.map((s) => s.body), [{ id: samId, name: 'Sam', role: 'founder', available: true }], 'only on_call staff, only where on call');
   assert.equal(env.GW_SWARM.seen.length, 0);
   await env.HQ_STATE.put('hours', JSON.stringify({ all: { mode: 'off', tz: 'UTC', week: {} } }));
   await applyHours(env, { fetchImpl });
-  assert.equal(env.GW_ARRANGE.seen[1].body.available, false);
+  assert.equal(env.GW_SHOP.seen[1].body.available, false);
   await applyHours(env, { fetchImpl });
-  assert.equal(env.GW_ARRANGE.seen.length, 2, 'nothing more once signed out');
+  assert.equal(env.GW_SHOP.seen.length, 2, 'nothing more once signed out');
 });
 
 test('alerts: first run starts from now, then actionable events go out titled with the bot', async () => {
@@ -159,11 +159,11 @@ test('alerts: first run starts from now, then actionable events go out titled wi
   env.GW_SWARM = gatewayBinding('swarm', { events, latest: 2 });
   await relayAlerts(env, { fetchImpl });
   assert.equal(alertsSent.length, 1);
-  assert.match(alertsSent[0].title, /^\[swarmagent\.dev staging\] A visitor wants to talk now/);
-  assert.match(alertsSent[0].body, /Open: https:\/\/hq\.example\.com\/\?bot=swarm-staging&session=sess-9/);
+  assert.match(alertsSent[0].title, /^\[docs\.example\.com staging\] A visitor wants to talk now/);
+  assert.match(alertsSent[0].body, /Open: https:\/\/hq\.example\.com\/\?bot=docs-staging&session=sess-9/);
   await relayAlerts(env, { fetchImpl });
   assert.equal(alertsSent.length, 1, 'the cursor moved past what was sent');
-  const quiet = makeEnv({ ALERTS_URL: 'https://alerts.example.com', ALERTS_AUTH: 'Authorization: Bearer x', BOTS: JSON.stringify([{ id: 'swarm-staging', name: 'swarmagent.dev', env: 'staging', binding: 'GW_SWARM', ops_secret: 'OPS_SWARM', alerts: false }]) });
+  const quiet = makeEnv({ ALERTS_URL: 'https://alerts.example.com', ALERTS_AUTH: 'Authorization: Bearer x', BOTS: JSON.stringify([{ id: 'docs-staging', name: 'docs.example.com', env: 'staging', binding: 'GW_SWARM', ops_secret: 'OPS_SWARM', alerts: false }]) });
   await relayAlerts(quiet, { fetchImpl });
   assert.equal(quiet.GW_SWARM.seen.length, 0, 'alerts: false skips the bot entirely');
 });
