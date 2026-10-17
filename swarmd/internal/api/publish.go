@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -187,6 +188,7 @@ type AutoPublisher struct {
 	state        *pebblestore.Store
 	mu           sync.Mutex
 	reviewCursor string
+	lastRecovery time.Time
 	attempts     map[uint64]int
 }
 
@@ -327,7 +329,12 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := deliver(ctx, sig)
+		err := p.unretireCompletion(ctx, &sig)
+		if err != nil {
+			err = p.retry(sig, err)
+		} else {
+			err = deliver(ctx, sig)
+		}
 		if err != nil {
 			failures = append(failures, err)
 		}
@@ -526,6 +533,28 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	if !controlMCPSafeID.MatchString(workerID) || !controlMCPSafeID.MatchString(runID) {
 		return skip("invalid worker or run id")
 	}
+	var retirement autoPublishRetirement
+	if _, err := p.state.GetJSON(publishRetiredKey(sig), &retirement); err != nil {
+		return retry(err)
+	}
+	if retirement.Retired {
+		return skip("job retired")
+	}
+	head := sig.Attrs["head"]
+	// Completion ingestion is the authority for reopening. Recovery may still
+	// carry a historical review head while this newer head awaits review.
+	if retirement.Head != "" {
+		head = retirement.Head
+	}
+	retire := func(reason string) error {
+		if retirement.Head != "" && sig.Attrs["head"] != retirement.Head {
+			return skip("historical signal cannot retire reopened job: " + reason)
+		}
+		if err := p.retire(sig, head); err != nil {
+			return retry(err)
+		}
+		return skip(reason)
+	}
 	c, err := p.server.pipelineCall(ctx)
 	if err != nil {
 		return retry(err) // owner initialization may still be in progress
@@ -540,24 +569,34 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	if err != nil {
 		return retry(err)
 	}
-	if entry.State == "landed" {
-		return skip("job already landed")
+	if entry.State == "landed" && (head == "" || entry.Request.Head == "" || head == entry.Request.Head) {
+		head = entry.Request.Head
+		return retire("job already landed")
 	}
 	var pipeline ReviewPipeline
 	if _, err := p.state.GetJSON(pipelineKey(principal.AccountScopeID, job), &pipeline); err != nil {
 		return retry(err)
 	}
-	if pipeline.Next == "review_exhausted" {
-		return skip("review rounds exhausted")
+	if pipeline.Next == "review_exhausted" && (head == "" || pipeline.Head == "" || head == pipeline.Head) {
+		head = pipeline.Head
+		return retire("review rounds exhausted")
+	}
+	storedRun, found, err := pebblestore.NewWorkerStore(p.state).GetWorkerRun(principal.AccountScopeID, workerID, runID)
+	if err != nil {
+		return retry(err)
+	}
+	if found && storedRun.Role == pebblestore.WorkerRoleReviewer {
+		return retire("reviewer report-only job")
 	}
 	view, err := c.jobView(controlMCPJobWorker, workerID, runID, 0, false, 0)
 	if err != nil {
 		return retry(err)
 	}
 	result := controlMCPJobResultJSON(view)
+	head = controlMCPString(result, "head")
 	status, _ := view["status"].(string)
 	if result["delivery_state"] == "report_only" {
-		return skip("report-only job")
+		return retire("report-only job")
 	}
 	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
 	if err != nil {
@@ -579,18 +618,23 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		// lifecycle finish. A snapshot without an end is not a final outcome.
 		run.workerBlocked = ok && lifecycle.EndedAt > 0 && lifecycle.Phase == "blocked" && strings.TrimSpace(lifecycle.StopReason) != ""
 		run.active = run.active || (ok && lifecycle.Active)
+		if ok && run.settleEndedBlocked(status, lifecycle.EndedAt) {
+			if lifecycle.Phase != "blocked" || strings.TrimSpace(lifecycle.StopReason) == "" {
+				p.logDecision(sig, "settled-blocked", fmt.Sprintf("lifecycle blocked phase missing=%t stop_reason missing=%t", lifecycle.Phase != "blocked", strings.TrimSpace(lifecycle.StopReason) == ""))
+			}
+		}
 	}
 	if run.settled && run.workerBlocked && !run.active && !run.recovering {
-		return skip("worker settled and blocked")
+		return retire("worker settled and blocked")
 	}
 	if autoPublishNext(status, result, run) == autoPublishSkip {
 		if result["delivery_state"] == "unavailable" {
-			return skip(fmt.Sprintf("status %q: assessment unavailable (%s): %s", status, controlMCPString(result, "delivery_reason_code"), controlMCPString(result, "delivery_reason")))
+			return retire(fmt.Sprintf("status %q: assessment unavailable (%s): %s", status, controlMCPString(result, "delivery_reason_code"), controlMCPString(result, "delivery_reason")))
 		}
-		return skip(fmt.Sprintf("status %q: job is not deliverable", status))
+		return retire(fmt.Sprintf("status %q: job is not deliverable", status))
 	}
 	if refs.run["role"] == "reviewer" {
-		return skip("reviewer job")
+		return retire("reviewer job")
 	}
 	rule, ok, err := p.server.publishRule(c.jobFolder(refs, result))
 	if err != nil {
@@ -620,7 +664,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		}
 		switch autoPublishNext(status, result, run) {
 		case autoPublishSkip:
-			return skip("job has no deliverable commits")
+			return retire("job has no deliverable commits")
 		case autoPublishWait:
 			return retry(errAutoPublishWait)
 		}
@@ -661,6 +705,9 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 			if chain.Next == "review_failed" && strings.HasPrefix(chain.Findings, "Review infrastructure") && chain.InfrastructureAttempts < 3 {
 				return retry(errAutoPublishWait)
 			}
+			if chain.Next == "review_exhausted" {
+				return retire("review rounds exhausted")
+			}
 			return skip("review pipeline pending; awaiting review signal")
 		}
 	}
@@ -677,7 +724,7 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	}
 	switch autoPublishNext(status, result, run) {
 	case autoPublishSkip:
-		return skip("job has no deliverable commits")
+		return retire("job has no deliverable commits")
 	case autoPublishWait:
 		return retry(errAutoPublishWait)
 	}
@@ -766,4 +813,81 @@ func (c *controlMCPCall) jobFolder(refs controlMCPJobRefs, result map[string]any
 func controlMCPJobHasCommits(result map[string]any) bool {
 	head, _ := result["head"].(string)
 	return strings.TrimSpace(head) != "" && len(controlMCPList(result["commits"])) > 0
+}
+
+// Retirement is account/job scoped and survives restarts. Only ingestion of a
+// fresh worker completion may reopen it; review recovery never does.
+type autoPublishRetirement struct {
+	Head    string `json:"head"`
+	Retired bool   `json:"retired"`
+}
+
+func publishRetiredKey(sig pebblestore.Signal) string {
+	return "publish_meta/retired/" + url.PathEscape(sig.Account) + "/" + url.PathEscape(controlMCPJobID(controlMCPJobWorker, sig.Refs["worker_id"], sig.Refs["run_id"]))
+}
+func (p *AutoPublisher) isRetired(sig pebblestore.Signal) (bool, error) {
+	var r autoPublishRetirement
+	_, err := p.state.GetJSON(publishRetiredKey(sig), &r)
+	return r.Retired, err
+}
+func (p *AutoPublisher) retire(sig pebblestore.Signal, head string) error {
+	return p.state.PutJSON(publishRetiredKey(sig), autoPublishRetirement{Head: head, Retired: true})
+}
+func (p *AutoPublisher) unretireCompletion(ctx context.Context, sig *pebblestore.Signal) error {
+	if sig.Kind != "worker.run.succeeded" {
+		return nil
+	}
+	var r autoPublishRetirement
+	if _, err := p.state.GetJSON(publishRetiredKey(*sig), &r); err != nil {
+		return err
+	}
+	if !r.Retired {
+		// Terminal records can predate retirement (including after upgrades).
+		// An unknown completion head must not be mistaken for their old head.
+		job := controlMCPJobID(controlMCPJobWorker, sig.Refs["worker_id"], sig.Refs["run_id"])
+		var pipeline ReviewPipeline
+		if _, err := p.state.GetJSON(pipelineKey(sig.Account, job), &pipeline); err != nil {
+			return err
+		}
+		entry, _, err := publish.NewQueue(p.state).Get(sig.Account, job)
+		if err != nil {
+			return err
+		}
+		if pipeline.Next != "review_exhausted" && entry.State != "landed" {
+			return nil
+		}
+	}
+	head := sig.Attrs["head"]
+	// Worker completion receipts do not always carry a head. Assess only this
+	// new completion, never old recovery records, to detect a follow-up commit.
+	if head == "" {
+		c, err := p.server.pipelineCall(ctx)
+		if err != nil {
+			return err
+		}
+		view, err := c.jobView(controlMCPJobWorker, sig.Refs["worker_id"], sig.Refs["run_id"], 0, false, 0)
+		if err != nil {
+			return err
+		}
+		head = controlMCPString(controlMCPJobResultJSON(view), "head")
+	}
+	if head == "" {
+		return fmt.Errorf("completion head unavailable; cannot compare terminal state")
+	}
+	if head == r.Head && r.Retired {
+		return nil
+	}
+	if sig.Attrs == nil {
+		sig.Attrs = map[string]string{}
+	}
+	sig.Attrs["head"] = head
+	return p.state.PutJSON(publishRetiredKey(*sig), autoPublishRetirement{Head: head})
+}
+
+func (run *autoPublishRunState) settleEndedBlocked(status string, endedAt int64) bool {
+	if status != "blocked" || endedAt <= 0 || run.active {
+		return false
+	}
+	run.settled, run.workerBlocked = true, true
+	return true
 }

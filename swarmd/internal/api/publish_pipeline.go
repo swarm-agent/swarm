@@ -120,7 +120,7 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if failedHead == "" {
 		failedHead = state.Head
 	}
-	if state.Next == "review_exhausted" || (state.Next == "review_failed" && failedHead == head && (followup == "" || followup == state.FollowupRunID) && (!strings.HasPrefix(state.Findings, "Review infrastructure") || state.InfrastructureAttempts >= 3 || time.Now().UnixMilli() < state.RetryAfter)) {
+	if (state.Next == "review_exhausted" && state.Head == head) || (state.Next == "review_failed" && failedHead == head && (followup == "" || followup == state.FollowupRunID) && (!strings.HasPrefix(state.Findings, "Review infrastructure") || state.InfrastructureAttempts >= 3 || time.Now().UnixMilli() < state.RetryAfter)) {
 		return false, nil
 	}
 	if state.Next == "review_failed" {
