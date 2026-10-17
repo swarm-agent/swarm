@@ -116,7 +116,9 @@ func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, ow
 	if err := guardFile.Close(); err != nil {
 		return Allocation{}, err
 	}
-	_, allocationErr := runGitAllocationGuardedContext(ctx, root, nil, timeout, guard, "clone", "--no-local", "--no-checkout", "--", cloneSource, path)
+	// Keep --no-local isolation while bounding the pack build: gVisor counts
+	// the whole upload-pack/pack-objects process tree against sandbox memory.
+	_, allocationErr := runGitAllocationGuardedContext(ctx, root, nil, timeout, guard, boundedCloneArgs(cloneSource, path)...)
 	if errors.Is(allocationErr, ErrAllocationWriterUnconfirmed) {
 		return Allocation{}, allocationErr
 	}

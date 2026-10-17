@@ -13,6 +13,18 @@ import (
 	"swarm/packages/swarmd/internal/sandbox"
 )
 
+// boundedCloneArgs bounds both upload-pack's pack-objects and the client without
+// persisting configuration in either repository. Git passes the upload-pack
+// command through a shell; keep it static and pass paths as separate arguments.
+func boundedCloneArgs(source, destination string) []string {
+	return []string{
+		"-c", "core.bigFileThreshold=1m",
+		"clone", "--no-local", "--no-checkout",
+		"--upload-pack=git -c pack.threads=1 -c pack.windowMemory=64m -c pack.deltaCacheSize=16m -c core.bigFileThreshold=1m -c pack.window=10 upload-pack",
+		"--", source, destination,
+	}
+}
+
 func (s *Service) allocateWorkerClone(source string, current bool, base, branch, owner string, exact bool, scopes []string, sparse bool, initialize ...func(string) error) (Allocation, error) {
 	root, err := resolveRepositoryRoot(source)
 	if err != nil {
@@ -58,7 +70,9 @@ func (s *Service) allocateWorkerClone(source string, current bool, base, branch,
 	}
 	// --no-local copies objects through upload-pack: no alternates, hardlinks,
 	// source config changes, or dependence on source garbage collection.
-	if _, err := runGitAllocation(root, nil, "clone", "--no-local", "--no-checkout", "--", source, path); err != nil {
+	// gVisor counts the whole pack build against the sandbox memory limit, so
+	// bound delta-search memory and threads and exclude large blobs from it.
+	if _, err := runGitAllocation(root, nil, boundedCloneArgs(source, path)...); err != nil {
 		if errors.Is(err, ErrAllocationWriterUnconfirmed) {
 			return Allocation{}, err
 		}
