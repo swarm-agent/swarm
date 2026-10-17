@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- `sudo swarmctl workspace ...` and `sudo swarmctl idle-off ...` work again on headless installs. The `swarmctl` wrapper always switched to Swarm's own user, so these root-only commands always refused with "run as root" (the installer's own workspace step hit it too). Root now runs them directly. Docs impact: none.
 - `swarmctl setup daily-limit` without `--usd` now only shows the cap and today's spend; turning the cap off takes an explicit `--usd 0`. A bare call used to switch a live cap off. Docs impact: none.
 - Vertex AI usage now counts toward the daily spend cap. Cost was looked up under provider `vertex`, which the model catalog does not keep (Vertex runs Google's models), so every Vertex turn cost 0 and the cap never tripped. It is priced from Google's catalog records. Docs impact: none.
 - `swarmctl setup credentials`, `add-credential --provider vertex --project P` and `remove-credential --provider X --id ID` manage provider credentials after first setup on a box with no shell, so a sealed box can move from a Gemini key to Vertex AI and then drop the key. The listing shows only provider, ID, type and whether it is active. Docs impact: containers/sealed/README.md.
