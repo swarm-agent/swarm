@@ -50,6 +50,7 @@ type Config struct {
 	CloudBuildServiceAccount     string
 	EnvironmentProvider          string
 	EnvironmentRunnerWaitSeconds int
+	EnvironmentRunnerWakeCommand string
 	SandboxCgroupParent          string
 	WorkerMaxConcurrentRuns      int
 	SecretsGateway               string // off (default) | on
@@ -126,6 +127,7 @@ func Parse(args []string) (Config, error) {
 	cfg.EnvironmentProvider = startupCfg.EnvironmentProvider
 	cfg.LandingParallel = startupCfg.ResolvedLandingParallel()
 	cfg.EnvironmentRunnerWaitSeconds = startupCfg.EnvironmentRunnerWaitSeconds
+	cfg.EnvironmentRunnerWakeCommand = startupCfg.EnvironmentRunnerWakeCommand
 	fs.IntVar(&cfg.LandingMaxConcurrent, "landing-max-concurrent", startupCfg.LandingMaxConcurrent, "box-wide landing limit (0: logical CPUs / 4)")
 	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")
 	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: RAM-derived)")
