@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- `swarm_get_job` (and `swarm_give_job`) with `wait_seconds` now return at the deadline while a job is busy. The wait re-read the job's state on every event the running worker emitted, and each read looks at its worktree, so a 110 s wait stayed open for about 15 minutes while reporting `waited_seconds: 110`. Re-reads are now coalesced to one every 2 s, the deadline always wins, and `waited_seconds` is the real time. swarm-fleet also gives each forwarded call a total deadline (the wait plus 30 s) instead of an idle timer that every byte restarted. Docs impact: none.
 - Add configurable runner slots and opt-in idle power-off, and document runner capacity, caches, private gateway access and wake configuration. Docs impact: docs/runners.md.
 
 - `sudo swarmctl workspace ...` and `sudo swarmctl idle-off ...` work again on headless installs. The `swarmctl` wrapper always switched to Swarm's own user, so these root-only commands always refused with "run as root" (the installer's own workspace step hit it too). Root now runs them directly. Docs impact: none.

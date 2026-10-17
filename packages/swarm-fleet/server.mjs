@@ -29,6 +29,12 @@ import { homedir } from 'node:os';
 const PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const CALL_TIMEOUT_MS = 330_000; // Swarm tools wait at most 300 s for a reply.
 const LIST_TIMEOUT_MS = 15_000;
+
+/** A call that asks the machine to wait gets that wait plus 30 s, not the full 330 s. */
+export function callTimeoutMs(args) {
+  const wait = Number(args?.wait_seconds);
+  return Number.isFinite(wait) && wait > 0 ? Math.min(CALL_TIMEOUT_MS, (Math.min(wait, 300) + 30) * 1000) : CALL_TIMEOUT_MS;
+}
 const DISCOVER_EVERY_MS = 20_000;
 const MAX_RESPONSE_BYTES = 8 << 20;
 const MACHINE_PROP = { type: 'string', maxLength: 64, description: 'Machine name from swarm_list_machines. Required when several are configured.' };
@@ -142,6 +148,10 @@ export async function post(machine, message, { proxy = '', timeoutMs = CALL_TIME
       });
     });
     req.once('error', reject);
+    // setTimeout on a request is an idle timer that restarts on every byte; this one is a
+    // total deadline, so a machine that keeps the connection busy cannot hold a call forever.
+    const deadline = setTimeout(() => req.destroy(new Error('machine did not answer in time')), timeoutMs);
+    req.once('close', () => clearTimeout(deadline));
     req.setTimeout(timeoutMs, () => req.destroy(new Error('machine did not answer in time')));
     req.end(body);
   });
@@ -355,7 +365,7 @@ export function createFleet(configured, { proxy = '', notify = () => {}, send = 
     }, machines.length && machines.every(m => tools.has(m.name)) ? 60_000 : 15_000);
     retry.unref?.();
   }
-  const callOn = (machine, name, args) => send(machine, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { proxy });
+  const callOn = (machine, name, args) => send(machine, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { proxy, timeoutMs: callTimeoutMs(args) });
 
   // A machine's run counts for today, exact (the daemon's run index), with the
   // failed runs' job ids; their reasons stay on the machine (swarm_get_job).
