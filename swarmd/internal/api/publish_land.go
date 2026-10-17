@@ -18,6 +18,16 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// landingWakeChannel coalesces enqueue notifications without blocking callers.
+func (s *Server) landingWakeChannel() chan struct{} {
+	s.landQueueMu.Lock()
+	defer s.landQueueMu.Unlock()
+	if s.landingWake == nil {
+		s.landingWake = make(chan struct{}, 1)
+	}
+	return s.landingWake
+}
+
 func (s *Server) landingQueue() (*publish.Queue, error) {
 	s.landQueueMu.Lock()
 	defer s.landQueueMu.Unlock()
@@ -46,6 +56,10 @@ func (c *controlMCPCall) enqueueLand(rule publish.Rule, req publish.Request, ret
 	entry, pos, err := q.EnqueueDelivery(publish.Entry{Account: principal.AccountScopeID, Request: req, RetryFollowupRunID: retryRunID}, retryStopped)
 	if err != nil {
 		return nil, err
+	}
+	select {
+	case c.server.landingWakeChannel() <- struct{}{}:
+	default:
 	}
 	kind, a, b, err := controlMCPParseJobID(map[string]any{"job_id": req.JobID})
 	if err != nil {
