@@ -1086,10 +1086,14 @@ daemon_env() {
 install_units() {
   load_conf
   conf_migrate
-  local sdk_args='' runtime_arg='' secrets_arg='' permissions_arg ai_url='' ai_ip='' release
+  local runner_args='' sdk_args='' runtime_arg='' secrets_arg='' permissions_arg ai_url='' ai_ip='' release
   # The app starts only when run as the main module, which Node decides on
   # the symlink-resolved path, so its unit names the release itself.
   release=$(readlink -f "$OPT/current")
+  if [[ ${RUNNER_GATEWAY_PORT:-0} != 0 ]]; then
+    [[ $RUNNER_GATEWAY_PORT =~ ^[1-9][0-9]{0,4}$ && $RUNNER_GATEWAY_PORT -le 65535 ]] || die "invalid RUNNER_GATEWAY_PORT"
+    runner_args="--runner-gateway-port=$RUNNER_GATEWAY_PORT"
+  fi
   # Swarm's MCP for AI keys, on loopback (and on the tailnet through Serve).
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
   [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'
@@ -1177,7 +1181,7 @@ WorkingDirectory=$PROJECT
 Slice=swarm.slice
 CPUWeight=1000
 IOWeight=1000
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $cgroup_arg $permissions_arg $runtime_arg $sdk_args $secrets_arg
+ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $cgroup_arg $permissions_arg $runtime_arg $sdk_args $runner_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -1619,6 +1623,42 @@ tailnet_cmd() {
       echo "Swarm no longer serves on your tailnet; the setup page is $LOCAL_APP_ORIGIN on this machine. Tailscale and ufw are unchanged."
       ;;
     *) die "$usage" ;;
+  esac
+}
+
+# Separate runner protocol entry point: no Swarm app capability grants.
+runner_gateway_cmd() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  [[ $# == 1 ]] || die "usage: install.sh runner-gateway on|off|status"
+  load_conf
+  case $1 in
+    on)
+      local port=${RUNNER_GATEWAY_PORT:-7784} TS_DNS
+      [[ $port =~ ^[1-9][0-9]{0,4}$ && $port -le 65535 ]] || die "invalid RUNNER_GATEWAY_PORT"
+      TS_DNS=$(tailscale status --json | jq -r '(.Self.DNSName // "") | rtrimstr(".")')
+      [[ -n $TS_DNS ]] || die "join the hub to your tailnet first"
+      conf_set RUNNER_GATEWAY_PORT "$port"
+      install_units
+      systemctl restart "$DAEMON_UNIT"
+      tailscale serve --bg --https=8445 "http://127.0.0.1:$port" >/dev/null || die "tailscale serve for runner gateway failed"
+      echo "Runner hub URL: https://$TS_DNS:8445"
+      echo "Tailnet policy should allow runner machines only tcp:8445 on the hub."
+      ;;
+    off)
+      tailscale serve --https=8445 off >/dev/null || die "could not remove runner gateway Serve entry"
+      sed -i '/^RUNNER_GATEWAY_PORT=/d' "$CONF"
+      unset RUNNER_GATEWAY_PORT
+      install_units
+      systemctl restart "$DAEMON_UNIT"
+      ;;
+    status)
+      echo "Runner gateway port: ${RUNNER_GATEWAY_PORT:-0} (0 = off)"
+      local service_status=0
+      systemctl status "$DAEMON_UNIT" --no-pager || service_status=$?
+      tailscale serve status || return $?
+      return "$service_status"
+      ;;
+    *) die "usage: install.sh runner-gateway on|off|status" ;;
   esac
 }
 
@@ -2085,6 +2125,7 @@ main() {
     connect-ai) shift; connect_ai "$@" ;;
     key) shift; provider_key "$@" ;;
     secret) shift; secret_cmd "$@" ;;
+    runner-gateway) shift; runner_gateway_cmd "$@" ;;
     tailnet) shift; tailnet_cmd "$@" ;;
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
     secrets-gateway) shift; set_secrets_gateway "$@" ;;

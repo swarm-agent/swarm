@@ -16,11 +16,12 @@ import (
 )
 
 type Config struct {
-	ConfigPath       string
-	ListenAddr       string
-	DesktopPort      int
-	ContainerSDKPort int
-	ContainerSDKHost string
+	ConfigPath        string
+	ListenAddr        string
+	DesktopPort       int
+	ContainerSDKPort  int
+	RunnerGatewayPort int
+	ContainerSDKHost  string
 	// TailnetIdentity admits Swarm Control on the SDK listener by the tailnet
 	// policy's app capability (Tailscale Serve header) instead of an AI key.
 	TailnetIdentity              bool
@@ -104,6 +105,7 @@ func Parse(args []string) (Config, error) {
 	}
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
 	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
+	fs.IntVar(&cfg.RunnerGatewayPort, "runner-gateway-port", 0, "opt-in runner-only loopback listener (0 disables)")
 	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
 	fs.StringVar(&cfg.ContainerSDKHost, "container-sdk-host", "0.0.0.0", "IPv4 address for the scoped-token SDK listener: 0.0.0.0 inside a container, 127.0.0.1 when Swarm runs as a host service")
 	fs.BoolVar(&cfg.TailnetIdentity, "tailnet-identity", false, "admit Swarm Control (/mcp) on the SDK listener by the tailnet policy's swarmagent.dev/cap/swarm grant, set by Tailscale Serve 1.92+ with --accept-app-caps; needs --container-sdk-host=127.0.0.1")
@@ -170,6 +172,9 @@ func Parse(args []string) (Config, error) {
 	case "on":
 	default:
 		return Config{}, fmt.Errorf("invalid --secrets-gateway %q (expected off or on)", cfg.SecretsGateway)
+	}
+	if err := validateRunnerGateway(cfg); err != nil {
+		return Config{}, err
 	}
 	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err
