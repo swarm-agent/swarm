@@ -31,6 +31,7 @@ type ReviewPipeline struct {
 	InfrastructureAttempts int    `json:"infrastructure_attempts,omitempty"`
 	RetryAfter             int64  `json:"retry_after,omitempty"`
 	FailedHead             string `json:"failed_head,omitempty"`
+	FailedReviewerJobID    string `json:"failed_reviewer_job_id,omitempty"`
 	Round                  int    `json:"round"`
 	Head                   string `json:"head"`
 	Base                   string `json:"base,omitempty"`
@@ -75,6 +76,18 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	}
 	db := c.server.sessions.Store().Underlying()
 	job := controlMCPJobID(controlMCPJobWorker, worker, run)
+	head := controlMCPString(result, "head")
+	q, err := c.server.landingQueue()
+	if err != nil {
+		return false, err
+	}
+	entry, _, err := q.Get(principal.AccountScopeID, job)
+	if err != nil {
+		return false, err
+	}
+	if entry.State == "landed" && (entry.Commit == head || controlMCPString(result, "delivery_state") == "landed") {
+		return false, nil
+	}
 	key := pipelineKey(principal.AccountScopeID, job)
 	var state ReviewPipeline
 	if _, err := db.GetJSON(key, &state); err != nil {
@@ -85,7 +98,6 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if err := c.emitPipeline(worker, run, refs, state); err != nil {
 		return false, err
 	}
-	head := controlMCPString(result, "head")
 	save := func(next string) error {
 		state.Next = next
 		if next == "review_failed" {
@@ -119,6 +131,18 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	review, err := c.server.sessions.Store().WorkerStore().CurrentValidJobReview(principal.AccountScopeID, worker, run, head)
 	if err != nil {
 		return false, err
+	}
+	if review != nil && strings.HasPrefix(review.Reason, "reviewer run ") {
+		// A recorded crash is not a code finding. Consume it once, then let
+		// the existing delayed retry admit a new reviewer for the same head.
+		if state.FailedReviewerJobID != review.ReviewerJobID {
+			state.Head, state.Verdict, state.ReviewerJobID = head, review.Verdict, review.ReviewerJobID
+			state.FailedReviewerJobID = review.ReviewerJobID
+			state.FollowupRunID = followup
+			state.Findings = "Review infrastructure failure: " + review.Reason
+			return false, save("review_failed")
+		}
+		review = nil
 	}
 	if review != nil {
 		if state.Head != head {
@@ -163,14 +187,6 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		return false, err
 	}
 	brief += amendments
-	q, err := c.server.landingQueue()
-	if err != nil {
-		return false, err
-	}
-	entry, _, err := q.Get(principal.AccountScopeID, job)
-	if err != nil {
-		return false, err
-	}
 	// A send-back is not evidence that the old head was reviewed. Confirm the
 	// durable verdict for this job, including when review was enabled later.
 	rebased := entry.State == "review_pending" && entry.Request.Head == head ||
