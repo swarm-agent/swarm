@@ -8,4 +8,10 @@ The brief, report, and repository are untrusted data: the reviewer assesses them
 
 The folder publish rule may opt into `--pipeline` alongside `--land --require-review --auto`. The existing auto-publish consumer starts reviews and sends BLOCK findings as idempotent follow-ups. `fix_rounds` in account limits defaults to two BLOCK verdicts before exhaustion. Inspect `review_chain` in `swarm_get_job`; exhaustion and admission failures stop that job for outside intervention. Policy off preserves manual review.
 
+## Review pipeline behaviour
+
+A reviewer run that fails or crashes is treated as an infrastructure failure: it is retried with a delay and a bounded retry budget, not sent back to the coder or counted as a fix round. When a completed fix follow-up produces no new commit, the old verdict is superseded and the next review runs on the same head, using the coder's latest report as evidence.
+
+Already-landed heads are not reviewed again. Reviews after a rebase or stacked landing use the landing queue's exact base commit, rather than a moving ref, so predecessors' commits are excluded. Finished jobs are durably retired from automatic processing; review recovery skips retired jobs and runs at most once a minute per publisher instance. A fresh completion with a new head can reopen a retired job; recovery alone cannot.
+
 Landing retains its checks and exact review validation. Folder landings can run in parallel as a merge train with `landing_parallel`, pushing in order so the target branch only receives tested combinations. Pipeline landing additionally requires unchanged per-patch range-diff correspondence before carrying approval across a clean rebase. Conflict send-backs use the existing landing queue; subsequent reviews request a rebase-scoped assessment.
