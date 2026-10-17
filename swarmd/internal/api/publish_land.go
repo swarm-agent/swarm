@@ -110,7 +110,7 @@ func (p *AutoPublisher) landPending(ctx context.Context) error {
 	return nil
 }
 func (p *AutoPublisher) processLand(ctx context.Context, q *publish.Queue, account, folder string) error {
-	c, err := p.server.internalCall(ctx, "sessions:read", "sessions:write", "projects:read", "projects:write", "swarm:read", "agents:read", "automations:read", "signals:read")
+	c, err := p.server.pipelineCall(ctx)
 	if err != nil {
 		return err
 	}
