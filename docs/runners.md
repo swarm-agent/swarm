@@ -208,6 +208,11 @@ disposable directory using the operating system temporary-directory contract.
 heartbeat, output and result delivery. State remains busy until all claims finish;
 the single-slot state format is unchanged.
 
+Each landing holds an exclusive stable lane and runs its checks in reused
+per-lane check directories, keeping paths stable so Go build and test caches can
+hit across landings. Check directories are emptied before reuse; a lane is held
+by only one landing at a time and retired if sandbox cleanup fails.
+
 SIGTERM stops claiming immediately and lets all held landings finish and report
 their results, then exits successfully. Drain is bounded by the request's check
 timeout plus two minutes (including a 15-second result-report allowance), not
@@ -217,6 +222,11 @@ immediate. The service creates `/run/swarm-runner` with `RuntimeDirectory`, pass
 `KillMode=mixed` sends SIGTERM only to the runner so child commands can drain.
 Standalone invocations can opt into state reporting with `--state-file PATH`;
 the parent directory must already exist.
+
+`swarmctl runner unit` rewrites `swarm-runner.service` from the current release's
+template when it differs and reloads systemd. Install and update call it when the
+runner is joined; update then starts the previously installed service, so new
+service arguments such as `--slots` take effect after an update.
 
 Each available slot claims a request, renews its lease every 20 seconds, streams bounded
 output, and reports codes/duration and the local failing-lines excerpt. Status
