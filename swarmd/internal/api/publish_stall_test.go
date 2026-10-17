@@ -251,3 +251,52 @@ func TestPublishStallFreshBeforeRetries(t *testing.T) {
 		t.Fatalf("pending: %+v", pending)
 	}
 }
+
+// Purpose: nextRetryDelay must not wake continuously for an order-blocked
+// successor while consume preserves its predecessor's backoff. Real durable
+// pending state exercises both scheduler boundaries without timers or sleeps.
+func TestPublishStallBlockedSuccessorDeadline(t *testing.T) {
+	s, _, _, cleanup := setupScopedAuthTestServer(t)
+	defer cleanup()
+	s.SetPublishConfig("configured")
+	db := s.sessions.Store().Underlying()
+	feed := store.NewSignalStore(db)
+	p := s.NewAutoPublisher(feed, db)
+	account := s.OutboxAccount()
+	signal := func(seq uint64, worker string) store.Signal {
+		return store.Signal{Seq: seq, Account: account, Refs: map[string]string{"worker_id": worker, "run_id": "run"}}
+	}
+	pending := []autoPublishPending{
+		{Signal: signal(1, "first"), NextAttempt: time.Now().Add(time.Hour)},
+		{Signal: signal(2, "first")},
+	}
+	if err := db.PutJSON(autoPublishCursorKey, uint64(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.PutJSON(autoPublishPendingKey, pending); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := p.consume(ctx, func(context.Context, store.Signal) error { t.Fatal("delivered order-blocked work"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if delay, err := p.nextRetryDelay(); err != nil || delay != 30*time.Second {
+		t.Fatalf("blocked successor delay=%v err=%v; want idle cap", delay, err)
+	}
+	// An unrelated ready job must still wake immediately.
+	pending = append(pending, autoPublishPending{Signal: signal(3, "other")})
+	if err := db.PutJSON(autoPublishPendingKey, pending); err != nil {
+		t.Fatal(err)
+	}
+	if delay, err := p.nextRetryDelay(); err != nil || delay != 0 {
+		t.Fatalf("unrelated ready delay=%v err=%v", delay, err)
+	}
+	// Once the predecessor is removed, its successor becomes eligible.
+	if err := db.PutJSON(autoPublishPendingKey, pending[1:2]); err != nil {
+		t.Fatal(err)
+	}
+	if delay, err := p.nextRetryDelay(); err != nil || delay != 0 {
+		t.Fatalf("unblocked successor delay=%v err=%v", delay, err)
+	}
+}

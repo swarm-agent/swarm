@@ -216,10 +216,19 @@ func (p *AutoPublisher) nextRetryDelay() (time.Duration, error) {
 	}
 	account := p.server.OutboxAccount()
 	now := time.Now()
+	seen := map[[2]string]bool{}
 	for _, item := range pending {
-		if item.Signal.Account == account {
-			delay = min(delay, max(time.Duration(0), item.NextAttempt.Sub(now)))
+		if item.Signal.Account != account {
+			continue
 		}
+		job := [2]string{item.Signal.Refs["worker_id"], item.Signal.Refs["run_id"]}
+		// Only the first pending signal for a job can run. Successors may
+		// have zero deadlines but cannot wake us ahead of their predecessor.
+		if seen[job] {
+			continue
+		}
+		seen[job] = true
+		delay = min(delay, max(time.Duration(0), item.NextAttempt.Sub(now)))
 	}
 	return delay, nil
 }
