@@ -9,6 +9,7 @@ export const PAGE_HTML = `<!doctype html>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --ink:#111418; --mute:#69707a; --line:#e3e6ea; --accent:#2340ff; --ok:#1f9d55; --warn:#c2410c; }
   * { box-sizing:border-box; margin:0; }
+  [hidden] { display:none !important; }
   body { font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--ink); }
   header { display:flex; align-items:center; gap:14px; padding:12px 20px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; }
   header h1 { font-size:16px; flex:1; }
@@ -345,9 +346,10 @@ function consoleApp() {
       const row = (k, v) => dl.append(el('dt', '', k), el('dd', '', v));
       const s = b.summary || {};
       if (!b.up) row('problem', b.error || 'unreachable');
+      if (b.up && b.note) row('note', b.note);
       if (b.kind === 'status') {
         for (const [k, v] of Object.entries(s).slice(0, 10)) if (typeof v !== 'object') row(k.replace(/_/g, ' '), String(v));
-      } else if (b.up) {
+      } else if (b.up && b.summary) {
         row('waiting for a person', String(s.conversations?.waiting_for_person ?? 0));
         row('chats today', String(s.conversations?.today ?? 0));
         row('chats kept', String(s.conversations?.total ?? 0));
@@ -357,6 +359,7 @@ function consoleApp() {
         row('running since', s.started_at ? new Date(s.started_at).toLocaleString() : '?');
         if (state.hours) row('online hours', describe(scheduleOf(b.id)));
       }
+      card.append(dl);
       if (b.kind === 'gateway') { const open = el('button', '', 'Open'); open.style.marginTop = '10px'; open.addEventListener('click', () => showBot(b.id)); card.append(open); }
       return card;
     }));

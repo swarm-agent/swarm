@@ -139,6 +139,8 @@ async function summaryOf(env, bot, deps) {
   try {
     const res = await botFetch(env, bot, '/ops/summary', { method: 'GET', signal: AbortSignal.timeout(8000) }, deps);
     const data = await res.json().catch(() => ({}));
+    // An older gateway without /ops/summary still answers its other routes: up, but no numbers.
+    if (res.status === 404 && bot.kind === 'gateway') return { ...publicBot(bot), up: true, ms: Date.now() - started, summary: null, note: 'gateway too old for a summary (update it)' };
     if (!res.ok) return { ...publicBot(bot), up: false, error: `HTTP ${res.status}` };
     return { ...publicBot(bot), up: true, ms: Date.now() - started, summary: data };
   } catch (error) {

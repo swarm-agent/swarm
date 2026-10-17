@@ -98,6 +98,12 @@ test('the overview reads every bot; a status-only bot uses its bearer key', asyn
   assert.equal(data.bots[1].summary.conversations.waiting_for_person, 2);
   assert.equal(data.bots[2].summary.auth, 'Bearer nf-key');
   assert.ok(data.bots.every((b) => b.up));
+  const old = makeEnv();
+  old.GW_ARRANGE = { fetch: async () => new Response('not found', { status: 404 }) };
+  const o = await (await handle(await req('/bots/summary'), old, { fetchImpl })).json();
+  assert.equal(o.bots[0].up, true);
+  assert.equal(o.bots[0].summary, null);
+  assert.match(o.bots[0].note, /too old/);
 });
 
 test('hours: validated, stored, one schedule for all or a bot its own', async () => {
