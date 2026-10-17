@@ -89,8 +89,29 @@ if [[ -n "${whole_repo_reason}" ]]; then
   echo "[prepush] path checks scan the whole repository: ${whole_repo_reason}"
 fi
 
+# The same commits already passed every check below on this machine (keyed by
+# their patch IDs, so the key survives a rebase onto commits that landed on the
+# remote meanwhile): skip the repeat. Without this a protected push re-runs
+# minutes of checks after every rebase, and a busy dev moves on before the
+# push is sent. Only the commits being pushed are keyed; the whole-repository
+# path never uses the record.
+pass_key=""
+if [[ -z "${whole_repo_reason}" ]]; then
+  pass_key="$(git format-patch --stdout "${SWARM_CHECK_BASE}..${SWARM_CHECK_HEAD}" | git patch-id --stable | cut -d' ' -f1 | sort | sha256sum | cut -d' ' -f1)"
+  pass_dir="$(git rev-parse --git-common-dir)/swarm-prepush-passed"
+  if [[ -n "${pass_key}" && -f "${pass_dir}/${pass_key}" ]]; then
+    echo "[prepush] these commits already passed every check on this machine; not repeating"
+    echo "[prepush] PASS"
+    exit 0
+  fi
+fi
+
 echo "[prepush] running repository guard checks before objects are sent"
 "${SCRIPT_DIR}/check-precommit.sh"
 echo "[prepush] running critical fast tests"
 bash "${SCRIPT_DIR}/run-critical-tests.sh" fast
+if [[ -n "${pass_key}" ]]; then
+  mkdir -p "${pass_dir}"
+  : > "${pass_dir}/${pass_key}"
+fi
 echo "[prepush] PASS"

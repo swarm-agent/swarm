@@ -15,6 +15,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 - Fix Cloud Build landing argument limits by uploading the runner script and fetching it through a small SHA256-verifying bootstrap. Docs impact: none.
 - Wire `landing_parallel` into per-folder merge trains with concurrent candidate checks, ordered pushes, suffix retesting and interrupted-push reconciliation. Jobs arriving while a train is running join it immediately, stacked on the last candidate. Docs impact: docs/runners.md
 
+- Pushing dev from a workstation no longer loses the race against machines that land on dev all the time. The pre-push check remembers commits that passed every check (keyed by patch ID, so a rebase keeps the record), and `scripts/push-dev.sh` rebases onto the remote, runs the checks before any key is needed, then fetches, rebases and pushes over one SSH connection, retrying on that connection if dev moved. Docs impact: docs/swarm-atlas.md.
 - Persist Cloud Build landing Go build/test, module and pnpm caches with bounded, best-effort archive restore and atomic publication. Docs impact: docs/runners.md
 - Preserve OK reviews across patch-identical landing rebases and route changed patches to rebase-scoped review without consuming coder fix rounds. Docs impact: none.
 - Include immutable landing-base and rebase comparison SHAs in pipeline review briefs, and classify missing base metadata as review infrastructure failure. Docs impact: none.
