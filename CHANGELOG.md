@@ -7,6 +7,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 ## Unreleased
 
 - Pull-request delivery brings the job's head commit from its clone into the folder before running the publish command; it failed with "commit is not in the folder" for every worker job. Docs impact: none.
+- A job in a folder that syncs with its forge now sees the synced commit as its clone's `origin/<branch>` and local `<branch>`, not the folder's lagging branch, so a worker asked to rebase onto the current base no longer moves its work onto an older commit. Docs impact: none.
 - A follow-up that ends while daemon Git is still starting in the job's sandbox no longer marks the job blocked: the container removal is deferred to the next sweep, a deferral is not recorded as a cleanup failure, and a job blocked only by container cleanup still shows its result so it can be delivered. Docs impact: none.
 - Bound Git pack memory when cloning worker jobs and review checkouts. Docs impact: none.
 - Use the full landing CPU budget and run test groups concurrently in `scripts/test-vital.sh`. Docs impact: none.
