@@ -6,6 +6,51 @@ RUNNER_RUNTIME_STATE=/run/swarm-runner/state
 
 runner_require_root() { [[ $EUID -eq 0 ]] || die "run as root"; }
 
+# Use the same isolated bridge and boot-time firewall as the headless host.
+# Runners have no secrets gateway, so no host port is opened.
+runner_sandbox_setup() {
+  install -d "$UNITS/swarm-runner.service.d"
+  cat >"$UNITS/swarm-sandbox-firewall.service" <<UNIT
+[Unit]
+Description=Keep Swarm's agent sandboxes off this server and private networks
+After=docker.service ufw.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=SWARM_SANDBOX_NETWORK=swarm-sandbox SWARM_SANDBOX_BRIDGE=br-swarm-sbx SWARM_SANDBOX_SUBNET=172.31.251.0/24 SWARM_SANDBOX_GATEWAY_PORT=
+ExecStart=/bin/bash $RUNNER_STATE/src/containers/sandbox/firewall.sh
+
+[Install]
+WantedBy=multi-user.target docker.service
+UNIT
+  cat >"$UNITS/swarm-runner.service.d/sandbox.conf" <<'UNIT'
+[Unit]
+After=swarm-sandbox-firewall.service
+Requires=swarm-sandbox-firewall.service
+UNIT
+  systemctl daemon-reload
+  systemctl enable swarm-sandbox-firewall.service
+  systemctl restart swarm-sandbox-firewall.service || die "runner sandbox firewall setup failed"
+}
+
+runner_sandbox_build() {
+  local commit=$1
+  if ! docker image inspect "swarm-sandbox:$commit" >/dev/null 2>&1; then
+    docker build --platform linux/amd64 -t "swarm-sandbox:$commit" "$RUNNER_STATE/src/containers/sandbox" ||
+      die "runner sandbox image build failed"
+  fi
+}
+
+runner_service_exists() {
+  local state
+  state=$(systemctl show --property=LoadState --value swarm-runner.service) || die "could not inspect runner service"
+  [[ -n $state ]] || die "could not determine runner service load state"
+  [[ $state != not-found ]]
+}
+
 runner_build() {
   local ref=$1 commit
   install -d -m 0755 "$RUNNER_STATE" "$RUNNER_OPT/releases"
@@ -22,10 +67,13 @@ runner_build() {
     --build-arg BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     -o "type=local,dest=$RUNNER_OPT/releases/$commit" "$RUNNER_STATE/src"
   chmod -R u=rwX,go=rX "$RUNNER_OPT/releases/$commit"
+  runner_sandbox_build "$commit"
   RUNNER_RELEASE=$RUNNER_OPT/releases/$commit
 }
 
 runner_activate() {
+  runner_sandbox_setup
+  docker tag "swarm-sandbox:${RUNNER_RELEASE##*/}" swarm-sandbox:local || die "runner sandbox image activation failed"
   ln -sfn "$RUNNER_RELEASE" "$RUNNER_OPT/current.new"
   mv -Tf "$RUNNER_OPT/current.new" "$RUNNER_OPT/current"
   ln -sfn "$RUNNER_OPT/current/bin/swarmctl" "$SWARMCTL"
@@ -46,7 +94,7 @@ install_runner() {
   if command -v snap >/dev/null && snap list docker >/dev/null 2>&1; then
     die "remove snap Docker before installing a runner"
   fi
-  local packages=(git curl ca-certificates gnupg)
+  local packages=(git curl ca-certificates gnupg iptables)
   if ! command -v docker >/dev/null || ! docker buildx version >/dev/null 2>&1; then
     packages+=(docker.io docker-buildx)
   fi
@@ -69,7 +117,7 @@ install_runner() {
 
 update_runner() {
   runner_require_root
-  local ref elapsed=0
+  local ref elapsed=0 service_present=no
   ref=$(cat "$RUNNER_CONF/ref")
   [[ $ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "invalid saved runner ref"
   runner_build "$ref"
@@ -81,7 +129,10 @@ update_runner() {
     sleep 2
     elapsed=$((elapsed + 2))
   done
-  systemctl stop swarm-runner.service || die "runner stop failed; release built but not activated"
+  if runner_service_exists; then
+    service_present=yes
+    systemctl stop swarm-runner.service || die "runner stop failed; release built but not activated"
+  fi
   runner_activate
-  if [[ -f $RUNNER_CONF/credential ]]; then systemctl start swarm-runner.service; fi
+  if [[ $service_present == yes && -f $RUNNER_CONF/credential ]]; then systemctl start swarm-runner.service; fi
 }
