@@ -52,7 +52,16 @@ docker() {
   echo "docker $*" >>"$log"
   if [[ $1 == image ]]; then [[ $image_exists == yes ]]; return; fi
   if [[ $1 == network && $2 == inspect ]]; then return 1; fi
-  if [[ $* == *runner-export* ]]; then mkdir -p "$RUNNER_OPT/releases/$fixture_commit/bin"; fi
+  if [[ $* == *runner-export* ]]; then
+    mkdir -p "$RUNNER_OPT/releases/$fixture_commit/bin"
+    cat >"$RUNNER_OPT/releases/$fixture_commit/bin/swarmctl" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $(readlink "$RUNNER_OPT/current") == "${0%/bin/swarmctl}" ]] || exit 1
+echo "$0 $*" >>"$log"
+SCRIPT
+    chmod +x "$RUNNER_OPT/releases/$fixture_commit/bin/swarmctl"
+  fi
 }
 systemctl() {
   echo "systemctl $*" >>"$log"
@@ -69,7 +78,7 @@ systemctl() {
 }
 iptables() { echo "iptables $*" >>"$log"; }
 ip6tables() { echo "ip6tables $*" >>"$log"; }
-export log image_exists RUNNER_STATE
+export log image_exists RUNNER_STATE RUNNER_OPT
 export -f docker iptables ip6tables
 id() { return 1; }
 useradd() { echo "useradd $*" >>"$log"; }
@@ -102,6 +111,7 @@ fixture_commit=second
 update_runner
 [[ $(readlink "$RUNNER_OPT/current") == "$RUNNER_OPT/releases/second" ]] || fail 'update before join activation'
 ! grep -Eq 'systemctl (stop|start) swarm-runner.service' "$log" || fail 'absent service touched'
+! grep -q 'runner unit' "$log" || fail 'unjoined unit refreshed'
 grep -q 'docker build --platform linux/amd64 -t swarm-sandbox:second' "$log" || fail 'update image build'
 grep -q 'docker tag swarm-sandbox:second swarm-sandbox:local' "$log" || fail 'update image activation'
 : >"$log"
@@ -119,6 +129,12 @@ if (update_runner) >"$work/error" 2>&1; then fail 'failed stop activated'; fi
 stop_fails=no
 update_runner
 grep -q 'systemctl start swarm-runner.service' "$log" || fail start
+# Purpose: update_runner must invoke the newly activated release's unit command
+# before start; the executable fixture rejects calls before symlink activation.
+[[ $(grep -E '/bin/swarmctl runner unit|systemctl start swarm-runner.service' "$log") == "$RUNNER_OPT/releases/third/bin/swarmctl runner unit"$'\nsystemctl start swarm-runner.service' ]] || fail 'new release unit refresh before start'
+: >"$log"
+install_runner --ref dev >"$work/output"
+grep -Fxq "$RUNNER_OPT/releases/third/bin/swarmctl runner unit" "$log" || fail 'joined install unit refresh'
 systemctl() { if [[ $1 == show ]]; then echo loaded; else [[ $1 == is-active ]]; fi; }
 sleep() { :; } # bounded wait control, not a workload or benchmark
 if (update_runner) >"$work/error" 2>&1; then fail 'active runner updated'; fi

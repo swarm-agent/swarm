@@ -43,7 +43,7 @@ var runnerCLIName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
 func (c runnerCLI) command(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: swarmctl runner token [--name NAME] | list | remove NAME | join HUB_URL [--name NAME] | status")
+		return fmt.Errorf("usage: swarmctl runner token [--name NAME] | list | remove NAME | join HUB_URL [--name NAME] | unit | status")
 	}
 	switch args[0] {
 	case "token":
@@ -137,6 +137,24 @@ func (c runnerCLI) command(args []string) error {
 			}
 		}
 		return nil
+	case "unit":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: runner unit")
+		}
+		if err := c.root([]string{"runner", "unit"}); err != nil {
+			return err
+		}
+		info, err := os.Stat(filepath.Join(c.config, "credential"))
+		if os.IsNotExist(err) {
+			return fmt.Errorf("runner is not joined")
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("runner credential is not a regular file")
+		}
+		return c.writeUnit()
 	case "join":
 		return c.join(args)
 	default:
@@ -223,7 +241,15 @@ func (c runnerCLI) join(args []string) error {
 	if err = c.write(filepath.Join(c.config, "runner.env"), fmt.Sprintf("SWARM_RUNNER_HUB=\"%s\"\nSWARM_RUNNER_NAME=\"%s\"\n", strings.TrimRight(args[1], "/"), name), 0600); err != nil {
 		return err
 	}
-	unit := `[Unit]
+	if err = c.writeUnit(); err != nil {
+		return err
+	}
+	return c.run("systemctl", "enable", "--now", runnerUnit)
+}
+
+// writeUnit owns only the join-generated unit, not installer-owned drop-ins.
+func (c runnerCLI) writeUnit() error {
+	const unit = `[Unit]
 Description=Swarm runner
 After=network-online.target docker.service
 Wants=network-online.target
@@ -245,11 +271,22 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 `
-	if err = c.write(filepath.Join(c.units, runnerUnit), unit, 0644); err != nil {
+	path := filepath.Join(c.units, runnerUnit)
+	previous, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err = c.run("systemctl", "daemon-reload"); err != nil {
+	status := "unchanged"
+	if string(previous) != unit {
+		if err := c.write(path, unit, 0644); err != nil {
+			return err
+		}
+		status = "changed"
+	}
+	// Reload even on an unchanged retry after a previous reload failure.
+	if err := c.run("systemctl", "daemon-reload"); err != nil {
 		return err
 	}
-	return c.run("systemctl", "enable", "--now", runnerUnit)
+	_, err = fmt.Fprintf(c.out, "%s %s\n", runnerUnit, status)
+	return err
 }
