@@ -168,9 +168,15 @@ func (s *SessionStore) CalculateCostWithStatus(provider, model string, inputToke
 	if provider == "codex" {
 		return 0.0, "subscription"
 	}
+	// Vertex AI runs Google's Gemini models and is priced from google's
+	// catalog records (the catalog keeps no separate vertex entries).
+	catalogProvider := provider
+	if catalogProvider == "vertex" {
+		catalogProvider = "google"
+	}
 	if s != nil && s.store != nil {
 		catalogStore := NewModelCatalogStore(s.store)
-		if rec, found, err := catalogStore.GetRecord(provider, model); err == nil && found && len(rec.Pricing) > 0 {
+		if rec, found, err := catalogStore.GetRecord(catalogProvider, model); err == nil && found && len(rec.Pricing) > 0 {
 			var p struct {
 				InputPricePerMillion       *float64 `json:"input_price_per_million_tokens"`
 				OutputPricePerMillion      *float64 `json:"output_price_per_million_tokens"`
