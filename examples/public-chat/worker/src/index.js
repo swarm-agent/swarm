@@ -1,7 +1,8 @@
 // Public edge for the chat: the only internet-facing piece. It admits browser
 // requests from the site's own origins, rate-limits per IP, caps sizes, checks
 // a Turnstile once per visitor (then a signed 24 h ticket), and forwards to the
-// gateway through a Cloudflare Tunnel protected by an Access service token.
+// gateway through a Cloudflare Tunnel protected by an Access service token, or
+// privately through a Workers VPC binding (GATEWAY) with no public hostname.
 // When the gateway is unreachable or the chat is paused, it says so and the
 // widget falls back to its built-in answers.
 
@@ -67,19 +68,22 @@ export async function handle(request, env, { fetchImpl = fetch, now = Date.now }
   const humanCheck = Boolean(env.TURNSTILE_SECRET) || env.REQUIRE_TURNSTILE === 'true';
   if (humanCheck && !(env.TURNSTILE_SECRET && env.TICKET_SECRET)) return reply(503, { status: 'unavailable', fallback: true });
 
+  // With a Workers VPC binding (GATEWAY) the gateway has no public hostname at all: the
+  // request goes through the tunnel privately, so there is no Access app to authorize.
+  const viaVpc = typeof env.GATEWAY?.fetch === 'function';
   const gatewayHeaders = {
     'Content-Type': 'application/json',
     'X-Gateway-Key': env.GATEWAY_SECRET ?? '',
-    'CF-Access-Client-Id': env.ACCESS_CLIENT_ID ?? '',
-    'CF-Access-Client-Secret': env.ACCESS_CLIENT_SECRET ?? '',
+    ...(viaVpc ? {} : { 'CF-Access-Client-Id': env.ACCESS_CLIENT_ID ?? '', 'CF-Access-Client-Secret': env.ACCESS_CLIENT_SECRET ?? '' }),
   };
+  const send = viaVpc ? (path, init) => env.GATEWAY.fetch(`http://${env.GATEWAY_HOST || 'gateway:8080'}${path}`, init) : (path, init) => fetchImpl(env.GATEWAY_URL + path, init);
   // A keyed hash of the visitor's IP, so staff can block a network: the gateway
   // gets a stable token, never the address. Off when no secret is configured.
   const netSecret = env.NET_SECRET || env.TICKET_SECRET;
   if (netSecret && ip !== 'unknown') gatewayHeaders['X-Visitor-Net'] = (await hmac(netSecret, `net:${ip}`)).slice(0, 22);
   const forward = async (path, init) => {
     try {
-      const res = await fetchImpl(env.GATEWAY_URL + path, { ...init, headers: gatewayHeaders, signal: AbortSignal.timeout(55_000) });
+      const res = await send(path, { ...init, headers: gatewayHeaders, signal: AbortSignal.timeout(55_000) });
       const data = await res.json().catch(() => ({}));
       if (res.status >= 500) return reply(503, { status: data.status ?? 'unavailable', fallback: data.status !== 'busy' && data.status !== 'resting' });
       return reply(res.status, data);

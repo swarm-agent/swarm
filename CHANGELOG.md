@@ -8,6 +8,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Add configurable runner slots and opt-in idle power-off, and document runner capacity, caches, private gateway access and wake configuration. Docs impact: docs/runners.md.
 
+- The public-chat edge Worker can reach its gateway through a Workers VPC binding (`GATEWAY`), so the gateway needs no public hostname, DNS record or Access app; without the binding it calls `GATEWAY_URL` with the Access service token as before. Docs impact: none.
 - `sudo swarmctl workspace ...` and `sudo swarmctl idle-off ...` work again on headless installs. The `swarmctl` wrapper always switched to Swarm's own user, so these root-only commands always refused with "run as root" (the installer's own workspace step hit it too). Root now runs them directly. Docs impact: none.
 - `swarmctl setup daily-limit` without `--usd` now only shows the cap and today's spend; turning the cap off takes an explicit `--usd 0`. A bare call used to switch a live cap off. Docs impact: none.
 - Vertex AI usage now counts toward the daily spend cap. Cost was looked up under provider `vertex`, which the model catalog does not keep (Vertex runs Google's models), so every Vertex turn cost 0 and the cap never tripped. It is priced from Google's catalog records. Docs impact: none.

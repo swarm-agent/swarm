@@ -185,3 +185,19 @@ test('the replies poll passes only checked wait, typing and state; typing needs 
   assert.equal(limited, 0, 'typing skips the per-IP limit');
   assert.deepEqual(JSON.parse(gw.seen.at(-1).init.body), { visitor_id: VISITOR });
 });
+
+test('with a Workers VPC binding the gateway is called privately, without Access headers or a public URL', async () => {
+  const seen = [];
+  const GATEWAY = { fetch: async (url, init) => { seen.push({ url, init }); return Response.json({ status: 'answered', reply: 'hi' }); } };
+  const { fetchImpl, seen: publicCalls } = gatewayStub();
+  const res = await handle(post({ visitor_id: VISITOR, message: 'hi' }), env({ GATEWAY, GATEWAY_URL: undefined, ACCESS_CLIENT_ID: undefined, ACCESS_CLIENT_SECRET: undefined }), { fetchImpl });
+  assert.equal(res.status, 200);
+  assert.equal(publicCalls.length, 0);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, 'http://gateway:8080/chat');
+  assert.equal(seen[0].init.headers['X-Gateway-Key'], 'gw-secret');
+  assert.equal(seen[0].init.headers['CF-Access-Client-Id'], undefined);
+  const custom = await handle(post({ visitor_id: VISITOR, message: 'hi' }), env({ GATEWAY, GATEWAY_HOST: 'chat-gw:9000' }), { fetchImpl });
+  assert.equal(custom.status, 200);
+  assert.equal(seen[1].url, 'http://chat-gw:9000/chat');
+});
