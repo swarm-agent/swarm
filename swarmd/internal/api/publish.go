@@ -193,9 +193,36 @@ type AutoPublisher struct {
 const (
 	autoPublishPendingKey = "publish_meta/pending"
 	autoPublishCursorKey  = "publish_meta/cursor"
-	autoPublishMaxRetries = 20
-	autoPublishRetryDelay = 90 * time.Second // at most about 30 minutes of assessment waits
+	autoPublishMaxRetries = 35 // 34 waits total about 30 minutes
 )
+
+// autoPublishRetryDelay uses the number of failed attempts (one-based).
+func autoPublishRetryDelay(attempt int) time.Duration {
+	if attempt >= 6 {
+		return time.Minute
+	}
+	return 2 * time.Second * time.Duration(1<<max(attempt-1, 0))
+}
+
+// nextRetryDelay reads durable deadlines so restarts preserve the same schedule.
+func (p *AutoPublisher) nextRetryDelay() (time.Duration, error) {
+	delay := 30 * time.Second
+	if p.server.publishConfig == "" {
+		return delay, nil
+	}
+	var pending []autoPublishPending
+	if _, err := p.state.GetJSON(autoPublishPendingKey, &pending); err != nil {
+		return delay, err
+	}
+	account := p.server.OutboxAccount()
+	now := time.Now()
+	for _, item := range pending {
+		if item.Signal.Account == account {
+			delay = min(delay, max(time.Duration(0), item.NextAttempt.Sub(now)))
+		}
+	}
+	return delay, nil
+}
 
 // NewAutoPublisher reads the machine's signal feed from the last delivered
 // job onwards.
@@ -207,6 +234,7 @@ func (s *Server) NewAutoPublisher(feed outbox.Feed, state *pebblestore.Store) *A
 func (p *AutoPublisher) Run(ctx context.Context) {
 	// Landing can take minutes; never block ingestion of other finished jobs.
 	landingDone := make(chan struct{})
+	landingWake := p.server.landingWakeChannel()
 	go func() {
 		defer close(landingDone)
 		for ctx.Err() == nil {
@@ -219,6 +247,8 @@ func (p *AutoPublisher) Run(ctx context.Context) {
 				timer.Stop()
 				return
 			case <-timer.C:
+			case <-landingWake:
+				timer.Stop()
 			}
 		}
 	}()
@@ -228,7 +258,11 @@ func (p *AutoPublisher) Run(ctx context.Context) {
 			log.Printf("auto publish ingestion: %v", err)
 		}
 		// Retry deadlines belong to individual signals, not the feed.
-		timer := time.NewTimer(30 * time.Second)
+		delay, err := p.nextRetryDelay()
+		if err != nil && ctx.Err() == nil {
+			log.Printf("auto publish retry deadline: %v", err)
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -311,7 +345,7 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 			if err := attempt(item.Signal); err != nil {
 				p.mu.Lock()
 				item.Attempts = p.attempts[item.Signal.Seq]
-				item.NextAttempt = time.Now().Add(autoPublishRetryDelay)
+				item.NextAttempt = time.Now().Add(autoPublishRetryDelay(item.Attempts))
 				p.mu.Unlock()
 				remaining = append(remaining, item)
 			}
@@ -343,7 +377,7 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 						p.mu.Lock()
 						tries := p.attempts[sig.Seq]
 						p.mu.Unlock()
-						pending = append(pending, autoPublishPending{Signal: sig, Attempts: tries, NextAttempt: time.Now().Add(autoPublishRetryDelay)})
+						pending = append(pending, autoPublishPending{Signal: sig, Attempts: tries, NextAttempt: time.Now().Add(autoPublishRetryDelay(tries))})
 						if err := p.state.PutJSON(autoPublishPendingKey, pending); err != nil {
 							return err
 						}
