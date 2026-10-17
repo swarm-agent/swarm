@@ -328,10 +328,24 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 	// its own deadline; unrelated feed activity must not exhaust its budget.
 	retries := len(pending)
 	account := p.server.OutboxAccount()
+	newSignals := false
 	retryPending := func() error {
 		remaining := make([]autoPublishPending, 0, len(pending))
-		for _, item := range pending[:retries] {
-			if time.Now().Before(item.NextAttempt) {
+		blocked := map[string]bool{}
+		for index, item := range pending[:retries] {
+			// Recheck between slow attempts, not only before the entire backlog.
+			page, err := p.feed.ListAfter(cursor, 1, pebblestore.SignalFilter{Account: account})
+			if err != nil {
+				return err
+			}
+			if len(page.Signals) > 0 {
+				newSignals = true
+				remaining = append(remaining, pending[index:retries]...)
+				break
+			}
+			job := item.Signal.Account + ":" + item.Signal.Refs["worker_id"] + ":" + item.Signal.Refs["run_id"]
+			if blocked[job] || time.Now().Before(item.NextAttempt) {
+				blocked[job] = true
 				remaining = append(remaining, item)
 				continue
 			}
@@ -344,6 +358,7 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 			p.mu.Unlock()
 			if err := attempt(item.Signal); err != nil {
 				p.mu.Lock()
+				blocked[job] = true
 				item.Attempts = p.attempts[item.Signal.Seq]
 				item.NextAttempt = time.Now().Add(autoPublishRetryDelay(item.Attempts))
 				p.mu.Unlock()
@@ -363,11 +378,23 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 				// A crash after retry handoff but before cursor persistence can
 				// leave the same signal in both places. Do not duplicate it.
 				deferred := false
+				ordered := false
 				for _, item := range pending {
+					if item.Signal.Account == sig.Account && item.Signal.Refs["worker_id"] == sig.Refs["worker_id"] && item.Signal.Refs["run_id"] == sig.Refs["run_id"] {
+						ordered = true
+					}
 					if item.Signal.Seq == sig.Seq {
 						deferred = true
 						break
 					}
+				}
+				if !deferred && ordered {
+					pending = append(pending, autoPublishPending{Signal: sig})
+					retries = len(pending)
+					if err := p.state.PutJSON(autoPublishPendingKey, pending); err != nil {
+						return err
+					}
+					deferred = true
 				}
 				if !deferred {
 					if err := attempt(sig); err != nil {
@@ -399,6 +426,11 @@ func (p *AutoPublisher) consume(ctx context.Context, deliver func(context.Contex
 			if err := retryPending(); err != nil {
 				return err
 			}
+			if newSignals {
+				newSignals = false
+				retries = len(pending)
+				continue
+			}
 			return errors.Join(failures...)
 		}
 	}
@@ -420,6 +452,9 @@ type autoPublishRunState struct {
 // base even when the delivery assessment could not read its lane), wait while
 // it is not settled or its commits are not assessed yet, else deliver it.
 func autoPublishNext(status string, result map[string]any, run *autoPublishRunState) int {
+	if run != nil && run.settled && run.workerBlocked && !run.active && !run.recovering {
+		return autoPublishSkip
+	}
 	if status == "blocked" {
 		if run == nil || run.active || run.recovering || !run.settled || !run.workerBlocked {
 			return autoPublishWait
@@ -454,43 +489,70 @@ func (s *Server) pipelineCall(ctx context.Context) (*controlMCPCall, error) {
 	return s.internalCall(ctx, "sessions:read", "sessions:write", "projects:read", "projects:write", "swarm:read", "agents:read", "automations:read", "automations:write", "signals:read")
 }
 
-func (p *AutoPublisher) logDecision(sig pebblestore.Signal, decision, reason string) {
-	log.Printf("auto publish signal=%d job=%s %s reason=%q", sig.Seq,
+func (p *AutoPublisher) logDecision(sig pebblestore.Signal, decision, reason string, started ...time.Time) {
+	var took time.Duration
+	if len(started) > 0 {
+		took = time.Since(started[0])
+	}
+	log.Printf("auto publish signal=%d job=%s %s reason=%q took=%s", sig.Seq,
 		controlMCPJobID(controlMCPJobWorker, sig.Refs["worker_id"], sig.Refs["run_id"]),
-		decision, controlMCPTruncate(reason, 200))
+		decision, controlMCPTruncate(reason, 200), took.Round(time.Millisecond))
 }
 
 // skip acknowledges only this signal, never the job: later completion signals
 // must read the current job again, including after a publisher restart.
-func (p *AutoPublisher) skip(sig pebblestore.Signal, reason string) error {
+func (p *AutoPublisher) skip(sig pebblestore.Signal, reason string, started ...time.Time) error {
 	p.mu.Lock()
 	delete(p.attempts, sig.Seq)
 	p.mu.Unlock()
-	p.logDecision(sig, "skip", reason)
+	p.logDecision(sig, "skip", reason, started...)
 	return nil
 }
 
 func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) error {
+	started := time.Now()
+	skip := func(reason string) error { return p.skip(sig, reason, started) }
+	retry := func(err error) error { return p.retry(sig, err, started) }
 	workerID, runID := sig.Refs["worker_id"], sig.Refs["run_id"]
 	if !controlMCPSafeID.MatchString(workerID) || !controlMCPSafeID.MatchString(runID) {
-		return p.skip(sig, "invalid worker or run id")
+		return skip("invalid worker or run id")
 	}
 	c, err := p.server.pipelineCall(ctx)
 	if err != nil {
-		return p.retry(sig, err) // owner initialization may still be in progress
+		return retry(err) // owner initialization may still be in progress
+	}
+	principal, _ := PrincipalFromRequest(c.request)
+	job := controlMCPJobID(controlMCPJobWorker, workerID, runID)
+	q, err := p.server.landingQueue()
+	if err != nil {
+		return retry(err)
+	}
+	entry, _, err := q.Get(principal.AccountScopeID, job)
+	if err != nil {
+		return retry(err)
+	}
+	if entry.State == "landed" {
+		return skip("job already landed")
+	}
+	var pipeline ReviewPipeline
+	if _, err := p.state.GetJSON(pipelineKey(principal.AccountScopeID, job), &pipeline); err != nil {
+		return retry(err)
+	}
+	if pipeline.Next == "review_exhausted" {
+		return skip("review rounds exhausted")
 	}
 	view, err := c.jobView(controlMCPJobWorker, workerID, runID, 0, false, 0)
 	if err != nil {
-		return p.retry(sig, err)
+		return retry(err)
 	}
 	result := controlMCPJobResultJSON(view)
 	status, _ := view["status"].(string)
 	if result["delivery_state"] == "report_only" {
-		return p.skip(sig, "report-only job")
+		return skip("report-only job")
 	}
 	refs, err := c.jobRefs(controlMCPJobWorker, workerID, runID)
 	if err != nil {
-		return p.retry(sig, err)
+		return retry(err)
 	}
 	run := &autoPublishRunState{}
 	run.active, _ = view["run_active"].(bool)
@@ -499,39 +561,42 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 	case "succeeded", "failed", "cancelled":
 		run.settled = true
 	}
-	if status == "blocked" && refs.sessionID != "" {
+	if refs.sessionID != "" {
 		lifecycle, ok, err := p.server.sessions.GetLifecycle(refs.sessionID)
 		if err != nil {
-			return p.retry(sig, err)
+			return retry(err)
 		}
 		// task_progress blocked preserves its requested phase and reason at
 		// lifecycle finish. A snapshot without an end is not a final outcome.
 		run.workerBlocked = ok && lifecycle.EndedAt > 0 && lifecycle.Phase == "blocked" && strings.TrimSpace(lifecycle.StopReason) != ""
 		run.active = run.active || (ok && lifecycle.Active)
 	}
+	if run.settled && run.workerBlocked && !run.active && !run.recovering {
+		return skip("worker settled and blocked")
+	}
 	if autoPublishNext(status, result, run) == autoPublishSkip {
 		if result["delivery_state"] == "unavailable" {
-			return p.skip(sig, fmt.Sprintf("status %q: assessment unavailable (%s): %s", status, controlMCPString(result, "delivery_reason_code"), controlMCPString(result, "delivery_reason")))
+			return skip(fmt.Sprintf("status %q: assessment unavailable (%s): %s", status, controlMCPString(result, "delivery_reason_code"), controlMCPString(result, "delivery_reason")))
 		}
-		return p.skip(sig, fmt.Sprintf("status %q: job is not deliverable", status))
+		return skip(fmt.Sprintf("status %q: job is not deliverable", status))
 	}
 	if refs.run["role"] == "reviewer" {
-		return p.skip(sig, "reviewer job")
+		return skip("reviewer job")
 	}
 	rule, ok, err := p.server.publishRule(c.jobFolder(refs, result))
 	if err != nil {
-		return p.retry(sig, err)
+		return retry(err)
 	}
 	if !ok || !rule.Auto {
-		return p.skip(sig, "no automatic publish rule")
+		return skip("no automatic publish rule")
 	}
 	if sig.Kind == "job.reviewed" && !reviewGated(rule) {
-		return p.skip(sig, "rule does not require review")
+		return skip("rule does not require review")
 	}
 	// Recovery waits must not be acknowledged as missing review: without a
 	// final worker outcome this completion still needs a durable retry.
 	if status == "blocked" && autoPublishNext(status, result, run) == autoPublishWait {
-		return p.retry(sig, errAutoPublishWait)
+		return retry(errAutoPublishWait)
 	}
 	if rule.Pipeline {
 		// Follow-up may already have made the coder active when the process
@@ -546,9 +611,9 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		}
 		switch autoPublishNext(status, result, run) {
 		case autoPublishSkip:
-			return p.skip(sig, "job has no deliverable commits")
+			return skip("job has no deliverable commits")
 		case autoPublishWait:
-			return p.retry(sig, errAutoPublishWait)
+			return retry(errAutoPublishWait)
 		}
 		ready, err := c.advancePipeline(workerID, runID, refs, rule, result)
 		if err != nil {
@@ -575,9 +640,9 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 				return err
 			}
 			if chain.InfrastructureAttempts < 3 {
-				return p.retry(sig, errAutoPublishWait)
+				return retry(errAutoPublishWait)
 			}
-			return p.skip(sig, "review infrastructure retry budget exhausted")
+			return skip("review infrastructure retry budget exhausted")
 		}
 		if !ready {
 			var chain ReviewPipeline
@@ -585,9 +650,9 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 				return err
 			}
 			if chain.Next == "review_failed" && strings.HasPrefix(chain.Findings, "Review infrastructure") && chain.InfrastructureAttempts < 3 {
-				return p.retry(sig, errAutoPublishWait)
+				return retry(errAutoPublishWait)
 			}
-			return p.skip(sig, "review pipeline pending; awaiting review signal")
+			return skip("review pipeline pending; awaiting review signal")
 		}
 	}
 	// A missing review must not hold the signal cursor: a later durable
@@ -596,38 +661,38 @@ func (p *AutoPublisher) deliver(ctx context.Context, sig pebblestore.Signal) err
 		if err := c.requireLandAdmission(controlMCPJobWorker, workerID, runID, rule, result); err != nil {
 			var missing *missingLandReview
 			if errors.As(err, &missing) {
-				return p.skip(sig, err.Error())
+				return skip(err.Error())
 			}
-			return p.retry(sig, err)
+			return retry(err)
 		}
 	}
 	switch autoPublishNext(status, result, run) {
 	case autoPublishSkip:
-		return p.skip(sig, "job has no deliverable commits")
+		return skip("job has no deliverable commits")
 	case autoPublishWait:
-		return p.retry(sig, errAutoPublishWait)
+		return retry(errAutoPublishWait)
 	}
 	if _, err := c.publishJob(controlMCPJobWorker, workerID, runID, refs, rule, result, false); err != nil {
-		return p.retry(sig, err)
+		return retry(err)
 	}
 	p.mu.Lock()
 	delete(p.attempts, sig.Seq)
 	p.mu.Unlock()
-	p.logDecision(sig, "deliver", "job admitted for publishing")
+	p.logDecision(sig, "deliver", "job admitted for publishing", started)
 	return nil
 }
 
 // retry defers a job until delivered or its bounded retry budget is exhausted.
-func (p *AutoPublisher) retry(sig pebblestore.Signal, err error) error {
+func (p *AutoPublisher) retry(sig pebblestore.Signal, err error, started ...time.Time) error {
 	p.mu.Lock()
 	p.attempts[sig.Seq]++
 	tries := p.attempts[sig.Seq]
 	p.mu.Unlock()
 	if tries < autoPublishMaxRetries {
-		p.logDecision(sig, "wait", fmt.Sprintf("attempt %d: %v", tries, err))
+		p.logDecision(sig, "wait", fmt.Sprintf("attempt %d: %v", tries, err), started...)
 		return fmt.Errorf("auto publish %s: %w", sig.Refs["run_id"], err)
 	}
-	p.logDecision(sig, "give up", err.Error())
+	p.logDecision(sig, "give up", err.Error(), started...)
 	p.mu.Lock()
 	delete(p.attempts, sig.Seq)
 	p.mu.Unlock()
