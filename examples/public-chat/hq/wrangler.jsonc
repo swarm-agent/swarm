@@ -1,0 +1,26 @@
+// Bots HQ: one staff console for several public-chat bots. Put it on its own
+// hostname behind a Cloudflare Access application that allows only your team;
+// the Worker verifies the Access token as well. Each bot's gateway is reached
+// privately through a Workers VPC service (wrangler vpc service create NAME
+// --type http --tunnel-id TUNNEL --hostname gateway --http-port 8080), so no
+// gateway needs a public hostname. Deploy from this directory:
+//   npx wrangler kv namespace create bots-hq-state     (put its id below)
+//   npx wrangler secret put OPS_<BOT>                   (each gateway's OPS_SECRET, from a pipe)
+//   npx wrangler secret put ALERTS_AUTH                 (optional: "Authorization: Bearer ..." for ALERTS_URL)
+//   npx wrangler deploy
+{
+  "name": "bots-hq",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "yourteam.cloudflareaccess.com",
+    "ACCESS_AUD": "REPLACE_WITH_THE_ACCESS_APPLICATION_AUD",
+    "STAFF": "{\"you@example.com\": {\"name\": \"You\", \"role\": \"founder\", \"on_call\": true}}",
+    "BOTS": "[{\"id\": \"site-prod\", \"name\": \"example.com\", \"env\": \"production\", \"binding\": \"GW_SITE_PROD\", \"ops_secret\": \"OPS_SITE_PROD\"}]",
+    "CONSOLE_URL": "https://hq.example.com",
+    "ALERTS_URL": ""
+  },
+  "vpc_services": [{ "binding": "GW_SITE_PROD", "service_id": "REPLACE_WITH_VPC_SERVICE_ID" }],
+  "kv_namespaces": [{ "binding": "HQ_STATE", "id": "REPLACE_WITH_KV_NAMESPACE_ID" }],
+  "triggers": { "crons": ["* * * * *"] }
+}

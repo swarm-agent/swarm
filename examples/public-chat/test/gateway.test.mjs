@@ -544,3 +544,22 @@ test('the replies request is held open and answers as soon as a person types or 
     assert.equal((await g.call(`/chat/replies?visitor_id=${VISITOR}&after=99`, { method: 'GET' })).status, 200);
   } finally { await g.close(); }
 });
+
+test('the monitoring summary needs the ops key and reports activity, waiting people and spend', async () => {
+  const g = await start({ agentLabel: 'Remy (AI)' });
+  try {
+    assert.equal((await g.call('/ops/summary', { method: 'GET', ops: true, key: GATEWAY_KEY })).status, 401, 'the gateway key is not the ops key');
+    await g.call('/chat', { body: { visitor_id: VISITOR, message: 'hi' } });
+    const s = (await g.call('/ops/summary', { method: 'GET', ops: true, key: OPS_KEY })).data;
+    assert.equal(s.agent, 'frontdesk');
+    assert.equal(s.label, 'Remy (AI)');
+    assert.equal(s.conversations.total, 1);
+    assert.equal(s.conversations.today, 1);
+    assert.equal(s.conversations.waiting_for_person, 0);
+    assert.equal(s.events_today['conversation.started'], 1);
+    assert.equal(s.errors_today, 0);
+    assert.equal(s.staff_online, 0);
+    assert.deepEqual(s.spend, { today_usd: 0, cap_usd: 0, cap_on: false, over: false });
+    assert.match(s.day, /^\d{4}-\d{2}-\d{2}$/);
+  } finally { await g.close(); }
+});

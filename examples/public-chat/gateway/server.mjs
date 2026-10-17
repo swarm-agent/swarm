@@ -25,7 +25,9 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
   let inflight = 0;
   let readyAt = 0;
   // Every event goes to the staff console's feed and, if configured, the hub.
-  const emit = (type, data) => { feed.push(type, data); sendEvent(type, data); };
+  const daily = core.createDailyCounts({ now });
+  const startedAt = now();
+  const emit = (type, data) => { feed.push(type, data); daily.bump(type); sendEvent(type, data); };
   // The daemon refuses a run over the token's concurrency limit (429) before it
   // records the message, so the gateway can wait for a free slot and retry instead
   // of turning the visitor away. It gives up after busyWaitMs and answers busy.
@@ -234,6 +236,26 @@ export function gatewayHandler({ gateway, operator, config, visitors, emit: send
 
   async function ops(path, body, url) {
     if (path === '/ops/conversations') return [200, { conversations: visitors.list() }];
+    if (path === '/ops/summary') {
+      // One read for a monitoring hub: is the bot up, how busy, does anyone wait, what it spent.
+      const list = visitors.list();
+      const { day, counts } = daily.snapshot();
+      const dayStart = Date.parse(day + 'T00:00:00Z');
+      let waiting = 0;
+      for (const v of list) if ((await personOf(v.visitor_id))?.state === 'waiting') waiting += 1;
+      let spend = null;
+      try { const s = await gateway.agents.spendToday(); spend = { today_usd: s.today_cost_usd ?? 0, cap_usd: s.daily_cost_limit_usd ?? 0, cap_on: Boolean(s.enabled), over: Boolean(s.limit_exceeded) }; } catch { spend = null; }
+      return [200, {
+        agent: config.agentName, label: agentLabel, version: config.version || 'unknown',
+        started_at: startedAt, at: now(), day,
+        staff_online: presence.online().length,
+        conversations: { total: list.length, today: list.filter((v) => (v.created_at ?? 0) >= dayStart).length, waiting_for_person: waiting },
+        events_today: counts,
+        errors_today: counts['chat.error'] ?? 0,
+        latest_event: feed.latest(),
+        spend,
+      }];
+    }
     if (path === '/ops/presence') {
       if (!body?.id) return [200, { online: presence.online() }];
       const text = (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 40;
@@ -432,6 +454,7 @@ async function main() {
   const config = {
     swarmUrl: env.SWARM_API_URL ?? 'http://swarm:7783',
     agentName: env.AGENT_NAME ?? 'frontdesk',
+    version: env.GATEWAY_VERSION ?? '',
     workspacePath: env.WORKSPACE_PATH ?? '/project',
     dataDir: env.DATA_DIR ?? '/data',
     bookingUrl: env.BOOKING_URL ?? '',

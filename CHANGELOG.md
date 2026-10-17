@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- public-chat: Bots HQ (`examples/public-chat/hq`), one staff console for several bots and their staging/production sets: an overview of every bot (up, chats, people waiting, errors, spend against the cap), per-bot conversations with accept/take over/reply, online hours (one schedule for all bots or each its own; off, during hours, always) that sign the on-call team in and out, and phone alerts titled with the bot. Gateways are reached privately through Workers VPC services. The gateway gains `GET /ops/summary` (today's activity, waiting people, staff online, errors, spend) and an optional `GATEWAY_VERSION`. Docs impact: none.
 - `swarm_get_job` (and `swarm_give_job`) with `wait_seconds` now return at the deadline while a job is busy. The wait re-read the job's state on every event the running worker emitted, and each read looks at its worktree, so a 110 s wait stayed open for about 15 minutes while reporting `waited_seconds: 110`. Re-reads are now coalesced to one every 2 s, the deadline always wins, and `waited_seconds` is the real time. swarm-fleet also gives each forwarded call a total deadline (the wait plus 30 s) instead of an idle timer that every byte restarted. Docs impact: none.
 - Add configurable runner slots and opt-in idle power-off, and document runner capacity, caches, private gateway access and wake configuration. Docs impact: docs/runners.md.
 

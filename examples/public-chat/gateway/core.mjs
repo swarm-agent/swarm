@@ -104,6 +104,18 @@ export function createPresence({ ttlMs = 90_000, maxStaff = 20, now = Date.now }
  * Recent gateway events for the staff console to long-poll: each has a
  * sequence number, and wait() resolves as soon as something newer arrives.
  */
+/** Today's event counts by type (UTC day), for the monitoring summary. In memory: a restart starts over. */
+export function createDailyCounts({ now = Date.now } = {}) {
+  let day = '';
+  let counts = {};
+  const today = () => new Date(now()).toISOString().slice(0, 10);
+  const roll = () => { const d = today(); if (d !== day) { day = d; counts = {}; } };
+  return {
+    bump(type) { roll(); counts[type] = (counts[type] ?? 0) + 1; },
+    snapshot() { roll(); return { day, counts: { ...counts } }; },
+  };
+}
+
 export function createFeed({ max = 500, now = Date.now } = {}) {
   const events = [];
   const waiters = new Set();
