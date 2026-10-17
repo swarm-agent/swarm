@@ -589,6 +589,11 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 		}
 	}
 	if cleanup, _ := refs.run["sandbox_cleanup_error"].(string); cleanup != "" && status != "in_progress" && status != "failed" && status != "needs_input" && status != "waiting_on_approval" {
+		// Only the job's disposable container is left over; its commits are
+		// untouched, so the finished work stays readable and deliverable.
+		if status == "needs_review" || status == "completed" {
+			state["work_status"] = status
+		}
 		status = "blocked"
 	}
 	state["status"] = status
@@ -812,7 +817,7 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	}
 	status, _ := state["status"].(string)
 	committed := true
-	if refs.projectID != "" && (status == "needs_review" || status == "completed" || status == "failed") {
+	if refs.projectID != "" && (status == "needs_review" || status == "completed" || status == "failed" || state["work_status"] != nil) {
 		resultArgs := map[string]any{"project_id": refs.projectID, "task_id": refs.taskID, "include_diff": includeDiff}
 		if diffChars > 0 {
 			resultArgs["diff_chars"] = float64(diffChars)
@@ -842,7 +847,11 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	if refs.sessionID != "" {
 		out["session_id"] = refs.sessionID
 	}
-	if next := controlMCPJobNext(status, committed); next != "" {
+	nextStatus := status
+	if work, ok := state["work_status"].(string); ok {
+		nextStatus = work
+	}
+	if next := controlMCPJobNext(nextStatus, committed); next != "" {
 		out["next"] = next
 	}
 	result := controlMCPMap(out["result"])
