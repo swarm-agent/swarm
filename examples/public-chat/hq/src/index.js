@@ -11,6 +11,7 @@
 //              (no public hostname); or "url" with ACCESS_CLIENT_ID/SECRET for a
 //              gateway behind a Cloudflare Tunnel hostname protected by Access
 //   ops_secret the name of the Worker secret holding that gateway's OPS_SECRET
+//   alerts     false to skip this bot's phone alerts (e.g. while an older console still relays them)
 //   kind       "gateway" (default) or "status": a bot with only a read-only status
 //              URL ("url") and a bearer key secret ("key_secret"), shown in the overview
 // STAFF = {"email": {"name", "role", "on_call": true}}: who may sign in; on_call
@@ -110,6 +111,7 @@ export function botsFrom(env) {
     id: b.id, name: b.name.slice(0, 60), env: b.env === 'production' ? 'production' : 'staging', kind: b.kind === 'status' ? 'status' : 'gateway',
     binding: typeof b.binding === 'string' ? b.binding : '', url: typeof b.url === 'string' ? b.url : '',
     ops_secret: typeof b.ops_secret === 'string' ? b.ops_secret : '', key_secret: typeof b.key_secret === 'string' ? b.key_secret : '',
+    alerts: b.alerts !== false,
   }));
 }
 
@@ -255,7 +257,7 @@ export async function relayAlerts(env, { fetchImpl = fetch } = {}) {
   if (!env.ALERTS_URL || !env.ALERTS_AUTH || !env.HQ_STATE) return { relayed: 0, skipped: 'not configured' };
   const sendAlert = env.ALERTS ? (u, init) => env.ALERTS.fetch(u, init) : fetchImpl;
   let relayed = 0;
-  for (const bot of botsFrom(env).filter((b) => b.kind === 'gateway')) {
+  for (const bot of botsFrom(env).filter((b) => b.kind === 'gateway' && b.alerts)) {
     const key = `cursor:${bot.id}`;
     try {
       const stored = await env.HQ_STATE.get(key);

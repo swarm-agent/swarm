@@ -157,4 +157,7 @@ test('alerts: first run starts from now, then actionable events go out titled wi
   assert.match(alertsSent[0].body, /Open: https:\/\/hq\.example\.com\/\?bot=swarm-staging&session=sess-9/);
   await relayAlerts(env, { fetchImpl });
   assert.equal(alertsSent.length, 1, 'the cursor moved past what was sent');
+  const quiet = makeEnv({ ALERTS_URL: 'https://alerts.example.com', ALERTS_AUTH: 'Authorization: Bearer x', BOTS: JSON.stringify([{ id: 'swarm-staging', name: 'swarmagent.dev', env: 'staging', binding: 'GW_SWARM', ops_secret: 'OPS_SWARM', alerts: false }]) });
+  await relayAlerts(quiet, { fetchImpl });
+  assert.equal(quiet.GW_SWARM.seen.length, 0, 'alerts: false skips the bot entirely');
 });
