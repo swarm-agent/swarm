@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ func (e *Failure) Error() string            { return "landing environment failed
 type Runners struct {
 	Store *pebblestore.Store
 	Wait  time.Duration
+	Wake  *RunnerWake
 	// Credentials uses the configured secret store when separate from Store.
 	Credentials interface {
 		ListScopedTokens(string) ([]pebblestore.ScopedTokenRecord, error)
@@ -60,6 +63,9 @@ func (p Runners) Acquire(ctx context.Context, spec Spec) (Environment, error) {
 	if err := p.Store.CreateRunnerLanding(spec.Account, l); err != nil {
 		return nil, &Failure{err.Error()}
 	}
+	if p.Wake != nil {
+		p.Wake.start(p.Store, spec.Account, records)
+	}
 	e := &runnerEnvironment{store: p.Store, spec: spec, id: id}
 	wait := p.Wait
 	if wait < 0 {
@@ -84,6 +90,60 @@ func (p Runners) Acquire(ctx context.Context, spec Spec) (Environment, error) {
 		spec.Selected("runner:" + e.last.Runner)
 	}
 	return e, nil
+}
+
+// RunnerWake is shared across acquires, including copies of a Runners provider.
+// Construct it once at startup, not once per landing.
+type RunnerWake struct {
+	Command   string
+	mu        sync.Mutex
+	lastStart time.Time
+}
+
+func (w *RunnerWake) start(store *pebblestore.Store, account string, records []pebblestore.ScopedTokenRecord) {
+	args := strings.Fields(w.Command)
+	if len(args) == 0 {
+		return
+	}
+	summary, err := store.RunnerSummary(account)
+	if err != nil {
+		log.Printf("landing environment: runner wake summary: %v", err)
+		return
+	}
+	now := time.Now()
+	for _, status := range summary.Items {
+		if status.State != "idle" || status.LastSeen < now.Add(-90*time.Second).UnixMilli() {
+			continue
+		}
+		for _, rec := range records {
+			if rec.AccountScopeID == account && rec.Kind == "runner" && !rec.Revoked && rec.Name == status.Name {
+				return
+			}
+		}
+	}
+	w.mu.Lock()
+	if now.Sub(w.lastStart) < 60*time.Second {
+		w.mu.Unlock()
+		return
+	}
+	w.lastStart = now
+	w.mu.Unlock()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "HOME=" + os.TempDir()}
+		// Nil stdin is empty; nil stdout/stderr discard output, including secrets.
+		err := cmd.Run()
+		code := 0
+		if err != nil {
+			code = -1
+			if cmd.ProcessState != nil {
+				code = cmd.ProcessState.ExitCode()
+			}
+		}
+		log.Printf("landing environment: waking runners: %s -> exit %d", w.Command, code)
+	}()
 }
 
 type runnerEnvironment struct {

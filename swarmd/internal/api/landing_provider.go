@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"swarm-refactor/swarmtui/pkg/startupconfig"
 	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/sandbox"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -14,6 +15,7 @@ type landingProvider struct {
 	server *Server
 	name   string
 	wait   time.Duration
+	wake   *environment.RunnerWake
 }
 
 func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (environment.Environment, error) {
@@ -25,7 +27,7 @@ func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (en
 		}
 	}
 	var local environment.Provider = environment.Local{Manager: sandbox.Default()}
-	remote := environment.Runners{Store: p.server.runnerStore, Wait: p.wait, Credentials: p.server.security}
+	remote := environment.Runners{Store: p.server.runnerStore, Wait: p.wait, Credentials: p.server.security, Wake: p.wake}
 	switch p.name {
 	case "runners":
 		return remote.Acquire(ctx, spec)
@@ -46,6 +48,24 @@ func (p landingProvider) Acquire(ctx context.Context, spec environment.Spec) (en
 		}
 		return e, err
 	}
+}
+
+// SetEnvironmentRunnerWakeCommand configures the shared wake limiter at startup.
+func (s *Server) SetEnvironmentRunnerWakeCommand(command string) error {
+	if err := startupconfig.ValidateRunnerWakeCommand(command); err != nil {
+		return err
+	}
+	p, ok := s.landingEnvironmentProvider.(landingProvider)
+	if !ok {
+		return fmt.Errorf("landing provider must be configured before runner wake")
+	}
+	if command != "" {
+		p.wake = &environment.RunnerWake{Command: command}
+	} else {
+		p.wake = nil
+	}
+	s.landingEnvironmentProvider = p
+	return nil
 }
 
 // ConfigureCloudBuild resolves ADC before accepting Cloud Build landings.
