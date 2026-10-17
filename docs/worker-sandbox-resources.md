@@ -52,6 +52,19 @@ replayed. Continue the same job with a follow-up after an interruption. A termin
 worker interruption also emits a warning `job.sandbox_interrupted` signal. Exit 137 is reported as a
 possible OOM rather than asserting a cause Docker has not confirmed.
 
+## Job clone memory
+
+Job and review clones use `boundedCloneArgs` in
+`swarmd/internal/worktree/worker_clone.go` (also called by `review.go`). They keep
+`git clone --no-local` isolation: objects pass through upload-pack without
+hardlinks or alternates. Because gVisor counts the whole upload-pack/pack-objects
+process tree against the sandbox memory limit, upload-pack uses `pack.threads=1`,
+`pack.windowMemory=64m`, `pack.deltaCacheSize=16m`, `core.bigFileThreshold=1m`, and
+`pack.window=10` to bound pack-building work and exclude large blobs from delta
+search. The clone client also uses `core.bigFileThreshold=1m`; these settings are
+command-scoped, not persisted in either repository. Repositories with many large
+loose objects should still be packed with `git gc` for faster clones.
+
 Tests: sandbox resource/classification/retry units, durable Pebble queue tests,
 and `TestWorkerDockerOOMIsolation` (skips without Docker; requires the installed
 sandbox image with Python 3). The Docker test allocates real memory past one
