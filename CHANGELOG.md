@@ -6,6 +6,14 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Bound Git pack memory when cloning worker jobs and review checkouts. Docs impact: none.
+- Use the full landing CPU budget and run test groups concurrently in `scripts/test-vital.sh`. Docs impact: none.
+- Retire finished jobs in the auto publisher and run review recovery at most once a minute. Docs impact: none.
+- Review stacked landings against the landing queue base and preserve the reviewed range across admission retries. Docs impact: none.
+- Reuse stable runner checkout lanes across landings to preserve build-cache hits. Docs impact: none.
+- Size runner landing sandboxes according to runner slots and concurrent checks. Docs impact: none.
+- Refresh the runner service on update through `swarmctl runner unit`, writing the unit in systemd's administrator directory. Docs impact: none.
+
 - `swarm_get_job` (and `swarm_give_job`) with `wait_seconds` now return at the deadline while a job is busy. The wait re-read the job's state on every event the running worker emitted, and each read looks at its worktree, so a 110 s wait stayed open for about 15 minutes while reporting `waited_seconds: 110`. Re-reads are now coalesced to one every 2 s, the deadline always wins, and `waited_seconds` is the real time. swarm-fleet also gives each forwarded call a total deadline (the wait plus 30 s) instead of an idle timer that every byte restarted. Docs impact: none.
 - Add configurable runner slots and opt-in idle power-off, and document runner capacity, caches, private gateway access and wake configuration. Docs impact: docs/runners.md.
 
