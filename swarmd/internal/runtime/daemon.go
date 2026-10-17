@@ -161,6 +161,7 @@ type Daemon struct {
 	localTransportServer      *http.Server
 	peerTransportServer       *http.Server
 	containerSDKServer        *http.Server
+	runnerGatewayServer       *http.Server
 	listener                  net.Listener
 	desktopListener           net.Listener
 	localTransportListener    net.Listener
@@ -1054,6 +1055,15 @@ func New(cfg config.Config) (*Daemon, error) {
 	}
 
 	d.httpServer = httpServer
+	if cfg.RunnerGatewayPort > 0 {
+		d.runnerGatewayServer = &http.Server{
+			Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.RunnerGatewayPort)),
+			Handler:           apiServer.RunnerGatewayHandler(),
+			ReadTimeout:       10 * time.Second,
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
+	}
 	if cfg.ContainerSDKPort > 0 {
 		d.containerSDKServer = &http.Server{
 			Addr:              net.JoinHostPort(cfg.ContainerSDKHost, strconv.Itoa(cfg.ContainerSDKPort)),
@@ -1404,6 +1414,18 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
+	if d.runnerGatewayServer != nil {
+		ln, err := net.Listen("tcp4", d.runnerGatewayServer.Addr)
+		if err != nil {
+			return fmt.Errorf("listen on runner gateway port: %w", err)
+		}
+		defer d.runnerGatewayServer.Close()
+		go func() {
+			if err := d.runnerGatewayServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				d.requestStop("runner-gateway-serve-error")
+			}
+		}()
+	}
 	if d.containerSDKServer != nil {
 		sdkLn, err := net.Listen("tcp4", d.containerSDKServer.Addr)
 		if err != nil {
@@ -1476,6 +1498,7 @@ func (d *Daemon) waitForShutdown() error {
 	}{
 		{name: "api", server: d.httpServer},
 		{name: "container SDK", server: d.containerSDKServer},
+		{name: "runner gateway", server: d.runnerGatewayServer},
 		{name: "desktop", server: d.desktopServer},
 		{name: "peer transport", server: d.peerTransportServer},
 		{name: "local transport", server: d.localTransportServer},
