@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/permission"
+	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -705,33 +706,95 @@ func (c *controlMCPCall) waitForJob(kind, a, b string, seconds int) (map[string]
 	if state, refs, err = c.jobState(kind, a, b); err != nil || settled(state) {
 		return state, refs, map[string]any{"settled": err == nil, "waited_seconds": elapsed()}, err
 	}
-	timer := time.NewTimer(time.Duration(seconds) * time.Second)
-	defer timer.Stop()
+	mine := func(record sessionruntime.RealtimeOutboxRecord) bool {
+		var payload struct {
+			ProjectID string `json:"project_id"`
+			TaskID    string `json:"task_id"`
+		}
+		if refs.sessionID == "" || record.SessionID == refs.sessionID {
+			return true
+		}
+		return refs.projectID != "" && json.Unmarshal(record.Event.Payload, &payload) == nil &&
+			payload.ProjectID == refs.projectID && (payload.TaskID == "" || payload.TaskID == refs.taskID)
+	}
+	check := func() bool {
+		state, refs, err = c.jobState(kind, a, b)
+		return err != nil || settled(state)
+	}
+	outcome := controlMCPWaitCoalesced(sub.send, sub.slow, c.request.Context().Done(), time.Duration(seconds)*time.Second, controlMCPJobRecheckGap, mine, check)
+	switch outcome {
+	case controlMCPWaitDone:
+		return state, refs, map[string]any{"settled": err == nil, "waited_seconds": elapsed()}, err
+	case controlMCPWaitCancelled:
+		return state, refs, map[string]any{"settled": false, "waited_seconds": elapsed()}, nil
+	}
+	// Timed out, or the event feed fell behind: one last look.
+	state, refs, err = c.jobState(kind, a, b)
+	waited := map[string]any{"settled": err == nil && settled(state), "waited_seconds": elapsed()}
+	if outcome == controlMCPWaitTimedOut {
+		waited["timed_out"] = true
+	}
+	return state, refs, waited, err
+}
+
+// controlMCPJobRecheckGap bounds how often a wait re-reads a job's state. A
+// running worker emits events constantly and each re-read is costly (it looks
+// at the job's worktree), so re-reading on every event once held a 110 s wait
+// open for 15 minutes.
+const controlMCPJobRecheckGap = 2 * time.Second
+
+type controlMCPWaitOutcome int
+
+const (
+	controlMCPWaitDone controlMCPWaitOutcome = iota
+	controlMCPWaitTimedOut
+	controlMCPWaitBehind
+	controlMCPWaitCancelled
+)
+
+// controlMCPWaitCoalesced waits until check reports done, the deadline passes,
+// the event feed falls behind or done closes. Relevant events only mark the
+// job as changed; check runs at most once per gap (and once more when the
+// last change is older than gap), and never after the deadline, so the wait
+// ends on time however many events arrive.
+func controlMCPWaitCoalesced[R any, S any](events <-chan R, slow <-chan S, cancelled <-chan struct{}, wait, gap time.Duration, relevant func(R) bool, check func() bool) controlMCPWaitOutcome {
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	tick := time.NewTicker(gap)
+	defer tick.Stop()
+	end := time.Now().Add(wait)
+	var last time.Time
+	dirty := false
+	run := func() bool {
+		dirty, last = false, time.Now()
+		return check()
+	}
 	for {
 		select {
-		case record := <-sub.send:
-			var payload struct {
-				ProjectID string `json:"project_id"`
-				TaskID    string `json:"task_id"`
-			}
-			mine := refs.sessionID == "" || record.SessionID == refs.sessionID
-			if !mine && refs.projectID != "" && json.Unmarshal(record.Event.Payload, &payload) == nil {
-				mine = payload.ProjectID == refs.projectID && (payload.TaskID == "" || payload.TaskID == refs.taskID)
-			}
-			if !mine {
+		case <-deadline.C:
+			return controlMCPWaitTimedOut
+		case <-cancelled:
+			return controlMCPWaitCancelled
+		case <-slow:
+			return controlMCPWaitBehind
+		case record := <-events:
+			if !relevant(record) {
 				continue
 			}
-			if state, refs, err = c.jobState(kind, a, b); err != nil || settled(state) {
-				return state, refs, map[string]any{"settled": err == nil, "waited_seconds": elapsed()}, err
+			dirty = true
+			if time.Since(last) < gap {
+				continue
 			}
-		case <-sub.slow:
-			state, refs, err = c.jobState(kind, a, b)
-			return state, refs, map[string]any{"settled": err == nil && settled(state), "waited_seconds": elapsed()}, err
-		case <-timer.C:
-			state, refs, err = c.jobState(kind, a, b)
-			return state, refs, map[string]any{"settled": err == nil && settled(state), "timed_out": true, "waited_seconds": seconds}, err
-		case <-c.request.Context().Done():
-			return state, refs, map[string]any{"settled": false, "waited_seconds": elapsed()}, nil
+		case <-tick.C:
+			if !dirty {
+				continue
+			}
+		}
+		if !time.Now().Before(end) {
+			return controlMCPWaitTimedOut
+		}
+		if run() {
+			return controlMCPWaitDone
 		}
 	}
 }
