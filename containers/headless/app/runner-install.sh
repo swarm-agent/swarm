@@ -106,6 +106,7 @@ install_runner() {
   id swarm-runner >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/swarm-runner --create-home --shell /usr/sbin/nologin swarm-runner
   usermod -aG docker swarm-runner
   install -d -o root -g swarm-runner -m 0750 "$RUNNER_CONF"
+  runner_configure_capacity
   runner_build "$ref"
   runner_activate
   printf '%s\n' "$ref" >"$RUNNER_CONF/ref"
@@ -115,9 +116,17 @@ install_runner() {
   echo 'Use a private tailnet to reach the hub; no network exposure is configured here.'
 }
 
-update_runner() {
+# A subshell scopes EXIT cleanup to the update, without replacing caller traps.
+update_runner() (
   runner_require_root
   local ref elapsed=0 service_present=no
+  if systemctl is-enabled --quiet swarm-runner-idle.timer; then
+    trap 'status=$?; systemctl start swarm-runner-idle.timer || { [[ $status != 0 ]] || status=1; }; exit "$status"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    systemctl stop swarm-runner-idle.timer || die "could not suspend runner idle timer"
+    rm -f /run/swarm-runner-idle/since
+  fi
   ref=$(cat "$RUNNER_CONF/ref")
   [[ $ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "invalid saved runner ref"
   runner_build "$ref"
@@ -135,4 +144,66 @@ update_runner() {
   fi
   runner_activate
   if [[ $service_present == yes && -f $RUNNER_CONF/credential ]]; then systemctl start swarm-runner.service; fi
+)
+
+# Separate configuration keeps slot settings intact across join and updates.
+runner_configure_capacity() {
+  local slots=${RUNNER_SLOTS:-1} minutes=${RUNNER_IDLE_POWEROFF_MINUTES:-0}
+  [[ $slots =~ ^([1-9]|1[0-6])$ ]] || die 'RUNNER_SLOTS must be 1-16'
+  [[ $minutes =~ ^(0|[1-9][0-9]{0,5})$ ]] || die 'RUNNER_IDLE_POWEROFF_MINUTES must be 0-999999'
+  printf 'SWARM_RUNNER_SLOTS=%s\n' "$slots" >"$RUNNER_CONF/slots.env"
+  chmod 0600 "$RUNNER_CONF/slots.env"
+  local units=${RUNNER_UNITS:-/etc/systemd/system}
+  if ((minutes == 0)); then
+    if [[ -f $units/swarm-runner-idle.timer ]]; then
+      systemctl disable --now swarm-runner-idle.timer
+    fi
+    return
+  fi
+  install -d -m 0755 "$units" "$RUNNER_OPT"
+  cat >"$RUNNER_OPT/idle-poweroff" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+minutes=$1
+state=/run/swarm-runner/state
+since=/run/swarm-runner-idle/since
+read -r uptime _ </proc/uptime
+now=${uptime%%.*}
+if [[ ! -f $state ]] || [[ $(cat "$state") != idle ]]; then
+  rm -f "$since"
+  exit 0
+fi
+first=$(cat "$since" 2>/dev/null || true)
+# An idle file replaced since the last observation also resets the interval:
+# this catches busy/idle transitions occurring between timer ticks.
+if [[ ! $first =~ ^[0-9]+$ || $state -nt $since ]] || ((first > now)); then
+  printf '%s\n' "$now" >"$since"
+  exit 0
+fi
+if ((now >= 600 && now - first >= minutes * 60)); then
+  systemctl poweroff
+fi
+SCRIPT
+  chmod 0755 "$RUNNER_OPT/idle-poweroff"
+  cat >"$units/swarm-runner-idle.service" <<EOF
+[Unit]
+Description=Power off an idle Swarm runner
+[Service]
+Type=oneshot
+User=root
+RuntimeDirectory=swarm-runner-idle
+RuntimeDirectoryPreserve=yes
+ExecStart=$RUNNER_OPT/idle-poweroff $minutes
+EOF
+  cat >"$units/swarm-runner-idle.timer" <<'EOF'
+[Unit]
+Description=Check Swarm runner idle time every minute
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now swarm-runner-idle.timer
 }

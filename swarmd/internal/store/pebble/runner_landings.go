@@ -177,7 +177,17 @@ func expireRunnerLeases(st *runnerState, now int64) {
 	}
 }
 
-func (s *Store) ClaimRunnerLanding(account, runner string, now time.Time) (*RunnerLanding, error) {
+func (s *Store) ClaimRunnerLanding(account, runner string, now time.Time, requestedSlots ...int) (*RunnerLanding, error) {
+	slots := 1
+	if len(requestedSlots) > 1 {
+		return nil, errors.New("expected one slot capacity")
+	}
+	if len(requestedSlots) == 1 {
+		slots = requestedSlots[0]
+	}
+	if slots < 1 || slots > 16 {
+		return nil, errors.New("slots must be between 1 and 16")
+	}
 	var result *RunnerLanding
 	err := s.mutateRunners(account, func(st *runnerState) error {
 		expireRunnerLeases(st, now.UnixMilli())
@@ -191,10 +201,14 @@ func (s *Store) ClaimRunnerLanding(account, runner string, now time.Time) (*Runn
 		if status.State == "unhealthy" {
 			return nil
 		}
+		active := 0
 		for _, l := range st.Landings {
-			if l.State == "claimed" && l.Runner == runner {
-				return errors.New("runner already has a landing")
+			if l.State == "claimed" && l.Runner == runner && l.LeaseUntil > now.UnixMilli() {
+				active++
 			}
+		}
+		if active >= slots {
+			return errors.New("runner landing slots are full")
 		}
 		for i := range st.Landings {
 			l := &st.Landings[i]

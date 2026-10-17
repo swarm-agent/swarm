@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ type Engine interface {
 type Runner struct {
 	Hub, Credential, WorkDir, Name   string
 	StateFile                        string
+	Slots                            int
 	Client                           *http.Client
 	Engine                           Engine
 	Logger                           *log.Logger
@@ -104,6 +106,14 @@ func (r *Runner) log(format string, args ...any) {
 }
 
 func (r *Runner) Run(ctx context.Context) error {
+	if r.Slots == 0 {
+		r.Slots = 1
+	}
+	if r.Slots < 1 || r.Slots > 16 {
+		return errors.New("slots must be between 1 and 16")
+	}
+	admission, stopAdmission := context.WithCancel(ctx)
+	defer stopAdmission()
 	u, err := url.Parse(r.Hub)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return errors.New("invalid hub URL")
@@ -134,13 +144,45 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 	var mu sync.Mutex
-	state := "idle"
-	report := func() error {
+	active := make(map[string]string)
+	stateChanged := make(chan struct{}, 1)
+	setState := func(id, timestamp string) error {
 		mu.Lock()
 		defer mu.Unlock()
-		c, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer func() {
+			select {
+			case stateChanged <- struct{}{}:
+			default:
+			}
+		}()
+		if timestamp == "" {
+			delete(active, id)
+		} else {
+			active[id] = timestamp
+		}
+		lines := make([]string, 0, len(active))
+		for id, at := range active {
+			lines = append(lines, "busy "+id+" "+at)
+		}
+		sort.Strings(lines)
+		if len(lines) == 0 {
+			return r.writeState("idle")
+		}
+		return r.writeState(strings.Join(lines, "\n"))
+	}
+	var reportMu sync.Mutex
+	report := func() error {
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		c, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 		defer cancel()
 		docker, gvisor, healthErr := r.Engine.Health(c, r.WorkDir)
+		mu.Lock()
+		state := "idle"
+		if len(active) > 0 {
+			state = "busy"
+		}
+		mu.Unlock()
 		s := store.RunnerStatus{Name: r.Name, State: state, Docker: docker, GVisor: gvisor}
 		if healthErr != nil {
 			s.State = "unhealthy"
@@ -153,16 +195,23 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 	// Status reporting continues during long polls and checks.
 	done := make(chan struct{})
-	defer close(done)
+	reporterExited := make(chan struct{})
+	defer func() { close(done); <-reporterExited }()
 	go func() {
+		defer close(reporterExited)
 		t := time.NewTicker(r.statusInterval)
 		defer t.Stop()
 		for {
 			select {
 			case <-done:
+				if err := report(); err != nil {
+					r.log("runner final status: %v", err)
+				}
 				return
-			case <-ctx.Done():
-				return
+			case <-stateChanged:
+				if err := report(); err != nil {
+					r.log("runner status: %v", err)
+				}
 			case <-t.C:
 				if err := report(); err != nil {
 					r.log("runner status: %v", err)
@@ -170,78 +219,89 @@ func (r *Runner) Run(ctx context.Context) error {
 			}
 		}
 	}()
-	for ctx.Err() == nil {
-		if err := report(); err != nil {
-			if !pause(ctx, r.retry) {
+	worker := func() error {
+		for admission.Err() == nil {
+			if err := report(); err != nil {
+				if !pause(admission, r.retry) {
+					break
+				}
+				continue
+			}
+			if admission.Err() != nil {
 				break
 			}
-			continue
-		}
-		resp, err := r.request(ctx, http.MethodPost, "/v3/runners/claim", nil)
-		if err != nil {
-			if !pause(ctx, r.retry) {
-				break
+			resp, err := r.request(admission, http.MethodPost, "/v3/runners/claim", map[string]int{"slots": r.Slots})
+			if err != nil {
+				if !pause(admission, r.retry) {
+					break
+				}
+				continue
 			}
-			continue
-		}
-		var claim struct {
-			Landing *landingRequest `json:"landing"`
-		}
-		if resp.StatusCode != 204 {
-			err = json.NewDecoder(io.LimitReader(resp.Body, 128<<10)).Decode(&claim)
-		}
-		resp.Body.Close()
-		if err != nil {
-			return fmt.Errorf("decode claim: %w", err)
-		}
-		if claim.Landing == nil {
-			if !pause(ctx, r.retry) {
-				break
+			var claim struct {
+				Landing *landingRequest `json:"landing"`
 			}
-			continue
-		}
-		r.log("runner claim %s", claim.Landing.ID)
-		mu.Lock()
-		state = "busy"
-		mu.Unlock()
-		if err := r.writeState("busy " + claim.Landing.ID + " " + time.Now().UTC().Format(time.RFC3339)); err != nil {
-			return err
-		}
-		if err := report(); err != nil {
-			r.log("runner busy status: %v", err)
-		}
-		// Cancellation stops admission immediately, but only bounds held work once
-		// draining begins. Reserve fifteen seconds of the grace for result delivery.
-		work, stopWork := context.WithCancel(context.WithoutCancel(ctx))
-		drained := make(chan struct{})
-		go func() {
-			select {
-			case <-drained:
-				return
-			case <-ctx.Done():
+			if resp.StatusCode != 204 {
+				err = json.NewDecoder(io.LimitReader(resp.Body, 128<<10)).Decode(&claim)
 			}
-			t := time.NewTimer(time.Duration(claim.Landing.CheckTimeout)*time.Second + 105*time.Second)
-			defer t.Stop()
-			select {
-			case <-drained:
-			case <-t.C:
-				stopWork()
+			resp.Body.Close()
+			if err != nil {
+				return fmt.Errorf("decode claim: %w", err)
 			}
-		}()
-		err = r.runLanding(work, *claim.Landing)
-		close(drained)
-		stopWork()
-		if stateErr := r.writeState("idle"); stateErr != nil {
-			err = errors.Join(err, stateErr)
+			if claim.Landing == nil {
+				if !pause(admission, r.retry) {
+					break
+				}
+				continue
+			}
+			r.log("runner claim %s", claim.Landing.ID)
+			if err := setState(claim.Landing.ID, time.Now().UTC().Format(time.RFC3339)); err != nil {
+				return err
+			}
+			// Cancellation stops admission immediately, but only bounds held work once
+			// draining begins. Reserve fifteen seconds of the grace for result delivery.
+			work, stopWork := context.WithCancel(context.WithoutCancel(ctx))
+			drained := make(chan struct{})
+			go func() {
+				select {
+				case <-drained:
+					return
+				case <-admission.Done():
+				}
+				t := time.NewTimer(time.Duration(claim.Landing.CheckTimeout)*time.Second + 105*time.Second)
+				defer t.Stop()
+				select {
+				case <-drained:
+				case <-t.C:
+					stopWork()
+				}
+			}()
+			err = r.runLanding(work, *claim.Landing)
+			close(drained)
+			stopWork()
+			if stateErr := setState(claim.Landing.ID, ""); stateErr != nil {
+				err = errors.Join(err, stateErr)
+			}
+			if err != nil {
+				return err
+			}
 		}
-		mu.Lock()
-		state = "idle"
-		mu.Unlock()
-		if err != nil {
-			return err
-		}
+		return nil
 	}
-	return nil
+	results := make(chan error, r.Slots)
+	for i := 0; i < r.Slots; i++ {
+		go func() {
+			err := worker()
+			if err != nil {
+				stopAdmission()
+			}
+			results <- err
+		}()
+	}
+	var runErr error
+	for i := 0; i < r.Slots; i++ {
+		runErr = errors.Join(runErr, <-results)
+	}
+	return runErr
 }
 
 func (r *Runner) writeState(state string) error {

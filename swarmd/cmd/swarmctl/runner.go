@@ -131,8 +131,12 @@ func (c runnerCLI) command(args []string) error {
 		if err != nil {
 			return fmt.Errorf("runner state unavailable: %w", err)
 		}
-		_, err = fmt.Fprintf(c.out, "Landing state: %s", state)
-		return err
+		for _, line := range strings.Split(strings.TrimSpace(string(state)), "\n") {
+			if _, err := fmt.Fprintf(c.out, "Landing state: %s\n", line); err != nil {
+				return err
+			}
+		}
+		return nil
 	case "join":
 		return c.join(args)
 	default:
@@ -230,7 +234,9 @@ Group=swarm-runner
 SupplementaryGroups=docker
 EnvironmentFile=/etc/swarm-runner/runner.env
 Environment=LD_LIBRARY_PATH=/opt/swarm-runner/current/lib
-ExecStart=/opt/swarm-runner/current/bin/swarmd runner --hub ${SWARM_RUNNER_HUB} --name ${SWARM_RUNNER_NAME} --credential-file /etc/swarm-runner/credential --state-file /run/swarm-runner/state
+Environment=SWARM_RUNNER_SLOTS=1
+EnvironmentFile=-/etc/swarm-runner/slots.env
+ExecStart=/opt/swarm-runner/current/bin/swarmd runner --slots ${SWARM_RUNNER_SLOTS} --hub ${SWARM_RUNNER_HUB} --name ${SWARM_RUNNER_NAME} --credential-file /etc/swarm-runner/credential --state-file /run/swarm-runner/state
 RuntimeDirectory=swarm-runner
 TimeoutStopSec=30min
 KillMode=mixed

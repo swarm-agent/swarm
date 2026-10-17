@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -17,11 +18,22 @@ func (s *Server) handleRunnerWork(w http.ResponseWriter, r *http.Request, rec *p
 	}
 	now := time.Now()
 	if r.URL.Path == "/v3/runners/claim" {
+		req := struct {
+			Slots int `json:"slots"`
+		}{Slots: 1}
+		if err := decodeJSONLimited(w, r, &req, 4096); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if req.Slots < 1 || req.Slots > 16 {
+			writeError(w, http.StatusBadRequest, errors.New("slots must be between 1 and 16"))
+			return
+		}
 		timer := time.NewTimer(30 * time.Second)
 		defer timer.Stop()
 		for {
 			wake := s.runnerStore.RunnerLandingWake()
-			landing, err := s.runnerStore.ClaimRunnerLanding(rec.AccountScopeID, rec.Name, time.Now())
+			landing, err := s.runnerStore.ClaimRunnerLanding(rec.AccountScopeID, rec.Name, time.Now(), req.Slots)
 			if err != nil {
 				writeError(w, 409, err)
 				return

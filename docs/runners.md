@@ -24,13 +24,29 @@ Cloud Build landings restore Go build/test results, Go modules and the pnpm stor
 On an x86_64 Linux machine with systemd, from a checkout of the same ref as the hub:
 
 ```sh
-sudo bash containers/headless/app/install.sh runner --ref main
+sudo RUNNER_SLOTS=8 RUNNER_IDLE_POWEROFF_MINUTES=15 bash containers/headless/app/install.sh runner --ref main
 ```
 
 This installs Docker (keeps an existing Docker with buildx), attempts gVisor,
 builds the binaries from source, and creates the Docker-enabled `swarm-runner`
 service account. It does not create projects, a setup page, AI keys or a tailnet.
 Use a private tailnet with HTTPS to reach the hub; do not expose the owner socket.
+
+`RUNNER_SLOTS` defaults to 1 (range 1–16) and is saved for the service's
+`--slots` argument. `RUNNER_IDLE_POWEROFF_MINUTES` defaults to 0 (disabled).
+A positive value installs the root `swarm-runner-idle` service and minute timer:
+it tracks the first observed idle time in `/run/swarm-runner-idle/since`, resets
+on missing or non-idle state, and calls `systemctl poweroff` after the configured
+idle period, never during the first ten minutes after boot. Update preserves
+these settings, suspends the timer before building, resets the idle interval,
+and restores an enabled timer on success or failure. Power-off does not remove
+storage charges; configure the hub's `environment_runner_wake_command` to start
+the VM when runner work is queued.
+
+On the hub, enable the runner-only Tailscale Serve gateway with
+`sudo bash containers/headless/app/install.sh runner-gateway on` (port 8445).
+Tailnet policy should allow runner machines only `tcp:8445` on the hub, with no
+Swarm capability. Join using `https://HUB:8445`; never grant runners owner access.
 
 On the hub, mint a one-use token valid for 15 minutes, naming the runner:
 
@@ -43,7 +59,7 @@ sudo swarmctl runner remove worker-one
 Transfer the token privately (not as a command-line argument). On the runner:
 
 ```sh
-sudo swarmctl runner join https://hub.example --name worker-one < join-token
+sudo swarmctl runner join https://hub.example:8445 --name worker-one < join-token
 sudo swarmctl runner status
 sudo bash /var/lib/swarm-runner-install/src/containers/headless/app/install.sh update
 ```
@@ -57,7 +73,7 @@ directly as `swarm-runner`. `join` installs `swarm-runner.service` and enables i
 keeps the credential: revoke that runner on the hub before attempting enrollment
 again. `sudo swarmctl runner status` displays systemd state, hub URL, runner
 name, and `/run/swarm-runner/state`: `idle` or `busy <landing id> <claimed at>`
-(the timestamp is UTC RFC3339). On the hub, `swarmctl runner list` includes the
+on one line per active claim (the timestamp is UTC RFC3339). On the hub, `swarmctl runner list` includes the
 current landing from live claim records, not runner-supplied attribution.
 
 Update builds the saved ref, waits up to 30 minutes for idle, then stops the
@@ -92,7 +108,7 @@ for any later failing check's diagnostic excerpt.
 
 The hub owns projects, folders, job clones, the landing queue, signals, keys and
 agents. A runner uses the same `swarmd` binary on another machine with Docker
-(and gVisor when available), claims one landing at a time and accepts no inbound
+(and gVisor when available), claims up to its configured slot count and accepts no inbound
 connections. It must not hold hub projects, provider keys or agents.
 
 Runners connect outbound to the hub API through a tailnet, relay or HTTPS URL.
@@ -179,7 +195,7 @@ Environment validation rejects account secret slot names in keys or values and a
 
 ## Runner mode
 
-`swarmd runner --hub URL --credential-file PATH [--work-dir DIR] [--name NAME]`
+`swarmd runner --hub URL --credential-file PATH [--work-dir DIR] [--name NAME] [--slots N]`
 starts an outbound-only landing worker, not the daemon. The credential is a raw
 bearer token in a regular file owned by the invoking effective user, mode 0600;
 symlinks are refused. Use HTTPS or an explicitly protected private transport.
@@ -188,8 +204,12 @@ Swarm sandbox image/network, and at least 2 GiB free under its work directory.
 No startup configuration keys are changed. Without `--work-dir`, it creates a
 disposable directory using the operating system temporary-directory contract.
 
-SIGTERM stops claiming immediately and lets the held landing finish and report
-its result, then exits successfully. Drain is bounded by the request's check
+`--slots` defaults to 1 and accepts 1–16 concurrent landings. Each has its own
+heartbeat, output and result delivery. State remains busy until all claims finish;
+the single-slot state format is unchanged.
+
+SIGTERM stops claiming immediately and lets all held landings finish and report
+their results, then exits successfully. Drain is bounded by the request's check
 timeout plus two minutes (including a 15-second result-report allowance), not
 an overall landing timeout. Reporting failures remain errors. Idle shutdown is
 immediate. The service creates `/run/swarm-runner` with `RuntimeDirectory`, passes
@@ -198,13 +218,15 @@ immediate. The service creates `/run/swarm-runner` with `RuntimeDirectory`, pass
 Standalone invocations can opt into state reporting with `--state-file PATH`;
 the parent directory must already exist.
 
-The loop claims one request, renews its lease every 20 seconds, streams bounded
+Each available slot claims a request, renews its lease every 20 seconds, streams bounded
 output, and reports codes/duration and the local failing-lines excerpt. Status
 is reported at startup, transitions, and every 60 seconds; engine/disk failures
 stop new claims. Environment images reuse the local definition hash and sandbox
-builder. A fresh local landing sandbox unpacks the verified archive and runs each
-check with `bash -lc`. Request directories, containers and home volumes are
-released after use; definition-keyed images may be reused. It never starts
+builder. A runner landing runs its checks concurrently in separate sandboxes,
+each unpacking the verified archive and running `bash -lc`. Go build, Go module
+and pnpm caches persist in per-definition volumes. Request directories,
+containers and home volumes are released after use; definition-keyed images and
+cache volumes may be reused. It never starts
 agents, receives provider keys, integrates commits, pushes, or listens inbound.
 
 Claims must carry `payload_format: "archive-v1"`, `base_commit`, `head_commit`,

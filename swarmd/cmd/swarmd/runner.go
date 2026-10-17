@@ -21,12 +21,16 @@ func runnerMain(args []string) error {
 	credential := flags.String("credential-file", "", "invoking-user-owned 0600 bearer credential file")
 	work := flags.String("work-dir", "", "disposable landing directory (defaults to a temporary directory)")
 	state := flags.String("state-file", "", "runner state file (service uses /run/swarm-runner/state)")
+	slots := flags.Int("slots", 1, "concurrent landings (1-16)")
 	name := flags.String("name", "", "runner display name")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *hub == "" || *credential == "" {
-		return errors.New("usage: swarmd runner --hub URL --credential-file PATH [--work-dir DIR] [--name NAME]")
+		return errors.New("usage: swarmd runner --hub URL --credential-file PATH [--work-dir DIR] [--name NAME] [--slots N]")
+	}
+	if *slots < 1 || *slots > 16 {
+		return errors.New("slots must be between 1 and 16")
 	}
 	token, err := readRunnerCredential(*credential)
 	if err != nil {
@@ -41,7 +45,7 @@ func runnerMain(args []string) error {
 		defer os.RemoveAll(dir)
 	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
-	r := runner.Runner{StateFile: *state, Hub: *hub, Credential: token, WorkDir: *work, Name: *name, Logger: logger, Engine: &runner.SandboxEngine{Log: logger.Printf}}
+	r := runner.Runner{Slots: *slots, StateFile: *state, Hub: *hub, Credential: token, WorkDir: *work, Name: *name, Logger: logger, Engine: &runner.SandboxEngine{Log: logger.Printf}}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	err = r.Run(ctx)
