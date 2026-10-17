@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- `swarmctl setup credentials`, `add-credential --provider vertex --project P` and `remove-credential --provider X --id ID` manage provider credentials after first setup on a box with no shell, so a sealed box can move from a Gemini key to Vertex AI and then drop the key. The listing shows only provider, ID, type and whether it is active. Docs impact: containers/sealed/README.md.
 - Admit new landings into running merge trains and refill freed slots immediately, preserving ordered tested pushes and suffix restacking. Docs impact: none.
 - Cloud Build landings consume check receipts before cache saving, report phase timings, overlap payload/cache restoration, skip satisfied setup packages, and use quiet Git plus unchanged-cache detection and optional parallel zstd compression. Docs impact: none.
 

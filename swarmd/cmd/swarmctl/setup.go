@@ -40,11 +40,14 @@ func runSetup(args []string, input io.Reader, output io.Writer) error {
 	if len(args) > 0 && args[0] == "daily-limit" {
 		return runSetupDailyLimit(args, output)
 	}
+	if len(args) > 0 && (args[0] == "credentials" || args[0] == "add-credential" || args[0] == "remove-credential") {
+		return runSetupCredentials(args, output)
+	}
 	if len(args) > 0 && args[0] == "sealed-agent" {
 		return runSetupSealedAgent(args, input, output)
 	}
 	if len(args) == 0 {
-		return errors.New("usage: swarmctl setup <status|identity|credential|codex-login|model|workspace|complete|sealed-agent|daily-limit|sdk-token|sdk-token-limits|sdk-tokens|revoke-sdk-token> --help")
+		return errors.New("usage: swarmctl setup <status|identity|credential|credentials|add-credential|remove-credential|codex-login|model|workspace|complete|sealed-agent|daily-limit|sdk-token|sdk-token-limits|sdk-tokens|revoke-sdk-token> --help")
 	}
 	fs := flag.NewFlagSet("setup "+args[0], flag.ContinueOnError)
 	// Do not echo unknown arguments: a mistaken --api-key SECRET must not leak.

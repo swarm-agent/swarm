@@ -447,6 +447,14 @@ as `vertex generateContent failed status=403 (permission denied: ...)`. The API
 equivalent is `POST /v1/auth/credentials` (or `/v1/onboarding/provider/credential`)
 with `{"provider":"vertex","type":"adc","google_project":"my-project","google_location":"global","active":true}`.
 
+A box already set up with another provider adds Vertex and can then drop the old key:
+
+```sh
+docker exec swarm-sealed swarmctl setup add-credential --provider vertex --project my-project
+docker exec swarm-sealed swarmctl setup credentials        # provider, id, type, active; no key material
+docker exec swarm-sealed swarmctl setup remove-credential --provider google --id CREDENTIAL_ID
+```
+
 A sealed agent selects Vertex in its definition:
 
 ```json
