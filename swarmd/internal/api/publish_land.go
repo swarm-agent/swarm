@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"runtime"
 	"strings"
 	"sync"
@@ -436,6 +437,10 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	if code != 0 || strings.TrimSpace(dirty) != "" {
 		return errors.New("job worktree is not clean")
 	}
+	logEquivalence := func(reason, oldBase, reviewedHead, rebasedHead string) {
+		// Quote the reason to keep executor errors on a single diagnostic line.
+		log.Printf("landing review equivalence: job=%s reason=%q oldBase=%s reviewedHead=%s newBase=%s rebasedHead=%s", e.Request.JobID, reason, oldBase, reviewedHead, base.Commit, rebasedHead)
+	}
 	var reviewedHead, reviewedPatch, oldBase string
 	reviewBase := base.Commit
 	if e.DeferChecks && e.Request.BaseCommit != "" {
@@ -481,11 +486,16 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			}
 		}
 		if e.Review != nil {
+			rejectEquivalence := func(reason string) error {
+				logEquivalence(reason, e.Review.ReviewedBase, e.Review.ReviewedHead, current)
+				return fmt.Errorf("%w (reason: %s)", reviewRequired(current), reason)
+			}
 			if current != e.Review.RebasedHead {
-				return reviewRequired(current)
+				return rejectEquivalence("rebased head mismatch")
 			}
 			patch, err := patchID(current, reviewBase)
 			if err != nil {
+				logEquivalence(fmt.Sprintf("cannot verify current patch identity: %v", err), e.Review.ReviewedBase, e.Review.ReviewedHead, current)
 				return err
 			}
 			approvedBase := reviewBase
@@ -494,10 +504,14 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 			}
 			approvedPatch, err := patchID(e.Review.ReviewedHead, approvedBase)
 			if err != nil {
+				logEquivalence(fmt.Sprintf("cannot verify approved patch identity: %v", err), approvedBase, e.Review.ReviewedHead, current)
 				return err
 			}
-			if patch != e.Review.PatchID || approvedPatch != patch {
-				return reviewRequired(current)
+			if patch != e.Review.PatchID {
+				return rejectEquivalence("patch differs from recorded equivalent patch")
+			}
+			if approvedPatch != patch {
+				return rejectEquivalence("patch differs from approved patch")
 			}
 			reviewedHead = e.Review.ReviewedHead
 		}
@@ -542,6 +556,9 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	}
 	if code != 0 {
 		// A conflicted attempt must never leave transferable approval behind.
+		if e.Review != nil {
+			logEquivalence("rebase conflicted", oldBase, reviewedHead, "unavailable")
+		}
 		e.Review = nil
 		if e.Checkpoint != nil {
 			if err := e.Checkpoint(); err != nil {
@@ -570,13 +587,14 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 	if err != nil {
 		return err
 	}
-	deferReview := func() error {
+	deferReview := func(reason string) error {
+		logEquivalence(reason, oldBase, reviewedHead, parsedHead)
 		e.Request.Head, e.Request.BaseCommit, e.Request.BaseBranch = parsedHead, base.Commit, base.Branch
 		e.Review = nil
 		if !rule.Pipeline {
-			return reviewRequired(parsedHead)
+			return fmt.Errorf("%w (reason: %s)", reviewRequired(parsedHead), reason)
 		}
-		return &publish.RebaseReviewError{Reason: fmt.Sprintf("Rebase-scoped review: review only the conflict resolution and confirm the range-diff against the previously reviewed commits (%s..%s versus %s..%s).", oldBase, reviewedHead, base.Commit, parsedHead)}
+		return &publish.RebaseReviewError{Reason: fmt.Sprintf("Rebase-scoped review: review only the conflict resolution and confirm the range-diff against the previously reviewed commits (%s..%s versus %s..%s) (reason: %s).", oldBase, reviewedHead, base.Commit, parsedHead, reason)}
 	}
 	if reviewGated(rule) && parsedHead != reviewedHead {
 		// Compare ordered per-commit stable patch IDs, not range-diff's context
@@ -603,23 +621,23 @@ func prepareLandWorktreeWithExecutors(ctx context.Context, rule publish.Rule, e 
 		}
 		before, err := ids(oldBase, reviewedHead)
 		if err != nil {
-			return deferReview()
+			return deferReview(fmt.Sprintf("cannot verify commit patch identities: %v", err))
 		}
 		after, err := ids(base.Commit, parsedHead)
 		if err != nil {
-			return deferReview()
+			return deferReview(fmt.Sprintf("cannot verify commit patch identities: %v", err))
 		}
 		if before != after {
-			return deferReview()
+			return deferReview(fmt.Sprintf("commit patch IDs differ: before=%d commits, after=%d commits", len(strings.Fields(before))/2, len(strings.Fields(after))/2))
 		}
 	}
 	if reviewGated(rule) && parsedHead != reviewedHead {
 		patch, err := patchID(parsedHead, base.Commit)
 		if err != nil {
-			return err
+			return deferReview(fmt.Sprintf("cannot verify aggregate patch identity: %v", err))
 		}
 		if patch != reviewedPatch {
-			return deferReview()
+			return deferReview("aggregate patch id differs")
 		}
 	}
 	if e.DeferChecks {

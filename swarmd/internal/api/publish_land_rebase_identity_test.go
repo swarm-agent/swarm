@@ -19,12 +19,12 @@ import (
 // unrelated merge-train rebase, including a previous candidate as StackBase.
 // Real Git at the executor boundary exercises patch-ID streams and ranges;
 // mocked Git output cannot detect errors in the shell identity computation.
+// A real conflicting rebase resolved at the executor boundary must instead
+// invalidate approval and return a diagnosable rebase-scoped review.
 func TestLandRebaseIdentity(t *testing.T) {
-	for _, stacked := range []bool{false, true} {
-		name := "dev"
-		if stacked {
-			name = "stacked"
-		}
+	for _, name := range []string{"dev", "stacked", "conflict_resolution"} {
+		stacked := name == "stacked"
+		conflict := name == "conflict_resolution"
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
@@ -64,6 +64,9 @@ func TestLandRebaseIdentity(t *testing.T) {
 			run("commit", "-am", "first dev change")
 			put("b", "second\n")
 			put("CHANGELOG", "dev changes\n")
+			if conflict {
+				put("a", "upstream\n")
+			}
 			run("add", ".")
 			run("commit", "-m", "second dev change")
 			target := run("rev-parse", "HEAD")
@@ -82,6 +85,22 @@ func TestLandRebaseIdentity(t *testing.T) {
 				cmd := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
 				cmd.Dir = r.WorkingDir
 				out, err := cmd.Output()
+				// Exercise actual conflict resolution, not synthetic patch-ID output.
+				if conflict && r.Command[0] == "git" && r.Command[1] == "rebase" && err != nil {
+					for i := 0; i < 2; i++ {
+						if run("diff", "--name-only", "--diff-filter=U") != "a" {
+							t.Fatal("expected a real conflict in a")
+						}
+						put("a", "resolved change "+strings.Repeat("x", i+1)+"\n")
+						run("add", "a")
+						cmd = exec.CommandContext(ctx, "git", "-c", "core.editor=true", "rebase", "--continue")
+						cmd.Dir = dir
+						out, err = cmd.Output()
+						if err == nil {
+							break
+						}
+					}
+				}
 				result := &provider.ExecResult{Stdout: string(out)}
 				var exit *exec.ExitError
 				if errors.As(err, &exit) {
@@ -100,6 +119,16 @@ func TestLandRebaseIdentity(t *testing.T) {
 					}
 					return nil
 				})
+			if conflict {
+				var review *publish.RebaseReviewError
+				if !errors.As(err, &review) || !strings.Contains(review.Reason, "reason: commit patch IDs differ: before=2 commits, after=2 commits") {
+					t.Fatalf("expected reasoned rebase review after resolution, got %v", err)
+				}
+				if entry.Review != nil || entry.Request.Head != run("rev-parse", "HEAD") || entry.Request.BaseCommit != target {
+					t.Fatalf("resolved patch retained approval or lost candidate: %+v", entry)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("unrelated rebase lost approval: %v", err)
 			}
