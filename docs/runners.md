@@ -224,6 +224,8 @@ Remaining work: the production provider caller (job 5c), hub environment-failure
 
 ## Cloud Build runner
 
+Each Cloud Build landing reports per-phase timings in its output as `SWARM_PHASE` lines (`setup`, `payload`, `cache_restore`, each check, and `cache_save`), and the landing result is reported before the cache is saved.
+
 Daemon startup constructs the production provider using Application Default
 Credentials with the `https://www.googleapis.com/auth/cloud-platform` scope.
 Use the machine's attached service account or `GOOGLE_APPLICATION_CREDENTIALS`;
