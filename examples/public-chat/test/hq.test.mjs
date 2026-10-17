@@ -3,7 +3,7 @@
 // They prove routing, identity, hours and alert labelling, not a deployed setup.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { handle, applyHours, relayAlerts, botsFrom, staffId } from '../hq/src/index.js';
+import { handle, applyHours, relayAlerts, watchBots, botsFrom, staffId } from '../hq/src/index.js';
 import { cleanHours, cleanSchedule, onCall, scheduleFor, localTime } from '../hq/src/hours.mjs';
 
 const TEAM = 'team.example.com';
@@ -166,4 +166,50 @@ test('alerts: first run starts from now, then actionable events go out titled wi
   const quiet = makeEnv({ ALERTS_URL: 'https://alerts.example.com', ALERTS_AUTH: 'Authorization: Bearer x', BOTS: JSON.stringify([{ id: 'docs-staging', name: 'docs.example.com', env: 'staging', binding: 'GW_SWARM', ops_secret: 'OPS_SWARM', alerts: false }]) });
   await relayAlerts(quiet, { fetchImpl });
   assert.equal(quiet.GW_SWARM.seen.length, 0, 'alerts: false skips the bot entirely');
+});
+
+test('bot health: spend, cap, errors and down become states, sent on change only', async () => {
+  const posted = [];
+  const watchFetch = async (url, init) => { posted.push({ url: String(url), ...JSON.parse(init.body) }); return new Response(null, { status: 202 }); };
+  const summary = { spend: { today_usd: 1.7, cap_usd: 2, cap_on: true, over: false }, errors_today: 12 };
+  let down = false;
+  const binding = { fetch: async (url) => (down ? Promise.reject(new Error('connection refused')) : new URL(url).pathname === '/ops/summary' ? Response.json(summary) : Response.json({})) };
+  let t = 1_000_000;
+  const env = makeEnv({
+    ALERTS_URL: 'https://alerts.example.com', ALERTS_AUTH: 'Authorization: Bearer x', CONSOLE_URL: 'https://hq.example.com',
+    BOTS: JSON.stringify([{ id: 'shop-prod', name: 'shop.example.com', env: 'production', binding: 'GW_SHOP', ops_secret: 'OPS_SHOP' }]), GW_SHOP: binding,
+  });
+  const run = () => watchBots(env, { fetchImpl: watchFetch, now: () => t });
+  await run();
+  const by = (key) => posted.filter((p) => p.key === key).at(-1);
+  assert.ok(posted.every((p) => p.url === 'https://alerts.example.com/v1/state'));
+  assert.deepEqual([by('bot.shop-prod.spend').state, by('bot.shop-prod.spend').severity], ['failing', 'warning'], '85% of the cap warns');
+  assert.match(by('bot.shop-prod.spend').fix, /HQ: https:\/\/hq\.example\.com\/\?bot=shop-prod$/);
+  assert.equal(by('bot.shop-prod.errors').state, 'failing');
+  assert.equal(by('bot.shop-prod.cap').state, 'ok');
+  assert.equal(by('bot.shop-prod.down').state, 'ok');
+
+  const count = posted.length;
+  t += 60_000; await run();
+  assert.equal(posted.length, count, 'nothing changed: nothing sent');
+
+  summary.spend = { today_usd: 2, cap_usd: 2, cap_on: true, over: true };
+  t += 60_000; await run();
+  assert.deepEqual([by('bot.shop-prod.spend').state, by('bot.shop-prod.spend').severity], ['failing', 'critical'], 'at the cap: critical');
+  summary.spend = { today_usd: 0, cap_usd: 0, cap_on: false, over: false };
+  t += 60_000; await run();
+  assert.equal(by('bot.shop-prod.cap').state, 'failing', 'a cap switched off warns');
+
+  down = true;
+  for (let i = 0; i < 2; i++) { t += 60_000; await run(); }
+  assert.equal(by('bot.shop-prod.down').state, 'ok', 'two misses are not down yet');
+  t += 60_000; await run();
+  assert.deepEqual([by('bot.shop-prod.down').state, by('bot.shop-prod.down').severity], ['failing', 'critical'], 'production down is critical');
+  down = false;
+  t += 60_000; await run();
+  assert.equal(by('bot.shop-prod.down').state, 'ok', 'back up resolves');
+
+  const sent = posted.length;
+  t += 31 * 60_000; await run();
+  assert.ok(posted.length > sent, 'states are re-sent every 30 minutes');
 });

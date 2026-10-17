@@ -293,7 +293,70 @@ export async function relayAlerts(env, { fetchImpl = fetch } = {}) {
   return { relayed };
 }
 
+/**
+ * Health alerts for every gateway bot, once a minute, reported to the alert
+ * service as states (POST ALERTS_URL/v1/state): a failing state becomes one
+ * alert there and resolves when it reports ok. Per bot:
+ *   bot.ID.down    HQ could not read the bot 3 minutes in a row (critical in
+ *                  production, a warning on staging)
+ *   bot.ID.spend   today's AI spend at 80% of the daily cap (warning) or at the
+ *                  cap, when the bot stops answering (critical)
+ *   bot.ID.cap     the daily spending cap is off (warning)
+ *   bot.ID.errors  ERRORS_ALERT (default 10) or more errors today (warning)
+ * A state is sent when it changes and again every 30 minutes, so a quiet
+ * minute writes nothing. Each title links to the bot in HQ.
+ */
+export async function watchBots(env, { fetchImpl = fetch, now = Date.now } = {}) {
+  if (!env.ALERTS_URL || !env.ALERTS_AUTH || !env.HQ_STATE) return { sent: 0, skipped: 'not configured' };
+  const sendAlert = env.ALERTS ? (u, init) => env.ALERTS.fetch(u, init) : fetchImpl;
+  let memo = {};
+  try { memo = JSON.parse((await env.HQ_STATE.get('watch')) ?? '{}'); } catch { memo = {}; }
+  const before = JSON.stringify(memo);
+  const errorsAlert = Number(env.ERRORS_ALERT) > 0 ? Number(env.ERRORS_ALERT) : 10;
+  let sent = 0;
+  for (const bot of botsFrom(env).filter((b) => b.kind === 'gateway' && b.alerts)) {
+    const s = await summaryOf(env, bot, { fetchImpl });
+    const label = `${bot.name}${bot.env === 'staging' ? ' staging' : ''}`;
+    const link = env.CONSOLE_URL ? ` ${env.CONSOLE_URL.replace(/\/$/, '')}/?bot=${encodeURIComponent(bot.id)}` : '';
+    const misses = s.up ? 0 : (Number(memo[`misses:${bot.id}`]) || 0) + 1;
+    if (misses) memo[`misses:${bot.id}`] = misses; else delete memo[`misses:${bot.id}`];
+    const states = [{
+      key: `bot.${bot.id}.down`, failing: misses >= 3, severity: bot.env === 'production' ? 'critical' : 'warning',
+      title: `${label} chat bot is not answering (${s.error ?? 'no reply'})`, fix: `check its gateway on the bot server; HQ:${link}`,
+    }];
+    const sum = s.summary;
+    if (sum?.spend) {
+      const cap = Number(sum.spend.cap_usd) || 0;
+      const today = Number(sum.spend.today_usd) || 0;
+      const atCap = sum.spend.cap_on && (sum.spend.over === true || (cap > 0 && today >= cap));
+      states.push({
+        key: `bot.${bot.id}.spend`, failing: Boolean(sum.spend.cap_on && cap > 0 && today >= cap * 0.8) || atCap, severity: atCap ? 'critical' : 'warning',
+        title: `${label} AI spend today $${today.toFixed(2)} of the $${cap.toFixed(2)} cap${atCap ? ': cap reached, the bot is resting' : ''}`,
+        fix: `raise the cap or wait for the next day (UTC); HQ:${link}`,
+      }, {
+        key: `bot.${bot.id}.cap`, failing: sum.spend.cap_on === false, severity: 'warning',
+        title: `${label} daily spending cap is OFF`, fix: `set it again: daily-limit with --usd; HQ:${link}`,
+      });
+    }
+    if (sum && Number.isFinite(Number(sum.errors_today))) {
+      const errors = Number(sum.errors_today);
+      states.push({ key: `bot.${bot.id}.errors`, failing: errors >= errorsAlert, severity: 'warning', title: `${label}: ${errors} errors today`, fix: `read its activity in HQ:${link}` });
+    }
+    for (const st of states) {
+      const sig = `${st.failing ? 1 : 0}${st.severity}`;
+      const prev = memo[st.key];
+      if (prev && prev.sig === sig && now() - prev.at < 30 * 60_000) continue;
+      const body = { key: st.key, state: st.failing ? 'failing' : 'ok', severity: st.severity, title: st.title.slice(0, 300), fix: st.fix.slice(0, 300) };
+      const status = await sendAlert(env.ALERTS_URL.replace(/\/$/, '') + '/v1/state', { method: 'POST', headers: alertHeaders(env.ALERTS_AUTH), body: JSON.stringify(body), signal: AbortSignal.timeout(5000) })
+        .then((r) => r.status, (e) => String(e?.message ?? e).slice(0, 100));
+      if ([200, 201, 202, 204].includes(status)) { memo[st.key] = { sig, at: now() }; sent++; } else console.error('state not delivered:', st.key, status);
+    }
+  }
+  if (JSON.stringify(memo) !== before) await env.HQ_STATE.put('watch', JSON.stringify(memo));
+  return { sent };
+}
+
 export default {
   fetch: (request, env) => handle(request, env),
-  scheduled: (controller, env, ctx) => ctx.waitUntil(Promise.all([applyHours(env), relayAlerts(env)])),
+  scheduled: (controller, env, ctx) => ctx.waitUntil(Promise.all([applyHours(env), relayAlerts(env), watchBots(env)])),
 };
