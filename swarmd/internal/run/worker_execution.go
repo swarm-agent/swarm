@@ -709,6 +709,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		reviewAllocated = role == store.WorkerRoleReviewer
 		if forgeBranch != "" {
 			allocation.BaseBranch = forgeBranch
+			if err := h.trees.AlignWorkerCloneBase(allocation.WorkspacePath, forgeBranch, allocation.BaseCommit); err != nil {
+				return err
+			}
 		}
 		available := true
 		grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}

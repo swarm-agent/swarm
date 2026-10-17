@@ -120,6 +120,30 @@ func (s *Service) allocateWorkerClone(source string, current bool, base, branch,
 	return Allocation{WorkspacePath: path, RepoRoot: root, BaseBranch: base, BaseCommit: head, BranchName: branch, WorkspaceID: id}, nil
 }
 
+// AlignWorkerCloneBase points a job clone's view of its base branch (origin's
+// branch and the local branch of that name) at the commit the job started
+// from. A clone copies the folder's branches, which lag behind the forge in a
+// folder that syncs with it; a worker asked for "the current base" must find
+// the synced commit there, not the folder's older branch.
+func (s *Service) AlignWorkerCloneBase(clone, branch, commit string) error {
+	if !validCommitID(commit) {
+		return errors.New("align clone base: a full commit id is required")
+	}
+	if _, err := runGitAllocation(clone, nil, "check-ref-format", "--branch", branch); err != nil {
+		return fmt.Errorf("align clone base: %w", err)
+	}
+	refs := []string{"refs/remotes/origin/" + branch}
+	if _, err := runGitAllocation(clone, nil, "show-ref", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
+		refs = append(refs, "refs/heads/"+branch)
+	}
+	for _, ref := range refs {
+		if _, err := runGitAllocation(clone, nil, "update-ref", "-m", "swarm: synced base", ref, commit); err != nil {
+			return fmt.Errorf("align clone base %s: %w", ref, err)
+		}
+	}
+	return nil
+}
+
 // managedCloneIdentity is a consistency check, not authorization: callers must
 // first bind the exact managed path to durable session ownership.
 func managedCloneIdentity(source, lane string) bool {
