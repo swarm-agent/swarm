@@ -65,3 +65,24 @@ func TestSetupCredentialsListAddRemove(t *testing.T) {
 		t.Fatalf("a refused command reached the daemon: %v", paths)
 	}
 }
+
+// Requirement: `setup daily-limit` without --usd only shows the cap; turning
+// it off takes an explicit --usd 0. (A bare call used to switch a live cap
+// off while meaning to read it.)
+func TestSetupDailyLimitWithoutUSDOnlyReads(t *testing.T) {
+	var methods []string
+	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		fmt.Fprint(w, `{"limits":{"daily_cost_limit_usd":5,"enabled":true,"today_cost_usd":0.25}}`)
+	})
+	var out bytes.Buffer
+	if err := runSetup([]string{"daily-limit", "--socket", socket}, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 1 || methods[0] != http.MethodGet || !strings.Contains(out.String(), "$5.00") {
+		t.Fatalf("bare daily-limit sent %v and printed %q", methods, out.String())
+	}
+	if err := runSetup([]string{"daily-limit", "--socket", socket, "--usd", "0"}, strings.NewReader(""), &bytes.Buffer{}); err != nil || methods[1] != http.MethodPost {
+		t.Fatalf("explicit --usd 0: err=%v methods=%v", err, methods)
+	}
+}

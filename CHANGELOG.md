@@ -6,6 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- `swarmctl setup daily-limit` without `--usd` now only shows the cap and today's spend; turning the cap off takes an explicit `--usd 0`. A bare call used to switch a live cap off. Docs impact: none.
 - Vertex AI usage now counts toward the daily spend cap. Cost was looked up under provider `vertex`, which the model catalog does not keep (Vertex runs Google's models), so every Vertex turn cost 0 and the cap never tripped. It is priced from Google's catalog records. Docs impact: none.
 - `swarmctl setup credentials`, `add-credential --provider vertex --project P` and `remove-credential --provider X --id ID` manage provider credentials after first setup on a box with no shell, so a sealed box can move from a Gemini key to Vertex AI and then drop the key. The listing shows only provider, ID, type and whether it is active. Docs impact: containers/sealed/README.md.
 - Admit new landings into running merge trains and refill freed slots immediately, preserving ordered tested pushes and suffix restacking. Docs impact: none.

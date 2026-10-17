@@ -9,12 +9,13 @@ import (
 )
 
 // runSetupDailyLimit sets the account's daily spend cap. When today's cost
-// reaches it the daemon refuses new runs and stops running ones.
+// reaches it the daemon refuses new runs and stops running ones. Without
+// --usd it only shows the cap: turning it off takes an explicit --usd 0.
 func runSetupDailyLimit(args []string, output io.Writer) error {
 	fs := flag.NewFlagSet("setup daily-limit", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	socket := fs.String("socket", "", "private daemon Unix socket")
-	usd := fs.Float64("usd", 0, "daily spend cap in US dollars (0 turns the cap off)")
+	usd := fs.Float64("usd", 0, "daily spend cap in US dollars (0 turns the cap off; leave out to show it)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -26,6 +27,8 @@ func runSetupDailyLimit(args []string, output io.Writer) error {
 	if fs.NArg() != 0 || *usd < 0 || *usd > 100000 {
 		return errors.New("usage: swarmctl setup daily-limit --usd 25")
 	}
+	usdSet := false
+	fs.Visit(func(f *flag.Flag) { usdSet = usdSet || f.Name == "usd" })
 	client, err := newSetupClient(*socket)
 	if err != nil {
 		return err
@@ -37,6 +40,17 @@ func runSetupDailyLimit(args []string, output io.Writer) error {
 			Enabled           bool    `json:"enabled"`
 			TodayCostUSD      float64 `json:"today_cost_usd"`
 		} `json:"limits"`
+	}
+	if !usdSet {
+		if err := setupRequest(client, http.MethodGet, "/v3/sessions:usage-limits", nil, &result); err != nil {
+			return err
+		}
+		if !result.Limits.Enabled {
+			_, err = fmt.Fprintf(output, "Daily spend cap off (spent today: $%.4f).\n", result.Limits.TodayCostUSD)
+			return err
+		}
+		_, err = fmt.Fprintf(output, "Daily spend cap $%.2f (spent today: $%.4f).\n", result.Limits.DailyCostLimitUSD, result.Limits.TodayCostUSD)
+		return err
 	}
 	if err := setupRequest(client, http.MethodPost, "/v3/sessions:usage-limits", map[string]any{"daily_cost_limit_usd": *usd, "enabled": *usd > 0}, &result); err != nil {
 		return err
