@@ -30,6 +30,7 @@ func unchangedRangeDiff(output string) bool {
 type ReviewPipeline struct {
 	InfrastructureAttempts int    `json:"infrastructure_attempts,omitempty"`
 	RetryAfter             int64  `json:"retry_after,omitempty"`
+	FailedHead             string `json:"failed_head,omitempty"`
 	Round                  int    `json:"round"`
 	Head                   string `json:"head"`
 	Base                   string `json:"base,omitempty"`
@@ -88,8 +89,11 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	save := func(next string) error {
 		state.Next = next
 		if next == "review_failed" {
+			state.FailedHead = head
 			state.InfrastructureAttempts++
 			state.RetryAfter = time.Now().Add(30 * time.Second).UnixMilli()
+		} else {
+			state.FailedHead = ""
 		}
 		if err := db.PutJSON(key, state); err != nil {
 			return err
@@ -97,11 +101,17 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		return c.emitPipeline(worker, run, refs, state)
 	}
 	followup := completedPublishFollowup(refs)
-	if state.Next == "review_exhausted" || (state.Next == "review_failed" && state.Head == head && (followup == "" || followup == state.FollowupRunID) && (!strings.HasPrefix(state.Findings, "Review infrastructure") || state.InfrastructureAttempts >= 3 || time.Now().UnixMilli() < state.RetryAfter)) {
+	// Admission failures retain Head/Base as review evidence. Retry controls
+	// instead belong to the failed attempt, with Head supporting older records.
+	failedHead := state.FailedHead
+	if failedHead == "" {
+		failedHead = state.Head
+	}
+	if state.Next == "review_exhausted" || (state.Next == "review_failed" && failedHead == head && (followup == "" || followup == state.FollowupRunID) && (!strings.HasPrefix(state.Findings, "Review infrastructure") || state.InfrastructureAttempts >= 3 || time.Now().UnixMilli() < state.RetryAfter)) {
 		return false, nil
 	}
 	if state.Next == "review_failed" {
-		if state.Head != head || followup != "" && followup != state.FollowupRunID {
+		if failedHead != head || followup != "" && followup != state.FollowupRunID {
 			state.InfrastructureAttempts = 0
 		}
 		state.Next, state.ReviewerJobID = "", ""
@@ -147,12 +157,6 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 		return false, nil
 	}
 	base := controlMCPString(result, "base_commit")
-	if !pipelineExactCommit(base) {
-		state.Head, state.Verdict, state.ReviewerJobID = head, "", ""
-		state.FollowupRunID = followup
-		state.Findings = "Review infrastructure failure: exact landing base commit is unavailable"
-		return false, save("review_failed")
-	}
 	brief := "Review this exact head: " + head + ". Check previous findings first and say which are fixed.\nPrevious findings:\n" + state.Findings
 	amendments, err := c.requesterReviewInstructions(refs.sessionID)
 	if err != nil {
@@ -167,11 +171,20 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	if err != nil {
 		return false, err
 	}
-	commits := []string{base}
 	// A send-back is not evidence that the old head was reviewed. Confirm the
 	// durable verdict for this job, including when review was enabled later.
 	rebased := entry.State == "review_pending" && entry.Request.Head == head ||
 		entry.SendBacks > 0 && strings.HasPrefix(entry.Reason, "Rebase conflict:")
+	if rebased && pipelineExactCommit(entry.Request.BaseCommit) {
+		base = entry.Request.BaseCommit
+	}
+	if !pipelineExactCommit(base) {
+		state.Head, state.Verdict, state.ReviewerJobID = head, "", ""
+		state.FollowupRunID = followup
+		state.Findings = "Review infrastructure failure: exact landing base commit is unavailable"
+		return false, save("review_failed")
+	}
+	commits := []string{base}
 	state.Rebase = false
 	if rebased && state.Head != head && pipelineExactCommit(state.Head) && pipelineExactCommit(state.Base) {
 		previous, err := c.server.sessions.Store().WorkerStore().CurrentValidJobReview(principal.AccountScopeID, worker, run, state.Head)
@@ -194,7 +207,9 @@ func (c *controlMCPCall) advancePipeline(worker, run string, refs controlMCPJobR
 	}
 	response, err := controlMCPGiveJob(c, map[string]any{"worker": "reviewer", "project": refs.projectID, "workspace": rule.Folder, "review_job": job, "review_commits": commits, "brief": brief, "idempotency_key": requestID})
 	if err != nil {
-		state.Head, state.Base, state.Verdict, state.ReviewerJobID = head, base, "", ""
+		// Admission did not review this range; retain the last reviewed pair
+		// so a retry can reconstruct the same rebase-scoped request.
+		state.Verdict, state.ReviewerJobID = "", ""
 		state.FollowupRunID = followup
 		state.Findings = "Review infrastructure admission failed: " + err.Error()
 		return false, save("review_failed")
