@@ -1,148 +1,208 @@
-// The Bots HQ page: the staff console for several bots. consoleApp runs in the
-// browser (served as /hq.js, so the page needs no inline script); it talks only
-// to this Worker: /bots, /bots/summary, /hours and the /ops routes (with ?bot=).
+// The Bots HQ page. hqApp runs in the browser (served as /hq.js, so the page
+// needs no inline script); it talks only to this Worker: /me, /bots,
+// /bots/summary, /hours and the /ops routes (with the bot chosen on screen).
 // Everything from visitors or the model is rendered as text, never HTML.
 
 export const PAGE_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bots HQ</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --ink:#111418; --mute:#69707a; --line:#e3e6ea; --accent:#2340ff; --ok:#1f9d55; --warn:#c2410c; }
+  :root { --bg:#0b0e14; --panel:#11161f; --panel2:#151b26; --line:#1f2733; --ink:#e6edf3; --mute:#8b96a5; --dim:#5d6876;
+          --accent:#87ceeb; --live:#3fb950; --stage:#d29922; --warn:#f0883e; --bad:#f85149; --radius:14px; }
   * { box-sizing:border-box; margin:0; }
   [hidden] { display:none !important; }
-  body { font:14px/1.45 system-ui,sans-serif; background:var(--bg); color:var(--ink); }
-  header { display:flex; align-items:center; gap:14px; padding:12px 20px; background:var(--card); border-bottom:1px solid var(--line); position:sticky; top:0; }
-  header h1 { font-size:16px; flex:1; }
-  .pill { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--line); border-radius:999px; cursor:pointer; user-select:none; }
-  .pill input { accent-color:var(--ok); }
-  .dot { width:9px; height:9px; border-radius:50%; background:#b7bcc3; }
-  .dot.on { background:var(--ok); }
-  button { font:inherit; padding:6px 12px; border-radius:8px; border:1px solid var(--line); background:var(--card); cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  button.danger { border-color:#f1c4c4; color:#b42318; }
-  button:disabled { opacity:.45; cursor:default; }
-  a.button { display:inline-block; padding:6px 12px; border-radius:8px; border:1px solid var(--accent); color:var(--accent); text-decoration:none; }
-  #contact { margin:6px 0 10px; padding:8px 10px; background:#f0f4ff; border-radius:8px; }
-  main { display:grid; grid-template-columns:340px 1fr; gap:16px; padding:16px 20px; }
-  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); margin-bottom:10px; }
-  .stack { display:flex; flex-direction:column; gap:16px; }
-  .item { padding:10px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; cursor:pointer; }
+  html, body { height:100%; }
+  body { font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
+  button { font:inherit; color:inherit; cursor:pointer; border:1px solid var(--line); background:var(--panel2); border-radius:10px; padding:7px 12px; }
+  button:hover:not(:disabled) { border-color:#2d3746; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#06101f; font-weight:600; }
+  button.danger { color:var(--bad); }
+  button.ghost { background:transparent; }
+  a.button { color:var(--accent); border:1px solid var(--line); border-radius:10px; padding:7px 12px; text-decoration:none; }
+  select, input[type=text], textarea { font:inherit; color:var(--ink); background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:8px 10px; }
+  textarea { width:100%; min-height:76px; resize:vertical; }
+  .app { display:grid; grid-template-columns:260px 1fr; grid-template-rows:60px 1fr; height:100vh; }
+  .top { grid-column:1 / -1; display:flex; align-items:center; gap:14px; padding:0 18px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .brand { display:flex; align-items:center; gap:10px; font-weight:650; font-size:16px; width:224px; }
+  .brand svg { width:26px; height:26px; }
+  .seg { display:inline-flex; background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:3px; }
+  .seg button { border:0; background:transparent; padding:6px 14px; border-radius:9px; color:var(--mute); display:inline-flex; align-items:center; gap:7px; }
+  .seg button.on { background:var(--panel2); color:var(--ink); }
+  .spacer { flex:1; }
+  .chip { display:inline-flex; align-items:center; gap:8px; padding:7px 12px; border-radius:999px; border:1px solid var(--line); background:var(--panel2); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--dim); flex-shrink:0; }
+  .dot.live { background:var(--live); } .dot.stage { background:var(--stage); } .dot.bad { background:var(--bad); } .dot.on { background:var(--live); box-shadow:0 0 0 3px #3fb95033; }
+  .who { color:var(--mute); font-size:13px; }
+  aside { border-right:1px solid var(--line); background:var(--panel); padding:14px 10px; overflow:auto; }
+  .navlabel { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); padding:12px 10px 6px; }
+  .nav { display:flex; align-items:center; gap:10px; width:100%; text-align:left; border:0; background:transparent; padding:9px 10px; border-radius:10px; color:var(--ink); }
+  .nav:hover { background:var(--panel2); }
+  .nav.sel { background:var(--panel2); box-shadow:inset 3px 0 0 var(--accent); }
+  .nav .name { flex:1; }
+  .nav.ghost { color:var(--dim); cursor:default; }
+  .badge { min-width:20px; padding:1px 7px; border-radius:999px; background:var(--warn); color:#120a02; font-size:12px; font-weight:700; text-align:center; }
+  .badge:empty { display:none; }
+  .envpill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--mute); }
+  .envpill.live { color:var(--live); border-color:#3fb95055; } .envpill.stage { color:var(--stage); border-color:#d2992255; }
+  main { overflow:auto; padding:22px 24px 40px; }
+  h1 { font-size:22px; font-weight:650; display:flex; align-items:center; gap:10px; }
+  .sub { color:var(--mute); margin-top:4px; }
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:20px 0; }
+  .kpi { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; }
+  .kpi .v { font-size:26px; font-weight:650; margin-top:2px; }
+  .kpi .l { color:var(--mute); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  .kpi.alert .v { color:var(--warn); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+  .card .head { display:flex; align-items:center; gap:10px; }
+  .card .head .name { font-weight:650; font-size:16px; flex:1; }
+  .stat { display:flex; justify-content:space-between; color:var(--mute); }
+  .stat b { color:var(--ink); font-weight:600; }
+  .bar { height:6px; border-radius:6px; background:var(--bg); overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); border-radius:6px; }
+  .bar.hot i { background:var(--warn); }
+  .note { color:var(--mute); font-size:13px; }
+  .empty { color:var(--dim); }
+  .botgrid { display:grid; grid-template-columns:300px minmax(0,1fr) 280px; gap:14px; margin-top:18px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:14px; min-width:0; }
+  .tabs { display:flex; gap:4px; margin-bottom:10px; }
+  .tabs button { border:0; background:transparent; color:var(--mute); padding:5px 10px; border-radius:8px; }
+  .tabs button.on { background:var(--panel2); color:var(--ink); }
+  .item { padding:10px 12px; border:1px solid var(--line); border-radius:12px; margin-bottom:8px; cursor:pointer; background:var(--panel2); }
+  .item:hover { border-color:#2d3746; }
   .item.sel { border-color:var(--accent); }
-  .item.waiting { border-color:var(--warn); background:#fff7ed; }
+  .item.waiting { border-color:#f0883e88; background:#1d150d; }
   .item small { color:var(--mute); display:block; }
-  .row { display:flex; gap:8px; align-items:center; justify-content:space-between; }
-  #log { font:12px/1.5 ui-monospace,monospace; color:var(--mute); max-height:180px; overflow:auto; white-space:pre-wrap; }
-  #transcript { display:flex; flex-direction:column; gap:8px; max-height:58vh; overflow:auto; padding:4px; }
-  .msg { max-width:80%; padding:8px 11px; border-radius:10px; white-space:pre-wrap; }
-  .msg.visitor { align-self:flex-end; background:#111418; color:#fff; }
-  .msg.agent { background:#eef0f3; }
-  .msg.person { background:#e8edff; }
-  .msg b { display:block; font-size:11px; opacity:.7; }
-  #card { margin:6px 0 10px; padding:8px 10px; background:#fff7ed; border-radius:8px; }
-  #vtyping { font-size:12px; color:var(--mute); padding:2px 4px 0; display:flex; align-items:center; gap:6px; }
-  #vtyping[hidden] { display:none; }
+  .item .row { margin-top:6px; }
+  .row { display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .convhead { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  .convhead h2 { font-size:15px; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  #transcript { display:flex; flex-direction:column; gap:10px; height:46vh; overflow:auto; padding:6px 2px; }
+  .msg { max-width:82%; padding:9px 12px; border-radius:14px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .msg.visitor { align-self:flex-end; background:#10202a; color:#eaf6fb; border-bottom-right-radius:4px; }
+  .msg.agent { background:var(--panel2); border-bottom-left-radius:4px; }
+  .msg.person { background:#1b2a3b; border-bottom-left-radius:4px; }
+  .msg b { display:block; font-size:11px; color:var(--mute); font-weight:600; margin-bottom:2px; }
+  .info { margin:4px 0 10px; padding:9px 12px; border-radius:10px; background:var(--panel2); color:var(--mute); }
+  .info.warm { background:#1d150d; color:#f3c69c; }
+  #vtyping { font-size:12px; color:var(--mute); padding:4px 2px 0; display:flex; align-items:center; gap:6px; }
   #vtyping i { width:5px; height:5px; border-radius:50%; background:var(--mute); animation:tdot 1.1s infinite; }
   #vtyping i:nth-child(2) { animation-delay:.15s; } #vtyping i:nth-child(3) { animation-delay:.3s; }
   @keyframes tdot { 0%,60%,100% { opacity:.3; } 30% { opacity:1; } }
-  textarea { width:100%; min-height:70px; font:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; resize:vertical; }
-  .empty { color:var(--mute); }
-  nav#tabs { display:flex; gap:6px; flex-wrap:wrap; padding:10px 20px 0; }
-  .tab { padding:6px 12px; border:1px solid var(--line); border-radius:999px; background:var(--card); cursor:pointer; display:inline-flex; gap:6px; align-items:center; }
-  .tab.sel { border-color:var(--accent); color:var(--accent); }
-  .tab .env { font-size:11px; color:var(--mute); }
-  .badge { min-width:18px; padding:0 6px; border-radius:999px; background:var(--warn); color:#fff; font-size:11px; text-align:center; }
-  .badge:empty { display:none; }
-  #overview { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:16px; padding:16px 20px; }
-  .bot h3 { font-size:15px; display:flex; justify-content:space-between; gap:8px; align-items:center; }
-  .bot dl { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin-top:10px; }
-  .bot dt { color:var(--mute); } .bot dd { margin:0; text-align:right; }
-  .up { color:var(--ok); } .down { color:#b42318; }
-  #hourspanel { padding:16px 20px; }
-  #hourspanel table { border-collapse:collapse; margin:8px 0; }
-  #hourspanel td { padding:4px 8px; vertical-align:top; }
-  #hourspanel input[type=text] { width:150px; font:inherit; padding:4px 6px; border:1px solid var(--line); border-radius:6px; }
-  #hourspanel select { font:inherit; padding:4px; }
-  .hint { color:var(--mute); font-size:12px; }
-  @media (max-width:800px) { main { grid-template-columns:1fr; } }
+  .composer { margin-top:10px; }
+  #log { font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--mute); max-height:260px; overflow:auto; white-space:pre-wrap; }
+  .side h3 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:2px 0 10px; }
+  .side .stat { padding:5px 0; border-bottom:1px solid #161c26; }
+  .switch { display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  .switch input { appearance:none; width:34px; height:20px; border-radius:20px; background:var(--line); position:relative; cursor:pointer; transition:background .15s; }
+  .switch input::after { content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:left .15s; }
+  .switch input:checked { background:var(--live); } .switch input:checked::after { left:16px; }
+  dialog { margin:auto; border:1px solid var(--line); border-radius:18px; background:var(--panel); color:var(--ink); padding:0; width:min(520px,calc(100vw - 32px)); }
+  dialog::backdrop { background:#000a; }
+  .dlg { padding:22px; display:flex; flex-direction:column; gap:16px; }
+  .dlg h2 { font-size:18px; }
+  .choices { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .choice { padding:10px; border-radius:12px; border:1px solid var(--line); background:var(--panel2); text-align:center; }
+  .choice.on { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+  .times { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  details summary { cursor:pointer; color:var(--mute); }
+  .botrow { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 0; border-bottom:1px solid #161c26; flex-wrap:wrap; }
+  @media (max-width:1100px) { .botgrid { grid-template-columns:280px minmax(0,1fr); } .botgrid .side { grid-column:1 / -1; } }
+  @media (max-width:760px) { .app { grid-template-columns:1fr; grid-template-rows:auto auto 1fr; } .top { flex-wrap:wrap; padding:10px; height:auto; } .brand { width:auto; }
+    aside { border-right:0; border-bottom:1px solid var(--line); } .botgrid { grid-template-columns:1fr; } .choices { grid-template-columns:repeat(2,1fr); } }
 </style></head>
 <body>
-<header>
-  <h1>Bots HQ</h1>
-  <span id="who" class="empty"></span>
-  <label class="pill" id="availpill" hidden><span id="dot" class="dot"></span><input id="avail" type="checkbox"> Available on this bot</label>
-  <button id="hoursbtn">Online hours</button>
-  <button id="alerts">Enable alerts</button>
-</header>
-<nav id="tabs"></nav>
-<div id="overview"></div>
-<section id="hourspanel" hidden></section>
-<main id="botview" hidden>
-  <div class="stack">
-    <section><h2>Waiting for a person</h2><div id="queue" class="empty">Nobody waiting.</div></section>
-    <section><h2>Recent conversations</h2><div id="convs" class="empty">None yet.</div></section>
-    <section><h2>Blocked</h2><div id="blocks" class="empty">Nobody blocked.</div></section>
-  </div>
-  <div class="stack">
-    <section>
-      <div class="row"><h2 id="title">Select a conversation</h2>
-        <span><button id="takeover" disabled>Take over</button> <button id="handback" disabled>Hand back</button> <button id="resolve" disabled>Resolve</button> <button id="block" class="danger" disabled>Block</button> <button id="reopen" disabled>Reopen</button> <a id="mail" class="button" hidden>Email them</a></span></div>
-      <div id="contact" class="empty" hidden></div>
-      <div id="card" hidden></div>
-      <div id="transcript"></div>
-      <div id="vtyping" hidden><i></i><i></i><i></i> Visitor is typing…</div>
-      <div style="margin-top:10px"><textarea id="reply" placeholder="Reply as yourself (take over first)" disabled></textarea>
-      <div class="row" style="margin-top:8px"><small id="state" class="empty"></small><button id="send" class="primary" disabled>Send</button></div></div>
+<div class="app">
+  <header class="top">
+    <div class="brand"><svg viewBox="0 0 400 400" aria-hidden="true"><rect x="20" y="20" width="360" height="360" rx="90" fill="#87ceeb" opacity=".15"/><rect x="60" y="60" width="280" height="280" rx="65" fill="#87ceeb" opacity=".35"/><rect x="100" y="100" width="200" height="200" rx="45" fill="#87ceeb" opacity=".6"/><rect x="140" y="140" width="120" height="120" rx="25" fill="#87ceeb" opacity=".85"/></svg>Bots HQ</div>
+    <div class="seg" role="group" aria-label="Environment"><button id="envlive" class="on"><span class="dot live"></span>Live<span id="badgelive" class="badge"></span></button><button id="envstage"><span class="dot stage"></span>Staging<span id="badgestage" class="badge"></span></button></div>
+    <div class="spacer"></div>
+    <button id="hoursbtn" class="chip"><span id="hoursdot" class="dot"></span><span id="hourstext">Online hours</span></button>
+    <button id="alerts" class="chip">Enable alerts</button>
+    <span id="who" class="who"></span>
+  </header>
+  <aside><nav id="tabs" aria-label="Bots"></nav></aside>
+  <main>
+    <section id="overview"></section>
+    <section id="botview" hidden>
+      <div class="row">
+        <div><h1 id="botname"></h1><div id="botsub" class="sub"></div></div>
+        <label class="switch" id="availpill"><input id="avail" type="checkbox"><span>I'm available on this bot</span></label>
+      </div>
+      <div class="botgrid">
+        <div class="panel">
+          <div class="tabs"><button id="t-waiting" class="on">Waiting <span id="qcount" class="badge"></span></button><button id="t-recent">Recent</button><button id="t-blocked">Blocked</button></div>
+          <div id="queue" class="empty">Nobody waiting.</div>
+          <div id="convs" class="empty" hidden>None yet.</div>
+          <div id="blocks" class="empty" hidden>Nobody blocked.</div>
+        </div>
+        <div class="panel">
+          <div class="convhead"><h2 id="title">Select a conversation</h2>
+            <div class="actions"><button id="takeover" disabled>Take over</button><button id="handback" disabled>Hand back</button><button id="resolve" disabled>Resolve</button><button id="reopen" disabled>Reopen</button><button id="block" class="danger" disabled>Block</button><a id="mail" class="button" hidden>Email them</a></div></div>
+          <div id="contact" class="info warm" hidden></div>
+          <div id="card" class="info" hidden></div>
+          <div id="transcript"></div>
+          <div id="vtyping" hidden><i></i><i></i><i></i> Visitor is typing…</div>
+          <div class="composer"><textarea id="reply" placeholder="Take over to reply as yourself" disabled></textarea>
+            <div class="row" style="margin-top:8px"><small id="state" class="note"></small><button id="send" class="primary" disabled>Send</button></div></div>
+        </div>
+        <div class="panel side"><h3>This bot</h3><div id="botstats"></div><h3 style="margin-top:16px">Live events</h3><div id="log"></div></div>
+      </div>
     </section>
-    <section><h2>Live events</h2><div id="log"></div></section>
-  </div>
-</main>
+  </main>
+</div>
+<dialog id="hoursdlg"><form method="dialog" class="dlg" id="hoursform"></form></dialog>
 <script src="/hq.js" defer></script>
 </body></html>`;
 
-function consoleApp() {
+function hqApp() {
   const $ = (s) => document.querySelector(s);
   const ENDED = { resolved: 'Resolved', blocked: 'Blocked', lead_saved: 'Left their details', abuse: 'Ended by the AI (abuse)', cannot_help: 'Ended by the AI' };
-  const state = { latest: 0, selected: null, available: false, beat: null, me: null, queue: [], audio: null, bot: 'all', bots: [], gen: 0, waiting: {}, hours: null };
-  // Every /ops call goes to the bot on screen: ?bot= on reads, "bot" in the body on writes.
-  const withBot = (path) => path.startsWith('/ops/') ? path + (path.includes('?') ? '&' : '?') + 'bot=' + encodeURIComponent(state.bot) : path;
+  const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  const PRESETS = { every: DAYS, sunthu: ['sun', 'mon', 'tue', 'wed', 'thu'], monfri: ['mon', 'tue', 'wed', 'thu', 'fri'] };
+  const ZONES = [['Asia/Jerusalem', 'Israel'], ['UTC', 'UTC'], ['Europe/London', 'London'], ['Europe/Berlin', 'Berlin'], ['America/New_York', 'New York'], ['America/Los_Angeles', 'Los Angeles']];
+  const state = { env: 'production', bot: null, bots: [], summaries: [], hours: null, onCall: {}, waiting: {}, gen: 0, latest: 0, selected: null, available: false, beat: null, me: null, audio: null, list: 'waiting' };
+
+  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
+  const ago = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? s + 's ago' : s < 3600 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; };
+  const money = (n) => '$' + Number(n || 0).toFixed(Number(n) < 1 ? 3 : 2);
+  const log = (line) => { const l = $('#log'); l.textContent = new Date().toLocaleTimeString() + '  ' + line + '\n' + l.textContent.slice(0, 8000); };
   const raw = async (path, body) => {
     const res = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw Object.assign(new Error(data.error || String(res.status)), { status: res.status });
     return data;
   };
-  const api = async (path, body) => {
-    if (path.startsWith('/ops/') && body !== undefined) return raw(path, { ...body, bot: state.bot });
-    const res = await fetch(withBot(path), body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(data.error || String(res.status)), { status: res.status });
-    return data;
-  };
-  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
-  const ago = (t) => { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? s + 's ago' : Math.round(s / 60) + 'm ago'; };
-  const log = (line) => { const l = $('#log'); l.textContent = new Date().toLocaleTimeString() + '  ' + line + '\n' + l.textContent.slice(0, 8000); };
+  // Every /ops call goes to the bot on screen: ?bot= on reads, "bot" in the body on writes.
+  const api = (path, body) => body === undefined
+    ? raw(path + (path.includes('?') ? '&' : '?') + 'bot=' + encodeURIComponent(state.bot))
+    : raw(path, { ...body, bot: state.bot });
+  const botById = (id) => state.bots.find((b) => b.id === id);
+  const envBots = () => state.bots.filter((b) => b.env === state.env);
+  const summaryOf = (id) => state.summaries.find((s) => s.id === id);
+  const isLive = (b) => b.env === 'production';
 
-  // ---- presence: a heartbeat every 20 s while "Available" is on and this tab is open
+  // ---- presence: a heartbeat every 20 s while "available" is on and this tab is open
   async function setAvailable(on) {
     state.available = on;
     $('#avail').checked = on;
-    $('#dot').classList.toggle('on', on);
     clearInterval(state.beat);
+    if (!state.bot) return;
     try { await api('/ops/presence', { available: on }); } catch (e) { log('presence failed: ' + e.message); }
     if (on) state.beat = setInterval(() => api('/ops/presence', { available: true }).catch(() => {}), 20_000);
   }
   $('#avail').addEventListener('change', (e) => setAvailable(e.target.checked));
-  // Closing the tab signs out at once; otherwise presence lapses on its own.
   addEventListener('pagehide', () => {
-    if (state.available) fetch('/ops/presence', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ available: false, bot: state.bot }) });
+    if (state.available && state.bot) fetch('/ops/presence', { method: 'POST', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ available: false, bot: state.bot }) });
   });
 
-  // ---- alerts: desktop notification + a short tone when someone asks for a person
+  // ---- alerts: a desktop notification and a short tone when someone wants a person
   $('#alerts').addEventListener('click', async () => {
     state.audio = state.audio || new AudioContext();
     if ('Notification' in window) await Notification.requestPermission();
-    $('#alerts').textContent = Notification.permission === 'granted' ? 'Alerts on' : 'Sound only';
+    $('#alerts').textContent = 'Notification' in window && Notification.permission === 'granted' ? 'Alerts on' : 'Sound only';
   });
   function alertNewChat(summary, botName) {
     if (state.audio) {
@@ -158,10 +218,153 @@ function consoleApp() {
   }
   addEventListener('focus', () => { document.title = 'Bots HQ'; });
 
-  // ---- queue and conversations
+  // ---- environment switch and the sidebar
+  function setEnv(env) {
+    state.env = env;
+    $('#envlive').classList.toggle('on', env === 'production');
+    $('#envstage').classList.toggle('on', env === 'staging');
+    showBot(null);
+  }
+  $('#envlive').addEventListener('click', () => setEnv('production'));
+  $('#envstage').addEventListener('click', () => setEnv('staging'));
+  function renderSidebar() {
+    const nav = $('#tabs');
+    const item = (label, id, { dot = '', badge = 0, ghost = false, note = '' } = {}) => {
+      const b = el('button', 'nav' + (state.bot === id ? ' sel' : '') + (ghost ? ' ghost' : ''));
+      if (dot) b.append(el('span', 'dot ' + dot));
+      b.append(el('span', 'name', label));
+      if (note) b.append(el('span', 'envpill', note));
+      b.append(el('span', 'badge', badge ? String(badge) : ''));
+      if (!ghost) b.addEventListener('click', () => showBot(id));
+      return b;
+    };
+    const total = envBots().reduce((n, b) => n + (state.waiting[b.id] ?? 0), 0);
+    const parts = [el('div', 'navlabel', state.env === 'production' ? 'Live' : 'Staging'), item('Overview', null, { badge: total })];
+    parts.push(el('div', 'navlabel', 'Bots'));
+    for (const b of envBots()) {
+      const s = summaryOf(b.id);
+      parts.push(item(b.name, b.id, { dot: !s ? '' : s.up ? (isLive(b) ? 'live' : 'stage') : 'bad', badge: state.waiting[b.id] ?? 0, ghost: b.kind !== 'gateway' && false }));
+    }
+    // Bots that exist only on the other side (for example nothing live yet).
+    const here = new Set(envBots().map((b) => b.name));
+    for (const name of [...new Set(state.bots.map((b) => b.name))].filter((n) => !here.has(n))) {
+      parts.push(item(name, '__none', { ghost: true, note: state.env === 'production' ? 'not live yet' : 'no staging' }));
+    }
+    nav.replaceChildren(...parts);
+    const count = (env) => state.bots.filter((b) => b.env === env).reduce((n, b) => n + (state.waiting[b.id] ?? 0), 0);
+    $('#badgelive').textContent = count('production') || '';
+    $('#badgestage').textContent = count('staging') || '';
+  }
+
+  // ---- overview: headline numbers, then one card per bot
+  function renderOverview() {
+    const box = $('#overview');
+    const list = state.summaries.filter((s) => s.env === state.env);
+    const sum = (f) => list.reduce((n, s) => n + (Number(f(s.summary || {})) || 0), 0);
+    const live = state.env === 'production';
+    const head = el('div');
+    const h1 = el('h1', '', live ? 'Live bots' : 'Staging bots');
+    h1.append(el('span', 'envpill ' + (live ? 'live' : 'stage'), live ? 'what visitors use' : 'for testing only'));
+    head.append(h1, el('div', 'sub', live ? 'Real visitors on the public sites.' : 'Test copies, separate from the live bots. Chats here never reach real visitors.'));
+    const kpis = el('div', 'kpis');
+    const kpi = (label, value, alert) => { const k = el('div', 'kpi' + (alert ? ' alert' : '')); k.append(el('div', 'l', label), el('div', 'v', value)); kpis.append(k); };
+    const waiting = sum((s) => s.conversations?.waiting_for_person);
+    kpi('Waiting for a person', String(waiting), waiting > 0);
+    kpi('Chats today', String(sum((s) => s.conversations?.today)));
+    kpi('Spend today', money(sum((s) => s.spend?.today_usd)) + ' of ' + money(sum((s) => s.spend?.cap_usd)));
+    const errors = sum((s) => s.errors_today);
+    kpi('Errors today', String(errors), errors > 0);
+    kpi('Team online', String(Math.max(0, ...list.map((s) => s.summary?.staff_online ?? 0))));
+    const cards = el('div', 'cards');
+    for (const s of list) {
+      const b = botById(s.id) || s;
+      const card = el('div', 'card');
+      const h = el('div', 'head');
+      h.append(el('span', 'dot ' + (s.up ? (live ? 'live' : 'stage') : 'bad')), el('span', 'name', s.name), el('span', 'envpill ' + (live ? 'live' : 'stage'), live ? 'live' : 'staging'));
+      card.append(h);
+      const stat = (label, value) => { const r = el('div', 'stat'); r.append(el('span', '', label), el('b', '', value)); card.append(r); };
+      const m = s.summary;
+      if (!s.up) card.append(el('div', 'note', 'Unreachable: ' + (s.error || 'no answer')));
+      else if (s.kind === 'status') { for (const [k, v] of Object.entries(m || {}).slice(0, 8)) if (typeof v !== 'object') stat(k.replace(/_/g, ' '), String(v)); }
+      else if (!m) card.append(el('div', 'note', s.note || 'No summary yet.'));
+      else {
+        stat('Waiting for a person', String(m.conversations?.waiting_for_person ?? 0));
+        stat('Chats today', String(m.conversations?.today ?? 0));
+        stat('Errors today', String(m.errors_today ?? 0));
+        const cap = m.spend?.cap_usd || 0, spent = m.spend?.today_usd || 0;
+        stat('Spend today', money(spent) + (m.spend?.cap_on ? ' of ' + money(cap) : ' · no cap!'));
+        const bar = el('div', 'bar' + (cap && spent / cap > 0.8 ? ' hot' : ''));
+        const fill = el('i'); fill.style.width = Math.min(100, cap ? (spent / cap) * 100 : 0) + '%'; bar.append(fill); card.append(bar);
+        stat('Online hours', hoursLabel(scheduleOf(s.id)) + (state.onCall[s.id] ? ' · on call now' : ''));
+        stat('Version', String(m.version || '?'));
+      }
+      if (b.kind === 'gateway') { const open = el('button', '', 'Open conversations'); open.addEventListener('click', () => showBot(s.id)); card.append(open); }
+      cards.append(card);
+    }
+    if (!list.length) cards.append(el('div', 'empty', 'No bots here yet.'));
+    box.replaceChildren(head, kpis, cards);
+  }
+
+  async function pollSummaries() {
+    try {
+      const { bots } = await raw('/bots/summary');
+      for (const b of bots) {
+        const w = b.summary?.conversations?.waiting_for_person ?? 0;
+        if (w > (state.waiting[b.id] ?? 0)) alertNewChat('Waiting on ' + b.name + (b.env === 'staging' ? ' (staging)' : ''), b.name);
+        state.waiting[b.id] = w;
+      }
+      state.summaries = bots;
+      renderSidebar();
+      if (!state.bot) renderOverview(); else renderBotStats();
+    } catch (e) { log('summary failed: ' + e.message); }
+  }
+
+  // ---- one bot
+  function renderBotStats() {
+    const s = summaryOf(state.bot), m = s?.summary || {};
+    const box = $('#botstats');
+    const rows = [['Status', s ? (s.up ? 'up' : 'unreachable') : '…'], ['Chats today', m.conversations?.today ?? '–'], ['Chats kept', m.conversations?.total ?? '–'],
+      ['Team online', m.staff_online ?? '–'], ['Errors today', m.errors_today ?? '–'], ['Spend today', m.spend ? money(m.spend.today_usd) + ' of ' + money(m.spend.cap_usd) : '–'],
+      ['Online hours', hoursLabel(scheduleOf(state.bot)) + (state.onCall[state.bot] ? ' · on call now' : '')], ['Version', m.version || '–']];
+    box.replaceChildren(...rows.map(([k, v]) => { const r = el('div', 'stat'); r.append(el('span', '', k), el('b', '', String(v))); return r; }));
+  }
+  function showList(which) {
+    state.list = which;
+    for (const w of ['waiting', 'recent', 'blocked']) $('#t-' + w).classList.toggle('on', w === which);
+    $('#queue').hidden = which !== 'waiting'; $('#convs').hidden = which !== 'recent'; $('#blocks').hidden = which !== 'blocked';
+  }
+  $('#t-waiting').addEventListener('click', () => showList('waiting'));
+  $('#t-recent').addEventListener('click', () => showList('recent'));
+  $('#t-blocked').addEventListener('click', () => showList('blocked'));
+
+  async function showBot(id) {
+    state.gen++;
+    if (state.available) await setAvailable(false);
+    state.bot = id; state.selected = null; state.latest = 0;
+    history.replaceState(null, '', id ? '/?bot=' + encodeURIComponent(id) : '/');
+    renderSidebar();
+    $('#overview').hidden = Boolean(id); $('#botview').hidden = !id;
+    if (!id) { renderOverview(); return; }
+    const b = botById(id);
+    $('#botname').replaceChildren(document.createTextNode(b.name + ' '), el('span', 'envpill ' + (isLive(b) ? 'live' : 'stage'), isLive(b) ? 'live' : 'staging'));
+    $('#botsub').textContent = isLive(b) ? 'Real visitors. Take over to reply as yourself.' : 'Test copy. Safe to try things.';
+    $('#transcript').replaceChildren(); $('#title').textContent = 'Select a conversation'; $('#log').textContent = '';
+    for (const id2 of ['takeover', 'handback', 'resolve', 'reopen', 'block', 'reply', 'send']) $('#' + id2).disabled = true;
+    $('#contact').hidden = true; $('#card').hidden = true; $('#mail').hidden = true; $('#state').textContent = '';
+    renderBotStats();
+    showList(state.list);
+    try {
+      const { latest } = await api('/ops/events?after=0&wait=0');
+      state.latest = latest;
+      await Promise.all([refreshQueue(), refreshConversations(), refreshBlocks()]);
+      if (!state.waiting[id]) showList('recent');
+    } catch (e) { log(b.name + ' unreachable: ' + e.message); }
+    listen();
+  }
+
   async function refreshQueue() {
     const { waiting } = await api('/ops/queue');
-    state.queue = waiting;
+    $('#qcount').textContent = waiting.length || '';
     const q = $('#queue');
     q.replaceChildren();
     q.className = waiting.length ? '' : 'empty';
@@ -169,10 +372,10 @@ function consoleApp() {
     for (const w of waiting) {
       const item = el('div', 'item waiting');
       const left = Math.max(0, Math.round((w.expires_at - Date.now()) / 1000));
-      item.append(el('div', '', w.summary || 'Visitor asked for a person'), el('small', '', 'waiting ' + ago(w.since) + ' · ' + left + 's left'));
+      item.append(el('div', '', w.summary || 'Visitor asked for a person'), el('small', '', 'waiting ' + ago(w.since) + ' · ' + left + 's left to accept'));
       const accept = el('button', 'primary', 'Accept');
+      const row = el('div', 'row'); row.append(accept); item.append(row);
       accept.addEventListener('click', async (e) => { e.stopPropagation(); await api('/ops/accept', { session_id: w.session_id }); log('accepted ' + w.session_id.slice(0, 8)); await select(w.session_id); refreshQueue(); });
-      item.append(accept);
       item.addEventListener('click', () => select(w.session_id));
       q.append(item);
     }
@@ -181,22 +384,20 @@ function consoleApp() {
     const { conversations } = await api('/ops/conversations');
     const c = $('#convs');
     c.replaceChildren();
-    const recent = conversations.sort((a, b) => b.last_at - a.last_at).slice(0, 30);
+    const recent = conversations.sort((a, b) => b.last_at - a.last_at).slice(0, 40);
     c.className = recent.length ? '' : 'empty';
-    if (!recent.length) c.textContent = 'None yet.';
+    if (!recent.length) c.textContent = 'No conversations yet.';
     for (const v of recent) {
       const item = el('div', 'item' + (v.session_id === state.selected ? ' sel' : ''));
-      const tags = [v.messages + ' msgs', ago(v.last_at)];
+      const tags = [v.messages + ' messages', ago(v.last_at)];
       if (v.person) tags.push(v.person.state);
       if (v.ended) tags.push(ENDED[v.ended.reason] || 'ended: ' + v.ended.reason);
-      if (v.contact) tags.push('email left');
+      if (v.contact) tags.push('left their email');
       item.append(el('div', '', 'Visitor ' + v.visitor_id.slice(0, 8)), el('small', '', tags.join(' · ')));
       item.addEventListener('click', () => select(v.session_id));
       c.append(item);
     }
   }
-
-  // ---- blocked networks: each lapses on its own after 30 days, or unblock here
   async function refreshBlocks() {
     const { blocks } = await api('/ops/blocks');
     const box = $('#blocks');
@@ -208,7 +409,7 @@ function consoleApp() {
       item.append(el('div', '', 'Visitor ' + String(b.visitor_id || '?').slice(0, 8)), el('small', '', [b.by ? 'by ' + b.by : '', 'until ' + new Date(b.until).toLocaleDateString()].filter(Boolean).join(' · ')));
       const undo = el('button', '', 'Unblock');
       undo.addEventListener('click', async (e) => { e.stopPropagation(); await api('/ops/unblock', { net: b.net }); log('unblocked ' + String(b.visitor_id).slice(0, 8)); refreshBlocks(); });
-      item.append(undo);
+      const row = el('div', 'row'); row.append(undo); item.append(row);
       if (b.session_id) item.addEventListener('click', () => select(b.session_id));
       box.append(item);
     }
@@ -224,33 +425,32 @@ function consoleApp() {
     refreshConversations().catch(() => {});
   }
   async function refreshTranscript() {
-    if (!state.selected) return;
+    if (!state.selected || !state.bot) return;
     const t = await api('/ops/transcript?session_id=' + encodeURIComponent(state.selected));
     const human = t.takeover?.state === 'human';
-    $('#title').textContent = 'Conversation ' + state.selected.slice(0, 8);
-    const agent = t.agent_label || 'AI worker';
+    $('#title').textContent = 'Visitor ' + (t.visitor_id || state.selected).slice(0, 8);
+    const agent = t.agent_label || 'AI';
     $('#state').textContent = t.ended ? (ENDED[t.ended.reason] || 'Ended (' + t.ended.reason + ')') + (t.ended.by ? ' by ' + t.ended.by : '') + (t.blocked ? ' · network blocked' : '')
-      : human ? 'You hold this conversation' : agent + ' is answering';
+      : human ? 'You are replying in this chat' : agent + ' is answering';
     $('#takeover').disabled = human || Boolean(t.ended);
     $('#handback').disabled = !human;
     $('#resolve').disabled = Boolean(t.ended);
     $('#block').disabled = t.ended?.reason === 'blocked';
     $('#reopen').disabled = !t.ended;
-    // The card the agent filled in, while it waits for the visitor to send it.
     $('#card').hidden = !t.proposal;
-    if (t.proposal) $('#card').textContent = 'Waiting for the visitor to send the card: ' + [t.proposal.name, t.proposal.email, t.proposal.need].filter(Boolean).join(' · ');
-    // Contact details the visitor left (form or the agent's capture_lead): reply by email.
+    if (t.proposal) $('#card').textContent = 'Waiting for the visitor to send their card: ' + [t.proposal.name, t.proposal.email, t.proposal.need].filter(Boolean).join(' · ');
     const contact = t.contact;
     $('#contact').hidden = !contact;
     $('#mail').hidden = !contact;
     if (contact) {
-      $('#contact').textContent = [contact.name, contact.email, contact.need].filter(Boolean).join(' · ');
+      $('#contact').textContent = 'Left their details: ' + [contact.name, contact.email, contact.need].filter(Boolean).join(' · ');
       const last = t.messages.filter((m) => m.from === 'visitor').slice(-1)[0];
       $('#mail').href = 'mailto:' + encodeURIComponent(contact.email) + '?subject=' + encodeURIComponent('Following up on your chat')
         + '&body=' + encodeURIComponent((contact.name ? 'Hi ' + contact.name + ',' : 'Hi,') + '\n\n' + (last ? 'You asked: "' + last.text.slice(0, 300) + '"\n\n' : ''));
     }
     $('#vtyping').hidden = !t.visitor_typing;
     $('#reply').disabled = !human;
+    $('#reply').placeholder = human ? 'Reply as yourself' : 'Take over to reply as yourself';
     $('#send').disabled = !human;
     const box = $('#transcript');
     const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 20;
@@ -268,9 +468,9 @@ function consoleApp() {
   $('#reopen').addEventListener('click', async () => { await act('/ops/reopen')(); refreshBlocks().catch(() => {}); });
   $('#resolve').addEventListener('click', act('/ops/resolve'));
   $('#block').addEventListener('click', async () => {
-    if (!state.selected || !confirm('Block this visitor? The chat closes, and their network cannot use the chat for 30 days. You can unblock them from the Blocked list.')) return;
+    if (!state.selected || !confirm('Block this visitor? The chat closes, and their network cannot use the chat for 30 days. You can unblock them from Blocked.')) return;
     const { network } = await api('/ops/block', { session_id: state.selected });
-    log('blocked ' + state.selected.slice(0, 8) + (network ? ' and their network' : ' (no network known: this browser only)'));
+    log('blocked ' + state.selected.slice(0, 8) + (network ? ' and their network' : ' (this browser only)'));
     await refreshTranscript(); refreshConversations(); refreshBlocks().catch(() => {});
   });
   async function send() {
@@ -282,7 +482,6 @@ function consoleApp() {
     finally { $('#send').disabled = false; }
   }
   $('#send').addEventListener('click', send);
-  // While you type a reply, the visitor sees "<your name> is typing" (sent at most every 3 s).
   let typedAt = 0;
   $('#reply').addEventListener('input', () => {
     if (!state.selected || !$('#reply').value.trim() || Date.now() - typedAt < 3000) return;
@@ -291,186 +490,132 @@ function consoleApp() {
   });
   $('#reply').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(); });
 
-  // ---- live events: long poll; the gateway answers as soon as something happens
+  // ---- live events for the bot on screen: long poll; the gateway answers as soon as something happens
   async function listen() {
     const gen = state.gen;
-    while (gen === state.gen) {
+    while (gen === state.gen && state.bot) {
       try {
         const { events, latest } = await api('/ops/events?after=' + state.latest + '&wait=25');
         if (gen !== state.gen) return;
         state.latest = latest;
         for (const e of events) {
-          // Typing marks only refresh the open conversation; they are not worth a log line.
           if (e.type === 'visitor.typing' || e.type === 'person.typing' || e.type === 'person.replied') {
             if (e.session_id === state.selected) refreshTranscript().catch(() => {});
             continue;
           }
-          log(e.type + (e.session_id ? ' ' + e.session_id.slice(0, 8) : '') + (e.summary ? ' — ' + e.summary : '') + (e.reason ? ' — ' + e.reason : ''));
-          if (e.type === 'handoff.requested' && e.staff_online !== false) alertNewChat(e.summary, botName(state.bot));
+          log(e.type.replace('.', ' ') + (e.session_id ? ' · ' + e.session_id.slice(0, 8) : '') + (e.summary ? ' — ' + e.summary : '') + (e.reason ? ' — ' + e.reason : ''));
+          if (e.type === 'handoff.requested' && e.staff_online !== false) alertNewChat(e.summary, botById(state.bot)?.name);
           if (e.session_id && e.session_id === state.selected) refreshTranscript().catch(() => {});
         }
         if (events.some((e) => !/typing|replied/.test(e.type))) { refreshQueue().catch(() => {}); refreshConversations().catch(() => {}); }
       } catch (e) {
-        if (e.status === 403) { log('signed out: reload the page'); setAvailable(false); return; }
+        if (e.status === 403) { log('signed out: reload the page'); return; }
         await new Promise((r) => setTimeout(r, 3000));
       }
     }
   }
 
-  // ---- bots: tabs, the overview, badges and notifications across all bots
-  const botName = (id) => (state.bots.find((b) => b.id === id) || {}).name || id;
-  const envLabel = (b) => b.env === 'staging' ? 'staging' : 'live';
-  function renderTabs() {
-    const nav = $('#tabs');
-    const tab = (id, label, env) => {
-      const t = el('button', 'tab' + (state.bot === id ? ' sel' : ''));
-      t.append(el('span', '', label));
-      if (env) t.append(el('span', 'env', env));
-      const badge = el('span', 'badge', state.waiting[id] ? String(state.waiting[id]) : '');
-      if (id === 'all') badge.textContent = String(Object.values(state.waiting).reduce((a, b) => a + b, 0) || '');
-      t.append(badge);
-      t.addEventListener('click', () => showBot(id));
-      return t;
-    };
-    nav.replaceChildren(tab('all', 'All bots'), ...state.bots.map((b) => tab(b.id, b.name, envLabel(b))));
+  // ---- online hours: one simple schedule for all bots; a bot may have its own (Advanced)
+  const zoneName = (tz) => (ZONES.find(([z]) => z === tz) || [tz, tz])[1];
+  const scheduleOf = (id) => (state.hours?.bots?.[id]?.own ? state.hours.bots[id].schedule : state.hours?.all) || { mode: 'off', tz: 'UTC', week: {} };
+  function presetOf(s) {
+    const ranges = DAYS.map((d) => JSON.stringify(s.week?.[d] || []));
+    const first = (s.week && Object.values(s.week).find((r) => r && r.length)) || [['09:00', '17:00']];
+    const same = (days) => DAYS.every((d) => JSON.stringify(s.week?.[d] || []) === (days.includes(d) ? JSON.stringify([first[0]]) : '[]'));
+    const preset = same(PRESETS.every) ? 'every' : same(PRESETS.sunthu) ? 'sunthu' : same(PRESETS.monfri) ? 'monfri' : ranges.some((r) => r !== '[]') ? 'custom' : 'every';
+    return { preset, from: first[0][0], to: first[0][1] };
   }
-  const money = (n) => '$' + Number(n || 0).toFixed(Number(n) < 1 ? 4 : 2);
-  function renderOverview(list) {
-    const box = $('#overview');
-    box.replaceChildren(...list.map((b) => {
-      const card = el('section', 'bot');
-      const h = el('h3');
-      h.append(el('span', '', b.name + ' · ' + envLabel(b)), el('span', b.up ? 'up' : 'down', b.up ? 'up' : 'down'));
-      card.append(h);
-      const dl = el('dl');
-      const row = (k, v) => dl.append(el('dt', '', k), el('dd', '', v));
-      const s = b.summary || {};
-      if (!b.up) row('problem', b.error || 'unreachable');
-      if (b.up && b.note) row('note', b.note);
-      if (b.kind === 'status') {
-        for (const [k, v] of Object.entries(s).slice(0, 10)) if (typeof v !== 'object') row(k.replace(/_/g, ' '), String(v));
-      } else if (b.up && b.summary) {
-        row('waiting for a person', String(s.conversations?.waiting_for_person ?? 0));
-        row('chats today', String(s.conversations?.today ?? 0));
-        row('chats kept', String(s.conversations?.total ?? 0));
-        row('staff online', String(s.staff_online ?? 0));
-        row('errors today', String(s.errors_today ?? 0));
-        row('spend today', s.spend ? money(s.spend.today_usd) + (s.spend.cap_on ? ' of ' + money(s.spend.cap_usd) : ' (no cap!)') + (s.spend.over ? ' · OVER CAP' : '') : 'unknown');
-        row('running since', s.started_at ? new Date(s.started_at).toLocaleString() : '?');
-        if (state.hours) row('online hours', describe(scheduleOf(b.id)));
-      }
-      card.append(dl);
-      if (b.kind === 'gateway') { const open = el('button', '', 'Open'); open.style.marginTop = '10px'; open.addEventListener('click', () => showBot(b.id)); card.append(open); }
-      return card;
-    }));
+  function hoursLabel(s) {
+    if (!s || s.mode === 'off') return 'off';
+    if (s.mode === 'always') return 'always on';
+    const p = presetOf(s);
+    const days = { every: 'every day', sunthu: 'Sun–Thu', monfri: 'Mon–Fri', custom: 'custom days' }[p.preset];
+    return p.from + '–' + p.to + ' ' + zoneName(s.tz) + ', ' + days;
   }
-  async function pollSummaries() {
-    try {
-      const { bots } = await raw('/bots/summary');
-      for (const b of bots) {
-        const w = b.summary?.conversations?.waiting_for_person ?? 0;
-        if (w > (state.waiting[b.id] ?? 0)) alertNewChat('Waiting on ' + b.name + (b.env === 'staging' ? ' (staging)' : ''), b.name);
-        state.waiting[b.id] = w;
-      }
-      renderTabs();
-      if (state.bot === 'all') renderOverview(bots);
-    } catch (e) { log('summary failed: ' + e.message); }
+  async function refreshHours() {
+    try { const r = await raw('/hours'); state.hours = r.hours; state.onCall = r.on_call_now || {}; } catch { return; }
+    const s = state.hours.all;
+    const anyOn = Object.values(state.onCall).some(Boolean);
+    $('#hoursdot').className = 'dot' + (anyOn ? ' on' : '');
+    $('#hourstext').textContent = s.mode === 'off' ? 'Online hours: off' : (anyOn ? 'On call now · ' : 'Off hours · ') + hoursLabel(s);
   }
-  async function showBot(id) {
-    state.gen++;
-    if (state.available) await setAvailable(false);
-    state.bot = id; state.selected = null; state.latest = 0;
-    history.replaceState(null, '', id === 'all' ? '/' : '/?bot=' + encodeURIComponent(id));
-    renderTabs();
-    $('#hourspanel').hidden = true;
-    const all = id === 'all';
-    $('#overview').hidden = !all; $('#botview').hidden = all; $('#availpill').hidden = all;
-    if (all) { pollSummaries(); return; }
-    $('#transcript').replaceChildren(); $('#title').textContent = 'Select a conversation'; $('#log').textContent = '';
-    try {
-      const { latest } = await api('/ops/events?after=0&wait=0');
-      state.latest = latest;
-      await Promise.all([refreshQueue(), refreshConversations(), refreshBlocks()]);
-    } catch (e) { log(botName(id) + ' unreachable: ' + e.message); }
-    listen();
-  }
-
-  // ---- online hours: one schedule for all bots, or a bot's own
-  const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
-  const scheduleOf = (id) => (state.hours?.bots?.[id]?.own ? state.hours.bots[id].schedule : state.hours?.all) || { mode: 'off' };
-  const describe = (s) => s.mode === 'off' ? 'off (toggle only)' : s.mode === 'always' ? 'always on' : 'scheduled (' + s.tz + ')';
-  function scheduleEditor(schedule, prefix) {
+  const times = () => { const out = []; for (let h = 0; h <= 24; h++) for (const m of ['00', '30']) { const t = String(h).padStart(2, '0') + ':' + m; if (t <= '24:00') out.push(t); } return out; };
+  function editor(schedule, key) {
+    const p = presetOf(schedule);
     const wrap = el('div');
-    const mode = el('select'); mode.id = prefix + '-mode';
-    for (const [v, t] of [['off', 'Off: only the "Available" switch'], ['hours', 'During these hours'], ['always', 'Always online']]) { const o = el('option', '', t); o.value = v; mode.append(o); }
-    mode.value = schedule.mode;
-    const tz = el('input'); tz.type = 'text'; tz.id = prefix + '-tz'; tz.value = schedule.tz || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const top = el('div'); top.append(mode, document.createTextNode(' time zone '), tz);
-    const table = el('table');
-    for (const d of DAYS) {
-      const tr = el('tr'); const input = el('input'); input.type = 'text'; input.id = prefix + '-' + d; input.placeholder = 'e.g. 09:00-17:00';
-      input.value = (schedule.week?.[d] || []).map((r) => r.join('-')).join(', ');
-      tr.append(el('td', '', d), el('td')); tr.lastChild.append(input); table.append(tr);
-    }
-    wrap.append(top, table);
+    wrap.dataset.key = key;
+    const choices = el('div', 'choices');
+    const pick = { value: schedule.mode === 'hours' ? p.preset === 'custom' ? 'every' : p.preset : schedule.mode };
+    const opts = [['off', 'Off'], ['every', 'Every day'], ['sunthu', 'Sun–Thu'], ['monfri', 'Mon–Fri'], ['always', 'Always on']];
+    const paint = () => { for (const c of choices.children) c.classList.toggle('on', c.dataset.v === pick.value); timesRow.hidden = pick.value === 'off' || pick.value === 'always'; };
+    for (const [v, t] of opts) { const c = el('button', 'choice', t); c.type = 'button'; c.dataset.v = v; c.addEventListener('click', () => { pick.value = v; paint(); }); choices.append(c); }
+    const timesRow = el('div', 'times');
+    const sel = (value, list, fmt = (x) => x) => { const s = el('select'); for (const x of list) { const o = el('option', '', fmt(x)); o.value = Array.isArray(x) ? x[0] : x; s.append(o); } s.value = value; return s; };
+    const from = sel(p.from, times()), to = sel(p.to, times()), tz = sel(schedule.tz && ZONES.some(([z]) => z === schedule.tz) ? schedule.tz : 'Asia/Jerusalem', ZONES, (z) => z[1] + ' time');
+    timesRow.append(el('span', 'note', 'From'), from, el('span', 'note', 'to'), to, tz);
+    wrap.append(choices, timesRow);
+    wrap.read = () => {
+      const week = Object.fromEntries(DAYS.map((d) => [d, []]));
+      if (pick.value === 'off' || pick.value === 'always') return { mode: pick.value, tz: tz.value, week };
+      if (from.value >= to.value) throw new Error('"From" must be before "to"');
+      for (const d of PRESETS[pick.value]) week[d] = [[from.value, to.value]];
+      return { mode: 'hours', tz: tz.value, week };
+    };
+    paint();
     return wrap;
   }
-  function readEditor(prefix) {
-    const week = {};
-    for (const d of DAYS) {
-      const text = $('#' + prefix + '-' + d).value.trim();
-      week[d] = text ? text.split(',').map((r) => r.trim().split('-').map((t) => t.trim().padStart(5, '0'))) : [];
-    }
-    return { mode: $('#' + prefix + '-mode').value, tz: $('#' + prefix + '-tz').value.trim(), week };
-  }
   async function openHours() {
-    const panel = $('#hourspanel');
-    if (!panel.hidden) { panel.hidden = true; return; }
-    const { hours, on_call_now } = await raw('/hours');
-    state.hours = hours;
-    panel.replaceChildren();
-    const card = el('section');
-    card.append(el('h2', '', 'Online hours'), el('p', 'hint', 'During online hours the on-call team counts as available, so visitors are offered a person and you get a phone alert to join. Outside them, visitors leave their email. The "Available" switch on a bot works at any time.'));
-    card.append(el('h3', '', 'All bots'), scheduleEditor(hours.all, 'all'));
+    await refreshHours();
+    const form = $('#hoursform');
+    const all = editor(state.hours.all, 'all');
+    const intro = el('p', 'note', 'During online hours you count as available on every bot: visitors who ask for a person are offered you, and you get an alert to join. Outside them, visitors leave their email. The "I\'m available" switch on a bot works any time.');
+    const adv = el('details');
+    adv.append(el('summary', '', 'Advanced: a bot with its own hours'));
+    const own = {};
     for (const b of state.bots.filter((x) => x.kind === 'gateway')) {
-      const own = hours.bots[b.id]?.own === true;
-      const box = el('div'); box.style.marginTop = '14px';
-      const label = el('label'); const cb = el('input'); cb.type = 'checkbox'; cb.id = 'own-' + b.id; cb.checked = own;
-      label.append(cb, document.createTextNode(' ' + b.name + ' (' + envLabel(b) + ') uses its own hours · on call now: ' + (on_call_now[b.id] ? 'yes' : 'no')));
-      const editor = scheduleEditor(own ? hours.bots[b.id].schedule : hours.all, 'b-' + b.id);
-      editor.hidden = !own; cb.addEventListener('change', () => { editor.hidden = !cb.checked; });
-      box.append(label, editor); card.append(box);
+      const row = el('div', 'botrow');
+      const lab = el('label', 'switch'); const cb = el('input'); cb.type = 'checkbox'; cb.checked = state.hours.bots[b.id]?.own === true;
+      lab.append(cb, el('span', '', b.name + ' · ' + (isLive(b) ? 'live' : 'staging') + ' uses its own hours'));
+      const ed = editor(scheduleOf(b.id), b.id); ed.hidden = !cb.checked; cb.addEventListener('change', () => { ed.hidden = !cb.checked; });
+      row.append(lab); adv.append(row, ed); own[b.id] = { cb, ed };
     }
-    const save = el('button', 'primary', 'Save hours'); save.style.marginTop = '14px';
-    const msg = el('span', 'hint'); msg.style.marginLeft = '10px';
+    const msg = el('span', 'note');
+    const save = el('button', 'primary', 'Save'); save.type = 'button';
+    const cancel = el('button', 'ghost', 'Close'); cancel.type = 'button'; cancel.addEventListener('click', () => $('#hoursdlg').close());
     save.addEventListener('click', async () => {
       try {
-        const body = { all: readEditor('all'), bots: {} };
-        for (const b of state.bots.filter((x) => x.kind === 'gateway')) body.bots[b.id] = $('#own-' + b.id).checked ? { own: true, schedule: readEditor('b-' + b.id) } : { own: false };
-        const r = await raw('/hours', body); state.hours = r.hours; msg.textContent = 'Saved. The schedule applies within a minute.';
+        const body = { all: all.read(), bots: {} };
+        for (const [id, o] of Object.entries(own)) body.bots[id] = o.cb.checked ? { own: true, schedule: o.ed.read() } : { own: false };
+        await raw('/hours', body);
+        await refreshHours(); renderOverview(); if (state.bot) renderBotStats();
+        $('#hoursdlg').close();
       } catch (e) { msg.textContent = 'Not saved: ' + e.message; }
     });
-    card.append(save, msg);
-    panel.append(card); panel.hidden = false;
+    const foot = el('div', 'row'); foot.append(msg, el('span', 'spacer')); const btns = el('div', 'actions'); btns.append(cancel, save); foot.append(btns);
+    form.replaceChildren(el('h2', '', 'Online hours'), intro, all, adv, foot);
+    $('#hoursdlg').showModal();
   }
   $('#hoursbtn').addEventListener('click', () => openHours().catch((e) => log('hours failed: ' + e.message)));
 
   (async () => {
-    state.me = await api('/me');
-    $('#who').textContent = state.me.name + ' · ' + state.me.role + (state.me.on_call ? ' · on call' : '');
+    state.me = await raw('/me');
+    $('#who').textContent = state.me.name + (state.me.on_call ? ' · on call' : '');
     state.bots = (await raw('/bots')).bots;
-    try { state.hours = (await raw('/hours')).hours; } catch { state.hours = null; }
-    const asked = new URLSearchParams(location.search).get('bot');
-    await showBot(state.bots.some((b) => b.id === asked && b.kind === 'gateway') ? asked : 'all');
-    // A phone alert links here with ?bot=ID&session=ID: open that conversation (Take over accepts it).
-    const linked = new URLSearchParams(location.search).get('session');
-    if (linked && state.bot !== 'all' && /^[A-Za-z0-9_-]{1,128}$/.test(linked)) select(linked).catch((e) => log('could not open the linked chat: ' + e.message));
-    setInterval(() => { if (state.bot !== 'all') refreshQueue().catch(() => {}); }, 5000);
+    await refreshHours();
+    const params = new URLSearchParams(location.search);
+    const asked = botById(params.get('bot') || '');
+    if (asked) { state.env = asked.env; $('#envlive').classList.toggle('on', asked.env === 'production'); $('#envstage').classList.toggle('on', asked.env === 'staging'); }
+    await pollSummaries();
+    await showBot(asked && asked.kind === 'gateway' ? asked.id : null);
+    // A phone alert links here with ?bot=ID&session=ID: open that conversation.
+    const linked = params.get('session');
+    if (linked && state.bot && /^[A-Za-z0-9_-]{1,128}$/.test(linked)) select(linked).catch((e) => log('could not open the linked chat: ' + e.message));
+    setInterval(() => { if (state.bot) refreshQueue().catch(() => {}); }, 5000);
     setInterval(pollSummaries, 15000);
-    pollSummaries();
-  })().catch((e) => log('Bots HQ failed to start: ' + e.message));
+    setInterval(refreshHours, 60000);
+  })().catch((e) => { document.body.prepend(el('div', 'info warm', 'Bots HQ failed to start: ' + e.message)); });
 }
 
 // Bundlers that keep function names (wrangler's esbuild does) insert calls to a
-// module-level __name helper into consoleApp's source; give the browser a no-op one.
-export const PAGE_JS = 'var __name = (fn) => fn;\n(' + consoleApp.toString() + ')();\n';
+// module-level __name helper into hqApp's source; give the browser a no-op one.
+export const PAGE_JS = 'var __name = (fn) => fn;\n(' + hqApp.toString() + ')();\n';
