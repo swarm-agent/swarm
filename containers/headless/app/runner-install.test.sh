@@ -14,6 +14,14 @@ source "$here/runner-install.sh"
 RUNNER_STATE=$work/state RUNNER_OPT=$work/opt RUNNER_CONF=$work/etc
 CONF=$work/hub.env SWARMCTL=$work/swarmctl UNITS=$work/units
 RUNNER_RUNTIME_STATE=$work/runtime-state
+RUNNER_UNITS=$UNITS
+rm() {
+  if [[ $* == '-f /run/swarm-runner-idle/since' ]]; then
+    echo reset-idle >>"$log"
+  else
+    command rm "$@"
+  fi
+}
 log=$work/log
 fail() { echo "FAIL: $*" >&2; exit 1; }
 # Replace only the privilege guard; all filesystem writes stay in the fixture.
@@ -49,6 +57,7 @@ docker() {
 systemctl() {
   echo "systemctl $*" >>"$log"
   case $1 in
+    is-enabled) return 1 ;;
     show) if [[ $service_exists == yes ]]; then echo loaded; else echo not-found; fi ;;
     restart)
       if [[ $2 == swarm-sandbox-firewall.service ]]; then
@@ -117,7 +126,7 @@ grep -q 'not activated' "$work/error" || fail 'missing timeout error'
 # A busy runner becomes idle before stop/activation/start; stop also closes the
 # race where a new landing was claimed after the idle observation.
 echo 'busy landing 2026-01-01T00:00:00Z' >"$RUNNER_RUNTIME_STATE"
-systemctl() { echo "systemctl $*" >>"$log"; if [[ $1 == show ]]; then echo loaded; fi; return 0; }
+systemctl() { echo "systemctl $*" >>"$log"; if [[ $1 == is-enabled ]]; then return 1; fi; if [[ $1 == show ]]; then echo loaded; fi; return 0; }
 sleep() { echo idle >"$RUNNER_RUNTIME_STATE"; echo waited >>"$log"; }
 : >"$log"
 update_runner
@@ -125,4 +134,51 @@ update_runner
 grep -q waited "$log" || fail 'did not wait for idle'
 grep -q 'systemctl stop swarm-runner.service' "$log" || fail 'did not stop before activation'
 grep -q 'systemctl start swarm-runner.service' "$log" || fail 'did not restart'
+# Purpose: capacity configuration persists arguments and installs only an opt-in
+# root timer. Generated units are inspected at the installer boundary.
+[[ $(cat "$RUNNER_CONF/slots.env") == SWARM_RUNNER_SLOTS=1 ]] || fail default-slots
+RUNNER_SLOTS=8 RUNNER_IDLE_POWEROFF_MINUTES=15 runner_configure_capacity
+[[ $(cat "$RUNNER_CONF/slots.env") == SWARM_RUNNER_SLOTS=8 ]] || fail slots
+[[ $(stat -c %a "$RUNNER_CONF/slots.env") == 600 ]] || fail slots-mode
+grep -q "ExecStart=$RUNNER_OPT/idle-poweroff 15" "$RUNNER_UNITS/swarm-runner-idle.service" || fail idle-argument
+grep -q 'User=root' "$RUNNER_UNITS/swarm-runner-idle.service" || fail idle-user
+grep -q 'RuntimeDirectoryPreserve=yes' "$RUNNER_UNITS/swarm-runner-idle.service" || fail idle-persistence
+grep -q 'OnUnitActiveSec=1min' "$RUNNER_UNITS/swarm-runner-idle.timer" || fail timer
+grep -q 'now >= 600' "$RUNNER_OPT/idle-poweroff" || fail boot-guard
+grep -q 'systemctl poweroff' "$RUNNER_OPT/idle-poweroff" || fail poweroff
+grep -q -- '--slots ${SWARM_RUNNER_SLOTS}' "$here/../../../swarmd/cmd/swarmctl/runner.go" || fail service-slots
+RUNNER_IDLE_POWEROFF_MINUTES=0 runner_configure_capacity
+grep -q 'systemctl disable --now swarm-runner-idle.timer' "$log" || fail disable
+if (RUNNER_SLOTS=17 runner_configure_capacity); then fail invalid-slots; fi
+if (RUNNER_IDLE_POWEROFF_MINUTES=-1 runner_configure_capacity); then fail invalid-idle; fi
+# Purpose: update_runner must suspend enabled idle power-off before any build,
+# restoring it on success and build failure without activating a failed release.
+# Function doubles exercise shell exit/trap ordering without host services.
+systemctl() {
+  echo "systemctl $*" >>"$log"
+  case $1 in is-enabled) [[ $idle_enabled == yes ]];; is-active) return 1;; show) echo not-found;; esac
+}
+runner_build() { echo build >>"$log"; if [[ $build_fails == yes ]]; then return 23; fi; }
+runner_activate() { echo activate >>"$log"; }
+for idle_enabled in yes no; do
+  for build_fails in no yes; do
+    : >"$log"
+    # Run outside a conditional so errexit remains enabled inside the update.
+    set +e
+    (set -e; update_runner) >"$work/error" 2>&1
+    result=$?
+    set -e
+    if [[ $build_fails == yes ]]; then
+      [[ $result == 23 ]] || fail 'build failure not preserved'
+      ! grep -q '^activate$' "$log" || fail 'failed build activated'
+    else
+      [[ $result == 0 ]] || fail 'successful update failed'
+    fi
+    if [[ $idle_enabled == yes ]]; then
+      [[ $(grep -E '^build$|^reset-idle$|systemctl (stop|start) swarm-runner-idle.timer' "$log") == $'systemctl stop swarm-runner-idle.timer\nreset-idle\nbuild\nsystemctl start swarm-runner-idle.timer' ]] || fail 'idle timer not suspended around build'
+    else
+      ! grep -Eq 'systemctl (stop|start) swarm-runner-idle.timer' "$log" || fail 'disabled timer touched'
+    fi
+  done
+done
 echo 'runner installer tests passed'
