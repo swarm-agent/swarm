@@ -13,7 +13,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 - Start Cloud Build checks concurrently over one payload, add the default-on `cloudbuild_cache` startup switch, and skip installed packages in simple apt-get setup commands; landing failure aggregation remains pending. Docs impact: docs/runners.md
 - Fix Cloud Build landing argument limits by uploading the runner script and fetching it through a small SHA256-verifying bootstrap. Docs impact: none.
-- Wire `landing_parallel` into per-folder merge trains with concurrent candidate checks, ordered pushes, suffix retesting and interrupted-push reconciliation. Docs impact: docs/runners.md
+- Wire `landing_parallel` into per-folder merge trains with concurrent candidate checks, ordered pushes, suffix retesting and interrupted-push reconciliation. Jobs arriving while a train is running join it immediately, stacked on the last candidate. Docs impact: docs/runners.md
 
 - Persist Cloud Build landing Go build/test, module and pnpm caches with bounded, best-effort archive restore and atomic publication. Docs impact: docs/runners.md
 - Preserve OK reviews across patch-identical landing rebases and route changed patches to rebase-scoped review without consuming coder fix rounds. Docs impact: none.
