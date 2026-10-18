@@ -347,10 +347,17 @@ explicit service drop-in before activation:
 NoNewPrivileges=no
 RestrictSUIDSGID=no
 ProtectControlGroups=no
+PrivateTmp=no
 ```
 
-These exceptions allow rootless UID mapping and user-manager cgroup operations;
-they do not select sandbox-off, change loopback listeners, grant permission
+These exceptions allow rootless UID mapping and user-manager cgroup operations.
+Podman's persistent user namespace must also avoid daemon-private temporary
+mounts that disappear across service restarts. The isolated qualification
+observed a subsequent allocation fail in slirp4netns with `cannot mount tmpfs
+on /tmp` when `PrivateTmp=yes`. Existing state created under that setting may
+require an explicitly authorized, drained Podman namespace reset; never migrate
+a shared account's active containers as an incidental capability check.
+They do not select sandbox-off, change loopback listeners, grant permission
 bypass or mount host directories into managed containers. Keep the installed
 Bubblewrap `ExecStart`. Reload systemd and restart only the intended stopped or
 drained daemon as an authorized installation action. An existing live service
