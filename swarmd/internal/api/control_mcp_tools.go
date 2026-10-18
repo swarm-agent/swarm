@@ -78,6 +78,7 @@ var controlMCPWorkspaceName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
 // minting and ChatGPT sign-in appear only for the box-setup tools, which fix
 // the scopes and the sign-in method themselves.
 var controlMCPRoutes = []string{
+	"POST v3/subagents:stop",
 	"GET v3/limits", "PUT v3/limits",
 	"GET v1/workspace/list",
 	"POST v1/workspace/repository/setup",
@@ -719,11 +720,11 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPDestructive, call: controlMCPIntegrateTask,
 		},
 		{
-			Name: "swarm_run_task", Title: "Delegate one task to a Swarm role",
-			Description: "Hand one piece of work to a Swarm agent in one hop, no orchestrator in between: role coder for code changes (needs workspace: the registered repository; it works on its own branch in a worktree and commits there), finder for research and audits, designer for UI and design work, image/video/sound for media, swarm only for a big feature that needs a plan and several coders. The brief is the whole instruction: what to do, where, and how to know it is done. The task starts at once (you are its approval); media tasks beyond the batch threshold and plans wait in pending_approval. Then wait_task, task_result and integrate_task.",
-			InputSchema: controlMCPObject([]string{"project_id", "role", "brief"}, map[string]any{
+			Name: "swarm_run_task", Title: "Delegate a goal to Swarm",
+			Description: "Delegate a self-contained goal to Swarm (the default role), which coordinates regular specialists and owns review and validation. Ordinary Swarm work does not require a plan. Explicit coder, finder, designer, image, video and sound roles remain available; coder needs a registered repository workspace. No worker presets are created. The brief states what to do, where, and acceptance criteria. The task starts at once under the caller's authority; media batches and explicit plans may require task approval, and tool permissions remain enforced. Follow the task/session receipts with wait_task, task_result and get_session; resolve_permission answers pending questions or approvals, send_message continues the session, stop_run stops it, and integrate_task performs authorized Git delivery.",
+			InputSchema: controlMCPObject([]string{"project_id", "brief"}, map[string]any{
 				"project_id":   controlMCPStringProp("From list_projects or create_project.", 1, 200),
-				"role":         map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer", "image", "video", "sound", "swarm"}, "description": "Which Swarm agent does the work."},
+				"role":         map[string]any{"type": "string", "enum": []string{"coder", "finder", "designer", "image", "video", "sound", "swarm"}, "default": "swarm", "description": "Defaults to swarm for goal delegation; set a specialist role only when explicitly desired."},
 				"brief":        controlMCPStringProp("What to do and the acceptance criteria. Mention branch rules (e.g. commit on the agent branch, do not push) if they matter.", 1, 20000),
 				"title":        controlMCPStringProp("Short task name; defaults to the brief's first line.", 0, 120),
 				"workspace":    controlMCPStringProp("Registered workspace path (absolute, as the machine sees it) or workspace id. Required for coder; otherwise the project's workspace is used.", 0, 4096),
@@ -1624,6 +1625,17 @@ func controlMCPStopRun(c *controlMCPCall, args map[string]any) (any, error) {
 	}
 	session := controlMCPMap(detail["session"])
 	targetSwarmID, _ := controlMCPMap(session["metadata"])["swarm_v3_runtime_swarm_id"].(string)
+	if strings.TrimSpace(targetSwarmID) == "" && controlMCPMap(session["metadata"])["lineage_kind"] == "delegated_subagent" {
+		// Ordinary task children already have an authenticated V3 stop route.
+		// They do not own the primary-session executor identity used below.
+		if err := c.requireTokenScope("sessions:write"); err != nil {
+			return nil, err
+		}
+		if _, err := c.dispatch(http.MethodPost, "/v3/subagents:stop", nil, map[string]any{"session_id": sessionID}); err != nil {
+			return nil, err
+		}
+		return map[string]any{"session_id": sessionID, "run_status": "stop_requested", "summary": "Stop requested for the delegated agent; inspect swarm_get_session for its final state."}, nil
+	}
 	if strings.TrimSpace(targetSwarmID) == "" {
 		return nil, controlMCPToolFailure("session has no runtime identity to stop")
 	}

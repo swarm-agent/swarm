@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,15 +17,15 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Workers and jobs: the default way an outside AI (the person's own Claude,
-// ChatGPT or Codex) uses Swarm. The box comes with four preset workers
-// (coder, designer, finder, reviewer); the AI gives them jobs in the person's folders,
+// Workers and jobs are explicit persistent application operations, separate
+// from default Swarm goal delegation. After deploying a worker, a client gives
+// it jobs in the person's folders,
 // waits, reads the result and merges it. A job is a worker run, which Swarm
 // executes as a project task on its own branch, in the folder's sandbox, with
 // only that folder's secrets. These tools compose the same allowlisted routes
 // the other Swarm Control tools use; the route handlers keep every check.
 
-// The code-owned preset workers every box has (POST /v3/workers:ensure-presets).
+// Presets available for explicit deployment (POST /v3/workers:ensure-presets).
 var controlMCPPresetWorkers = []string{"coder", "designer", "finder", "reviewer"}
 
 // Media a job can ask for; each runs as a project task on the media models.
@@ -163,10 +162,9 @@ func (c *controlMCPCall) listWorkers() ([]map[string]any, error) {
 	return workers, nil
 }
 
-// ensurePresets makes sure the coder, designer, finder and reviewer exist. Swarm creates
-// a missing preset and never touches one the person changed.
-func (c *controlMCPCall) ensurePresets() ([]map[string]any, error) {
-	response, err := c.dispatch(http.MethodPost, "/v3/workers:ensure-presets", nil, map[string]any{})
+// deployPreset explicitly provisions only the requested preset.
+func (c *controlMCPCall) deployPreset(preset string) ([]map[string]any, error) {
+	response, err := c.dispatch(http.MethodPost, "/v3/workers:ensure-presets", nil, map[string]any{"preset": preset})
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +182,7 @@ func (c *controlMCPCall) ensurePresets() ([]map[string]any, error) {
 func (c *controlMCPCall) resolveWorker(ref string) (map[string]any, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return nil, controlMCPToolFailure("worker is required: coder, designer, finder, reviewer, or a worker id from swarm_list_workers")
+		return nil, controlMCPToolFailure("worker is required: an existing deployed worker id or preset name from swarm_list_workers")
 	}
 	match := func(workers []map[string]any) map[string]any {
 		for _, worker := range workers {
@@ -206,16 +204,15 @@ func (c *controlMCPCall) resolveWorker(ref string) (map[string]any, error) {
 	if worker := match(workers); worker != nil {
 		return worker, nil
 	}
-	if slices.Contains(controlMCPPresetWorkers, strings.ToLower(ref)) {
-		presets, err := c.ensurePresets()
-		if err != nil {
-			return nil, err
-		}
-		if worker := match(presets); worker != nil {
-			return worker, nil
-		}
+
+	hint := "use an existing id from swarm_list_workers"
+	if record, ok := ScopedTokenFromRequest(c.request); ok && record.HasScope("automations:write") && c.levelAllows("swarm_deploy_worker") {
+		hint += "; explicitly deploy a persistent worker with swarm_deploy_worker"
 	}
-	return nil, controlMCPToolFailure("no worker %q: use coder, designer, finder, reviewer, or an id from swarm_list_workers", ref)
+	if c.advertisedToolAllowed("swarm_run_task") {
+		hint += "; delegate a goal with swarm_run_task"
+	}
+	return nil, controlMCPToolFailure("no worker %q: %s", ref, hint)
 }
 
 func controlMCPWorkerView(worker map[string]any) map[string]any {
@@ -236,20 +233,6 @@ func controlMCPListWorkerJobs(c *controlMCPCall, args map[string]any) (any, erro
 	workers, err := c.listWorkers()
 	if err != nil {
 		return nil, err
-	}
-	present := map[string]bool{}
-	for _, worker := range workers {
-		present[controlMCPWorkerPreset(worker)] = true
-	}
-	for _, preset := range controlMCPPresetWorkers {
-		if !present[preset] {
-			if _, err := c.ensurePresets(); err == nil {
-				if workers, err = c.listWorkers(); err != nil {
-					return nil, err
-				}
-			}
-			break
-		}
 	}
 	out := []map[string]any{}
 	for _, worker := range workers {
@@ -313,11 +296,16 @@ func controlMCPDeployWorker(c *controlMCPCall, args map[string]any) (any, error)
 		if controlMCPString(args, "name") != "" || controlMCPString(args, "instructions") != "" {
 			return nil, controlMCPToolFailure("give either preset, or name, role and instructions for a custom worker")
 		}
-		worker, err := c.resolveWorker(preset)
+		workers, err := c.deployPreset(preset)
 		if err != nil {
 			return nil, err
 		}
-		return c.deployWorkerModel(worker, args)
+		for _, worker := range workers {
+			if controlMCPWorkerPreset(worker) == preset {
+				return c.deployWorkerModel(worker, args)
+			}
+		}
+		return nil, controlMCPToolFailure("preset %q was not deployed", preset)
 	}
 	name, instructions, role := controlMCPString(args, "name"), controlMCPString(args, "instructions"), controlMCPString(args, "role")
 	if name == "" || instructions == "" || role == "" {
@@ -1423,7 +1411,7 @@ func controlMCPListSecrets(c *controlMCPCall, _ map[string]any) (any, error) {
 
 func controlMCPJobTools() []controlMCPTool {
 	jobID := controlMCPStringProp("From swarm_give_job, swarm_request_media, swarm_list_workers (include_jobs) or swarm_activity.", 1, 700)
-	workerRef := controlMCPStringProp("coder, designer, finder, reviewer, or a worker id from swarm_list_workers.", 1, 200)
+	workerRef := controlMCPStringProp("An existing worker id or deployed preset name from swarm_list_workers.", 1, 200)
 	project := controlMCPStringProp("The project (id or name from swarm_list_projects) the job belongs to. May be left out when there is only one project.", 0, 256)
 	workspace := controlMCPStringProp("Which of the project's folders to work in (an absolute path from swarm_list_projects). May be left out when the project has one folder.", 0, 4096)
 	waitProp := map[string]any{"type": "integer", "minimum": 0, "maximum": controlMCPMaxWaitSeconds, "description": "Wait up to this many seconds (at most 110; keep it under your client's tool timeout, often 60) until the job settles: needs_review (done, ready to merge), completed, failed, needs_input (the worker asked something) or cancelled. waited.timed_out means it is still working: call swarm_get_job again. Default 0."}
@@ -1469,7 +1457,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_workers", Title: "List workers",
-			Description: "The box's workers: the preset coder, designer, finder and reviewer (created on first use) and any others, with role, state and the model their next job uses (their role's model unless pinned). include_jobs adds each worker's latest jobs.",
+			Description: "Existing explicitly deployed workers (listing never creates presets), with role, state and the model their next job uses (their role's model unless pinned). include_jobs adds each worker's latest jobs.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"include_jobs": map[string]any{"type": "boolean", "description": "Also list each worker's 5 latest jobs with job_id and status."},
 			}),
@@ -1477,7 +1465,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deploy_worker", Title: "Deploy a worker",
-			Description: "Make a worker ready on this box: preset coder, designer, finder or reviewer (already there on most boxes), or a custom worker with a name, a role (coder, designer, finder, reviewer or swarm: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to update only the pin, or model: null to clear it (no staged review).",
+			Description: "Make a worker ready on this box: an explicitly selected preset coder, designer, finder or reviewer, or a custom worker with a name, a role (coder, designer, finder, reviewer or swarm: what it can do) and standing instructions that apply to every job. Workers work in any project; each job names its project and folder. Optional model pins this worker; pass worker id or its existing name to update only the pin, or model: null to clear it (no staged review).",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"preset":       map[string]any{"type": "string", "enum": controlMCPPresetWorkers},
 				"worker":       workerRef,

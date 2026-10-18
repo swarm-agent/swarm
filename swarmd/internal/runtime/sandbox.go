@@ -42,6 +42,7 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 	protected := append(append([]string(nil), storage...), credentials...)
 	manager, err := sandbox.NewManager(ctx, sandbox.Config{
 		Mode:    mode,
+		Backend: cfg.SandboxBackend,
 		Image:   cfg.SandboxImage,
 		Network: cfg.SandboxNetwork,
 		Runtime: cfg.SandboxRuntime,
@@ -91,6 +92,9 @@ func protectedDaemonPaths(cfg config.Config) (storage, credentials, ancestors []
 		return nil, nil, nil, fmt.Errorf("resolve storage roots: %w", err)
 	}
 	storage = []string{roots.DataDir, roots.CacheDir, roots.RuntimeDir, roots.ConfigDir, roots.LogsDir, cfg.DataDir, filepath.Dir(cfg.DBPath), filepath.Dir(cfg.LockPath)}
+	if executable, err := os.Executable(); err == nil {
+		storage = append(storage, executable)
+	}
 	if path, err := startupconfig.ResolvePath(); err == nil {
 		storage = append(storage, filepath.Dir(path))
 	}

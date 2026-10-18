@@ -16,6 +16,25 @@ var ErrCleanupDeferred = errors.New("sandbox cleanup deferred")
 // EndJob removes only the disposable container, never the shared home volume or
 // checkout. Lifecycle leases refuse removal while a command is still in flight.
 func (m *Manager) EndJob(ctx context.Context, checkout string, terminal func() (bool, error)) error {
+	if m != nil && m.Local() {
+		m.mu.Lock()
+		active := m.localRuns[resolveExisting(checkout)] != 0
+		m.mu.Unlock()
+		if active {
+			return ErrCleanupDeferred
+		}
+		if terminal == nil {
+			return fmt.Errorf("job cleanup requires durable terminal state")
+		}
+		done, err := terminal()
+		if err != nil {
+			return err
+		}
+		if !done {
+			return ErrCleanupDeferred
+		}
+		return nil
+	}
 	if m == nil || !m.Active() || checkout == "" {
 		return ErrCleanupDeferred
 	}
@@ -129,7 +148,7 @@ func (m *Manager) releaseProjectReferenceLocked(b *box) {
 // unknown and terminal jobs are removed, live jobs are stopped until reacquired.
 // Startup calls this before executor admission. It never removes volumes.
 func (m *Manager) ReconcileContainers(ctx context.Context, active func(string) (bool, error)) error {
-	if m == nil || !m.Active() {
+	if m == nil || m.Local() || !m.Active() {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)

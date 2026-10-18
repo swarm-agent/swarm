@@ -1,5 +1,12 @@
 # Headless distribution image (Linux amd64)
 
+For the independent **core-only host package**, see
+[core/README.md](core/README.md). It builds the dedicated Headless command,
+packages the operational CLI and service without a setup app, and initializes
+through the private CLI. Its local candidate verification and remaining release
+gates are explicit. The image and setup-app distribution below retain their
+existing contracts; they are separate from that new package.
+
 To run Swarm on a machine (a server or your own PC) with its setup page, use
 the one-line installer in [app/README.md](app/README.md): no Tailscale needed,
 everything listens on 127.0.0.1, and your AI on that machine connects to

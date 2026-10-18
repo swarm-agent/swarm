@@ -303,7 +303,7 @@ func (r *VertexRunner) prepare(ctx context.Context, req provideriface.Request) (
 	} else if len(media) > 0 {
 		return generateContentSurface{}, "", googleRequest{}, errors.New("vertex does not accept session media yet")
 	}
-	requestPayload, err := buildGoogleRequest(req)
+	requestPayload, err := buildGeminiRequest(req, true)
 	if err != nil {
 		return generateContentSurface{}, "", googleRequest{}, err
 	}

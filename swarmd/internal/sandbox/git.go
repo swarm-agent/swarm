@@ -132,6 +132,9 @@ func SharedScratchDir(path, pattern string) (string, error) {
 
 func scratchDir(path, pattern string, shared bool) (string, error) {
 	m := Default()
+	if m != nil && m.Local() && (m.Active() || m.Enforced()) {
+		return m.localScratchDir(path, pattern)
+	}
 	if m != nil && (m.Active() || m.Enforced()) {
 		if scope, ok, err := m.ScopeFor(path); err == nil && ok && len(scope.Mounts) > 1 {
 			if shared {
@@ -201,6 +204,9 @@ func (m *Manager) RouteGit(ctx context.Context, cmd *exec.Cmd) error {
 	target, err := gitTarget(cmd)
 	if err != nil {
 		return err
+	}
+	if m.Local() && m.cfg.Mode != ModeOff {
+		return m.routeLocalGit(ctx, cmd, target)
 	}
 	scope, ok, err := m.ScopeFor(target)
 	scope = jobScope(ctx, scope)
@@ -415,7 +421,7 @@ func Warm(ctx context.Context, dir string) error {
 
 // Warm is the package-level Warm for this manager.
 func (m *Manager) Warm(ctx context.Context, dir string) error {
-	if m == nil || !m.Active() {
+	if m == nil || m.Local() || !m.Active() {
 		return nil
 	}
 	scope, ok, err := m.ScopeFor(dir)

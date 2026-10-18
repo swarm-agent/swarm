@@ -21,6 +21,7 @@ import (
 	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/memory"
 	"swarm/packages/swarmd/internal/publish"
+	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -205,13 +206,16 @@ type Server struct {
 	// so swarm_connect_chatgpt status wait_seconds wakes without polling.
 	codexOAuthChanged chan struct{}
 
-	shuttingDown           atomic.Bool
-	activeRunMu            sync.Mutex
-	runCtx                 context.Context
-	runCancel              context.CancelFunc
-	runWG                  sync.WaitGroup
-	activeRuns             atomic.Int32
-	requestStop            func(reason string)
+	shuttingDown atomic.Bool
+	activeRunMu  sync.Mutex
+	runCtx       context.Context
+	runCancel    context.CancelFunc
+	runWG        sync.WaitGroup
+	activeRuns   atomic.Int32
+	requestStop  func(reason string)
+	// browser is installed only by the Desktop composition. Core servers never
+	// accept browser cookies, bootstrap Desktop sessions or register UI routes.
+	browser                *browserComposition
 	desktopLocalSessions   *desktopLocalSessionManager
 	identityService        *identity.Service
 	identitySessions       *identity.SessionService
@@ -346,42 +350,40 @@ type mcpService interface {
 	SetEnabled(id string, enabled bool) (mcpruntime.Server, *pebblestore.EventEnvelope, error)
 }
 
-func NewServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
+// NewCoreServer composes canonical backend APIs without Desktop routes, assets
+// or browser authentication. NewServer adds the existing Desktop composition.
+func NewCoreServer(authSvc *auth.Service, agentSvc *agentruntime.Service, modelSvc *model.Service, runSvc runService, sessionSvc *sessionruntime.Service, workspaceSvc *workspace.Service, discoverySvc *discovery.Service, securitySvc *security.Service, providers *registry.Registry, permSvc permissionService, notificationSvc notificationService, events *pebblestore.EventLog, hub *stream.Hub) *Server {
 	runCtx, runCancel := context.WithCancel(context.Background())
 	artifactPreviewKey := make([]byte, 32)
 	if _, err := rand.Read(artifactPreviewKey); err != nil {
 		artifactPreviewKey = nil
 	}
 	server := &Server{
-		auth:                 authSvc,
-		agents:               agentSvc,
-		model:                modelSvc,
-		runner:               runSvc,
-		runStreams:           newRunControlAllocator(),
-		v3RealtimeOutbox:     newV3RealtimeOutboxHub(),
-		sessionChanges:       newSessionChangeNotifier(),
-		v3LiveHub:            newV3LiveHub(),
-		v3LivePatchEnabled:   v3LivePatchDefaultEnabled,
-		sessions:             sessionSvc,
-		workspace:            workspaceSvc,
-		discovery:            discoverySvc,
-		security:             securitySvc,
-		providers:            providers,
-		perm:                 permSvc,
-		notifications:        notificationSvc,
-		hub:                  hub,
-		events:               events,
-		startedAt:            time.Now(),
-		codexOAuthSessions:   make(map[string]*codexOAuthSession),
-		desktopLocalSessions: newDesktopLocalSessionManager(),
-		artifactPreviewKey:   artifactPreviewKey,
-		gitRealtime:          nil,
-		reviewCommitActive:   make(map[string]string),
-		runCtx:               runCtx,
-		runCancel:            runCancel,
-	}
-	if server.desktopLocalSessions != nil {
-		server.desktopLocalSessions.server = server
+		auth:               authSvc,
+		agents:             agentSvc,
+		model:              modelSvc,
+		runner:             runSvc,
+		runStreams:         newRunControlAllocator(),
+		v3RealtimeOutbox:   newV3RealtimeOutboxHub(),
+		sessionChanges:     newSessionChangeNotifier(),
+		v3LiveHub:          newV3LiveHub(),
+		v3LivePatchEnabled: v3LivePatchDefaultEnabled,
+		sessions:           sessionSvc,
+		workspace:          workspaceSvc,
+		discovery:          discoverySvc,
+		security:           securitySvc,
+		providers:          providers,
+		perm:               permSvc,
+		notifications:      notificationSvc,
+		hub:                hub,
+		events:             events,
+		startedAt:          time.Now(),
+		codexOAuthSessions: make(map[string]*codexOAuthSession),
+		artifactPreviewKey: artifactPreviewKey,
+		gitRealtime:        nil,
+		reviewCommitActive: make(map[string]string),
+		runCtx:             runCtx,
+		runCancel:          runCancel,
 	}
 	if workspaceAware, ok := runSvc.(interface{ SetWorkspaceService(*workspace.Service) }); ok && workspaceAware != nil {
 		workspaceAware.SetWorkspaceService(workspaceSvc)
@@ -906,6 +908,9 @@ func (s *Server) apiMux() *http.ServeMux {
 	s.registerProviderRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
 	s.registerRuntimeRoutes(mux)
+	if s.browser != nil {
+		s.browser.registerRoutes(mux)
+	}
 	return mux
 }
 
@@ -939,26 +944,6 @@ func (s *Server) LocalTransportHandler() http.Handler {
 	})
 }
 
-func (s *Server) DesktopHandler() http.Handler {
-	apiHandler := s.withDesktopLocalSession(s.withAuth(s.withVaultGate(s.withJSON(s.apiMux()))))
-	desktopSurface := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if shouldServeDesktopAsset(r) {
-			s.withDesktopLocalSession(s.withDesktopAssets(http.NotFoundHandler())).ServeHTTP(w, r)
-			return
-		}
-		apiHandler.ServeHTTP(w, r)
-	})
-	return s.withDesktopBoundary(desktopSurface)
-}
-
-func (s *Server) handleDesktopStream(w http.ResponseWriter, r *http.Request) {
-	if s.hub == nil {
-		writeError(w, http.StatusInternalServerError, errors.New("stream hub not configured"))
-		return
-	}
-	s.hub.ServeHTTP(w, r)
-}
-
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		methodNotAllowed(w)
@@ -987,7 +972,18 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	// HTTP readiness describes the control API, which remains usable for setup.
+	// Fixed execution fields disclose no probe errors or host details.
+	manager := sandbox.Default()
+	status := manager.Status()
+	executionReady := manager != nil && (status.Active || status.Mode == sandbox.ModeOff)
+	reason := ""
+	if !executionReady {
+		reason = "sandbox_unavailable"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true,
+		"agent_execution_ready": executionReady, "agent_execution_mode": status.Mode,
+		"agent_execution_reason": reason})
 }
 
 // readinessProblem reports why the daemon cannot take work right now: it is
@@ -4404,7 +4400,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		}
 
 		if s.identitySessions != nil {
-			if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil {
+			if actor, err := s.identitySessions.Validate(s.productSessionToken(r)); err == nil {
 				next.ServeHTTP(w, requestWithActorContext(r, actor))
 				return
 			}
@@ -4514,19 +4510,16 @@ func extractAttachToken(r *http.Request) string {
 }
 
 func (s *Server) isAuthExemptRequest(r *http.Request) bool {
+	if s.browser != nil && s.browser.authExempt(r) {
+		return true
+	}
 	switch r.URL.Path {
 	case "/v3/runners/join":
 		return r.Method == http.MethodPost
 	case "/healthz", "/readyz":
 		return true
-	case "/v1/auth/desktop/session":
-		return r.Method == http.MethodGet && shouldAllowDesktopLocalSessionBootstrapRequest(r)
 	case "/v1/onboarding":
 		return r.Method == http.MethodGet || (r.Method == http.MethodPost && s.allowsUnauthenticatedOnboardingPost(r))
-	case TailscaleOnboardingApprovalPath:
-		_, pending := pendingDesktopOrigin(r)
-		_, admitted := admittedDesktopOrigin(r)
-		return (pending || admitted) && (r.Method == http.MethodGet || (pending && r.Method == http.MethodPost))
 	default:
 		return false
 	}

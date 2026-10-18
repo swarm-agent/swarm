@@ -365,6 +365,13 @@ func (s *Service) resolveExecutionMode(requestMode string, agentProfile pebblest
 		return requestMode, "", nil
 	}
 	setting := pebblestore.AgentProfileRuntimeMode(agentProfile)
+	// Regular Coder's compiled contract now includes scoped Bash checks. The
+	// legacy readwrite permission mode forbids all shell execution, even when
+	// the resolved tool contract exposes Bash. Use ordinary auto authorization
+	// for this role; tool filtering, explicit denies and approvals still apply.
+	if agentProfile.Name == agentruntime.CoderAgentID && agentProfile.Mode == agentruntime.ModeSubagent && setting == pebblestore.AgentRuntimeModeReadWrite && profileHasCapability(agentProfile, "bash") {
+		return sessionruntime.ModeAuto, "", nil
+	}
 	if setting == pebblestore.AgentRuntimeModePlanAuto {
 		return requestMode, "", nil
 	}
@@ -2146,34 +2153,18 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		} else if strings.TrimSpace(instructionPrincipal.SessionID) == "" {
 			instructionPrincipal.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 		}
-		baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
-			PrimaryPath: workspaceCtx.WorkspacePath,
-			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
-			Principal:   instructionPrincipal,
-			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
-		}, agentProfile, options.Instructions)
-		baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
-		baseInstructions = appendWorktreeRuntimeContext(baseInstructions, instructionScope)
-		baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
-		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), agentProfile)
 		mediaExecutionMode := requestMode
 		mediaContract := CompileSessionMediaContract(SessionMediaContractInput{
 			ProviderID: providerID, Model: resolvedPreference.Preference.Model, Catalog: catalogRecord, CatalogMeta: catalogMeta,
 			Adapter: ResolveMediaAdapterDeclaration(runnerCtx, providerID, providerRunner), AgentAuthorized: AgentProfileAuthorizesMedia(agentProfile) && !effectiveDisabledTools[mediaInspectToolName],
 			ExecutionMode: mediaExecutionMode, WorkspaceScope: workspaceCtx.WorkspacePath, SessionScope: sessionID,
 		})
-		stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
-		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
-		if stateErr != nil {
-			return RunResult{}, stateErr
-		}
-		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + ScopeDurableRunStateInstructions(runStateInstructions, agentProfile))
 		stepToolDefinitions := MaterializeSessionMediaTool(toolDefinitions, mediaContract)
 		stepToolDefinitions = MaterializeSessionVideoTool(stepToolDefinitions, sessionSnapshot.Metadata)
+		planWarning := ""
 		if executionMode == sessionruntime.ModePlan && pebblestore.AgentExitPlanModeEnabled(agentProfile) && planContextGuard.beginDecision() {
-			warning := planContextGuard.warningInstructions()
-			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)
-			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: warning})
+			planWarning = planContextGuard.warningInstructions()
+			emit(StreamEvent{Type: StreamEventSessionWarning, Step: step, Warning: planWarning})
 			if planContextGuard.finalizationOnly {
 				stepToolDefinitions = filterToolDefinitionsExcept(stepToolDefinitions, map[string]struct{}{"exit_plan_mode": {}})
 			} else {
@@ -2181,6 +2172,28 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			}
 		} else {
 			stepToolDefinitions = filterToolDefinitions(stepToolDefinitions, map[string]bool{"compact": true})
+		}
+		instructionProfile := InstructionProfileForTools(agentProfile, stepToolDefinitions)
+		baseInstructions = s.composeInstructionsForScope(tool.WorkspaceScope{
+			PrimaryPath: workspaceCtx.WorkspacePath,
+			Roots:       append([]string(nil), workspaceCtx.WorkspaceRoots...),
+			Principal:   instructionPrincipal,
+			SessionID:   strings.TrimSpace(sessionSnapshot.ID),
+		}, instructionProfile, options.Instructions)
+		baseInstructions = appendHostRuntimeContext(baseInstructions, workspaceCtx.WorkspacePath, workspaceCtx.WorkspaceRoots)
+		baseInstructions = appendWorktreeRuntimeContext(baseInstructions, instructionScope)
+		baseInstructions = s.appendWorkspaceEnvironmentPromptBlock(baseInstructions, instructionScope)
+		stepInstructions := composeModeAwareInstructions(baseInstructions, executionMode, s.permissions != nil && s.permissions.BypassPermissions(), instructionProfile)
+		if profileHasCapability(instructionProfile, mediaInspectToolName) {
+			stepInstructions = AppendSessionMediaInstructions(stepInstructions, mediaContract)
+		}
+		runStateInstructions, stateErr := s.durableRunStateInstructions(sessionID, executionMode, runID, options)
+		if stateErr != nil {
+			return RunResult{}, stateErr
+		}
+		stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + ScopeDurableRunStateInstructions(runStateInstructions, agentProfile, providerToolNames(stepToolDefinitions)...))
+		if planWarning != "" {
+			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + planWarning)
 		}
 		stepReasoningSummary := ""
 		stepReasoningMessages := make(map[string]*pebblestore.MessageSnapshot, 4)

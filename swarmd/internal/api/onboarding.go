@@ -208,7 +208,7 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 		// Bootstrap GET is auth-exempt. Validate the TUI's product bearer
 		// explicitly before exposing only the runtime workspace guidance.
 		if response.WorkspaceGuidance == nil && s.identitySessions != nil {
-			if actor, err := s.identitySessions.Validate(productSessionTokenFromRequest(r)); err == nil && isCompleteProductActor(actor) {
+			if actor, err := s.identitySessions.Validate(s.productSessionToken(r)); err == nil && isCompleteProductActor(actor) {
 				guidance := workspace.DaemonWorkspaceGuidance()
 				response.WorkspaceGuidance = &guidance
 			}
@@ -225,8 +225,8 @@ func (s *Server) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 			writeError(w, onboardingErrorStatus(err), err)
 			return
 		}
-		if issued != nil {
-			http.SetCookie(w, buildDesktopLocalSessionCookie(r, issued.Token, issued.ExpiresAt))
+		if issued != nil && s.browser != nil {
+			s.browser.setSessionCookie(w, r, issued)
 		}
 		writeJSON(w, http.StatusOK, response)
 		if req.DesktopOnboardingComplete != nil && *req.DesktopOnboardingComplete {
@@ -264,7 +264,7 @@ func (s *Server) allowsUnauthenticatedOnboardingPost(r *http.Request) bool {
 	if s == nil || r == nil || r.Method != http.MethodPost {
 		return false
 	}
-	if !shouldAllowDesktopLocalSessionBootstrapRequest(r) {
+	if !s.allowsIdentityBootstrap(r) {
 		return false
 	}
 	if _, err := s.loadStartupConfig(); err != nil {
@@ -290,10 +290,8 @@ func (s *Server) allowSensitiveOnboardingMetadata(r *http.Request) bool {
 	if isLocalTransportRequest(r) {
 		return true
 	}
-	if shouldUseDesktopLocalSessionAuth(r) && s != nil {
-		if _, ok := s.actorFromDesktopLocalSession(r); ok {
-			return true
-		}
+	if s != nil && s.browser != nil && s.browser.sensitiveOnboarding(r) {
+		return true
 	}
 	if isLocalTransportRequest(r) {
 		return true

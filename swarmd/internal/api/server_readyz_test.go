@@ -15,7 +15,8 @@ import (
 // Purpose: /readyz must say "not ready" whenever the daemon cannot take work,
 // not only during shutdown: no running session executor, or a durable store that
 // no longer answers a read. Container health checks and external monitors rely
-// on it to restart or alert. The body carries only a fixed reason word.
+// on it to restart or alert. Execution readiness adds only fixed mode/reason
+// words and a boolean; private engine errors must never reach this public route.
 // Threat: a daemon whose store has failed (or whose executor stopped) reporting
 // ready forever, so nothing restarts it while every chat run fails.
 // Boundary: Server.handleReady, readinessProblem, sessionStoreAnswers.
@@ -47,8 +48,33 @@ func TestReadyzReportsStoreAndExecutorFailures(t *testing.T) {
 		s.handleReady(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 		var body map[string]any
 		_ = json.Unmarshal(w.Body.Bytes(), &body)
-		if len(body) > 2 {
-			t.Fatalf("readyz exposed more than ok/reason: %v", body)
+		for key, value := range body {
+			switch key {
+			case "ok", "agent_execution_ready":
+				if _, ok := value.(bool); !ok {
+					t.Fatalf("non-boolean readiness field %q", key)
+				}
+			case "reason":
+				if value != "shutting_down" && value != "executor_unavailable" && value != "store_unavailable" {
+					t.Fatalf("private or unknown readiness reason: %v", value)
+				}
+			case "agent_execution_mode":
+				if value != "off" && value != "required" && value != "auto" {
+					t.Fatalf("unknown execution mode: %v", value)
+				}
+			case "agent_execution_reason":
+				if value != "" && value != "sandbox_unavailable" {
+					t.Fatalf("private execution reason: %v", value)
+				}
+			default:
+				t.Fatalf("unexpected public readiness field %q", key)
+			}
+		}
+		if w.Code == http.StatusOK && len(body) != 4 {
+			t.Fatal("execution readiness fields absent")
+		}
+		if w.Code != http.StatusOK && len(body) != 2 {
+			t.Fatal("failed control readiness must retain only ok/reason")
 		}
 		return w.Code, body
 	}

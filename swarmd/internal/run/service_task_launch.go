@@ -339,6 +339,7 @@ type taskLaunchParentInfo struct {
 }
 
 type taskLaunchManifestRow struct {
+	RouterAlert            string                                         `json:"router_alert,omitempty"`
 	Description            string                                         `json:"description"`
 	RequestedSubagentType  string                                         `json:"requested_subagent_type"`
 	ResolvedAgentName      string                                         `json:"resolved_agent_name"`
@@ -4342,7 +4343,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		if s == nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: run service is not configured", i, requested)
 		}
-		subagentProfile, virtualTarget, sourceAgentName, err := s.resolveTaskLaunchProfileForMode(parentSession, requested, childMode)
+		subagentProfile, virtualTarget, sourceAgentName, routerAlert, err := s.resolveTaskLaunchProfileWithFallback(parentSession, requested, childMode)
 		if err != nil {
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q: %w", i, requested, err)
 		}
@@ -4393,6 +4394,7 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		preference := applyAgentPreferenceOverridesForMode(parentSession.Preference, subagentProfile, childMode)
 		childTitle := assignmentLabel
 		launches = append(launches, taskLaunchManifestRow{
+			RouterAlert:            routerAlert,
 			Description:            parsed.Description,
 			RequestedSubagentType:  requested,
 			ResolvedAgentName:      resolvedName,

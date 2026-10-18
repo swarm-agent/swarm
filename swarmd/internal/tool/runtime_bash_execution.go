@@ -91,7 +91,7 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 			exitCode = -1
 		}
 	}
-	return bashResponse(command, capture, streamWriter, exitCode, timedOut, err)
+	return bashResponse(command, capture, streamWriter, exitCode, timedOut, err, "host")
 }
 
 // sandboxBashScript merges stderr into stdout (preserving order, as the host
@@ -137,18 +137,22 @@ func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scop
 		OnOutput:   func(chunk []byte) { _, _ = streamWriter.Write(chunk) },
 	})
 	streamWriter.Flush()
+	executionMode := "docker"
+	if manager.Local() {
+		executionMode = "bubblewrap"
+	}
 	switch {
 	case errors.Is(runErr, provider.ErrOperationTimedOut):
-		return bashResponse(command, capture, streamWriter, result.ExitCode, true, nil)
+		return bashResponse(command, capture, streamWriter, result.ExitCode, true, nil, executionMode)
 	case errors.Is(runErr, provider.ErrOperationCancelled):
 		return "", fmt.Errorf("bash execution cancelled: %w", parent.Err())
 	case runErr != nil:
 		return "", fmt.Errorf("bash sandbox execution failed: %w", runErr)
 	}
-	return bashResponse(command, capture, streamWriter, result.ExitCode, false, nil)
+	return bashResponse(command, capture, streamWriter, result.ExitCode, false, nil, executionMode)
 }
 
-func bashResponse(command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error) (string, error) {
+func bashResponse(command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error, executionMode ...string) (string, error) {
 	wasTruncated := capture.Truncated()
 	rawOutput := capture.Bytes()
 	binarySuppressed := streamWriter.BinarySuppressed() || isLikelyBinary(rawOutput)
@@ -170,6 +174,9 @@ func bashResponse(command string, capture *cappedBuffer, streamWriter *bashStrea
 		"details_truncated":    detailsTruncated,
 		"safety":               buildUntrustedSafety(combined),
 		"prompt_injection_tag": "tool_output_untrusted",
+	}
+	if len(executionMode) > 0 {
+		response["execution_mode"] = executionMode[0]
 	}
 	encoded, marshalErr := json.Marshal(response)
 	if marshalErr != nil {

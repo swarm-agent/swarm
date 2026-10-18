@@ -3600,9 +3600,9 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 
 		stepInstructions := baseReq.Instructions
 		stepTools := baseReq.Tools
+		planWarning := ""
 		if strings.EqualFold(strings.TrimSpace(resolved.Session.Mode), sessionruntime.ModePlan) && pebblestore.AgentExitPlanModeEnabled(resolved.AgentProfile) && planContextGuard.BeginDecision() {
-			warning := planContextGuard.WarningInstructions()
-			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + warning)
+			planWarning = planContextGuard.WarningInstructions()
 			if planContextGuard.FinalizationOnly() {
 				stepTools = runruntime.FilterToolDefinitionsExcept(stepTools, map[string]struct{}{"exit_plan_mode": {}})
 			} else {
@@ -3614,6 +3614,16 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		if limit := resolved.Limits.MaxSteps; limit > 0 && step >= limit {
 			// Last allowed model call: no tools, so the model has to answer.
 			stepTools = nil
+		}
+		if len(stepTools) != len(baseReq.Tools) {
+			var instructionErr error
+			stepInstructions, instructionErr = e.composeSessionV3ResolvedInstructions(job, resolved, stepTools)
+			if instructionErr != nil {
+				return sessionV3ProviderLoopResult{}, instructionErr
+			}
+		}
+		if planWarning != "" {
+			stepInstructions = strings.TrimSpace(stepInstructions + "\n\n" + planWarning)
 		}
 		toolsEnabled := len(stepTools) > 0 && !strings.EqualFold(strings.TrimSpace(baseReq.ToolChoice), "none")
 		var toolInvoker provideriface.ToolInvoker
@@ -5072,7 +5082,7 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
-	session, agentProfile, pref, scope := resolved.Session, resolved.AgentProfile, resolved.Preference, resolved.Scope
+	session, agentProfile, scope := resolved.Session, resolved.AgentProfile, resolved.Scope
 	tools, err := e.resolveSessionV3ProviderTools(session.AccountScopeID, agentProfile)
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
@@ -5081,6 +5091,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	if err != nil {
 		return sessionV3ResolvedRuntime{}, err
 	}
+	// Task-history overlays may add task tools, but must not change media authority.
+	if runruntime.AgentProfileAuthorizesMedia(agentProfile) != runruntime.AgentProfileAuthorizesMedia(resolved.AgentProfile) {
+		return sessionV3ResolvedRuntime{}, errors.New("task history overlay changed media authorization")
+	}
+	resolved.AgentProfile = agentProfile
+	resolved.Tools = runruntime.MaterializeSessionMediaTool(tools, resolved.MediaContract)
+	resolved.ToolChoice = "none"
+	if len(resolved.Tools) > 0 {
+		resolved.ToolChoice = "auto"
+	}
+	sealed := e.server.sealedAgentError(session.AccountScopeID, agentProfile.Name) == nil
+	resolved.Limits = effectiveAgentRunLimits(agentProfile.Limits, sealed)
+	resolved.Instructions, err = e.composeSessionV3ResolvedInstructions(job, resolved, resolved.Tools)
+	return resolved, err
+}
+
+// Compose against the final provider tool list without re-resolving model or role authority.
+func (e *sessionV3Executor) composeSessionV3ResolvedInstructions(job sessionV3ExecutorJob, resolved sessionV3ResolvedRuntime, tools []provideriface.ToolDefinition) (string, error) {
+	session, agentProfile, pref, scope := resolved.Session, resolved.AgentProfile, resolved.Preference, resolved.Scope
 	sealed := e.server.sealedAgentError(session.AccountScopeID, agentProfile.Name) == nil
 	var instructions string
 	if sealed {
@@ -5091,28 +5120,25 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 	} else {
 		applicationInstructions, err := e.server.applicationAgentInstructions(session)
 		if err != nil {
-			return sessionV3ResolvedRuntime{}, err
+			return "", err
 		}
-		instructions = strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, agentProfile))
+		instructionProfile := runruntime.InstructionProfileForTools(agentProfile, tools)
+		instructions = strings.TrimSpace(e.composeSessionV3Instructions(scope, session.Mode, instructionProfile))
 		if instructions == "" {
-			return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
+			return "", errors.New("resolved v3 instructions are empty")
 		}
 		instructions += applicationInstructions
 		instructions = runruntime.AppendResolvedModelPolicyInstructions(instructions, session.Mode, pref)
 	}
 	if instructions == "" {
-		return sessionV3ResolvedRuntime{}, errors.New("resolved v3 instructions are empty")
-	}
-	// Task-history overlays may add task tools, but must not change media authority.
-	if runruntime.AgentProfileAuthorizesMedia(agentProfile) != runruntime.AgentProfileAuthorizesMedia(resolved.AgentProfile) {
-		return sessionV3ResolvedRuntime{}, errors.New("task history overlay changed media authorization")
+		return "", errors.New("resolved v3 instructions are empty")
 	}
 	mediaContract := resolved.MediaContract
-	instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
-	tools = runruntime.MaterializeSessionMediaTool(tools, mediaContract)
-	toolChoice := "none"
-	if len(tools) > 0 {
-		toolChoice = "auto"
+	for _, definition := range tools {
+		if definition.Name == "media_inspect" {
+			instructions = runruntime.AppendSessionMediaInstructions(instructions, mediaContract)
+			break
+		}
 	}
 	if stateCompiler, ok := e.server.runner.(interface {
 		ComposeDurableRunStateInstructions(string, string, string, *runruntime.RunPlanCheckpointContext) (string, error)
@@ -5129,11 +5155,15 @@ func (e *sessionV3Executor) resolveSessionV3Runtime(job sessionV3ExecutorJob) (s
 		}
 		runState, stateErr := stateCompiler.ComposeDurableRunStateInstructions(session.ID, session.Mode, job.RunID, checkpointContext)
 		if stateErr != nil {
-			return sessionV3ResolvedRuntime{}, stateErr
+			return "", stateErr
 		}
-		instructions = strings.TrimSpace(instructions + "\n\n" + runruntime.ScopeDurableRunStateInstructions(runState, agentProfile))
+		enabledToolNames := make([]string, 0, len(tools))
+		for _, definition := range tools {
+			enabledToolNames = append(enabledToolNames, definition.Name)
+		}
+		instructions = strings.TrimSpace(instructions + "\n\n" + runruntime.ScopeDurableRunStateInstructions(runState, agentProfile, enabledToolNames...))
 	}
-	return sessionV3ResolvedRuntime{Session: session, AgentProfile: agentProfile, Preference: pref, ContextWindow: resolved.ContextWindow, ModelCatalog: resolved.ModelCatalog, CatalogMeta: resolved.CatalogMeta, MediaContract: mediaContract, Scope: scope, Instructions: instructions, Tools: tools, ToolChoice: toolChoice, Limits: effectiveAgentRunLimits(agentProfile.Limits, sealed)}, nil
+	return instructions, nil
 }
 
 func (e *sessionV3Executor) resolveSessionV3CurrentAgentToolContract(accountScopeID string, metadata map[string]any, snapshot pebblestore.AgentProfile) (pebblestore.AgentProfile, error) {

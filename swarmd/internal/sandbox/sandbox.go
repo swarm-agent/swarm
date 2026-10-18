@@ -73,6 +73,7 @@ func ParseMode(value string) (Mode, error) {
 
 // Config describes how sandboxes are created.
 type Config struct {
+	Backend string // empty preserves the Desktop Docker backend
 	Mode    Mode
 	Engine  string // container engine CLI, default "docker"
 	Image   string
@@ -151,8 +152,10 @@ type Scope struct {
 
 // Manager owns the per-project sandbox containers.
 type Manager struct {
-	cfg    Config
-	runner provider.CommandRunner
+	cfg              Config
+	runner           provider.CommandRunner
+	localEmptyConfig string
+	localRuns        map[string]int
 
 	mu      sync.Mutex
 	status  Status
@@ -208,6 +211,12 @@ var ErrInactive = errors.New("sandbox is not active")
 // NewManager validates cfg and probes the engine. In auto mode the probe
 // result decides, once, whether this process uses sandboxes.
 func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) (*Manager, error) {
+	if cfg.Backend == BackendBubblewrap {
+		return newLocalManager(ctx, cfg)
+	}
+	if cfg.Backend != "" && cfg.Backend != BackendDocker {
+		return nil, fmt.Errorf("unsupported sandbox backend %q", cfg.Backend)
+	}
 	if cfg.Engine == "" {
 		cfg.Engine = "docker"
 	}
@@ -351,7 +360,7 @@ func (m *Manager) probe(ctx context.Context) error {
 
 // Start runs the idle reaper until ctx ends or Close is called.
 func (m *Manager) Start(ctx context.Context) {
-	if m == nil || !m.Active() {
+	if m == nil || m.Local() || !m.Active() {
 		return
 	}
 	m.reaper.Add(1)
@@ -378,6 +387,12 @@ func (m *Manager) Start(ctx context.Context) {
 // Close stops the idle reaper. Containers are left for the next start.
 func (m *Manager) Close() {
 	if m == nil {
+		return
+	}
+	if m.Local() {
+		if m.localEmptyConfig != "" {
+			_ = os.RemoveAll(filepath.Dir(m.localEmptyConfig))
+		}
 		return
 	}
 	m.mu.Lock()
@@ -677,6 +692,9 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 // acquire makes sure the project's sandbox is running with the given mounts
 // and returns an inflight lease; the caller must call release.
 func (m *Manager) acquire(ctx context.Context, scope Scope, command ...string) (*box, error) {
+	if m.Local() {
+		return nil, fmt.Errorf("container lifecycle is unavailable with bubblewrap")
+	}
 	nameOnly := "acquire"
 	if len(command) > 0 && command[0] != "" {
 		nameOnly = filepath.Base(command[0])
@@ -946,6 +964,9 @@ func (m *Manager) exec(ctx context.Context, scope Scope, req ExecRequest, daemon
 }
 
 func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*provider.ExecResult, error) {
+	if m.Local() {
+		return m.execLocal(ctx, scope, req)
+	}
 	b, err := m.acquire(ctx, scope, req.Command...)
 	if err != nil {
 		return nil, err

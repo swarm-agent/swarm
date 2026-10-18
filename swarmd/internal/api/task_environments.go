@@ -107,9 +107,14 @@ func (s *Server) ValidateTaskEnvironmentLease(ctx context.Context, lease environ
 	} else if lease.ConsumerType != environments.ConsumerTypeCustom || lease.ConsumerID != b.UserID {
 		return errors.New("invalid task consumer")
 	}
-	task, err := s.authorizeTaskEnvironment(p, sessionID, b.ProjectID, b.TaskID)
+	task, err := s.authorizeTaskEnvironment(p, "", b.ProjectID, b.TaskID)
 	if err != nil {
 		return err
+	}
+	if sessionID != "" {
+		if err := s.validateTaskExecutionConsumer(p, task, sessionID); err != nil {
+			return err
+		}
 	}
 	if b.AttemptID == "" || task.ActiveAttemptID != b.AttemptID {
 		return errors.New("task attempt changed; explicitly reassign attachment")
@@ -211,6 +216,9 @@ func (s *Server) taskEnvironmentProjection(ctx context.Context, p identity.Princ
 // expands workspace scope, accepts source claims or copies another consumer lease.
 func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal, sessionID string, req tool.TaskEnvironmentRequest) (tool.TaskEnvironmentResult, error) {
 	var result tool.TaskEnvironmentResult
+	if req.ExecutionSessionID != "" && req.Action != "acquire_attachment" {
+		return result, errors.New("execution_session_id is only valid for acquire_attachment")
+	}
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -365,6 +373,24 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 			result.Operation = op
 		}
 	case "acquire_attachment":
+		consumerSessionID := sessionID
+		if req.ExecutionSessionID != "" {
+			if _, ok := s.deployments.(interface {
+				Release(context.Context, lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
+			}); !ok {
+				return result, errors.New("managed selection requires receipt cleanup support")
+			}
+			if sessionID != "" {
+				caller, found, e := s.sessions.GetSession(sessionID)
+				if e != nil || !found || tool.TaskEnvironmentConsumer(caller.Metadata) {
+					return result, errors.New("only task administration may select an execution session")
+				}
+			}
+			if err := s.validateTaskExecutionConsumer(p, task, req.ExecutionSessionID); err != nil {
+				return result, err
+			}
+			consumerSessionID = req.ExecutionSessionID
+		}
 		if req.ExpectedAttachmentRevision <= 0 || req.AttemptID == "" {
 			return result, errors.New("exact attachment revision and attempt required")
 		}
@@ -385,18 +411,24 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 		}
 		binding := &environments.TaskLeaseBinding{ProjectID: req.ProjectID, TaskID: req.TaskID, AttemptID: req.AttemptID, AttachmentID: req.AttachmentID, AttachmentRevision: req.ExpectedAttachmentRevision, UserID: p.UserID}
 		kind, id := environments.ConsumerTypeCustom, p.UserID
-		if sessionID != "" {
-			kind, id = environments.ConsumerTypeSession, sessionID
+		if consumerSessionID != "" {
+			kind, id = environments.ConsumerTypeSession, consumerSessionID
 		}
 		candidate := environments.DeploymentLease{AccountScopeID: p.AccountScopeID, ConsumerType: kind, ConsumerID: id, TaskBinding: binding, PreparedSource: &selected.Source}
 		if e := s.ValidateTaskEnvironmentLease(ctx, candidate); e != nil {
 			return result, e
 		}
-		lease, e := service.AcquirePreparedLease(ctx, lifecycle.AcquirePreparedLeaseRequest{Source: selected.Source, Binding: binding, Attribution: environments.OperationAttribution{Actor: p.UserID, SessionID: sessionID}, TTLMillis: req.TTLMillis})
+		lease, e := service.AcquirePreparedLease(ctx, lifecycle.AcquirePreparedLeaseRequest{Source: selected.Source, Binding: binding, Attribution: environments.OperationAttribution{Actor: p.UserID, SessionID: consumerSessionID}, TTLMillis: req.TTLMillis})
 		if e != nil {
 			return result, e
 		}
 		result.Lease = &lease
+		if req.ExecutionSessionID != "" {
+			if err := s.bindOrReleaseTaskExecution(ctx, p, task, req.ExecutionSessionID, lease); err != nil {
+				result.Lease = nil
+				return result, err
+			}
+		}
 	default:
 		return result, errors.New("unknown task environment action")
 	}

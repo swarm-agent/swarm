@@ -44,6 +44,7 @@ func manageSessionsDefinition() Definition {
 			"proposals":                 map[string]any{"type": "array", "minItems": 1, "maxItems": manageSessionsMaxDeployBatch, "description": "Deploy proposals (first selected by default).", "items": map[string]any{"type": "object", "required": []string{"prompt"}, "additionalProperties": false, "properties": map[string]any{"title": map[string]any{"type": "string"}, "prompt": map[string]any{"type": "string"}, "mode": map[string]any{"type": "string", "enum": []string{"auto"}}, "agent": map[string]any{"type": "string"}, "workspace_path": map[string]any{"type": "string"}, "worktree_name": map[string]any{"type": "string"}}}},
 			"trigger":                   map[string]any{"type": "boolean", "description": "send_message: false saves feedback without starting execution; alias of trigger_run. Conflicting aliases are rejected."},
 			"trigger_run":               map[string]any{"type": "boolean"},
+			"wait_seconds":              map[string]any{"type": "integer", "minimum": 0, "maximum": 120, "description": "send_message/deploy: bounded wait for the launched run. Use 120 when awaiting a Coder continuation; if still running, report pending instead of repeatedly polling get."},
 			"client_request_id":         map[string]any{"type": "string", "description": "Stable retry key for non-triggering feedback."},
 			"prompt":                    map[string]any{"type": "string"},
 			"title":                     map[string]any{"type": "string"},

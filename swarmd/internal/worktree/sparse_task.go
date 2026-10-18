@@ -21,12 +21,11 @@ func prepareTaskWorktreeCheckout(worktreePath string, ownedScopes []string) erro
 	}
 	// Ownership constrains mutations, not the committed source a job may read.
 	// Language dependencies and build inputs cannot be inferred from an owned
-	// file list. Override inherited sparse configuration in this new worktree
-	// only; tool mutation scopes and committed-diff handoff checks still apply.
-	if _, err := runGitAllocation(worktreePath, []byte("/*\n"), "sparse-checkout", "set", "--no-cone", "--stdin"); err != nil {
-		return fmt.Errorf("configure complete task checkout: %w", err)
-	}
-	if _, err := runGitAllocation(worktreePath, nil, "checkout", "--force"); err != nil {
+	// file list. Override inherited sparsity for this checkout command only;
+	// sparse-checkout set writes shared Git configuration, which the sandbox
+	// intentionally protects. No repository configuration needs changing to
+	// materialize a complete new task checkout. Mutation scope checks still apply.
+	if _, err := runGitAllocation(worktreePath, nil, "-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", "checkout", "--force"); err != nil {
 		return fmt.Errorf("materialize committed task source: %w", err)
 	}
 	return nil

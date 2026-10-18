@@ -115,6 +115,11 @@ func TestSystemAgentRegistryRejectsMissingDuplicateAndInvalidDefinitions(t *test
 	}
 }
 
+// Requirement: registry reconciliation preserves account model context while
+// restoring immutable role/output authority. Threat: stale snapshots grant tools
+// or leak an incompatible Designer output mode. Owners: SystemAgentRegistry and
+// designerAgentProfileForParent; this direct contract test is the narrowest
+// layer, with malformed/stale snapshots and both output-mode postconditions.
 func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *testing.T) {
 	registry, err := BuiltinSystemAgentRegistry()
 	if err != nil {
@@ -275,10 +280,13 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("managed Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
 	}
-	for _, denied := range []string{"write", "edit", "artifact_v2_author", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := designer.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Designer mandatory denial %q was not restored: %+v", denied, designer.ToolContract)
 		}
+	}
+	if _, exists := designer.ToolContract.Tools["artifact_v2_author"]; exists {
+		t.Fatal("retired author capability must be absent from compiled contract; custom defaults deny it")
 	}
 	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
 		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
@@ -308,10 +316,22 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
 		}
 	}
-	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v3_author", "inspect_context", "complete conventional project tree", "artifact-scoped list/read/write/edit/delete", "Parts are stable navigation and user-intent targets", "shared files", "build_preview repeatedly", "finish_turn exactly once", "base commit", "output policy", "exactly three top-level keys", "non-empty label", "and locator", "Never use shorthand selector", "Do not call manage_artifact or artifact_v2_author", "Workspace output", "Never call artifact_v3_author, artifact_v2_author, or manage_artifact", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
+	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v3_author", "inspect_context", "complete conventional project tree", "artifact-scoped list/read/write/edit/delete", "Parts are stable navigation and user-intent targets", "shared files", "build_preview repeatedly", "finish_turn exactly once", "base commit", "output policy", "exactly three top-level keys", "non-empty label", "and locator", "Never use shorthand selector", "Do not call manage_artifact or artifact_v2_author", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
 			t.Fatalf("Designer prompt missing immutable output contract %q", want)
 		}
+	}
+
+	if strings.Contains(DesignerAgentPrompt(), "Workspace output") {
+		t.Fatal("managed Designer received workspace authoring instructions")
+	}
+	for _, want := range []string{"Workspace output: use write and edit", "concrete declared owned scope", "exact workspace-relative output paths", "Managed publication is unavailable"} {
+		if !strings.Contains(workspaceDesigner.Prompt, want) {
+			t.Fatalf("workspace Designer missing %q", want)
+		}
+	}
+	if strings.Contains(workspaceDesigner.Prompt, "Start with inspect_context") || strings.Contains(workspaceDesigner.Prompt, "build_preview repeatedly") {
+		t.Fatal("workspace Designer received unavailable managed author instructions")
 	}
 
 	swarm, err := registry.ReconcileSnapshot(SwarmAgentID, pebblestore.AgentProfile{
@@ -341,12 +361,12 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if clone.Name != CoderAgentID || clone.Prompt != CoderAgentPrompt() || clone.Provider != "codex" || clone.Model != "parent-model" || clone.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || !clone.Enabled || clone.ExitPlanModeEnabled == nil || *clone.ExitPlanModeEnabled {
 		t.Fatalf("Clone immutable contract was not restored: %+v", clone)
 	}
-	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit", "task_progress"} {
+	for _, allowed := range []string{"read", "search", "list", "write", "edit", "websearch", "webfetch", "webdownload", "git_status", "git_diff", "git_add", "git_commit", "task_progress", "bash"} {
 		if cfg := clone.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
 			t.Fatalf("Clone locked tool %q unavailable: %+v", allowed, clone.ToolContract)
 		}
 	}
-	for _, denied := range []string{"bash", "task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := clone.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Clone mandatory denial %q was not restored: %+v", denied, clone.ToolContract)
 		}
@@ -356,5 +376,46 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	if _, err := registry.ReconcileSnapshot(PlanSidechatAgentID, pebblestore.AgentProfile{Name: AISidechatAgentID}); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
 		t.Fatalf("metadata mismatch error = %v", err)
+	}
+}
+
+// Requirement: regular Coder may execute its scoped checks but may not acquire
+// orchestration or environment-management authority. Threat: inherited/stale
+// profiles retain enabled management tools after Bash is added. Owners:
+// CoderAgentToolContract, CoderAgentProfileForParent and reconcileCoderAgentProfile.
+// Direct materialization and reconciliation are the narrowest compiled-role
+// boundary; downstream resolved tool rejection is tested in run role contracts.
+func TestCoderBashDoesNotGrantManagementAuthority(t *testing.T) {
+	registry, err := BuiltinSystemAgentRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := []string{"task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode", "manage_worktree", "manage_environments", "manage_workers", "manage_automation"}
+	injected := &pebblestore.AgentToolContract{Preset: "read_write", Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(false)}}}
+	for _, name := range denied {
+		injected.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
+	}
+	parent := pebblestore.AgentProfile{Name: CoderAgentID, Provider: "fixture-provider", Model: "fixture-model", ToolContract: injected}
+	for _, reconcile := range []bool{false, true} {
+		var profile pebblestore.AgentProfile
+		if reconcile {
+			profile, err = registry.ReconcileSnapshot(CoderAgentID, parent)
+		} else {
+			profile, err = registry.Materialize(CoderAgentID, parent)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !agentToolEnabled(profile.ToolContract, "bash") || profile.ToolContract.Preset != "custom" {
+			t.Fatal("Coder did not restore explicit scoped Bash contract")
+		}
+		for _, name := range denied {
+			if agentToolEnabled(profile.ToolContract, name) {
+				t.Fatalf("reconcile=%v retained unauthorized %s", reconcile, name)
+			}
+		}
+		if profile.Provider != parent.Provider || profile.Model != parent.Model || !agentToolEnabled(parent.ToolContract, "manage_environments") || agentToolEnabled(parent.ToolContract, "bash") {
+			t.Fatal("materialization changed account model context or mutated input authority")
+		}
 	}
 }

@@ -154,6 +154,9 @@ func (m *Manager) CommandScope(path string) (Scope, error) {
 }
 
 func (m *Manager) scopeForRoot(root string, layout Layout) (Scope, bool, error) {
+	if m.Local() {
+		return Scope{Root: root, Mounts: []string{root}}, true, nil
+	}
 	scope := Scope{Root: root, Mounts: []string{root}}
 	if layout.Bucket != nil && layout.WorktreesRoot != "" {
 		bucket, err := layout.Bucket(root)

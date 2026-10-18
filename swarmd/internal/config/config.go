@@ -35,6 +35,7 @@ type Config struct {
 	LockPath                     string
 	StartupCWD                   string
 	SandboxMode                  string
+	SandboxBackend               string
 	SandboxImage                 string
 	SandboxNetwork               string
 	SandboxRuntime               string
@@ -58,7 +59,13 @@ type Config struct {
 	SecretsGatewayAddr           string // bridge address:port the gateway listens on
 }
 
-func Parse(args []string) (Config, error) {
+func Parse(args []string) (Config, error) { return parse(args, true) }
+
+// ParseHeadless shares backend configuration but cannot enable a Desktop
+// listener, including through an existing Desktop installation's config file.
+func ParseHeadless(args []string) (Config, error) { return parse(args, false) }
+
+func parse(args []string, desktop bool) (Config, error) {
 	configPath, err := startupconfig.ResolvePath()
 	if err != nil {
 		return Config{}, err
@@ -104,7 +111,11 @@ func Parse(args []string) (Config, error) {
 		LongSessionDiagnostics:  startupCfg.LongSessionDiagnostics,
 	}
 	fs.StringVar(&cfg.ListenAddr, "listen", defaultListenAddr, "HTTP listen address")
-	fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
+	if desktop {
+		fs.IntVar(&cfg.DesktopPort, "desktop-port", startupCfg.DesktopPort, "desktop HTTP listen port (0 disables desktop listener)")
+	} else {
+		cfg.DesktopPort = 0
+	}
 	fs.IntVar(&cfg.RunnerGatewayPort, "runner-gateway-port", 0, "opt-in runner-only loopback listener (0 disables)")
 	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
 	fs.StringVar(&cfg.ContainerSDKHost, "container-sdk-host", "0.0.0.0", "IPv4 address for the scoped-token SDK listener: 0.0.0.0 inside a container, 127.0.0.1 when Swarm runs as a host service")
@@ -113,11 +124,22 @@ func Parse(args []string) (Config, error) {
 	// Never persisted: the lock is a property of how this process was started,
 	// so nothing reachable at runtime (API, agents, config edits) can lift it.
 	fs.BoolVar(&cfg.LockPermissionPolicy, "lock-permission-policy", false, "make permission policy (rules, capability policies, bypass) read-only for this process; bypass stays off. Changing it requires a restart without this flag")
-	fs.StringVar(&cfg.SandboxMode, "sandbox", "auto", "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)")
+	defaultSandboxMode := "auto"
+	sandboxHelp := "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)"
+	if !desktop {
+		defaultSandboxMode = "required"
+		sandboxHelp = "agent sandbox mode: required (default; unavailable isolation blocks commands while setup remains accessible), off (explicit host execution; permission bypass disabled); auto is unsupported"
+	}
+	fs.StringVar(&cfg.SandboxMode, "sandbox", defaultSandboxMode, sandboxHelp)
+	backend := "docker"
+	if !desktop {
+		backend = "bubblewrap"
+	}
+	fs.StringVar(&cfg.SandboxBackend, "sandbox-backend", backend, "execution backend: bubblewrap (Linux, isolated network) or docker")
 	fs.StringVar(&cfg.SandboxImage, "sandbox-image", "swarm-sandbox:local", "image for agent sandboxes")
 	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
-	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "memory cap per sandbox (empty: host-derived)")
+	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "Docker memory cap per sandbox (empty: host-derived; bubblewrap has no per-worker RAM reservation)")
 	fs.StringVar(&cfg.SandboxCPUs, "sandbox-cpus", startupCfg.SandboxCPUs, "CPU quota per agent container (empty: unrestricted)")
 	cfg.CloudBuildCache = startupCfg.CloudBuildCache
 	cfg.CloudBuildProject = startupCfg.CloudBuildProject
@@ -132,7 +154,7 @@ func Parse(args []string) (Config, error) {
 	cfg.EnvironmentRunnerWakeCommand = startupCfg.EnvironmentRunnerWakeCommand
 	fs.IntVar(&cfg.LandingMaxConcurrent, "landing-max-concurrent", startupCfg.LandingMaxConcurrent, "box-wide landing limit (0: logical CPUs / 4)")
 	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")
-	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: RAM-derived)")
+	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: CPU-count for bubblewrap, RAM-derived for docker)")
 	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
 	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")
@@ -147,6 +169,9 @@ func Parse(args []string) (Config, error) {
 	if err := fs.Parse(filteredArgs); err != nil {
 		return Config{}, err
 	}
+	if !desktop && fs.NArg() != 0 {
+		return Config{}, fmt.Errorf("unexpected Headless argument %q", fs.Arg(0))
+	}
 
 	if cfg.DesktopPort < 0 || cfg.DesktopPort > 65535 {
 		return Config{}, fmt.Errorf("invalid desktop port %d (expected 0-65535)", cfg.DesktopPort)
@@ -160,8 +185,17 @@ func Parse(args []string) (Config, error) {
 		// startup config file was edited to enable bypass.
 		cfg.BypassPermissions = false
 	}
+	if !desktop {
+		cfg.SandboxMode, err = HeadlessSandboxMode(cfg.SandboxMode)
+		if err != nil {
+			return Config{}, err
+		}
+	}
 	if _, err := sandbox.ParseMode(cfg.SandboxMode); err != nil {
 		return Config{}, err
+	}
+	if cfg.SandboxBackend != sandbox.BackendBubblewrap && cfg.SandboxBackend != sandbox.BackendDocker {
+		return Config{}, fmt.Errorf("sandbox-backend must be bubblewrap or docker")
 	}
 	if err := sandbox.ValidateMemory(cfg.SandboxMemory); err != nil {
 		return Config{}, err

@@ -447,6 +447,19 @@ func formatToolSearchIndexContent(call tool.Call, result tool.Result) string {
 }
 
 func formatToolCompletedOutput(call tool.Call, result tool.Result) string {
+	if canonicalToolName(firstNonEmptyString(result.Name, call.Name)) == "bash" {
+		if payload := decodeToolPayload(result.Output); payload != nil {
+			if receipt, ok := payload["validation_receipt"].(map[string]any); ok {
+				compact := map[string]any{"validation_receipt": receipt, "summary": payload["summary"], "exit_code": payload["exit_code"]}
+				if result.Error != "" {
+					compact["error"] = result.Error
+				}
+				if raw, err := json.Marshal(compact); err == nil {
+					return string(raw)
+				}
+			}
+		}
+	}
 	name := strings.TrimSpace(result.Name)
 	if name == "" {
 		name = strings.TrimSpace(call.Name)
@@ -509,6 +522,11 @@ func prepareToolOutputForModel(call tool.Call, result tool.Result) string {
 		payload["summary"] = summarizeToolOutput(name, output, maxToolPreviewChars, 3)
 		payload["hint"] = "Rerun with narrower tool scope if more detail is needed."
 		if structured := decodeToolPayload(output); structured != nil {
+			if canonicalToolName(name) == "bash" {
+				if receipt, ok := structured["validation_receipt"].(map[string]any); ok {
+					payload["validation_receipt"] = receipt
+				}
+			}
 			if pathID := mapString(structured, "path_id"); pathID != "" {
 				payload["tool_path_id"] = pathID
 			}

@@ -151,6 +151,7 @@ func (j *TaskProgramJobSpec) UnmarshalJSON(data []byte) error {
 }
 
 type TaskProgramJobRecord struct {
+	RouterAlert         string                     `json:"router_alert,omitempty"`
 	JobID               string                     `json:"job_id"`
 	StageID             string                     `json:"stage_id"`
 	State               string                     `json:"state"`
@@ -262,6 +263,7 @@ type TaskProgramTransition struct {
 }
 
 type TaskProgramJobTransition struct {
+	RouterAlert         string
 	JobID               string
 	ExpectedState       string
 	State               string
@@ -551,6 +553,9 @@ func applyTaskProgramJobTransition(job *TaskProgramJobRecord, update TaskProgram
 	}
 	if value := strings.TrimSpace(update.ImmutableStageBase); value != "" {
 		job.ImmutableStageBase = value
+	}
+	if value := strings.TrimSpace(update.RouterAlert); value != "" {
+		job.RouterAlert = boundedTaskProgramText(value)
 	}
 	if value := strings.TrimSpace(update.ChildHead); value != "" {
 		job.ChildHead = value

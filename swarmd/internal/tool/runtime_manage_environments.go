@@ -30,6 +30,7 @@ func manageEnvironmentsDefinition() Definition {
 				"project_id":                   map[string]any{"type": "string"},
 				"task_id":                      map[string]any{"type": "string"},
 				"attempt_id":                   map[string]any{"type": "string"},
+				"execution_session_id":         map[string]any{"type": "string", "description": "For acquire_attachment only: explicitly assign managed Bash to this exact current task session. Host file edits are not synchronized."},
 				"attachment_id":                map[string]any{"type": "string"},
 				"expected_task_revision":       map[string]any{"type": "integer"},
 				"expected_attachment_revision": map[string]any{"type": "integer"},

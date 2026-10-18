@@ -477,6 +477,7 @@ func WithWorkspaceScope(parent context.Context, scope WorkspaceScope) context.Co
 	normalized := normalizeWorkspaceScope(scope.PrimaryPath, scope.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), scope.ReadOnlyRoots...)
 	normalized.ReadOnlyBash = scope.ReadOnlyBash
+	normalized.ReviewCheckout = strings.TrimSpace(scope.ReviewCheckout)
 	normalized.MutationScopes = append([]string(nil), scope.MutationScopes...)
 	normalized.TaskHistoryOnly = scope.TaskHistoryOnly
 	normalized.RejectScopeExpansion = scope.RejectScopeExpansion
@@ -537,6 +538,12 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 		// the durable principal/session identity instead. Preserve that identity
 		// while retaining the caller's normalized path scope.
 		scope.TaskHistoryOnly = override.TaskHistoryOnly
+		scope.ReadOnlyBash = override.ReadOnlyBash
+		scope.ReviewCheckout = strings.TrimSpace(override.ReviewCheckout)
+		scope.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
+		scope.MutationScopes = append([]string(nil), override.MutationScopes...)
+		scope.RejectScopeExpansion = override.RejectScopeExpansion
+		scope.ExplicitRepositoryRecovery = override.ExplicitRepositoryRecovery
 		scope.SessionID = strings.TrimSpace(override.SessionID)
 		scope.Principal = override.Principal
 		return scope
@@ -544,6 +551,7 @@ func workspaceScopeFromContext(ctx context.Context, workspacePath string) Worksp
 	normalized := normalizeWorkspaceScope(override.PrimaryPath, override.Roots)
 	normalized.ReadOnlyRoots = append([]string(nil), override.ReadOnlyRoots...)
 	normalized.ReadOnlyBash = normalized.ReadOnlyBash || override.ReadOnlyBash
+	normalized.ReviewCheckout = strings.TrimSpace(override.ReviewCheckout)
 	normalized.MutationScopes = append([]string(nil), override.MutationScopes...)
 	normalized.TaskHistoryOnly = override.TaskHistoryOnly
 	normalized.RejectScopeExpansion = override.RejectScopeExpansion
@@ -1082,8 +1090,9 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"workspace_path": map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
-					"command":        map[string]any{"type": "string", "description": "Shell command to execute"},
+					"workspace_path":   map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
+					"committed_source": map[string]any{"type": "object", "description": "Parent-owned validation of an exact completed Coder child. Use the committed_source tuple returned by manage-worktree recall; mutually exclusive with workspace_path. Account, lineage, inactive lifecycle and clean exact HEAD are revalidated before and after execution. Inspect validation_receipt.verified; command completion alone is not verified validation.", "properties": map[string]any{"task_call_id": map[string]any{"type": "string"}, "child_session_id": map[string]any{"type": "string"}, "head_commit": map[string]any{"type": "string"}}, "required": []string{"task_call_id", "child_session_id", "head_commit"}, "additionalProperties": false},
+					"command":          map[string]any{"type": "string", "description": "Shell command to execute"},
 					"explanation": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -1522,7 +1531,8 @@ func (r *Runtime) Definitions() []Definition {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|integrate|promote|help"},
+					"action":                map[string]any{"type": "string", "description": "Action: inspect|list|recall|inspect_source|retain_source|recover_handoff|integrate|promote|help. recover_handoff records a successful resumed regular Coder handoff without changing its failed launch or integrating Git; requires task_call_id, child_session_id, child_run_id and source_head."},
+					"child_run_id":          map[string]any{"type": "string", "description": "Exact completed continuation run for recover_handoff"},
 					"recovery":              map[string]any{"type": "boolean", "description": "integrate: attribution-independent fast-forward of exact reviewed commits between account-authorized worktrees. Requires workspace_path, source_branch/head, target_workspace_path, target_branch/head and commits."},
 					"commits":               map[string]any{"type": "array", "maxItems": 100, "items": map[string]any{"type": "string"}},
 					"request_id":            map[string]any{"type": "string", "description": "Stable exact-request identity for recovery integration"},
@@ -2109,12 +2119,38 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		scope.RejectScopeExpansion = true
 	}
 	name := strings.ToLower(strings.TrimSpace(call.Name))
+	managed, managedErr := r.managedExecutionBinding(scope)
+	if managedErr != nil {
+		return "", managedErr
+	}
+	if managed != nil {
+		if name == "bash" {
+			return r.executeManagedBash(ctx, scope, *managed, args, func(chunk string) {
+				if onProgress != nil {
+					onProgress(Progress{Stage: "output", Output: chunk})
+				}
+			})
+		}
+		switch name {
+		case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage", "task_progress", "task-progress", "manage-todos", "manage_todos", "websearch", "webfetch":
+			// Pure conversation/control or HTTP inspection; no host checkout access.
+		default:
+			return "", errors.New("managed execution uses a prepared checkout; this host-bound tool cannot access that checkout; use Bash inside the assigned environment")
+		}
+	}
 	switch name {
 	case "read":
 		return executeRead(scope, args)
 	case "write":
 		return executeWrite(scope, args)
 	case "bash":
+		if _, selected := args["committed_source"]; selected {
+			return r.executeCommittedSourceBash(ctx, scope, args, func(chunk string) {
+				if onProgress != nil && strings.TrimSpace(chunk) != "" {
+					onProgress(Progress{Stage: "output", Output: strings.TrimSpace(chunk)})
+				}
+			})
+		}
 		if path := stringValue(args["workspace_path"]); path != "" && scope.ReviewCheckout == "" {
 			repo, err := r.recoveryRepository(scope, path)
 			if err != nil {
@@ -2222,6 +2258,9 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "task":
 		return "", errors.New("task must be handled by run-service control-plane")
 	default:
+		if managed != nil {
+			return "", errors.New("custom tools cannot execute against the host while managed execution is selected")
+		}
 		return r.executeCustomTool(ctx, scope, name, args, onProgress)
 	}
 }
@@ -6646,6 +6685,8 @@ func (r *Runtime) executeManageWorktree(scope WorkspaceScope, args map[string]an
 		return r.manageWorktreeRecoverySource(scope, args)
 	case "recall":
 		return r.manageWorktreeRecall(scope, args)
+	case "recover_handoff":
+		return r.manageWorktreeRecoverHandoff(scope, args)
 	case "integrate":
 		if boolValue(args["recovery"]) {
 			return r.recoveryIntegrate(scope, args)
@@ -7463,7 +7504,7 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 							childState = "committed"
 						}
 					}
-					if (childState == "committed" || childState == "integrated") && state.Clean {
+					if state.Clean {
 						req := CommittedSourceRequest{
 							TaskCallID:     callID,
 							ChildSessionID: childSession.ID,
@@ -7471,6 +7512,11 @@ func (r *Runtime) manageWorktreeRecall(scope WorkspaceScope, args map[string]any
 						}
 						binding, resolveErr := r.ResolveCommittedSource(scope, req)
 						if resolveErr == nil {
+							// A recovered handoff deliberately leaves the original failed
+							// launch untouched. Resolve its current committed evidence.
+							if childState != "integrated" {
+								childState = "committed"
+							}
 							child["committed_source"] = map[string]any{
 								"task_call_id":     callID,
 								"child_session_id": childSession.ID,
@@ -7573,14 +7619,15 @@ func (r *Runtime) manageWorktreeHelp(args map[string]any) (string, error) {
 		"tool":        "manage-worktree",
 		"description": "Worktree lineage recall, integration, promotion, and source recovery manager. Call action='help' for workflow guidance.",
 		"actions": map[string]any{
-			"inspect":        "Inspect git commit history and integration status for workspace worktrees.",
-			"list":           "Alias for inspect.",
-			"recall":         "Read-only recall of delegated child Coder worktree states. Returns committed_source for eligible validated sources. Distinguishes session-owned lanes from promotion-only captured destinations.",
-			"inspect_source": "Inspect bounded UTF-8 files from an unfinished/blocked Coder child worktree.",
-			"retain_source":  "Retain bounded UTF-8 recovery files in parent metadata.",
-			"integrate":      "Preflight and integrate committed child worktree changes into the session-owned parent lane. Delivers inherited base commits (B..H) for corrected children while validating new handoff (C..H). Rejects captured promotion-only destinations.",
-			"promote":        "Promote committed child or session worktrees into captured workspace checkouts. Delivers full commit stack (B..H for corrected children).",
-			"help":           "Show workflow guidance and supported actions.",
+			"inspect":         "Inspect git commit history and integration status for workspace worktrees.",
+			"list":            "Alias for inspect.",
+			"recall":          "Read-only recall of delegated child Coder worktree states. Returns committed_source for eligible validated sources. Distinguishes session-owned lanes from promotion-only captured destinations.",
+			"inspect_source":  "Inspect bounded UTF-8 files from an unfinished/blocked Coder child worktree.",
+			"retain_source":   "Retain bounded UTF-8 recovery files in parent metadata.",
+			"recover_handoff": "After this parent's resumed regular Coder finishes, record task_call_id, child_session_id, child_run_id and source_head. Preserves the failed launch; returns committed_source for exact-child validation. No Git integration.",
+			"integrate":       "Preflight and integrate committed child worktree changes into the session-owned parent lane. Delivers inherited base commits (B..H) for corrected children while validating new handoff (C..H). Rejects captured promotion-only destinations.",
+			"promote":         "Promote committed child or session worktrees into captured workspace checkouts. Delivers full commit stack (B..H for corrected children).",
+			"help":            "Show workflow guidance and supported actions.",
 		},
 		"path_id": toolPathID("manage-worktree"),
 	}

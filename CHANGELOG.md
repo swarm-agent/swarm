@@ -6,7 +6,7 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
-- Remove a consumer application example and its deployment templates from the product repository. The supported authenticated Swarm API and SDK are unchanged. Docs impact: remove application example documentation and obsolete setup references.
+- Remove a consumer application example and its deployment templates from the product repository. Swarm continues to provide the supported authenticated API and SDK; consumer applications own their implementation and infrastructure. Docs impact: remove the application example documentation and obsolete setup references.
 
 - Pull-request delivery brings the job's head commit from its clone into the folder before running the publish command; it failed with "commit is not in the folder" for every worker job. Docs impact: none.
 - A job in a folder that syncs with its forge now sees the synced commit as its clone's `origin/<branch>` and local `<branch>`, not the folder's lagging branch, so a worker asked to rebase onto the current base no longer moves its work onto an older commit. Docs impact: none.

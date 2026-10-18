@@ -10,13 +10,12 @@ import (
 )
 
 // emitStartupSignals records that the daemon started and whether agent
-// commands are confined: sandbox.active, or sandbox.inactive (agents run on
-// this machine and permission bypass is off) with the reason.
+// commands are confined, blocked by required isolation, or explicitly unconfined.
 func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 	emitter.Emit(pebblestore.Signal{
 		Kind:     "daemon.started",
 		Severity: pebblestore.SignalSeverityInfo,
-		Summary:  "Swarm started; any previous update drain ended and execution admission reopened",
+		Summary:  "Swarm started; any previous update drain ended; command execution depends on sandbox readiness",
 		DedupKey: "daemon.started",
 	})
 	if status.Active {
@@ -27,9 +26,19 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 		emitter.Emit(pebblestore.Signal{
 			Kind:     "sandbox.active",
 			Severity: pebblestore.SignalSeverityInfo,
-			Summary:  "Agent commands run in per-project sandboxes",
+			Summary:  "Agent command isolation is active",
 			DedupKey: "sandbox.state",
 			Attrs:    map[string]string{"runtime": runtimeName, "mode": string(status.Mode)},
+		})
+		return
+	}
+	if status.Mode == sandbox.ModeRequired {
+		emitter.Emit(pebblestore.Signal{
+			Kind:     "sandbox.unavailable",
+			Severity: pebblestore.SignalSeverityWarning,
+			Summary:  "Agent commands blocked: required sandbox unavailable; inspect the sandbox readiness reason and repair the configured isolation backend, then restart",
+			DedupKey: "sandbox.state",
+			Attrs:    map[string]string{"reason": status.Reason, "mode": string(status.Mode)},
 		})
 		return
 	}

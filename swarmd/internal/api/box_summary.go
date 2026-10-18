@@ -110,7 +110,11 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 
 	sb := sandbox.Default().Status()
 	if !sb.Active {
-		raise(BoxStatusDegraded, "agent sandbox is off: "+sb.Reason)
+		if sb.Mode == sandbox.ModeRequired {
+			raise(BoxStatusDegraded, "agent execution blocked: required sandbox unavailable: "+sb.Reason)
+		} else {
+			raise(BoxStatusDegraded, "agent sandbox is off: "+sb.Reason)
+		}
 	}
 
 	attention := map[string]any{"blocked_sessions": 0, "sessions": []boxBlockedSession{}}

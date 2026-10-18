@@ -49,7 +49,7 @@ func controlMCPReviewTools(sessionID map[string]any) []controlMCPTool {
 	return []controlMCPTool{
 		{
 			Name: "swarm_approve_task", Title: "Approve or reject a project task waiting for approval",
-			Description: "For a project task in status pending_approval (list_tasks; its action_needed says to click Approve): approve starts it, exactly as the Approve button in Swarm; reject drops it and its plan. Read the task first (list_tasks, and get_session on its session_id for its plan). The task's own session, plan and plan revision are sent as guards, so a plan that changed since you read it is refused. Other statuses are refused: needs_review work is merged with integrate_task instead.",
+			Description: "For a project task in status pending_approval (list_tasks): approve starts it through the canonical task approval API; reject drops it and its plan. Read the task first (list_tasks, and get_session on its session_id for its plan). The task's own session, plan and plan revision are sent as guards, so a plan that changed since you read it is refused. Other statuses are refused: needs_review work is merged with integrate_task instead.",
 			InputSchema: controlMCPObject([]string{"project_id", "task_id", "action"}, map[string]any{
 				"project_id": projectProp,
 				"task_id":    taskProp,
@@ -165,7 +165,7 @@ func controlMCPApproveTask(c *controlMCPCall, args map[string]any) (any, error) 
 	}
 	out := map[string]any{"status": response["status"], "task": controlMCPTaskSummary(controlMCPMap(response["task"]))}
 	if action == "approve" {
-		out["next"] = "The task runs now; follow it with list_tasks or get_session on its session_id."
+		out["next"] = c.taskNext(controlMCPMap(response["task"]))
 	}
 	return out, nil
 }

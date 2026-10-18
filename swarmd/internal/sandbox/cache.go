@@ -30,6 +30,9 @@ type CacheUsage struct {
 
 // cacheHelper mounts only the cache; never host storage, credentials or projects.
 func (m *Manager) cacheHelper(ctx context.Context, root, script string, values ...string) ([]byte, error) {
+	if m.Local() {
+		return nil, fmt.Errorf("container project cache is unavailable with bubblewrap")
+	}
 	uid, gid := m.sandboxUser(root)
 	args := []string{"run", "--network", "none", "--rm", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "512m"}
 	m.mu.Lock()
@@ -80,6 +83,9 @@ func (m *Manager) initializeProjectCache(ctx context.Context, root string) error
 
 // ProjectCacheUsage reads without creating a volume. Errors are surfaced to callers.
 func (m *Manager) ProjectCacheUsage(ctx context.Context, root string) (CacheUsage, error) {
+	if m.Local() {
+		return CacheUsage{}, fmt.Errorf("container project cache is unavailable with bubblewrap")
+	}
 	limit, err := m.cacheLimit(ctx)
 	usage := CacheUsage{Volume: ProjectCacheVolume(root), LimitBytes: limit}
 	if err != nil {

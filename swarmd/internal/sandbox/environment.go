@@ -129,6 +129,9 @@ func (l *envLog) output(out []byte) {
 // (the internet, not the host or private networks), with no host folder
 // mounted; the result must run bash and git as an unprivileged user.
 func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (EnvironmentBuildResult, error) {
+	if m.Local() {
+		return EnvironmentBuildResult{}, fmt.Errorf("container image builds are unavailable with bubblewrap")
+	}
 	log := &envLog{}
 	result := func(err error) (EnvironmentBuildResult, error) {
 		return EnvironmentBuildResult{Log: log.b.String()}, err

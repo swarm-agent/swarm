@@ -25,10 +25,17 @@ type bashSimpleCommand struct {
 // grouping, escapes or line breaks. Built-in allows only apply to such commands.
 func parseBashSimpleCommand(arguments string) (bashSimpleCommand, bool) {
 	var payload struct {
-		Command       string `json:"command"`
-		WorkspacePath string `json:"workspace_path"`
+		Command         string          `json:"command"`
+		WorkspacePath   string          `json:"workspace_path"`
+		CommittedSource json.RawMessage `json:"committed_source"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(arguments)), &payload); err != nil {
+		return bashSimpleCommand{}, false
+	}
+	// A committed child is resolved only at execution, after this permission
+	// decision. Never approve against the parent cwd when any retarget argument
+	// is present, including null or malformed tuples. Explicit policy still applies.
+	if len(payload.CommittedSource) > 0 {
 		return bashSimpleCommand{}, false
 	}
 	command := strings.TrimSpace(payload.Command)

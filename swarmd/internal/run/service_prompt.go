@@ -83,7 +83,7 @@ func masterHarnessPromptWithScopeAndAgent(scope tool.WorkspaceScope, isOrchestra
 		"- For read, safe to request up to 2000 lines per call. Match effort to request scope: keep cohesive work direct and avoid full-repository sweeps for routine tasks.",
 		"- When asked to create, make, start, or open a new session without explicitly asking for subagents or naming an agent or agents, use manage-sessions deploy; do not use the task tool. Treat `session` as a durable user session by default. supply a short Swarm-authored worktree_name; session-owned managed worktree isolation is mandatory: neither the model nor approval UI can disable or opt out of isolation.",
 		"- Subagents & Delegation:",
-		"  * Worker Coders run Bash and tests in their sandbox. Regular delegated Coders lack Bash: they implement code/tests and commit with Git tools; their parent runs tests, builds and formatters. Missing Bash alone is not a Coder blocker: require a committed implementation/test handoff with exact proposed commands, expected assertions, and 'not run; parent validation required'.",
+		"  * Regular delegated Coders use exposed Bash for required focused tests, builds and formatters in their assigned worktree and commit with Git tools. Require actual command/results evidence; unavailable checks remain unverified. Selected managed execution controls command placement and may reject unsupported file/Git operations. The parent owns final acceptance validation of the exact committed handoff.",
 		"  * Parent-owned validation is an iterative feedback loop, not a fictional Coder test stage. Inspect each handoff and execute the narrowest authorized tests against its committed tree; batch independent tests in parallel; never race tests against files another worker is editing; a Task Program integration barrier is not an implicit parent test hook.",
 		"  * Before launching a Coder, decompose the requested outcome into implementation responsibilities and dependency stages. One Coder owns one independently reviewable deliverable plus local tests. Independent changes across repositories use parallel workspace-specific Coders, each targeting an explicitly authorized source repository and isolated worktree, with per-repository integration. Dependent cross-repository or multi-subsystem changes use one fully declared staged Task Program with workspace_path on each Coder job and repository-specific integration lanes. Resolve each source against the account's authorized workspace catalog; project membership, the first/coordination workspace, or a prompt alone never grants source authority. If target identity is ambiguous, missing or conflicting, stop and resolve it before deploying. Coder launch requires a clean committed target worktree; launches targeting the same repository share the base commit on isolated sibling worktrees. Do not impose repo-wide locks.",
 		"  * Never strand a dependent Coder: before launch, the parent must identify every prerequisite commit, the user's intended source repository/branch, and the actual clean committed base the selected launch path will capture. For an ordinary new task, first integrate prerequisite work into that intended source branch through the authorized integration/promotion workflow, then verify with Git that each required same-repository commit is an ancestor of both the intended branch HEAD and the actual delegation base; inspect the required files at that base. Integration into a different parent worktree or program lane does not update a captured source checkout. A completed task, clean worktree, commit hash, or status label alone is not integration evidence. Do not advance an unauthorized checkout or silently substitute a branch; resolve missing authority before dependent deployment.",
@@ -410,12 +410,12 @@ func (s *Service) composeInstructionsForScopeWithDiscoveryRoots(scope tool.Works
 		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)
 	}
 	blocks = append(blocks, harnessForProfile(scope, agentProfile))
-	if s.permissions != nil && !usesWorkerContext(agentProfile) {
+	if s.permissions != nil && profileHasCapability(agentProfile, "task") {
 		if policy, err := s.permissions.CurrentPolicyForAccount(scope.Principal.AccountScopeID); err == nil {
 			blocks = append(blocks, subagentPolicyInstructions(policy.Subagents))
 		}
 	}
-	if !usesWorkerContext(agentProfile) {
+	if profileHasCapability(agentProfile, "manage_sessions") {
 		capacitySnapshot := s.ExecutionCapacitySnapshot(scope.Principal.AccountScopeID)
 		blocks = append(blocks, executionCapacityInstructions(capacitySnapshot))
 	}
@@ -767,8 +767,20 @@ func composeModeAwareInstructions(baseInstructions, mode string, bypassPermissio
 }
 
 func modeCapabilityInstructions(mode string, bypassPermissions bool, agentProfile pebblestore.AgentProfile) string {
-	if usesWorkerContext(agentProfile) {
-		return workerModeInstructions(agentProfile, bypassPermissions)
+	if !agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
+		lines := []string{workerModeInstructions(agentProfile, bypassPermissions)}
+		if profileHasCapability(agentProfile, "ask_user") {
+			lines = append(lines, "Use ask_user only for a product decision that changes the result; supply at least two concrete choices. Tool permission requests go through the tool permission boundary.")
+		} else {
+			lines = append(lines, "Report missing decisions or blockers through the assignment's parent handoff; do not call unavailable interaction tools.")
+		}
+		if agentProfile.Mode != agentruntime.ModeSubagent && profileHasCapability(agentProfile, "plan_manage") {
+			lines = append(lines, "The available plan_manage tool preserves durable plan definitions, approvals, revisions and attempt ownership. Follow the injected durable state before transitions; do not complete another run's checkpoint.")
+			if mode == sessionruntime.ModePlan && profileHasCapability(agentProfile, "exit_plan_mode") {
+				lines = append(lines, "Current session mode: plan. Perform targeted discovery for the requested plan, then call exit_plan_mode once with the complete structured document and active plan_id when present; explicit approval remains required.")
+			}
+		}
+		return strings.Join(lines, "\n")
 	}
 	if agentruntime.IsSwarmOrchestratorAgentName(agentProfile.Name) {
 		agentProfile = agentruntime.SwarmOrchestratorAgentProfileForContext(agentProfile)

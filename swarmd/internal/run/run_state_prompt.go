@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
@@ -37,19 +38,23 @@ type compactRunState struct {
 	ReviewRequired      bool                    `json:"review_required"`
 	Blocked             bool                    `json:"blocked"`
 	Failed              bool                    `json:"failed"`
+	Paused              bool                    `json:"paused"`
+	WaitingReason       string                  `json:"waiting_reason,omitempty"`
 	NextLifecycleAction string                  `json:"next_lifecycle_action"`
 }
 
 type compactCheckpointState struct {
-	ID              string                `json:"id"`
-	Title           string                `json:"title,omitempty"`
-	Status          string                `json:"status,omitempty"`
-	Attempt         string                `json:"attempt_id,omitempty"`
-	RunID           string                `json:"run_id,omitempty"`
-	Session         string                `json:"session_id,omitempty"`
-	Tasks           []string              `json:"tasks,omitempty"`
-	Subtasks        []compactSubtaskState `json:"subtasks,omitempty"`
-	ActiveSubtaskID string                `json:"active_subtask_id,omitempty"`
+	ID                 string                `json:"id"`
+	Title              string                `json:"title,omitempty"`
+	Objective          string                `json:"objective,omitempty"`
+	AcceptanceCriteria []string              `json:"acceptance_criteria,omitempty"`
+	Status             string                `json:"status,omitempty"`
+	Attempt            string                `json:"attempt_id,omitempty"`
+	RunID              string                `json:"run_id,omitempty"`
+	Session            string                `json:"session_id,omitempty"`
+	Tasks              []string              `json:"tasks,omitempty"`
+	Subtasks           []compactSubtaskState `json:"subtasks,omitempty"`
+	ActiveSubtaskID    string                `json:"active_subtask_id,omitempty"`
 }
 
 type compactSubtaskState struct {
@@ -127,6 +132,8 @@ func renderDurablePlanRunState(state compactRunState, plan pebblestore.SessionPl
 	state.ReviewRequired = summary.ReviewRequired
 	state.Blocked = summary.Blocked
 	state.Failed = summary.Failed
+	state.Paused = summary.Paused
+	state.WaitingReason = summary.WaitingReason
 	state.NextLifecycleAction = nextPlanLifecycleAction(summary)
 	checkpointID := strings.TrimSpace(doc.ActiveCheckpointID)
 	if checkpointID == "" {
@@ -135,27 +142,89 @@ func renderDurablePlanRunState(state compactRunState, plan pebblestore.SessionPl
 	if idx := findPlanRunCheckpointIndex(doc.Checkpoints, checkpointID); idx >= 0 {
 		checkpoint := doc.Checkpoints[idx]
 		state.ActiveCheckpoint = &compactCheckpointState{
-			ID:              strings.TrimSpace(checkpoint.ID),
-			Title:           truncateRunes(strings.TrimSpace(checkpoint.Title), 120),
-			Status:          strings.TrimSpace(checkpoint.Status),
-			Attempt:         strings.TrimSpace(checkpoint.AttemptID),
-			RunID:           strings.TrimSpace(checkpoint.RunID),
-			Session:         strings.TrimSpace(checkpoint.SessionID),
-			Tasks:           compactCheckpointTasks(checkpoint.Tasks),
-			Subtasks:        compactCheckpointSubtasks(checkpoint.Subtasks),
-			ActiveSubtaskID: strings.TrimSpace(checkpoint.ActiveSubtaskID),
+			ID:                 strings.TrimSpace(checkpoint.ID),
+			Title:              truncateRunes(strings.TrimSpace(checkpoint.Title), 120),
+			Objective:          checkpoint.Objective,
+			AcceptanceCriteria: append([]string(nil), checkpoint.AcceptanceCriteria...),
+			Status:             strings.TrimSpace(checkpoint.Status),
+			Attempt:            strings.TrimSpace(checkpoint.AttemptID),
+			RunID:              strings.TrimSpace(checkpoint.RunID),
+			Session:            strings.TrimSpace(checkpoint.SessionID),
+			Tasks:              compactCheckpointTasks(checkpoint.Tasks),
+			Subtasks:           compactCheckpointSubtasks(checkpoint.Subtasks),
+			ActiveSubtaskID:    strings.TrimSpace(checkpoint.ActiveSubtaskID),
 		}
 	}
 	return renderCompactRunState(state)
 }
 
-// ScopeDurableRunStateInstructions keeps parent lifecycle instructions out of
-// restricted worker requests at both provider entry points.
-func ScopeDurableRunStateInstructions(text string, profile pebblestore.AgentProfile) string {
-	if usesWorkerContext(profile) {
-		return workerRunStateInstructions()
+// ScopeDurableRunStateInstructions selects lifecycle guidance from the actual
+// request tools and durable ownership. The telemetry and subsequent automation
+// evidence remain byte-for-byte intact for every audience.
+func ScopeDurableRunStateInstructions(text string, profile pebblestore.AgentProfile, enabledToolNames ...string) string {
+	const marker = "<system_runtime_telemetry>"
+	const unavailable = "Durable lifecycle ownership could not be established. Do not mutate checkpoint state; report the missing state."
+	at := strings.Index(text, marker)
+	if at < 0 {
+		return unavailable
 	}
-	return text
+	suffix := text[at:]
+	start := strings.Index(suffix, "{")
+	end := strings.Index(suffix, "\n</system_runtime_telemetry>")
+	var state compactRunState
+	if start < 0 || end < start || json.Unmarshal([]byte(suffix[start:end]), &state) != nil {
+		return unavailable + "\n\n" + suffix
+	}
+	tools := make(map[string]bool, len(enabledToolNames))
+	for _, name := range enabledToolNames {
+		tools[canonicalToolName(name)] = true
+	}
+	specialist := usesWorkerContext(profile) || profile.Mode == agentruntime.ModeSubagent || agentruntime.IsCoderAgentName(profile.Name) || agentruntime.IsDesignerAgentName(profile.Name)
+	guidance := "No active plan exists. Continue the current task using the available tools and supplied acceptance criteria; no planning bootstrap is required."
+	if specialist {
+		guidance = "Continue only the supplied assignment and acceptance criteria. Preserve assignment, attempt and output references in the handoff. Report completed work, unresolved blockers and unverified evidence to the parent; checkpoint transitions belong to the authorized owner."
+		if tools["task_progress"] {
+			guidance += " Use task_progress for assignment progress."
+		}
+		if state.Blocked || state.Failed || state.Paused || state.ReviewRequired {
+			guidance += " The recorded checkpoint is stopped or awaiting review. Do not restart, complete or recover it from this assignment; report its recorded state and wait for authorized continuation."
+		}
+	} else if !state.ActivePlanPresent {
+		if sessionruntime.NormalizeMode(state.SessionMode) == sessionruntime.ModePlan && tools["exit_plan_mode"] {
+			guidance = "No active plan exists. In plan mode, perform only the discovery needed for the requested plan, then submit its complete structured document with exit_plan_mode once."
+		}
+	} else {
+		guidance = "The injected plan and checkpoint state is authoritative. This request has no checkpoint transition authority. Preserve the current attempt and acceptance criteria; report its state and any unresolved blocker without completing, restarting or recovering another run's checkpoint."
+		stoppedOrReview := state.Blocked || state.Failed || state.Paused || state.ReviewRequired || state.NextLifecycleAction == "await_final_review"
+		parentTransition := durableParentLifecycleOwner(state) && (stoppedOrReview || state.ActiveCheckpoint != nil && state.ActiveCheckpoint.Status == sessionruntime.PlanCheckpointStatusPending)
+		if tools["plan_manage"] && (parentTransition || !stoppedOrReview && durableCheckpointRunOwner(state)) {
+			guidance = compactRunStateLifecycleInstructions(state)
+		}
+	}
+	return guidance + "\n\n" + suffix
+}
+
+func durableParentLifecycleOwner(state compactRunState) bool {
+	if state.RunKind == runKindCheckpoint || state.CurrentSessionID == "" {
+		return false
+	}
+	if state.RunOwnership != nil && state.RunOwnership.ParentSessionID != "" {
+		return state.RunOwnership.ParentSessionID == state.CurrentSessionID
+	}
+	return state.ActiveCheckpoint != nil && state.ActiveCheckpoint.Session == state.CurrentSessionID
+}
+
+func durableCheckpointRunOwner(state compactRunState) bool {
+	checkpoint := state.ActiveCheckpoint
+	if checkpoint == nil || state.CurrentRunID == "" || state.CurrentSessionID == "" || checkpoint.Attempt == "" || checkpoint.RunID != state.CurrentRunID || checkpoint.Session != state.CurrentSessionID {
+		return false
+	}
+	if owner := state.RunOwnership; owner != nil {
+		if owner.CurrentRunID != "" && owner.CurrentRunID != state.CurrentRunID || owner.CurrentSessionID != "" && owner.CurrentSessionID != state.CurrentSessionID || owner.ActiveAttemptID != "" && owner.ActiveAttemptID != checkpoint.Attempt {
+			return false
+		}
+	}
+	return true
 }
 
 func renderCompactRunState(state compactRunState) (string, error) {
@@ -175,10 +244,16 @@ func compactRunStateLifecycleInstructions(state compactRunState) string {
 		case sessionruntime.ModePlan:
 			return planPresenceInstruction + " No active plan exists. In plan mode, run only the targeted discovery needed to make the plan actionable, then call exit_plan_mode exactly once with the complete structured plan document (info and checkpoints). Do not call start_session_checkpoint, and do not save a draft merely to submit the same plan afterward."
 		default:
-			return planPresenceInstruction + " No active plan exists. Auto session mode does not mean an active plan exists. The retired request_followup_checkpoint action and aliases are always invalid. In auto mode, distinguish single scoped requests from broad multi-phase workflows: for a clear bounded task call plan_manage start_session_checkpoint directly with a self-contained checkpoint definition (e.g. 'fix my sidebar'); that single action atomically creates and starts the checkpoint in the current run, so do not call start_checkpoint afterward. For broad, uncertain, high-risk, or multi-phase work (e.g. 'fix my cicd pipeline') or explicit multi-checkpoint requests, make exactly one approval-gated plan_manage request_new_plan call with a complete multi-checkpoint structured document, optionally coding task_programs into checkpoints that benefit from staged subagent execution. Do not create a draft with new/save, do not propose a plan and then manually start it, and do not call exit_plan_mode from auto."
+			return "No active plan exists. Continue the current task with the available tools and supplied acceptance criteria; no planning bootstrap is required."
 		}
 	}
 	activePlanInstruction := planPresenceInstruction + " An active plan exists; the injected plan and checkpoint fields are authoritative. Inspect next_lifecycle_action and the active checkpoint status before acting."
+	if state.Failed {
+		return activePlanInstruction + " The checkpoint failed. Keep the failed attempt stopped and preserve its failure evidence. Do not complete it, clear failure with a subtask, or invent a recovery action; use only the canonical recovery path when explicitly authorized."
+	}
+	if state.Paused {
+		return activePlanInstruction + " The checkpoint is paused. Preserve its work and attempt; do not continue implementation or record a terminal outcome until the backend supplies an authorized active continuation."
+	}
 	if state.Blocked {
 		checkpointID := "the active checkpoint"
 		if state.ActiveCheckpoint != nil && strings.TrimSpace(state.ActiveCheckpoint.ID) != "" {
@@ -186,7 +261,7 @@ func compactRunStateLifecycleInstructions(state compactRunState) string {
 		}
 		return activePlanInstruction + " The active checkpoint is blocked and this parent run does not own its terminal outcome. Do not continue implementation, run validation, or call complete_checkpoint/mark_needs_review/mark_blocked/mark_failed from this run; those calls cannot recover the checkpoint and will fail run-ownership checks. First decide whether the user's message actually resolves the named blocker. If it does, immediately call plan_manage exactly once with action=resolve_blocked_checkpoint, checkpoint_id=" + checkpointID + ", and start_next=true; do not pass stale attempt_id or run_id values. That transition creates a fresh attempt and provider run owning the same checkpoint; let that resumed run inspect preserved work and record the normal outcome. If the blocker is not resolved, leave the checkpoint blocked and state the exact unresolved dependency."
 	}
-	return activePlanInstruction + " When next_lifecycle_action is await_review or await_final_review, the prior checkpoint is already terminal and its handoff has already been emitted: treat the new user message as a normal post-handoff conversation turn. Do not continue, complete, re-complete, or otherwise mutate the terminal checkpoint merely to acknowledge praise, agreement, commentary, a question, or other guidance; respond conversationally without plan mutation unless the message explicitly requests review acceptance, changes, or new work. Do not call add_subtask or complete_checkpoint on completed checkpoints. Continue the current work only when it is runnable without injecting or following any no-plan bootstrap path. If this turn was opened by a user message after an explicit pause/stop, the backend has already reactivated the paused checkpoint and made it processable under this turn; treat it as nonterminal, do not call resume_checkpoint, and do not wait for the user to click Resume before interpreting the message. Treat a plain request to continue as authority to keep working in the same checkpoint only when the checkpoint is nonterminal, and choose a plan mutation only when the message changes the deliverable contract. If the user's new direction invalidates the checkpoint objective or acceptance criteria, you must restart the checkpoint with the full replacement contract. Do not refuse or conversationally dismiss the redirection, complete or re-complete the superseded checkpoint, treat it as terminal post-handoff conversation, or emit a final handoff instead of restarting. The selected checkpoint's current objective governs its run; earlier plan goals and checkpoint objectives are historical context, not competing instructions. Classify new feedback by impact on the deliverable contract and choose the least disruptive valid route, regardless of whether the user used an imperative sentence: inquiry or guidance only means respond without plan mutation; localized additive patch whose existing checklist remains valid means add_subtask and continue the same checkpoint and attempt only when the checkpoint is active. Format for add_subtask: {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}}. subtask must be a JSON object with a non-empty title, not bare text or a top-level title, and do not issue a partial call to discover the format. feedback that supersedes the current checklist means replace_subtasks with the complete authoritative list; a redefinition that invalidates the objective or acceptance criteria means restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes; you must restart the checkpoint with the full replacement contract; independently shippable work or a separate review/failure boundary from a parent provider turn means transition_checkpoint_boundary with a self-contained objective derived only from the current request; its successful call assigns the checkpoint to this already-current run and continues the same execution-epoch provider turn with additive checkpoint routing. When a materially new direction would invalidate or reorder a larger remaining plan, use request_new_plan with the current plan_id to replace the whole plan instead of forcing the direction into the paused checkpoint or corrupting later checkpoint order. Examples: ‘Why is the hero headline blue?’ is inquiry; ‘Make the hero headline blue’ is a localized subtask; ‘Replace this landing page with an admin dashboard’ redefines the checkpoint; ‘Also build an email template’ is independent work. Small fixes, validation, documentation, review, and commit preparation for the same contract remain typed subtasks. Routine subtask mutations do not require plan approval and must preserve checkpoint identity and attempt history. Do not use add_subtask to clear blocked or failed state: blocked work requires explicit blocker resolution, and failed work remains stopped until its canonical recovery path is used. Ask the user only for a real product decision or a risky operation."
+	return activePlanInstruction + " When next_lifecycle_action is await_review or await_final_review, the prior checkpoint is already terminal and its handoff has already been emitted: treat the new user message as a normal post-handoff conversation turn. Do not continue, complete, re-complete, or otherwise mutate the terminal checkpoint merely to acknowledge praise, agreement, commentary, a question, or other guidance; respond conversationally without plan mutation unless the message explicitly requests review acceptance, changes, or new work. Do not call add_subtask or complete_checkpoint on completed checkpoints. Continue the current work only when it is runnable without injecting or following any no-plan bootstrap path. If this turn was opened by a user message after an explicit pause/stop, the backend has already reactivated the paused checkpoint and made it processable under this turn; treat it as nonterminal, do not call resume_checkpoint, and interpret the message using that authoritative reactivated state. Treat a plain request to continue as authority to keep working in the same checkpoint only when the checkpoint is nonterminal, and choose a plan mutation only when the message changes the deliverable contract. If the user's new direction invalidates the checkpoint objective or acceptance criteria, you must restart the checkpoint with the full replacement contract. Do not refuse or conversationally dismiss the redirection, complete or re-complete the superseded checkpoint, treat it as terminal post-handoff conversation, or emit a final handoff instead of restarting. The selected checkpoint's current objective governs its run; earlier plan goals and checkpoint objectives are historical context, not competing instructions. Classify new feedback by impact on the deliverable contract and choose the least disruptive valid route, regardless of whether the user used an imperative sentence: inquiry or guidance only means respond without plan mutation; localized additive patch whose existing checklist remains valid means add_subtask and continue the same checkpoint and attempt only when the checkpoint is active. Format for add_subtask: {\"action\":\"add_subtask\",\"checkpoint_id\":\"cp-1\",\"subtask\":{\"title\":\"Measure Swarm hosting capacity\"}}. subtask must be a JSON object with a non-empty title, not bare text or a top-level title, and do not issue a partial call to discover the format. feedback that supersedes the current checklist means replace_subtasks with the complete authoritative list; a redefinition that invalidates the objective or acceptance criteria means restart_checkpoint with change_request and complete replacement title/tasks/acceptance_criteria/notes; you must restart the checkpoint with the full replacement contract; independently shippable work or a separate review/failure boundary from a parent provider turn means transition_checkpoint_boundary with a self-contained objective derived only from the current request; its successful call assigns the checkpoint to this already-current run and continues the same execution-epoch provider turn with additive checkpoint routing. When a materially new direction would invalidate or reorder a larger remaining plan, use request_new_plan with the current plan_id to replace the whole plan instead of forcing the direction into the paused checkpoint or corrupting later checkpoint order. Examples: ‘Why is the hero headline blue?’ is inquiry; ‘Make the hero headline blue’ is a localized subtask; ‘Replace this landing page with an admin dashboard’ redefines the checkpoint; ‘Also build an email template’ is independent work. Small fixes, validation, documentation, review, and commit preparation for the same contract remain typed subtasks. Routine subtask mutations do not require plan approval and must preserve checkpoint identity and attempt history. Do not use add_subtask to clear blocked or failed state: blocked work requires explicit blocker resolution, and failed work remains stopped until its canonical recovery path is used. Ask the user only for a real product decision or a risky operation."
 }
 
 func runKindForOptions(mode string, options RunOptions, origin string) string {
@@ -215,6 +290,8 @@ func nextPlanLifecycleAction(summary sessionruntime.PlanExecutionSummary) string
 		return "remain_blocked"
 	case summary.Failed:
 		return "remain_failed"
+	case summary.Paused:
+		return "remain_paused"
 	case summary.ReviewRequired:
 		return "await_review"
 	case summary.PlanComplete:

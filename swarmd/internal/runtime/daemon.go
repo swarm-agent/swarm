@@ -69,7 +69,6 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/stream"
 	swarmruntime "swarm/packages/swarmd/internal/swarm"
-	"swarm/packages/swarmd/internal/tailscale"
 	"swarm/packages/swarmd/internal/todo"
 	"swarm/packages/swarmd/internal/tool"
 	topologyruntime "swarm/packages/swarmd/internal/topology"
@@ -157,17 +156,15 @@ type Daemon struct {
 	apiServer                 *api.Server
 	notificationService       *notification.Service
 	httpServer                *http.Server
-	desktopServer             *http.Server
+	clientServers             []*clientHTTPServer
 	localTransportServer      *http.Server
 	peerTransportServer       *http.Server
 	containerSDKServer        *http.Server
 	runnerGatewayServer       *http.Server
 	listener                  net.Listener
-	desktopListener           net.Listener
 	localTransportListener    net.Listener
 	peerTransportListener     net.Listener
 	serveDone                 chan struct{}
-	desktopServeDone          chan struct{}
 	localTransportServeDone   chan struct{}
 	peerTransportServeDone    chan struct{}
 	stopCh                    chan string
@@ -244,7 +241,7 @@ func htmlCaptureConcurrency() int {
 	return 1
 }
 
-func New(cfg config.Config) (*Daemon, error) {
+func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore.Store)) (*Daemon, error) {
 	if err := ensurePrivateDirectory(cfg.DataDir); err != nil {
 		return nil, fmt.Errorf("secure data directory: %w", err)
 	}
@@ -510,7 +507,9 @@ func New(cfg config.Config) (*Daemon, error) {
 		if runtimeName == "" {
 			runtimeName = "engine default runtime"
 		}
-		log.Printf("swarmd agent sandbox active (%s); agent commands and Git on projects run inside per-project sandboxes", runtimeName)
+		log.Printf("swarmd agent sandbox active (%s); agent commands and Git on projects use the configured isolation backend", runtimeName)
+	} else if status.Mode == sandbox.ModeRequired {
+		log.Printf("swarmd agent execution blocked: required sandbox unavailable (%s); inspect the readiness reason and repair the configured isolation backend, then restart; setup and diagnostics remain available", status.Reason)
 	} else {
 		log.Printf("swarmd agent sandbox inactive (%s); agent commands run on this machine and permission bypass is disabled", status.Reason)
 	}
@@ -779,7 +778,10 @@ func New(cfg config.Config) (*Daemon, error) {
 	memorySvc := memory.NewService(pebblestore.NewMemoryStore(store), &memory.RuntimeProvider{Runners: providers, Catalog: pebblestore.NewModelCatalogStore(store), Sessions: sessionSvc.Store()})
 	memoryDone := make(chan struct{})
 	runSvc.SetMemoryStore(memorySvc.Store)
-	apiServer := api.NewServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	apiServer := api.NewCoreServer(authSvc, agentSvc, modelSvc, runSvc, sessionSvc, workspaceSvc, discoverySvc, securitySvc, providers, permissionSvc, notificationSvc, events, hub)
+	if configureClient != nil {
+		configureClient(apiServer, store)
+	}
 	if err := apiServer.SetEnvironmentProvider(cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds); err != nil {
 		return nil, err
 	}
@@ -983,27 +985,6 @@ func New(cfg config.Config) (*Daemon, error) {
 	apiServer.SetSwarmStore(swarmStore)
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)
-	if cfg.DesktopPort > 0 {
-		listenHost, _, err := net.SplitHostPort(cfg.ListenAddr)
-		if err != nil {
-			bgCancel()
-			_ = secretStore.Close()
-			_ = store.Close()
-			_ = lk.Release()
-			return nil, fmt.Errorf("configure tailscale verifier desktop listener: %w", err)
-		}
-		detector, err := tailscale.NewDetector(tailscale.Config{
-			Listener: tailscale.Listener{Host: listenHost, Port: cfg.DesktopPort},
-		})
-		if err != nil {
-			bgCancel()
-			_ = secretStore.Close()
-			_ = store.Close()
-			_ = lk.Release()
-			return nil, fmt.Errorf("configure tailscale verifier: %w", err)
-		}
-		apiServer.SetTailscaleServePolicy(pebblestore.NewTailscaleServeAllowlistStore(store), detector)
-	}
 
 	if htmlRenderer != nil {
 		runSvc.SetDesignRenderer(htmlRenderer)
@@ -1096,22 +1077,6 @@ func New(cfg config.Config) (*Daemon, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      0,
 		IdleTimeout:       60 * time.Second,
-	}
-	if cfg.DesktopPort > 0 {
-		listenHost, _, err := net.SplitHostPort(cfg.ListenAddr)
-		if err != nil {
-			return nil, fmt.Errorf("resolve desktop listen host from %q: %w", cfg.ListenAddr, err)
-		}
-		desktopMux := http.NewServeMux()
-		desktopMux.Handle("/", apiServer.DesktopHandler())
-		d.desktopServer = &http.Server{
-			Addr:              net.JoinHostPort(listenHost, strconv.Itoa(cfg.DesktopPort)),
-			Handler:           desktopMux,
-			ReadTimeout:       10 * time.Second,
-			ReadHeaderTimeout: 5 * time.Second,
-			WriteTimeout:      0,
-			IdleTimeout:       60 * time.Second,
-		}
 	}
 
 	diagnostics, err := longsessiondiag.Start(longsessiondiag.Options{
@@ -1330,7 +1295,7 @@ func (d *Daemon) Run() error {
 	if d.apiServer != nil {
 		d.apiServer.SetProviderKeyPageAddr(d.httpServer.Addr)
 	}
-	log.Printf("swarmd listener topology api_listen=%q desktop_port=%d desktop_assets_enabled=%t desktop_assets_on_api=%t", d.httpServer.Addr, d.cfg.DesktopPort, strings.TrimSpace(os.Getenv("SWARM_WEB_DIST_DIR")) != "", false)
+	log.Printf("swarmd listener topology api_listen=%q", d.httpServer.Addr)
 
 	d.serveDone = make(chan struct{})
 	go func() {
@@ -1340,23 +1305,14 @@ func (d *Daemon) Run() error {
 			d.requestStop("http-serve-error")
 		}
 	}()
-	if d.desktopServer != nil {
-		desktopLn, err := net.Listen("tcp", d.desktopServer.Addr)
-		if err != nil {
+	for _, client := range d.clientServers {
+		if err := d.serveClient(client); err != nil {
 			_ = ln.Close()
+			for _, started := range d.clientServers {
+				_ = started.server.Close()
+			}
 			return err
 		}
-		d.desktopListener = desktopLn
-		d.desktopServer.Addr = desktopLn.Addr().String()
-		log.Printf("swarmd listener topology desktop_listen=%q desktop_assets_on_desktop=%t", d.desktopServer.Addr, true)
-		d.desktopServeDone = make(chan struct{})
-		go func() {
-			defer close(d.desktopServeDone)
-			if err := d.desktopServer.Serve(desktopLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("swarmd desktop serve error: %v", err)
-				d.requestStop("desktop-serve-error")
-			}
-		}()
 	}
 	if d.localTransportServer != nil {
 		socketPath := strings.TrimSpace(d.localTransportSocketPath)
@@ -1499,9 +1455,14 @@ func (d *Daemon) waitForShutdown() error {
 		{name: "api", server: d.httpServer},
 		{name: "container SDK", server: d.containerSDKServer},
 		{name: "runner gateway", server: d.runnerGatewayServer},
-		{name: "desktop", server: d.desktopServer},
 		{name: "peer transport", server: d.peerTransportServer},
 		{name: "local transport", server: d.localTransportServer},
+	}
+	for _, client := range d.clientServers {
+		servers = append(servers, struct {
+			name   string
+			server *http.Server
+		}{client.name, client.server})
 	}
 	for _, item := range servers {
 		if item.server == nil {

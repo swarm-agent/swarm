@@ -8,16 +8,19 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+
+	"swarm/packages/swarmd/internal/sandbox"
 )
 
 // rootedWorkspacePath binds a requested path to an opened allowed root. All
 // filesystem operations must use root and relative together; absolutePath is
 // only for display and for integrations that require a pathname.
 type rootedWorkspacePath struct {
-	root         *os.Root
-	relative     string
-	absolutePath string
-	mutable      bool
+	root          *os.Root
+	relative      string
+	absolutePath  string
+	mutable       bool
+	localConfined bool
 }
 
 func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWorkspacePath, error) {
@@ -76,11 +79,34 @@ func openRootedWorkspacePath(scope WorkspaceScope, requested string) (*rootedWor
 		return nil, fmt.Errorf("open workspace root: %w", err)
 	}
 	return &rootedWorkspacePath{
-		root:         root,
-		relative:     selectedRelative,
-		absolutePath: candidate,
-		mutable:      workspaceMutationAllowed(scope, candidate),
+		root:          root,
+		relative:      selectedRelative,
+		absolutePath:  candidate,
+		mutable:       workspaceMutationAllowed(scope, candidate) && localGitMetadataMutable(candidate, resolvedCandidate),
+		localConfined: localFileConfinement(),
 	}, nil
+}
+
+// Bubblewrap makes repository administration read-only to arbitrary Bash.
+// File tools execute in the daemon, so they must preserve that same boundary.
+// Canonical scoped Git tools remain the only mutation path for Git metadata.
+func localGitMetadataMutable(paths ...string) bool {
+	if !localFileConfinement() {
+		return true
+	}
+	for _, p := range paths {
+		for _, component := range strings.Split(filepath.Clean(p), string(filepath.Separator)) {
+			if component == ".git" {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func localFileConfinement() bool {
+	m := sandbox.Default()
+	return m != nil && m.Local() && m.Active()
 }
 
 func (p *rootedWorkspacePath) Close() error {
@@ -101,6 +127,13 @@ func (p *rootedWorkspacePath) stat() (fs.FileInfo, error) {
 func (p *rootedWorkspacePath) mkdirParent() error {
 	if !p.mutable {
 		return errors.New("mutation rejected: path is outside the Coder owned scope")
+	}
+	if p.localConfined {
+		parent, _, err := p.openLocalMutationParent(true)
+		if parent != nil {
+			parent.Close()
+		}
+		return err
 	}
 	parent := filepath.Dir(p.relative)
 	if parent == "." || parent == "" {
@@ -173,7 +206,13 @@ func (p *rootedWorkspacePath) openMutable(flags int, perm fs.FileMode) (*os.File
 			created = true
 		}
 	}
-	file, err := p.root.OpenFile(p.relative, flags, perm)
+	var file *os.File
+	var err error
+	if p.localConfined {
+		file, err = p.openLocalMutationFile(flags, perm)
+	} else {
+		file, err = p.root.OpenFile(p.relative, flags, perm)
+	}
 	if err != nil {
 		return nil, err
 	}

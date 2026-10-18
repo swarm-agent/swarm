@@ -31,6 +31,7 @@ import (
 )
 
 type taskLaunchPrepared struct {
+	RouterAlert             string
 	RecoverySourceDigest    string
 	RecoveryPrincipal       identity.Principal
 	LaunchIndex             int
@@ -151,6 +152,7 @@ func (e taskChildBlockedError) Error() string {
 }
 
 type taskLaunchOutcome struct {
+	RouterAlert            string
 	LaunchIndex            int
 	VirtualTarget          bool
 	RequestedSubagent      string
@@ -819,6 +821,7 @@ func buildTaskLaunchOutcome(launch taskLaunchPrepared) taskLaunchOutcome {
 	requested := strings.TrimSpace(launch.RequestedSubagent)
 	metaPrompt := strings.TrimSpace(launch.MetaPrompt)
 	outcome := taskLaunchOutcome{
+		RouterAlert:            firstNonEmptyString(launch.RouterAlert, mapString(launch.ChildSession.Metadata, "router_alert"), mapString(launch.ChildSession.Metadata, "model_resolution_warning")),
 		LaunchIndex:            launch.LaunchIndex,
 		VirtualTarget:          launch.VirtualTarget,
 		RequestedSubagent:      requested,
@@ -992,6 +995,7 @@ func buildTaskStreamLaunchPayload(launch taskLaunchOutcome, status, phase string
 		"owned_scope":                append([]string(nil), launch.OwnedScope...),
 		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
+		"router_alert":               strings.TrimSpace(launch.RouterAlert),
 		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
 		"child_mode":                 strings.TrimSpace(launch.ChildMode),
 		"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
@@ -1068,6 +1072,7 @@ func buildTaskStreamPayload(parentSessionID, action, description string, launchC
 		"assignment_label":  strings.TrimSpace(launch.AssignmentLabel),
 		"subagent_provider": strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":    strings.TrimSpace(launch.SubagentModel),
+		"router_alert":      strings.TrimSpace(launch.RouterAlert),
 		"path_id":           "tool.task.stream.v1",
 		"summary":           summary,
 		"details_truncated": false,
@@ -1113,6 +1118,7 @@ func buildTaskStreamLaunchPatchPayload(launch taskLaunchOutcome, status, phase s
 		"owned_scope":                append([]string(nil), launch.OwnedScope...),
 		"subagent_provider":          strings.TrimSpace(launch.SubagentProvider),
 		"subagent_model":             strings.TrimSpace(launch.SubagentModel),
+		"router_alert":               strings.TrimSpace(launch.RouterAlert),
 		"child_session_id":           strings.TrimSpace(launch.ChildSessionID),
 		"child_mode":                 strings.TrimSpace(launch.ChildMode),
 		"workspace_path":             strings.TrimSpace(launch.WorkspacePath),
@@ -1238,7 +1244,7 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		subagentProfile, err = cloneTaskAgentProfile(*trustedProfile)
 		launch.SourceAgentName = strings.TrimSpace(sourceAgentName)
 	} else {
-		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, err = s.resolveTaskLaunchProfileForMode(parentSession, requestedSubagent, effectiveTaskChildMode(sessionMode))
+		subagentProfile, launch.VirtualTarget, launch.SourceAgentName, launch.RouterAlert, err = s.resolveTaskLaunchProfileWithFallback(parentSession, requestedSubagent, effectiveTaskChildMode(sessionMode))
 	}
 	if err != nil {
 		return taskLaunchPrepared{}, err
@@ -1303,6 +1309,8 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	isImageTarget := agentruntime.IsImageAgentName(requestedSubagent)
 	isManagedArtifactTarget := isDesignerTarget || isImageTarget
 	childMetadata := map[string]any{
+		"router_alert":             strings.TrimSpace(launch.RouterAlert),
+		"model_resolution_warning": strings.TrimSpace(launch.RouterAlert),
 		"workspace_id":             worktreeruntime.WorkspaceIdentityForSession(childSessionID),
 		"runtime_state":            "standby",
 		"title_pending":            false,
@@ -5581,6 +5589,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	trustedProfiles := make([]*pebblestore.AgentProfile, len(launchSpecs))
 	trustedVirtualTargets := make([]bool, len(launchSpecs))
 	trustedSources := make([]string, len(launchSpecs))
+	trustedRouterAlerts := make([]string, len(launchSpecs))
 	if approved := strings.TrimSpace(req.ApprovedArguments); approved != "" {
 		manifest, manifestErr := parseApprovedTaskLaunchManifest(approved, launchSpecs)
 		if manifestErr != nil {
@@ -5643,6 +5652,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 			trustedProfiles[i] = &profile
 			trustedSources[i] = strings.TrimSpace(row.SourceAgentName)
+			trustedRouterAlerts[i] = strings.TrimSpace(row.RouterAlert)
 		}
 	}
 	if err := s.materializeWorkspaceDesignerSources(ctx, parentSession, launchSpecs); err != nil {
@@ -5769,6 +5779,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		launchInput := taskLaunchPrepared{
+			RouterAlert:             trustedRouterAlerts[i],
 			LaunchIndex:             i + 1,
 			VirtualTarget:           trustedVirtualTargets[i],
 			TaskBase:                launchTaskBase,
@@ -5928,6 +5939,7 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				"owned_scope":             append([]string(nil), launch.OwnedScope...),
 				"subagent_provider":       strings.TrimSpace(launch.SubagentProvider),
 				"subagent_model":          strings.TrimSpace(launch.SubagentModel),
+				"router_alert":            strings.TrimSpace(launch.RouterAlert),
 				"child_session_id":        strings.TrimSpace(launch.ChildSessionID),
 				"child_run_id":            strings.TrimSpace(launch.ChildRunID),
 				"child_mode":              strings.TrimSpace(launch.ChildMode),

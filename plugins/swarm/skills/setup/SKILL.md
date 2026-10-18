@@ -74,7 +74,7 @@ never ask for a key in chat, and if one is pasted, tell them to revoke it:
 
 Call `swarm_list_providers` again to confirm it is ready. Swarm then gives
 every role its recommended model: `swarm_list_models` shows what the coder,
-designer and finder workers will use. Do not change models unless the person
+designer and finder agents will use. Do not change models unless the person
 asks (`swarm_set_agent_model` does it, per role).
 
 ## 5. Their project
@@ -93,17 +93,20 @@ those folders. Swarm registers each folder in place and writes the project's
 Use `swarm_create_workspace` (a new, empty repository; advanced tools) only
 when the person asks to start a new project from scratch.
 
-## 6. Prove a first job
+## 6. Prove a first task
 
 Use the person's real task, or agree on a small one in their project. Follow
-the `using-swarm` skill: `swarm_give_job` (coder, designer or finder; the
-project and folder; a brief with acceptance criteria), `swarm_get_job` with
-`wait_seconds` until it settles, check the result yourself (diff, files,
-tests), then `swarm_deliver_job` if the person wants it merged. A timeout
-means it is still working: wait again, never start a duplicate.
+`using-swarm`: `swarm_run_task` with `project_id`, the registered workspace
+and a brief with acceptance criteria. Omit `role` to delegate to Swarm, which
+uses its task tool for regular specialists. No worker preset is required or
+created by this flow. Follow `swarm_wait_task`, read `swarm_task_result` and
+`swarm_get_session`, and handle returned questions/approvals through their
+authorized controls. Check actual files, diffs and validation receipts; use
+`swarm_integrate_task` only when the person wants the reviewed work integrated.
+A timeout means keep waiting, never start a duplicate task.
 
-End with what runs where, which project and folders are set up, which models
-the workers use, what the job did, what it cost, and what you verified.
+End with what runs where, the project/workspace, resolved models without
+secrets, what completed, measured usage, and what was actually verified.
 
 ## Secrets
 

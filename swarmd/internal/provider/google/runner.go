@@ -96,9 +96,10 @@ type googleTool struct {
 }
 
 type googleFunctionDeclaration struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
+	Name                 string         `json:"name"`
+	Description          string         `json:"description,omitempty"`
+	Parameters           map[string]any `json:"parameters,omitempty"`
+	ParametersJSONSchema map[string]any `json:"parametersJsonSchema,omitempty"`
 }
 
 type googleToolConfig struct {
@@ -284,6 +285,10 @@ func (r *Runner) ensureAuth(ctx context.Context) (googleAuth, error) {
 }
 
 func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
+	return buildGeminiRequest(req, false)
+}
+
+func buildGeminiRequest(req provideriface.Request, jsonSchemaParameters bool) (googleRequest, error) {
 	contents, mediaPayloads, err := buildGoogleContentsWithMedia(req)
 	if err != nil {
 		return googleRequest{}, err
@@ -318,11 +323,19 @@ func buildGoogleRequest(req provideriface.Request) (googleRequest, error) {
 			if name == "" {
 				continue
 			}
-			declarations = append(declarations, googleFunctionDeclaration{
+			declaration := googleFunctionDeclaration{
 				Name:        name,
 				Description: strings.TrimSpace(definition.Description),
-				Parameters:  sanitizeGoogleToolParameters(definition.Parameters),
-			})
+			}
+			if jsonSchemaParameters {
+				// Vertex accepts JSON Schema directly. Its legacy protobuf Schema
+				// cannot express canonical alternatives with sibling constraints.
+				// Preserve the tool contract; do not drop branches or restrictions.
+				declaration.ParametersJSONSchema = definition.Parameters
+			} else {
+				declaration.Parameters = sanitizeGoogleToolParameters(definition.Parameters)
+			}
+			declarations = append(declarations, declaration)
 		}
 		if len(declarations) > 0 {
 			out.Tools = []googleTool{{FunctionDeclarations: declarations}}
@@ -791,7 +804,9 @@ func buildGoogleContentsWithMedia(req provideriface.Request) ([]googleContent, [
 }
 
 // normalizeGoogleContentsForRequest enforces Google Gemini conversation turn requirements:
-// 1. Roles must alternate between "user" and "model" (consecutive turns of the same role are merged).
+// 1. Consecutive ordinary turns of the same role are merged. Function responses
+// retain their boundary from a later user message: Vertex can reject a merged
+// [functionResponse, text] turn as an unsupported model-ending request.
 // 2. The first turn must be a "user" turn (if leading with "model", a user continuation turn is prepended).
 // 3. Requests must not end with a "model" turn ("Requests ending with a model turn are not supported.").
 // If contents ends with "model", a user continuation turn ("Continue") is appended.
@@ -809,7 +824,7 @@ func normalizeGoogleContentsForRequest(contents []googleContent) []googleContent
 		if len(c.Parts) == 0 {
 			continue
 		}
-		if len(out) > 0 && out[len(out)-1].Role == c.Role {
+		if len(out) > 0 && out[len(out)-1].Role == c.Role && isGoogleToolResponse(out[len(out)-1]) == isGoogleToolResponse(c) {
 			out[len(out)-1].Parts = append(out[len(out)-1].Parts, c.Parts...)
 		} else {
 			out = append(out, c)

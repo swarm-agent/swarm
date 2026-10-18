@@ -1,0 +1,54 @@
+package pebblestore
+
+import "errors"
+
+// Called under the project and session locks by ApplyV3SessionMutation. The
+// retry's message, run intent and task receipt must commit together, including
+// when a fast failure occurs before any client observes the running state.
+func (s *SessionStore) prepareTaskExecutionContinuation(input V3SessionMutationInput, current SessionSnapshot, intent V3SessionRunIntent, now int64) (*projectRealtimeMutation, error) {
+	projectID, _ := current.Metadata["project_id"].(string)
+	taskID, _ := current.Metadata["task_id"].(string)
+	if taskID == "" {
+		taskID, _ = current.Metadata["project_task_id"].(string)
+	}
+	if taskID == "" {
+		return nil, nil
+	}
+	task, found, err := s.GetProjectTask(input.AccountScopeID, projectID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || task == nil || task.AccountID != input.AccountScopeID || current.AccountScopeID != input.AccountScopeID || current.UserID != input.UserID || task.SessionID != current.ID {
+		return nil, errors.New("task continuation requires its current owning session")
+	}
+	task.EnsureTaskAttempts()
+	attempt := task.ActiveAttempt()
+	attemptID, _ := current.Metadata["task_attempt_id"].(string)
+	if attempt == nil || attempt.SessionID != current.ID || (attempt.UserID != "" && attempt.UserID != input.UserID) || (attemptID != "" && attemptID != attempt.ID) {
+		return nil, errors.New("task continuation attempt mismatch")
+	}
+	if task.ExecutionRunID() == intent.RunID {
+		return nil, nil // Initial admission keeps its reserved lifecycle.
+	}
+	if task.Archived || task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
+		return nil, errors.New("task continuation requires an admitted task; use the canonical task approval or reopen lifecycle")
+	}
+	previous, found, err := s.GetV3SessionRunState(current.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !found || previous.AccountScopeID != input.AccountScopeID || previous.Active {
+		return nil, errors.New("task continuation requires a settled owning run")
+	}
+	attempt.RunID = intent.RunID
+	attempt.Summary, attempt.SummaryRunID = "", ""
+	task.Status, task.LastError, task.ActionNeeded = "in_progress", "", ""
+	task.Revision++
+	task.UpdatedAt = now
+	task.CaptureActiveAttempt()
+	mutation := &projectRealtimeMutation{accountScopeID: input.AccountScopeID, projectID: projectID}
+	if err := mutation.put(KeyProjectTask(input.AccountScopeID, projectID, taskID), task); err != nil {
+		return nil, err
+	}
+	return mutation, nil
+}

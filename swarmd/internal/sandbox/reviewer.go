@@ -192,6 +192,10 @@ func (m *Manager) SetReviewEnvironment(checkout string, env map[string]string) e
 // remains fail-closed until the daemon has removed the managed worktree.
 func (m *Manager) EndReview(ctx context.Context, checkout string) error {
 	m.mu.Lock()
+	if m.Local() && m.localRuns[resolveExisting(checkout)] != 0 {
+		m.mu.Unlock()
+		return fmt.Errorf("review sandbox still has active commands")
+	}
 	name := scopeContainerName(Scope{Root: m.reviews[checkout], ReviewCheckout: checkout})
 	b := m.boxes[name]
 	if b != nil && (b.inflight != 0 || b.preparing != 0 || b.changing != nil) {

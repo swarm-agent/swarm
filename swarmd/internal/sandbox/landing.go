@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -47,6 +48,9 @@ func (m *Manager) AcquireLanding(ctx context.Context, folder, checkout string) (
 }
 
 func (m *Manager) AcquireLandingWithVolumes(ctx context.Context, folder, checkout string, volumes []NamedVolume) (*Landing, error) {
+	if m.Local() {
+		return nil, fmt.Errorf("container landing environments are unavailable with bubblewrap")
+	}
 	if err := validateLandingVolumes(checkout, volumes); err != nil {
 		return nil, err
 	}
