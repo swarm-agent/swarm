@@ -358,3 +358,35 @@ must not be changed as an incidental environment capability check. Verify the
 connection's actual capabilities and a disposable managed build/exec before
 using it for work. Missing prerequisites remain an actionable refusal; no
 rootful or host execution fallback is provided.
+
+## One definition, independent job instances
+
+A definition and its committed build are reusable recipes, not a running job's
+private environment. Use `deploy` with the same successful `build_operation_id`
+to create a distinct deployment for each independent job, up to the definition's
+`deployment_policy.max_instances`. Attach each job to its own deployment and
+acquire that attachment's receipt. Its delegated Coder borrows that assignment
+with a separate child receipt and checkout; it does not provision another box.
+Acquiring another receipt for one existing deployment does not clone it.
+
+Use `resources.cpu_limit`, `resources.memory_limit` and the rootless PID limit
+for per-instance ceilings appropriate to the workload. These do not reserve a
+fixed amount of RAM per agent. Capacity exhaustion is an explicit refusal, not
+an implicit host fallback or a promise to queue/provision another cloud host.
+
+Managed builds retain their deployments on receipt release. For a fresh job
+instance, explicitly destroy an unleased deployment and deploy again from the
+same build. `ensure` can reuse an unleased compatible deployment and is not a
+clean-reset guarantee. Active receipts prevent destructive lifecycle operations;
+release the owning parent receipt after its delegated work ends, then destroy
+the instance when retention is no longer wanted. Keep each job's exact source,
+deployment and lease association in its durable task attachment.
+
+A managed selection keeps the Swarm owner's receipt controls available through
+`manage_environments`: release, operation inspection/cancellation, deployment
+inspection and attachment listing. These still cross the existing durable
+role/task/receipt checks; Coder does not gain environment management authority.
+Provisioning, reassignment and alternate execution remain blocked while that
+selection is active. Task receipts must be released through the owning task's
+control path with explicit project, task, attachment, workspace and lease
+references; the generic environment endpoint cannot impersonate that consumer.

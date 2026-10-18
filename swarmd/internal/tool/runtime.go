@@ -2138,6 +2138,15 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 			})
 		}
 		switch name {
+		case "manage-environments", "manage_environments":
+			// Lease control does not access the host checkout. Keep the normal
+			// durable role, task and receipt authorization below; selection must
+			// not strand an owner who needs to release or inspect its receipt.
+			switch strings.ToLower(strings.TrimSpace(asString(args["action"]))) {
+			case "release", "get_operation", "get_deployment", "cancel_operation", "list_attachments":
+			default:
+				return "", errors.New("managed selection permits receipt control only; environment provisioning or reassignment is not allowed here")
+			}
 		case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage", "task_progress", "task-progress", "manage-todos", "manage_todos", "websearch", "webfetch":
 			// Pure conversation/control or HTTP inspection; no host checkout access.
 		default:
