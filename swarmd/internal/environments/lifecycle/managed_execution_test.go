@@ -126,3 +126,26 @@ func TestManagedExecutionLeaseBoundary(t *testing.T) {
 		})
 	}
 }
+
+// Requirement: active command supervision must use durable lease state without
+// recurring Git/source probes. Threat: active revocation checks accidentally
+// invoke expensive source freshness checks or silently proceed without an
+// authority. The manager's two validator hooks own this separation; recording
+// callbacks are the narrowest test and do not claim live cancellation evidence.
+func TestManagedActiveLeaseValidation(t *testing.T) {
+	manager := &DeploymentManager{}
+	lease := environments.DeploymentLease{TaskBinding: &environments.TaskLeaseBinding{}}
+	if err := manager.validateActiveTaskLease(context.Background(), lease); err == nil {
+		t.Fatal("missing active authority accepted")
+	}
+	sourceCalls, activeCalls := 0, 0
+	manager.SetTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error { sourceCalls++; return nil })
+	revoked := errors.New("attachment replaced")
+	manager.SetActiveTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error { activeCalls++; return revoked })
+	if err := manager.validateActiveTaskLease(context.Background(), lease); !errors.Is(err, revoked) {
+		t.Fatal(err)
+	}
+	if sourceCalls != 0 || activeCalls != 1 {
+		t.Fatalf("wrong validation source=%d active=%d", sourceCalls, activeCalls)
+	}
+}

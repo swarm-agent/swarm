@@ -93,6 +93,13 @@ func cloneArtifactV3AuthorRunContext(input *tool.ArtifactV3AuthorRunContext) *to
 
 func delegatedSubagentRunStartMeta(launch taskLaunchPrepared, permissionSessionID string, principal identity.Principal, applySessionMutation func(sessionruntime.SessionMutationInput) (sessionruntime.SessionMutationResult, error)) RunStartMeta {
 	profile := launch.SubagentProfile
+	child := launch.ChildSession
+	if _, managed := child.Metadata[tool.ManagedExecutionMetadataKey]; managed && child.ID != "" && principal.Valid() && principal.UserID == child.UserID && principal.AccountScopeID == child.AccountScopeID && (principal.SessionID == "" || principal.SessionID == child.ID || principal.SessionID == mapString(child.Metadata, "parent_session_id")) {
+		// The trusted handoff admitted this durable child and its own receipt.
+		// Execute as that consumer while preserving the parent's permission
+		// decision scope below. Never relax the tool's exact-session check.
+		principal.SessionID = child.ID
+	}
 	meta := RunStartMeta{
 		AllowSubagent:           true,
 		TrustedAgentProfile:     &profile,
@@ -1339,6 +1346,17 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 		"task_program_job_id":      strings.TrimSpace(launch.ProgramJobID),
 		"original_assignment":      strings.TrimSpace(firstNonEmptyString(launch.MetaPrompt, description)),
 	}
+	if selected, managed := parentSession.Metadata[tool.ManagedExecutionMetadataKey]; managed {
+		if !isCoderTarget {
+			return taskLaunchPrepared{}, errors.New("managed execution delegation currently requires Coder")
+		}
+		// Persist a fail-closed selection before the child can ever run. The
+		// trusted handoff replaces this parent receipt with a child receipt.
+		childMetadata[tool.ManagedExecutionMetadataKey] = selected
+		for _, key := range []string{"project_id", "task_id", "task_attempt_id"} {
+			childMetadata[key] = parentSession.Metadata[key]
+		}
+	}
 	if len(launch.OwnedScope) > 0 {
 		childMetadata["owned_scope"] = append([]string(nil), launch.OwnedScope...)
 	}
@@ -1642,6 +1660,22 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 	}
 	if lineage.CurrentGeneration != 1 || lineage.CurrentSessionID != childSession.ID {
 		return taskLaunchPrepared{}, errors.New("delegated child creation did not acquire generation-one ownership")
+	}
+	if _, managed := childMetadata[tool.ManagedExecutionMetadataKey]; managed {
+		if s.tools == nil {
+			return taskLaunchPrepared{}, errors.New("managed execution handoff unavailable")
+		}
+		handoffCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		err := s.tools.BindDelegatedManagedExecution(handoffCtx, parentSession.ID, childSession.ID)
+		cancel()
+		if err != nil {
+			return taskLaunchPrepared{}, fmt.Errorf("managed execution handoff refused: %w", err)
+		}
+		var found bool
+		childSession, found, err = s.sessions.GetSession(childSession.ID)
+		if err != nil || !found {
+			return taskLaunchPrepared{}, errors.New("managed child unavailable after handoff")
+		}
 	}
 
 	launch.RequestedSubagent = requestedSubagent
@@ -6161,8 +6195,13 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 		}
 	}
 
-	outcomes, runErrs := executeTaskLaunchesInParallel(ctx, len(prepared), func(runCtx context.Context, idx int) (taskLaunchOutcome, error) {
+	outcomes, runErrs := executeTaskLaunchesInParallel(ctx, len(prepared), func(runCtx context.Context, idx int) (completed taskLaunchOutcome, completionErr error) {
 		launch := prepared[idx]
+		if _, managed := launch.ChildSession.Metadata[tool.ManagedExecutionMetadataKey]; managed {
+			defer func() {
+				completionErr = errors.Join(completionErr, s.tools.ReleaseManagedCheckout(context.WithoutCancel(runCtx), launch.ChildSession.ID))
+			}()
+		}
 		outcome := buildTaskLaunchOutcome(launch)
 		metaPrompt := strings.TrimSpace(outcome.MetaPrompt)
 		perLaunchPrompt := prompt
@@ -6563,6 +6602,14 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 			}
 		}
 		if agentruntime.IsCoderAgentName(launch.RequestedSubagent) && s.worktrees != nil {
+			if _, managed := launch.ChildSession.Metadata[tool.ManagedExecutionMetadataKey]; managed && blockedErr == nil {
+				handoffCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				handoffErr := s.tools.CompleteManagedCheckout(handoffCtx, launch.ChildSession.ID)
+				cancel()
+				if handoffErr != nil {
+					return outcome, fmt.Errorf("managed Coder Git handoff refused: %w", handoffErr)
+				}
+			}
 			state, inspectErr := s.worktrees.InspectTaskWorkspace(outcome.WorkspacePath)
 			if inspectErr != nil {
 				return outcome, fmt.Errorf("inspect Coder handoff Git state: %w", inspectErr)

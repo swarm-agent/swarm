@@ -73,6 +73,7 @@ func (m *DeploymentManager) ExecTaskLease(ctx context.Context, account, workspac
 	}()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	nextValidation := time.Now().Add(time.Second)
 	for {
 		if !op.IsActive() {
 			result := &provider.ExecResult{OperationID: op.OperationID, ExitCode: op.Result.ExitCode, Stdout: op.Result.Stdout, Stderr: op.Result.Stderr, Truncated: op.Result.Truncated}
@@ -100,6 +101,25 @@ func (m *DeploymentManager) ExecTaskLease(ctx context.Context, account, workspac
 			cancel()
 			return nil, errors.Join(ctx.Err(), cancelErr)
 		case <-ticker.C:
+			if !time.Now().Before(nextValidation) {
+				nextValidation = time.Now().Add(time.Second)
+				currentLease, held, checkErr := m.GetLease(account, workspace, leaseID)
+				if checkErr == nil && (!held || !currentLease.IsHeld(time.Now().UnixMilli())) {
+					checkErr = errors.New("managed execution lease expired or released during command")
+				}
+				if checkErr == nil {
+					checkErr = m.validateActiveTaskLease(ctx, currentLease)
+				}
+				if checkErr != nil {
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cleanupTimeout)
+					cancelled, cancelErr := m.Cancel(cleanupCtx, CancelOperationRequest{AccountScopeID: account, WorkspaceID: workspace, OperationID: op.OperationID, Reason: "managed lease invalidated during command"})
+					cancel()
+					if cancelled != nil {
+						op = cancelled
+					}
+					return nil, errors.Join(checkErr, cancelErr)
+				}
+			}
 			current, found, err := m.Get(ctx, account, workspace, op.OperationID)
 			if err != nil {
 				return nil, err

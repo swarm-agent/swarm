@@ -153,7 +153,9 @@ The task attachment interface uses `manage_environments` or authenticated
 catalog `workspace_id`; attachment operations deliberately do not accept
 `workspace_path` or `project_result` as alternate source authorities. Orchestrator
 may prepare before assignment. A task-linked Swarm may prepare only its current
-task's clean committed isolated source. Product workspace/generation must match
+task's clean committed source. Coding tasks require an owned isolated worktree;
+a general Swarm coordinator may select its exact catalog source read-only while
+its delegated Coder receives an independent worktree. Product workspace/generation must match
 the task source; product commit must match its current clean checkout. Recipe
 source must also resolve to an authorized project workspace generation.
 
@@ -191,6 +193,26 @@ execution. Commit changes, rebuild the explicit source, select the exact new
 runtime, and CAS reassign; never substitute current dev. Detached attachment IDs
 are permanently retired for that task; create a fresh ID. Mutations are bounded
 at 16 live attachments and 4096 retired identities per task.
+
+### Ordinary delegated Coder execution
+
+Task administration may use `acquire_attachment` with `execution_session_id` to
+select the current parent task session. Ordinary Task launch then binds a direct
+Coder child to its own shared receipt before starting it. Durable current lineage,
+account/user, task attempt, source and worktree ownership must match. The child's
+receipt records the parent receipt; each Bash dispatch and provider boundary
+rechecks the current parent selection, lease and attachment. Approval remains in
+the parent's permission scope while execution uses the child's session identity.
+Coder receives no environment-management authority.
+
+A missing or invalid managed selection never falls back to local execution,
+including with `--sandbox=off`. Binding failures retain a blocked selector and
+release the consumer receipt. This slice supports direct Coder delegation and
+local Podman execution with the bounded delegated file/Git handoff described
+below. Nested delegation and context-rotation rebinding remain unsupported.
+Provider-backed repair-cycle claims require exact-candidate live receipts. Other agent roles are refused while the parent has
+a managed execution selection. The returned source commit is the prepared
+baseline, not an attestation of the current remote filesystem.
 
 ### Lifetime and realtime
 
@@ -269,3 +291,70 @@ emulate local rootless systemd. See [managed SSH test environments](managed-ssh-
 for prerequisites, receipts, stop conditions and uncertain cancellation cleanup.
 Local Podman contracts remain unchanged. Cloud authority acquisition and host
 provisioning remain external operator responsibilities, not Swarm broker APIs.
+
+## Delegated Coder checkout and Git handoff
+
+An admitted direct Coder receives a distinct receipt-derived checkout inside the
+selected deployment. Preparation transfers the exact allocated base commit and
+its tree as a shallow Git repository. It does not copy host Git configuration,
+hooks, credentials, unrelated history or the host working directory. The recipe
+must provide Bash, Git and GNU coreutils, plus the project's test dependencies.
+Configure the intended commit identity/signing inside that environment; host
+signing keys and remotes are never copied automatically.
+
+Bash, `read`, `write`, `edit`, `git_status`, `git_diff`, `git_add` and `git_commit`
+use that checkout. File operations reject path traversal, Git metadata and
+symlinks; edits use content-hash compare-and-swap. Other host-bound tools stay
+refused. File staging is limited to 1 MiB per file. Committed source packs are
+limited to 8 MiB, with the existing 4 MiB encoded operation-output limit also
+bounding returned packs. Oversized transfers are rejected explicitly. Symlinks,
+submodules, special files and protected credential-shaped paths are unsupported.
+These limits are admission constraints, not a general repository compatibility
+claim. No local fallback is allowed.
+
+On successful Coder completion, trusted orchestration obtains the remote commit
+and pack through the lease, checks clean source/ancestry and the still-current
+receipt, then imports only into the allocated child worktree. Each of at most
+256 linear commits must stay within owned scope. A dirty, moved or renamed
+local destination is refused; the committed remote checkout is retained for
+inspection. The exact commit ID is preserved. The normal Coder handoff then
+inspects the returned local Git state independently. The parent source branch is
+not integrated, pushed or deployed. A failed handoff must not be reported as a
+successful implementation.
+
+Every operation revalidates the receipt at admission and provider dispatch.
+While a managed command is active, receipt/task validation repeats at roughly
+one-second intervals; revocation, replacement or expiration requests supervised
+cancellation. Command deadlines and explicit stop use the same provider process
+cleanup. A failed cleanup remains an error. Completion or failure releases the
+child receipt; deployment retention/destruction remains the owner's policy.
+Context rotation and other providers require separate qualification.
+
+## Opt-in Headless service prerequisites
+
+The default Headless installation remains Bubblewrap and does not install or
+activate Podman. For an explicitly selected local Podman managed backend on a
+systemd host, an administrator must provision Podman, crun, slirp4netns, uidmap
+and a user session bus; assign a non-overlapping subordinate UID/GID range to
+the daemon account; and enable its persistent user systemd manager. Do not copy
+another host's numeric range without checking allocations.
+
+For the packaged `swarm-headless.service`, the administrator also installs an
+explicit service drop-in before activation:
+
+```ini
+[Service]
+NoNewPrivileges=no
+RestrictSUIDSGID=no
+ProtectControlGroups=no
+```
+
+These exceptions allow rootless UID mapping and user-manager cgroup operations;
+they do not select sandbox-off, change loopback listeners, grant permission
+bypass or mount host directories into managed containers. Keep the installed
+Bubblewrap `ExecStart`. Reload systemd and restart only the intended stopped or
+drained daemon as an authorized installation action. An existing live service
+must not be changed as an incidental environment capability check. Verify the
+connection's actual capabilities and a disposable managed build/exec before
+using it for work. Missing prerequisites remain an actionable refusal; no
+rootful or host execution fallback is provided.

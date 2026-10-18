@@ -9,4 +9,6 @@ type TaskLeaseBinding struct {
 	AttachmentID       string `json:"attachment_id"`
 	AttachmentRevision int    `json:"attachment_revision"`
 	UserID             string `json:"user_id"`
+	// ParentLeaseID fences a delegated consumer to its parent's live receipt.
+	ParentLeaseID string `json:"parent_lease_id,omitempty"`
 }

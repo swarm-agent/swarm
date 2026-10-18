@@ -2124,6 +2124,12 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return "", managedErr
 	}
 	if managed != nil {
+		switch name {
+		case "read", "write", "edit":
+			return r.executeManagedFile(ctx, scope, *managed, name, args)
+		case "git_status", "git_diff", "git_add", "git_commit":
+			return r.executeManagedGit(ctx, scope, *managed, name, args)
+		}
 		if name == "bash" {
 			return r.executeManagedBash(ctx, scope, *managed, args, func(chunk string) {
 				if onProgress != nil {

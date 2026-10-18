@@ -20,7 +20,7 @@ type managedCleanupFixture struct {
 	request  lifecycle.ReleaseDeploymentRequest
 }
 
-func (f *managedCleanupFixture) Release(ctx context.Context, req lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error) {
+func (f *managedCleanupFixture) ReleaseDeployment(ctx context.Context, req lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

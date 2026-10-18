@@ -12,7 +12,9 @@ import (
 )
 
 // Preparation cannot substitute an arbitrary project member or mutable dev HEAD.
-// Once assigned, the current isolated task tree is the source authority.
+// Once assigned, the current isolated task tree is the source authority. A
+// general Swarm coordinator may select its exact catalog source read-only;
+// its delegated Coder still requires an independently owned worktree.
 func (s *Server) validateTaskEnvironmentCommit(task *pebblestore.ProjectTaskRecord, commit string) error {
 	if commit == "" || s.worktrees == nil {
 		return errors.New("task source Git inspection unavailable")
@@ -20,22 +22,28 @@ func (s *Server) validateTaskEnvironmentCommit(task *pebblestore.ProjectTaskReco
 	root := task.SourceWorkspace.Path
 	if task.SessionID != "" {
 		child, found, err := s.sessions.GetSession(task.SessionID)
-		if err != nil || !found || !child.WorktreeEnabled {
+		if err != nil || !found {
 			return errors.New("task source session unavailable or not isolated")
 		}
 		if err := verifyProjectTaskSession(task, child, child.AccountScopeID); err != nil {
 			return err
 		}
-		validator, ok := s.worktrees.(interface {
-			ValidateSessionRepositoryLane(string, string, string, string) error
-		})
-		if !ok {
-			return errors.New("task source ownership validator unavailable")
+		if !child.WorktreeEnabled {
+			if task.Agent != "swarm" || task.OutcomeType != "general" || task.PlanBinding != nil || root == "" || child.WorkspacePath != root || task.WorkspacePath != root {
+				return errors.New("task source session unavailable or not isolated")
+			}
+		} else {
+			validator, ok := s.worktrees.(interface {
+				ValidateSessionRepositoryLane(string, string, string, string) error
+			})
+			if !ok {
+				return errors.New("task source ownership validator unavailable")
+			}
+			if err := validator.ValidateSessionRepositoryLane(root, child.WorktreeRootPath, child.ID, child.WorktreeBranch); err != nil {
+				return err
+			}
+			root = child.WorktreeRootPath
 		}
-		if err := validator.ValidateSessionRepositoryLane(root, child.WorktreeRootPath, child.ID, child.WorktreeBranch); err != nil {
-			return err
-		}
-		root = child.WorktreeRootPath
 	}
 	if root == "" {
 		return errors.New("task source root required")

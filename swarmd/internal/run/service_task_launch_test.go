@@ -323,3 +323,38 @@ func newTaskLaunchPermissionTestService(t *testing.T) (*Service, string, func())
 	service.SetAgentModelSettingsService(agentmodelsettings.NewService(agentSettingsStore))
 	return service, parent.ID, cleanup
 }
+
+// A managed child consumes its own receipt, while approval stays with the
+// parent. Only the trusted same-owner launch may translate execution identity;
+// an unrelated scoped principal must still fail the runtime ownership check.
+func TestManagedDelegatedExecutionPrincipal(t *testing.T) {
+	for _, name := range []string{"managed_parent", "managed_unscoped", "managed_child", "local", "foreign_account", "foreign_user", "foreign_session"} {
+		t.Run(name, func(t *testing.T) {
+			child := pebblestore.SessionSnapshot{ID: "child", UserID: "user", AccountScopeID: "account", Metadata: map[string]any{"parent_session_id": "parent", tool.ManagedExecutionMetadataKey: tool.ManagedExecutionBinding{WorkspaceID: "workspace", LeaseID: "child-receipt"}}}
+			p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user", AccountScopeID: "account", SessionID: "parent"}
+			want := "child"
+			switch name {
+			case "managed_unscoped":
+				p.SessionID = ""
+			case "managed_child":
+				p.SessionID = "child"
+			case "local":
+				delete(child.Metadata, tool.ManagedExecutionMetadataKey)
+				want = "parent"
+			case "foreign_account":
+				p.AccountScopeID = "other"
+				want = "parent"
+			case "foreign_user":
+				p.UserID = "other"
+				want = "parent"
+			case "foreign_session":
+				p.SessionID = "other"
+				want = "other"
+			}
+			meta := delegatedSubagentRunStartMeta(taskLaunchPrepared{ChildSession: child}, "parent", p, nil)
+			if meta.Principal.SessionID != want || meta.PermissionSessionID != "parent" || meta.Principal.AccountScopeID != p.AccountScopeID || meta.Principal.UserID != p.UserID {
+				t.Fatalf("execution/approval authority changed incorrectly: %#v", meta)
+			}
+		})
+	}
+}

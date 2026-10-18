@@ -89,6 +89,14 @@ func (s *Server) validateTaskEnvironmentSource(p identity.Principal, task *pebbl
 // ValidateTaskEnvironmentLease is called both before receipt creation and directly
 // before supervised execution. It reloads task, session, catalog and deployment;
 // detach/reassignment/reopen never changes another consumer's receipt.
+type activeTaskLeaseValidationKey struct{}
+
+// Active supervision checks durable revocation/attempt/source-generation state
+// without repeatedly invoking Git. Full source checks still gate every command.
+func (s *Server) ValidateActiveTaskEnvironmentLease(ctx context.Context, lease environments.DeploymentLease) error {
+	return s.ValidateTaskEnvironmentLease(context.WithValue(ctx, activeTaskLeaseValidationKey{}, true), lease)
+}
+
 func (s *Server) ValidateTaskEnvironmentLease(ctx context.Context, lease environments.DeploymentLease) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -119,6 +127,21 @@ func (s *Server) ValidateTaskEnvironmentLease(ctx context.Context, lease environ
 	if b.AttemptID == "" || task.ActiveAttemptID != b.AttemptID {
 		return errors.New("task attempt changed; explicitly reassign attachment")
 	}
+	if b.ParentLeaseID != "" {
+		if err := s.validateDelegatedParentReceipt(ctx, lease, task, p); err != nil {
+			return err
+		}
+	} else if sessionID != "" && sessionID != task.SessionID {
+		// A delegated Coder must not bypass parent receipt revocation by
+		// acquiring an otherwise-valid direct attachment receipt.
+		caller, found, err := s.sessions.GetSession(sessionID)
+		if err != nil || !found {
+			return errors.New("task execution session unavailable")
+		}
+		if !tool.EnvironmentToolAllowed(caller.Metadata, "manage_environments") {
+			return errors.New("delegated execution requires parent receipt")
+		}
+	}
 	for _, a := range task.EnvironmentAttachments {
 		if a.ID != b.AttachmentID {
 			continue
@@ -126,8 +149,10 @@ func (s *Server) ValidateTaskEnvironmentLease(ctx context.Context, lease environ
 		if a.Revision != b.AttachmentRevision || a.AttemptID != b.AttemptID || a.EffectiveState(task.ActiveAttemptID, time.Now().UnixMilli()) != "ready" || a.Source != *lease.PreparedSource {
 			return errors.New("attachment expired, replaced or reassigned")
 		}
-		if err := s.validateTaskEnvironmentSource(p, task, a.Source); err != nil {
-			return err
+		if ctx.Value(activeTaskLeaseValidationKey{}) != true {
+			if err := s.validateTaskEnvironmentSource(p, task, a.Source); err != nil {
+				return err
+			}
 		}
 		if s.deployments == nil {
 			return errors.New("deployment service unavailable")
@@ -376,7 +401,7 @@ func (s *Server) ManageTaskEnvironment(ctx context.Context, p identity.Principal
 		consumerSessionID := sessionID
 		if req.ExecutionSessionID != "" {
 			if _, ok := s.deployments.(interface {
-				Release(context.Context, lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
+				ReleaseDeployment(context.Context, lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
 			}); !ok {
 				return result, errors.New("managed selection requires receipt cleanup support")
 			}

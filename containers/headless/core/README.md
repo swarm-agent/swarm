@@ -203,3 +203,17 @@ This is isolated process deployment evidence, not a fresh VM/systemd boot test
 or provider qualification. A real provider must be configured by its owner before
 agent execution. Stage 2C update/recovery, H1–H8 agent/tool repairs, full task and
 media qualification, and the final release gates remain required.
+
+### Optional local managed environments
+
+Bubblewrap remains the default and needs no environment lease. To opt into a
+leased local Podman environment, provision rootless Podman/crun/slirp4netns,
+subordinate UID/GID mappings and a persistent user systemd manager for `swarm`.
+The service requires an explicit administrator-reviewed drop-in setting
+`NoNewPrivileges=no`, `RestrictSUIDSGID=no`, and `ProtectControlGroups=no` for
+that backend. Keep the installed Bubblewrap `ExecStart`; these exceptions do
+not select sandbox-off or permission bypass. A capability check performs no
+installation or host changes. Validate the actual connection and a disposable
+build/exec after authorized activation. Full setup and the bounded delegated
+checkout/Git contract are documented in `docs/managed-local-systemd-environments.md`
+in the source distribution. This optional setup is not performed by install.sh.

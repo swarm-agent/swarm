@@ -17,14 +17,14 @@ import (
 func (s *Server) bindOrReleaseTaskExecution(ctx context.Context, p identity.Principal, task *pebblestore.ProjectTaskRecord, sessionID string, lease environments.DeploymentLease) error {
 	if err := s.bindTaskExecutionSession(ctx, p, task, sessionID, lease); err != nil {
 		cleanup, ok := s.deployments.(interface {
-			Release(context.Context, lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
+			ReleaseDeployment(context.Context, lifecycle.ReleaseDeploymentRequest) (*lifecycle.ReleaseDeploymentResult, error)
 		})
 		if !ok {
 			return errors.Join(err, errors.New("receipt cleanup unavailable"))
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cleanupCancel()
-		_, cleanupErr := cleanup.Release(cleanupCtx, lifecycle.ReleaseDeploymentRequest{AccountScopeID: p.AccountScopeID, WorkspaceID: lease.WorkspaceID, LeaseID: lease.ID, Attribution: environments.OperationAttribution{Actor: p.UserID, SessionID: sessionID}, Reason: "execution_binding_failed"})
+		_, cleanupErr := cleanup.ReleaseDeployment(cleanupCtx, lifecycle.ReleaseDeploymentRequest{AccountScopeID: p.AccountScopeID, WorkspaceID: lease.WorkspaceID, LeaseID: lease.ID, Attribution: environments.OperationAttribution{Actor: p.UserID, SessionID: sessionID}, Reason: "execution_binding_failed"})
 		return errors.Join(err, cleanupErr)
 	}
 	return nil
@@ -45,6 +45,10 @@ func (s *Server) validateTaskExecutionConsumer(p identity.Principal, task *pebbl
 	raw, _ := json.Marshal(caller.Metadata["agent_profile"])
 	if json.Unmarshal(raw, &profile) != nil || !agentruntime.IsCoderAgentName(profile.Name) {
 		return errors.New("task execution requires current Coder consumer")
+	}
+	if task.SessionID != sessionID {
+		_, err := s.delegatedExecutionParent(p, task, caller)
+		return err
 	}
 	if err := verifyProjectTaskSession(task, caller, p.AccountScopeID); err != nil {
 		return err
@@ -81,10 +85,13 @@ func (s *Server) bindTaskExecutionSession(ctx context.Context, p identity.Princi
 	metadata[tool.ManagedExecutionMetadataKey] = tool.ManagedExecutionBinding{WorkspaceID: lease.WorkspaceID, LeaseID: lease.ID}
 	next.Metadata, next.UpdatedAt = metadata, time.Now().UnixMilli()
 	key := "managed-execution:" + lease.ID
-	_, err = s.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
+	result, err := s.sessions.ApplySessionMutation(pebblestore.V3SessionMutationInput{
 		SessionID: sessionID, AccountScopeID: p.AccountScopeID, UserID: p.UserID,
 		Kind: pebblestore.V3SessionMutationUpdateMetadata, ClientRequestID: key, IdempotencyKey: key, PayloadHash: key,
 		Session: &next, ExpectedLastEventSeq: &projection.LastEventSeq, NowUnixMs: next.UpdatedAt,
 	})
+	if err == nil && (result.Error != nil || result.Conflict != nil || result.Session == nil) {
+		return errors.New("managed execution binding rejected by canonical session mutation")
+	}
 	return err
 }

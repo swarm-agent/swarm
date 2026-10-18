@@ -21,6 +21,24 @@ type ManagedExecutionBinding struct {
 	LeaseID     string `json:"lease_id"`
 }
 
+// BindDelegatedManagedExecution is a trusted launch hook, not an agent tool.
+// The API authority reloads durable lineage and the parent's current receipt.
+func (r *Runtime) BindDelegatedManagedExecution(ctx context.Context, parentID, childID string) error {
+	service, ok := r.projectTaskLifecycle.(interface {
+		BindDelegatedTaskExecution(context.Context, string, string) error
+	})
+	if !ok {
+		return errors.New("managed execution handoff unavailable; local fallback forbidden")
+	}
+	if err := service.BindDelegatedTaskExecution(ctx, parentID, childID); err != nil {
+		return err
+	}
+	if err := r.prepareManagedCheckout(ctx, childID); err != nil {
+		return errors.Join(err, r.ReleaseManagedCheckout(context.WithoutCancel(ctx), childID))
+	}
+	return nil
+}
+
 func (r *Runtime) managedExecutionBinding(scope WorkspaceScope) (*ManagedExecutionBinding, error) {
 	if r.sessions == nil || scope.SessionID == "" {
 		return nil, nil
@@ -60,29 +78,11 @@ func (r *Runtime) executeManagedBash(ctx context.Context, scope WorkspaceScope, 
 	if err != nil {
 		return "", err
 	}
-	service, ok := r.deploymentManager.(interface {
-		GetLease(string, string, string) (environments.DeploymentLease, bool, error)
-		ExecTaskLease(context.Context, string, string, string, environments.OperationAttribution, provider.ExecRequest) (*provider.ExecResult, error)
-	})
-	if !ok {
-		return "", errors.New("managed execution service unavailable; local fallback forbidden")
-	}
-	lease, found, err := service.GetLease(scope.Principal.AccountScopeID, binding.WorkspaceID, binding.LeaseID)
+	lease, err := r.managedReceipt(scope, binding)
 	if err != nil {
 		return "", err
 	}
-	if !found || lease.ID != binding.LeaseID || lease.AccountScopeID != scope.Principal.AccountScopeID || lease.WorkspaceID != binding.WorkspaceID || lease.ConsumerType != environments.ConsumerTypeSession || lease.ConsumerID != scope.SessionID || lease.TaskBinding == nil || lease.PreparedSource == nil || lease.TaskBinding.UserID != scope.Principal.UserID || !lease.IsHeld(time.Now().UnixMilli()) {
-		return "", errors.New("managed execution receipt does not belong to current session")
-	}
-	// Do not rely on the selector metadata for task/attempt/source authority.
-	s, found, err := r.sessions.GetSession(scope.SessionID)
-	if err != nil || !found {
-		return "", errors.New("managed execution session unavailable")
-	}
-	b := lease.TaskBinding
-	if asString(s.Metadata["project_id"]) != b.ProjectID || asString(s.Metadata["task_id"]) != b.TaskID || asString(s.Metadata["task_attempt_id"]) != b.AttemptID {
-		return "", errors.New("managed execution task attempt mismatch")
-	}
+	service := r.deploymentManager.(managedLeaseExecutor)
 	timeout := time.Duration(asInt(args["timeout_ms"], int(defaultBashTimeout.Milliseconds()))) * time.Millisecond
 	if timeout <= 0 {
 		timeout = defaultBashTimeout
@@ -93,7 +93,7 @@ func (r *Runtime) executeManagedBash(ctx context.Context, scope WorkspaceScope, 
 	capture := newCappedBuffer(maxBashOutputViewerBytes)
 	stream := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
 	result, runErr := service.ExecTaskLease(ctx, scope.Principal.AccountScopeID, binding.WorkspaceID, binding.LeaseID, environments.OperationAttribution{Actor: scope.Principal.UserID, SessionID: scope.SessionID}, provider.ExecRequest{
-		Command: []string{"bash", "-c", sandboxBashScript, "swarm-managed-bash", command}, Timeout: timeout, MaxOutput: maxBashOutputViewerBytes,
+		Command: managedBashCommand(lease, command), Timeout: timeout, MaxOutput: maxBashOutputViewerBytes,
 	})
 	if result != nil {
 		_, _ = stream.Write([]byte(result.CombinedOutput()))
@@ -124,7 +124,40 @@ func (r *Runtime) executeManagedBash(ctx context.Context, scope WorkspaceScope, 
 	}
 	response["lease_id"], response["deployment_id"], response["workspace_id"] = lease.ID, lease.DeploymentID, lease.WorkspaceID
 	response["source_commit"] = lease.PreparedSource.Build.Product.Commit
-	response["source_consistency"] = "prepared_committed_checkout; host file edits are not synchronized"
+	response["source_consistency"] = "prepared_baseline; delegated edits remain in lease checkout until verified Git handoff"
 	encoded, err := json.Marshal(response)
 	return strings.TrimSpace(string(encoded)), err
+}
+
+type managedLeaseExecutor interface {
+	GetLease(string, string, string) (environments.DeploymentLease, bool, error)
+	ExecTaskLease(context.Context, string, string, string, environments.OperationAttribution, provider.ExecRequest) (*provider.ExecResult, error)
+}
+
+func (r *Runtime) managedReceipt(scope WorkspaceScope, binding ManagedExecutionBinding) (environments.DeploymentLease, error) {
+	service, ok := r.deploymentManager.(interface {
+		GetLease(string, string, string) (environments.DeploymentLease, bool, error)
+		ExecTaskLease(context.Context, string, string, string, environments.OperationAttribution, provider.ExecRequest) (*provider.ExecResult, error)
+	})
+	if !ok {
+		return environments.DeploymentLease{}, errors.New("managed execution service unavailable; local fallback forbidden")
+	}
+	lease, found, err := service.GetLease(scope.Principal.AccountScopeID, binding.WorkspaceID, binding.LeaseID)
+	if err != nil {
+		return environments.DeploymentLease{}, err
+	}
+	if !found || lease.ID != binding.LeaseID || lease.AccountScopeID != scope.Principal.AccountScopeID || lease.WorkspaceID != binding.WorkspaceID || lease.ConsumerType != environments.ConsumerTypeSession || lease.ConsumerID != scope.SessionID || lease.TaskBinding == nil || lease.PreparedSource == nil || lease.TaskBinding.UserID != scope.Principal.UserID || !lease.IsHeld(time.Now().UnixMilli()) {
+		return environments.DeploymentLease{}, errors.New("managed execution receipt does not belong to current session")
+	}
+	// Do not rely on the selector metadata for task/attempt/source authority.
+	s, found, err := r.sessions.GetSession(scope.SessionID)
+	if err != nil || !found {
+		return environments.DeploymentLease{}, errors.New("managed execution session unavailable")
+	}
+	b := lease.TaskBinding
+	if asString(s.Metadata["project_id"]) != b.ProjectID || asString(s.Metadata["task_id"]) != b.TaskID || asString(s.Metadata["task_attempt_id"]) != b.AttemptID {
+		return environments.DeploymentLease{}, errors.New("managed execution task attempt mismatch")
+	}
+
+	return lease, nil
 }

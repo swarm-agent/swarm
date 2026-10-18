@@ -79,6 +79,11 @@ func (s *Server) SetEnvironmentServices(
 	}); ok {
 		bound.SetTaskLeaseValidator(s.ValidateTaskEnvironmentLease)
 	}
+	if bound, ok := deployments.(interface {
+		SetActiveTaskLeaseValidator(func(context.Context, environments.DeploymentLease) error)
+	}); ok {
+		bound.SetActiveTaskLeaseValidator(s.ValidateActiveTaskEnvironmentLease)
+	}
 	s.workspaceEnvSettings = workspaceEnvSettings
 	s.envProviders = envProviders
 }

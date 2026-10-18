@@ -189,13 +189,14 @@ type DeployDeploymentResult struct {
 // DeploymentManager coordinates deployment lifecycle, connection resolution, leasing, reuse pooling,
 // limit enforcement, cancellation-aware locking, and durable supervised operations.
 type DeploymentManager struct {
-	taskLeaseValidator func(context.Context, environments.DeploymentLease) error
-	connections        ConnectionReader
-	environments       EnvironmentReader
-	deployments        DeploymentManagerStore
-	workspaces         WorkspaceSettingsReader
-	registry           *provider.Registry
-	operations         OperationStore
+	taskLeaseValidator       func(context.Context, environments.DeploymentLease) error
+	activeTaskLeaseValidator func(context.Context, environments.DeploymentLease) error
+	connections              ConnectionReader
+	environments             EnvironmentReader
+	deployments              DeploymentManagerStore
+	workspaces               WorkspaceSettingsReader
+	registry                 *provider.Registry
+	operations               OperationStore
 
 	mu       sync.Mutex
 	envLocks map[string]*contextMutex

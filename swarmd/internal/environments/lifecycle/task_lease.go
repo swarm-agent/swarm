@@ -17,6 +17,24 @@ func (m *DeploymentManager) SetTaskLeaseValidator(fn func(context.Context, envir
 	m.taskLeaseValidator = fn
 }
 
+// Active validation observes durable lease/task state only. Git/source checks
+// remain at command admission and handoff, never on a recurring freshness poll.
+func (m *DeploymentManager) SetActiveTaskLeaseValidator(fn func(context.Context, environments.DeploymentLease) error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.activeTaskLeaseValidator = fn
+}
+
+func (m *DeploymentManager) validateActiveTaskLease(ctx context.Context, lease environments.DeploymentLease) error {
+	m.mu.Lock()
+	fn := m.activeTaskLeaseValidator
+	m.mu.Unlock()
+	if fn == nil {
+		return errors.New("active task attachment authorization unavailable")
+	}
+	return fn(ctx, lease)
+}
+
 func (m *DeploymentManager) validateTaskLease(ctx context.Context, lease environments.DeploymentLease) error {
 	m.mu.Lock()
 	fn := m.taskLeaseValidator
