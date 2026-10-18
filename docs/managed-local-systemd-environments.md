@@ -376,6 +376,12 @@ acquire that attachment's receipt. Its delegated Coder borrows that assignment
 with a separate child receipt and checkout; it does not provision another box.
 Acquiring another receipt for one existing deployment does not clone it.
 
+Completed managed Coders sharing a Git repository queue their imports behind
+its existing integration lock for at most 30 seconds, within the completion
+deadline. Agent execution remains concurrent. The receipt, source and clean
+remote commit are revalidated after waiting and before the child ref advances;
+cancellation or revoked authority leaves that ref and its files unchanged.
+
 Use `resources.cpu_limit`, `resources.memory_limit` and the rootless PID limit
 for per-instance ceilings appropriate to the workload. These do not reserve a
 fixed amount of RAM per agent. Capacity exhaustion is an explicit refusal, not

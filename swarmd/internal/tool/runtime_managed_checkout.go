@@ -132,12 +132,14 @@ func (r *Runtime) CompleteManagedCheckout(ctx context.Context, childID string) e
 	if err != nil || len(pack) > worktree.MaxManagedPackBytes {
 		return errors.New("managed Git handoff invalid or exceeds transfer limit")
 	}
-	// A second durable provider-boundary check after the transfer fences stale
-	// receipts/attempts before any host ref or file can advance.
-	if _, err = r.managedCommand(ctx, scope, b, "test \"$(git rev-parse HEAD)\" = "+managedQuote(head)+"; test -z \"$(git status --porcelain --untracked-files=all)\"", true); err != nil {
+	// Waiting for a sibling's import must not extend an expired/revoked receipt.
+	// Revalidate through the same durable provider boundary under the repository
+	// lock, including immediately before the allocated child ref can advance.
+	fence := func() error {
+		_, err := r.managedCommand(ctx, scope, b, "test \"$(git rev-parse HEAD)\" = "+managedQuote(head)+"; test -z \"$(git status --porcelain --untracked-files=all)\"", true)
 		return err
 	}
-	return worktree.ImportManagedCheckout(ctx, scope.PrimaryPath, scope.WorktreeBranch, base, head, pack, scope.MutationScopes)
+	return worktree.ImportManagedCheckout(ctx, scope.PrimaryPath, scope.WorktreeBranch, base, head, pack, scope.MutationScopes, fence)
 }
 
 func managedRelativePath(scope WorkspaceScope, raw string, mutate bool) (string, error) {

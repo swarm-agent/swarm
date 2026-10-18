@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Requirement: managed commits return only to the unchanged allocated child,
@@ -16,7 +17,8 @@ import (
 func TestManagedCheckoutHandoff(t *testing.T) {
 	for _, tc := range []string{"pass", "dirty", "moved", "branch", "scope", "symlink", "unrelated", "corrupt", "hidden_scope", "ignored_collision"} {
 		t.Run(tc, func(t *testing.T) {
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 			host := t.TempDir()
 			remote := t.TempDir()
 			git := func(root string, args ...string) string {
@@ -114,7 +116,7 @@ func TestManagedCheckoutHandoff(t *testing.T) {
 			}
 			before := git(host, "rev-parse", "HEAD")
 			content, _ := os.ReadFile(filepath.Join(host, "fix.txt"))
-			err = ImportManagedCheckout(ctx, host, "child", base, head, result, scopes)
+			err = ImportManagedCheckout(ctx, host, "child", base, head, result, scopes, func() error { return ctx.Err() })
 			if tc == "pass" {
 				if err != nil {
 					t.Fatal(err)
@@ -126,7 +128,7 @@ func TestManagedCheckoutHandoff(t *testing.T) {
 				if string(got) != "fixed\n" {
 					t.Fatal("wrong files")
 				}
-				if err = ImportManagedCheckout(ctx, host, "child", base, head, result, scopes); err != nil {
+				if err = ImportManagedCheckout(ctx, host, "child", base, head, result, scopes, func() error { return ctx.Err() }); err != nil {
 					t.Fatal("retry", err)
 				}
 			} else {

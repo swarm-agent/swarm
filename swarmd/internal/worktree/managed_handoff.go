@@ -9,9 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"swarm/packages/swarmd/internal/lock"
 	"swarm/packages/swarmd/internal/sandbox"
 )
 
@@ -19,6 +22,52 @@ import (
 // credentials, hooks, reflogs or unrelated history. Larger repositories fail
 // explicitly rather than falling back to a host checkout.
 const MaxManagedPackBytes = 8 << 20
+
+var managedImportQueues sync.Map
+
+// Queue managed imports by common repository, while retaining the existing
+// cross-process integration lock as authority. A busy sibling is not a failed
+// handoff. Waiting is bounded and never releases somebody else's lock.
+func acquireManagedImportLock(ctx context.Context, root string) (func(), error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	common, err := managedGit(ctx, root, nil, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return nil, err
+	}
+	dir, err := resolveGitPath(root, strings.TrimSpace(string(common)))
+	if err != nil {
+		return nil, err
+	}
+	key := filepath.Join(dir, "swarm-integration.lock")
+	value, _ := managedImportQueues.LoadOrStore(key, make(chan struct{}, 1))
+	queue := value.(chan struct{})
+	select {
+	case queue <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("wait for managed Git handoff: %w", ctx.Err())
+	}
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			<-queue
+			return nil, fmt.Errorf("wait for repository integration lock: %w", err)
+		}
+		owner, err := lock.Acquire(key, lock.Metadata{PID: os.Getpid(), StartedAt: time.Now().UnixMilli()})
+		if err == nil {
+			return func() { _ = owner.Release(); <-queue }, nil
+		}
+		if !errors.Is(err, lock.ErrAlreadyRunning) {
+			<-queue
+			return nil, fmt.Errorf("acquire repository integration lock: %w", err)
+		}
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+		}
+	}
+}
 
 type managedBoundedWriter struct {
 	bytes.Buffer
@@ -120,19 +169,22 @@ func checkManagedDestination(ctx context.Context, root, branch, head string) err
 }
 
 // ImportManagedCheckout advances only the allocated child branch. The caller
-// must revalidate its lease and durable ownership immediately before this call.
+// supplies a lease/ownership fence, rechecked after waiting and before refs move.
 // Objects may be retained after a rejected import; refs/files never advance on
 // failed identity, scope, source or ancestry checks. Repeating an exact completed
 // import is safe. Integration into a parent branch is a separate operation.
-func ImportManagedCheckout(ctx context.Context, root, branch, base, head string, pack []byte, scopes []string) error {
-	if !validCommitID(base) || !validCommitID(head) || head == base || len(pack) == 0 || len(pack) > MaxManagedPackBytes {
+func ImportManagedCheckout(ctx context.Context, root, branch, base, head string, pack []byte, scopes []string, fence func() error) error {
+	if !validCommitID(base) || !validCommitID(head) || head == base || len(pack) == 0 || len(pack) > MaxManagedPackBytes || fence == nil {
 		return errors.New("invalid managed Git handoff")
 	}
-	lock, err := acquireIntegrationLock(root)
+	release, err := acquireManagedImportLock(ctx, root)
 	if err != nil {
 		return err
 	}
-	defer lock.Release()
+	defer release()
+	if err = fence(); err != nil {
+		return err
+	}
 	if err = checkManagedDestination(ctx, root, branch, head); err == nil {
 		return nil
 	}
@@ -187,6 +239,12 @@ func ImportManagedCheckout(ctx context.Context, root, branch, base, head string,
 			}
 		}
 		previous = commit
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if err = fence(); err != nil {
+		return err
 	}
 	if err = checkManagedDestination(ctx, root, branch, base); err != nil {
 		return err
