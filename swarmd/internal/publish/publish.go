@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -206,22 +205,12 @@ func Update(ctx context.Context, rule Rule, current string) (Base, error) {
 // folder, with a minimal environment, its own scratch folder and a time limit,
 // and returns what it printed.
 func command(ctx context.Context, rule Rule, scratch string, limit time.Duration, action string, env ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, rule.Command)
-	cmd.Dir = rule.Folder
-	cmd.Env = append([]string{
-		"PATH=/usr/local/bin:/usr/bin:/bin",
-		"HOME=" + os.Getenv("HOME"),
-		"TMPDIR=" + scratch,
-		"SWARM_PUBLISH_ACTION=" + action,
-		"SWARM_PUBLISH_FOLDER=" + rule.Folder,
-	}, env...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &limited{buf: &stdout, max: 64 << 10}, &limited{buf: &stderr, max: 64 << 10}
-	runErr := cmd.Run()
+	_, runErr := RunScript(ctx, Script{
+		Path: rule.Command, Dir: rule.Folder, Scratch: scratch, Timeout: limit,
+		Env:    append([]string{"SWARM_PUBLISH_ACTION=" + action, "SWARM_PUBLISH_FOLDER=" + rule.Folder}, env...),
+		Stdout: &limited{buf: &stdout, max: 64 << 10}, Stderr: &limited{buf: &stderr, max: 64 << 10},
+	})
 	output := strings.TrimSpace(stdout.String())
 	if runErr != nil {
 		reason := strings.TrimSpace(stderr.String())
@@ -251,20 +240,20 @@ func ownedByRoot(path string, executable bool) error {
 		return err
 	}
 	if !info.Mode().IsRegular() {
-		return errors.New("not a regular file")
+		return ErrNotRegular
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
-		return errors.New("cannot read its owner")
+		return ErrNoOwner
 	}
 	if stat.Uid != 0 && int(stat.Uid) != allowOwner {
-		return errors.New("must be owned by root")
+		return ErrNotRootOwned
 	}
 	if info.Mode().Perm()&0o022 != 0 {
-		return errors.New("must not be writable by group or others")
+		return ErrWritable
 	}
 	if executable && info.Mode().Perm()&0o111 == 0 {
-		return errors.New("is not executable")
+		return ErrNotExecutable
 	}
 	return nil
 }

@@ -1,12 +1,10 @@
 package jobautomation
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,19 +12,19 @@ import (
 	"testing"
 	"time"
 
+	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/signals"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // These tests drive the real consumer (Runner) over a real Pebble store and
-// the real signal feed (SignalStore + signals.Emitter). Two host boundaries
-// are stubbed: the job's swarm_get_job view (staticResults returns the
-// result a job end produced) and the sandbox (hostSandbox runs the folder's
-// script on the host with only the step's environment plus the folder's
-// secret stand-ins, which is what the folder's sandbox gives a script; this
-// machine has neither bubblewrap nor docker). The agent step's job start is
-// stubbed by recordingAgents; the real Dispatch path is tested in api.
+// the real signal feed (SignalStore + signals.Emitter). Run steps run through
+// the real HostExecutor (real processes on the host); its root-owner check
+// accepts the test's own files through publish.AllowOwnerForTests. The job's
+// swarm_get_job view (staticResults returns the result a job end produced)
+// is stubbed, and the agent step's job start is stubbed by recordingAgents
+// (the model provider); the real Dispatch path is tested in api.
 
 const testAccount = "acct-a"
 
@@ -52,47 +50,21 @@ func (s *staticResults) Result(_ context.Context, sig pebblestore.Signal, _ bool
 	return &copy, nil
 }
 
-// hostSandbox stands in for the folder's sandbox: the script runs with a
-// cleared environment, the step's variables and the stand-ins of the
-// folder's secret grants only.
-type hostSandbox struct {
-	grants map[string]map[string]string // folder -> NAME -> stand-in
+// recordingHost is the real HostExecutor, recording each request; before
+// may stop a request (a daemon stopping as the step starts).
+type recordingHost struct {
 	before func(RunRequest) error
 	ran    []RunRequest
 }
 
-func (h *hostSandbox) Run(ctx context.Context, req RunRequest) (RunOutcome, error) {
+func (h *recordingHost) Run(ctx context.Context, req RunRequest) (RunOutcome, error) {
 	if h.before != nil {
 		if err := h.before(req); err != nil {
 			return RunOutcome{}, err
 		}
 	}
 	h.ran = append(h.ran, req)
-	script, err := scriptPath(req.Folder, req.Command)
-	if err != nil {
-		return RunOutcome{}, &RefusedError{Reason: err.Error()}
-	}
-	cmd := exec.CommandContext(ctx, script, req.Args...)
-	cmd.Dir = req.Folder
-	cmd.Env = []string{"PATH=/usr/bin:/bin"}
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	for k, v := range h.grants[req.Folder] {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	cmd.Stdin = bytes.NewReader(req.Stdin)
-	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
-	err = cmd.Run()
-	if req.OnOutput != nil {
-		req.OnOutput(out.Bytes())
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return RunOutcome{ExitCode: exit.ExitCode(), Output: out.Bytes()}, nil
-	}
-	return RunOutcome{Output: out.Bytes()}, err
+	return HostExecutor{}.Run(ctx, req)
 }
 
 type recordingAgents struct {
@@ -132,15 +104,18 @@ type harness struct {
 	feed    *pebblestore.SignalStore
 	store   *Store
 	results *staticResults
-	sandbox *hostSandbox
+	host    *recordingHost
 	agents  *recordingAgents
 	runner  *Runner
+	// head imports the job's head into the folder; nil names the ref only.
+	head func(context.Context, string, Result) (string, error)
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	h := &harness{t: t, dbPath: filepath.Join(t.TempDir(), "automations.pebble"), results: &staticResults{results: map[string]*Result{}},
-		sandbox: &hostSandbox{grants: map[string]map[string]string{}}, agents: &recordingAgents{status: "succeeded"}}
+		host: &recordingHost{}, agents: &recordingAgents{status: "succeeded"}}
+	t.Cleanup(publish.AllowOwnerForTests(os.Getuid()))
 	h.open()
 	t.Cleanup(func() { _ = h.db.Close() })
 	return h
@@ -155,9 +130,17 @@ func (h *harness) open() {
 		h.t.Fatal(err)
 	}
 	h.db, h.feed, h.store = db, pebblestore.NewSignalStore(db), NewStore(db)
+	h.build()
+}
+
+// build makes a fresh runner over the open database.
+func (h *harness) build() {
+	head := h.head
+	if head == nil {
+		head = func(_ context.Context, _ string, r Result) (string, error) { return "refs/swarm/jobs/" + r.RunID, nil }
+	}
 	h.runner = NewRunner(Options{Store: h.store, Feed: h.feed, Account: func() string { return testAccount }, Results: h.results,
-		Run: h.sandbox, Agent: h.agents, Emit: signals.NewEmitter(h.feed).Emit,
-		Head: func(_ context.Context, _ string, r Result) (string, error) { return "refs/swarm/jobs/" + r.RunID, nil }})
+		Run: h.host, Agent: h.agents, Emit: signals.NewEmitter(h.feed).Emit, Head: head})
 	h.runner.backoff = func(int) time.Duration { return 0 }
 }
 
@@ -222,6 +205,11 @@ func writeScript(t *testing.T, folder, name, body string) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Not group- or other-writable whatever the umask: the root-owner check
+	// refuses that.
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func workerResult(folder, runID string) *Result {
@@ -240,21 +228,30 @@ func readFile(t *testing.T, path string) string {
 	return string(data)
 }
 
-// Requirement: a run step gets the job's result JSON on stdin and the SWARM_*
-// environment, sees its own folder's secret grants and nothing of another
-// folder's or the daemon's environment, and its last output line is recorded
-// as the step's output with the log tail.
-// Threat: a script that cannot tell which job ended, a secret of another
-// folder (or of the daemon) leaking into a folder's script, or a lost output.
-// Owners: Runner.runScript (stepEnv, stdin, tail, lastLine) and Store.
-func TestRunStepGetsResultOnStdinEnvAndOnlyTheFolderGrants(t *testing.T) {
+// Requirement: a run step runs on the host, as the daemon's user, in the
+// folder, with no sandbox manager configured. It gets the job's result JSON
+// on stdin and the SWARM_* environment over a minimal environment (PATH,
+// HOME, a per-step TMPDIR removed afterwards) and nothing else of the
+// daemon's environment; its last output line is recorded as the step's
+// output with the log tail, and its exit code as the outcome.
+// Threat: a step refused because the sandbox is off, a script that cannot
+// tell which job ended, a daemon variable leaking into a script, a scratch
+// folder left behind, or a lost output.
+// Owners: HostExecutor.Run over publish.RunScript, and Runner.runScript
+// (stepEnv, stdin, tail, lastLine) and Store. A real process run through the
+// real runner is the narrowest layer that proves what the script sees.
+func TestRunStepRunsOnTheHostWithResultAndOnlyItsEnv(t *testing.T) {
 	t.Setenv("SWARM_DAEMON_ONLY_SECRET", "daemon-value")
+	if sandbox.Default() != nil {
+		t.Fatal("a sandbox manager is configured; this test proves run steps need none")
+	}
 	h := newHarness(t)
-	folder, other := t.TempDir(), t.TempDir()
-	h.sandbox.grants[folder] = map[string]string{"FORGE_TOKEN": "swarm-secret://FORGE_TOKEN"}
-	h.sandbox.grants[other] = map[string]string{"OTHER_TOKEN": "swarm-secret://OTHER_TOKEN"}
+	folder := t.TempDir()
 	writeScript(t, folder, "deliver/push.sh", `cat > "$PWD/stdin.json"
 env | sort > "$PWD/env.txt"
+echo "$TMPDIR" > "$PWD/tmpdir.txt"
+touch "$TMPDIR/scratch-file"
+id -u > "$PWD/uid.txt"
 echo "pushing $SWARM_HEAD"
 echo "https://forge.example.invalid/pr/7"
 echo ""
@@ -287,18 +284,32 @@ echo ""
 	env := readFile(t, filepath.Join(folder, "env.txt"))
 	for _, want := range []string{"SWARM_JOB_ID=worker/coder-1/run-1", "SWARM_JOB_STATUS=succeeded", "SWARM_HEAD=" + strings.Repeat("b", 40),
 		"SWARM_BASE=" + strings.Repeat("a", 40), "SWARM_BRANCH=agent/run-1", "SWARM_JOB_REF=refs/swarm/jobs/run-1", "SWARM_DELIVERY_ID=" + d.ID,
-		"FORGE_TOKEN=swarm-secret://FORGE_TOKEN"} {
+		"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + os.Getenv("HOME")} {
 		if !strings.Contains(env, want+"\n") {
 			t.Fatalf("env lacks %s:\n%s", want, env)
 		}
 	}
-	for _, leak := range []string{"OTHER_TOKEN", "SWARM_DAEMON_ONLY_SECRET", "daemon-value"} {
-		if strings.Contains(env, leak) {
-			t.Fatalf("env leaks %s:\n%s", leak, env)
+	// Only the minimal environment, the SWARM_* variables and what the
+	// shell itself sets.
+	shell := map[string]bool{"PATH": true, "HOME": true, "TMPDIR": true, "PWD": true, "OLDPWD": true, "SHLVL": true, "_": true}
+	for _, line := range strings.Split(strings.TrimSpace(env), "\n") {
+		name, _, _ := strings.Cut(line, "=")
+		if !shell[name] && !strings.HasPrefix(name, "SWARM_") || name == "SWARM_DAEMON_ONLY_SECRET" {
+			t.Fatalf("env has %s from outside the step:\n%s", name, env)
 		}
 	}
-	if len(h.sandbox.ran) != 1 || h.sandbox.ran[0].Folder != folder || h.sandbox.ran[0].Args[0] != "--draft" {
-		t.Fatalf("sandbox requests = %+v", h.sandbox.ran)
+	scratch := strings.TrimSpace(readFile(t, filepath.Join(folder, "tmpdir.txt")))
+	if scratch == "" || scratch == os.TempDir() || !strings.Contains(env, "TMPDIR="+scratch+"\n") {
+		t.Fatalf("TMPDIR %q is not a per-step scratch folder", scratch)
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Fatalf("the step's scratch folder %s was not removed: %v", scratch, err)
+	}
+	if uid := strings.TrimSpace(readFile(t, filepath.Join(folder, "uid.txt"))); uid != strconv.Itoa(os.Getuid()) {
+		t.Fatalf("the step ran as uid %s, not the daemon's user %d", uid, os.Getuid())
+	}
+	if len(h.host.ran) != 1 || h.host.ran[0].Folder != folder || h.host.ran[0].Args[0] != "--draft" {
+		t.Fatalf("run requests = %+v", h.host.ran)
 	}
 	if sigs := h.signalsOf("automation.step.succeeded"); len(sigs) != 1 || sigs[0].Attrs["output"] != "https://forge.example.invalid/pr/7" {
 		t.Fatalf("succeeded signals = %+v", sigs)
@@ -393,7 +404,7 @@ func TestRestartResumesWithoutRerunningAFinishedStep(t *testing.T) {
 
 	// The daemon stops while step two is starting.
 	ctx, cancel := context.WithCancel(context.Background())
-	h.sandbox.before = func(req RunRequest) error {
+	h.host.before = func(req RunRequest) error {
 		if req.Command == "two.sh" {
 			cancel()
 			return context.Canceled
@@ -409,7 +420,7 @@ func TestRestartResumesWithoutRerunningAFinishedStep(t *testing.T) {
 		t.Fatalf("before restart: %s %s %s", d.State, d.Steps[0].State, d.Steps[1].State)
 	}
 
-	h.sandbox.before = nil
+	h.host.before = nil
 	h.restart()
 	h.process()
 	d = h.deliveries("worker/coder-1/run-1")[0]
@@ -525,8 +536,8 @@ func TestStopSwitchPreventsNewSteps(t *testing.T) {
 	h.jobEnd("run-1", "", "succeeded", "direct")
 	h.process()
 	d := h.deliveries("worker/coder-1/run-1")[0]
-	if d.State != StateStopped || d.Steps[0].State != StateStopped || d.Steps[0].Attempts != 0 || len(h.sandbox.ran) != 0 {
-		t.Fatalf("stopped delivery = %+v (ran %d)", d, len(h.sandbox.ran))
+	if d.State != StateStopped || d.Steps[0].State != StateStopped || d.Steps[0].Attempts != 0 || len(h.host.ran) != 0 {
+		t.Fatalf("stopped delivery = %+v (ran %d)", d, len(h.host.ran))
 	}
 	if _, err := os.Stat(filepath.Join(folder, "pushed")); !os.IsNotExist(err) {
 		t.Fatal("a step ran while the stop switch was on")
@@ -594,8 +605,8 @@ func TestNoAutomationMeansNothingRuns(t *testing.T) {
 	h.results.results["run-1"] = workerResult(folder, "run-1")
 	h.jobEnd("run-1", "", "succeeded", "direct")
 	h.process()
-	if h.results.calls != 0 || len(h.deliveries("worker/coder-1/run-1")) != 0 || len(h.sandbox.ran) != 0 || len(h.agents.started) != 0 {
-		t.Fatalf("a job end without automations did something: results %d sandbox %d agents %d", h.results.calls, len(h.sandbox.ran), len(h.agents.started))
+	if h.results.calls != 0 || len(h.deliveries("worker/coder-1/run-1")) != 0 || len(h.host.ran) != 0 || len(h.agents.started) != 0 {
+		t.Fatalf("a job end without automations did something: results %d runs %d agents %d", h.results.calls, len(h.host.ran), len(h.agents.started))
 	}
 	if sigs := h.signalsOf("automation"); len(sigs) != 0 {
 		t.Fatalf("automation signals without automations: %+v", sigs)
@@ -606,16 +617,5 @@ func TestNoAutomationMeansNothingRuns(t *testing.T) {
 	h.process()
 	if len(h.deliveries("worker/coder-1/run-1")) != 0 {
 		t.Fatal("an automation of another folder delivered")
-	}
-}
-
-// Requirement: a run step is refused, with a clear reason, when the sandbox
-// is not active; nothing runs on the host.
-// Owner: SandboxExecutor.Run.
-func TestSandboxExecutorRefusesWithoutAnActiveSandbox(t *testing.T) {
-	_, err := SandboxExecutor{Manager: func() *sandbox.Manager { return nil }}.Run(context.Background(), RunRequest{Folder: t.TempDir(), Command: "push.sh"})
-	var refused *RefusedError
-	if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "sandbox is not active") {
-		t.Fatalf("err = %v", err)
 	}
 }

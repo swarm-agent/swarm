@@ -1,6 +1,7 @@
 package jobautomation
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -56,7 +57,6 @@ const (
 	MaxRetries                = 3
 	MaxSteps                  = 20
 	MaxStepArgs               = 32
-	MaxStepSecrets            = 16
 	maxNameRunes              = 200
 	maxBriefRunes             = 20000
 	maxArgBytes               = 4096
@@ -68,10 +68,9 @@ const (
 )
 
 var (
-	stepIDPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
-	secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)
-	jobIDPattern      = regexp.MustCompile(`^(worker|media|design)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
-	refIDPattern      = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
+	stepIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	jobIDPattern  = regexp.MustCompile(`^(worker|media|design)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
+	refIDPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 )
 
 // Scope is which job ends an automation applies to: every job in a folder,
@@ -96,8 +95,9 @@ type Condition struct {
 	Verdict string `json:"verdict,omitempty"`
 }
 
-// Step is one thing an automation does. A run step runs a script of the
-// folder in the folder's sandbox; an agent step gives a worker a job; a
+// Step is one thing an automation does. A run step runs the owner's
+// root-owned script on the host, as the daemon's user, in the folder; an
+// agent step gives a worker a job; a
 // reopen step sends an earlier step's findings into the triggering job's own
 // session as a follow-up.
 type Step struct {
@@ -111,10 +111,10 @@ type Step struct {
 	// run
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
-	// Secrets names the folder grants the script needs; the sandbox gets the
-	// folder's grants as stand-ins either way. Naming them makes the step
-	// refuse clearly when the secrets gateway is off or one is not granted.
-	Secrets []string `json:"secrets,omitempty"`
+	// Secrets was removed: a run step runs on the host and uses the
+	// machine's own credentials, like the publish command. It is read only
+	// so a step that still sends it is refused, never silently ignored.
+	Secrets json.RawMessage `json:"secrets,omitempty"`
 	// agent
 	Worker string `json:"worker,omitempty"`
 	Brief  string `json:"brief,omitempty"`
@@ -221,6 +221,9 @@ func NormalizeSteps(steps []Step) error {
 		if seen[step.ID] {
 			return invalid("step id %q is used twice", step.ID)
 		}
+		if step.Secrets != nil {
+			return invalid("step %s: %s", step.ID, secretsRemoved)
+		}
 		if step.TimeoutSeconds == 0 {
 			step.TimeoutSeconds = DefaultStepTimeoutSeconds
 		}
@@ -323,21 +326,12 @@ func (s *Step) normalizeRun() error {
 			return invalid("step %s: an arg is longer than %d bytes or holds a NUL", s.ID, maxArgBytes)
 		}
 	}
-	if len(s.Secrets) > MaxStepSecrets {
-		return invalid("step %s: at most %d secrets", s.ID, MaxStepSecrets)
-	}
-	for i, name := range s.Secrets {
-		s.Secrets[i] = strings.TrimSpace(name)
-		if !secretNamePattern.MatchString(s.Secrets[i]) {
-			return invalid("step %s: secret %q is not a secret name", s.ID, name)
-		}
-	}
 	return nil
 }
 
 func (s *Step) normalizeAgent() error {
-	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
-		return invalid("step %s: an agent step has worker and brief, not command, args, secrets, from, message or max_rounds", s.ID)
+	if s.Command != "" || len(s.Args) > 0 || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
+		return invalid("step %s: an agent step has worker and brief, not command, args, from, message or max_rounds", s.ID)
 	}
 	s.Worker, s.Brief = strings.TrimSpace(s.Worker), strings.TrimSpace(s.Brief)
 	if s.Worker == "" || len(s.Worker) > 200 {
@@ -365,15 +359,25 @@ func NonReviewerFixesError(stepID, worker, role string) error {
 	return invalid("step %s: fixes is only for a reviewer worker; %s is a %s worker", stepID, worker, role)
 }
 
-// ValidCommandPath checks a run step's command: a path to a script inside
-// the folder, relative to it, with no way out of it.
+// secretsRemoved is why a step that names secrets is refused.
+const secretsRemoved = "secrets are no longer a step option: a run step runs on the host as the daemon's user and uses the machine's own credentials, like the publish command; remove secrets from the step"
+
+// ValidCommandPath checks a run step's command: an absolute path, or a path
+// relative to the folder that does not leave it, never under .git. Where
+// the script lives is the owner's choice; before it runs, the resolved file
+// must be owned by root and not writable by group or others (ResolveScript).
 func ValidCommandPath(command string) error {
 	if command == "" || len(command) > maxCommandBytes {
-		return errors.New("command is required: the path of an executable script inside the folder, for example deliver/push.sh")
+		return errors.New("command is required: the absolute path of a root-owned executable script, or its path relative to the folder, for example deliver/push.sh")
 	}
-	if strings.HasPrefix(command, "/") || strings.ContainsAny(command, "\\\x00") || path.Clean(command) != command || command == "." ||
-		command == ".." || strings.HasPrefix(command, "../") || strings.HasPrefix(command, ".git/") || command == ".git" {
-		return fmt.Errorf("command %q must be a clean path inside the folder (no absolute path, no .., not under .git)", command)
+	if strings.ContainsAny(command, "\\\x00") || path.Clean(command) != command || command == "." || command == "/" ||
+		command == ".." || strings.HasPrefix(command, "../") {
+		return fmt.Errorf("command %q must be a clean absolute path or a clean path inside the folder (no .., not under .git)", command)
+	}
+	for _, part := range strings.Split(command, "/") {
+		if part == ".git" {
+			return fmt.Errorf("command %q is under .git: a run step's script is never under .git", command)
+		}
 	}
 	return nil
 }

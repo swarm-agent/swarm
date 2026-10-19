@@ -21,7 +21,7 @@ import (
 // the real Pebble store and signal feed. Stubbed boundaries only: the model
 // provider behind the coder and reviewer jobs (recordingAgents scripts each
 // reviewer job's recorded verdict), the job's session that accepts the
-// follow-up (sessionReopener) and the folder's sandbox (hostSandbox).
+// follow-up (sessionReopener) and the run step's host executor (recordingHost).
 func TestReviewLoopAcceptanceBlockReopenThenOkDeliversTheFinalHead(t *testing.T) {
 	h := newHarness(t)
 	reopener := &sessionReopener{}
@@ -122,8 +122,8 @@ func TestNoAutomationNothingReviewsReopensOrDelivers(t *testing.T) {
 	h.jobEnd("run-1", "", "succeeded", "direct")
 	h.jobEnd("run-1", "followup-1", "succeeded", "direct")
 	h.process()
-	if len(h.agents.started) != 0 || len(reopener.sent) != 0 || len(h.sandbox.ran) != 0 || len(h.deliveries("worker/coder-1/run-1")) != 0 {
-		t.Fatalf("without automations: agents %d reopens %d runs %d", len(h.agents.started), len(reopener.sent), len(h.sandbox.ran))
+	if len(h.agents.started) != 0 || len(reopener.sent) != 0 || len(h.host.ran) != 0 || len(h.deliveries("worker/coder-1/run-1")) != 0 {
+		t.Fatalf("without automations: agents %d reopens %d runs %d", len(h.agents.started), len(reopener.sent), len(h.host.ran))
 	}
 	if sigs := h.signalsOf("automation"); len(sigs) != 0 {
 		t.Fatalf("automation signals without automations: %+v", sigs)

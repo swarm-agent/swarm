@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -11,13 +10,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/jobautomation"
+	"swarm/packages/swarmd/internal/publish"
 	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	"swarm/packages/swarmd/internal/signals"
@@ -30,34 +29,24 @@ import (
 // media.job.* signal (signalMediaSettled) and a design job's design.job.*
 // signal (DesignJobEndSignal), through the daemon's result source
 // (JobAutomationResults over the shared job result builder and
-// designJobView) into the real Runner and store. The sandbox is the stubbed
-// host boundary (automationHostSandbox runs the folder's script on the host
-// with only the step's environment); this machine has neither bubblewrap
-// nor docker.
+// designJobView) into the real Runner and store. Run steps run through the
+// real jobautomation.HostExecutor (automationHost records them); its
+// root-owner check accepts the test's own scripts through
+// publish.AllowOwnerForTests.
 
-type automationHostSandbox struct{ ran []jobautomation.RunRequest }
+type automationHost struct{ ran []jobautomation.RunRequest }
 
-func (h *automationHostSandbox) Run(ctx context.Context, req jobautomation.RunRequest) (jobautomation.RunOutcome, error) {
+// newAutomationHost is the real host executor, with the test's own files
+// accepted as root-owned until the test ends.
+func newAutomationHost(t *testing.T) *automationHost {
+	t.Helper()
+	t.Cleanup(publish.AllowOwnerForTests(os.Getuid()))
+	return &automationHost{}
+}
+
+func (h *automationHost) Run(ctx context.Context, req jobautomation.RunRequest) (jobautomation.RunOutcome, error) {
 	h.ran = append(h.ran, req)
-	if err := jobautomation.ValidCommandPath(req.Command); err != nil {
-		return jobautomation.RunOutcome{}, &jobautomation.RefusedError{Reason: err.Error()}
-	}
-	cmd := exec.CommandContext(ctx, filepath.Join(req.Folder, req.Command), req.Args...)
-	cmd.Dir = req.Folder
-	cmd.Env = []string{"PATH=/usr/bin:/bin"}
-	for k, v := range req.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
-	}
-	cmd.Stdin = bytes.NewReader(req.Stdin)
-	out, err := cmd.CombinedOutput()
-	if req.OnOutput != nil {
-		req.OnOutput(out)
-	}
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
-		return jobautomation.RunOutcome{ExitCode: exit.ExitCode(), Output: out}, nil
-	}
-	return jobautomation.RunOutcome{Output: out}, err
+	return jobautomation.HostExecutor{}.Run(ctx, req)
 }
 
 func writeAutomationScript(t *testing.T, folder, name string) {
@@ -103,7 +92,7 @@ func TestMediaJobEndProducesAResultAndTriggersItsAutomation(t *testing.T) {
 	p := identity.Principal{Type: identity.PrincipalTypeUser, UserID: "user-a", AccountScopeID: "account-a"}
 	folder := t.TempDir()
 	writeAutomationScript(t, folder, "upload.sh")
-	sandbox := &automationHostSandbox{}
+	sandbox := newAutomationHost(t)
 	runner := newAutomationRunner(t, server, store, feed, p.AccountScopeID, sandbox)
 	if _, _, err := runner.Store().Put(p.AccountScopeID, jobautomation.Automation{Name: "upload", Scope: jobautomation.Scope{Folder: folder}, Enabled: true,
 		Steps: []jobautomation.Step{{ID: "upload", Type: jobautomation.StepRun, Command: "upload.sh"}}}); err != nil {
@@ -172,7 +161,7 @@ func TestDesignJobEndProducesAResultAndTriggersItsAutomation(t *testing.T) {
 	p := testPrincipal()
 	folder := t.TempDir()
 	writeAutomationScript(t, folder, "publish.sh")
-	runner := newAutomationRunner(t, server, store, server.signals, p.AccountScopeID, &automationHostSandbox{})
+	runner := newAutomationRunner(t, server, store, server.signals, p.AccountScopeID, newAutomationHost(t))
 	if _, _, err := runner.Store().Put(p.AccountScopeID, jobautomation.Automation{Name: "publish designs", Scope: jobautomation.Scope{Folder: folder}, Enabled: true,
 		Steps: []jobautomation.Step{{ID: "publish", Type: jobautomation.StepRun, Command: "publish.sh"}}}); err != nil {
 		t.Fatal(err)
@@ -453,5 +442,32 @@ func TestJobAutomationRoutesEnforceScopesAndAccounts(t *testing.T) {
 	}
 	if w := do(owner(http.MethodDelete, JobAutomationsPath+"/"+created.Automation.ID, "", "automations:write")); w.Code != http.StatusOK {
 		t.Fatalf("delete = %d %s", w.Code, w.Body)
+	}
+}
+
+// Requirement: the MCP automation tools (and the HTTP API, which decodes the
+// same jobautomation.Step) accept a run step's command as an absolute path,
+// refuse a step that still sends secrets with the reason, and no longer
+// offer secrets in the steps schema.
+// Threat: an owner setting secrets they believe scope a host script that
+// actually runs with the machine's own credentials, or a schema that keeps
+// advertising a removed option.
+// Owners: controlMCPAutomationSteps (over jobautomation.NormalizeSteps) and
+// controlMCPAutomationStepsSchema.
+func TestAutomationStepsAcceptAbsoluteCommandsAndRefuseSecrets(t *testing.T) {
+	steps, err := controlMCPAutomationSteps([]any{map[string]any{"type": "run", "command": "/usr/local/libexec/deliver/push.sh"}})
+	if err != nil || len(steps) != 1 || steps[0].Command != "/usr/local/libexec/deliver/push.sh" {
+		t.Fatalf("absolute command: %+v %v", steps, err)
+	}
+	_, err = controlMCPAutomationSteps([]any{map[string]any{"type": "run", "command": "deliver/push.sh", "secrets": []any{"FORGE_TOKEN"}}})
+	if err == nil || !strings.Contains(err.Error(), "secrets are no longer a step option") {
+		t.Fatalf("step with secrets: err = %v", err)
+	}
+	props := controlMCPAutomationStepsSchema()["items"].(map[string]any)["properties"].(map[string]any)
+	if _, ok := props["secrets"]; ok {
+		t.Fatal("the steps schema still offers secrets")
+	}
+	if desc, _ := props["command"].(map[string]any)["description"].(string); !strings.Contains(desc, "absolute path") || !strings.Contains(desc, "owned by root") {
+		t.Fatalf("command description = %q", desc)
 	}
 }

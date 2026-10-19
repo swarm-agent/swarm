@@ -55,31 +55,65 @@ failed), and the steps after it still run. There is no expression language.
 ### `run` steps
 
 ```json
-{ "id": "push", "type": "run", "command": "deliver/push.sh", "args": ["--draft"], "secrets": ["FORGE_TOKEN"] }
+{ "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh", "args": ["--draft"] }
 ```
 
-- `command` is the path of an **executable script inside the folder**
-  (relative, no `..`, not under `.git`). It runs in the folder's sandbox, the
-  same one jobs' Bash uses, with the folder as working directory. Swarm
-  refuses the step when the sandbox is not active; it never runs it on the
-  host.
+A `run` step is what the machine's owner does with a job's result after the
+job has ended: merge it locally, push it, upload a file. It is the owner's
+own script, not an agent command, so it runs **on the host as the daemon's
+user**, the same way the publish command does: with the folder as working
+directory, the machine's own credentials (the daemon user's SSH keys, Git
+credential helper, `~/.netrc`) and write access to the folder's repository.
+Swarm ships, installs and suggests no script: it runs only the steps the
+owner configured, and nothing when there are none.
+
+- `command` is an **absolute path**, or a path **relative to the folder**
+  (no `..`, not under `.git`). The script may live anywhere on the machine.
+  Swarm resolves it, symlinks included, and runs it only when the final file
+  is **owned by root and not writable by group or others** (and executable);
+  otherwise the step is refused with the reason and the fix, and nothing
+  runs. The check is made again immediately before the script runs, and
+  Swarm runs the resolved path, not the name the step gave. Install a script
+  with:
+
+  ```sh
+  sudo install -o root -m 755 push.sh /usr/local/libexec/swarm-deliver/push.sh
+  ```
+
+  A script inside the folder (`deliver/push.sh`) must pass the same check,
+  so a file an agent or the folder's owner can edit never runs.
+- `run` steps have no `secrets`: a step that sends them is refused. A host
+  script uses the machine's own credentials, as the publish command does.
 - Before the step, Swarm brings the delivery's head commit (the job's head,
   or the head an earlier `agent` step moved it to) into the folder as
   `refs/swarm/jobs/<run-id>`.
-- The script gets the job's result JSON (below) on **stdin**.
-- Environment: `SWARM_JOB_ID`, `SWARM_JOB_STATUS` (`succeeded`, `failed` or
-  `cancelled`), `SWARM_HEAD` (the delivery's head), `SWARM_BASE`,
-  `SWARM_BRANCH`, `SWARM_JOB_REF`, `SWARM_DELIVERY_ID` and `SWARM_ROUND` (the
-  git values are empty when the job has no commits). Nothing of the
+- The script gets the job's result JSON (below) on **stdin**, and `args` as
+  its arguments.
+- Environment: only `PATH` (`/usr/local/bin:/usr/bin:/bin`), `HOME` (the
+  daemon user's), `TMPDIR` (a scratch folder of its own, removed when the
+  step ends) and these:
+
+  ```sh
+  SWARM_JOB_ID=worker/<worker>/<run>
+  SWARM_JOB_STATUS=succeeded          # or failed, cancelled
+  SWARM_HEAD=<sha>                    # the delivery's head
+  SWARM_BASE=<sha>
+  SWARM_BRANCH=agent/...
+  SWARM_JOB_REF=refs/swarm/jobs/<run-id>
+  SWARM_DELIVERY_ID=<delivery id>
+  SWARM_ROUND=0
+  ```
+
+  The git values are empty when the job has no commits. Nothing else of the
   daemon's environment is passed in.
-- Secrets: exactly the folder's grants, as the stand-ins the sandbox already
-  carries (the real value is put in only on the way to an allowed website).
-  `secrets` names the grants the script needs; the step is refused with a
-  clear reason when the secrets gateway is off or a named secret is not
-  granted to the folder.
-- Output: the last 64 KiB are kept as the step's log tail; the **last
-  non-empty line** is the step's `output` (for example a pull request URL).
-  A non-zero exit fails the step.
+- Time limit: `timeout_seconds`. Past it, or when the daemon stops, Swarm
+  kills the script's whole process group (the script and every process it
+  started). A timed-out step fails with exit code 124 and a last line saying
+  it timed out.
+- Output: stdout and stderr together; the last 64 KiB are kept as the step's
+  log tail and the **last non-empty line** is the step's `output` (for
+  example a pull request URL). The exit code is the outcome: a non-zero exit
+  fails the step.
 
 ### `agent` steps
 
@@ -324,16 +358,49 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
 - SDK: `client.jobAutomations` (`list`, `get`, `set`, `delete`, `stopState`,
   `setStopped`, `deliveries`, `delivery`, `rerun`).
 
+## Example: merge the job into a local branch
+
+The scripts in these examples are examples for owners to adapt, not
+defaults: Swarm ships none and runs none on its own.
+
+`/usr/local/libexec/swarm-deliver/merge.sh`, installed with
+`sudo install -o root -m 755 merge.sh /usr/local/libexec/swarm-deliver/merge.sh`:
+
+```sh
+#!/bin/sh
+# Merge each finished job into the folder's "integration" branch.
+set -eu
+git checkout -q integration
+git merge -q --no-ff -m "Merge $SWARM_JOB_ID" "$SWARM_JOB_REF"
+git rev-parse HEAD
+```
+
+```json
+{
+  "name": "merge finished jobs",
+  "scope": { "folder": "/srv/site" },
+  "when": "succeeded",
+  "steps": [{ "id": "merge", "type": "run", "command": "/usr/local/libexec/swarm-deliver/merge.sh" }]
+}
+```
+
+The script runs in `/srv/site` as the daemon's user, so it can check out and
+merge there; the step's output is the merge commit. A conflict fails the
+step (`git merge` exits non-zero) and leaves the folder for the owner to
+resolve.
+
 ## Example: push the job's commits to a branch
 
-`deliver/push.sh` in the folder (committed, `chmod +x`), with the folder's
-forge token granted as a secret:
+`/usr/local/libexec/swarm-deliver/push.sh`, installed the same way. It
+pushes with the folder's own `origin` remote and the daemon user's Git
+credentials (an SSH key or credential helper), like any push from that
+account:
 
 ```sh
 #!/bin/sh
 set -eu
 branch="swarm/$(basename "$SWARM_JOB_ID")"
-git push "https://x-access-token:${FORGE_TOKEN}@forge.example.com/acme/site.git" "$SWARM_JOB_REF:refs/heads/$branch"
+git push origin "$SWARM_JOB_REF:refs/heads/$branch"
 echo "https://forge.example.com/acme/site/tree/$branch"
 ```
 
@@ -343,7 +410,7 @@ echo "https://forge.example.com/acme/site/tree/$branch"
   "scope": { "folder": "/srv/site" },
   "when": "succeeded",
   "retries": 1,
-  "steps": [{ "id": "push", "type": "run", "command": "deliver/push.sh", "secrets": ["FORGE_TOKEN"] }]
+  "steps": [{ "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh" }]
 }
 ```
 
@@ -371,7 +438,7 @@ automation says so: there is no built-in review chain.
       { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2,
         "message": "The reviewer blocked your work. Its findings:",
         "if": [{ "step": "review", "verdict": "block" }] },
-      { "id": "push", "type": "run", "command": "deliver/push.sh", "secrets": ["FORGE_TOKEN"],
+      { "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
         "if": [{ "step": "review", "verdict": "ok" }] }
     ]
   }
@@ -392,7 +459,7 @@ automation says so: there is no built-in review chain.
    could not be read reopens nothing: `fix` fails with
    `review unreadable: <reviewer job id>`, no round is used and the delivery
    ends `blocked`.
-5. On `ok`, `fix` is skipped and `push` runs `deliver/push.sh` with
+5. On `ok`, `fix` is skipped and `push` runs the owner's push script with
    `SWARM_HEAD` (and `refs/swarm/jobs/<run-id>`) at the reviewed head, or at
    the reviewer's fix head when it committed fixes within the limit. Fixes
    over the limit fail `review` (`reviewer fixes too large`): nothing is
@@ -431,8 +498,9 @@ Reviewer jobs started outside automations work as before. See
 A job that commits images, video or audio (a coder or designer worker making
 assets) lists them in the result's `files` with their sha256. The step reads
 each one from the job's head through `$SWARM_JOB_REF` (no checkout needed),
-checks its hash and uploads it. `deliver/upload-media.sh` (here with `jq`,
-`sha256sum` and `curl`, if the folder's environment has them):
+checks its hash and uploads it. `/usr/local/libexec/swarm-deliver/upload-media.sh`
+(root-owned, here with `jq`, `sha256sum` and `curl` from the machine, and the
+CDN login from the daemon user's `~/.netrc`):
 
 ```sh
 #!/bin/sh
@@ -443,7 +511,7 @@ for path in $(echo "$result" | jq -r '.files[].path'); do
   want=$(echo "$result" | jq -r --arg p "$path" '.files[] | select(.path == $p) | .sha256')
   git show "$SWARM_JOB_REF:$path" > "$TMPDIR/upload"
   [ "$(sha256sum < "$TMPDIR/upload" | cut -d' ' -f1)" = "$want" ] || { echo "hash mismatch: $path"; exit 1; }
-  curl -fsS -H "Authorization: Bearer $CDN_TOKEN" --data-binary @"$TMPDIR/upload" "https://cdn.example.com/upload/$path"
+  curl -fsS --netrc --data-binary @"$TMPDIR/upload" "https://cdn.example.com/upload/$path"
   count=$((count + 1))
 done
 echo "uploaded $count file(s)"
@@ -453,7 +521,7 @@ echo "uploaded $count file(s)"
 {
   "name": "upload media",
   "scope": { "folder": "/srv/site", "worker": "<designer worker id>" },
-  "steps": [{ "id": "upload", "type": "run", "command": "deliver/upload-media.sh", "secrets": ["CDN_TOKEN"] }]
+  "steps": [{ "id": "upload", "type": "run", "command": "/usr/local/libexec/swarm-deliver/upload-media.sh" }]
 }
 ```
 

@@ -183,8 +183,8 @@ func (f fixedJobResults) Result(_ context.Context, sig pebblestore.Signal, _ boo
 // Server.automationAgentReview, VerifyJobHead, JobHeadChangedLines and
 // ImportJobRef, with real Git clones, the real worker store and signal feed.
 // Stubbed: the reviewer job's start (stubStartAgents: the model provider),
-// the coder job's result (fixedJobResults) and the run step's sandbox
-// (automationHostSandbox, the host boundary).
+// the coder job's result (fixedJobResults). The run step runs through the
+// real host executor (automationHost).
 func TestFixingReviewerStepAppliesFixesThroughTheDaemonPath(t *testing.T) {
 	f := newReopenFixture(t)
 	p := testPrincipal()
@@ -275,7 +275,7 @@ func TestFixingReviewerStepAppliesFixesThroughTheDaemonPath(t *testing.T) {
 	}
 	agents := &stubStartAgents{jobs: []string{okJob, bigJob}, wait: f.server.JobAutomationAgents()}
 	feed := pebblestore.NewSignalStore(store.Underlying())
-	sandbox := &automationHostSandbox{}
+	sandbox := newAutomationHost(t)
 	runner := jobautomation.NewRunner(jobautomation.Options{Store: jobautomation.NewStore(store.Underlying()), Feed: feed, Account: func() string { return account },
 		Results: results, Run: sandbox, Agent: agents, Head: ImportJobRef, Verify: VerifyJobHead, Lines: JobHeadChangedLines})
 	if err := runner.ProcessOnce(ctx); err != nil {

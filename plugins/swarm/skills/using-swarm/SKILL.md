@@ -183,8 +183,11 @@ reviewer for a second look), you can offer a job automation:
 - `swarm_set_automation`: a name, the folder (or `project`), optionally only
   one worker's jobs, one job or one schedule's jobs, `when` (`succeeded`,
   `failed` or `always`), `retries` (0-3) and ordered steps. A `run` step runs
-  an executable script of the folder in its sandbox (it gets the job's result
-  JSON on stdin and `SWARM_*` variables, and only the folder's secrets); an
+  the machine owner's script on the host as the daemon's user, in the folder,
+  with the machine's own credentials (it gets the job's result JSON on stdin
+  and `SWARM_*` variables); its `command` is an absolute path or a path
+  relative to the folder, and the file must be owned by root and not writable
+  by group or others (`sudo install -o root -m 755`), or the step is refused; an
   `agent` step gives a worker a job (a reviewer reviews the job's exact head
   and records a verdict, `ok` or `block`, with findings; only with
   `fixes: "security"` on its step may it commit small security fixes, at most
@@ -193,8 +196,8 @@ reviewer for a second look), you can offer a job automation:
   follow-up, at most `max_rounds` times before the delivery ends `blocked`.
   A step's `if` runs it only when an earlier step's status or verdict match,
   so a person can compose a review loop (docs/automations.md has the exact
-  call). The person writes and commits the scripts; do not invent ones that
-  push or deploy without their say-so.
+  call). The machine's owner writes and installs the scripts; do not invent
+  ones that merge, push or deploy without their say-so.
 - `swarm_give_job` / `swarm_schedule_job` take `then` with the same steps,
   for that job or that schedule's jobs only.
 - `swarm_get_job` shows a job's deliveries and steps; `swarm_list_automations`

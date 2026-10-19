@@ -49,7 +49,8 @@ func TestDefinitionsAreRevisionedValidatedAndAccountScoped(t *testing.T) {
 	}
 	for name, bad := range map[string]Automation{
 		"escaping command": {Name: "x", Scope: Scope{Folder: "/srv/site"}, Steps: []Step{{Type: StepRun, Command: "../outside.sh"}}},
-		"absolute command": {Name: "x", Scope: Scope{Folder: "/srv/site"}, Steps: []Step{{Type: StepRun, Command: "/bin/sh"}}},
+		"command in .git":  {Name: "x", Scope: Scope{Folder: "/srv/site"}, Steps: []Step{{Type: StepRun, Command: "/srv/site/.git/hooks/push"}}},
+		"step secrets":     {Name: "x", Scope: Scope{Folder: "/srv/site"}, Steps: []Step{{Type: StepRun, Command: "a.sh", Secrets: []byte(`["T"]`)}}},
 		"relative folder":  {Name: "x", Scope: Scope{Folder: "site"}, Steps: []Step{{Type: StepRun, Command: "a.sh"}}},
 		"retries":          {Name: "x", Scope: Scope{Folder: "/srv/site"}, Retries: 4, Steps: []Step{{Type: StepRun, Command: "a.sh"}}},
 		"timeout":          {Name: "x", Scope: Scope{Folder: "/srv/site"}, Steps: []Step{{Type: StepRun, Command: "a.sh", TimeoutSeconds: 3601}}},

@@ -846,17 +846,9 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 		Store: jobautomation.NewStore(store), Feed: signalStore, Account: apiServer.OutboxAccount,
 		Results: apiServer.JobAutomationResults(), Agent: apiServer.JobAutomationAgents(), Reopen: apiServer.JobAutomationReopener(),
 		Head: api.ImportJobRef, Verify: api.VerifyJobHead, Lines: api.JobHeadChangedLines, Emit: signalEmitter.Emit,
-		Run: jobautomation.SandboxExecutor{Grants: func(folder string) ([]string, error) {
-			grants, err := secretSlots.ActiveGrantsForWorkspace(folder)
-			if err != nil {
-				return nil, err
-			}
-			names := make([]string, 0, len(grants))
-			for _, grant := range grants {
-				names = append(names, grant.Slot.Name)
-			}
-			return names, nil
-		}},
+		// Run steps are the owner's root-owned scripts, run on the host as the
+		// daemon's user, like the publish command.
+		Run: jobautomation.HostExecutor{},
 	})
 	apiServer.SetJobAutomations(jobAutomationRunner)
 	// Jobs in folders whose owner set a publish command (swarmctl workspace

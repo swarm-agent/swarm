@@ -60,7 +60,7 @@ func (r *gitRepo) commitFiles(msg string) string {
 // Owners: Runner.runAgent and Runner.applyReviewerFixes (HeadVerifier,
 // LineCounter), stepEnv, over a real Git repository, the real Pebble store
 // and signal feed. Stubbed: the reviewer job itself (recordingAgents: the
-// model provider) and the sandbox (hostSandbox).
+// model provider) and the run step's host executor (recordingHost).
 func TestReviewerFixesMoveTheHeadOnlyWithOKAndWithinTheLimit(t *testing.T) {
 	h := newHarness(t)
 	folder := t.TempDir()
@@ -206,7 +206,7 @@ func TestFixesIsOnlyForAReviewerAgentStep(t *testing.T) {
 // head while the reviewer's findings say FIXED.
 // Owners: Runner.applyReviewerFixes (via runAgent), over a real Git
 // repository, the real Pebble store and signal feed. Stubbed: the reviewer
-// job (recordingAgents: the model provider) and the sandbox (hostSandbox).
+// job (recordingAgents: the model provider) and the run step's host executor (recordingHost).
 func TestReviewerOKWithUnreadableFixesFailsClosed(t *testing.T) {
 	h := newHarness(t)
 	folder := t.TempDir()

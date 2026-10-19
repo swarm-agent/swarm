@@ -1048,7 +1048,7 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	}
 	var steps []jobautomation.Step
 	if err := json.Unmarshal(encoded, &steps); err != nil {
-		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen, if, command, args, secrets, worker, brief, fixes, from, message, max_rounds, timeout_seconds, continue_on_failure}: %s", err.Error())
+		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen, if, command, args, worker, brief, fixes, from, message, max_rounds, timeout_seconds, continue_on_failure}: %s", err.Error())
 	}
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())
@@ -1285,9 +1285,8 @@ func controlMCPAutomationStepsSchema() map[string]any {
 			"from":                controlMCPStringProp("reopen: the earlier agent step whose findings are sent into the triggering job's own session (as swarm_message_job does).", 0, 64),
 			"message":             controlMCPStringProp("reopen: text placed before the findings.", 0, 4000),
 			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this loop may reopen the job; past it the delivery ends blocked (rounds_exhausted). Default 2."},
-			"command":             controlMCPStringProp("run: path of an executable script inside the folder, e.g. deliver/push.sh. It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output.", 0, 1024),
+			"command":             controlMCPStringProp("run: the machine owner's script, as an absolute path or a path relative to the folder (e.g. deliver/push.sh). It runs on the host as the daemon's user, in the folder, with the machine's own credentials, and only if the file (symlinks resolved) is owned by root and not writable by group or others. It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output.", 0, 1024),
 			"args":                map[string]any{"type": "array", "maxItems": jobautomation.MaxStepArgs, "items": map[string]any{"type": "string"}},
-			"secrets":             map[string]any{"type": "array", "maxItems": jobautomation.MaxStepSecrets, "items": map[string]any{"type": "string"}, "description": "run: secret names the script needs (granted to the folder); refused when the secrets gateway is off."},
 			"worker":              controlMCPStringProp("agent: coder, designer, finder, reviewer or a worker id. A reviewer reviews the triggering job's exact head.", 0, 200),
 			"brief":               controlMCPStringProp("agent: the job's brief; the triggering job's result is attached.", 0, 20000),
 			"fixes":               map[string]any{"type": "string", "enum": []string{jobautomation.FixesSecurity}, "description": "agent, reviewer worker only: \"security\" lets the reviewer commit small security-only fixes on a branch at the reviewed head instead of blocking for them. Its commits move the delivery head only with an OK verdict and at most " + strconv.Itoa(jobautomation.MaxReviewerFixLines) + " changed lines (else the step fails: reviewer fixes too large). Without it a reviewer is read-only."},
@@ -1309,7 +1308,7 @@ func controlMCPAutomationTools() []controlMCPTool {
 	return []controlMCPTool{
 		{
 			Name: "swarm_set_automation", Title: "Set a job automation",
-			Description: "Create or update (by name) what Swarm runs when a job ends in a folder: ordered steps, each a script of the folder run in its sandbox (run), a job for a worker (agent), or a follow-up that sends an agent step's findings into the triggering job's own session (reopen, bounded by max_rounds). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every job in the folder, one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. Swarm runs only these steps and reports what happened; with no automation a job just ends with its branch and the person integrates it by hand. Offer it; do not set it up unasked.",
+			Description: "Create or update (by name) what Swarm runs when a job ends in a folder: ordered steps, each the machine owner's root-owned script run on the host in the folder (run), a job for a worker (agent), or a follow-up that sends an agent step's findings into the triggering job's own session (reopen, bounded by max_rounds). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every job in the folder, one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. Swarm runs only these steps and reports what happened; with no automation a job just ends with its branch and the person integrates it by hand. Offer it; do not set it up unasked.",
 			InputSchema: controlMCPObject([]string{"name", "steps"}, map[string]any{
 				"name":      controlMCPStringProp("Unique name; setting an existing name updates it (its revision rises).", 1, 200),
 				"project":   controlMCPStringProp("Project (id or name) whose folder the automation watches, when scope.folder is not given.", 0, 256),

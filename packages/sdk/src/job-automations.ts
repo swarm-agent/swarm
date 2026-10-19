@@ -51,11 +51,16 @@ export interface JobAutomationStep {
   continue_on_failure?: boolean;
   /** Conditions that must all hold for the step to run; otherwise it is skipped and later steps still run. */
   if?: JobAutomationCondition[];
-  /** run: path of an executable script inside the folder, e.g. `deliver/push.sh`. */
+  /**
+   * run: the machine owner's script, as an absolute path or a path relative
+   * to the folder (e.g. `deliver/push.sh`). It runs on the host as the
+   * daemon's user, in the folder, with the machine's own credentials, and
+   * only if the file (symlinks resolved) is owned by root and not writable by
+   * group or others. A run step has no `secrets`: a step that sends them is
+   * refused.
+   */
   command?: string;
   args?: string[];
-  /** run: secret names the script needs (granted to the folder). */
-  secrets?: string[];
   /** agent: `coder`, `designer`, `finder`, `reviewer` or a worker id. */
   worker?: string;
   /** agent: the job's brief; the triggering job's result is attached (a reviewer also gets its brief, report, commands run and diff). */

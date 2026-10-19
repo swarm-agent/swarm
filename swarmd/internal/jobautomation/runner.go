@@ -39,14 +39,13 @@ type ResultSource interface {
 	Result(ctx context.Context, sig pebblestore.Signal, lastAttempt bool) (*Result, error)
 }
 
-// RunRequest is a run step for the folder's sandbox.
+// RunRequest is a run step: the owner's script, run on the host in Folder.
 type RunRequest struct {
 	Folder   string
 	Command  string
 	Args     []string
 	Env      map[string]string
 	Stdin    []byte
-	Secrets  []string
 	Timeout  time.Duration
 	OnOutput func([]byte)
 }
@@ -58,13 +57,13 @@ type RunOutcome struct {
 	Output   []byte
 }
 
-// RunExecutor runs a run step's script in the folder's sandbox.
+// RunExecutor runs a run step's script (HostExecutor in the daemon).
 type RunExecutor interface {
 	Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 }
 
-// RefusedError is a step Swarm refused to run (no sandbox, no secret
-// gateway, a script outside the folder): nothing ran.
+// RefusedError is a step Swarm refused to run (a script that is not owned
+// by root, or that group or others can write): nothing ran.
 type RefusedError struct{ Reason string }
 
 func (e *RefusedError) Error() string { return e.Reason }
@@ -762,6 +761,9 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	if r.run == nil {
 		return stepFailure{reason: "run steps are not available on this daemon", next: "rerun", refused: true}
 	}
+	if step.Secrets != nil {
+		return stepFailure{reason: secretsRemoved, next: "remove secrets from the step", refused: true}
+	}
 	ref := ""
 	if d.Result.Git != nil && d.Result.Git.Head != "" && r.head != nil {
 		imported, err := r.head(ctx, d.Folder, headResult(*d))
@@ -777,7 +779,7 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	tail := &tailBuffer{max: MaxLogTailBytes}
 	outcome, err := r.run.Run(ctx, RunRequest{
 		Folder: d.Folder, Command: step.Command, Args: append([]string(nil), step.Args...), Env: stepEnv(*d, ref), Stdin: stdin,
-		Secrets: append([]string(nil), step.Secrets...), Timeout: time.Duration(step.TimeoutSeconds) * time.Second, OnOutput: tail.write,
+		Timeout: time.Duration(step.TimeoutSeconds) * time.Second, OnOutput: tail.write,
 	})
 	if tail.len() == 0 && len(outcome.Output) > 0 {
 		tail.write(outcome.Output)
