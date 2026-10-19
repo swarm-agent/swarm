@@ -4575,9 +4575,6 @@ func (s *Service) compactRunContextWithMemory(ctx context.Context, sessionID, ru
 			return "", err
 		}
 	}
-	finalErr := errors.New("Compact one-shot returned without a result")
-	finishFailure(finalErr)
-	return "", finalErr
 }
 
 func boundCompactTranscript(transcript string, inputBudgetTokens int, fixedParts ...string) string {

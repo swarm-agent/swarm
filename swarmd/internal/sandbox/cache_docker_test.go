@@ -79,7 +79,7 @@ func TestProjectCacheDocker(t *testing.T) {
 	args := func(dir, command string) []string {
 		return []string{"run", "--rm", "--network", "none", "--user", fmt.Sprintf("%d:%d", uid, gid), "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--mount", "type=volume,src=" + volume + ",dst=" + projectCachePath, "--mount", "type=bind,src=" + root + ",dst=/cacheproof,readonly", "-w", "/cacheproof/" + filepath.Base(dir), "-e", "GOCACHE=" + projectCachePath + "/go-build", "-e", "GOMODCACHE=" + projectCachePath + "/go-mod", "-e", "GOFLAGS=-buildvcs=false -trimpath", "-e", "GOMAXPROCS=4", "--entrypoint", "sh", image, "-c", command}
 	}
-	if err := exec.CommandContext(ctx, "docker", append(args(filepath.Join(root, "one"), "command -v go"))...).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "docker", args(filepath.Join(root, "one"), "command -v go")...).Run(); err != nil {
 		t.Skip("sandbox image has no Go toolchain")
 	}
 	run(args(filepath.Join(root, "one"), "go test -p 4 ./...")...)

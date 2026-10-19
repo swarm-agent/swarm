@@ -920,7 +920,6 @@ func normalizeCredentialRecord(record AuthCredentialRecord) AuthCredentialRecord
 	record.AccountID = strings.TrimSpace(record.AccountID)
 	record.GoogleProject = strings.TrimSpace(record.GoogleProject)
 	record.GoogleLocation = strings.ToLower(strings.TrimSpace(record.GoogleLocation))
-	record.Managed = record.Managed
 	record.OwnerSwarmID = strings.TrimSpace(record.OwnerSwarmID)
 	record.Connection = normalizeCredentialConnection(record.Connection)
 	if record.UpdatedAt <= 0 {
