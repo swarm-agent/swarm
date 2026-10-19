@@ -264,7 +264,7 @@ func (t *generateContentTransport) stream(ctx context.Context, surface generateC
 			return provideriface.Response{}, sanitizeGoogleError("decode "+providerID+" stream response", parseErr)
 		}
 		if !accumulator.finished {
-			return provideriface.Response{}, errors.New(providerID + " stream ended without a finish reason")
+			return provideriface.Response{}, fmt.Errorf("%s %w", providerID, provideriface.ErrStreamIncomplete)
 		}
 		if !textStreamed && attempt < googleTransientMaxRetries && googleResponseEmpty(accumulator.response()) {
 			providerdiagnostics.LogErrorContext(ctx, providerID, method, errors.New("empty response; retrying"))

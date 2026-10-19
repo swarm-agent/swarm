@@ -3685,15 +3685,19 @@ func (e *sessionV3Executor) runProviderToolLoop(ctx context.Context, job session
 		streamState := newSessionV3ProviderStreamState(e, job, sink, step)
 		providerStart := time.Now()
 		var firstEventOnce sync.Once
-		response, providerErr := e.runStaleSupervisedProviderAttempt(ctx, job, runner, req, func(event provideriface.StreamEvent) {
-			firstEventOnce.Do(func() {
-				pebblestore.ObserveExecutionEpochFirstEvent(providerStart)
-				if recorder := e.server.longSessionDiagnostics; recorder != nil {
-					recorder.ObserveOperation("v3.provider_first_event", job.SessionID, time.Since(providerStart), false, map[string]int64{"step": int64(step)}, nil)
-				}
+		attemptProvider := func() (provideriface.Response, error) {
+			return e.runStaleSupervisedProviderAttempt(ctx, job, runner, req, func(event provideriface.StreamEvent) {
+				firstEventOnce.Do(func() {
+					pebblestore.ObserveExecutionEpochFirstEvent(providerStart)
+					if recorder := e.server.longSessionDiagnostics; recorder != nil {
+						recorder.ObserveOperation("v3.provider_first_event", job.SessionID, time.Since(providerStart), false, map[string]int64{"step": int64(step)}, nil)
+					}
+				})
+				streamState.Handle(event)
 			})
-			streamState.Handle(event)
-		})
+		}
+		response, providerErr := attemptProvider()
+		response, providerErr = e.replayIncompleteProviderStream(ctx, job, step, streamState, response, providerErr, attemptProvider)
 		pebblestore.ObserveExecutionEpochProviderSend(providerStart)
 		if recorder := e.server.longSessionDiagnostics; recorder != nil {
 			recorder.ObserveOperation("v3.provider_total", job.SessionID, time.Since(providerStart), providerErr != nil, map[string]int64{"step": int64(step), "input_items": int64(len(req.Input)), "tools": int64(len(req.Tools)), "function_calls": int64(len(response.FunctionCalls))}, map[string]bool{"continuation": req.AllowContinuation, "reset_transport": req.ResetTransport, "force_fresh": req.ForceFreshProviderContext})

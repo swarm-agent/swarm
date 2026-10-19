@@ -27,9 +27,13 @@ type providerAttemptResult struct {
 // runProviderAttempt supervises one provider continuation at a time. An
 // activity timeout first fences and cancels the current generation, then waits
 // for it to terminate before making one replacement attempt with the exact same
-// durable continuation request.
+// durable continuation request. A stream the provider closed without its
+// terminal signal (provideriface.ErrStreamIncomplete) earns the same single
+// replacement: its attempt has already terminated and ran no tools, and the
+// run keeps nothing from it.
 type providerAttemptObserver interface {
 	AttemptTimedOut(attempt int)
+	AttemptStreamIncomplete(attempt int)
 	AttemptCancelled(attempt int)
 	AttemptRetrying(attempt int)
 	AttemptFailed(attempt int, err error)
@@ -171,21 +175,36 @@ func runProviderAttempt(
 		}
 		cancelAttempt()
 
+		streamIncomplete := false
 		if !timedOut {
 			if err := ctx.Err(); err != nil {
 				acceptedGeneration.CompareAndSwap(generation, generation+1)
 				return result.response, err
 			}
-			return result.response, result.err
+			if !errors.Is(result.err, provideriface.ErrStreamIncomplete) {
+				return result.response, result.err
+			}
+			streamIncomplete = true
+			// Fence late callbacks; the replacement starts from the same request.
+			acceptedGeneration.CompareAndSwap(generation, generation+1)
+			if observer != nil {
+				observer.AttemptStreamIncomplete(attempt + 1)
+			}
+		}
+		retryCause := errProviderAttemptActivityTimeout
+		if streamIncomplete {
+			retryCause = result.err
 		}
 		if budget, ok := ctx.Value(workerBudgetContextKey{}).(*workerBudgetContext); ok {
 			if budgetErr := budget.repository.CheckWorkerUnmeteredOperation(budget.account, budget.session); budgetErr != nil {
-				return result.response, fmt.Errorf("%w: capped worker requires receipt settlement before retry", errProviderAttemptActivityTimeout)
+				return result.response, fmt.Errorf("%w: capped worker requires receipt settlement before retry", retryCause)
 			}
 		}
 		if attempt == providerAttemptRetryLimit {
 			terminalErr := fmt.Errorf("%w after %d attempts", errProviderAttemptActivityTimeout, attempt+1)
-			if result.err != nil && !errors.Is(result.err, context.Canceled) {
+			if streamIncomplete {
+				terminalErr = fmt.Errorf("%w after %d attempts", result.err, attempt+1)
+			} else if result.err != nil && !errors.Is(result.err, context.Canceled) {
 				terminalErr = fmt.Errorf("%w after %d attempts: %v", errProviderAttemptActivityTimeout, attempt+1, result.err)
 			}
 			if observer != nil {

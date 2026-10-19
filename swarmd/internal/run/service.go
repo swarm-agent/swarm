@@ -2487,6 +2487,7 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 			runnerCtx = withProviderAttemptObserver(runnerCtx, &durableProviderAttemptObserver{
 				sessionID: sessionID,
 				runID:     runID,
+				step:      step,
 				principal: options.Principal,
 				apply:     options.ApplySessionMutation,
 			})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -440,6 +441,13 @@ type StreamEvent struct {
 	Status            string
 	Metadata          map[string]any
 }
+
+// ErrStreamIncomplete marks a provider stream that closed without the
+// provider's terminal signal, so its reply cannot be trusted as complete. An
+// adapter may wrap it only when the attempt ran no tools (it never called the
+// request's ToolInvoker): the run then replays the same request once from its
+// durable boundary, and nothing the attempt produced is kept.
+var ErrStreamIncomplete = errors.New("stream ended without a finish reason")
 
 type Runner interface {
 	ID() string
