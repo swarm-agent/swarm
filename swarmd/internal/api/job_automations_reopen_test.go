@@ -154,6 +154,70 @@ func TestReopenAnswersBusyForARunningJob(t *testing.T) {
 	}
 }
 
+// sendRace is the daemon's own route handler with one race injected: just
+// before the reopen's follow-up reaches the session, another follow-up (a
+// person's swarm_message_job) is sent to it through the real routes, after
+// the reopener has already read the job as settled.
+type sendRace struct {
+	next    http.Handler
+	direct  *controlMCPCall
+	session string
+	raced   bool
+}
+
+func (r *sendRace) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if !r.raced && req.Method == http.MethodPost && req.URL.Path == controlMCPSessionPath(r.session, "messages") {
+		r.raced = true
+		if _, err := r.direct.sendMessage(r.session, "a person's follow-up", "competing-followup"); err != nil {
+			http.Error(w, "the competing follow-up was not sent: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	r.next.ServeHTTP(w, req)
+}
+
+// Requirement: when the job reads as settled but a follow-up starts in its
+// session before the reopen's own message is sent, the send's refusal (409,
+// "a follow-up is already running in this job") is answered busy, so the
+// reopen step waits and sends later, never failed outright; the reopen's
+// message does not reach the session.
+// Threat (review finding): the race between the busy check and the send
+// came back as a refusal, the step failed and its findings were never sent,
+// the symptom part 2 fixes.
+// Owners: jobAutomationReopener.Reopen over controlMCPMessageJob, the real
+// session routes and the run-intent store's one-active-run refusal. The
+// race is injected at the HTTP boundary between Reopen and the routes,
+// because no other layer can place it after the busy check and before the
+// send deterministically.
+func TestReopenAnswersBusyWhenAFollowupStartsAtSendTime(t *testing.T) {
+	f := newReopenFixture(t)
+	p := testPrincipal()
+	jobID := f.job(t, "run-reopen-race", "succeeded", f.session.ID)
+	scopes := &pebblestore.ScopedTokenRecord{Scopes: []string{"swarm:read", "sessions:read", "sessions:write", "automations:read"}}
+	direct := &controlMCPCall{request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), scopes), next: f.server.internalRouteHandler(), server: f.server}
+	race := &sendRace{next: f.server.internalRouteHandler(), direct: direct, session: f.session.ID}
+	raced := &controlMCPCall{request: requestWithScopedToken(withTestPrincipal(httptest.NewRequest(http.MethodPost, "/mcp", nil)), scopes), next: race, server: f.server}
+	f.server.jobAutomationCallFn = func(context.Context) (*controlMCPCall, error) { return raced, nil }
+	before := len(f.userMessages(t, f.session.ID))
+
+	_, err := f.server.JobAutomationReopener().Reopen(context.Background(), jobautomation.ReopenRequest{Account: p.AccountScopeID, JobID: jobID, Message: "fix it", RequestID: "jdel_race.fix"})
+	if !race.raced {
+		t.Fatal("the reopen never reached the send")
+	}
+	var busy interface{ Busy() bool }
+	if !errors.As(err, &busy) || !busy.Busy() || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("err = %v, want busy (a follow-up is already running)", err)
+	}
+	var refused *jobautomation.RefusedError
+	if errors.As(err, &refused) {
+		t.Fatalf("the send-time race was refused, not answered busy: %v", err)
+	}
+	got := f.userMessages(t, f.session.ID)
+	if len(got) != before+1 || got[len(got)-1] != "a person's follow-up" {
+		t.Fatalf("session user messages = %q, want only the competing follow-up", got)
+	}
+}
+
 // Requirement: a cancelled job is never reopened: the step fails with the
 // reason and no message reaches its session.
 // Owner: jobAutomationReopener.Reopen.
