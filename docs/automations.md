@@ -384,8 +384,10 @@ in `swarm_get_job`'s result and in `swarm_get_changes`) is the job's
   job rebased onto it). The commits, files and diff are then listed from it,
   and the base recorded at creation is reported as `recorded_base_commit`
   (`recorded_base` in `swarm_get_changes`).
-- Otherwise, including a job that was not rebased while the target moved on,
-  the recorded base stays.
+- Otherwise, including a job that was not rebased while the target moved on
+  and a job the target already contains (delivered by a fast-forward or a
+  merge, where that merge-base would be the head itself), the recorded base
+  stays, so a landed job still lists its commits.
 
 A reviewer reviews `base..head` from the same effective base, so its range
 holds only the job's own commits.

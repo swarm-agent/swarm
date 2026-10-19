@@ -38,8 +38,9 @@ var targetBranchName = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$
 //     (the job was rebased onto, or merged, a newer target), or when head
 //     no longer descends from the recorded base at all (the target was
 //     rewritten and the job rebased onto it).
-//   - Otherwise (the job was not rebased, or nothing is known about the
-//     target) the recorded base stays.
+//   - Otherwise (the job was not rebased, nothing is known about the
+//     target, or the target already contains the head because the job was
+//     delivered) the recorded base stays.
 //
 // It only reads: no ref or object is written in the clone or the folder.
 // Errors reading the target are not fatal: the recorded base is returned.
@@ -79,7 +80,10 @@ func EffectiveTaskBase(ctx context.Context, clone, folder, target, recorded, hea
 			best = mergeBase
 		}
 	}
-	if best == "" || best == recorded || !onTarget(best) {
+	// best == head: the target already contains the job's head (it was
+	// delivered by a fast-forward or a merge). The head is not a base; the
+	// recorded base keeps the job's commits visible after it lands.
+	if best == "" || best == recorded || best == head || !onTarget(best) {
 		return recorded
 	}
 	if past, err := isAncestor(ctx, clone, recorded, best); err == nil && past {
