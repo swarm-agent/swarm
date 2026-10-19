@@ -188,3 +188,91 @@ func TestWorkerSchedulerPendingV2WakesPageWithoutCatalogScans(t *testing.T) {
 		t.Errorf("overflow: %d bounded catalog hint scans in 10s, want 0", got)
 	}
 }
+
+// Requirement: a worker change committed while a scheduler pass is running
+// (above all, the pass's own admission) must not move the worker's admission
+// cursor past the pass time; a sibling automation's slot that falls due while
+// Dispatch runs must still be admitted, as the old per-second sweep did by
+// setting its cursor to the sweep start. Threat: Notify stamps the change with
+// the wall clock, which is later than the pass time once Dispatch takes a
+// while; applySignals and reconcileEntry then advance the cursor to that later
+// time and the sibling's slot is never admitted. Owner: WorkerScheduler
+// (Notify, applySignals, reconcileEntry, admitDue) with the real
+// WorkerStore.AdmitWorkerRun commit, whose commitWorkerRealtime emits the
+// worker scheduling signal. Only the service-level Dispatch preparation
+// (workspace, model, project resolution) is replaced; the hook advances
+// simulated time by the dispatch duration and then performs the real store
+// admission, which is the narrowest layer that produces the in-pass signal.
+func TestWorkerSchedulerAdmissionSignalDoesNotSkipSiblingSlot(t *testing.T) {
+	fx := newSchedulerFixture(t, 0, 60)
+	w := fx.createActiveWorkerWith(t, "Close slots", []pebblestore.WorkerAutomationDefinition{
+		{Name: "every minute cron", ActivationMode: "cron", Enabled: true, WorkspaceID: "ws-sched", Schedule: &pebblestore.AutomationV2Schedule{Kind: "cron", Cron: "* * * * *", Timezone: "UTC"}},
+		{Name: "every minute interval", ActivationMode: "interval", Enabled: true, WorkspaceID: "ws-sched", Schedule: &pebblestore.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 60}},
+	})
+	// Start a full minute ahead so the startup reconcile is well clear of the
+	// first slot's per-worker reconcile spacing.
+	start := time.Now().Add(time.Minute)
+	slots := map[string]time.Time{}
+	for _, a := range w.Automations {
+		next, err := workerAutomationNextDue(a, start)
+		if err != nil || next <= 0 {
+			t.Fatalf("automation %s next due: %d, %v", a.ID, next, err)
+		}
+		slots[a.ID] = time.UnixMilli(next)
+	}
+	var firstID, secondID string
+	for id, at := range slots {
+		if firstID == "" || at.Before(slots[firstID]) {
+			firstID = id
+		}
+	}
+	for id := range slots {
+		if id != firstID {
+			secondID = id
+		}
+	}
+	first, second := slots[firstID], slots[secondID]
+	gap := second.Sub(first)
+	if gap <= 0 {
+		t.Skipf("cron and interval slots coincide (worker created on a whole minute); no sibling window to test")
+	}
+	// The first admission's Dispatch outlasts the gap to the sibling's slot.
+	dispatchTime := gap + time.Second
+
+	clock := newFakeSchedulerClock(start)
+	sch := NewWorkerScheduler(fx.service, WorkerSchedulerOptions{Clock: clock})
+	fx.db.SetSchedulingObserver(sch.Notify)
+	t.Cleanup(func() { fx.db.SetSchedulingObserver(nil) })
+	dispatch := &dispatchRecorder{}
+	var admitErrs []error
+	fx.service.scheduledDispatchForTest = func(account, owner string, req pebblestore.WorkerRunAdmission) error {
+		clock.Set(clock.Now().Add(dispatchTime))
+		req.UserID = owner
+		if _, err := fx.ws.AdmitWorkerRun(account, req); err != nil {
+			admitErrs = append(admitErrs, err)
+			return err
+		}
+		return dispatch.record(account, owner, req)
+	}
+	ctx := context.Background()
+	_ = sch.process(ctx, start)
+	simulate(ctx, sch, clock, second.Add(dispatchTime+time.Second))
+	if len(admitErrs) != 0 {
+		t.Fatalf("real store admission failed: %v", admitErrs)
+	}
+	got := map[string][]int64{}
+	for _, r := range dispatch.reqs {
+		got[r.AutomationID] = append(got[r.AutomationID], r.Input["due_at"].(int64))
+	}
+	if len(got[firstID]) != 1 || got[firstID][0] != first.UnixMilli() {
+		t.Fatalf("first automation admitted %v, want [%d]", got[firstID], first.UnixMilli())
+	}
+	if len(got[secondID]) != 1 || got[secondID][0] != second.UnixMilli() {
+		t.Fatalf("sibling automation admitted %v, want its slot [%d] that fell due %v after the first, while Dispatch ran", got[secondID], second.UnixMilli(), gap)
+	}
+	for occ, n := range dispatch.occurrences() {
+		if n != 1 {
+			t.Fatalf("occurrence %s admitted %d times, want once", occ, n)
+		}
+	}
+}
