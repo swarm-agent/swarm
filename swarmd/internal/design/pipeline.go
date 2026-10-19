@@ -187,9 +187,9 @@ func (p *Pipeline) runCreate(ctx context.Context, req Request) (BatchResult, err
 	return final, nil
 }
 
-func (p *Pipeline) createOne(ctx context.Context, req Request, index int, stopped *atomic.Bool) ItemResult {
+func (p *Pipeline) createOne(ctx context.Context, req Request, index int, stopped *atomic.Bool) (item ItemResult) {
 	started := p.now()
-	item := ItemResult{Index: index + 1, Variation: variationFor(req, index)}
+	item = ItemResult{Index: index + 1, Variation: variationFor(req, index)}
 	defer func() { item.DurationMS = p.now().Sub(started).Milliseconds() }()
 	if stopped.Load() {
 		item.Status = StatusSkippedBudget

@@ -385,3 +385,16 @@ func TestExtractHTML(t *testing.T) {
 		t.Fatalf("incomplete reply accepted")
 	}
 }
+
+func TestItemDurationIsRecorded(t *testing.T) {
+	// Purpose: results.json reports how long each design took; a deferred
+	// assignment to a non-named return silently reported 0.
+	clock := time.Unix(0, 0)
+	var mu sync.Mutex
+	now := func() time.Time { mu.Lock(); defer mu.Unlock(); clock = clock.Add(time.Second); return clock }
+	m := &fakeModel{reply: func(ModelCall) (string, error) { return fenced(goodHTML), nil }}
+	res := run(t, &Pipeline{Model: m, Checker: &fakeChecker{}, Files: newFakeFiles(), Now: now}, Request{Brief: "x", Count: 1, Folder: "d"})
+	if res.Items[0].DurationMS <= 0 {
+		t.Fatalf("item duration not recorded: %+v", res.Items[0])
+	}
+}
