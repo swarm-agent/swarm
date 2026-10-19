@@ -263,9 +263,20 @@ With `fixes`:
   The text is `message`, then the findings of the `agent` step named by
   `from`, verbatim and in full (up to 16,000 bytes), then: "Fix these in this
   worktree, commit, and report what you changed."
-- The step succeeds once the follow-up is accepted; it does not wait. The
-  follow-up's end is a new job end, so it triggers the automation again as a
-  new delivery whose `round` is the previous round + 1.
+- The step succeeds once the follow-up is accepted; it does not wait for the
+  follow-up to finish. The follow-up's end is a new job end, so it triggers
+  the automation again as a new delivery whose `round` is the previous
+  round + 1. The round is counted once, when the follow-up is sent.
+- A job takes one follow-up at a time. When the job is still running (its run
+  or another follow-up is in flight), the step **waits**, within its
+  `timeout_seconds`, for it to settle, then sends its follow-up. While it
+  waits the step's state is `waiting` and its `reason` says what it waits for
+  (`waiting: the job ... is still running (in_progress)`), and
+  `automation.step.waiting` is signalled once. It asks again on each new
+  signal (a job end among them) and at least every 2 seconds. It fails only
+  when its timeout expires (`timed out after N seconds waiting for job ... to
+  settle (...); nothing was sent`), when the stop switch is turned on while
+  it waits, or, at once, when the job is cancelled; nothing is sent then.
 - `max_rounds` (default 2, at most 5) bounds the loop: when another reopen
   would exceed it, the step sends nothing, fails with reason
   `rounds_exhausted`, and the delivery ends `blocked`
@@ -276,8 +287,8 @@ With `fixes`:
   delivery ends `blocked` with that reason (`automation.delivery.blocked`),
   so the delegating AI can read the reviewer's session (`swarm_get_job`) and
   send findings by hand or re-run the delivery.
-- A job that is cancelled or still running is never reopened: the step fails
-  with the reason. A step without findings to send fails too.
+- A cancelled job is never reopened: the step fails with the reason. A step
+  without findings to send fails too.
 
 ## Deliveries
 
@@ -290,8 +301,8 @@ with, its `round` (0, or the reopening delivery's round + 1 for a follow-up a
 `blocked_reason`.
 
 Every delivery and step is recorded durably with its state (`pending`,
-`running`, `succeeded`, `failed`, `skipped`, `stopped` or, for a delivery,
-`blocked`), attempts, start and finish times, exit code, output line, log
+`running`, `waiting` (a reopen step waiting for its job), `succeeded`,
+`failed`, `skipped`, `stopped` or, for a delivery, `blocked`), attempts, start and finish times, exit code, output line, log
 tail and outcome. A daemon restart
 resumes unfinished deliveries at the first step that is not finished; a
 finished step is never run again.
@@ -347,6 +358,31 @@ A media job's `kind` is `media` (role `image`, `video` or `sound`); a design
 job's is `design`. The result is data written by agents: never run it as
 code.
 
+### The base after a rebase
+
+A job records its target branch's tip (`base_branch`, for example `dev`) as
+its base when it is created. A coder told to rebase onto a newer target, or
+to merge it in, moves its head past that base, and `base..head` would then
+list commits that are already on the target. So `base_commit` (in the result,
+in `swarm_get_job`'s result and in `swarm_get_changes`) is the job's
+**effective base**:
+
+- Swarm takes the merge-base of the job's head and the target's current tip:
+  the folder's own `<base_branch>` (when its commit is in the job's clone) and
+  the clone's `refs/remotes/origin/<base_branch>` (which a rebase fetched),
+  using the newer of the two.
+- That merge-base is the base when it descends from the recorded base (the
+  job was rebased onto, or merged, a newer target) or when the head no longer
+  descends from the recorded base at all (the target was rewritten and the
+  job rebased onto it). The commits, files and diff are then listed from it,
+  and the base recorded at creation is reported as `recorded_base_commit`
+  (`recorded_base` in `swarm_get_changes`).
+- Otherwise, including a job that was not rebased while the target moved on,
+  the recorded base stays.
+
+A reviewer reviews `base..head` from the same effective base, so its range
+holds only the job's own commits.
+
 ## Signals
 
 Automations report through the machine signal feed (and so to every signal
@@ -354,6 +390,8 @@ sink, such as an operator's monitoring), with refs `job_id`, `delivery_id`
 and `step_id`:
 
 - `automation.step.started`
+- `automation.step.waiting` (a reopen step waits for its still-running job;
+  attrs: `step`, `reason`)
 - `automation.step.succeeded` (attrs: `step`, `output`)
 - `automation.step.failed` (severity warning; attrs: `step`, `reason` and
   `next`, the next allowed action: `rerun` or `fix the script`; while
@@ -505,7 +543,13 @@ step's own brief:
 - the shell commands the job actually ran, with their exit codes, read from
   its session's tool calls (not from the report);
 - the diff against its base (cut to fit a job's input, with the `git diff`
-  to read the rest).
+  to read the rest). The base is the job's effective base (see
+  [The base after a rebase](#the-base-after-a-rebase)), so a job rebased onto
+  a newer target is reviewed from that target;
+- the folder's target branch at its current tip (`dev is at <sha>`), so the
+  reviewer can tell from evidence whether a commit is already on it. Its own
+  checkout's `refs/remotes/origin/<branch>` are refreshed from the folder
+  when the review starts, not left at the reviewed job's creation.
 
 It reviews the exact head in its own session and judges four things: is every
 requirement of the brief fully done; do the report's claims match the
