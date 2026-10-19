@@ -32,7 +32,7 @@ func (f *fakeV2Hinter) AutomationV2ScheduleHint(int64) (pebblestore.AutomationV2
 // scheduler and its store hint are replaced at their interfaces because the
 // V2 Tick/admission contract itself is unchanged.
 func TestWorkerSchedulerDrivesAutomationV2OnlyWhenDueOrPending(t *testing.T) {
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	clock := newFakeSchedulerClock(start)
 	sweeper := &fakeV2Sweeper{}
 	hinter := &fakeV2Hinter{}

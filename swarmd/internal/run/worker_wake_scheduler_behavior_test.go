@@ -123,7 +123,7 @@ func (fx *schedulerFixture) budgetStatusReads() int64 {
 // Owner: WorkerScheduler.process/nextWake and TickWorker over a real store.
 func TestWorkerSchedulerFiresDueSlotsOnTimeOnce(t *testing.T) {
 	fx := newSchedulerFixture(t, 1, 60)
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	h := newSchedulerHarness(t, fx, start)
 	first := firstSlotAfter(t, fx.workers[0], start)
 	if got := h.sch.nextWake(); !got.Equal(first) {
@@ -161,7 +161,7 @@ func TestWorkerSchedulerFiresDueSlotsOnTimeOnce(t *testing.T) {
 // reconcileEntry/reschedule.
 func TestWorkerSchedulerEditReschedules(t *testing.T) {
 	fx := newSchedulerFixture(t, 1, 3600)
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	h := newSchedulerHarness(t, fx, start)
 	w := fx.workers[0]
 	if got, want := h.sch.nextWake(), earliestWake(firstSlotAfter(t, w, start), start); !got.Equal(want) {
@@ -210,7 +210,7 @@ func TestWorkerSchedulerEditReschedules(t *testing.T) {
 // signal -> reschedule; TickWorker re-checks the current definition.
 func TestWorkerSchedulerDisableCancels(t *testing.T) {
 	fx := newSchedulerFixture(t, 1, 60)
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	h := newSchedulerHarness(t, fx, start)
 	w := fx.workers[0]
 	due := firstSlotAfter(t, w, start)
@@ -233,7 +233,7 @@ func TestWorkerSchedulerDisableCancels(t *testing.T) {
 // storms after restart. Owner: WorkerScheduler startup rescan cursor.
 func TestWorkerSchedulerRestartSkipsMissedSlots(t *testing.T) {
 	fx := newSchedulerFixture(t, 1, 60)
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	w := fx.workers[0]
 	first := firstSlotAfter(t, w, start)
 	// The daemon was offline across three slots and restarts mid-interval.
@@ -257,12 +257,19 @@ func TestWorkerSchedulerRestartSkipsMissedSlots(t *testing.T) {
 // polling path being skipped at admission. Owner: TickWorker budget check.
 func TestWorkerSchedulerBudgetHoldBlocksAdmissionAtDueTime(t *testing.T) {
 	fx := newSchedulerFixture(t, 1, 60)
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	w := fx.workers[0]
-	date := time.Now().UTC().Format("2006-01-02")
-	hold := pebblestore.WorkerBudgetHold{Date: date, Reason: "daily_budget_exhausted", CapSource: "worker", Dimension: "tokens", Limit: 1, Usage: 1}
-	if err := fx.db.PutJSON(pebblestore.KeyWorkerBudgetHold(schedulerAccount, w.ID, date), hold); err != nil {
-		t.Fatal(err)
+	// GetWorkerBudgetStatus dates its hold lookup from the wall clock, not
+	// the scheduler clock, so the hold is written for the wall-clock UTC day
+	// and the next one: the test stays correct if it straddles a real UTC
+	// midnight, and the fixed noon start keeps the simulated window clear of
+	// the scheduler's own midnight wake.
+	wall := time.Now().UTC()
+	for _, date := range []string{wall.Format("2006-01-02"), wall.AddDate(0, 0, 1).Format("2006-01-02")} {
+		hold := pebblestore.WorkerBudgetHold{Date: date, Reason: "daily_budget_exhausted", CapSource: "worker", Dimension: "tokens", Limit: 1, Usage: 1}
+		if err := fx.db.PutJSON(pebblestore.KeyWorkerBudgetHold(schedulerAccount, w.ID, date), hold); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h := newSchedulerHarness(t, fx, start)
 	due := firstSlotAfter(t, w, start)
@@ -288,7 +295,7 @@ func TestWorkerSchedulerBudgetHoldBlocksAdmissionAtDueTime(t *testing.T) {
 // WorkerScheduler.Run with Notify installed as the store scheduling observer.
 func TestWorkerSchedulerRunSleepsUntilDueAndWakesOnChange(t *testing.T) {
 	fx := newSchedulerFixture(t, 2, 3600)
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	clock := newFakeSchedulerClock(start)
 	sch := NewWorkerScheduler(fx.service, WorkerSchedulerOptions{Clock: clock})
 	waits := make(chan time.Time, 16)

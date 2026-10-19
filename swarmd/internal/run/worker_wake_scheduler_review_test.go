@@ -48,7 +48,7 @@ func TestWorkerSchedulerFailingAutomationDoesNotStopSiblings(t *testing.T) {
 	if interval.ID == "" {
 		t.Fatal("interval automation missing")
 	}
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	clock := newFakeSchedulerClock(start)
 	dispatch := &dispatchRecorder{}
 	fx.service.scheduledDispatchForTest = dispatch.record
@@ -88,7 +88,7 @@ func TestWorkerSchedulerFailingAutomationDoesNotStopSiblings(t *testing.T) {
 func TestWorkerSchedulerBacksOffAfterWorkerReadError(t *testing.T) {
 	fx := newSchedulerFixture(t, 1, 60)
 	w := fx.workers[0]
-	start := time.Now()
+	start := schedulerTestStart(time.Now())
 	clock := newFakeSchedulerClock(start)
 	sch := NewWorkerScheduler(fx.service, WorkerSchedulerOptions{Clock: clock})
 	ctx := context.Background()
@@ -211,7 +211,7 @@ func TestWorkerSchedulerAdmissionSignalDoesNotSkipSiblingSlot(t *testing.T) {
 	})
 	// Start a full minute ahead so the startup reconcile is well clear of the
 	// first slot's per-worker reconcile spacing.
-	start := time.Now().Add(time.Minute)
+	start := schedulerTestStart(time.Now()).Add(time.Minute)
 	slots := map[string]time.Time{}
 	for _, a := range w.Automations {
 		next, err := workerAutomationNextDue(a, start)
@@ -336,5 +336,79 @@ func TestWorkerSchedulerDeferredV2ChangeNeverLeavesPastWake(t *testing.T) {
 	}
 	if len(sweeper.sweeps) == 0 {
 		t.Fatal("the deferred V2 change was never processed")
+	}
+}
+
+// Requirement: budget and usage are read only just before a due slot is
+// admitted, or when a reconcile is driven by an event (budget, worker or run
+// signal, UTC midnight, the slow safety rescan). A worker with runs in flight
+// is re-observed on the busy interval for the stall watchdog and settlement,
+// but that timer must reuse the hold state from the last event-driven read
+// instead of re-reading the ledger. Threat: reconcileWorker calling
+// GetWorkerBudgetStatus (GetUsageScopeDay, GetDailyUsageAccumulator) on every
+// 5 s busy re-check, a short poll outside admission. Owner:
+// WorkerScheduler.reconcileDue/reconcileEntry and
+// WorkerExecutionService.reconcileWorker over a real Pebble store; the run in
+// flight is a real WorkerStore.AdmitWorkerRun record. The scheduler is the
+// narrowest layer that owns which reconciles are event-driven.
+func TestWorkerSchedulerBusyRecheckDoesNotReadBudget(t *testing.T) {
+	fx := newSchedulerFixture(t, 0, 3600)
+	w := fx.createActiveWorkerWith(t, "Busy worker", []pebblestore.WorkerAutomationDefinition{
+		{Name: "hourly", ActivationMode: "interval", Enabled: true, WorkspaceID: "ws-sched", Schedule: &pebblestore.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 3600}},
+	})
+	start := schedulerTestStart(time.Now())
+	clock := newFakeSchedulerClock(start)
+	sch := NewWorkerScheduler(fx.service, WorkerSchedulerOptions{Clock: clock})
+	ctx := context.Background()
+	admitted, err := fx.ws.AdmitWorkerRun(schedulerAccount, pebblestore.WorkerRunAdmission{WorkerID: w.ID, AutomationID: w.Automations[0].ID, OccurrenceID: "wocc_busy", RequestSource: "schedule", UserID: schedulerUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The run is past preparation and executing elsewhere: reconcile only
+	// observes it (watchdog, settlement) and it stays in flight.
+	admitted.Status = "running"
+	if _, err := fx.ws.RecordWorkerRun(schedulerAccount, admitted); err != nil {
+		t.Fatal(err)
+	}
+	// Startup is a rescan: the busy worker's budget is read once there.
+	_ = sch.process(ctx, start)
+	if e := sch.entries[workerKey{schedulerAccount, w.ID}]; e == nil || !e.busy {
+		t.Fatalf("worker with a run in flight is not tracked as busy: %+v", e)
+	}
+	startupReads := fx.budgetReads.Load()
+	if startupReads == 0 {
+		t.Fatal("startup rescan did not read the busy worker's budget")
+	}
+	// Stay well inside the safety rescan and the next slot; no signals.
+	end := start.Add(workerSchedulerSafetyInterval - 10*time.Second)
+	fx.db.SetSchedulingObserver(nil)
+	wakes := 0
+	for i := 0; i < 200; i++ {
+		next := sch.nextWake()
+		if next.After(end) {
+			break
+		}
+		if next.Before(clock.Now()) {
+			next = clock.Now()
+		}
+		clock.Set(next)
+		_ = sch.process(ctx, next)
+		wakes++
+	}
+	if min := int((end.Sub(start))/workerSchedulerBusyInterval) - 1; wakes < min {
+		t.Fatalf("busy worker re-checked %d times over %v, want at least %d busy re-checks", wakes, end.Sub(start), min)
+	}
+	if n := fx.budgetReads.Load() - startupReads; n != 0 {
+		kinds := map[string]int64{}
+		fx.readKinds.Range(func(k, v any) bool { kinds[k.(string)] = v.(interface{ Load() int64 }).Load(); return true })
+		t.Fatalf("%d busy re-checks with no signals performed %d budget/usage reads (totals %v), want 0", wakes, n, kinds)
+	}
+	// A budget signal for the account is an event: the next reconcile reads.
+	sch.busyWorkers.Store(1)
+	sch.Notify(pebblestore.SchedulingSignal{Kind: pebblestore.SchedulingSignalBudget, AccountScopeID: schedulerAccount})
+	clock.Set(clock.Now().Add(workerSchedulerMinSpacing))
+	_ = sch.process(ctx, clock.Now())
+	if n := fx.budgetStatusReads(); n == 0 || fx.budgetReads.Load() == startupReads {
+		t.Fatal("budget signal for a busy worker did not re-read the budget")
 	}
 }

@@ -28,6 +28,20 @@ type fakeSchedulerTimer struct {
 	active   bool
 }
 
+// schedulerTestStart is the fixed simulated start for scheduler tests: the
+// first 12:00 UTC at or after notBefore. Seeding the fake clock from it keeps
+// every test window twelve hours from the UTC-midnight wake, whatever the wall
+// clock, while never starting before the workers' CreatedAt (pass a time taken
+// after the fixture's workers were created).
+func schedulerTestStart(notBefore time.Time) time.Time {
+	y, m, d := notBefore.UTC().Date()
+	noon := time.Date(y, m, d, 12, 0, 0, 0, time.UTC)
+	if noon.Before(notBefore) {
+		noon = noon.AddDate(0, 0, 1)
+	}
+	return noon
+}
+
 func newFakeSchedulerClock(now time.Time) *fakeSchedulerClock {
 	return &fakeSchedulerClock{now: now}
 }
@@ -156,7 +170,7 @@ func simulate(ctx context.Context, sch *WorkerScheduler, clock *fakeSchedulerClo
 // per-worker work. Time is simulated; nothing sleeps.
 func TestIdleWorkerSchedulerPerformsNoBudgetReadsOrPerSecondWakeups(t *testing.T) {
 	fx := newSchedulerFixture(t, 4, 3600)
-	clock := newFakeSchedulerClock(time.Now())
+	clock := newFakeSchedulerClock(schedulerTestStart(time.Now()))
 	sch := NewWorkerScheduler(fx.service, WorkerSchedulerOptions{Clock: clock})
 	ctx := context.Background()
 	start := clock.Now()
