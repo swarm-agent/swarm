@@ -3,6 +3,7 @@ package worktree
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -23,10 +24,16 @@ var targetBranchName = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$
 // that, and base..head would then list commits that are already on the
 // target. The rule:
 //
-//   - Let tip be the target branch's current tip: the folder's
-//     refs/heads/<target> (when that commit is in the job's clone) and the
-//     clone's own refs/remotes/origin/<target> (which a rebase fetched).
-//     Take the newest merge-base of head and those tips.
+//   - Let tip be the target branch's current tip, taken only from
+//     daemon-authoritative state: the folder's refs/heads/<target> (when
+//     that commit is in the job's clone). The clone belongs to the coder and
+//     its refs are writable to agent Bash, so the clone's own
+//     refs/remotes/origin/<target> (which a rebase fetched) is a candidate
+//     only when the folder's target branch contains it. Take the newest
+//     merge-base of head and those tips, and accept it only when the
+//     folder's target branch contains it too: a commit not on the target
+//     never becomes the base, so no commit of the job's own can drop out of
+//     its range.
 //   - That merge-base is the base when it descends from the recorded base
 //     (the job was rebased onto, or merged, a newer target), or when head
 //     no longer descends from the recorded base at all (the target was
@@ -39,18 +46,25 @@ var targetBranchName = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]{0,199}$
 func EffectiveTaskBase(ctx context.Context, clone, folder, target, recorded, head string) string {
 	clone, folder, target = strings.TrimSpace(clone), strings.TrimSpace(folder), strings.TrimSpace(target)
 	recorded, head = strings.TrimSpace(recorded), strings.TrimSpace(head)
-	if clone == "" || !validCommitID(recorded) || !validCommitID(head) || !targetBranchName.MatchString(target) || strings.Contains(target, "..") {
+	if clone == "" || folder == "" || !validCommitID(recorded) || !validCommitID(head) || !targetBranchName.MatchString(target) || strings.Contains(target, "..") {
 		return recorded
 	}
-	var tips []string
-	if folder != "" {
-		if tip, err := readGit(ctx, folder, "rev-parse", "--verify", "--quiet", "refs/heads/"+target+"^{commit}"); err == nil && validCommitID(tip) {
-			if _, err := readGit(ctx, clone, "cat-file", "-e", tip+"^{commit}"); err == nil {
-				tips = append(tips, tip)
-			}
-		}
+	folderTip := TargetBranchTip(ctx, folder, target)
+	if folderTip == "" {
+		return recorded
 	}
-	if tip, err := readGit(ctx, clone, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+target+"^{commit}"); err == nil && validCommitID(tip) {
+	// onTarget reports whether the folder's target branch contains commit,
+	// judged in the folder: a commit the coder made, or a ref it moved off
+	// the target, is not there.
+	onTarget := func(commit string) bool {
+		contained, err := isAncestor(ctx, folder, commit, folderTip)
+		return err == nil && contained
+	}
+	var tips []string
+	if _, err := readGit(ctx, clone, "cat-file", "-e", folderTip+"^{commit}"); err == nil {
+		tips = append(tips, folderTip)
+	}
+	if tip, err := readGit(ctx, clone, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+target+"^{commit}"); err == nil && validCommitID(tip) && tip != folderTip && onTarget(tip) {
 		tips = append(tips, tip)
 	}
 	best := ""
@@ -65,7 +79,7 @@ func EffectiveTaskBase(ctx context.Context, clone, folder, target, recorded, hea
 			best = mergeBase
 		}
 	}
-	if best == "" || best == recorded {
+	if best == "" || best == recorded || !onTarget(best) {
 		return recorded
 	}
 	if past, err := isAncestor(ctx, clone, recorded, best); err == nil && past {
@@ -93,7 +107,10 @@ func TargetBranchTip(ctx context.Context, folder, target string) string {
 func readGit(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx = sandbox.WithGitCommandTimeout(ctx, effectiveBaseGitTimeout)
 	full := append([]string{"-c", "safe.directory=" + dir, "-c", "core.fsmonitor=false"}, args...)
-	out, err := sandbox.TimedGitOutput(ctx, dir, nil, full...)
+	// Replace refs and a grafts file in the coder's clone could rewrite the
+	// ancestry merge-base reads; ignore both.
+	env := append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE="+os.DevNull)
+	out, err := sandbox.TimedGitOutput(ctx, dir, env, full...)
 	return strings.TrimSpace(string(out)), err
 }
 
