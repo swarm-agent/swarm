@@ -887,7 +887,7 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
-	}, append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...)...)
+	}, append(append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...), controlMCPAutomationTools()...)...)
 }
 
 // ---- sessions ------------------------------------------------------------

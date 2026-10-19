@@ -14,6 +14,7 @@ import { SwarmDeliverablesNamespace } from './deliverables.js';
 import { SwarmDeployNamespace } from './deploy/index.js';
 import { SwarmNotificationsNamespace } from './notifications.js';
 import { SwarmSignalsNamespace } from './signals.js';
+import { SwarmJobAutomationsNamespace } from './job-automations.js';
 import { SwarmActivityNamespace } from './activity.js';
 import { SwarmBoxNamespace } from './box.js';
 import { SwarmProjectsNamespace } from './projects.js';
@@ -65,6 +66,11 @@ export class SwarmClient {
   readonly inbox: SwarmNotificationsNamespace;
   /** Machine signal feed: blocked agents, failures, refused keys, reported events. */
   readonly signals: SwarmSignalsNamespace;
+  /**
+   * Job automations: steps Swarm runs when a job ends (/v3/job-automations,
+   * /v3/job-deliveries). Not the legacy `automations` namespace.
+   */
+  readonly jobAutomations: SwarmJobAutomationsNamespace;
   readonly activity: SwarmActivityNamespace;
   /** Machine state for monitors: sandbox, blocked sessions, failing workers, usage. */
   readonly box: SwarmBoxNamespace;
@@ -117,6 +123,7 @@ export class SwarmClient {
     this.notifications = new SwarmNotificationsNamespace(this.transport);
     this.inbox = this.notifications;
     this.signals = new SwarmSignalsNamespace(this.transport);
+    this.jobAutomations = new SwarmJobAutomationsNamespace(this.transport);
     this.activity = new SwarmActivityNamespace(this.transport);
     this.box = new SwarmBoxNamespace(this.transport);
     this.agents = new SwarmAgentsNamespace(this.transport);

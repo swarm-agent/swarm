@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -378,6 +379,12 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err := c.environmentBlocksJob(place); err != nil {
 		return nil, err
 	}
+	then, hasThen := args["then"]
+	if hasThen {
+		if err := controlMCPValidateThen(c, then); err != nil {
+			return nil, err
+		}
+	}
 	files := []string{}
 	for _, raw := range controlMCPList(args["files"]) {
 		if path, _ := raw.(string); strings.TrimSpace(path) != "" {
@@ -414,9 +421,20 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, controlMCPToolFailure("Swarm accepted the job without a usable run id")
 	}
 	jobID := controlMCPJobID(controlMCPJobWorker, workerID, runID)
+	var thenView map[string]any
+	if hasThen && then != nil {
+		// The job's own automation, scoped to it; set before the job can end.
+		thenView, err = c.controlMCPThen(then, "then: "+jobID, place.path, jobautomation.Scope{Job: jobID})
+		if err != nil {
+			return nil, controlMCPToolFailure("the job %s started, but its then steps were not set: %s", jobID, err.Error())
+		}
+	}
 	out, err := c.jobView(controlMCPJobWorker, workerID, runID, controlMCPInt(args, "wait_seconds", 0), false, 0)
 	if err != nil {
 		return nil, err
+	}
+	if thenView != nil {
+		out["then"] = thenView
 	}
 	out["job_id"] = jobID
 	out["idempotency_key"] = key
@@ -836,7 +854,13 @@ func controlMCPGetJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if kind == controlMCPJobDesign {
-		return c.designJobView(a, b, controlMCPInt(args, "wait_seconds", 0))
+		out, err := c.designJobView(a, b, controlMCPInt(args, "wait_seconds", 0))
+		if err == nil {
+			if deliveries, ok := c.jobDeliveries(controlMCPJobID(kind, a, b)); ok {
+				out["automations"] = deliveries
+			}
+		}
+		return out, err
 	}
 	include, _ := args["include_diff"].(bool)
 	out, err := c.jobView(kind, a, b, controlMCPInt(args, "wait_seconds", 0), include, controlMCPInt(args, "diff_chars", 0))
@@ -844,6 +868,9 @@ func controlMCPGetJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	out["job_id"] = controlMCPJobID(kind, a, b)
+	if deliveries, ok := c.jobDeliveries(controlMCPJobID(kind, a, b)); ok {
+		out["automations"] = deliveries
+	}
 	if kind == controlMCPJobMedia {
 		return c.controlMCPMediaJobFiles(out, a, b, args)
 	}
@@ -988,6 +1015,11 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if rerun, _ := args["automation"].(bool); rerun {
+		// Re-run the job's automations (only their failed or stopped steps);
+		// nothing is merged.
+		return c.rerunJobAutomations(controlMCPJobID(kind, a, b))
+	}
 	if kind == controlMCPJobDesign {
 		return nil, controlMCPDesignRefused("swarm_deliver_job")
 	}
@@ -1123,6 +1155,12 @@ func controlMCPScheduleJob(c *controlMCPCall, args map[string]any) (any, error) 
 	if err != nil {
 		return nil, err
 	}
+	then, hasThen := args["then"]
+	if hasThen {
+		if err := controlMCPValidateThen(c, then); err != nil {
+			return nil, err
+		}
+	}
 	projectID := place.projectID
 	name := controlMCPString(args, "name")
 	templateName, _ := template["name"].(string)
@@ -1180,13 +1218,21 @@ func controlMCPScheduleJob(c *controlMCPCall, args map[string]any) (any, error) 
 	if err != nil {
 		return nil, controlMCPToolFailure("scheduled worker %s activated but its schedule was not enabled: %s", workerID, err.Error())
 	}
-	return map[string]any{
+	out := map[string]any{
 		"worker":      controlMCPWorkerView(controlMCPMap(enabled["worker"])),
 		"schedule_id": scheduleID,
 		"project":     map[string]any{"id": place.projectID, "name": place.projectName},
 		"workspace":   path,
 		"next":        "each run is a job: swarm_list_workers with include_jobs lists them, swarm_activity reports them, swarm_manage_worker pauses or switches the schedule",
-	}, nil
+	}
+	if hasThen && then != nil {
+		thenView, err := c.controlMCPThen(then, "then: schedule "+scheduleID, place.path, jobautomation.Scope{Worker: workerID, Schedule: scheduleID})
+		if err != nil {
+			return nil, controlMCPToolFailure("the schedule %s is set, but its then steps were not: %s", scheduleID, err.Error())
+		}
+		out["then"] = thenView
+	}
+	return out, nil
 }
 
 func controlMCPRequestMedia(c *controlMCPCall, args map[string]any) (any, error) {
@@ -1443,6 +1489,7 @@ func controlMCPJobTools() []controlMCPTool {
 				"files":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Path prefixes the job may change (relative to the folder); written into the brief as its scope."},
 				"idempotency_key": controlMCPStringProp("Reuse when retrying the same job.", 0, 200),
 				"wait_seconds":    waitProp,
+				"then":            controlMCPThenSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPGiveJob,
 		},
@@ -1485,7 +1532,8 @@ func controlMCPJobTools() []controlMCPTool {
 		{
 			Name: "swarm_deliver_job", Title: "Merge a job's result into its folder",
 			Description: "Deliver a needs_review job's commits: by default a real local git merge from its branch into the folder's branch; when the folder's owner set up publishing for it on the machine, a pull request instead (the result names it). Swarm never pushes otherwise. Read the result with swarm_get_job first. Refused when the job committed nothing; a merge is also refused on conflicts.",
-			InputSchema: controlMCPObject([]string{"job_id"}, map[string]any{"job_id": jobID}),
+			InputSchema: controlMCPObject([]string{"job_id"}, map[string]any{"job_id": jobID,
+				"automation": map[string]any{"type": "boolean", "description": "Instead of merging: re-run only the failed or stopped steps of the job's automation deliveries (swarm_get_job shows them)."}}),
 			Annotations: controlMCPDestructive, call: controlMCPDeliverJob,
 		},
 		{
@@ -1504,6 +1552,7 @@ func controlMCPJobTools() []controlMCPTool {
 				"project":   project,
 				"workspace": workspace,
 				"name":      controlMCPStringProp("Name for the scheduled worker.", 0, 200),
+				"then":      controlMCPThenSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPScheduleJob,
 		},
