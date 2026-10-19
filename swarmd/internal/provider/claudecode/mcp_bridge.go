@@ -28,7 +28,27 @@ const (
 	mcpMaxRequestBytes     = 32 << 20
 	mcpToolUseIDMetaKey    = "claudecode/toolUseId"
 	mcpCorrelationWaitTime = 2 * time.Second
+	// mcpToolTimeoutMargin is how much longer than Swarm's longest tool call
+	// (provideriface.MaxToolCallDuration) the CLI waits for one, so the
+	// tool's own timeout always ends a long command first and reports it.
+	mcpToolTimeoutMargin = 2 * time.Minute
 )
+
+// While a tool call runs, the bridge keeps its HTTP answer alive with an
+// event every mcpStreamKeepAlive (a progress notification when the client
+// asked for progress, otherwise an event-stream comment), and tells the
+// provider-attempt watchdog every mcpToolHeartbeat that the turn is waiting
+// on Swarm, not stuck. Variables so tests can shorten them.
+var (
+	mcpStreamKeepAlive = 15 * time.Second
+	mcpToolHeartbeat   = 30 * time.Second
+)
+
+// MCPToolTimeoutMillis is the MCP_TOOL_TIMEOUT the Claude Code CLI runs
+// with: Swarm's longest tool call plus mcpToolTimeoutMargin.
+func MCPToolTimeoutMillis() int64 {
+	return (provideriface.MaxToolCallDuration + mcpToolTimeoutMargin).Milliseconds()
+}
 
 var mcpSupportedProtocols = map[string]struct{}{
 	"2024-11-05": {},
@@ -219,12 +239,92 @@ func (b *mcpBridge) handle(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, jsonRPCResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &jsonRPCError{Code: -32700, Message: "parse error"}})
 		return
 	}
+	if message.Method == "tools/call" && len(message.ID) > 0 && string(message.ID) != "null" && acceptsEventStream(r) {
+		if flusher, ok := w.(http.Flusher); ok {
+			b.streamToolCall(w, flusher, r, message)
+			return
+		}
+	}
 	response, ok := b.dispatch(r.Context(), message)
 	if !ok {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	writeJSON(w, response)
+}
+
+// acceptsEventStream reports whether the client takes an event-stream answer
+// to its POST (a Streamable HTTP MCP client sends Accept: application/json,
+// text/event-stream).
+func acceptsEventStream(r *http.Request) bool {
+	for _, value := range r.Header.Values("Accept") {
+		for _, part := range strings.Split(value, ",") {
+			if media, _, _ := strings.Cut(strings.TrimSpace(part), ";"); strings.EqualFold(strings.TrimSpace(media), "text/event-stream") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// streamToolCall answers one tools/call as an event stream: the response
+// starts at once (so a client's per-request timeout, about 60 seconds in
+// Claude Code, never abandons a long tool call and cancels it), carries a
+// keep-alive while the tool runs, and ends with the JSON-RPC response as its
+// last event. A client that drops the request still cancels the tool.
+func (b *mcpBridge) streamToolCall(w http.ResponseWriter, flusher http.Flusher, r *http.Request, message jsonRPCMessage) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	var mu sync.Mutex
+	write := func(chunk string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if _, err := io.WriteString(w, chunk); err == nil {
+			flusher.Flush()
+		}
+	}
+	var params struct {
+		Meta struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+		} `json:"_meta"`
+	}
+	_ = json.Unmarshal(message.Params, &params)
+	done := make(chan struct{})
+	var keepAlive sync.WaitGroup
+	keepAlive.Add(1)
+	go func() {
+		defer keepAlive.Done()
+		ticker := time.NewTicker(mcpStreamKeepAlive)
+		defer ticker.Stop()
+		for progress := 1; ; progress++ {
+			select {
+			case <-done:
+				return
+			case <-r.Context().Done():
+				return
+			case <-ticker.C:
+			}
+			if token := bytes.TrimSpace(params.Meta.ProgressToken); len(token) > 0 && string(token) != "null" {
+				notification, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "notifications/progress",
+					"params": map[string]any{"progressToken": json.RawMessage(token), "progress": progress, "message": "the Swarm tool call is still running"}})
+				if err == nil {
+					write("event: message\ndata: " + string(notification) + "\n\n")
+					continue
+				}
+			}
+			write(": the Swarm tool call is still running\n\n")
+		}
+	}()
+	response, _ := b.dispatch(r.Context(), message)
+	close(done)
+	keepAlive.Wait()
+	payload, err := json.Marshal(response)
+	if err != nil {
+		payload, _ = json.Marshal(jsonRPCResponse{JSONRPC: "2.0", ID: message.ID, Error: &jsonRPCError{Code: -32603, Message: "encode tool result"}})
+	}
+	write("event: message\ndata: " + string(payload) + "\n\n")
 }
 
 func (b *mcpBridge) authorized(r *http.Request) bool {
@@ -314,6 +414,21 @@ func (b *mcpBridge) callTool(requestCtx context.Context, rawParams json.RawMessa
 
 	provideriface.ReportAttemptActivity(b.ctx, provideriface.AttemptActivityStreamEvent)
 	defer provideriface.ReportAttemptActivity(b.ctx, provideriface.AttemptActivityStreamEvent)
+	// The CLI is silent while Swarm runs the tool: keep the provider-attempt
+	// watchdog (an inactivity timeout of minutes) from ending the turn under
+	// a long but live tool call.
+	heartbeat := time.NewTicker(mcpToolHeartbeat)
+	defer heartbeat.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-heartbeat.C:
+				provideriface.ReportAttemptActivity(b.ctx, provideriface.AttemptActivityStreamEvent)
+			}
+		}
+	}()
 	result, err := b.invoker.ExecuteTool(ctx, provideriface.ToolInvocation{
 		CallID:    callID,
 		Name:      original,

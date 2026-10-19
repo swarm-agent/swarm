@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,6 +165,29 @@ func TestBridgeBashPastItsTimeoutIsStoppedAndReported(t *testing.T) {
 	time.Sleep(2500 * time.Millisecond)
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatal("the timed-out command kept running after the tool call returned")
+	}
+}
+
+// Requirement: while a tool call runs, the bridge keeps telling the
+// provider-attempt watchdog that the turn is alive, so a long command is not
+// ended by the watchdog's inactivity timeout (the CLI is silent meanwhile).
+// Threat: a bash call within its documented maximum cut off after the
+// watchdog's few minutes and the turn retried under it.
+// Owner: mcpBridge.callTool (heartbeat) with the attempt-activity reporter
+// runProviderAttempt installs.
+func TestBridgeKeepsTheAttemptAliveWhileAToolRuns(t *testing.T) {
+	oldHeartbeat, oldKeepAlive := mcpToolHeartbeat, mcpStreamKeepAlive
+	mcpToolHeartbeat, mcpStreamKeepAlive = 50*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { mcpToolHeartbeat, mcpStreamKeepAlive = oldHeartbeat, oldKeepAlive })
+	var reports atomic.Int64
+	ctx := provideriface.WithAttemptActivityReporter(context.Background(), func(provideriface.AttemptActivityPhase) { reports.Add(1) })
+	bridge, _ := newBashBridge(t, ctx)
+	receipt := callBash(t, bridge, "sleep 1", 30000)
+	if receipt["exit_code"] != float64(0) {
+		t.Fatalf("bash receipt = %+v", receipt)
+	}
+	if n := reports.Load(); n < 8 {
+		t.Fatalf("attempt activity reported %d times during a 1 s tool call with a 50 ms heartbeat", n)
 	}
 }
 

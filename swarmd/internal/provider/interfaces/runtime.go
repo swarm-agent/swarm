@@ -337,6 +337,12 @@ type ToolInvoker interface {
 	ExecuteTool(context.Context, ToolInvocation) (ToolExecutionResult, error)
 }
 
+// MaxToolCallDuration is the longest one Swarm tool call may run: the bash
+// tool's timeout_ms maximum. It is the single upper bound; a provider that
+// runs tool calls through its own client (Claude Code's MCP bridge) must let
+// a call run at least this long, so the tool's own timeout ends it.
+const MaxToolCallDuration = 30 * time.Minute
+
 type FunctionCall struct {
 	CallID    string         `json:"call_id"`
 	Name      string         `json:"name"`

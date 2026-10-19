@@ -43,6 +43,7 @@ import (
 	"swarm/packages/swarmd/internal/htmlcapture"
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
+	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 	"swarm/packages/swarmd/internal/taskscope"
@@ -70,7 +71,7 @@ const (
 	maxSearchHelperStdout               = 8 * 1024 * 1024
 	maxSearchHelperStderr               = 64 * 1024
 	defaultBashTimeout                  = 2 * time.Minute
-	maxBashTimeout                      = 30 * time.Minute
+	maxBashTimeout                      = provideriface.MaxToolCallDuration
 	defaultGitTimeout                   = 20 * time.Second
 	defaultGitCommitTimeout             = 5 * time.Minute
 	defaultSearchTimeout                = 8 * time.Second
@@ -1036,7 +1037,7 @@ func (r *Runtime) Definitions() []Definition {
 					},
 					"category":   map[string]any{"type": "string", "enum": []string{"read", "write", "update", "delete"}, "description": "Overall effect category: read only observes state; write creates new state, resources, or processes; update is a non-removal in-place mutation; delete removes state and always requires critical=true. Use the highest-impact applicable category."},
 					"critical":   map[string]any{"type": "boolean", "description": "Set true when the user should pay special attention before execution, including public listeners or network exposure, destructive or privileged operations, security-sensitive changes, or other unusually consequential effects."},
-					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000)"},
+					"timeout_ms": map[string]any{"type": "integer", "description": "Timeout in milliseconds (default 120000, max 1800000 = 30 minutes; larger values use the max). The call waits for the command up to this limit for every provider; at the limit the command is stopped and the result reports timed_out."},
 				},
 				"required":             []string{"command", "explanation", "category", "critical"},
 				"additionalProperties": false,
