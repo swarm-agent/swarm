@@ -162,10 +162,17 @@ With `fixes`:
   `agent` step after another `agent` step that already moved the delivery
   head is refused without starting its job. Put the fixing review first.
 - The step's `outcome` shows the reviewer's `fix_commits`, `fix_lines`,
-  `fixes_applied` and, when not applied, `fixes_reason`; the reviewer job's
-  own result shows its commits and head. `swarm_get_job` on the reviewed job
-  and the delivery views show the moved `head` and the applied
-  `fix_commits`.
+  `fixes_applied` and, when not applied, `fixes_reason`; `swarm_get_job` on
+  the reviewer job shows its fix `commits` and `head` on its
+  `agent/review-<run>` branch (read from its checkout; `fix_error` when that
+  read fails). `swarm_get_job` on the reviewed job and the delivery views
+  show the moved `head` and the applied `fix_commits`.
+- A fixing reviewer's review of the reviewed job is recorded with
+  `fix_head` when it committed: its OK covers the reviewed head only with
+  those fixes, so `swarm_get_job` on the reviewed job shows that review as
+  `stale`, never as a current OK of the unfixed head, whether or not the
+  step applied the fixes. An OK whose fix checkout cannot be read is
+  recorded as BLOCK (`reviewer fixes unreadable`).
 - The reviewer's checkout is kept after the job ends, like a coder's job
   checkout, so the delivery and later `run` steps can read its head; it is
   not deleted as a read-only reviewer's checkout is. Reviewer jobs stay

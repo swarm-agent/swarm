@@ -785,6 +785,9 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 			out["result_error"] = controlMCPTruncate(err.Error(), 300)
 		}
 	}
+	if kind == controlMCPJobWorker && refs.run != nil {
+		c.fillReviewFixResult(out, a, b, refs.run)
+	}
 	if refs.run != nil {
 		if review := controlMCPMap(refs.run["review"]); review["verdict"] != nil {
 			out["review"] = review
@@ -820,6 +823,44 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 		}
 	}
 	return out, nil
+}
+
+// fillReviewFixResult shows, on the job of a reviewer an automation step
+// allowed to commit security fixes, its fix commits and head on its own
+// agent/review-<run> branch, read with Git from its checkout by the same
+// reader the automation step uses (Server.reviewFixCheckout). A reviewer's
+// delivery assessment is report-only and never reports a head, so this is
+// the result's head. A checkout that cannot be read is reported as
+// result.fix_error with no head, never as a head without fixes.
+func (c *controlMCPCall) fillReviewFixResult(out map[string]any, workerID, runID string, run map[string]any) {
+	if c.server == nil {
+		return
+	}
+	if fixes, _ := controlMCPMap(run["input"])["review_fixes"].(string); fixes != jobautomation.FixesSecurity {
+		return
+	}
+	account, _ := run["account_scope_id"].(string)
+	git, fixing, err := c.server.reviewFixCheckout(c.request.Context(), account, workerID, runID)
+	if !fixing {
+		return
+	}
+	result := controlMCPMap(out["result"])
+	if result == nil {
+		result = map[string]any{}
+	}
+	if err != nil {
+		delete(result, "head")
+		result["fix_error"] = controlMCPTruncate(err.Error(), 300)
+		out["result"] = result
+		return
+	}
+	commits := []string{}
+	for _, commit := range git.Commits {
+		commits = append(commits, controlMCPTruncate(commit.SHA+" "+commit.Subject, 200))
+	}
+	result["head"], result["branch"], result["base_commit"], result["commits"] = git.Head, git.Branch, git.BaseCommit, commits
+	delete(result, "fix_error")
+	out["result"] = result
 }
 
 // controlMCPUncommittedNext is a reviewable job's next step while its worktree

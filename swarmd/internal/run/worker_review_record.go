@@ -3,8 +3,10 @@ package run
 import (
 	"errors"
 	"strings"
-	store "swarm/packages/swarmd/internal/store/pebble"
 	"time"
+
+	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/worktree"
 )
 
 func reviewFromResult(r store.WorkerRunRecord, report, head string, at int64) store.JobReview {
@@ -19,6 +21,30 @@ func reviewFromResult(r store.WorkerRunRecord, report, head string, at int64) st
 		if r.Error != "" {
 			review.Reason += ": " + r.Error
 		}
+	}
+	return review
+}
+
+// withReviewFixHead binds a fixing reviewer's verdict to its fix commits:
+// when its checkout's head moved past the reviewed head the record carries
+// FixHead, so an OK never reads as a plain OK of the unfixed head. An OK whose
+// checkout cannot be read fails closed as BLOCK: what it approved is unknown.
+func withReviewFixHead(review store.JobReview, snapshot store.SessionSnapshot, runID string) store.JobReview {
+	var head string
+	var err error
+	if !snapshot.WorktreeEnabled || strings.TrimSpace(snapshot.WorktreeRootPath) == "" {
+		err = errors.New("the reviewer's fix checkout is not recorded on its session")
+	} else {
+		head, err = worktree.ReviewFixHead(snapshot.WorktreeRootPath, reviewFixBranch(runID), review.Head)
+	}
+	if err != nil {
+		if review.Verdict == "ok" {
+			review.Verdict, review.Reason = "block", "reviewer fixes unreadable: "+err.Error()
+		}
+		return review
+	}
+	if head != review.Head {
+		review.FixHead = head
 	}
 	return review
 }
@@ -69,6 +95,9 @@ func (s *WorkerExecutionService) recordReviewResult(r store.WorkerRunRecord) err
 		at = time.Now().UnixMilli()
 	}
 	review := reviewFromResult(r, report, env["SWARM_REVIEW_HEAD"], at)
+	if sessionReviewFixes(snapshot.Metadata) {
+		review = withReviewFixHead(review, snapshot, r.ID)
+	}
 	ws, err := s.workerStore()
 	if err != nil {
 		return err

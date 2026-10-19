@@ -1272,6 +1272,8 @@ export interface JobReview {
   model: string;
   at: number;
   reason?: string;
+  /** Set when a fixing reviewer committed on top of `head`: the verdict covers `head` only with those fixes. */
+  fix_head?: string;
   stale: boolean;
 }
 

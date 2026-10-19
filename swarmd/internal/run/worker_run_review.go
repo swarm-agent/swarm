@@ -14,6 +14,9 @@ import (
 // explicitly without changing run status semantics. It is never persisted.
 type WorkerRunReview struct {
 	*store.JobReview
+	// Stale is true when the run's checkout is no longer at the reviewed
+	// head, and always when the verdict depends on a fixing reviewer's
+	// commits (FixHead): the run's own head was not approved on its own.
 	Stale bool `json:"stale"`
 	// State is "awaiting_review" while the task needs review, "completed" once
 	// the task is integrated or accepted, otherwise the task status.
@@ -66,7 +69,7 @@ func (s *WorkerExecutionService) RunReview(r store.WorkerRunRecord) (*WorkerRunR
 	}
 	if review.JobReview != nil {
 		state, inspectErr := s.host.trees.InspectTaskWorkspace(task.WorkspacePath)
-		review.Stale = inspectErr != nil || state.HeadCommit != review.Head
+		review.Stale = inspectErr != nil || state.HeadCommit != review.Head || review.FixHead != ""
 	}
 	switch task.Status {
 	case "needs_review":

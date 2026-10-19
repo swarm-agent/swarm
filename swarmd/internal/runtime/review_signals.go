@@ -11,6 +11,10 @@ func jobReviewSignal(emitter *signals.Emitter) func(string, string, string, stor
 		if review.Verdict == "block" {
 			severity = store.SignalSeverityWarning
 		}
-		emitter.Emit(store.Signal{Kind: "job.reviewed", Severity: severity, Account: account, Summary: "Job review recorded", DedupKey: "job.reviewed:" + review.ReviewerJobID, Refs: map[string]string{"worker_id": worker, "run_id": run, "job_id": "worker/" + worker + "/" + run, "reviewer_job_id": review.ReviewerJobID}, Attrs: map[string]string{"verdict": review.Verdict, "head": review.Head}})
+		attrs := map[string]string{"verdict": review.Verdict, "head": review.Head}
+		if review.FixHead != "" {
+			attrs["fix_head"] = review.FixHead
+		}
+		emitter.Emit(store.Signal{Kind: "job.reviewed", Severity: severity, Account: account, Summary: "Job review recorded", DedupKey: "job.reviewed:" + review.ReviewerJobID, Refs: map[string]string{"worker_id": worker, "run_id": run, "job_id": "worker/" + worker + "/" + run, "reviewer_job_id": review.ReviewerJobID}, Attrs: attrs})
 	}
 }

@@ -120,6 +120,28 @@ func (s *Service) allocateReviewFixWorkspace(source, owner, reviewedClone, head,
 	return Allocation{WorkspacePath: path, RepoRoot: root, BaseBranch: head, BaseCommit: head, BranchName: branch, WorkspaceID: id}, nil
 }
 
+// ReviewFixHead reads the head of a fixing reviewer's checkout: lane must be
+// on branch (agent/review-<run>) and its HEAD must descend from the reviewed
+// head. It returns HEAD, which equals reviewed when the reviewer committed
+// nothing.
+func ReviewFixHead(lane, branch, reviewed string) (string, error) {
+	if !strings.HasPrefix(branch, ReviewFixBranchPrefix) || !validCommitID(reviewed) || strings.TrimSpace(lane) == "" {
+		return "", errors.New("review fix checkout identity is incomplete")
+	}
+	current, err := runGit(lane, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil || current != branch {
+		return "", fmt.Errorf("the reviewer's checkout is not on %s", branch)
+	}
+	head, err := runGit(lane, "rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
+	if err != nil || !validCommitID(head) {
+		return "", errors.New("the reviewer's checkout head could not be read")
+	}
+	if _, err := runGit(lane, "merge-base", "--is-ancestor", reviewed, head); err != nil {
+		return "", errors.New("the reviewer's head does not descend from the reviewed head")
+	}
+	return head, nil
+}
+
 // ValidateReviewFixExecutionIdentity admits the writable branch checkout of a
 // reviewer allowed to commit security fixes: a managed clone of the folder on
 // its agent/review-<run> branch whose HEAD descends from the reviewed head.

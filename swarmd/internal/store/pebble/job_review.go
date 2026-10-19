@@ -15,6 +15,10 @@ type JobReview struct {
 	// MaxJobReviewFindingsBytes. Empty for a malformed report and for
 	// records written before this field existed.
 	Findings string `json:"findings,omitempty"`
+	// FixHead is set when a reviewer allowed to commit security fixes
+	// committed on top of Head: its verdict covers Head only together with
+	// those fix commits (up to FixHead), never Head alone.
+	FixHead string `json:"fix_head,omitempty"`
 }
 
 // MaxJobReviewFindingsBytes bounds the findings a review record keeps; the
