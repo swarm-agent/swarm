@@ -269,7 +269,9 @@ With `fixes`:
   round + 1. The round is counted once, when the follow-up is sent.
 - A job takes one follow-up at a time. When the job is still running (its run
   or another follow-up is in flight), the step **waits**, within its
-  `timeout_seconds`, for it to settle, then sends its follow-up. While it
+  `timeout_seconds`, for it to settle, then sends its follow-up. A follow-up
+  that starts just before the step's own send (the send is refused with "a
+  follow-up is already running in this job") is waited for the same way. While it
   waits the step's state is `waiting` and its `reason` says what it waits for
   (`waiting: the job ... is still running (in_progress)`), and
   `automation.step.waiting` is signalled once. It asks again on each new
@@ -367,10 +369,15 @@ list commits that are already on the target. So `base_commit` (in the result,
 in `swarm_get_job`'s result and in `swarm_get_changes`) is the job's
 **effective base**:
 
-- Swarm takes the merge-base of the job's head and the target's current tip:
-  the folder's own `<base_branch>` (when its commit is in the job's clone) and
-  the clone's `refs/remotes/origin/<base_branch>` (which a rebase fetched),
-  using the newer of the two.
+- Swarm takes the merge-base of the job's head and the target's current tip.
+  The tip comes only from the folder's own `<base_branch>` (when its commit is
+  in the job's clone). The clone belongs to the coder, whose commands can move
+  its refs, so the clone's `refs/remotes/origin/<base_branch>` (which a rebase
+  fetched) counts only when the folder's branch contains it, and the
+  merge-base itself must be on the folder's branch. Replace refs and grafts in
+  the clone are ignored. A commit that is not on the target therefore never
+  becomes the base, and none of the job's own commits can drop out of its
+  range.
 - That merge-base is the base when it descends from the recorded base (the
   job was rebased onto, or merged, a newer target) or when the head no longer
   descends from the recorded base at all (the target was rewritten and the

@@ -268,8 +268,10 @@ func acceptsEventStream(r *http.Request) bool {
 }
 
 // streamToolCall answers one tools/call as an event stream: the response
-// starts at once (so a client's per-request timeout, about 60 seconds in
-// Claude Code, never abandons a long tool call and cancels it), carries a
+// starts at once (so a client per-request timeout that waits for the
+// response to begin cannot abandon a long tool call and cancel it; the
+// ~60 s cut-off seen with Claude Code is taken to be such a timeout, which
+// is inferred and not yet confirmed against the CLI), carries a
 // keep-alive while the tool runs, and ends with the JSON-RPC response as its
 // last event. A client that drops the request still cancels the tool.
 func (b *mcpBridge) streamToolCall(w http.ResponseWriter, flusher http.Flusher, r *http.Request, message jsonRPCMessage) {
