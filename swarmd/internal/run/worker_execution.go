@@ -1439,41 +1439,47 @@ func (s *Service) WorkerExecutionService() *WorkerExecutionService {
 // retain the same session and ownership checks; unsafe allocation recovery is
 // reported as failure, never bypassed. Missed scheduled slots are not replayed.
 func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, id string) error {
-	_, err := s.reconcileWorker(ctx, account, id)
+	_, _, _, err := s.reconcileWorker(ctx, account, id, true, false)
 	return err
 }
 
 // reconcileWorker reports whether the worker had unfinished runs, so the
-// scheduler keeps observing it until they settle. The budget is read only
-// when there is an unfinished run whose admission it can close.
-func (s *WorkerExecutionService) reconcileWorker(ctx context.Context, account, id string) (bool, error) {
+// scheduler keeps observing it until they settle, and the budget hold state
+// it applied. The budget is read only when readBudget is set and there is an
+// unfinished run whose admission it can close; otherwise the caller's
+// knownHeld (from its last event-driven read) is applied. Holds, limit and
+// policy changes and the UTC-day reset all reach the scheduler as events,
+// so a timer-driven re-check never needs to re-read the ledger. budgetKnown
+// reports that the returned hold state is current: the read succeeded, or
+// none was needed because the worker had no runs in flight.
+func (s *WorkerExecutionService) reconcileWorker(ctx context.Context, account, id string, readBudget, knownHeld bool) (busy, budgetHeld, budgetKnown bool, err error) {
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
 	ws, err := s.workerStore()
 	if err != nil {
-		return false, err
+		return false, knownHeld, false, err
 	}
 	w, found, err := ws.GetWorker(account, id)
 	if err != nil {
-		return false, err
+		return false, knownHeld, false, err
 	}
 	if !found {
-		return false, store.ErrWorkerNotFound
+		return false, knownHeld, false, store.ErrWorkerNotFound
 	}
 	pending, err := ws.UnfinishedWorkerRuns(account, id, "")
 	if err != nil {
-		return false, err
+		return false, knownHeld, false, err
 	}
-	busy := len(pending) > 0
-	budgetHeld := false
-	if busy {
+	busy = len(pending) > 0
+	budgetHeld = busy && knownHeld
+	if busy && readBudget {
 		budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
 		if err != nil {
-			return busy, err
+			return busy, knownHeld, false, err
 		}
 		budgetHeld = budget.Hold != nil
 	}
-	return busy, s.reconcileWorkerRuns(ctx, ws, w, account, id, pending, budgetHeld)
+	return busy, budgetHeld, readBudget || !busy, s.reconcileWorkerRuns(ctx, ws, w, account, id, pending, budgetHeld)
 }
 
 func (s *WorkerExecutionService) reconcileWorkerRuns(ctx context.Context, ws *store.WorkerStore, w store.WorkerRecord, account, id string, pending []store.WorkerRunRecord, budgetHeld bool) error {

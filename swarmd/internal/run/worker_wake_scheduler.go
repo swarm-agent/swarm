@@ -89,7 +89,13 @@ type workerSchedEntry struct {
 	lastReconcile time.Time
 	changedSince  time.Time
 	busy          bool
-	index         int
+	// budgetHeld is the hold state from the last budget read. budgetStale
+	// asks the next reconcile to read the budget again; only events (budget,
+	// worker or run signals, UTC midnight) and the safety rescan set it, never
+	// the busy re-check timer.
+	budgetHeld  bool
+	budgetStale bool
+	index       int
 }
 
 func (e *workerSchedEntry) at() time.Time {
@@ -340,14 +346,16 @@ func (sch *WorkerScheduler) entry(k workerKey, after time.Time) *workerSchedEntr
 	if len(sch.entries) >= workerSchedulerWorkerBudget {
 		return nil
 	}
-	e := &workerSchedEntry{key: k, after: after, index: -1}
+	e := &workerSchedEntry{key: k, after: after, budgetStale: true, index: -1}
 	sch.entries[k] = e
 	return e
 }
 
-// requestReconcile schedules a reconcile no sooner than the per-worker
-// spacing allows.
+// requestReconcile schedules an event-driven reconcile no sooner than the
+// per-worker spacing allows. Every caller is an event, so it also re-reads
+// the budget.
 func (sch *WorkerScheduler) requestReconcile(e *workerSchedEntry, now time.Time) {
+	e.budgetStale = true
 	at := now
 	if !e.lastReconcile.IsZero() {
 		if spaced := e.lastReconcile.Add(workerSchedulerMinSpacing); spaced.After(at) {
@@ -434,6 +442,7 @@ func (sch *WorkerScheduler) rescan(ctx context.Context, now time.Time) error {
 			if e == nil {
 				continue
 			}
+			e.budgetStale = true
 			failures = append(failures, sch.reconcileEntry(ctx, ws, e, now))
 		}
 		if rows.NextCursor == "" {
@@ -482,15 +491,20 @@ func (sch *WorkerScheduler) reconcileDue(ctx context.Context, now time.Time) err
 }
 
 // reconcileEntry runs ReconcileWorker and recomputes the next due slot from
-// the entry's cursor, moved to the first unapplied change.
+// the entry's cursor, moved to the first unapplied change. The budget is read
+// only when an event or the rescan marked it stale; a busy re-check applies
+// the hold state from that read. A failed read stays stale and is retried.
 func (sch *WorkerScheduler) reconcileEntry(ctx context.Context, ws *store.WorkerStore, e *workerSchedEntry, now time.Time) error {
-	busy, err := sch.service.reconcileWorker(ctx, e.key.account, e.key.id)
+	busy, held, known, err := sch.service.reconcileWorker(ctx, e.key.account, e.key.id, e.budgetStale, e.budgetHeld)
 	e.lastReconcile, e.reconcileAt = now, time.Time{}
 	if errors.Is(err, store.ErrWorkerNotFound) {
 		sch.remove(e)
 		return nil
 	}
 	e.busy = busy
+	if known {
+		e.budgetHeld, e.budgetStale = held, false
+	}
 	if busy || err != nil {
 		e.reconcileAt = now.Add(workerSchedulerBusyInterval)
 	}
