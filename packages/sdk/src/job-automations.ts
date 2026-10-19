@@ -56,8 +56,9 @@ export interface JobAutomationStep {
    * to the folder (e.g. `deliver/push.sh`). It runs on the host as the
    * daemon's user, in the folder, with the machine's own credentials, and
    * only if the file (symlinks resolved) is owned by root and not writable by
-   * group or others. A run step has no `secrets`: a step that sends them is
-   * refused.
+   * group or others. A relative path must resolve to a singly linked file
+   * inside the folder; prefer an absolute path in a directory only root can
+   * write. A run step has no `secrets`: a step that sends them is refused.
    */
   command?: string;
   args?: string[];

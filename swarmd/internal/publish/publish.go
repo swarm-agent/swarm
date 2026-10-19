@@ -239,6 +239,11 @@ func ownedByRoot(path string, executable bool) error {
 	if err != nil {
 		return err
 	}
+	return checkOwnedByRoot(info, executable)
+}
+
+// checkOwnedByRoot applies ownedByRoot's rules to a file's own metadata.
+func checkOwnedByRoot(info os.FileInfo, executable bool) error {
 	if !info.Mode().IsRegular() {
 		return ErrNotRegular
 	}

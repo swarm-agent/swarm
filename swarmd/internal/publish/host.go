@@ -6,8 +6,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Script is one owner script Swarm runs on the host: the publish command, or
@@ -62,7 +65,47 @@ var (
 	ErrNotRootOwned  = errors.New("must be owned by root")
 	ErrWritable      = errors.New("must not be writable by group or others")
 	ErrNotExecutable = errors.New("is not executable")
+	// ErrChanged: a path component was a symlink when the file was opened,
+	// or the opened file is no longer at path: something changed it after
+	// it was resolved.
+	ErrChanged = errors.New("changed while it was being checked")
 )
+
+// OpenOwnedByRoot opens the file at path, an absolute path with no symlinks
+// in it (filepath.EvalSymlinks' result), and refuses it unless the opened
+// file is still the file at exactly that path (so no symlink or rename was
+// followed on the way), then applies OwnedByRoot's rules to the opened file
+// itself. The file is returned open for reading (the caller closes it), so
+// a caller can use exactly the file that was checked, whatever happens at
+// path afterwards. info is the opened file's metadata. A FIFO or device is
+// refused without blocking.
+func OpenOwnedByRoot(path string, executable bool) (file *os.File, info os.FileInfo, err error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY, 0)
+	if errors.Is(err, unix.ELOOP) {
+		return nil, nil, ErrChanged
+	}
+	if err != nil {
+		return nil, nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	file = os.NewFile(uintptr(fd), path)
+	fail := func(err error) (*os.File, os.FileInfo, error) {
+		file.Close()
+		return nil, nil, err
+	}
+	// The kernel's path for the open file: it differs from path when a
+	// symlink was followed or a directory was renamed since path was
+	// resolved.
+	if at, err := os.Readlink("/proc/self/fd/" + strconv.Itoa(fd)); err != nil || at != path {
+		return fail(ErrChanged)
+	}
+	if info, err = file.Stat(); err != nil {
+		return fail(err)
+	}
+	if err := checkOwnedByRoot(info, executable); err != nil {
+		return fail(err)
+	}
+	return file, info, nil
+}
 
 // OwnedByRoot refuses a file another user could change: it must be a regular
 // file owned by root, not writable by group or others and, when executable

@@ -68,20 +68,34 @@ Swarm ships, installs and suggests no script: it runs only the steps the
 owner configured, and nothing when there are none.
 
 - `command` is an **absolute path**, or a path **relative to the folder**
-  (no `..`, not under `.git`). The script may live anywhere on the machine.
-  Swarm resolves it, symlinks included, and runs it only when the final file
-  is **owned by root and not writable by group or others** (and executable);
-  otherwise the step is refused with the reason and the fix, and nothing
-  runs. The check is made again immediately before the script runs, and
-  Swarm runs the resolved path, not the name the step gave. Install a script
-  with:
+  (no `..`, not under `.git`). Swarm resolves it, symlinks included, and runs
+  it only when the final file is **owned by root and not writable by group
+  or others** (and executable and readable); otherwise the step is refused
+  with the reason and the fix, and nothing runs. Install a script with:
 
   ```sh
   sudo install -o root -m 755 push.sh /usr/local/libexec/swarm-deliver/push.sh
   ```
 
-  A script inside the folder (`deliver/push.sh`) must pass the same check,
-  so a file an agent or the folder's owner can edit never runs.
+- **Prefer an absolute path in a directory only root can write**, such as
+  `/usr/local/libexec/swarm-deliver/`. An absolute path may point anywhere,
+  symlinks included: where it points is the owner's choice.
+- A **relative** command must resolve to a file **inside the folder**. A
+  symlink in the folder (the script, or a directory on its path) that leads
+  out of the folder is refused, even to a root-owned file such as `/bin/sh`.
+  The script must also have exactly one link: a hard link is refused. These
+  rules exist because whoever can write the folder (the folder's user, an
+  agent working in it, or a job commit your merge script checks out) can
+  replace `deliver/push.sh`. They still cannot make a file pass the root-owner
+  check. They can, however, delete or rename a script in the folder, or put
+  another root-owned script from the same folder in its place. A script that
+  holds credentials or must not be swapped belongs outside the folder.
+- The check is made again immediately before the script runs, on the opened
+  file itself. Swarm then runs a private copy of exactly that file (in a
+  folder only the daemon's user can read, removed afterwards), so a file
+  swapped in at the path after the check never runs. The script's `$0` is
+  therefore that copy's path, not the path you installed it at: do not find
+  sibling files through `$0`.
 - `run` steps have no `secrets`: a step that sends them is refused. A host
   script uses the machine's own credentials, as the publish command does.
 - Before the step, Swarm brings the delivery's head commit (the job's head,

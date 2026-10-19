@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -23,7 +24,11 @@ import (
 // SWARM_* variables, a time limit and a process-group kill. A run step is
 // the machine owner's own post-job script, not an agent command, so it may
 // write the folder's repository and use the machine's own credentials. It
-// runs only a script owned by root that group and others cannot write.
+// runs only a script owned by root that group and others cannot write; a
+// relative command must also resolve to a file inside the folder. The file
+// is opened once, without following symlinks; that open file is checked and
+// copied into a private folder of the step's, and the copy runs, so a file
+// swapped in at the path after the check never runs.
 type HostExecutor struct{}
 
 // timeoutExitCode is a step's exit code when its time limit killed it (the
@@ -60,16 +65,42 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 		return RunOutcome{}, fmt.Errorf("create the step's scratch folder: %w", err)
 	}
 	defer os.RemoveAll(scratch)
-	// Check the resolved file again immediately before running it.
-	if err := publish.OwnedByRoot(script, true); err != nil {
+	// Check the resolved file again immediately before running it, on the
+	// open file whose contents run.
+	checked, info, err := publish.OpenOwnedByRoot(script, true)
+	if err != nil {
 		return RunOutcome{}, &RefusedError{Reason: scriptRefusal(req.Command, "", script, err)}
 	}
+	defer checked.Close()
+	if !filepath.IsAbs(filepath.FromSlash(req.Command)) {
+		// A hard link is the one way to put a root-owned file (a shell, say)
+		// in a folder without root: a script in the folder has no other link.
+		if stat, ok := info.Sys().(*syscall.Stat_t); !ok || stat.Nlink != 1 {
+			return RunOutcome{}, &RefusedError{Reason: fmt.Sprintf("%s has other hard links, so it may be a file from outside the folder: a script in the folder must have exactly one link; install it with sudo install -o root -m 755 SCRIPT %s", req.Command, script)}
+		}
+	}
+	run, cleanup, err := copyChecked(checked, filepath.Base(script))
+	if err != nil {
+		return RunOutcome{}, err
+	}
+	defer cleanup()
 	out := &stepOutput{tail: tailBuffer{max: MaxLogTailBytes}, onOutput: req.OnOutput}
-	timedOut, runErr := publish.RunScript(ctx, publish.Script{
-		Path: script, Args: req.Args, Dir: folder, Env: env, Scratch: scratch,
-		Stdin: bytes.NewReader(req.Stdin), Stdout: out, Stderr: out,
-		Timeout: timeout, WaitDelay: stepWaitDelay,
-	})
+	var timedOut bool
+	var runErr error
+	for attempt := 0; ; attempt++ {
+		timedOut, runErr = publish.RunScript(ctx, publish.Script{
+			Path: run, Args: req.Args, Dir: folder, Env: env, Scratch: scratch,
+			Stdin: bytes.NewReader(req.Stdin), Stdout: out, Stderr: out,
+			Timeout: timeout, WaitDelay: stepWaitDelay,
+		})
+		// ETXTBSY: a process another goroutine was starting still held the
+		// copy's write handle (golang/go#22315). The exec never started, so
+		// the script did not run; try again shortly.
+		if !errors.Is(runErr, syscall.ETXTBSY) || attempt == 4 || ctx.Err() != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if timedOut {
 		out.Write([]byte(fmt.Sprintf("\nswarm: the step timed out after %s; its processes were killed\n", timeout)))
 		return RunOutcome{ExitCode: timeoutExitCode, Output: out.tail.bytes()}, nil
@@ -89,10 +120,42 @@ func (HostExecutor) Run(ctx context.Context, req RunRequest) (RunOutcome, error)
 	return RunOutcome{Output: out.tail.bytes()}, runErr
 }
 
+// copyChecked copies the checked script (an open file) into a new private
+// folder (mode 0700, the daemon user's) as name, mode 0500, and returns its
+// path and a cleanup that removes the folder. The original is owned by root
+// and nobody else can write it, so the copy is exactly the file checked;
+// running the copy, not the path, means a file swapped in at the path
+// between the check and the run never runs.
+func copyChecked(checked *os.File, name string) (path string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "swarm-step-script-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create the step's script folder: %w", err)
+	}
+	cleanup = func() { os.RemoveAll(dir) }
+	path = filepath.Join(dir, name)
+	dst, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+	if err == nil {
+		_, err = io.Copy(dst, checked)
+		if closeErr := dst.Close(); err == nil {
+			err = closeErr
+		}
+	}
+	if err == nil {
+		err = os.Chmod(path, 0o500)
+	}
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("copy the checked script: %w", err)
+	}
+	return path, cleanup, nil
+}
+
 // ResolveScript resolves a run step's command (an absolute path, or a path
 // relative to the folder), symlinks included, and returns the final file if
 // it is owned by root, not writable by group or others, executable and not
-// in a .git directory. The refusal gives the reason and the fix.
+// in a .git directory, and, for a relative command, inside the folder (a
+// link in the folder never reaches a root-owned program elsewhere, such as
+// a shell). The refusal gives the reason and the fix.
 func ResolveScript(folder, command string) (string, error) {
 	if err := ValidCommandPath(command); err != nil {
 		return "", err
@@ -111,6 +174,15 @@ func ResolveScript(folder, command string) (string, error) {
 	if !filepath.IsAbs(resolved) {
 		if resolved, err = filepath.Abs(resolved); err != nil {
 			return "", fmt.Errorf("%s cannot be resolved: %v", command, err)
+		}
+	}
+	if !filepath.IsAbs(filepath.FromSlash(command)) {
+		root, err := filepath.EvalSymlinks(folder)
+		if err != nil {
+			return "", fmt.Errorf("the folder %s cannot be resolved: %v", folder, err)
+		}
+		if rel, err := filepath.Rel(root, resolved); err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("%s resolves to %s, outside the folder: a relative command must resolve to a file inside the folder; to run a script elsewhere, give its absolute path", command, resolved)
 		}
 	}
 	if inGitDir(resolved) {
@@ -143,6 +215,8 @@ func scriptRefusal(command, link, resolved string, err error) string {
 		why = "it is not executable"
 	case errors.Is(err, publish.ErrNotRegular):
 		why = "it is not a regular file"
+	case errors.Is(err, publish.ErrChanged):
+		return fmt.Sprintf("%s changed while it was being checked (a symlink or rename in its path): it did not run; install it where only root can change it, with sudo install -o root -m 755 SCRIPT %s", name, resolved)
 	default:
 		why = err.Error()
 	}

@@ -185,9 +185,11 @@ reviewer for a second look), you can offer a job automation:
   `failed` or `always`), `retries` (0-3) and ordered steps. A `run` step runs
   the machine owner's script on the host as the daemon's user, in the folder,
   with the machine's own credentials (it gets the job's result JSON on stdin
-  and `SWARM_*` variables); its `command` is an absolute path or a path
-  relative to the folder, and the file must be owned by root and not writable
-  by group or others (`sudo install -o root -m 755`), or the step is refused; an
+  and `SWARM_*` variables); its `command` is an absolute path (preferred, in a
+  directory only root can write) or a path relative to the folder that must
+  resolve, symlinks included, to a singly linked file inside the folder, and
+  the file must be owned by root and not writable by group or others
+  (`sudo install -o root -m 755`), or the step is refused; an
   `agent` step gives a worker a job (a reviewer reviews the job's exact head
   and records a verdict, `ok` or `block`, with findings; only with
   `fixes: "security"` on its step may it commit small security fixes, at most

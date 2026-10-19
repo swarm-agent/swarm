@@ -191,20 +191,21 @@ func TestRunStepRefusesScriptsThatAreNotRootOwnedOrAreWritable(t *testing.T) {
 }
 
 // Requirement: the root-owner check applies to the file a symlink resolves
-// to, and the step runs the resolved path, not the name the step gave.
+// to; a relative command's link may point only inside the folder, and an
+// absolute command's link may point anywhere.
 // Threat: a root-owned-looking name in the folder that links to a file
 // anyone can change.
 // Owners: ResolveScript and HostExecutor.Run.
 func TestRunStepResolvesSymlinksBeforeTheOwnerCheck(t *testing.T) {
 	t.Cleanup(publish.AllowOwnerForTests(os.Getuid()))
 	folder, elsewhere := t.TempDir(), t.TempDir()
-	writeScript(t, elsewhere, "real.sh", "echo \"$0\"\ntouch \"$PWD/ran\"\n")
-	real := filepath.Join(elsewhere, "real.sh")
+	writeScript(t, folder, "lib/real.sh", "echo real\ntouch \"$PWD/ran\"\n")
+	real := filepath.Join(folder, "lib", "real.sh")
 	if err := os.MkdirAll(filepath.Join(folder, "deliver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(folder, "deliver", "push.sh")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink("../lib/real.sh", link); err != nil {
 		t.Fatal(err)
 	}
 	resolvedReal, err := filepath.EvalSymlinks(real)
@@ -212,13 +213,32 @@ func TestRunStepResolvesSymlinksBeforeTheOwnerCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A link to a file that passes runs that file, by its resolved path.
+	// A relative link to a passing file inside the folder runs that file.
 	out, err := HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: "deliver/push.sh", Timeout: 10 * time.Second})
-	if err != nil || out.ExitCode != 0 || lastLine(out.Output) != resolvedReal {
-		t.Fatalf("link to a passing script: %+v %v (ran as %q, want %q)", out, err, lastLine(out.Output), resolvedReal)
+	if err != nil || out.ExitCode != 0 || lastLine(out.Output) != "real" {
+		t.Fatalf("link to a passing script: %+v %v", out, err)
 	}
 	if err := os.Remove(filepath.Join(folder, "ran")); err != nil {
 		t.Fatal(err)
+	}
+
+	// An absolute command may be a link to a passing file elsewhere.
+	writeScript(t, elsewhere, "bin/push.sh", "echo elsewhere\n")
+	if err := os.Symlink(filepath.Join(elsewhere, "bin", "push.sh"), filepath.Join(elsewhere, "push.sh")); err != nil {
+		t.Fatal(err)
+	}
+	out, err = HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: filepath.Join(elsewhere, "push.sh"), Timeout: 10 * time.Second})
+	if err != nil || out.ExitCode != 0 || lastLine(out.Output) != "elsewhere" {
+		t.Fatalf("absolute link to a passing script: %+v %v", out, err)
+	}
+	// The same file through a relative link that leaves the folder is
+	// refused, though it passes the owner check.
+	if err := os.Symlink(filepath.Join(elsewhere, "bin", "push.sh"), filepath.Join(folder, "out.sh")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: "out.sh", Timeout: 10 * time.Second})
+	if reason := refusedReason(t, err); !strings.Contains(reason, "outside the folder") || !strings.Contains(reason, "absolute path") {
+		t.Fatalf("relative link out of the folder: reason %q", reason)
 	}
 
 	// A link to a file that is not root-owned is refused and nothing runs.
@@ -227,7 +247,7 @@ func TestRunStepResolvesSymlinksBeforeTheOwnerCheck(t *testing.T) {
 	_, err = HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: "deliver/push.sh", Timeout: 10 * time.Second})
 	restore()
 	reason := refusedReason(t, err)
-	if !strings.Contains(reason, "a link to "+resolvedReal) || !strings.Contains(reason, "it is not owned by root") {
+	if !strings.Contains(reason, resolvedReal) || !strings.Contains(reason, "it is not owned by root") {
 		t.Fatalf("reason %q does not name the link's target and why", reason)
 	}
 	// A link to a group-writable file is refused too.
@@ -251,6 +271,139 @@ func TestRunStepResolvesSymlinksBeforeTheOwnerCheck(t *testing.T) {
 	_, err = HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: "hook.sh", Timeout: 10 * time.Second})
 	if reason := refusedReason(t, err); !strings.Contains(reason, ".git") {
 		t.Fatalf("reason %q", reason)
+	}
+}
+
+// Requirement: a relative command never runs a root-owned program outside
+// the folder through a link in the folder, whether the script itself or a
+// directory on its path is the link. The step is refused and nothing runs.
+// The root-owner override is off: the shell really is root-owned, so the
+// owner check alone would pass it.
+// Threat: anyone who can write the folder (an agent working in it, or a job
+// commit with a symlink that a merge script checks out) replacing the
+// owner's deliver/push.sh with a link to /bin/sh, which then reads the
+// result JSON (agent-controlled text such as the report) from stdin as its
+// script and runs it on the host as the daemon's user.
+// Owners: ResolveScript (the resolved file must stay inside the resolved
+// folder) and HostExecutor.Run.
+func TestRunStepRefusesAFolderLinkToARootOwnedShell(t *testing.T) {
+	shell, err := filepath.EvalSymlinks("/bin/sh")
+	if err != nil {
+		t.Skipf("no /bin/sh on this host: %v", err)
+	}
+	if err := publish.OwnedByRoot(shell, true); err != nil {
+		t.Skipf("%s does not pass the root-owner check here (%v), so it cannot show the attack", shell, err)
+	}
+	stdin := []byte("touch \"$PWD/ran\"\n")
+	for _, c := range []struct{ name, command string }{
+		{"the script is a link", "deliver/push.sh"},
+		{"a directory on its path is a link", "bin/" + filepath.Base(shell)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			folder := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(folder, "deliver"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(shell, filepath.Join(folder, "deliver", "push.sh")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Dir(shell), filepath.Join(folder, "bin")); err != nil {
+				t.Fatal(err)
+			}
+			_, err := HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: c.command, Stdin: stdin, Timeout: 10 * time.Second})
+			reason := refusedReason(t, err)
+			if !strings.Contains(reason, c.command+" resolves to "+shell+", outside the folder") {
+				t.Fatalf("reason %q", reason)
+			}
+			if _, err := os.Stat(filepath.Join(folder, "ran")); !os.IsNotExist(err) {
+				t.Fatal("the shell ran the step's stdin")
+			}
+			if _, err := ResolveScript(folder, c.command); err == nil {
+				t.Fatal("ResolveScript accepted a link out of the folder")
+			}
+		})
+	}
+}
+
+// Requirement: a script given by a relative command must have exactly one
+// link. A hard link is the one way to put a root-owned file from elsewhere
+// into the folder without root, where the kernel allows it. An absolute
+// command is the owner's own choice and is not limited.
+// Threat: a hard link in the folder to a root-owned shell or interpreter
+// passing both the containment and the owner checks.
+// Owner: HostExecutor.Run (the link count of the opened file). A test
+// user's own file stands in for the root-owned one: unprivileged users
+// cannot hard-link root's files where protected_hardlinks is set.
+func TestRunStepRefusesAHardLinkedScriptInTheFolder(t *testing.T) {
+	t.Cleanup(publish.AllowOwnerForTests(os.Getuid()))
+	folder := t.TempDir()
+	writeScript(t, folder, "lib/real.sh", "touch \"$PWD/ran\"\n")
+	if err := os.MkdirAll(filepath.Join(folder, "deliver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(folder, "lib", "real.sh"), filepath.Join(folder, "deliver", "push.sh")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: "deliver/push.sh", Timeout: 10 * time.Second})
+	if reason := refusedReason(t, err); !strings.Contains(reason, "deliver/push.sh has other hard links") {
+		t.Fatalf("reason %q", reason)
+	}
+	if _, err := os.Stat(filepath.Join(folder, "ran")); !os.IsNotExist(err) {
+		t.Fatal("a hard-linked script ran")
+	}
+	out, err := HostExecutor{}.Run(context.Background(), RunRequest{Folder: folder, Command: filepath.Join(folder, "deliver", "push.sh"), Timeout: 10 * time.Second})
+	if err != nil || out.ExitCode != 0 {
+		t.Fatalf("absolute command to the same file: %+v %v", out, err)
+	}
+}
+
+// Requirement: what a run step executes is the file that passed the check,
+// even when the file at the script's path is swapped (by rename) between
+// the check and the run: the executor checks the open file and runs a
+// private copy of it.
+// Threat: whoever can write the script's directory (an agent in the folder)
+// swapping in a file that never passed the owner check after the check.
+// Owners: publish.OpenOwnedByRoot and copyChecked, composed as
+// HostExecutor.Run composes them. The swap cannot be made deterministically
+// inside Run, so this drives the same two calls with the swap between them.
+func TestRunStepRunsTheCheckedFileWhenThePathIsSwapped(t *testing.T) {
+	t.Cleanup(publish.AllowOwnerForTests(os.Getuid()))
+	folder, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeScript(t, folder, "deliver/push.sh", "echo checked\n")
+	script, err := ResolveScript(folder, "deliver/push.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked, _, err := publish.OpenOwnedByRoot(script, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer checked.Close()
+	// The swap, after the check: a different file renamed over the script.
+	writeScript(t, folder, "swap.sh", "echo swapped\ntouch \"$PWD/ran\"\n")
+	if err := os.Rename(filepath.Join(folder, "swap.sh"), script); err != nil {
+		t.Fatal(err)
+	}
+	run, cleanup, err := copyChecked(checked, filepath.Base(script))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if _, err := publish.RunScript(context.Background(), publish.Script{Path: run, Dir: folder, Scratch: t.TempDir(), Stdout: &out, Stderr: &out, Timeout: 10 * time.Second}); err != nil {
+		t.Fatalf("run: %v: %s", err, out.String())
+	}
+	if strings.TrimSpace(out.String()) != "checked" {
+		t.Fatalf("ran %q, want the checked file", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(folder, "ran")); !os.IsNotExist(err) {
+		t.Fatal("the swapped-in file ran")
+	}
+	cleanup()
+	if _, err := os.Stat(filepath.Dir(run)); !os.IsNotExist(err) {
+		t.Fatalf("the script copy's folder is left behind: %v", err)
 	}
 }
 
