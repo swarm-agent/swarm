@@ -75,7 +75,7 @@ func (ws *WorkerStore) AdmitWorkerRun(account string, req WorkerRunAdmission) (W
 		return WorkerRunRecord{}, fmt.Errorf("%w: use exactly one occurrence or idempotency key", ErrWorkerConflict)
 	}
 	switch req.RequestSource {
-	case "direct", "orchestrator", "test_run":
+	case "direct", "orchestrator", "test_run", "automation":
 		if req.OccurrenceID != "" {
 			return WorkerRunRecord{}, ErrWorkerConflict
 		}

@@ -38,6 +38,7 @@ import (
 	identityruntime "swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
+	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/lock"
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
@@ -174,6 +175,7 @@ type Daemon struct {
 	remoteTransport           *remote.Service
 	signalForwarder           *signals.Forwarder
 	resultOutbox              *outbox.Exporter
+	jobAutomations            *jobautomation.Runner
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -838,6 +840,24 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 			log.Printf("swarmd outbox exports to %s as machine %s", outboxCfg.Describe(), outboxCfg.Machine)
 		}
 	}
+	// Job automations (docs/automations.md): when a job ends, run the steps
+	// the owner set for it, and nothing when there are none.
+	jobAutomationRunner := jobautomation.NewRunner(jobautomation.Options{
+		Store: jobautomation.NewStore(store), Feed: signalStore, Account: apiServer.OutboxAccount,
+		Results: apiServer.JobAutomationResults(), Agent: apiServer.JobAutomationAgents(), Head: api.ImportJobRef, Emit: signalEmitter.Emit,
+		Run: jobautomation.SandboxExecutor{Grants: func(folder string) ([]string, error) {
+			grants, err := secretSlots.ActiveGrantsForWorkspace(folder)
+			if err != nil {
+				return nil, err
+			}
+			names := make([]string, 0, len(grants))
+			for _, grant := range grants {
+				names = append(names, grant.Slot.Name)
+			}
+			return names, nil
+		}},
+	})
+	apiServer.SetJobAutomations(jobAutomationRunner)
 	// Jobs in folders whose owner set a publish command (swarmctl workspace
 	// publish) are delivered as pull requests when swarm_deliver_job asks.
 	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
@@ -1021,6 +1041,7 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 		remoteTransport:           remoteSvc,
 		signalForwarder:           signalForwarder,
 		resultOutbox:              resultOutbox,
+		jobAutomations:            jobAutomationRunner,
 	}
 	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -1380,6 +1401,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.resultOutbox != nil && d.bgCtx != nil {
 		go d.resultOutbox.Run(d.bgCtx)
+	}
+	if d.jobAutomations != nil && d.bgCtx != nil {
+		go d.jobAutomations.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {

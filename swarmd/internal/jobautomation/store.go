@@ -48,13 +48,13 @@ var ErrNotFound = errors.New("not found")
 // Delivery is one (job end, automation revision) pair: the steps run once
 // for it. It keeps the automation as it was when the job ended.
 type Delivery struct {
-	ID                 string       `json:"id"`
-	Account            string       `json:"account"`
-	AutomationID       string       `json:"automation_id"`
-	AutomationName     string       `json:"automation_name"`
-	AutomationRevision uint64       `json:"automation_revision"`
-	JobID              string       `json:"job_id"`
-	Followup           string       `json:"followup,omitempty"`
+	ID                 string `json:"id"`
+	Account            string `json:"account"`
+	AutomationID       string `json:"automation_id"`
+	AutomationName     string `json:"automation_name"`
+	AutomationRevision uint64 `json:"automation_revision"`
+	JobID              string `json:"job_id"`
+	Followup           string `json:"followup,omitempty"`
 	// Round counts how many times the job's session was reopened for this
 	// delivery (part B); 0 for now.
 	Round      int          `json:"round"`

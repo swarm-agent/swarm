@@ -366,6 +366,7 @@ func (m *Manager) execLocal(ctx context.Context, scope Scope, req ExecRequest) (
 	out := &localOutput{limit: limit, onOutput: req.OnOutput}
 	cmd.Stdout = out
 	cmd.Stderr = out
+	cmd.Stdin = req.Stdin
 	start := time.Now()
 	err = cmd.Run()
 	result := &provider.ExecResult{DurationMS: time.Since(start).Milliseconds(), Stdout: string(out.bytes), Truncated: out.truncated, LastObservedAt: time.Now()}

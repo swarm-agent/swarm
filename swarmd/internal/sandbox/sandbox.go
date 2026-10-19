@@ -295,6 +295,12 @@ func (m *Manager) SetSecretBroker(broker SecretBroker) {
 	m.mu.Unlock()
 }
 
+// SecretsGateway reports whether the secret gateway is on, so commands get
+// their folder's secret grants as stand-ins.
+func (m *Manager) SecretsGateway() bool {
+	return m != nil && m.secretBroker() != nil
+}
+
 func (m *Manager) secretBroker() SecretBroker {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -905,10 +911,12 @@ type ExecRequest struct {
 	WorkingDir   string
 	Env          map[string]string
 	SecretValues []string
-	Timeout      time.Duration
-	MaxTimeout   time.Duration
-	MaxOutput    int
-	OnOutput     func([]byte)
+	// Stdin, when set, is the command's standard input.
+	Stdin      io.Reader
+	Timeout    time.Duration
+	MaxTimeout time.Duration
+	MaxOutput  int
+	OnOutput   func([]byte)
 }
 
 // Exec runs req in the project's sandbox under the supervised exec contract.
@@ -988,6 +996,7 @@ func (m *Manager) execOnce(ctx context.Context, scope Scope, req ExecRequest) (*
 		WorkingDir:   req.WorkingDir,
 		Env:          req.Env,
 		SecretValues: req.SecretValues,
+		Stdin:        req.Stdin,
 		Timeout:      req.Timeout,
 		MaxOutput:    req.MaxOutput,
 		OnProgress:   progress,

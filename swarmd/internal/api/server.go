@@ -39,6 +39,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/imagegen"
 	integrationruntime "swarm/packages/swarmd/internal/integration"
+	"swarm/packages/swarmd/internal/jobautomation"
 	"swarm/packages/swarmd/internal/longsessiondiag"
 	mcpruntime "swarm/packages/swarmd/internal/mcp"
 	"swarm/packages/swarmd/internal/mediastaging"
@@ -142,6 +143,8 @@ type Server struct {
 	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore
 	outboxStatus                func() outbox.Status
+	jobAutomations              *jobautomation.Runner
+	jobAutomationCallFn         func(context.Context) (*controlMCPCall, error)
 	publishConfig               string
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service

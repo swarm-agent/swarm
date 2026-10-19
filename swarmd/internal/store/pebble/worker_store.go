@@ -177,7 +177,7 @@ type WorkerRunRecord struct {
 	// Role is the worker role pinned at admission (empty means swarm).
 	Role                string                         `json:"role,omitempty"`
 	SessionID           string                         `json:"session_id,omitempty"`
-	RequestSource       string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator"
+	RequestSource       string                         `json:"request_source"` // "direct", "schedule", "trigger", "test_run", "orchestrator", "automation"
 	Input               map[string]any                 `json:"input,omitempty"`
 	Status              string                         `json:"status"` // "admitted", "running", "succeeded", "failed", "cancelled"
 	QueueReason         string                         `json:"queue_reason,omitempty"`
@@ -2557,7 +2557,7 @@ func (ws *WorkerStore) recordWorkerRun(account string, run WorkerRunRecord, sett
 			run.RequestSource = "direct"
 		}
 		switch run.RequestSource {
-		case "direct", "schedule", "trigger", "test_run", "orchestrator":
+		case "direct", "schedule", "trigger", "test_run", "orchestrator", "automation":
 		default:
 			return WorkerRunRecord{}, fmt.Errorf("invalid request_source: %q", run.RequestSource)
 		}
