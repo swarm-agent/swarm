@@ -34,9 +34,12 @@ func TestReviewLoopAcceptanceBlockReopenThenOkDeliversTheFinalHead(t *testing.T)
 		return "refs/swarm/jobs/" + r.RunID, nil
 	}
 	findings := "1. high internal/upload/upload.go:42 the per-minute limit is never checked\n2. medium internal/upload/upload_test.go:10 the report says go test passed, but no go test ran"
+	fixed := strings.Repeat("d", 40)
 	h.agents.outcomes = []AgentOutcome{
 		{Verdict: VerdictBlock, Findings: findings},
-		{Verdict: VerdictOK},
+		// OK with nothing to fix: the fixing reviewer's checkout, as Wait
+		// reads it, is still at the reviewed head with no fix commits.
+		{Verdict: VerdictOK, Result: &Result{Git: &ResultGit{Branch: "agent/review-run-review-2", BaseCommit: fixed, Head: fixed}}},
 	}
 	h.process()
 	// The exact automation of the docs' example.
@@ -71,7 +74,6 @@ func TestReviewLoopAcceptanceBlockReopenThenOkDeliversTheFinalHead(t *testing.T)
 	}
 
 	// The coder fixes it in the same worktree: the follow-up ends with a new head.
-	fixed := strings.Repeat("d", 40)
 	h.results.results["run-1"].Git.Head = fixed
 	h.results.results["run-1"].Git.Commits = append(h.results.results["run-1"].Git.Commits, ResultCommit{SHA: fixed, Subject: "check the limit"})
 	h.jobEnd("run-1", "followup-1", "succeeded", "direct")

@@ -186,6 +186,20 @@ func TestHeadlessV3FinalMaxStepsRequestHasNoToolGuidance(t *testing.T) {
 		t.Fatalf("initial run intent: found=%t error=%v", found, err)
 	}
 	job.EpochID = prior.EpochID
+	// This test is the executor for its synthetic run. Claim the run as in
+	// flight before marking it pending. Otherwise the initial run's completion
+	// refill (refillPendingBacklog) can pick the pending run up and execute it
+	// concurrently. Two sinks then record its provider first event with
+	// different timestamps: a timing-dependent idempotency conflict.
+	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
+	executor.mu.Lock()
+	executor.inFlightRuns[runKey] = true
+	executor.mu.Unlock()
+	defer func() {
+		executor.mu.Lock()
+		delete(executor.inFlightRuns, runKey)
+		executor.mu.Unlock()
+	}()
 	if _, err := executor.recordRunStatus(job, sessionruntime.RunIntentPendingExecutor, "", "session.assistant.queued"); err != nil {
 		t.Fatal(err)
 	}

@@ -8,9 +8,29 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
+// terminalSandboxEnder is the sandbox side of the terminal sweep
+// (*sandbox.Manager in the daemon).
+type terminalSandboxEnder interface {
+	EndTerminalReview(ctx context.Context, root, checkout string) error
+	EndJob(ctx context.Context, checkout string, terminal func() (bool, error)) error
+}
+
+// terminalSandboxIsReview reports whether a terminal run's container is a
+// read-only review container. A reviewer an automation step allowed to commit
+// security fixes (input review_fixes "security", admitted only from an
+// automation) runs in an unregistered job-checkout scope, so its container is
+// a job container and is ended like a coder's.
+func terminalSandboxIsReview(r pebblestore.WorkerRunRecord) bool {
+	if r.Role != pebblestore.WorkerRoleReviewer {
+		return false
+	}
+	fixes, _ := r.Input["review_fixes"].(string)
+	return fixes != "security"
+}
+
 // Sweep terminal receipts independently of reviewer checkout cleanup. Each retry
 // rechecks both receipt and intent; it never stops an executing follow-up.
-func cleanupTerminalSandboxes(ctx context.Context, m *sandbox.Manager, db *pebblestore.Store) {
+func cleanupTerminalSandboxes(ctx context.Context, m terminalSandboxEnder, db *pebblestore.Store) {
 	ws := pebblestore.NewWorkerStore(db)
 	runs, err := ws.WorkerSandboxRuns()
 	if err != nil {
@@ -45,7 +65,7 @@ func cleanupTerminalSandboxes(ctx context.Context, m *sandbox.Manager, db *pebbl
 			continue
 		}
 		if err == nil && done {
-			if r.Role == pebblestore.WorkerRoleReviewer {
+			if terminalSandboxIsReview(r) {
 				err = m.EndTerminalReview(ctx, snap.WorkspacePath, snap.WorktreeRootPath)
 			} else {
 				err = m.EndJob(ctx, snap.WorktreeRootPath, terminal)

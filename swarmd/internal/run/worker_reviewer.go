@@ -5,9 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	agentruntime "swarm/packages/swarmd/internal/agent"
+	"swarm/packages/swarmd/internal/identity"
 	"swarm/packages/swarmd/internal/sandbox"
 	store "swarm/packages/swarmd/internal/store/pebble"
-	"time"
+	"swarm/packages/swarmd/internal/worktree"
 )
 
 // ReviewFixesSecurity is the only review_fixes value: a reviewer an
@@ -37,6 +41,57 @@ func sessionReviewFixes(meta map[string]any) bool {
 // security fixes: agent/review-<run>.
 func reviewFixBranch(runID string) string {
 	return "agent/review-" + runID
+}
+
+// workerExecutionAgentID is the code-owned system agent a worker run's
+// session starts with, and whether it is the reviewer allowed to commit
+// security fixes: only a reviewer whose admitted input carries review_fixes
+// (validated at admission: automation source only) gets the fixer agent,
+// which may edit and commit but never delegates.
+func workerExecutionAgentID(role string, input map[string]any) (string, bool) {
+	if role == store.WorkerRoleReviewer && reviewFixesAllowed(input) {
+		return agentruntime.ReviewerFixerAgentID, true
+	}
+	return workerRoleAgentID(role), false
+}
+
+// allocateReviewerCheckout allocates a reviewer run's checkout from its
+// captured review target: a writable agent/review-<run> branch at the
+// reviewed head, from the reviewed job's own clone, when fixes are allowed;
+// otherwise the detached, disposable review checkout.
+func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, source string, r store.WorkerRunRecord, fixes bool) (worktree.Allocation, error) {
+	target, ok := r.Input["captured_review_target"].(map[string]any)
+	if !ok {
+		return worktree.Allocation{}, errors.New("missing captured review target")
+	}
+	head, _ := target["head"].(string)
+	reviewBase, _ := target["base"].(string)
+	commits := []string{reviewBase}
+	switch values := target["commits"].(type) {
+	case []string:
+		commits = values
+	case []any:
+		commits = nil
+		for _, value := range values {
+			text, _ := value.(string)
+			commits = append(commits, text)
+		}
+	}
+	if fixes {
+		checkout, _ := target["checkout"].(string)
+		return trees.AllocateReviewFixWorkspace(p, source, r.SessionID, checkout, head, reviewFixBranch(r.ID))
+	}
+	return trees.AllocateReviewWorkspace(p, source, r.SessionID, head, commits...)
+}
+
+// pinReviewerMetadata pins a reviewer session's review target and, only for
+// the reviewer allowed to fix, worker_review_fixes (what the sandbox, the
+// per-call identity check and cleanup read).
+func pinReviewerMetadata(meta map[string]any, input map[string]any, fixes bool) {
+	meta["worker_review_target"] = input["captured_review_target"]
+	if fixes {
+		meta["worker_review_fixes"] = ReviewFixesSecurity
+	}
 }
 
 func validateReviewRequest(role, source string, input map[string]any) error {

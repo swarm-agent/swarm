@@ -633,13 +633,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			// Legacy Swarm-role workers explicitly retain their accepted-plan workflow.
 			profileContext.DefaultSessionMode = store.AgentDefaultSessionModePlan
 		}
-		agentID := workerRoleAgentID(role)
-		fixes := role == store.WorkerRoleReviewer && reviewFixesAllowed(r.Input)
-		if fixes {
-			// Only a reviewer an automation agent step opted in for fixes
-			// (validated at admission) may edit and commit; never delegate.
-			agentID = agentruntime.ReviewerFixerAgentID
-		}
+		agentID, fixes := workerExecutionAgentID(role, r.Input)
 		profile, err := h.runs.agents.ResolveSystemAgent(agentID, profileContext)
 		if err != nil {
 			return err
@@ -689,31 +683,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		}
 		var allocation worktree.Allocation
 		if role == store.WorkerRoleReviewer {
-			target, ok := r.Input["captured_review_target"].(map[string]any)
-			if !ok {
-				return errors.New("missing captured review target")
-			}
-			head, _ := target["head"].(string)
-			reviewBase, _ := target["base"].(string)
-			commits := []string{reviewBase}
-			switch values := target["commits"].(type) {
-			case []string:
-				commits = values
-			case []any:
-				commits = nil
-				for _, value := range values {
-					text, _ := value.(string)
-					commits = append(commits, text)
-				}
-			}
-			if fixes {
-				// A writable branch at the reviewed head, from the reviewed
-				// job's own clone, kept like a coder's job clone.
-				checkout, _ := target["checkout"].(string)
-				allocation, err = h.trees.AllocateReviewFixWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, checkout, head, reviewFixBranch(r.ID))
-			} else {
-				allocation, err = h.trees.AllocateReviewWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, head, commits...)
-			}
+			allocation, err = allocateReviewerCheckout(h.trees, p, canonical.SourceWorkspacePath, r, fixes)
 		} else {
 			allocation, err = h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		}
@@ -739,10 +709,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["worker_execution_mode"] = firstNonEmptyString(w.ExecutionMode, "auto")
 		meta["worker_role"] = role
 		if role == store.WorkerRoleReviewer {
-			meta["worker_review_target"] = r.Input["captured_review_target"]
-			if fixes {
-				meta["worker_review_fixes"] = ReviewFixesSecurity
-			}
+			pinReviewerMetadata(meta, r.Input, fixes)
 		}
 		meta["worker_workspace_id"] = canonical.SourceWorkspaceID
 		meta["navigation_hidden"] = true

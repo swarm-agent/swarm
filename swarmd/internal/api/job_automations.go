@@ -336,8 +336,26 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 				status = "failed"
 			}
 			out := jobautomation.AgentOutcome{JobID: jobID, Status: status}
-			if result, err := s.workerJobAutomationResult(ctx, workerID, runID, status, true); err == nil {
+			result, resultErr := s.workerJobAutomationResult(ctx, workerID, runID, status, true)
+			if resultErr == nil {
 				out.Result = result
+			}
+			// A reviewer allowed to fix: its head and fix commits are read
+			// from its own checkout with Git, never inferred from a view;
+			// any read failure is reported so an OK verdict fails closed.
+			if fixGit, fixes, err := s.reviewFixCheckout(ctx, account, workerID, runID); fixes {
+				switch {
+				case err != nil:
+					out.ResultError = err.Error()
+				case resultErr != nil:
+					out.ResultError = "read the reviewer's result: " + resultErr.Error()
+				default:
+					if out.Result == nil {
+						out.Result = &jobautomation.Result{V: jobautomation.ResultVersion, JobID: jobID, Kind: jobautomation.KindWorker, Role: pebblestore.WorkerRoleReviewer,
+							RunID: runID, Status: jobautomation.NormalizeStatus(status)}
+					}
+					out.Result.Git = fixGit
+				}
 			}
 			if out.Result != nil && out.Result.Git != nil && len(out.Result.Git.Commits) > 0 {
 				out.Head = out.Result.Git.Head
@@ -361,6 +379,78 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// maxReviewFixCommits bounds the fix commits read from a reviewer's checkout;
+// fixes are at most MaxReviewerFixLines lines, so more commits than this are
+// refused rather than listed in part.
+const maxReviewFixCommits = 100
+
+// reviewFixCheckout reads, with Git, the checkout of a reviewer an automation
+// step allowed to commit security fixes (its run's input review_fixes): its
+// agent/review-<run> branch, HEAD (which must descend from the reviewed head)
+// and the commits from the reviewed head to HEAD. fixes is false for every
+// other job, which is not read. Git runs routed like all daemon Git.
+func (s *Server) reviewFixCheckout(ctx context.Context, account, workerID, runID string) (*jobautomation.ResultGit, bool, error) {
+	if s.sessions == nil || s.sessions.Store() == nil {
+		return nil, false, nil
+	}
+	run, found, err := s.sessions.Store().WorkerStore().GetWorkerRun(account, workerID, runID)
+	if err != nil || !found {
+		return nil, false, nil
+	}
+	if fixes, _ := run.Input["review_fixes"].(string); fixes != jobautomation.FixesSecurity || run.Role != pebblestore.WorkerRoleReviewer {
+		return nil, false, nil
+	}
+	target, _ := run.Input["captured_review_target"].(map[string]any)
+	reviewed, _ := target["head"].(string)
+	if !controlMCPCommitID.MatchString(reviewed) {
+		return nil, true, errors.New("the reviewer's captured review head is missing")
+	}
+	session, found, err := s.sessions.Store().GetSession(run.SessionID)
+	if err != nil {
+		return nil, true, fmt.Errorf("read the reviewer's session: %w", err)
+	}
+	branch := "agent/review-" + runID
+	if !found || !session.WorktreeEnabled || strings.TrimSpace(session.WorktreeRootPath) == "" || session.WorktreeBranch != branch {
+		return nil, true, errors.New("the reviewer's fix checkout is not recorded on its session")
+	}
+	dir := session.WorktreeRootPath
+	git := func(args ...string) (string, error) {
+		gitCtx := sandbox.WithGitCommandTimeout(ctx, time.Minute)
+		out, err := sandbox.TimedGitOutput(gitCtx, dir, nil, append([]string{"-c", "safe.directory=" + dir}, args...)...)
+		return strings.TrimSpace(string(out)), err
+	}
+	current, err := git("symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil || current != branch {
+		return nil, true, fmt.Errorf("the reviewer's checkout is not on %s", branch)
+	}
+	head, err := git("rev-parse", "--verify", "--end-of-options", "HEAD^{commit}")
+	if err != nil || !controlMCPCommitID.MatchString(head) {
+		return nil, true, errors.New("the reviewer's checkout head could not be read")
+	}
+	if _, err := git("merge-base", "--is-ancestor", reviewed, head); err != nil {
+		return nil, true, errors.New("the reviewer's head does not descend from the reviewed head")
+	}
+	log, err := git("log", "--no-decorate", "--format=%H %s", fmt.Sprintf("--max-count=%d", maxReviewFixCommits+1), reviewed+".."+head, "--")
+	if err != nil {
+		return nil, true, fmt.Errorf("list the reviewer's fix commits: %w", err)
+	}
+	out := &jobautomation.ResultGit{Branch: branch, BaseCommit: reviewed, Head: head, Worktree: dir, Files: []string{}}
+	for _, line := range strings.Split(log, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		sha, subject, _ := strings.Cut(line, " ")
+		out.Commits = append(out.Commits, jobautomation.ResultCommit{SHA: sha, Subject: subject})
+	}
+	if len(out.Commits) > maxReviewFixCommits {
+		return nil, true, fmt.Errorf("the reviewer made more than %d fix commits", maxReviewFixCommits)
+	}
+	if (head == reviewed) != (len(out.Commits) == 0) {
+		return nil, true, errors.New("the reviewer's fix commits do not match its head")
+	}
+	return out, true, nil
 }
 
 // automationAgentReview is the verdict and findings of the review an agent

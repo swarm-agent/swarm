@@ -151,7 +151,16 @@ With `fixes`:
 - Only an `ok` verdict moves the head (after the same ancestry check). A
   reviewer that committed while its verdict is `block` (or that recorded no
   verdict) does not move the head; the step keeps its verdict, so a `reopen`
-  step still sends its findings to the coder.
+  step still sends its findings to the coder. A security problem the
+  reviewer fixed is not a reason for it to block.
+- An `ok` verdict may mean "I fixed it", so it fails closed: Swarm reads the
+  reviewer's head and fix commits from its own checkout with Git, and when
+  that read fails (or the head moved without readable fix commits) the step
+  fails with `reviewer fixes unreadable`, the delivery head does not move
+  and a later `ok`-gated step does not run.
+- A fixing reviewer branches at the reviewed job's own head, so a fixing
+  `agent` step after another `agent` step that already moved the delivery
+  head is refused without starting its job. Put the fixing review first.
 - The step's `outcome` shows the reviewer's `fix_commits`, `fix_lines`,
   `fixes_applied` and, when not applied, `fixes_reason`; the reviewer job's
   own result shows its commits and head. `swarm_get_job` on the reviewed job

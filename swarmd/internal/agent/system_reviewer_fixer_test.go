@@ -61,6 +61,7 @@ func TestOnlyTheFixingReviewerMayEditAndCommit(t *testing.T) {
 		"You may commit small, security-only fixes on top of the reviewed head instead of blocking for them",
 		"Every fix is also listed in FINDINGS, marked FIXED, with what it was, why, and file:line",
 		"Anything that is not a small security fix is a BLOCK finding",
+		"A security problem you fixed is not a reason to BLOCK",
 		"Run only the narrowest test that proves a fix, and list it under TESTS RUN",
 		"at most 80 lines (added plus removed)",
 		"VERDICT: OK|BLOCK",

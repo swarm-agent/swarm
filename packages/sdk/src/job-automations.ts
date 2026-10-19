@@ -65,7 +65,9 @@ export interface JobAutomationStep {
    * security-only fixes on a branch at the reviewed head instead of blocking
    * for them. Its commits move the delivery head only with an OK verdict and
    * at most {@link JOB_REVIEWER_FIX_MAX_LINES} changed lines; more fails the
-   * step (`reviewer fixes too large`). Without it a reviewer is read-only.
+   * step (`reviewer fixes too large`); an OK whose fixes cannot be read from
+   * the reviewer's checkout fails it (`reviewer fixes unreadable`). Without
+   * it a reviewer is read-only.
    */
   fixes?: JobReviewerFixes;
   /** reopen: the earlier agent step whose findings are sent into the triggering job's own session. */

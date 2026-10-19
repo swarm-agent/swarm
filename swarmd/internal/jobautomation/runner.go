@@ -94,6 +94,10 @@ type AgentOutcome struct {
 	Verdict  string
 	Findings string
 	Head     string
+	// ResultError is why the job's result (or, for a reviewer allowed to
+	// fix, its own checkout) could not be read; "" when it was read. A
+	// reviewer allowed to fix fails closed on it with an OK verdict.
+	ResultError string
 }
 
 // AgentRunner starts a job for an agent step and waits for it to end.
@@ -801,6 +805,15 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		return stepFailure{reason: "agent steps are not available on this daemon", next: "rerun", refused: true}
 	}
 	jobID, _ := record.Outcome["job_id"].(string)
+	if jobID == "" && step.Fixes != "" {
+		// A reviewer allowed to fix branches at the reviewed job's own head;
+		// once an earlier agent step moved the delivery head its fixes could
+		// never descend from it, so it is not started.
+		if d.Result.Git == nil || d.Head == "" || d.Head != d.Result.Git.Head {
+			return stepFailure{reason: "fixes need the delivery head to be the reviewed job's own head; an earlier agent step moved it",
+				next: "put the fixing review step before any agent step that commits", refused: true}
+		}
+	}
 	if jobID == "" {
 		started, err := r.agent.Start(ctx, AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result,
 			IdempotencyKey: agentIdempotencyKey(*d, step.ID), Fixes: step.Fixes})
@@ -970,16 +983,23 @@ func (r *Runner) verifyDescends(ctx context.Context, d *Delivery, outcome AgentO
 // verdict keeps the head and the step's own outcome; too many changed lines
 // fail the step with ReasonFixesTooLarge. The reviewer's fix commits are
 // recorded either way.
+//
+// An OK verdict from a reviewer allowed to fix may mean "I fixed it", so it
+// fails closed (ReasonFixesUnreadable, head kept) unless the reviewer's own
+// checkout was read: Result.Git must carry its head and base (the reviewed
+// head, which must be the delivery head), and the fix commits whenever its
+// head moved.
 func (r *Runner) applyReviewerFixes(ctx context.Context, d *Delivery, record *StepRecord, outcome AgentOutcome, out map[string]any) stepFailure {
-	if outcome.Head == "" || d.Head == "" || outcome.Head == d.Head {
-		return stepFailure{}
-	}
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
 		return stepFailure{} // the job's own failure is reported below
 	}
-	if outcome.Result != nil && outcome.Result.Git != nil && len(outcome.Result.Git.Commits) > 0 {
-		commits := make([]map[string]any, 0, len(outcome.Result.Git.Commits))
-		for _, c := range outcome.Result.Git.Commits {
+	var git *ResultGit
+	if outcome.Result != nil {
+		git = outcome.Result.Git
+	}
+	if git != nil && len(git.Commits) > 0 {
+		commits := make([]map[string]any, 0, len(git.Commits))
+		for _, c := range git.Commits {
 			commits = append(commits, map[string]any{"sha": c.SHA, "subject": c.Subject})
 		}
 		out["fix_commits"] = commits
@@ -993,6 +1013,32 @@ func (r *Runner) applyReviewerFixes(ctx context.Context, d *Delivery, record *St
 		out["fixes_reason"] = "the review verdict is " + verdict + ", not ok: the reviewer's commits do not move the delivery head"
 		return stepFailure{}
 	}
+	unreadable := func(why string) stepFailure {
+		out["fixes_applied"] = false
+		out["fixes_reason"] = why + ": the delivery head is not moved"
+		record.Output = truncate(outcome.JobID+": "+why, 300)
+		return stepFailure{reason: ReasonFixesUnreadable, next: "rerun; if it persists, check the reviewer job with swarm_get_job"}
+	}
+	switch {
+	case outcome.ResultError != "":
+		return unreadable("the reviewer's checkout could not be read: " + truncate(outcome.ResultError, 200))
+	case git == nil || !isCommitID(git.Head):
+		return unreadable("the reviewer's result has no head")
+	case d.Head == "" || git.BaseCommit != d.Head:
+		return unreadable("the reviewer's branch did not start at the delivery head")
+	}
+	if git.Head == d.Head {
+		if len(git.Commits) > 0 {
+			return unreadable("the reviewer's head did not move but it lists fix commits")
+		}
+		out["fixes_applied"] = false
+		out["fix_lines"] = 0
+		return stepFailure{} // OK with nothing fixed
+	}
+	if len(git.Commits) == 0 {
+		return unreadable("the reviewer's head moved but its fix commits could not be read")
+	}
+	outcome.Head = git.Head
 	worktree, failure := r.verifyDescends(ctx, d, outcome)
 	if failure.reason != "" || ctx.Err() != nil {
 		return failure
@@ -1064,6 +1110,14 @@ func (t *tailBuffer) bytes() []byte {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]byte(nil), t.buf...)
+}
+
+// isCommitID reports whether s is a full SHA-1 or SHA-256 commit id.
+func isCommitID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	return strings.Trim(s, "0123456789abcdef") == ""
 }
 
 // lastLine is the last non-empty line of a step's output.

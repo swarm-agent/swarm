@@ -193,3 +193,139 @@ func TestFixesIsOnlyForAReviewerAgentStep(t *testing.T) {
 		t.Fatalf("NonReviewerFixesError = %v", err)
 	}
 }
+
+// Requirement: with fixes, an OK verdict may mean "I fixed it", so it fails
+// closed unless the reviewer's own checkout was read: a read error, a missing
+// result or head, a head that moved without readable fix commits, or a
+// branch not started at the delivery head fail the step with "reviewer fixes
+// unreadable", keep the delivery head and skip the run step gated on OK. An
+// OK verdict whose checkout was read with no fix commits (head still the
+// reviewed head) succeeds and the run step gets the job's own head.
+// Threat (review finding, fails open): an OK whose fix commits were lost
+// (dropped result error, failed get_changes) pushing the coder's unfixed
+// head while the reviewer's findings say FIXED.
+// Owners: Runner.applyReviewerFixes (via runAgent), over a real Git
+// repository, the real Pebble store and signal feed. Stubbed: the reviewer
+// job (recordingAgents: the model provider) and the sandbox (hostSandbox).
+func TestReviewerOKWithUnreadableFixesFailsClosed(t *testing.T) {
+	h := newHarness(t)
+	folder := t.TempDir()
+	repo := newGitRepo(t, folder)
+	repo.write("upload.go", "package upload\n\nfunc Name(s string) string { return s }\n")
+	jobHead := repo.commitFiles("coder: add the upload name")
+	repo.write("upload.go", "package upload\n\nimport \"html\"\n\nfunc Name(s string) string { return html.EscapeString(s) }\n")
+	fixHead := repo.commitFiles("reviewer: escape the upload name")
+	other := strings.Repeat("c", 40) // not the delivery head
+
+	h.runner.verify, h.runner.lines = gitVerifier, gitLineCounter
+	var pushedRefs []string
+	h.runner.head = func(_ context.Context, _ string, r Result) (string, error) {
+		pushedRefs = append(pushedRefs, r.Git.Head)
+		return "refs/swarm/jobs/" + r.RunID, nil
+	}
+	writeScript(t, folder, "deliver/push.sh", "echo \"$SWARM_HEAD\" >> \"$PWD/pushed-heads\"\n")
+	worktree := filepath.Join(folder, "reviewer-checkout")
+	git := func(base, head string, commits ...ResultCommit) *Result {
+		return &Result{Git: &ResultGit{Branch: "agent/review-run", BaseCommit: base, Head: head, Worktree: worktree, Commits: commits}}
+	}
+	fixCommit := ResultCommit{SHA: fixHead, Subject: "reviewer: escape the upload name"}
+	findings := "1. FIXED high upload.go:5 the name was not escaped"
+	cases := []struct {
+		name    string
+		outcome AgentOutcome
+	}{
+		{"result error", AgentOutcome{Verdict: VerdictOK, Findings: findings, ResultError: "the reviewer's checkout head could not be read"}},
+		{"no result", AgentOutcome{Verdict: VerdictOK, Findings: findings}},
+		{"no git", AgentOutcome{Verdict: VerdictOK, Findings: findings, Result: &Result{Report: "VERDICT: OK"}}},
+		{"head moved without commits", AgentOutcome{Verdict: VerdictOK, Findings: findings, Result: git(jobHead, fixHead)}},
+		{"branch not at the delivery head", AgentOutcome{Verdict: VerdictOK, Findings: findings, Result: git(other, fixHead, fixCommit)}},
+		{"commits without a moved head", AgentOutcome{Verdict: VerdictOK, Findings: findings, Result: git(jobHead, jobHead, fixCommit)}},
+	}
+	for _, c := range cases {
+		h.agents.outcomes = append(h.agents.outcomes, c.outcome)
+	}
+	// Last: OK, checkout read, nothing fixed.
+	h.agents.outcomes = append(h.agents.outcomes, AgentOutcome{Verdict: VerdictOK, Result: git(jobHead, jobHead)})
+	h.process()
+	h.automation(Automation{Name: "review then push", Scope: Scope{Folder: folder}, Enabled: true, Steps: []Step{
+		{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity},
+		{ID: "push", Type: StepRun, Command: "deliver/push.sh", If: []Condition{{Step: "review", Verdict: VerdictOK}}},
+	}})
+	end := func(runID string) Delivery {
+		t.Helper()
+		result := workerResult(folder, runID)
+		result.Git.Head = jobHead
+		h.results.results[runID] = result
+		h.jobEnd(runID, "", "succeeded", "direct")
+		h.process()
+		list := h.deliveries("worker/coder-1/" + runID)
+		if len(list) != 1 {
+			t.Fatalf("deliveries for %s = %d", runID, len(list))
+		}
+		return list[0]
+	}
+	for i, c := range cases {
+		d := end("run-unreadable-" + strconv.Itoa(i))
+		if d.State != StateFailed || d.Head != jobHead || d.Steps[0].State != StateFailed || d.Steps[0].Reason != ReasonFixesUnreadable {
+			t.Fatalf("%s: delivery = state %s head %s step %+v", c.name, d.State, d.Head, d.Steps[0])
+		}
+		if d.Steps[1].State != StateSkipped || d.Steps[0].Outcome["fixes_applied"] != false {
+			t.Fatalf("%s: push %s outcome %+v", c.name, d.Steps[1].State, d.Steps[0].Outcome)
+		}
+		if _, moved := d.Steps[0].Outcome["moved_head"]; moved {
+			t.Fatalf("%s: the head was moved", c.name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(folder, "pushed-heads")); !os.IsNotExist(err) || len(pushedRefs) != 0 {
+		t.Fatalf("an unreadable OK pushed something: %v %v", err, pushedRefs)
+	}
+
+	d := end("run-nothing-fixed")
+	if d.State != StateSucceeded || d.Head != jobHead || d.Steps[0].Outcome["fixes_applied"] != false || fmt.Sprint(d.Steps[0].Outcome["fix_lines"]) != "0" {
+		t.Fatalf("nothing fixed: state %s head %s outcome %+v", d.State, d.Head, d.Steps[0].Outcome)
+	}
+	if pushed := strings.Fields(readFile(t, filepath.Join(folder, "pushed-heads"))); len(pushed) != 1 || pushed[0] != jobHead {
+		t.Fatalf("nothing fixed: pushed %v, want the job's head", pushed)
+	}
+}
+
+// Requirement: a fixing reviewer branches at the reviewed job's own head, so
+// when an earlier agent step already moved the delivery head the fixing step
+// is refused before its job starts (its fixes could never descend from the
+// moved head) and the head stays where the earlier step put it.
+// Threat: a reviewer job spent (and its fixes thrown away) on a branch that
+// can never be applied, or fixes applied on top of a head they never saw.
+// Owner: Runner.runAgent. Stubbed as above.
+func TestFixingReviewerAfterAMovedHeadIsNotStarted(t *testing.T) {
+	h := newHarness(t)
+	folder := t.TempDir()
+	repo := newGitRepo(t, folder)
+	repo.write("upload.go", "package upload\n")
+	jobHead := repo.commitFiles("coder")
+	repo.write("upload.go", "package upload\n\n// formatted\n")
+	formatted := repo.commitFiles("formatter")
+	h.runner.verify, h.runner.lines = gitVerifier, gitLineCounter
+	h.agents.outcomes = []AgentOutcome{{Head: formatted, Result: &Result{Git: &ResultGit{Head: formatted, BaseCommit: jobHead,
+		Commits: []ResultCommit{{SHA: formatted, Subject: "formatter"}}}}}}
+	h.process()
+	h.automation(Automation{Name: "format then review", Scope: Scope{Folder: folder}, Enabled: true, Steps: []Step{
+		{ID: "format", Type: StepAgent, Worker: "coder", Brief: "format"},
+		{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "review", Fixes: FixesSecurity},
+	}})
+	result := workerResult(folder, "run-moved")
+	result.Git.Head = jobHead
+	h.results.results["run-moved"] = result
+	h.jobEnd("run-moved", "", "succeeded", "direct")
+	h.process()
+	list := h.deliveries("worker/coder-1/run-moved")
+	if len(list) != 1 {
+		t.Fatalf("deliveries = %d", len(list))
+	}
+	d := list[0]
+	if d.Steps[0].State != StateSucceeded || d.Head != formatted {
+		t.Fatalf("format step = %+v head %s", d.Steps[0], d.Head)
+	}
+	if d.Steps[1].State != StateFailed || !strings.Contains(d.Steps[1].Reason, "an earlier agent step moved it") || len(h.agents.started) != 1 {
+		t.Fatalf("fixing review after a moved head = %+v (started %d jobs)", d.Steps[1], len(h.agents.started))
+	}
+}

@@ -4625,7 +4625,7 @@ func isProtectedSessionsV3MetadataKey(key string) bool {
 		"agent_profile",
 		"resolved_worker_context",
 		"worker_id", "worker_execution_run_id", "worker_name", "worker_job_title",
-		"worker_revision", "worker_execution_mode", "worker_role", "worker_review_target", "worker_workspace_id",
+		"worker_revision", "worker_execution_mode", "worker_role", "worker_review_target", "worker_review_fixes", "worker_workspace_id",
 		"model_profile",
 		"resolved_agent_name",
 		"agent_mode",

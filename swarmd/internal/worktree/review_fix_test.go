@@ -12,9 +12,11 @@ import (
 // gets a writable branch checkout (agent/review-<run>) started at the
 // reviewed head, branched from the reviewed job's own clone, in which it can
 // commit; its identity check is "HEAD descends from the reviewed head". A
-// reviewer without the option keeps the detached disposable checkout, whose
-// identity refuses any commit (its head must stay the reviewed head) and
-// which the fix-branch identity never admits. The folder and the reviewed
+// reviewer without the option keeps the detached disposable checkout: a
+// commit there is detected (its removal validation reports the head changed)
+// and the fix-branch identity never admits it. Blocking the commit itself is
+// the sandbox's read-only .git mount, which needs a real sandbox runtime and
+// is not proven here. The folder and the reviewed
 // job's clone are never written.
 // Threat: a writable reviewer checkout for a reviewer that did not opt in, a
 // fix branch outside the job's repository (unverifiable ancestry), or a fix
@@ -50,8 +52,8 @@ func TestReviewFixCheckoutIsABranchAtTheReviewedHead(t *testing.T) {
 	git(coder.WorkspacePath, "commit", "-m", "coder work")
 	head := git(coder.WorkspacePath, "rev-parse", "HEAD")
 
-	// Without the option: detached at the head; a commit there is refused by
-	// its identity check, and the fix-branch identity never admits it.
+	// Without the option: detached at the head; a commit there is detected,
+	// and the fix-branch identity never admits it.
 	review, err := s.allocateReviewWorkspace(repo, "worker-execution-review-ro", head)
 	if err != nil {
 		t.Fatal(err)

@@ -39,6 +39,10 @@ const (
 	FixesSecurity       = "security"
 	MaxReviewerFixLines = 80
 	ReasonFixesTooLarge = "reviewer fixes too large"
+	// ReasonFixesUnreadable fails an OK verdict from a reviewer allowed to
+	// fix whose own checkout (head and fix commits) could not be read: an
+	// OK may mean "I fixed it", so the unfixed head is never delivered on it.
+	ReasonFixesUnreadable = "reviewer fixes unreadable"
 )
 
 // nonReviewerRoles are the worker role names an agent step may name that
