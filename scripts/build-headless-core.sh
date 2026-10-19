@@ -20,6 +20,7 @@ output=$(realpath -m -- "$2")
 source "$script_dir/lib-go.sh"
 swarm_require_go "$repo_root"
 for tool in jq tar sha256sum gcc; do command -v "$tool" >/dev/null; done
+module_path=$(awk '/^module / { print $2; exit }' "$repo_root/go.mod")
 source_commit=$(git -C "$repo_root" rev-parse HEAD)
 source_dirty=false
 [[ -z $(git -C "$repo_root" status --porcelain --untracked-files=all) ]] || source_dirty=true
@@ -27,7 +28,7 @@ built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 mkdir -p "$output"
 package="$output/swarm-headless-core-$version-linux-amd64"
 mkdir -p "$package/bin" "$package/lib" "$package/doc" "$package/systemd"
-flags="-X swarm-refactor/swarmtui/pkg/buildinfo.Version=$version -X swarm-refactor/swarmtui/pkg/buildinfo.Commit=$source_commit -X swarm-refactor/swarmtui/pkg/buildinfo.BuiltAt=$built_at"
+flags="-X $module_path/pkg/buildinfo.Version=$version -X $module_path/pkg/buildinfo.Commit=$source_commit -X $module_path/pkg/buildinfo.BuiltAt=$built_at"
 (
   cd "$repo_root/swarmd"
   CGO_ENABLED=1 "$GO_BIN" build -mod=readonly -p 2 -trimpath -ldflags "$flags" -o "$package/bin/swarmd" ./cmd/swarm-headless
@@ -40,7 +41,7 @@ flags="-X swarm-refactor/swarmtui/pkg/buildinfo.Version=$version -X swarm-refact
 if grep -E 'internal/api\.ConfigureDesktop|internal/api\.\(\*Server\)\.(desktopHandler|withDesktopAssets|issueDesktopLocalSession)|internal/runtime\.New$' "$output/headless-symbols.txt"; then
   echo 'Headless composition check failed.' >&2; exit 1
 fi
-if grep -E 'swarm-refactor/swarmtui/internal/(app|launcher|ui)(/|$)|github.com/(gdamore/tcell|rivo/tview|charmbracelet/bubbletea)(/|$)' "$output/headless-imports.txt"; then
+if grep -E "$module_path"'/internal/(app|launcher|ui)(/|$)|github.com/(gdamore/tcell|rivo/tview|charmbracelet/bubbletea)(/|$)' "$output/headless-imports.txt"; then
   echo 'Headless imports UI dependencies.' >&2; exit 1
 fi
 install -m 0644 "$repo_root/swarmd/internal/fff/lib/linux-amd64-gnu/libfff_c.so" "$package/lib/libfff_c.so"

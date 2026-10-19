@@ -39,12 +39,13 @@ trap 'rm -f -- "$headless_symbols" "$desktop_symbols" "$imports"' EXIT
 "$GO_BIN" tool nm "$headless_binary" > "$headless_symbols"
 "$GO_BIN" tool nm "$desktop_binary" > "$desktop_symbols"
 (cd "${repo_root}/swarmd" && "$GO_BIN" list -mod=readonly -deps ./cmd/swarm-headless) > "$imports"
-ui_imports='swarm-refactor/swarmtui/internal/(app|launcher|ui)(/|$)|github.com/(gdamore/tcell|rivo/tview|charmbracelet/bubbletea)(/|$)'
+module_path="$(awk '/^module / { print $2; exit }' "${repo_root}/go.mod")"
+ui_imports="${module_path}"'/internal/(app|launcher|ui)(/|$)|github.com/(gdamore/tcell|rivo/tview|charmbracelet/bubbletea)(/|$)'
 if grep -E "$ui_imports" "$imports"; then
   echo 'FAIL: Headless imports UI/launcher packages' >&2
   exit 1
 fi
-ui_symbols='internal/api\.ConfigureDesktop|internal/api\.\(\*Server\)\.(desktopHandler|withDesktopAssets|withDesktopLocalSession|issueDesktopLocalSession|handleDesktopLocalSessionBootstrap|handleDesktopStream|handleTailscaleOnboardingApproval|handleDesktopFeedback|handleUpdate(Status|Apply|Run))|internal/runtime\.New$|internal/tailscale\.NewDetector|swarm-refactor/swarmtui/internal/(app|launcher|ui)\.'
+ui_symbols='internal/api\.ConfigureDesktop|internal/api\.\(\*Server\)\.(desktopHandler|withDesktopAssets|withDesktopLocalSession|issueDesktopLocalSession|handleDesktopLocalSessionBootstrap|handleDesktopStream|handleTailscaleOnboardingApproval|handleDesktopFeedback|handleUpdate(Status|Apply|Run))|internal/runtime\.New$|internal/tailscale\.NewDetector|'"${module_path}"'/internal/(app|launcher|ui)\.'
 if grep -E "$ui_symbols" "$headless_symbols"; then
   echo 'FAIL: Headless binary links Desktop composition' >&2
   exit 1
