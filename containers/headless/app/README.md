@@ -137,8 +137,7 @@ Swarm keeps running as `swarm`. Then register the folder in place
 the project's orchestrator once it is ready. Worker jobs and reviewers get
 independent full clones in the managed checkout directory. These use no shared
 object alternates or hardlinks, so job commits and source garbage collection
-are independent. Serialized landing fetches the prepared job commit before the
-fast-forward-only land command. Desktop and plan sessions still use worktrees. Never point work at a freshly
+are independent. Desktop and plan sessions still use worktrees. Never point work at a freshly
 initialised, empty repository in place of their code; `swarm_create_workspace`
 is only for a new project started from scratch. System folders, settings
 folders (any `.name` folder), Swarm's storage, the whole home folder and
@@ -170,13 +169,11 @@ socket). A granted project's sandbox sees only a stand-in
 (`NAME=swarm-secret://NAME`); the gateway swaps in the real value on requests
 to the allowed websites, scrubs it from responses and logs each use (`swarmctl secret uses`).
 
-**Job delivery.** `install.sh workspace publish PATH COMMAND` publishes pull
-requests. `--land` instead queues fast-forward delivery, with checks in the
-sandbox before the command's land action returns `LANDED COMMIT` or `MOVED`
-(refresh and retry). Conflicts or failed checks send work back to the worker;
-retries are bounded, and delivering a stopped job again starts a fresh attempt.
-`--sync` starts jobs from the forge's latest base; `--auto` delivers finished
-jobs with commits without asking. `publish PATH --off` restores local merges.
+**Job delivery.** A job ends when its agent has built, tested and committed its
+work; nothing is delivered until `swarm_deliver_job` asks.
+`install.sh workspace publish PATH COMMAND` makes that delivery a pull request.
+`--sync` starts jobs from the forge's latest base. `publish PATH --off` restores
+local merges.
 
 **Agent permissions.** Jobs normally run without tool-approval prompts: the installer
 starts Swarm with `--sandbox=required --bypass-permissions`, so agents run
@@ -286,16 +283,12 @@ Restart after changing these keys in the daemon startup config (`swarm.conf`):
 - `worker_max_concurrent_runs`: concurrent agents, defaulting to three quarters
   of host RAM divided by a 3 GiB per-run admission budget (at least one), with
   no CPU cap. A positive setting overrides this RAM-derived default.
-- `landing_max_concurrent`: box-wide concurrent landings, defaulting to
-  `max(1, logical CPUs / 4)` rounded down. Each folder still lands one job at a
-  time. A positive setting overrides this CPU-derived default.
 - Agents have no default CPU quota or command slot queue. `sandbox_cpus` remains
   available only as an explicit per-container override; empty means unrestricted.
 - `sandbox_cgroup_parent`: optional Docker cgroup parent. The headless installer
   supplies `--sandbox-cgroup-parent=swarm-sandbox.slice` on install and update.
 
-A 22-CPU, 64 GiB host defaults to 16 agents and five concurrent landings.
-Landing check containers retain their existing resources and weights.
+A 22-CPU, 64 GiB host defaults to 16 agents.
 The installer gives agent containers a lower-weight slice (CPUWeight/IOWeight 25), versus daemon weights 1000,
 and retains `ProtectControlGroups=yes`. Install/update detects Docker's cgroup
  driver: systemd uses the slice; cgroupfs explicitly clears the parent override
@@ -316,7 +309,7 @@ this machine after 30 continuous minutes of verified idle. It is off by default;
 `sudo bash install.sh idle-off off` disables it. `install.sh status` shows the
 configured interval and timer state. Use the saved installer file, not a pipe.
 
-The timer checks `/v3/box/busy`, including follow-ups, reviews and landing work.
+The timer checks `/v3/box/busy`, including follow-ups and reviews.
 An unreachable daemon, malformed response or failed pre-shutdown signal resets
 the idle interval; it never authorizes shutdown. The installer sends an
 `external.idle_off` signal through the daemon before root invokes systemd poweroff.
@@ -362,48 +355,3 @@ cannot expire or be cancelled by ordinary API/MCP cancellation. Restart replaces
 it with a fresh admission manager; failure cleanup releases it with the same
 claim. If the installer is killed without executing its trap, operator recovery
 is required; the daemon never kills running work or performs host installation.
-
-### Opt-in review pipeline
-
-Add `--pipeline` to `install.sh workspace publish PATH COMMAND --land --require-review --auto` to enable daemon-owned review and bounded fixes. Without this flag the existing manual-review behavior is unchanged. The publish rule exposes `pipeline`; `swarm_get_job` exposes `review_chain` with the head, reviewer job, BLOCK round, findings and next transition. Account limits expose `fix_rounds` (default 2, range 0–20): reaching that many BLOCK verdicts stops the chain with `job.review_exhausted`. A stopped chain requires outside intervention. Review admission and follow-ups use stable per-head request identities. OK evidence still passes through the existing landing queue and folder checks.
-
-### Require a problem proof at landing
-
-`install.sh workspace publish PATH COMMAND --land --require-proof` refuses jobs
-without a reproduction; the option is off by default. `swarm_give_job`, the direct
-worker API and SDK accept a `proof` command run from the folder root. Alternatively,
-the coder commits `.swarm-proof.json`. Verification runs only when the folder rule
-has `require-proof`; otherwise declarations and proof commands are ignored and
-cannot block landing. For example:
-`{"command":"bash repro.sh","files":["repro.sh"]}`. Only declarations added or changed by the job apply; unchanged declarations from
-previous landings are ignored. Listed files must be newly
-added regular files; they are copied from head into the disposable base checkout
-so missing scripts cannot masquerade as reproduction failures.
-
-The daemon runs the command in the landing sandbox in disposable base/head
-checkouts in daemon-owned, group-accessible mounted scratch, never in the job
-workspace. Execution has a 20-minute combined timeout and 4 KiB output per run.
-No provider credentials are passed in the environment. `swarm_get_job` reports `proof.base` and
-`proof.head` with exact commits, exit codes and output. Base must fail, head must
-pass; timeouts and launch failures refuse landing as infrastructure errors.
-
-### Environments
-
-Landing checks run in a fresh environment from a provider and release it after the landing. The startup key `environment_provider` defaults to `local`, currently the only operational provider: Docker on this machine. The parser also recognizes `runners` and `auto`, but landing initialization still rejects them until runner execution is implemented. The canonical `environment_runner_wait_seconds` key defaults to 120 seconds. Agent bash containers are unchanged.
-
-## Runners
-
-Runner execution is planned, not yet operational. Only `environment_provider = local`
-is currently wired into landing execution. See [the runner design](../../../docs/runners.md)
-for the security, lease and recovery contract and implementation gaps.
-
-Runner management commands and `install.sh runner --ref main` are available;
-see [Set up a runner](../../../docs/runners.md#set-up-a-runner) for exact commands,
-private-tailnet guidance and remaining credential/service and idle-update gaps.
-Do not configure `runners` or `auto` until the execution implementation lands.
-
-Cloud Build startup configuration and an injectable execution provider are
-available, but daemon ADC/provider wiring remains incomplete; selecting
-`gcp-cloudbuild` in configuration alone is not operational. See [Cloud Build runner](../../../docs/runners.md#cloud-build-runner)
-for the keys, intended Google Cloud prerequisites, generated-build contract,
-cost considerations and remaining implementation gaps.

@@ -29,7 +29,7 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("invalid scoped bearer token"))
 			return
 		}
-		if !gateRunnerKey(w, r, rec) {
+		if !refuseRunnerKey(w, rec) {
 			return
 		}
 		actor, err := s.identitySessions.ActorForUserID(rec.UserID)
@@ -99,6 +99,16 @@ func isClientAppKey(rec *pebblestore.ScopedTokenRecord) bool {
 
 // gateClientAppKey limits a client-app key to start, read, message, stop and
 // resolve permissions in sessions (containerSDKRouteAllowed); never /mcp.
+// refuseRunnerKey refuses a scoped credential of the removed runner kind:
+// such credentials may still exist in a store but grant no route.
+func refuseRunnerKey(w http.ResponseWriter, rec *pebblestore.ScopedTokenRecord) bool {
+	if rec != nil && rec.Kind == "runner" {
+		writeError(w, http.StatusForbidden, errors.New("runner credentials are no longer accepted"))
+		return false
+	}
+	return true
+}
+
 func gateClientAppKey(w http.ResponseWriter, r *http.Request, rec *pebblestore.ScopedTokenRecord) bool {
 	if isClientAppKey(rec) && !containerSDKRouteAllowed(r) {
 		writeError(w, http.StatusForbidden, errors.New("client app keys reach only session routes"))

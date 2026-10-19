@@ -166,10 +166,8 @@ reported as passing runs.
 
 Focused retained API, worktree, agent, action, workspace, discovery, artifact,
 video, media, scheduler, store, artifact-Git and permission tests passed, as did
-root app/client routing tests. Existing API `TestLandReview*` and `TestAutoPublish*`
-also passed. `TestReviewPipeline*`, `TestPublishProof*`, and
-`TestWorkerProofContract*` declarations are absent from this captured revision.
-No test added in another checkout is claimed as retained here.
+root app/client routing tests. No test added in another checkout is claimed as
+retained here.
 
 Root `go build -p 4 ./pkg/...` and `go vet -p 4 ./pkg/...` passed. Daemon
 `go build -p 4 ./...` passed; daemon `go vet -p 4 ./...` failed with existing
@@ -270,21 +268,16 @@ installer and e2e shell tests; it did not require preserving every Go test there
 The obsolete root/daemon integration groups were removed from the runner after
 removing their unselected tests. Every selected runnable group still runs.
 
-### Exact extras and regression purposes (58)
+### Exact extras and regression purposes (52)
 
 Executable package/name authority: `scripts/test-vital-extras.txt`. Docker-only
 extras are retained but excluded from local execution. Each line below states
 the regression the retained test is intended to catch, not a live release proof.
 
-- TestAutoPublishNext — incorrect next-item selection for automatic publication.
-- TestReviewPipelineExhaustion — exhausted review pipeline incorrectly advances work.
-- TestReviewPipelinePrincipal — review pipeline loses principal scoping.
-- TestReviewPipelineReceiptReplay — receipt replay changes review outcome twice.
-- TestLandReviewRealGitRebase — landing/review breaks real Git rebasing.
-- TestAutoPublishReviewSignalQueuesLanding — approved review fails to queue landing.
-- TestAutoPublishReviewSignal — publication loses the review signal.
-- TestLandReviewBlockingPatch — a blocking review patch incorrectly lands.
-- TestAutoPublishReviewerDoesNotDelayCoder — review scheduling unnecessarily blocks coding.
+- TestPublishJobRefusesReportOnlyJobs — reviewer or report-only jobs are published.
+- TestLoadIgnoresRemovedOptions — a publish rule file listing removed options stops loading.
+- TestParseAcceptsRemovedFlags — service units passing removed flags stop the daemon from starting.
+- TestLoadIgnoresRemovedStartupKeys — a swarm.conf with removed keys stops the daemon from starting.
 - TestRemovalTrashRestart — queued trash removal does not survive restart.
 - TestRemovalAdminCrashRecovery — interrupted worktree administration cannot recover.
 - TestRemovalQueueDrains — removal work remains stranded in the queue.
@@ -325,11 +318,6 @@ the regression the retained test is intended to catch, not a live release proof.
 - TestLeaseFromContextReleasedAndAccount — released/cross-account context leases remain valid.
 - TestChangedRemainsClosedAfterShutdown — shutdown notifications reopen or strand listeners.
 - TestInvalidResolvedLimitFailsClosed — invalid resolved policy admits work.
-- TestQueuePebbleRestart — durable publication queue loses entries after restart.
-- TestQueueGitCommand — publication Git commands violate queue operation behavior.
-- TestPublishLandNotificationRestart — landing notification state is lost on restart.
-- TestPublishLandSendBackRestart — review send-back state is lost on restart.
-- TestPublishLandSendBackInstructions — send-back loses corrective instructions.
 - TestCPUConfigRoundTrip — CPU configuration fails persistence round-trip.
 - TestSandboxCacheConfig — sandbox cache configuration loses its intended settings.
 - TestSandboxResourceConfig — sandbox resource configuration loses limits.
@@ -342,14 +330,11 @@ Rebased onto the explicitly requested `e643047a7` (verified ancestor). The local
 Resolved the SDK workers test modify/delete conflict by preserving deletion:
 that suite is not selected. No product conflict occurred.
 
-The rebase added four proof tests, all retained as extras and run successfully:
-- TestPublishProofRealGit — real Git publication cannot substitute stale or unrelated proof.
-- TestPublishProofExecutionBounds — proof execution respects its bounded execution contract.
-- TestLoadRequireProof — persisted publish policy cannot silently lose required-proof settings.
-- TestWorkerProofContract — worker context preserves the required proof contract.
+The rebase added `TestWorkerProofContract` (worker context keeps its
+validation contract), retained as an extra. The proof tests it also added
+were removed with the proof mechanism.
 
-Final extras count is **62**, with exact package/name list in
-`scripts/test-vital-extras.txt`. Final Go count is **209 declarations / 187 files**
+The exact package/name list is in `scripts/test-vital-extras.txt`. Final Go count is **209 declarations / 187 files**
 (original **6,352 / 1,513**). The rebased final vital run passed the same eight
 PASS groups above in **121 seconds**, exit 0. Both root/daemon builds and compile-
 only tests, web tsc and SDK tsc were rerun on this rebased tree and passed.
@@ -366,12 +351,9 @@ It also executes the installer's post-update smoke against that daemon and
 checks rejection of an unavailable socket. No provider is used.
 
 The headless updater invokes the smoke before accepting the new release and
-uses its existing rollback on failure. `install.sh workspace publish --land`
-and `install.sh update` append the smoke to this repository folder's environment
-checks, preserving existing checks. The queue captures and runs them on its
-candidate in the project sandbox. The privileged publisher never runs candidate
-code. Layer 1 always disables nested sandboxes; environment build and real
-command/commit verification belong to `--live` against the running daemon.
+uses its existing rollback on failure. Layer 1 always disables nested
+sandboxes; environment build and real command/commit verification belong to
+`--live` against the running daemon.
 
 Run `bash scripts/test-app-runs.sh --live unix:///path/to/api.sock` on the daemon
 host using its local owner transport (as with local MCP). No provider credential
@@ -382,12 +364,9 @@ the repository. Cleanup cancels unfinished jobs and restores the prior current
 workspace; cleanup failures are reported. This is not a remote filesystem test. Live provider/container execution
 requires separate host validation; deterministic checks do not prove it.
 
-Landing uses a ten-minute default timeout, configurable on the daemon with
-`SWARM_LAND_TIMEOUT` (Go duration, positive and at most one hour). Only a bounded
-failure step receipt, not privileged command logs, enters delivery_reason.
 `bash scripts/test-update-rollback.sh` exercises the shared installer rollback
 decision against temporary executable releases; Layer 1 additionally runs it
 against the real daemon's smoke and an unavailable candidate socket. It does
 not exercise privileged systemd/Docker activation.
 
-The vital extras retain `TestTerminalReviewContainerReconcileRetry`, `TestReconcileSkipsUnverifiableOwnership`, `TestSandboxInstanceOwnership` and `TestAppRunsFailureReceipt` to protect reconcile retry/ownership isolation and bounded landing-failure receipts; `job_cleanup_lifecycle_test.go` is focused regression coverage for this reconcile change.
+The vital extras retain `TestTerminalReviewContainerReconcileRetry`, `TestReconcileSkipsUnverifiableOwnership`, and `TestSandboxInstanceOwnership` to protect reconcile retry/ownership isolation; `job_cleanup_lifecycle_test.go` is focused regression coverage for this reconcile change.

@@ -144,7 +144,7 @@ The `/workers` interface is currently focused on schedules and execution history
 | Worker: CI/CD Candidate Testbench                              Detected: 35m ago       |
 | Cause: HTTP 409 conflict detected during parallel worker review proposal.              |
 | Automated Loop: Spawned Ephemeral Coder Session (attempt 1 of 2)...                    |
-| Status: Coder commits; landing step builds and tests once.                            |
+| Status: Coder builds, tests and commits the fix.                                      |
 |                                                                                        |
 | [View Live Debug Session]   [Abort Loop]           [Manual Override]                   |
 +----------------------------------------------------------------------------------------+
@@ -179,7 +179,7 @@ One of the most powerful paradigms enabled by Swarm's Git worktree isolation is 
 |   3. Daemon spawns isolated Coder Session in a fresh Git worktree:                     |
 |      ├── Analyzes error stack trace and test output.                                   |
 |      ├── Edits source code in its isolated worktree.                                   |
-|      └── Commits the fix; the landing step builds and tests once.                      |
+|      └── Builds, tests and commits the fix.                                            |
 |                                                                                        |
 |   4. Evaluation:                                                                       |
 |      ├── PASS: Commits to branch `agent/auto-fix-...`, creates a Deliverable Card      |
@@ -191,7 +191,7 @@ One of the most powerful paradigms enabled by Swarm's Git worktree isolation is 
 
 ### Why This Works Cleanly in Swarm:
 - **No Workspace Pollution**: The debug session operates in its own session-owned worktree. If the AI's fix is broken, the main codebase remains 100% clean and untouched.
-- **Landing Validation**: The coder runs what the brief names and commits the fix; verification builds and tests happen once at landing, returning failures to the job.
+- **Validation in the job**: The coder builds and tests the fix and commits it; the job ends there, and what happens to the result is a later job.
 
 ---
 

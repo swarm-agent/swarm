@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,50 +17,42 @@ import (
 )
 
 type Config struct {
-	ConfigPath        string
-	ListenAddr        string
-	DesktopPort       int
-	ContainerSDKPort  int
-	RunnerGatewayPort int
-	ContainerSDKHost  string
+	ConfigPath       string
+	ListenAddr       string
+	DesktopPort      int
+	ContainerSDKPort int
+	ContainerSDKHost string
 	// TailnetIdentity admits Swarm Control on the SDK listener by the tailnet
 	// policy's app capability (Tailscale Serve header) instead of an AI key.
-	TailnetIdentity              bool
-	LockPermissionPolicy         bool
-	PeerTransportPort            int
-	BypassPermissions            bool
-	RetainToolOutputHistory      bool
-	LongSessionDiagnostics       bool
-	DataDir                      string
-	DBPath                       string
-	LockPath                     string
-	StartupCWD                   string
-	SandboxMode                  string
-	SandboxBackend               string
-	SandboxImage                 string
-	SandboxNetwork               string
-	SandboxRuntime               string
-	SandboxMemory                string
-	SandboxCPUs                  string
-	LandingMaxConcurrent         int
-	LandingParallel              int
-	CloudBuildCache              bool
-	CloudBuildProject            string
-	CloudBuildRegion             string
-	CloudBuildBucket             string
-	CloudBuildMachineType        string
-	CloudBuildTimeoutMinutes     int
-	CloudBuildServiceAccount     string
-	EnvironmentProvider          string
-	EnvironmentRunnerWaitSeconds int
-	EnvironmentRunnerWakeCommand string
-	SandboxCgroupParent          string
-	WorkerMaxConcurrentRuns      int
-	SecretsGateway               string // off (default) | on
-	SecretsGatewayAddr           string // bridge address:port the gateway listens on
+	TailnetIdentity         bool
+	LockPermissionPolicy    bool
+	PeerTransportPort       int
+	BypassPermissions       bool
+	RetainToolOutputHistory bool
+	LongSessionDiagnostics  bool
+	DataDir                 string
+	DBPath                  string
+	LockPath                string
+	StartupCWD              string
+	SandboxMode             string
+	SandboxBackend          string
+	SandboxImage            string
+	SandboxNetwork          string
+	SandboxRuntime          string
+	SandboxMemory           string
+	SandboxCPUs             string
+	SandboxCgroupParent     string
+	WorkerMaxConcurrentRuns int
+	SecretsGateway          string // off (default) | on
+	SecretsGatewayAddr      string // bridge address:port the gateway listens on
 }
 
 func Parse(args []string) (Config, error) { return parse(args, true) }
+
+// removedFlags are command-line flags of removed features (the runner
+// gateway and the landing limit). Service units written by older installers
+// still pass them; they are accepted and ignored.
+var removedFlags = []string{"runner-gateway-port", "landing-max-concurrent"}
 
 // ParseHeadless shares backend configuration but cannot enable a Desktop
 // listener, including through an existing Desktop installation's config file.
@@ -116,7 +109,15 @@ func parse(args []string, desktop bool) (Config, error) {
 	} else {
 		cfg.DesktopPort = 0
 	}
-	fs.IntVar(&cfg.RunnerGatewayPort, "runner-gateway-port", 0, "opt-in runner-only loopback listener (0 disables)")
+	// Flags of removed features: existing service units still pass them, so
+	// they are accepted and ignored with one log line.
+	var ignoredFlags []string
+	for _, name := range removedFlags {
+		fs.Func(name, "removed; accepted and ignored", func(string) error {
+			ignoredFlags = append(ignoredFlags, "--"+name)
+			return nil
+		})
+	}
 	fs.IntVar(&cfg.ContainerSDKPort, "container-sdk-port", 0, "opt-in scoped-token SDK listener on container IPv4 interfaces; publish only to host loopback (0 disables)")
 	fs.StringVar(&cfg.ContainerSDKHost, "container-sdk-host", "0.0.0.0", "IPv4 address for the scoped-token SDK listener: 0.0.0.0 inside a container, 127.0.0.1 when Swarm runs as a host service")
 	fs.BoolVar(&cfg.TailnetIdentity, "tailnet-identity", false, "admit Swarm Control (/mcp) on the SDK listener by the tailnet policy's swarmagent.dev/cap/swarm grant, set by Tailscale Serve 1.92+ with --accept-app-caps; needs --container-sdk-host=127.0.0.1")
@@ -141,18 +142,6 @@ func parse(args []string, desktop bool) (Config, error) {
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
 	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "Docker memory cap per sandbox (empty: host-derived; bubblewrap has no per-worker RAM reservation)")
 	fs.StringVar(&cfg.SandboxCPUs, "sandbox-cpus", startupCfg.SandboxCPUs, "CPU quota per agent container (empty: unrestricted)")
-	cfg.CloudBuildCache = startupCfg.CloudBuildCache
-	cfg.CloudBuildProject = startupCfg.CloudBuildProject
-	cfg.CloudBuildRegion = startupCfg.CloudBuildRegion
-	cfg.CloudBuildBucket = startupCfg.CloudBuildBucket
-	cfg.CloudBuildMachineType = startupCfg.CloudBuildMachineType
-	cfg.CloudBuildTimeoutMinutes = startupCfg.CloudBuildTimeoutMinutes
-	cfg.CloudBuildServiceAccount = startupCfg.CloudBuildServiceAccount
-	cfg.EnvironmentProvider = startupCfg.EnvironmentProvider
-	cfg.LandingParallel = startupCfg.ResolvedLandingParallel()
-	cfg.EnvironmentRunnerWaitSeconds = startupCfg.EnvironmentRunnerWaitSeconds
-	cfg.EnvironmentRunnerWakeCommand = startupCfg.EnvironmentRunnerWakeCommand
-	fs.IntVar(&cfg.LandingMaxConcurrent, "landing-max-concurrent", startupCfg.LandingMaxConcurrent, "box-wide landing limit (0: logical CPUs / 4)")
 	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")
 	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: CPU-count for bubblewrap, RAM-derived for docker)")
 	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
@@ -168,6 +157,9 @@ func parse(args []string, desktop bool) (Config, error) {
 
 	if err := fs.Parse(filteredArgs); err != nil {
 		return Config{}, err
+	}
+	if len(ignoredFlags) > 0 {
+		log.Printf("swarmd: ignoring removed flags %s", strings.Join(ignoredFlags, " "))
 	}
 	if !desktop && fs.NArg() != 0 {
 		return Config{}, fmt.Errorf("unexpected Headless argument %q", fs.Arg(0))
@@ -206,9 +198,6 @@ func parse(args []string, desktop bool) (Config, error) {
 	case "on":
 	default:
 		return Config{}, fmt.Errorf("invalid --secrets-gateway %q (expected off or on)", cfg.SecretsGateway)
-	}
-	if err := validateRunnerGateway(cfg); err != nil {
-		return Config{}, err
 	}
 	if err := validateContainerSDK(cfg); err != nil {
 		return Config{}, err

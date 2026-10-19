@@ -49,18 +49,6 @@ type FileConfig struct {
 	ProviderAPIDiagnostics       bool
 	SandboxMemory                string
 	SandboxCPUs                  string
-	LandingMaxConcurrent         int
-	LandingParallel              int
-	CloudBuildCache              bool
-	CloudBuildProject            string
-	CloudBuildRegion             string
-	CloudBuildBucket             string
-	CloudBuildMachineType        string
-	CloudBuildTimeoutMinutes     int
-	CloudBuildServiceAccount     string
-	EnvironmentProvider          string
-	EnvironmentRunnerWaitSeconds int
-	EnvironmentRunnerWakeCommand string
 	SandboxCgroupParent          string
 	WorkerMaxConcurrentRuns      int
 	LongSessionDiagnostics       bool
@@ -155,11 +143,6 @@ func ResolvePath() (string, error) {
 func Default(path string) FileConfig {
 	return FileConfig{
 		Path:                         path,
-		EnvironmentProvider:          "local",
-		CloudBuildCache:              true,
-		CloudBuildRegion:             "global",
-		CloudBuildMachineType:        "e2-highcpu-8",
-		EnvironmentRunnerWaitSeconds: 120,
 		DevMode:                      false,
 		DevRoot:                      "",
 		Host:                         DefaultHost,
@@ -353,18 +336,6 @@ long_session_diagnostics = %t
 # Per-job sandbox memory (empty: host-derived), and box worker admission (0: auto).
 sandbox_memory = %s
 sandbox_cpus = %s
-cloudbuild_project = %s
-cloudbuild_region = %s
-cloudbuild_bucket = %s
-cloudbuild_machine_type = %s
-cloudbuild_timeout_minutes = %d
-cloudbuild_service_account = %s
-cloudbuild_cache = %t
-environment_provider = %s
-environment_runner_wait_seconds = %d
-environment_runner_wake_command = %s
-landing_parallel = %d
-landing_max_concurrent = %d
 sandbox_cgroup_parent = %s
 worker_max_concurrent_runs = %d
 
@@ -388,7 +359,7 @@ tailscale_url = %s
 # Changing it requires a restart.
 peer_transport_port = %d
 
-`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.CloudBuildProject, cfg.CloudBuildRegion, cfg.CloudBuildBucket, cfg.CloudBuildMachineType, cfg.CloudBuildTimeoutMinutes, cfg.CloudBuildServiceAccount, cfg.CloudBuildCache, cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds, cfg.EnvironmentRunnerWakeCommand, cfg.LandingParallel, cfg.LandingMaxConcurrent, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
+`, cfg.DevMode, cfg.DevRoot, cfg.Host, cfg.Port, cfg.AdvertiseHost, cfg.AdvertisePort, cfg.DesktopPort, cfg.BypassPermissions, cfg.RetainToolOutputHistory, cfg.V3Diagnostics, cfg.ProviderAPIDiagnostics, cfg.LongSessionDiagnostics, cfg.SandboxMemory, cfg.SandboxCPUs, cfg.SandboxCgroupParent, cfg.WorkerMaxConcurrentRuns, cfg.SwarmName, cfg.DesktopOnboardingComplete, cfg.Child, cfg.TailscaleURL, cfg.PeerTransportPort)
 }
 
 func BootstrapExistingConfigError(path string) error {
@@ -425,9 +396,6 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 		}
 		if isLegacyIgnoredKey(key) {
 			continue
-		}
-		if key == "environment_provider" && value == "" {
-			return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, gcp-cloudbuild, auto)", value)
 		}
 		if !allowsEmptyValue(key) && value == "" {
 			return FileConfig{}, nil, fmt.Errorf("line %d: value for %q must be non-empty", lineNumber+1, key)
@@ -562,60 +530,13 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 				return FileConfig{}, nil, fmt.Errorf("line %d: invalid provider_api_diagnostics %q", lineNumber+1, value)
 			}
 			cfg.ProviderAPIDiagnostics = providerAPIDiagnostics
-		case "cloudbuild_project", "cloudbuild_region", "cloudbuild_bucket", "cloudbuild_machine_type", "cloudbuild_timeout_minutes", "cloudbuild_service_account", "cloudbuild_cache":
+		case "sandbox_cpus", "sandbox_cgroup_parent":
 			if _, exists := rawSeen[key]; exists {
 				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
 			}
 			rawSeen[key] = struct{}{}
 			seen[key] = struct{}{}
 			switch key {
-			case "cloudbuild_cache":
-				v, err := strconv.ParseBool(value)
-				if err != nil {
-					return FileConfig{}, nil, fmt.Errorf("invalid cloudbuild_cache %q: %w", value, err)
-				}
-				cfg.CloudBuildCache = v
-			case "cloudbuild_project":
-				cfg.CloudBuildProject = value
-			case "cloudbuild_region":
-				cfg.CloudBuildRegion = value
-			case "cloudbuild_bucket":
-				cfg.CloudBuildBucket = value
-			case "cloudbuild_machine_type":
-				cfg.CloudBuildMachineType = value
-			case "cloudbuild_service_account":
-				cfg.CloudBuildServiceAccount = value
-			case "cloudbuild_timeout_minutes":
-				n, err := strconv.Atoi(value)
-				if err != nil || n < 0 {
-					return FileConfig{}, nil, fmt.Errorf("invalid cloudbuild_timeout_minutes %q (expected a non-negative integer; 0 uses the folder check timeout plus 5 minutes, capped at 1440)", value)
-				}
-				cfg.CloudBuildTimeoutMinutes = n
-			}
-		case "environment_provider", "environment_runner_wait_seconds", "environment_runner_wake_command", "sandbox_cpus", "landing_parallel", "landing_max_concurrent", "sandbox_cgroup_parent":
-			if _, exists := rawSeen[key]; exists {
-				return FileConfig{}, nil, fmt.Errorf("duplicate key %q", key)
-			}
-			rawSeen[key] = struct{}{}
-			seen[key] = struct{}{}
-			switch key {
-			case "environment_provider":
-				if value != "local" && value != "runners" && value != "gcp-cloudbuild" && value != "auto" {
-					return FileConfig{}, nil, fmt.Errorf("invalid environment_provider %q (valid values: local, runners, gcp-cloudbuild, auto)", value)
-				}
-				cfg.EnvironmentProvider = value
-			case "environment_runner_wake_command":
-				if err := ValidateRunnerWakeCommand(value); err != nil {
-					return FileConfig{}, nil, err
-				}
-				cfg.EnvironmentRunnerWakeCommand = value
-			case "environment_runner_wait_seconds":
-				n, err := strconv.Atoi(value)
-				// Bound conversion to time.Duration seconds on every architecture.
-				if err != nil || n < 0 || int64(n) > 9223372036 {
-					return FileConfig{}, nil, fmt.Errorf("invalid environment_runner_wait_seconds %q", value)
-				}
-				cfg.EnvironmentRunnerWaitSeconds = n
 			case "sandbox_cpus":
 				if value != "" {
 					n, err := strconv.ParseFloat(value, 64)
@@ -624,18 +545,6 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 					}
 				}
 				cfg.SandboxCPUs = value
-			case "landing_parallel":
-				n, err := strconv.Atoi(value)
-				if err != nil || n < 0 {
-					return FileConfig{}, nil, fmt.Errorf("invalid landing_parallel %q", value)
-				}
-				cfg.LandingParallel = n
-			case "landing_max_concurrent":
-				n, err := strconv.Atoi(value)
-				if err != nil || n < 0 {
-					return FileConfig{}, nil, fmt.Errorf("invalid landing_max_concurrent %q", value)
-				}
-				cfg.LandingMaxConcurrent = n
 			case "sandbox_cgroup_parent":
 				cfg.SandboxCgroupParent = value
 			}
@@ -777,9 +686,6 @@ func parseEntries(text string, cfg FileConfig) (FileConfig, map[string]struct{},
 	if _, ok := seen["advertise_port"]; !ok {
 		cfg.AdvertisePort = cfg.Port
 	}
-	if cfg.EnvironmentProvider == "gcp-cloudbuild" && (cfg.CloudBuildProject == "" || cfg.CloudBuildBucket == "") {
-		return FileConfig{}, nil, errors.New("gcp-cloudbuild requires cloudbuild_project and cloudbuild_bucket")
-	}
 	return cfg, seen, nil
 }
 
@@ -851,34 +757,6 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 	}
 	if _, ok := seen["sandbox_cpus"]; !ok {
 		lines = append(lines, fmt.Sprintf("sandbox_cpus = %s", cfg.SandboxCPUs))
-	}
-	if _, ok := seen["environment_runner_wake_command"]; !ok {
-		lines = append(lines, "environment_runner_wake_command = "+cfg.EnvironmentRunnerWakeCommand)
-	}
-	if _, ok := seen["environment_runner_wait_seconds"]; !ok {
-		lines = append(lines, fmt.Sprintf("environment_runner_wait_seconds = %d", cfg.EnvironmentRunnerWaitSeconds))
-	}
-	for _, entry := range []struct{ key, value string }{
-		{"cloudbuild_cache", strconv.FormatBool(cfg.CloudBuildCache)},
-		{"cloudbuild_project", cfg.CloudBuildProject},
-		{"cloudbuild_region", cfg.CloudBuildRegion},
-		{"cloudbuild_bucket", cfg.CloudBuildBucket},
-		{"cloudbuild_machine_type", cfg.CloudBuildMachineType},
-		{"cloudbuild_timeout_minutes", strconv.Itoa(cfg.CloudBuildTimeoutMinutes)},
-		{"cloudbuild_service_account", cfg.CloudBuildServiceAccount},
-	} {
-		if _, ok := seen[entry.key]; !ok {
-			lines = append(lines, entry.key+" = "+entry.value)
-		}
-	}
-	if _, ok := seen["environment_provider"]; !ok {
-		lines = append(lines, "environment_provider = "+cfg.EnvironmentProvider)
-	}
-	if _, ok := seen["landing_parallel"]; !ok {
-		lines = append(lines, fmt.Sprintf("landing_parallel = %d", cfg.LandingParallel))
-	}
-	if _, ok := seen["landing_max_concurrent"]; !ok {
-		lines = append(lines, fmt.Sprintf("landing_max_concurrent = %d", cfg.LandingMaxConcurrent))
 	}
 	if _, ok := seen["sandbox_cgroup_parent"]; !ok {
 		lines = append(lines, fmt.Sprintf("sandbox_cgroup_parent = %s", cfg.SandboxCgroupParent))
@@ -960,9 +838,6 @@ func missingKeyLines(cfg FileConfig, seen map[string]struct{}) []string {
 }
 
 func validate(cfg FileConfig) error {
-	if err := ValidateRunnerWakeCommand(cfg.EnvironmentRunnerWakeCommand); err != nil {
-		return err
-	}
 	if strings.TrimSpace(cfg.DevRoot) != "" && !filepath.IsAbs(cfg.DevRoot) {
 		return fmt.Errorf("invalid %s %q (expected an absolute path)", devRootKey, cfg.DevRoot)
 	}
@@ -990,21 +865,9 @@ func validate(cfg FileConfig) error {
 	return nil
 }
 
-// ValidateRunnerWakeCommand accepts an absolute executable and unquoted arguments,
-// never shell syntax. Execution uses argv directly rather than a shell.
-func ValidateRunnerWakeCommand(command string) error {
-	args := strings.Fields(command)
-	if strings.ContainsAny(command, ";|&$<>`\"'\n\r\x00") || (len(args) > 0 && !filepath.IsAbs(args[0])) {
-		return fmt.Errorf("invalid environment_runner_wake_command: expected an absolute executable and plain arguments")
-	}
-	return nil
-}
-
 func allowsEmptyValue(key string) bool {
 	switch key {
-	case "environment_runner_wake_command":
-		return true
-	case "cloudbuild_project", "cloudbuild_region", "cloudbuild_bucket", "cloudbuild_machine_type", "cloudbuild_service_account", "sandbox_cpus", "sandbox_cgroup_parent", "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
+	case "sandbox_cpus", "sandbox_cgroup_parent", "sandbox_memory", devRootKey, "swarm_name", "tailscale_url", "advertise_host", "advertise_addr", "onboarding_state", "swarm_id":
 		return true
 	default:
 		return false

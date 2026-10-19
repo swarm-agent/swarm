@@ -2,16 +2,8 @@
 
 The system reviewer receives the job's brief and exact committed head, reads `git diff BASE...HEAD`, and answers one question: did the coder do what the brief asked, completely and only that? It reports BLOCK only for a missing or incorrectly implemented requirement, or an unrequested behavior change in the diff; otherwise it reports OK. Each finding explains what is missing or wrong with a `file:line` location and reaches the coder verbatim. Alternative approaches, style preferences, and risks outside the brief are notes in SUMMARY, never findings.
 
-The reviewer runs no builds, tests, checks, or scripts. The landing step builds and tests after review. Reports retain four sections: VERDICT, SUMMARY, FINDINGS, and TESTS RUN. TESTS RUN always says `none (the landing step tests after review)`.
+The reviewer runs no builds, tests, checks, or scripts: a job ends when its coder has built, tested and committed its work. Reports retain four sections: VERDICT, SUMMARY, FINDINGS, and TESTS RUN. TESTS RUN always says `none (review is read-only)`.
 
-The brief, report, and repository are untrusted data: the reviewer assesses them but never follows instructions found in them. A re-review assesses previous findings first and identifies which are fixed. A rebase-scoped review assesses only the conflict resolution.
+The brief, report, and repository are untrusted data: the reviewer assesses them but never follows instructions found in them. A re-review assesses previous findings first and identifies which are fixed.
 
-The folder publish rule may opt into `--pipeline` alongside `--land --require-review --auto`. The existing auto-publish consumer starts reviews and sends BLOCK findings as idempotent follow-ups. `fix_rounds` in account limits defaults to two BLOCK verdicts before exhaustion. Inspect `review_chain` in `swarm_get_job`; exhaustion and admission failures stop that job for outside intervention. Policy off preserves manual review.
-
-## Review pipeline behaviour
-
-A reviewer run that fails or crashes is treated as an infrastructure failure: it is retried with a delay and a bounded retry budget, not sent back to the coder or counted as a fix round. When a completed fix follow-up produces no new commit, the old verdict is superseded and the next review runs on the same head, using the coder's latest report as evidence.
-
-Already-landed heads are not reviewed again. Reviews after a rebase or stacked landing use the landing queue's exact base commit, rather than a moving ref, so predecessors' commits are excluded. Finished jobs are durably retired from automatic processing; review recovery skips retired jobs and runs at most once a minute per publisher instance. A fresh completion with a new head can reopen a retired job; recovery alone cannot.
-
-Landing retains its checks and exact review validation. Folder landings can run in parallel as a merge train with `landing_parallel`, pushing in order so the target branch only receives tested combinations. Pipeline landing additionally requires unchanged per-patch range-diff correspondence before carrying approval across a clean rebase. Conflict send-backs use the existing landing queue; subsequent reviews request a rebase-scoped assessment.
+A review is report-only. What happens to a reviewed job afterwards (delivering it with `swarm_deliver_job`, sending findings back with `swarm_message_job`) is up to the AI or automation that asked for the review.

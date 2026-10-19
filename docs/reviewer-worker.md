@@ -16,26 +16,8 @@ Retries preserve the original captured head. The job message includes the
 reviewed brief and latest attempt report, labeled untrusted evidence (bounded
 to 24 KB each). Commands receive `SWARM_REVIEW_HEAD`, `SWARM_REVIEW_BASE` and
 `SWARM_REVIEW_JOB`. The base is `refs/swarm/publish/<base>` if that commit ref
-exists, otherwise the captured landing branch. Reviews do not fetch or advance
-the landing target. A later source commit does not change an existing review.
-
-## Folder checks
-
-Admission also captures `checks` and `check_timeout_minutes` from the source
-folder's account-owned `/v3/sandbox-environments` definition, never the job
-brief. `SWARM_REVIEW_CHECKS` runs those commands in order, each in its own
-`bash -lc` shell, stopping at the first failure, just like landing.
-`SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS` supplies the total budget (20 minutes
-when unspecified). Captured values survive retries; later definition changes
-do not rewrite an existing review.
-
-The compiled reviewer instruction runs these checks in its disposable checkout
-**before** narrow tests, allowing the folder command to install dependencies.
-Failure or timeout requires `VERDICT: BLOCK` and quoted failing output in
-`TESTS RUN`. Without checks, both variables are empty; the reviewer explicitly
-reports no folder checks and runs narrow tests. This is a reviewer instruction,
-not a daemon-enforced proof that a model executed the gate. Landing still runs
-its own checks against its then-current definition and rebased head.
+exists, otherwise the captured base branch. Reviews do not fetch or advance
+the base branch. A later source commit does not change an existing review.
 
 ## Sandbox boundary
 
@@ -58,8 +40,7 @@ routed Git and supervised exec preserve the review scope, and host file/search
 tools see only the checkout. Terminal cleanup keeps registration restrictive
 until removal succeeds; failed removal can be retried without a writable lane.
 Verdict sections must be unique, ordered and non-empty; quoted or ambiguous
-structure fails closed. Auto-publication skips report-only jobs rather than
-holding the signal cursor, and publication/landing preparation refuse them.
+structure fails closed. Publication refuses report-only jobs.
 
 Reviewer results are report-only. MCP delivery and the direct V3 task
 integration/recovery-integration routes refuse reviewer tasks. Task detail shows
@@ -74,8 +55,7 @@ is latest-per-head; terminal replay does not overwrite a newer review. V3 worker
 run detail, SDK `workers.getRun`, and MCP `swarm_get_job` expose the latest
 `review` with `stale` computed against the job's current Git HEAD. An unavailable
 checkout is stale, never a valid approval. Existing review lifecycle fields are
-preserved for compatibility. `WorkerStore.CurrentValidJobReview` is the exported
-exact-head hook for the future landing policy (it returns BLOCK evidence too).
+preserved for compatibility.
 
 Recording emits an account-scoped `job.reviewed` signal with verdict/head and
 job IDs through the existing best-effort signal observer pattern; report/reason
@@ -86,7 +66,7 @@ PATCH accepts `system_agents.reviewer`. Fresh defaults use the provider catalog'
 `review` recommendation, or the coder assignment if absent. Existing settings
 without the optional reviewer slot resolve catalog review/coder defaults;
 explicit reviewer assignments take precedence. No model/provider is hardcoded.
-No landing review gate is imposed.
+No review gate is imposed on delivery.
 
 ## Docker enforcement proof
 
@@ -104,45 +84,3 @@ Go tests succeed, then verifies unchanged host state. Hermetic admission tests
 use a deterministic engine fixture with real Git and prove source identity,
 exact-head checkout, retry, context and cleanup, not kernel mount enforcement
 or provider-backed review quality.
-
-## Require review before landing
-
-The headless installer can make independent review mandatory for a folder:
-
-```sh
-install.sh workspace publish FOLDER COMMAND --land --require-review --auto
-```
-
-`require-review` is stored in the root-owned publish config; `get_project`
-shows `publish.require_review` on each configured workspace. It requires
-`--land`; omitting it preserves existing delivery behavior.
-
-Delivery needs a recorded `ok` verdict for the job's current exact head. Missing,
-BLOCK, or stale evidence refuses delivery with `delivery_reason` naming the head
-and asking you to give the reviewer `review_job`. With `--auto`, a durable OK
-`job.reviewed` signal triggers another delivery attempt; unreviewed jobs do not
-hold up other jobs' signals. Jobs without worker review evidence cannot land
-under this policy.
-
-A clean rebase may carry approval forward within landing preparation only when
-its whole-job stable Git patch-id is unchanged. Conflicted rebases are aborted
-and sent back; commit the resolution and request a fresh exact-head review.
-Checks that change HEAD or leave uncommitted changes still refuse landing.
-The queue durably checkpoints the reviewed head, rebased head, patch-id and
-review identity, so unchanged-patch retries survive MOVED receipts and restart.
-A BLOCK on the rebased head or another reviewed head with the same patch-id
-wins over carried approval. Automatic publishing also scans durable OK evidence
-at startup and periodically in bounded pages; a lost review signal cannot
-permanently strand an approved job.
-
-## Problem proofs
-
-When a job declares `proof`, review whether its reproduction tests the problem
-in the brief, not an easier substitute. Read `proof.base` and `proof.head` from
-`swarm_get_job`: these contain daemon-observed exit codes, bounded output and
-exact commits. Missing results mean verification has not happened, not success.
-Landing requires non-zero at base and zero at head. Infrastructure errors do
-not count as a reproduced failure. A coder can commit `.swarm-proof.json` with
-`command` and `files` (new reproduction scripts copied unchanged to base).
-Inspect those scripts as carefully as the fix; the daemon cannot judge whether
-a command's assertion faithfully represents the brief.

@@ -336,21 +336,8 @@ container has been exercised for listing machines and workspaces. Not yet
 proven: the new orchestration, model and schedule tools against a live
 machine, ChatGPT, Claude Code routines, and long-running reconnect behaviour.
 
-### Land-mode delivery
+### Delivery
 
-`swarm_deliver_job` enqueues land-mode jobs and returns `queue_position`.
-`swarm_get_job` includes `delivery_state`, `landed_commit`, `delivery_reason`,
-`checks`, and `queue_position`. No checks are labelled `checks: none defined`.
-Folder checks are defined with `swarm_set_environment` (`checks`, at most ten
-commands of 4000 characters; `check_timeout_minutes`, 0/default 20, at most 60).
-They are stored with the environment but excluded from the image hash.
-A checks-only update may omit `base_image` to preserve the existing image definition.
-Never put secrets in commands. Checks execute on the rebased job in the sandbox.
-
-Landing persists FIFO and active state across restart; active deliveries restart
-at base update. Failures in source (conflicts or failed checks) use the same
-`swarm_message_job` follow-up path, with an idempotent request ID. The second
-send-back stops delivery. Signals are bounded one-line summaries:
-`job.landed`, `job.sent_back` (info), `job.landing_stopped`, `job.land_failed`
-(warning); command output stays off signals. Automatic publishing includes all
-successful worker jobs with commits, not only scheduled worker runs.
+`swarm_deliver_job` merges a job into its folder, or opens its pull request
+when the folder's owner set a publish command. Nothing is delivered without
+that call: a job ends when its agent has built, tested and committed its work.
