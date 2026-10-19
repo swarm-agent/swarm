@@ -77,3 +77,54 @@ func TestEffectiveTaskBaseIgnoresRefsTheCoderMoves(t *testing.T) {
 		t.Fatalf("rebased job: base %s, want the folder's dev %s", got, landed)
 	}
 }
+
+// Purpose: a job whose head the folder's target branch already contains
+// (it was delivered by a fast-forward or a merge) keeps its recorded base,
+// so its commits still show after it lands.
+// Threat (review finding): merge-base(head, tip) is head itself once the
+// target contains head, so the base became head: swarm_get_changes listed no
+// commits and no files, swarm_get_job reported base_commit = head, a reviewer
+// started after landing got an empty diff and a review by hand failed with
+// "review job must have commits".
+// Owner: EffectiveTaskBase over real local Git (a folder and a clone of it).
+func TestEffectiveTaskBaseKeepsTheRecordedBaseOnceTheTargetContainsTheHead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for _, delivery := range []string{"fast-forward", "merge"} {
+		t.Run(delivery, func(t *testing.T) {
+			folder := t.TempDir()
+			git(folder, "init", "-q", "-b", "dev")
+			git(folder, "commit", "-q", "--allow-empty", "-m", "base")
+			recorded := git(folder, "rev-parse", "HEAD")
+			clone := filepath.Join(t.TempDir(), "job")
+			git(filepath.Dir(clone), "clone", "-q", folder, clone)
+			git(clone, "checkout", "-q", "-b", "agent/job")
+			git(clone, "commit", "-q", "--allow-empty", "-m", "one")
+			git(clone, "commit", "-q", "--allow-empty", "-m", "two")
+			head := git(clone, "rev-parse", "HEAD")
+			if delivery == "merge" {
+				git(folder, "commit", "-q", "--allow-empty", "-m", "landed elsewhere")
+			}
+			// Deliver: the folder takes the job's head onto dev.
+			git(folder, "fetch", "-q", clone, "agent/job")
+			if delivery == "fast-forward" {
+				git(folder, "merge", "-q", "--ff-only", "FETCH_HEAD")
+			} else {
+				git(folder, "merge", "-q", "--no-ff", "-m", "deliver job", "FETCH_HEAD")
+			}
+			git(clone, "fetch", "-q", "origin")
+			if got := EffectiveTaskBase(context.Background(), clone, folder, "dev", recorded, head); got != recorded {
+				t.Fatalf("job delivered by %s: base %s, want recorded %s (head %s)", delivery, got, recorded, head)
+			}
+		})
+	}
+}
