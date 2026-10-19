@@ -734,6 +734,7 @@ func (s *SessionStore) ApplyV3SessionMutation(input V3SessionMutationInput) (V3S
 	defer func() {
 		unlockSession()
 		if budgetReceiptCommitted {
+			s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: input.AccountScopeID})
 			s.publishWorkerBudgetHolds(input.AccountScopeID)
 		}
 	}()

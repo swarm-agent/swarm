@@ -15,8 +15,10 @@ const (
 	// SchedulingSignalAutomationV2 follows a committed V2 automation record or
 	// occurrence mutation.
 	SchedulingSignalAutomationV2 SchedulingSignalKind = "automation_v2"
-	// SchedulingSignalBudget follows a committed usage receipt that may have
-	// set an account's worker budget holds.
+	// SchedulingSignalBudget follows a committed usage receipt or usage-scope
+	// repair that may have set an account's worker budget holds, a newly
+	// committed hold, or an account usage limit write. Budget reads never
+	// send it.
 	SchedulingSignalBudget SchedulingSignalKind = "budget"
 )
 

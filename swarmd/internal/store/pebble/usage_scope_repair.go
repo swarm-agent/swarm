@@ -204,5 +204,10 @@ func (s *SessionStore) repairUsageScopeReceipt(account, key string, value []byte
 		return false, false, err
 	}
 	_, err = s.applyFreshV3SessionMutation(input, KeyV3SessionOperationIdempotency(account, session, input.Kind, input.ClientRequestID))
+	if err == nil {
+		// The committed repair may have set worker budget holds
+		// (setUsageDays/setMediaUsageDays -> setWorkerBudgetHold).
+		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: account})
+	}
 	return err == nil, false, err
 }

@@ -110,8 +110,13 @@ func (s *SessionStore) holdWorkerBudgetLocked(account, worker string, h *WorkerB
 	if err := s.setWorkerBudgetHold(batch, account, worker, h); err != nil {
 		return err
 	}
+	wrote := !batch.Empty()
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return err
+	}
+	if wrote {
+		// Only a newly committed hold signals; an existing one is unchanged.
+		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: account})
 	}
 	return fmt.Errorf("%w: %s %s limit reached; held until %s", ErrWorkerBudget, h.CapSource, h.Dimension, time.UnixMilli(h.ResetAt).UTC().Format(time.RFC3339))
 }
@@ -156,8 +161,10 @@ func (s *Store) SetWorkerBudgetPublisher(publish func(NotificationRecord)) {
 	s.workerBudgetPublisher = publish
 }
 
+// publishWorkerBudgetHolds re-publishes durable hold notifications. It also
+// runs after plain reads, so it never sends a scheduling signal: committed
+// hold, usage and limit writes signal at their commit.
 func (s *SessionStore) publishWorkerBudgetHolds(account string) {
-	s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: account})
 	s.store.workerPublisherMu.RLock()
 	publish := s.store.workerBudgetPublisher
 	s.store.workerPublisherMu.RUnlock()
