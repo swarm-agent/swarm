@@ -276,3 +276,59 @@ func TestWorkerSchedulerAdmissionSignalDoesNotSkipSiblingSlot(t *testing.T) {
 		}
 	}
 }
+
+// Requirement: after every scheduler pass the next wake must be in the
+// future; a deferred change-driven V2 pass must never leave a past wake time.
+// Threat: a V2 change arriving inside the one-second change spacing, while
+// v2Next holds an upcoming V2 slot earlier than the deferred time, kept that
+// slot; once it passed, nextWake returned a past time and Run armed zero
+// timers back to back until the spacing ended (a busy spin). Owner:
+// WorkerScheduler.processV2 deferral. Each process call is driven by hand at
+// the wake it asked for, because simulate clamps past wakes to now and would
+// hide the spin.
+func TestWorkerSchedulerDeferredV2ChangeNeverLeavesPastWake(t *testing.T) {
+	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	clock := newFakeSchedulerClock(start)
+	sweeper := &fakeV2Sweeper{}
+	upcoming := start.Add(300 * time.Millisecond)
+	hinter := &fakeV2Hinter{hint: pebblestore.AutomationV2ScheduleHint{AcceptedKeys: 4, EarliestDueAt: upcoming.UnixMilli(), UpcomingDueAt: upcoming.UnixMilli()}}
+	sch := NewWorkerScheduler(nil, WorkerSchedulerOptions{Clock: clock, V2: sweeper, V2Hints: hinter})
+	ctx := context.Background()
+	check := func(now time.Time) {
+		t.Helper()
+		if next := sch.nextWake(); !next.After(now) {
+			t.Fatalf("after the pass at %v, next wake %v is not in the future", now.Sub(start), next.Sub(start))
+		}
+	}
+	// A dirty pass sees an upcoming V2 slot 300ms away.
+	if err := sch.process(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	check(start)
+	if got := sch.nextWake(); !got.Equal(upcoming) {
+		t.Fatalf("next wake = %v, want the upcoming slot %v", got, upcoming)
+	}
+	// A V2 change commits before the slot, inside the change spacing.
+	signalAt := start.Add(100 * time.Millisecond)
+	clock.Set(signalAt)
+	sch.Notify(pebblestore.SchedulingSignal{Kind: pebblestore.SchedulingSignalAutomationV2})
+	if err := sch.process(ctx, signalAt); err != nil {
+		t.Fatal(err)
+	}
+	check(signalAt)
+	// Follow every wake the scheduler asks for until the spacing has ended.
+	passes := 0
+	for now := sch.nextWake(); !now.After(start.Add(2 * time.Second)); now = sch.nextWake() {
+		if passes++; passes > 20 {
+			t.Fatalf("more than 20 passes within 2s of simulated time")
+		}
+		clock.Set(now)
+		if err := sch.process(ctx, now); err != nil {
+			t.Fatal(err)
+		}
+		check(now)
+	}
+	if len(sweeper.sweeps) == 0 {
+		t.Fatal("the deferred V2 change was never processed")
+	}
+}
