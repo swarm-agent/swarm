@@ -26,7 +26,7 @@ type WorkerPreset struct {
 
 // WorkerPresets lists the premade workers in their display order.
 var WorkerPresets = []WorkerPreset{
-	{Key: store.WorkerRoleReviewer, Name: "Reviewer", Role: store.WorkerRoleReviewer, Description: "Independent report-only code reviewer.", Instructions: "Review the exact job head against its base, run narrow relevant tests, and return VERDICT, SUMMARY, FINDINGS and TESTS RUN. Never deliver changes."},
+	{Key: store.WorkerRoleReviewer, Name: "Reviewer", Role: store.WorkerRoleReviewer, Description: "Independent report-only code reviewer.", Instructions: "Review the exact job head against its base and judge four things: is every requirement of the brief fully done; do the report's claims match the evidence (a test the report says passed must appear among the commands the job actually ran, with exit code 0; unbacked claims are findings); are there gaps; are there security problems. Return VERDICT: OK|BLOCK, SUMMARY, FINDINGS (each at file:line, sent to the coder verbatim) and TESTS RUN. Never deliver changes."},
 	{
 		Key:          store.WorkerRoleCoder,
 		Name:         "Coder",

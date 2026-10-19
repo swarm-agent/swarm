@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -257,6 +258,9 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 			return "", &jobautomation.RefusedError{Reason: "a reviewer reviews a worker job's commits; " + req.Result.JobID + " is not a worker job"}
 		}
 		input["review_job"] = req.Result.JobID
+		// The reviewer gets the whole picture: the job's brief, its report,
+		// the commands it actually ran and its diff.
+		input["prompt"] = s.automationReviewerBrief(ctx, req)
 	}
 	run, err := execution.Dispatch(ctx, principal.AccountScopeID, principal.UserID, pebblestore.WorkerRunAdmission{
 		WorkerID: workerID, RequestSource: jobautomation.RequestSourceAutomation, Input: input, IdempotencyKey: req.IdempotencyKey, WorkspaceID: workspaceID,
@@ -488,6 +492,31 @@ func ImportJobRef(ctx context.Context, folder string, result jobautomation.Resul
 		return "", fmt.Errorf("name the job's head %s: %w", ref, err)
 	}
 	return ref, nil
+}
+
+// VerifyJobHead reports whether head descends from ancestor, with Git in the
+// folder: both commits are brought in from their checkouts (importJobHead)
+// and git merge-base --is-ancestor decides. Git runs routed like all daemon
+// Git on a folder.
+func VerifyJobHead(ctx context.Context, folder string, ancestor, head jobautomation.HeadRef) (bool, error) {
+	for _, ref := range []jobautomation.HeadRef{ancestor, head} {
+		if !controlMCPCommitID.MatchString(ref.Commit) {
+			return false, fmt.Errorf("%q is not a commit id", ref.Commit)
+		}
+		if err := importJobHead(ctx, folder, ref.Worktree, ref.Commit); err != nil {
+			return false, err
+		}
+	}
+	gitCtx := sandbox.WithGitCommandTimeout(ctx, time.Minute)
+	_, err := sandbox.TimedGitOutput(gitCtx, folder, nil, "-c", "safe.directory="+folder, "merge-base", "--is-ancestor", ancestor.Commit, head.Commit)
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git merge-base: %w", err)
 }
 
 // ---- views -----------------------------------------------------------------

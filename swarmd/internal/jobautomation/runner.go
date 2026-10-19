@@ -118,6 +118,16 @@ type Reopener interface {
 // ReopenClosing is the text a reopen step's follow-up ends with.
 const ReopenClosing = "Fix these in this worktree, commit, and report what you changed."
 
+// HeadRef is a commit and the checkout it can be fetched from.
+type HeadRef struct {
+	Commit   string
+	Worktree string
+}
+
+// HeadVerifier reports, with Git in the folder, whether head descends from
+// ancestor (ancestor is head or one of its ancestors).
+type HeadVerifier func(ctx context.Context, folder string, ancestor, head HeadRef) (bool, error)
+
 // HeadImporter brings a job's head into the folder as refs/swarm/jobs/<run>
 // and returns the ref.
 type HeadImporter func(ctx context.Context, folder string, result Result) (string, error)
@@ -133,6 +143,7 @@ type Runner struct {
 	agent   AgentRunner
 	reopen  Reopener
 	head    HeadImporter
+	verify  HeadVerifier
 	emit    func(pebblestore.Signal)
 	now     func() time.Time
 	backoff func(attempt int) time.Duration
@@ -158,13 +169,14 @@ type Options struct {
 	Agent   AgentRunner
 	Reopen  Reopener
 	Head    HeadImporter
+	Verify  HeadVerifier
 	Emit    func(pebblestore.Signal)
 }
 
 func NewRunner(opts Options) *Runner {
 	return &Runner{
 		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent, reopen: opts.Reopen,
-		head: opts.Head, emit: opts.Emit, now: time.Now, backoff: defaultBackoff,
+		head: opts.Head, verify: opts.Verify, emit: opts.Emit, now: time.Now, backoff: defaultBackoff,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
 	}
 }
@@ -347,7 +359,9 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 		return nil
 	}
 	result.Followup = followupOf(sig)
-	if result.FinishedAt == 0 {
+	// A follow-up's end is when its signal was recorded: the run's own
+	// completion time is its first end.
+	if result.FinishedAt == 0 || (result.Followup != "" && sig.At > 0) {
 		result.FinishedAt = sig.At
 	}
 	r.reopenMu.Lock()
@@ -687,16 +701,37 @@ type stepFailure struct {
 	refused      bool
 }
 
-// stepEnv is the environment a run step's script gets.
+// stepEnv is the environment a run step's script gets. SWARM_HEAD is the
+// delivery's head: the job's head, moved forward by an agent step whose job
+// committed on top of it.
 func stepEnv(d Delivery, ref string) map[string]string {
 	env := map[string]string{
 		"SWARM_JOB_ID": d.Result.JobID, "SWARM_JOB_STATUS": d.Result.Status, "SWARM_DELIVERY_ID": d.ID,
 		"SWARM_HEAD": "", "SWARM_BASE": "", "SWARM_BRANCH": "", "SWARM_JOB_REF": ref,
+		"SWARM_ROUND": strconv.Itoa(d.Round),
 	}
 	if g := d.Result.Git; g != nil {
 		env["SWARM_HEAD"], env["SWARM_BASE"], env["SWARM_BRANCH"] = g.Head, g.BaseCommit, g.Branch
 	}
+	if d.Head != "" {
+		env["SWARM_HEAD"] = d.Head
+	}
 	return env
+}
+
+// headResult is the delivery's result with its git head moved to the
+// delivery head, for importing it into the folder.
+func headResult(d Delivery) Result {
+	out := d.Result
+	if out.Git != nil && d.Head != "" {
+		g := *out.Git
+		g.Head = d.Head
+		if d.HeadWorktree != "" {
+			g.Worktree = d.HeadWorktree
+		}
+		out.Git = &g
+	}
+	return out
 }
 
 func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord, step Step) stepFailure {
@@ -705,7 +740,7 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 	ref := ""
 	if d.Result.Git != nil && d.Result.Git.Head != "" && r.head != nil {
-		imported, err := r.head(ctx, d.Folder, d.Result)
+		imported, err := r.head(ctx, d.Folder, headResult(*d))
 		if err != nil {
 			return stepFailure{reason: truncate("could not bring the job's head into the folder: "+err.Error(), 300), next: "rerun"}
 		}
@@ -801,6 +836,9 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	}
 	record.Outcome = out
 	record.Output = jobID
+	if failure := r.moveHead(ctx, d, outcome, out); failure.reason != "" {
+		return failure
+	}
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
 		return stepFailure{reason: "the job " + jobID + " ended " + outcome.Status, next: "rerun"}
 	}
@@ -861,6 +899,40 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 	record.Outcome = map[string]any{"followup": followup, "round": d.Round + 1}
 	record.Output = "reopened " + d.JobID + " (round " + strconv.Itoa(d.Round+1) + ")"
+	return stepFailure{}
+}
+
+// moveHead moves the delivery head forward to the head of an agent step's
+// job that committed on top of it, after Git confirms the job's head
+// descends from the current delivery head; a job head that does not fails
+// the step and the delivery head stays.
+func (r *Runner) moveHead(ctx context.Context, d *Delivery, outcome AgentOutcome, out map[string]any) stepFailure {
+	if outcome.Head == "" || d.Head == "" || outcome.Head == d.Head {
+		return stepFailure{}
+	}
+	if NormalizeStatus(outcome.Status) != StatusSucceeded {
+		return stepFailure{} // the job's own failure is reported below
+	}
+	if r.verify == nil {
+		return stepFailure{reason: "the job " + outcome.JobID + " committed, but this daemon cannot verify its head against the delivery head", next: "rerun", refused: true}
+	}
+	worktree := ""
+	if outcome.Result != nil && outcome.Result.Git != nil {
+		worktree = outcome.Result.Git.Worktree
+	}
+	descends, err := r.verify(ctx, d.Folder, HeadRef{Commit: d.Head, Worktree: d.HeadWorktree}, HeadRef{Commit: outcome.Head, Worktree: worktree})
+	if err != nil {
+		if ctx.Err() != nil {
+			return stepFailure{}
+		}
+		return stepFailure{reason: truncate("could not verify the job's head against the delivery head: "+err.Error(), 300), next: "rerun"}
+	}
+	if !descends {
+		return stepFailure{reason: "the job " + outcome.JobID + " head " + outcome.Head + " does not descend from the delivery head " + d.Head + ": the delivery head is not moved",
+			next: "fix the automation", refused: true}
+	}
+	out["moved_head"] = map[string]any{"from": d.Head, "to": outcome.Head}
+	d.Head, d.HeadWorktree = outcome.Head, worktree
 	return stepFailure{}
 }
 
