@@ -256,7 +256,11 @@ func TestWorkerSchedulerAdmissionSignalDoesNotSkipSiblingSlot(t *testing.T) {
 	}
 	ctx := context.Background()
 	_ = sch.process(ctx, start)
-	simulate(ctx, sch, clock, second.Add(dispatchTime+time.Second))
+	// End at the sibling's slot: it is admitted at the pass after the slow
+	// first Dispatch (already past it). A later end would, for gaps over
+	// ~29s, also reach the first automation's next slot and admit it
+	// legitimately, making the exact-once assertion depend on the wall clock.
+	simulate(ctx, sch, clock, second)
 	if len(admitErrs) != 0 {
 		t.Fatalf("real store admission failed: %v", admitErrs)
 	}
@@ -285,7 +289,9 @@ func TestWorkerSchedulerAdmissionSignalDoesNotSkipSiblingSlot(t *testing.T) {
 // timers back to back until the spacing ended (a busy spin). Owner:
 // WorkerScheduler.processV2 deferral. Each process call is driven by hand at
 // the wake it asked for, because simulate clamps past wakes to now and would
-// hide the spin.
+// hide the spin. The fake hint stays fixed, so by the deferred pass its
+// upcoming time is also in the past; that must not become a past wake either
+// (v2DueTimes).
 func TestWorkerSchedulerDeferredV2ChangeNeverLeavesPastWake(t *testing.T) {
 	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
 	clock := newFakeSchedulerClock(start)

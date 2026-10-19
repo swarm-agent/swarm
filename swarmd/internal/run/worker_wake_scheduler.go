@@ -568,6 +568,14 @@ func (sch *WorkerScheduler) admitDue(ctx context.Context, now time.Time) error {
 // upcoming V2 due times in unix milliseconds (zero when none).
 func v2DueTimes(hint store.AutomationV2ScheduleHint, nowMs int64) (latestDue, upcoming int64) {
 	latestDue, upcoming = hint.LatestDueAt, hint.UpcomingDueAt
+	if upcoming > 0 && upcoming <= nowMs {
+		// An upcoming time that is no longer in the future is due; as a
+		// wake time it would be in the past and spin the loop.
+		if upcoming > latestDue {
+			latestDue = upcoming
+		}
+		upcoming = 0
+	}
 	if e := hint.EarliestDueAt; e > 0 {
 		if e <= nowMs && e > latestDue {
 			latestDue = e
@@ -600,7 +608,10 @@ func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error 
 	if sch.v2Dirty {
 		if !sch.v2LastDirty.IsZero() {
 			if at := sch.v2LastDirty.Add(workerSchedulerMinSpacing); now.Before(at) {
-				if sch.v2Next.IsZero() || at.Before(sch.v2Next) {
+				// A v2Next that is not after now has already been reached
+				// (for example an upcoming slot earlier than at); keeping
+				// it would leave a past wake and spin the loop.
+				if sch.v2Next.IsZero() || !sch.v2Next.After(now) || at.Before(sch.v2Next) {
 					sch.v2Next = at
 				}
 				return nil
