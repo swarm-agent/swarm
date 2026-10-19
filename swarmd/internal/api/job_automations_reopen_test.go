@@ -124,6 +124,36 @@ func TestReopenSendsTheFollowupIntoTheJobsOwnSession(t *testing.T) {
 	}
 }
 
+// Requirement: a job whose run or follow-up is still in flight is answered
+// "busy" (an error whose Busy reports true, naming the state), not refused,
+// so the reopen step waits for it; nothing reaches its session meanwhile.
+// Threat (forge run): the step treated a busy job as a refusal, the
+// delivery failed and the findings were never sent.
+// Owner: jobAutomationReopener.Reopen over the real worker run records and
+// session routes.
+func TestReopenAnswersBusyForARunningJob(t *testing.T) {
+	f := newReopenFixture(t)
+	p := testPrincipal()
+	before := len(f.userMessages(t, f.session.ID))
+	// A worker run that is admitted or running is the job in_progress.
+	for i, status := range []string{"running", "admitted"} {
+		jobID := f.job(t, "run-reopen-busy-"+status, status, f.session.ID)
+		_, err := f.server.JobAutomationReopener().Reopen(context.Background(), jobautomation.ReopenRequest{Account: p.AccountScopeID, JobID: jobID, Message: "fix it",
+			RequestID: "jdel_busy.fix" + string(rune('a'+i))})
+		var busy interface{ Busy() bool }
+		if !errors.As(err, &busy) || !busy.Busy() || !strings.Contains(err.Error(), "in_progress") {
+			t.Fatalf("%s job: err = %v, want busy naming the state", status, err)
+		}
+		var refused *jobautomation.RefusedError
+		if errors.As(err, &refused) {
+			t.Fatalf("%s job was refused, not answered busy: %v", status, err)
+		}
+	}
+	if n := len(f.userMessages(t, f.session.ID)); n != before {
+		t.Fatalf("a running job got a follow-up: %d user messages", n)
+	}
+}
+
 // Requirement: a cancelled job is never reopened: the step fails with the
 // reason and no message reaches its session.
 // Owner: jobAutomationReopener.Reopen.
