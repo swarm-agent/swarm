@@ -34,9 +34,9 @@ type WorkerExecutionService struct {
 	stallTimeout                atomic.Int64
 	host                        *AutomationV2ExecutionHost
 	dispatchMu                  sync.Mutex
-	scheduleMu                  sync.Mutex
 	presetMu                    sync.Mutex
-	lastScheduled               time.Time
+	// scheduledDispatchForTest replaces Dispatch for a due scheduled slot.
+	scheduledDispatchForTest func(account, owner string, req store.WorkerRunAdmission) error
 }
 
 func NewWorkerExecutionService(runs *Service, repository *store.SessionStore, trees *worktree.Service, apply func(sessions.SessionMutationInput) (sessions.SessionMutationResult, error), enqueue func(identity.Principal, store.V3SessionRunIntent) bool) (*WorkerExecutionService, error) {
@@ -53,16 +53,6 @@ func NewWorkerExecutionService(runs *Service, repository *store.SessionStore, tr
 		service.SetStallTimeout(timeout)
 	}
 	return service, nil
-}
-
-// MarkWorkerSweep completes one bounded local sweep; it advances the cursor
-// only after the daemon has visited its scheduled workers.
-func (s *WorkerExecutionService) MarkWorkerSweep(now time.Time) {
-	s.scheduleMu.Lock()
-	if now.After(s.lastScheduled) {
-		s.lastScheduled = now
-	}
-	s.scheduleMu.Unlock()
 }
 
 // WorkerStoreForScheduling is read-only at the runtime wiring boundary; all
@@ -1449,28 +1439,44 @@ func (s *Service) WorkerExecutionService() *WorkerExecutionService {
 // retain the same session and ownership checks; unsafe allocation recovery is
 // reported as failure, never bypassed. Missed scheduled slots are not replayed.
 func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, id string) error {
+	_, err := s.reconcileWorker(ctx, account, id)
+	return err
+}
+
+// reconcileWorker reports whether the worker had unfinished runs, so the
+// scheduler keeps observing it until they settle. The budget is read only
+// when there is an unfinished run whose admission it can close.
+func (s *WorkerExecutionService) reconcileWorker(ctx context.Context, account, id string) (bool, error) {
 	s.dispatchMu.Lock()
 	defer s.dispatchMu.Unlock()
 	ws, err := s.workerStore()
 	if err != nil {
-		return err
+		return false, err
 	}
 	w, found, err := ws.GetWorker(account, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !found {
-		return store.ErrWorkerNotFound
+		return false, store.ErrWorkerNotFound
 	}
-	budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
-	if err != nil {
-		return err
-	}
-	budgetHeld := budget.Hold != nil
 	pending, err := ws.UnfinishedWorkerRuns(account, id, "")
 	if err != nil {
-		return err
+		return false, err
 	}
+	busy := len(pending) > 0
+	budgetHeld := false
+	if busy {
+		budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
+		if err != nil {
+			return busy, err
+		}
+		budgetHeld = budget.Hold != nil
+	}
+	return busy, s.reconcileWorkerRuns(ctx, ws, w, account, id, pending, budgetHeld)
+}
+
+func (s *WorkerExecutionService) reconcileWorkerRuns(ctx context.Context, ws *store.WorkerStore, w store.WorkerRecord, account, id string, pending []store.WorkerRunRecord, budgetHeld bool) error {
 	var failures []error
 	for _, r := range pending {
 		if r.FollowupRunID != "" {
@@ -1487,7 +1493,7 @@ func (s *WorkerExecutionService) ReconcileWorker(ctx context.Context, account, i
 		if r.Placement != nil {
 			return store.ErrWorkerRemoteUnavailable
 		}
-		if err = ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if settled, watchdogErr := s.watchdogRun(r, time.Now()); settled || watchdogErr != nil {

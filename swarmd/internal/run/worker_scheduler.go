@@ -9,19 +9,19 @@ import (
 	store "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// NextWorkerScheduledAt reports the earliest future eligible schedule slot. It is
-// an estimate, not a dispatch guarantee: TickWorker uses a process-local sweep
-// cursor, skips missed slots, and still checks ownership/admission at dispatch.
-func NextWorkerScheduledAt(w store.WorkerRecord, now time.Time) (int64, error) {
+// NextWorkerScheduledAt reports the earliest eligible schedule slot strictly
+// after after. It is an estimate, not a dispatch guarantee: TickWorker skips
+// missed slots and still checks ownership, budget and admission at dispatch.
+func NextWorkerScheduledAt(w store.WorkerRecord, after time.Time) (int64, error) {
 	if w.LifecycleState != store.WorkerLifecycleStateActive {
 		return 0, nil
 	}
 	var earliest int64
 	for _, a := range w.Automations {
-		if !a.Enabled || a.Schedule == nil || (a.ActivationMode != "interval" && a.ActivationMode != "cron") {
+		if !workerAutomationScheduled(a) {
 			continue
 		}
-		next, err := store.AutomationV2NextDue(store.AutomationV2Settings{SchemaVersion: 2, Schedule: *a.Schedule, Missed: "skip", Overlap: "independent", ActivateOnAccept: true}, a.CreatedAt, now.UnixMilli())
+		next, err := workerAutomationNextDue(a, after)
 		if err != nil {
 			return 0, err
 		}
@@ -32,9 +32,23 @@ func NextWorkerScheduledAt(w store.WorkerRecord, now time.Time) (int64, error) {
 	return earliest, nil
 }
 
-// TickWorker admits at most one due slot per automation. Worker admission owns
-// deduplication; missed slots are skipped rather than replayed after restart.
-func (s *WorkerExecutionService) TickWorker(ctx context.Context, account, id string, now time.Time) error {
+func workerAutomationScheduled(a store.WorkerAutomationDefinition) bool {
+	return a.Enabled && a.Schedule != nil && (a.ActivationMode == "interval" || a.ActivationMode == "cron")
+}
+
+func workerAutomationNextDue(a store.WorkerAutomationDefinition, after time.Time) (int64, error) {
+	return store.AutomationV2NextDue(store.AutomationV2Settings{SchemaVersion: 2, Schedule: *a.Schedule, Missed: "skip", Overlap: "independent", ActivateOnAccept: true}, a.CreatedAt, after.UnixMilli())
+}
+
+// TickWorker admits at most one slot per automation that fell due in
+// (after, now]. The caller owns the cursor: a restarted daemon starts it at
+// startup, so slots missed while offline are skipped, never replayed. Worker
+// admission owns deduplication. The budget is read only when a slot is due,
+// immediately before admission; a held budget skips the slot.
+func (s *WorkerExecutionService) TickWorker(ctx context.Context, account, id string, after, now time.Time) error {
+	if after.IsZero() || !now.After(after) {
+		return nil
+	}
 	ws, err := s.workerStore()
 	if err != nil {
 		return err
@@ -49,34 +63,20 @@ func (s *WorkerExecutionService) TickWorker(ctx context.Context, account, id str
 	if w.LifecycleState != store.WorkerLifecycleStateActive {
 		return nil
 	}
-	budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
-	if err != nil {
-		return err
-	}
-	if budget.Hold != nil {
-		return nil
-	}
-	// The first sweep sets a process-local cursor; restart never catches up
-	// slots that fell due while this process was offline.
-	s.scheduleMu.Lock()
-	after := s.lastScheduled
-	s.scheduleMu.Unlock()
-	if after.IsZero() || !now.After(after) {
-		return nil
+	type dueSlot struct {
+		automation store.WorkerAutomationDefinition
+		at         int64
 	}
 	var failures []error
-	owner, err := s.scheduleOwner(w)
-	if err != nil {
-		return err
-	}
+	var due []dueSlot
 	for _, a := range w.Automations {
-		if !a.Enabled || a.Schedule == nil || (a.ActivationMode != "interval" && a.ActivationMode != "cron") {
+		if !workerAutomationScheduled(a) {
 			continue
 		}
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		next, err := store.AutomationV2NextDue(store.AutomationV2Settings{SchemaVersion: 2, Schedule: *a.Schedule, Missed: "skip", Overlap: "independent", ActivateOnAccept: true}, a.CreatedAt, after.UnixMilli())
+		next, err := workerAutomationNextDue(a, after)
 		if err != nil {
 			failures = append(failures, err)
 			continue
@@ -84,8 +84,34 @@ func (s *WorkerExecutionService) TickWorker(ctx context.Context, account, id str
 		if next > now.UnixMilli() || next <= 0 {
 			continue
 		}
-		occurrence := fmt.Sprintf("wocc_%s_%d_%d", a.ID, a.Revision, next)
-		_, err = s.Dispatch(ctx, account, owner, store.WorkerRunAdmission{WorkerID: id, AutomationID: a.ID, OccurrenceID: occurrence, RequestSource: "schedule", Input: map[string]any{"due_at": next}})
+		due = append(due, dueSlot{automation: a, at: next})
+	}
+	if len(due) == 0 {
+		return errors.Join(failures...)
+	}
+	budget, err := s.host.runs.sessions.Store().GetWorkerBudgetStatus(account, id)
+	if err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	if budget.Hold != nil {
+		return errors.Join(failures...)
+	}
+	owner, err := s.scheduleOwner(w)
+	if err != nil {
+		return errors.Join(append(failures, err)...)
+	}
+	for _, slot := range due {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		a := slot.automation
+		occurrence := fmt.Sprintf("wocc_%s_%d_%d", a.ID, a.Revision, slot.at)
+		req := store.WorkerRunAdmission{WorkerID: id, AutomationID: a.ID, OccurrenceID: occurrence, RequestSource: "schedule", Input: map[string]any{"due_at": slot.at}}
+		if s.scheduledDispatchForTest != nil {
+			err = s.scheduledDispatchForTest(account, owner, req)
+		} else {
+			_, err = s.Dispatch(ctx, account, owner, req)
+		}
 		if err != nil {
 			failures = append(failures, err)
 		}
