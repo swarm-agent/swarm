@@ -114,6 +114,17 @@ func (s *Service) allocateReviewFixWorkspace(source, owner, reviewedClone, head,
 			return cleanup(err)
 		}
 	}
+	// Its origin branches are the folder's as of now, not the reviewed
+	// job's clone's at that job's creation.
+	refresh, err := reviewRemoteRefresh(context.Background(), path, root, worktreeAllocationTimeout)
+	if err != nil {
+		return cleanup(err)
+	}
+	for _, args := range refresh {
+		if _, err := runGitAllocation(path, nil, args...); err != nil {
+			return cleanup(err)
+		}
+	}
 	if err := appstorage.SetPrivateDirPerm(path); err != nil {
 		return cleanup(err)
 	}

@@ -20,6 +20,7 @@ import (
 	"swarm/packages/swarmd/internal/gitenv"
 	"swarm/packages/swarmd/internal/sandbox"
 	"swarm/packages/swarmd/internal/tool"
+	"swarm/packages/swarmd/internal/worktree"
 )
 
 // Swarm Control review tools: approve or reject a project task waiting for
@@ -497,9 +498,9 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	ctx, cancel := context.WithTimeout(c.request.Context(), controlMCPGitTimeout)
 	defer cancel()
 	out := map[string]any{"session_id": sessionID, "folder": folder}
-	worktree, _ := session["worktree_enabled"].(bool)
+	hasWorktree, _ := session["worktree_enabled"].(bool)
 	base := ""
-	if worktree {
+	if hasWorktree {
 		base = controlMCPMetadataString(controlMCPMap(session["metadata"]), "swarm_v3_worktree_base_commit", "base_commit")
 		if base == "" {
 			if branch, _ := session["worktree_base_branch"].(string); controlMCPGitRevision.MatchString(branch) {
@@ -516,12 +517,23 @@ func controlMCPGetChanges(c *controlMCPCall, args map[string]any) (any, error) {
 	if !controlMCPGitRevision.MatchString(base) {
 		return nil, controlMCPToolFailure("session %q has no usable base revision", sessionID)
 	}
-	out["base"] = base
 	head, _, err := controlMCPGit(ctx, resolved, 200, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, err
 	}
 	out["head"] = strings.TrimSpace(head)
+	if base != "HEAD" {
+		// A job rebased onto (or merged with) a newer target after it was
+		// created lists its commits from that newer base, never from the
+		// recorded one (worktree.EffectiveTaskBase).
+		source := controlMCPMetadataString(controlMCPMap(session["metadata"]), "swarm_v3_source_workspace_path")
+		target, _ := session["worktree_base_branch"].(string)
+		if effective := worktree.EffectiveTaskBase(ctx, resolved, source, target, base, strings.TrimSpace(head)); effective != base {
+			out["recorded_base"] = base
+			base = effective
+		}
+	}
+	out["base"] = base
 	if branch, _ := session["worktree_branch"].(string); branch != "" {
 		out["branch"] = branch
 	}

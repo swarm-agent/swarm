@@ -168,18 +168,25 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if task.BaseCommit == "" || state.HeadCommit == task.BaseCommit {
 		return nil, errors.New("review job must have commits")
 	}
+	// A job rebased onto (or merged with) a newer target after it was
+	// created is reviewed from that newer base, so the range holds only its
+	// own commits (worktree.EffectiveTaskBase); otherwise its recorded fork.
+	jobBase := worktree.EffectiveTaskBase(ctx, task.WorkspacePath, task.SourceWorkspace.Path, task.BaseBranch, task.BaseCommit, state.HeadCommit)
+	if state.HeadCommit == jobBase {
+		return nil, errors.New("review job must have commits")
+	}
 	// Unlanded commits exist only in the job clone validated above.
-	descends, err := s.host.trees.TaskCommitDescendsFrom(task.WorkspacePath, task.BaseCommit, state.HeadCommit)
+	descends, err := s.host.trees.TaskCommitDescendsFrom(task.WorkspacePath, jobBase, state.HeadCommit)
 	if err != nil {
 		return nil, err
 	}
 	if !descends {
 		return nil, errors.New("review job head does not descend from its base")
 	}
-	// The task's immutable fork is the normal review base. Pipeline rebase
+	// The job's effective base is the normal review base. Pipeline rebase
 	// reviews supply their exact comparison commits; these are evidence only,
 	// never repository or publication authority, and allocation verifies them.
-	base, commits, err := reviewComparisonCommits(task.BaseCommit, r.Input)
+	base, commits, err := reviewComparisonCommits(jobBase, r.Input)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +216,12 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 		brief = brief[:24000]
 	}
 	captured := map[string]any{"head": state.HeadCommit, "base": base, "commits": commits, "job": r.Input["review_job"], "brief": brief, "report": report}
+	// The folder's target branch as the review starts, so the reviewer can
+	// tell what is already on it (its checkout's origin branches are
+	// refreshed from the folder too).
+	if tip := worktree.TargetBranchTip(ctx, task.SourceWorkspace.Path, task.BaseBranch); tip != "" {
+		captured["target"] = task.BaseBranch + " at " + tip
+	}
 	if reviewFixesAllowed(r.Input) {
 		// The fix branch starts from the reviewed job's own clone (validated
 		// above as that job's session lane).

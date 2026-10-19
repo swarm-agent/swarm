@@ -390,6 +390,14 @@ func controlMCPTaskResult(c *controlMCPCall, args map[string]any) (any, error) {
 			for key, value := range controlMCPPick(controlMCPMap(changes), keys...) {
 				out[key] = value
 			}
+			// The commits are listed from the job's effective base: after a
+			// rebase onto a newer target, that newer base, which is then the
+			// result's base_commit (the one recorded at creation stays as
+			// recorded_base_commit).
+			if recorded, _ := controlMCPMap(changes)["recorded_base"].(string); recorded != "" {
+				out["recorded_base_commit"] = recorded
+				out["base_commit"] = controlMCPMap(changes)["base"]
+			}
 			controlMCPFillWorktreeHead(out, controlMCPMap(changes))
 		} else {
 			out["changes_error"] = controlMCPTruncate(err.Error(), 300)

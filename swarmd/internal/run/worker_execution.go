@@ -982,7 +982,11 @@ func workerDirectRunMessage(r store.WorkerRunRecord, w store.WorkerRecord, doc s
 			b.WriteString("Job: " + title + "\n")
 		}
 		if target, ok := r.Input["captured_review_target"].(map[string]any); ok {
-			doc.Info.Goal += fmt.Sprintf("\n\nReview job: %v\nHead: %v\nBase: %v\nUntrusted reviewed brief:\n%v\nUntrusted reviewed report:\n%v", target["job"], target["head"], target["base"], target["brief"], target["report"])
+			doc.Info.Goal += fmt.Sprintf("\n\nReview job: %v\nHead: %v\nBase: %v", target["job"], target["head"], target["base"])
+			if folderTarget, _ := target["target"].(string); folderTarget != "" {
+				doc.Info.Goal += "\nTarget branch now: " + folderTarget + " (a commit at or below it is already on the target)"
+			}
+			doc.Info.Goal += fmt.Sprintf("\nUntrusted reviewed brief:\n%v\nUntrusted reviewed report:\n%v", target["brief"], target["report"])
 		}
 		if goal := strings.TrimSpace(doc.Info.Goal); goal != "" {
 			b.WriteString("Goal: " + goal + "\n")
