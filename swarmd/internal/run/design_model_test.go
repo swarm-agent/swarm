@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
@@ -24,6 +25,8 @@ type designFakeRunner struct {
 	requests []provideriface.Request
 	text     string
 	usage    provideriface.TokenUsage
+	// behave, when set, replaces the fixed reply; attempt counts from 1.
+	behave func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error)
 }
 
 func (r *designFakeRunner) ID() string { return "fixture-provider" }
@@ -32,11 +35,14 @@ func (r *designFakeRunner) CreateResponse(ctx context.Context, req provideriface
 	return r.CreateResponseStreaming(ctx, req, func(provideriface.StreamEvent) {})
 }
 
-func (r *designFakeRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+func (r *designFakeRunner) CreateResponseStreaming(ctx context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
 	r.mu.Lock()
 	r.requests = append(r.requests, req)
-	text, usage := r.text, r.usage
+	text, usage, behave, attempt := r.text, r.usage, r.behave, len(r.requests)
 	r.mu.Unlock()
+	if behave != nil {
+		return behave(ctx, attempt, onEvent)
+	}
 	onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: text})
 	return provideriface.Response{Text: text, Usage: usage}, nil
 }
@@ -207,5 +213,94 @@ func TestDesignModelRequiresAccountDesignerSettings(t *testing.T) {
 	}
 	if len(f.runner.requests) != 0 {
 		t.Fatal("resolution called the provider")
+	}
+}
+
+// Requirement: a design call whose attempt ended before any output arrived
+// (its own deadline, or a stream that closed empty without a finish reason)
+// is sent once more; an attempt that had already streamed text is never
+// replayed, and a second empty attempt gives up. Both attempts' reported usage
+// is recorded under separate run ids and summed on the call.
+// Threat: 10% of live designs failed on the per-call limit before Vertex sent
+// anything; retrying blindly would double-spend partial replies or loop.
+// Owners: designModel.Complete/attempt and addDesignUsage. The store-backed
+// fixture with a scripted runner is the narrowest layer that sees deadlines,
+// provider requests and committed receipts together.
+func TestDesignModelRetriesOnlyAnAttemptWithoutOutput(t *testing.T) {
+	waitForDeadline := func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+	html := "<!doctype html><html><body>ok</body></html>"
+	cases := []struct {
+		name     string
+		behave   func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error)
+		requests int
+		wantErr  bool
+		attempts int
+	}{
+		{"deadline before output, then success", func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+			if attempt == 1 {
+				return provideriface.Response{Usage: provideriface.TokenUsage{InputTokens: 100, TotalTokens: 100, Source: "fixture"}}, waitForDeadline(ctx)
+			}
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: html})
+			return provideriface.Response{Text: html, Usage: provideriface.TokenUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500, Source: "fixture"}}, nil
+		}, 2, false, 2},
+		{"empty incomplete stream, then success", func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+			if attempt == 1 {
+				return provideriface.Response{}, provideriface.ErrStreamIncomplete
+			}
+			return provideriface.Response{Text: html}, nil
+		}, 2, false, 2},
+		{"deadline after output is not replayed", func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "<!doctype html><html><bo"})
+			return provideriface.Response{}, waitForDeadline(ctx)
+		}, 1, true, 1},
+		{"incomplete stream after output is not replayed", func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+			onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: "<!doctype html>"})
+			return provideriface.Response{}, provideriface.ErrStreamIncomplete
+		}, 1, true, 1},
+		{"two empty attempts give up", func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+			return provideriface.Response{}, waitForDeadline(ctx)
+		}, 2, true, 2},
+		{"other provider errors are not replayed", func(ctx context.Context, attempt int, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+			return provideriface.Response{}, errors.New("400 bad request")
+		}, 1, true, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDesignModelFixture(t)
+			f.runner.behave = tc.behave
+			m, err := f.service.DesignModel(f.principal, f.sessionID, "task_design")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.(*designModel).timeout = 50 * time.Millisecond
+			reply, err := m.Complete(context.Background(), design.ModelCall{Phase: "generate", Item: 1, Instructions: "system", Input: "brief"})
+			if (err != nil) != tc.wantErr || len(f.runner.requests) != tc.requests || reply.Usage.Attempts != tc.attempts {
+				t.Fatalf("err=%v requests=%d attempts=%d", err, len(f.runner.requests), reply.Usage.Attempts)
+			}
+			if !tc.wantErr && reply.Text != html {
+				t.Fatalf("reply text %q", reply.Text)
+			}
+		})
+	}
+
+	// Usage of both attempts is recorded separately and summed on the call.
+	f := newDesignModelFixture(t)
+	f.runner.behave = cases[0].behave
+	m, err := f.service.DesignModel(f.principal, f.sessionID, "task_design")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.(*designModel).timeout = 50 * time.Millisecond
+	reply, err := m.Complete(context.Background(), design.ModelCall{Phase: "generate", Item: 1, Instructions: "system", Input: "brief"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, found1, _ := f.store.GetTurnUsage(f.sessionID, "design:task_design:1:generate")
+	retry, found2, _ := f.store.GetTurnUsage(f.sessionID, "design:task_design:1:generate:retry1")
+	if !found1 || !found2 || first.TotalTokens != 100 || retry.TotalTokens != 1500 {
+		t.Fatalf("attempt receipts: %v %v %#v %#v", found1, found2, first, retry)
+	}
+	if u := reply.Usage; !u.Reported || u.Total != 1600 || u.CostUSD == nil || *u.CostUSD != first.EstimatedCostUSD+retry.EstimatedCostUSD {
+		t.Fatalf("summed usage: %#v", u)
 	}
 }

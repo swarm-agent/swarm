@@ -104,6 +104,7 @@ type CallUsage struct {
 	CostUSD     *float64 `json:"cost_usd,omitempty"`
 	PriceStatus string   `json:"price_status,omitempty"`
 	Reported    bool     `json:"reported"`
+	Attempts    int      `json:"attempts,omitempty"` // 2 when an attempt that produced nothing was sent again
 	DurationMS  int64    `json:"duration_ms"`
 }
 
