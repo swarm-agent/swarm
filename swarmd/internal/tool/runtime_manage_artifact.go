@@ -60,7 +60,6 @@ type ArtifactAuthority interface {
 	Reserve(artifact.Principal, artifact.CreateInput) (pebblestore.SessionArtifactVariant, error)
 	MarkFailed(artifact.Principal, string, string, string, string) (pebblestore.SessionArtifactVariant, error)
 	UpdateProgress(artifact.Principal, string, string, string, pebblestore.SessionArtifactProgress) (pebblestore.SessionArtifactVariant, error)
-	CreateInitialComposition(context.Context, artifact.Principal, artifact.CreateInitialCompositionInput) (pebblestore.SessionArtifactVariant, error)
 	CreatePackage(context.Context, artifact.Principal, artifact.CreatePackageInput) (pebblestore.SessionArtifactVariant, error)
 	List(artifact.Principal, string, int) ([]pebblestore.SessionArtifactCollection, error)
 	ListVariants(artifact.Principal, string, int) ([]pebblestore.SessionArtifactVariant, error)
