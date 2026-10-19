@@ -30,6 +30,7 @@ import (
 	"swarm/packages/swarmd/internal/auth"
 	"swarm/packages/swarmd/internal/automation"
 	"swarm/packages/swarmd/internal/config"
+	"swarm/packages/swarmd/internal/design"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
@@ -760,6 +761,11 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	if err := runSvc.ReconcileActiveLifecycles("daemon restarted"); err != nil {
 		log.Printf("warning: reconcile active session lifecycles: %v", err)
 	}
+	if marked, err := sessionSvc.Store().ReconcileInterruptedDesignJobs(time.Now().UnixMilli()); err != nil {
+		log.Printf("warning: reconcile interrupted design jobs: %v", err)
+	} else if marked > 0 {
+		log.Printf("marked %d design job(s) interrupted by the restart as failed", marked)
+	}
 	if err := pebblestore.NewWorkerStore(store).RecoverClearedWorkerFollowups(); err != nil {
 		return nil, fmt.Errorf("recover follow-up outcomes: %w", err)
 	}
@@ -989,6 +995,13 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	if htmlRenderer != nil {
 		runSvc.SetDesignRenderer(htmlRenderer)
 	}
+	// Design jobs check each design in the sandboxed headless Chrome; without a
+	// renderer every check reports unavailable (never a pass).
+	designChecker := design.ChromeChecker{}
+	if htmlRenderer != nil {
+		designChecker.Browser = htmlRenderer
+	}
+	apiServer.SetDesignJobs(designChecker, runSvc)
 	designDispatcher := runSvc.StartDesignDispatcher(bgCtx)
 	localTransportRuntimeName := ""
 

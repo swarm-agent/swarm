@@ -1080,6 +1080,9 @@ func (s *Server) ApproveProjectTask(ctx context.Context, p identity.Principal, p
 	if existingTask.AccountID != "" && existingTask.AccountID != p.AccountScopeID {
 		return nil, errors.New("cross-account task approval forbidden")
 	}
+	if existingTask.Design != nil {
+		return nil, errDesignJobNotAgentTask
+	}
 	if existingTask.ProjectID != "" && existingTask.ProjectID != projectID {
 		return nil, errors.New("cross-project task approval forbidden")
 	}
@@ -1561,6 +1564,9 @@ func (s *Server) deployProjectTaskLocked(ctx context.Context, p identity.Princip
 	}
 	if !found || task == nil {
 		return fmt.Errorf("task %q not found", taskID)
+	}
+	if task.Design != nil {
+		return errDesignJobNotAgentTask
 	}
 	if task.AccountID != "" && task.AccountID != p.AccountScopeID {
 		return errors.New("cross-account task access forbidden")

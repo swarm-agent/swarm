@@ -357,6 +357,11 @@ func syncTaskSessionState(task *pebblestore.ProjectTaskRecord, db projectTaskLif
 	if task == nil || db == nil || task.Archived {
 		return
 	}
+	// A design job's record is its own lifecycle authority; its receipt
+	// session never runs.
+	if task.Design != nil {
+		return
+	}
 	// Direct video generation intentionally has no chat session. Its persisted
 	// generation lifecycle is authoritative; router warnings are not failures.
 	if task.Agent == "video" && task.SessionID == "" && task.TaskProgramID == "" && task.TaskProgram == nil {
@@ -1604,6 +1609,10 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectDesigns(w, r, p, segments[0])
 		return
 	}
+	if len(segments) >= 2 && segments[1] == "design-jobs" {
+		s.handleProjectDesignJobs(w, r, p, segments[0], segments[2:])
+		return
+	}
 
 	// 2. Synthesize context: POST /v3/projects/synthesize-context
 	if len(segments) == 1 && segments[0] == "synthesize-context" {
@@ -1619,6 +1628,9 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	projectID := segments[0]
+	if s.refuseDesignTaskMutation(w, r, p, projectID, segments) {
+		return
+	}
 	if len(segments) == 5 && segments[1] == "tasks" && segments[3] == "deliverables" {
 		s.handleProjectDeliverableContent(w, r, p, projectID, segments[2], segments[4])
 		return

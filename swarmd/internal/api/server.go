@@ -103,6 +103,7 @@ const (
 
 type Server struct {
 	automations *automationHTTPServices
+	designJobs  *designJobRuntime
 
 	memory                      *memory.Service
 	auth                        *auth.Service

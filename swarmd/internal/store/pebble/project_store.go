@@ -494,6 +494,7 @@ type ProjectTaskRecord struct {
 	TaskProgram                     *TaskProgramDefinition       `json:"task_program,omitempty"`
 	TaskProgramID                   string                       `json:"task_program_id,omitempty"`
 	TaskProgramStatus               *TaskProgramRecord           `json:"task_program_status,omitempty"`
+	Design                          *ProjectTaskDesignJob        `json:"design,omitempty"` // a design job: the daemon design pipeline, not an agent session
 	CreatedAt                       int64                        `json:"created_at"`
 	UpdatedAt                       int64                        `json:"updated_at"`
 }
@@ -650,6 +651,14 @@ func (t *ProjectTaskRecord) Validate() error {
 		}
 	}
 
+	if t.Design != nil {
+		if agent != "designer" || outcome != "ui_design" || t.TaskProgram != nil || t.TaskProgramID != "" || len(t.CoderAssignments) > 0 || t.PlanBinding != nil || len(t.EnvironmentAttachments) > 0 || t.WorkerID != "" {
+			return errors.New("a design job is a designer task with outcome ui_design and no other execution")
+		}
+		if err := t.Design.Validate(); err != nil {
+			return err
+		}
+	}
 	if len(t.CoderAssignments) > 0 {
 		if len(t.CoderAssignments) < 2 || len(t.CoderAssignments) > 8 || agent != "swarm" || featSize != "small" || (outcome != "code_pr" && outcome != "bug_patch" && outcome != "code") || t.TaskProgram != nil || t.TaskProgramID != "" || t.PlanBinding != nil || t.PlanDocument != nil {
 			return errors.New("parallel coder assignments require a small Swarm coding task without a plan or task program (2-8 assignments)")

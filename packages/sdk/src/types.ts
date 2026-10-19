@@ -721,8 +721,103 @@ export interface ProjectTaskRecord {
   task_program?: any;
   task_program_id?: string;
   task_program_status?: any;
+  /** Present when the task is a design job (createDesignJob). */
+  design?: ProjectTaskDesignJob;
   created_at: number;
   updated_at: number;
+}
+
+/** One check finding kept on a design job item. */
+export interface ProjectTaskDesignDiagnostic {
+  kind: string;
+  message?: string;
+}
+
+/** One design's durable outcome in a design job. */
+export interface ProjectTaskDesignItem {
+  n: number;
+  path?: string;
+  sha256?: string;
+  status:
+    | 'passed'
+    | 'repaired'
+    | 'failed'
+    | 'check_unavailable'
+    | 'generation_failed'
+    | 'skipped_budget'
+    | 'cancelled'
+    | 'stale_base'
+    | 'edit_refused'
+    | string;
+  error?: string;
+  variation?: string;
+  check?: string;
+  diagnostics?: ProjectTaskDesignDiagnostic[];
+  repair_edits?: number;
+  repair_refused?: string;
+  check_after_repair?: string;
+  diagnostics_after_repair?: ProjectTaskDesignDiagnostic[];
+  calls: number;
+  tokens: number;
+  /** Absent when the provider reported no usage or the model has no price. */
+  cost_usd?: number;
+  usage_complete: boolean;
+  duration_ms: number;
+}
+
+/** The request and outcome of a design job. */
+export interface ProjectTaskDesignJob {
+  mode: 'create' | 'edit';
+  brief: string;
+  count: number;
+  style?: string;
+  variations?: string[];
+  batch_name?: string;
+  /** The job's own output folder, relative to the workspace (create). */
+  folder?: string;
+  results_path?: string;
+  edit_path?: string;
+  state: 'running' | 'completed' | 'failed' | 'cancelled';
+  error?: string;
+  provider?: string;
+  model?: string;
+  thinking?: string;
+  items?: ProjectTaskDesignItem[];
+  counts?: Record<string, number>;
+  calls: number;
+  tokens: number;
+  cost_usd: number;
+  cost_complete: boolean;
+  edit_base_sha256?: string;
+  edit_final_sha256?: string;
+  results_error?: string;
+  started_at: number;
+  finished_at?: number;
+}
+
+/** Body of createDesignJob: make count designs, or edit one HTML file. */
+export interface CreateDesignJobParams {
+  /** Absolute folder of the project; required when the project has several. */
+  workspace?: string;
+  brief: string;
+  /** 1 to 50 (default 1); an edit is always 1. */
+  count?: number;
+  style?: string;
+  variations?: string[];
+  batch_name?: string;
+  /** Parent folder for batches, relative to the workspace (default designs). */
+  folder?: string;
+  /** Edit this existing .html file (relative to the workspace) instead. */
+  edit_path?: string;
+}
+
+export interface CreateDesignJobResult {
+  task: ProjectTaskRecord;
+}
+
+export interface CancelDesignJobResult {
+  task_id: string;
+  status: string;
 }
 
 export interface CreateProjectTaskParams {

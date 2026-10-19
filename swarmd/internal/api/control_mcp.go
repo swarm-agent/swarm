@@ -72,6 +72,7 @@ var controlMCPCoreTools = map[string]bool{
 	"swarm_give_job": true, "swarm_get_job": true, "swarm_message_job": true, "swarm_answer_job": true,
 	"swarm_deliver_job": true, "swarm_stop_job": true, "swarm_schedule_job": true,
 	"swarm_request_media": true, "swarm_media_models": true, "swarm_save_media": true, "swarm_set_media_models": true,
+	"swarm_design":       true,
 	"swarm_list_secrets": true,
 }
 
@@ -98,6 +99,7 @@ var controlMCPCoreInstructionLines = []controlMCPInstruction{
 	{[]string{"swarm_deliver_job"}, "swarm_deliver_job delivers a finished job to its folder: a local git merge by default, a pull request when the folder's owner set up publishing, or a queued landing receipt in land mode; Swarm never pushes otherwise."},
 	{[]string{"swarm_deploy_worker"}, "Only when the person requests a persistent worker, use swarm_deploy_worker: a name, a role (coder, designer, finder, reviewer or swarm) and standing instructions for every job."},
 	{[]string{"swarm_request_media", "swarm_media_models"}, "swarm_request_media makes images, video or sound: swarm_media_models lists the models and the options each takes (length, resolution, aspect ratio, input images); swarm_get_job lists the files and shows images, swarm_save_media writes them into a workspace."},
+	{[]string{"swarm_design", "swarm_get_job"}, "swarm_design makes N standalone HTML designs in parallel (one model call each, a browser check, one repair call only for designs with errors) or edits one HTML file; swarm_get_job returns each design's status, errors and cost; the files land in the project folder, nothing to merge."},
 	{[]string{"swarm_schedule_job"}, "swarm_schedule_job deploys a worker that runs a job on a schedule in a project's folder."},
 	{[]string{"swarm_status", "swarm_activity", "swarm_list_runs"}, "swarm_status says whether the box is all right and what needs attention, with exact counts: schedules (active, next run), runs today (succeeded, failed, running) and the failed runs; swarm_list_runs lists runs across all workers, newest first, filtered by status or time; swarm_activity lists what happened since your last cursor (jobs finished or failed, workers blocked, sandbox changes)."},
 	{[]string{"swarm_list_secrets"}, "swarm_list_secrets shows which secrets exist, the websites they may go to and the folders that may use them; the person sets values and grants on the setup page or by script, never through you."},

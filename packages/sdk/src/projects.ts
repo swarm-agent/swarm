@@ -7,8 +7,11 @@ import { SwarmSessionsNamespace } from './sessions.js';
 import type { SwarmTransport } from './transport.js';
 import type {
   ApproveProjectTaskResult,
+  CancelDesignJobResult,
   ClearProjectContextResult,
   CompleteProjectTaskResult,
+  CreateDesignJobParams,
+  CreateDesignJobResult,
   CreateProjectParams,
   CreateProjectTaskParams,
   CreateProjectTaskResult,
@@ -394,6 +397,44 @@ export class SwarmProjectsNamespace {
       };
     }
     throw new SwarmApiError('Malformed response: missing task record', { status: res.status, details: data });
+  }
+
+  /**
+   * Starts a design job: count standalone HTML designs (or an edit of one
+   * existing .html file) written into the project folder. Returns the job's
+   * task at once; read progress with getTask (task.design).
+   */
+  async createDesignJob(projectId: string, params: CreateDesignJobParams, options?: RequestOptions): Promise<CreateDesignJobResult> {
+    const id = encodeURIComponent(projectId.trim());
+    const res = await this.transport.request<{ task?: ProjectTaskRecord }>(
+      `/v3/projects/${id}/design-jobs`,
+      {
+        method: 'POST',
+        body: params,
+        ...options,
+      }
+    );
+    const data = res.data;
+    if (data && typeof data === 'object' && data.task && data.task.design) {
+      return { task: data.task };
+    }
+    throw new SwarmApiError('Malformed response: missing design job task', { status: res.status, details: data });
+  }
+
+  /**
+   * Stops a running design job. Designs already written stay in the folder.
+   */
+  async cancelDesignJob(projectId: string, taskId: string, options?: RequestOptions): Promise<CancelDesignJobResult> {
+    const pId = encodeURIComponent(projectId.trim());
+    const tId = encodeURIComponent(taskId.trim());
+    const res = await this.transport.request<CancelDesignJobResult>(
+      `/v3/projects/${pId}/design-jobs/${tId}/cancel`,
+      { method: 'POST', body: {}, ...options }
+    );
+    if (res.data && typeof res.data === 'object' && typeof res.data.status === 'string') {
+      return res.data;
+    }
+    throw new SwarmApiError('Malformed response: missing design job cancel status', { status: res.status, details: res.data });
   }
 
   /**

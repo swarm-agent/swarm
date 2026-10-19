@@ -127,7 +127,7 @@ func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.Proje
 }
 
 func reconcileTaskGitStateContext(ctx context.Context, db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord, servers ...*Server) error {
-	if task == nil {
+	if task == nil || task.Design != nil {
 		return nil
 	}
 	state := inspectTaskGitStateContext(ctx, *task, db, servers...)

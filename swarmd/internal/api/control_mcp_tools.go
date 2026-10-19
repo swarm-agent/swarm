@@ -118,6 +118,10 @@ var controlMCPRoutes = []string{
 	// (/accept), which publishes deliverables, stays unreachable.
 	"POST v3/projects/*/tasks/*/approve",
 	"POST v3/projects/*/tasks/*/reject",
+	// Design jobs (control_mcp_design.go): make or edit standalone HTML designs
+	// in a project folder, and stop one.
+	"POST v3/projects/*/design-jobs",
+	"POST v3/projects/*/design-jobs/*/cancel",
 	// Closing a plan review: the Desktop's accept on a needs_review checkpoint.
 	"POST v3/sessions/*/plan-mode/checkpoints/*/accept",
 	"GET v3/workers",

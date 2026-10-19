@@ -116,6 +116,7 @@ var toolScopes = map[string]string{
 	"swarm_request_media":   ScopeWrite,
 	"swarm_media_models":    ScopeRead,
 	"swarm_save_media":      ScopeWrite,
+	"swarm_design":          ScopeWrite,
 }
 
 // localOnlyTools are box setup that only a key on the machine itself may do
