@@ -67,6 +67,17 @@ credential helper, `~/.netrc`) and write access to the folder's repository.
 Swarm ships, installs and suggests no script: it runs only the steps the
 owner configured, and nothing when there are none.
 
+- **Only the machine's owner may set a `run` step**: the local owner (the
+  Desktop or `swarm` on the machine, with no key), or a key with the `admin`
+  scope (a `full` AI key). A `write` AI key, a remote device and any other
+  key without `admin` are refused when they save an automation, or a `then`
+  on `swarm_give_job` or `swarm_schedule_job`, that contains a `run` step
+  (HTTP 403, or a tool error), and nothing is stored or started. They may
+  still save `agent` and `reopen` steps. The root-owned check below does not
+  limit what a step can do on its own: every system interpreter is root-owned,
+  and `args` are free-form, so `{"command": "/bin/sh", "args": ["-c", "..."]}`
+  passes it. Saving a `run` step is running a command as the daemon's user,
+  so it needs the owner.
 - `command` is an **absolute path**, or a path **relative to the folder**
   (no `..`, not under `.git`). Swarm resolves it, symlinks included, and runs
   it only when the final file is **owned by root and not writable by group
@@ -364,7 +375,8 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
   `swarm_delete_automation`, `swarm_stop_automations`; `then` on
   `swarm_give_job` and `swarm_schedule_job`; deliveries in `swarm_get_job`;
   `automation: true` on `swarm_deliver_job`.
-- API (`automations:read` to read, `automations:write` to change):
+- API (`automations:read` to read, `automations:write` to change, and
+  `admin` or the local owner to save a `run` step):
   `GET/POST /v3/job-automations`, `GET/DELETE /v3/job-automations/{id}`,
   `GET/POST /v3/job-automations/stop`, `GET /v3/job-deliveries`
   (`job_id`, `automation_id`, `state`, `limit`), `GET

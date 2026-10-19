@@ -822,6 +822,26 @@ func (b jobAutomationBody) automation() jobautomation.Automation {
 	return jobautomation.Automation{Name: b.Name, Scope: b.Scope, When: b.When, Enabled: enabled, Retries: b.Retries, Steps: b.Steps}
 }
 
+// errRunStepNeedsOwner refuses a run step from a caller without the machine
+// owner's authority.
+var errRunStepNeedsOwner = errors.New("a run step runs its command on the host as the daemon's user, outside the sandbox and without tool approvals, so only the machine's owner may save one: the local owner, or a key with the admin scope (a full AI key). This key may save agent and reopen steps")
+
+// runStepOwnerError refuses steps containing a run step unless the caller
+// is the machine's owner: a request without a scoped token (the local owner,
+// as on every other route) or a token with the admin scope. A write-level AI
+// key or a remote device token (automations:write without admin) is refused:
+// a run step's command and args are free-form, so saving one is code
+// execution on the host.
+func runStepOwnerError(r *http.Request, steps []jobautomation.Step) error {
+	if !jobautomation.HasRunStep(steps) {
+		return nil
+	}
+	if record, ok := ScopedTokenFromRequest(r); ok && !record.HasScope("admin") {
+		return errRunStepNeedsOwner
+	}
+	return nil
+}
+
 func jobAutomationHTTPError(w http.ResponseWriter, err error) {
 	switch {
 	case jobautomation.IsValidationError(err):
@@ -885,6 +905,10 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 		automation := body.automation()
 		if err := automation.Normalize(); err != nil {
 			jobAutomationHTTPError(w, err)
+			return
+		}
+		if err := runStepOwnerError(r, automation.Steps); err != nil {
+			writeError(w, http.StatusForbidden, err)
 			return
 		}
 		if err := s.jobAutomationFixesError(account, automation.Steps); err != nil {
@@ -1057,11 +1081,16 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 }
 
 // automationSteps reads and validates the steps argument, including that
-// fixes names a reviewer worker of the caller's account.
+// fixes names a reviewer worker of the caller's account and that only the
+// machine's owner sets a run step. swarm_set_automation and both checks of a
+// then (before the job starts, and when it is set) go through it.
 func (c *controlMCPCall) automationSteps(raw any, account string) ([]jobautomation.Step, error) {
 	steps, err := controlMCPAutomationSteps(raw)
 	if err != nil {
 		return nil, err
+	}
+	if err := runStepOwnerError(c.request, steps); err != nil {
+		return nil, controlMCPToolFailure("%s", err.Error())
 	}
 	if c.server != nil {
 		if err := c.server.jobAutomationFixesError(account, steps); err != nil {
@@ -1285,7 +1314,7 @@ func controlMCPAutomationStepsSchema() map[string]any {
 			"from":                controlMCPStringProp("reopen: the earlier agent step whose findings are sent into the triggering job's own session (as swarm_message_job does).", 0, 64),
 			"message":             controlMCPStringProp("reopen: text placed before the findings.", 0, 4000),
 			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this loop may reopen the job; past it the delivery ends blocked (rounds_exhausted). Default 2."},
-			"command":             controlMCPStringProp("run: the machine owner's script, as an absolute path or a path relative to the folder (e.g. deliver/push.sh). It runs on the host as the daemon's user, in the folder, with the machine's own credentials, and only if the file (symlinks resolved) is owned by root and not writable by group or others; a relative path must resolve to a singly linked file inside the folder (prefer an absolute path in a directory only root can write). It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output.", 0, 1024),
+			"command":             controlMCPStringProp("run: the machine owner's script, as an absolute path or a path relative to the folder (e.g. deliver/push.sh). It runs on the host as the daemon's user, in the folder, with the machine's own credentials, and only if the file (symlinks resolved) is owned by root and not writable by group or others; a relative path must resolve to a singly linked file inside the folder (prefer an absolute path in a directory only root can write). It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output. Only the machine's owner may set a run step (a full AI key); a write key is refused.", 0, 1024),
 			"args":                map[string]any{"type": "array", "maxItems": jobautomation.MaxStepArgs, "items": map[string]any{"type": "string"}},
 			"worker":              controlMCPStringProp("agent: coder, designer, finder, reviewer or a worker id. A reviewer reviews the triggering job's exact head.", 0, 200),
 			"brief":               controlMCPStringProp("agent: the job's brief; the triggering job's result is attached.", 0, 20000),

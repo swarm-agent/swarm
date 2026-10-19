@@ -59,6 +59,8 @@ export interface JobAutomationStep {
    * group or others. A relative path must resolve to a singly linked file
    * inside the folder; prefer an absolute path in a directory only root can
    * write. A run step has no `secrets`: a step that sends them is refused.
+   * Only the machine's owner may save a run step: the local owner or a key
+   * with the `admin` scope; any other key gets 403 and nothing is stored.
    */
   command?: string;
   args?: string[];

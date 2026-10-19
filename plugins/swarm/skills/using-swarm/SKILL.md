@@ -189,7 +189,10 @@ reviewer for a second look), you can offer a job automation:
   directory only root can write) or a path relative to the folder that must
   resolve, symlinks included, to a singly linked file inside the folder, and
   the file must be owned by root and not writable by group or others
-  (`sudo install -o root -m 755`), or the step is refused; an
+  (`sudo install -o root -m 755`), or the step is refused. Only the machine's
+  owner may set a `run` step (the local owner, or a `full` AI key); with a
+  `write` key the automation or `then` is refused and nothing is saved, so
+  ask the person to add the `run` step themselves. An
   `agent` step gives a worker a job (a reviewer reviews the job's exact head
   and records a verdict, `ok` or `block`, with findings; only with
   `fixes: "security"` on its step may it commit small security fixes, at most

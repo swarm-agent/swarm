@@ -375,10 +375,11 @@ func TestAgentStepAdmitsAnAutomationJobThroughDispatch(t *testing.T) {
 }
 
 // Requirement: /v3/job-automations needs automations:write to change and
-// automations:read to read; definitions are the caller's account's only;
-// an invalid definition is refused with 400 and nothing stored.
-// Threat: a read-only key setting a script to run, or one account reading or
-// deleting another's automations.
+// automations:read to read, and a run step also needs the owner's admin
+// scope; definitions are the caller's account's only; an invalid definition
+// is refused with 400 and nothing stored.
+// Threat: a read-only or write-level key setting a script to run on the
+// host, or one account reading or deleting another's automations.
 // Owners: handleJobAutomations, handleJobDeliveries and jobautomation.Store.
 func TestJobAutomationRoutesEnforceScopesAndAccounts(t *testing.T) {
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "routes.pebble"))
@@ -405,10 +406,13 @@ func TestJobAutomationRoutesEnforceScopesAndAccounts(t *testing.T) {
 	if w := do(owner(http.MethodPost, JobAutomationsPath, body, "automations:read")); w.Code != http.StatusForbidden {
 		t.Fatalf("read-only create = %d %s", w.Code, w.Body)
 	}
-	if w := do(owner(http.MethodPost, JobAutomationsPath, `{"name":"bad","scope":{"folder":"/srv/site"},"steps":[{"type":"run","command":"../x.sh"}]}`, "automations:write")); w.Code != http.StatusBadRequest {
+	if w := do(owner(http.MethodPost, JobAutomationsPath, `{"name":"bad","scope":{"folder":"/srv/site"},"steps":[{"type":"run","command":"../x.sh"}]}`, "admin")); w.Code != http.StatusBadRequest {
 		t.Fatalf("invalid create = %d %s", w.Code, w.Body)
 	}
-	w := do(owner(http.MethodPost, JobAutomationsPath, body, "automations:write"))
+	if w := do(owner(http.MethodPost, JobAutomationsPath, body, "automations:write")); w.Code != http.StatusForbidden {
+		t.Fatalf("write-level run step create = %d %s", w.Code, w.Body)
+	}
+	w := do(owner(http.MethodPost, JobAutomationsPath, body, "admin"))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", w.Code, w.Body)
 	}

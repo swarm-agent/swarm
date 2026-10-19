@@ -202,6 +202,18 @@ func (s *Scope) normalize() error {
 	return nil
 }
 
+// HasRunStep reports whether steps contain a run step: a command the daemon
+// runs on the host as its own user. The API lets only the machine's owner
+// save one (see the api package's runStepOwnerError).
+func HasRunStep(steps []Step) bool {
+	for _, step := range steps {
+		if step.Type == StepRun {
+			return true
+		}
+	}
+	return false
+}
+
 // NormalizeSteps applies step defaults (ids, timeouts) and validates them.
 func NormalizeSteps(steps []Step) error {
 	if len(steps) == 0 || len(steps) > MaxSteps {
