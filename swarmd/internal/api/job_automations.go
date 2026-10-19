@@ -534,8 +534,9 @@ func (s *Server) jobAutomationWriteCall(ctx context.Context) (*controlMCPCall, e
 
 // Reopen sends the follow-up into the job's own session through
 // swarm_message_job's own path (controlMCPMessageJob): the same session and
-// worktree, never a new job. A job that is cancelled or still running is
-// refused with the reason.
+// worktree, never a new job. A cancelled job is refused with the reason; a
+// job whose run or follow-up is still in flight is answered busy
+// (jobautomation.BusyError), so the reopen step waits for it.
 func (a jobAutomationReopener) Reopen(ctx context.Context, req jobautomation.ReopenRequest) (string, error) {
 	c, err := a.s.jobAutomationWriteCall(ctx)
 	if err != nil {
@@ -559,10 +560,10 @@ func (a jobAutomationReopener) Reopen(ctx context.Context, req jobautomation.Reo
 	case "cancelled":
 		return "", &jobautomation.RefusedError{Reason: "the job " + req.JobID + " was cancelled: it is not reopened"}
 	case "in_progress", "queued", "planning", "pending_approval", "needs_input", "waiting_on_approval":
-		return "", &jobautomation.RefusedError{Reason: "the job " + req.JobID + " is still running (" + status + "): it is not reopened"}
+		return "", &jobautomation.BusyError{Reason: "the job " + req.JobID + " is still running (" + status + ")"}
 	}
 	if active, _ := state["run_active"].(bool); active {
-		return "", &jobautomation.RefusedError{Reason: "the job " + req.JobID + " is still running: it is not reopened"}
+		return "", &jobautomation.BusyError{Reason: "the job " + req.JobID + " is still running a follow-up"}
 	}
 	out, err := controlMCPMessageJob(c, args)
 	if err != nil {

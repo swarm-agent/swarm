@@ -201,15 +201,15 @@ func TestRoundsExhaustedBlocksTheDeliveryAndSignalsIt(t *testing.T) {
 	}
 }
 
-// Requirement: a reopen step never reopens a job that is cancelled or still
-// running; it fails with the reason and is not retried. Without findings it
-// sends nothing.
-// Threat: a follow-up racing a running job, or reviving a job the person
-// cancelled.
+// Requirement: a reopen step never reopens a job that is cancelled or a job
+// whose Reopener refuses it; it fails with the reason and is not retried.
+// Without findings it sends nothing. (A job that is still running is not
+// refused: the step waits for it; see reopen_wait_test.go.)
+// Threat: reviving a job the person cancelled.
 // Owner: Runner.runReopen (and the Reopener's refusal).
 func TestReopenRefusesCancelledOrRunningJobs(t *testing.T) {
 	h := newHarness(t)
-	reopener := &sessionReopener{refuse: "the job worker/coder-1/run-1 is still running (in_progress): it is not reopened"}
+	reopener := &sessionReopener{refuse: "reopen steps run only for the machine owner's automations"}
 	h.withReopener(reopener)
 	folder := t.TempDir()
 	writeScript(t, folder, "push.sh", "echo pushed\n")
@@ -222,8 +222,8 @@ func TestReopenRefusesCancelledOrRunningJobs(t *testing.T) {
 	h.jobEnd("run-1", "", "succeeded", "direct")
 	h.process()
 	d := h.deliveries("worker/coder-1/run-1")[0]
-	if d.State != StateFailed || d.Steps[1].State != StateFailed || !strings.Contains(d.Steps[1].Reason, "still running") || d.Steps[1].Attempts != 1 {
-		t.Fatalf("running job = %s %+v", d.State, d.Steps[1])
+	if d.State != StateFailed || d.Steps[1].State != StateFailed || !strings.Contains(d.Steps[1].Reason, "machine owner") || d.Steps[1].Attempts != 1 {
+		t.Fatalf("refused reopen = %s %+v", d.State, d.Steps[1])
 	}
 
 	reopener.refuse = ""

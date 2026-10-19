@@ -40,6 +40,10 @@ const (
 	StateFailed    = "failed"
 	StateSkipped   = "skipped"
 	StateStopped   = "stopped"
+	// StateWaiting is a reopen step waiting, within its timeout_seconds, for
+	// its job's run or follow-up to settle before it sends; its reason says
+	// what it waits for. It is not final.
+	StateWaiting = "waiting"
 	// StateBlocked ends a delivery whose reopen step ran out of rounds or
 	// had an unreadable review to send.
 	StateBlocked = "blocked"

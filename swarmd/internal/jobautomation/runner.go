@@ -122,11 +122,25 @@ type ReopenRequest struct {
 
 // Reopener sends a follow-up into a job's own session exactly as
 // swarm_message_job does and returns the follow-up's run id once it is
-// accepted. It refuses (RefusedError) a job that is cancelled or still
-// running.
+// accepted. It refuses (RefusedError) a job that is cancelled, and answers
+// busy (an error whose Busy reports true, such as BusyError) while the job's
+// run or follow-up is still in flight: a job takes one follow-up at a time.
 type Reopener interface {
 	Reopen(ctx context.Context, req ReopenRequest) (followup string, err error)
 }
+
+// BusyError is a Reopener's answer for a job whose run or follow-up is still
+// running: nothing was sent, and the reopen step waits and asks again.
+type BusyError struct{ Reason string }
+
+func (e *BusyError) Error() string { return e.Reason }
+
+// Busy reports that the job is still running.
+func (e *BusyError) Busy() bool { return true }
+
+// reopenRecheck is the longest a waiting reopen step goes without asking its
+// job again; any new signal (a job end among them) wakes it sooner.
+const reopenRecheck = 2 * time.Second
 
 // ReopenClosing is the text a reopen step's follow-up ends with.
 const ReopenClosing = "Fix these in this worktree, commit, and report what you changed."
@@ -166,6 +180,8 @@ type Runner struct {
 	emit    func(pebblestore.Signal)
 	now     func() time.Time
 	backoff func(attempt int) time.Duration
+	// recheck is reopenRecheck (a field so a test can shorten it).
+	recheck time.Duration
 
 	// reopenMu spans a reopen's send and its durable record, and the
 	// consumer's delivery creation, so a follow-up's end is never recorded
@@ -196,7 +212,7 @@ type Options struct {
 func NewRunner(opts Options) *Runner {
 	return &Runner{
 		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent, reopen: opts.Reopen,
-		head: opts.Head, verify: opts.Verify, lines: opts.Lines, emit: opts.Emit, now: time.Now, backoff: defaultBackoff,
+		head: opts.Head, verify: opts.Verify, lines: opts.Lines, emit: opts.Emit, now: time.Now, backoff: defaultBackoff, recheck: reopenRecheck,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
 	}
 }
@@ -936,25 +952,81 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	if step.Message != "" {
 		text = step.Message + "\n\n" + text
 	}
+	req := ReopenRequest{Account: d.Account, JobID: d.JobID, Message: text, RequestID: agentIdempotencyKey(*d, step.ID)}
+	// A job takes one follow-up at a time: while its run or follow-up is in
+	// flight the step waits (state waiting, with the reason), within its
+	// timeout, and asks again on each new signal or every reopenRecheck. It
+	// sends once, when the job has settled; only then is the round counted.
+	for {
+		var changed <-chan struct{}
+		if r.feed != nil {
+			changed = r.feed.Changed() // before asking, so a job end in between wakes us
+		}
+		sent, failure, busy := r.sendReopen(ctx, d, record, req)
+		if sent || failure.reason != "" {
+			return failure
+		}
+		if busy == "" { // the daemon is stopping: resumed on the next start
+			return stepFailure{}
+		}
+		if record.State != StateWaiting || record.Reason != "waiting: "+busy {
+			first := record.State != StateWaiting
+			record.State, record.Reason = StateWaiting, "waiting: "+busy
+			if err := r.store.SaveDelivery(*d); err != nil {
+				log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
+			}
+			if first {
+				r.signal(*d, "automation.step.waiting", pebblestore.SignalSeverityInfo, fmt.Sprintf("Automation %s step %s waits for job %s: %s", d.AutomationName, step.ID, d.JobID, busy), step.ID,
+					map[string]string{"automation": d.AutomationName, "step": step.ID, "type": step.Type, "reason": busy}, "")
+			}
+		}
+		recheck := time.NewTimer(r.recheck)
+		select {
+		case <-ctx.Done():
+			recheck.Stop()
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return stepFailure{reason: truncate(fmt.Sprintf("timed out after %d seconds waiting for job %s to settle (%s); nothing was sent", step.TimeoutSeconds, d.JobID, busy), 300),
+					next: "swarm_message_job by hand once the job settles, or rerun"}
+			}
+			return stepFailure{} // the daemon is stopping
+		case <-changed:
+		case <-recheck.C:
+		}
+		recheck.Stop()
+		if stop, err := r.store.StopState(); err == nil && stop.Stopped {
+			return stepFailure{reason: "cancelled while waiting for job " + d.JobID + " to settle: the automation stop switch is on; nothing was sent", next: "rerun", refused: true}
+		}
+	}
+}
+
+// sendReopen asks the Reopener once. It reports sent with the follow-up
+// recorded, a failure, or busy (the job's state) when the job is still
+// running and nothing was sent. Neither is set when ctx ended.
+func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord, req ReopenRequest) (bool, stepFailure, string) {
 	r.reopenMu.Lock()
 	defer r.reopenMu.Unlock()
-	followup, err := r.reopen.Reopen(ctx, ReopenRequest{Account: d.Account, JobID: d.JobID, Message: text, RequestID: agentIdempotencyKey(*d, step.ID)})
+	followup, err := r.reopen.Reopen(ctx, req)
 	if err != nil {
 		var refused *RefusedError
 		if errors.As(err, &refused) {
-			return stepFailure{reason: truncate(refused.Reason, 300), next: "swarm_message_job by hand", refused: true}
+			return false, stepFailure{reason: truncate(refused.Reason, 300), next: "swarm_message_job by hand", refused: true}, ""
 		}
 		if ctx.Err() != nil {
-			return stepFailure{}
+			return false, stepFailure{}, ""
 		}
-		return stepFailure{reason: truncate("could not send the follow-up: "+err.Error(), 300), next: "rerun"}
+		var busy interface{ Busy() bool }
+		if errors.As(err, &busy) && busy.Busy() {
+			return false, stepFailure{}, truncate(err.Error(), 240)
+		}
+		return false, stepFailure{reason: truncate("could not send the follow-up: "+err.Error(), 300), next: "rerun"}, ""
 	}
 	if err := r.store.PutReopen(d.Account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Round: d.Round, RoundBase: d.RoundBase}); err != nil {
-		return stepFailure{reason: truncate("record the reopen: "+err.Error(), 300), next: "rerun"}
+		return false, stepFailure{reason: truncate("record the reopen: "+err.Error(), 300), next: "rerun"}, ""
 	}
+	record.Reason = ""
 	record.Outcome = map[string]any{"followup": followup, "round": d.Round + 1}
 	record.Output = "reopened " + d.JobID + " (round " + strconv.Itoa(d.Round+1) + ")"
-	return stepFailure{}
+	return true, stepFailure{}, ""
 }
 
 // moveHead moves the delivery head forward to the head of an agent step's
