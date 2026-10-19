@@ -322,6 +322,10 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 			if result, err := s.workerJobAutomationResult(ctx, workerID, runID, status, true); err == nil {
 				out.Result = result
 			}
+			if out.Result != nil && out.Result.Git != nil && len(out.Result.Git.Commits) > 0 {
+				out.Head = out.Result.Git.Head
+			}
+			out.Verdict, out.Findings = s.automationAgentReview(account, workerID, runID, out.Result)
 			return out, nil
 		}
 		timer := time.NewTimer(time.Minute)
@@ -340,6 +344,42 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// automationAgentReview is the verdict and findings of the review an agent
+// step's job recorded: a reviewer job's store.JobReview is recorded against
+// the job it reviewed (its input review_job) with ReviewerJobID set to the
+// reviewer job, so it is read there, never from the reviewer's own result.
+// A job that recorded no review has no verdict.
+func (s *Server) automationAgentReview(account, workerID, runID string, result *jobautomation.Result) (string, string) {
+	if s.sessions == nil || s.sessions.Store() == nil {
+		return "", ""
+	}
+	ws := s.sessions.Store().WorkerStore()
+	run, found, err := ws.GetWorkerRun(account, workerID, runID)
+	if err != nil || !found {
+		return "", ""
+	}
+	target, _ := run.Input["review_job"].(string)
+	parts := strings.Split(target, "/")
+	if len(parts) != 3 || parts[0] != controlMCPJobWorker {
+		return "", ""
+	}
+	review, err := ws.GetJobReviewByReviewer(account, parts[1], parts[2], controlMCPJobID(controlMCPJobWorker, workerID, runID))
+	if err != nil || review == nil || (review.Verdict != jobautomation.VerdictOK && review.Verdict != jobautomation.VerdictBlock) {
+		return "", ""
+	}
+	findings := ""
+	if review.Verdict == jobautomation.VerdictBlock {
+		findings = jobautomation.FindingsOf(review.Reason)
+	}
+	if findings == "" && result != nil {
+		findings = jobautomation.FindingsOf(result.Report)
+	}
+	if findings == "" && review.Verdict == jobautomation.VerdictBlock {
+		findings = review.Reason
+	}
+	return review.Verdict, findings
 }
 
 // ---- job head --------------------------------------------------------------

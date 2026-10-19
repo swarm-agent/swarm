@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -97,14 +98,29 @@ func (h *hostSandbox) Run(ctx context.Context, req RunRequest) (RunOutcome, erro
 type recordingAgents struct {
 	started []AgentRequest
 	status  string
+	// outcomes, when set, script each started job's end in order (the
+	// verdict its review recorded, its head); the job id is filled in.
+	outcomes []AgentOutcome
 }
 
 func (a *recordingAgents) Start(_ context.Context, req AgentRequest) (string, error) {
 	a.started = append(a.started, req)
-	return "worker/reviewer-1/run-review-1", nil
+	return "worker/reviewer-1/run-review-" + strconv.Itoa(len(a.started)), nil
 }
 
 func (a *recordingAgents) Wait(_ context.Context, _, jobID string) (AgentOutcome, error) {
+	if len(a.outcomes) > 0 {
+		n, _ := strconv.Atoi(strings.TrimPrefix(jobID, "worker/reviewer-1/run-review-"))
+		if n < 1 || n > len(a.outcomes) {
+			return AgentOutcome{}, errors.New("no scripted outcome for " + jobID)
+		}
+		out := a.outcomes[n-1]
+		out.JobID = jobID
+		if out.Status == "" {
+			out.Status = "succeeded"
+		}
+		return out, nil
+	}
 	return AgentOutcome{JobID: jobID, Status: a.status, Result: &Result{JobID: jobID, Report: "looks fine", Git: &ResultGit{Head: "abc"},
 		Review: map[string]any{"verdict": "approve", "findings": []any{"none"}}}}, nil
 }

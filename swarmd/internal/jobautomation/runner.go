@@ -79,11 +79,17 @@ type AgentRequest struct {
 	IdempotencyKey string
 }
 
-// AgentOutcome is how the job an agent step started ended.
+// AgentOutcome is how the job an agent step started ended. Verdict and
+// Findings are set when that job recorded a review (a reviewer job's verdict
+// on the job it reviewed); "" otherwise. Head is the job's own head when it
+// committed.
 type AgentOutcome struct {
-	JobID  string
-	Status string
-	Result *Result
+	JobID    string
+	Status   string
+	Result   *Result
+	Verdict  string
+	Findings string
+	Head     string
 }
 
 // AgentRunner starts a job for an agent step and waits for it to end.
@@ -449,6 +455,13 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 			r.finish(&d, StateFailed)
 			return
 		}
+		if held, why := conditionsHold(d, step.If); !held {
+			record.State, record.Reason, record.FinishedAt = StateSkipped, why, r.now().UnixMilli()
+			if err := r.store.SaveDelivery(d); err != nil {
+				log.Printf("swarmd job automations: save delivery %s: %v", d.ID, err)
+			}
+			continue
+		}
 		ok = r.runStep(ctx, &d, i, step)
 		if ctx.Err() != nil {
 			return
@@ -470,6 +483,36 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 		}
 	}
 	r.finish(&d, state)
+}
+
+// conditionsHold reports whether all of a step's conditions hold, and if not,
+// why it is skipped. A step that did not run (skipped, stopped) matches no
+// status; a missing verdict never matches a verdict condition.
+func conditionsHold(d Delivery, conds []Condition) (bool, string) {
+	for _, c := range conds {
+		var rec *StepRecord
+		for i := range d.Steps {
+			if d.Steps[i].ID == c.Step {
+				rec = &d.Steps[i]
+			}
+		}
+		if rec == nil {
+			return false, "condition not met: step " + c.Step + " is not in the delivery"
+		}
+		if c.Status != "" && rec.State != c.Status {
+			return false, "condition not met: step " + c.Step + " is " + rec.State + ", not " + c.Status
+		}
+		if c.Verdict != "" {
+			got, _ := rec.Outcome["verdict"].(string)
+			if got == "" {
+				return false, "condition not met: step " + c.Step + " recorded no verdict"
+			}
+			if got != c.Verdict {
+				return false, "condition not met: step " + c.Step + " verdict is " + got + ", not " + c.Verdict
+			}
+		}
+	}
+	return true, ""
 }
 
 func (d Delivery) step(id string) (Step, bool) {
@@ -692,6 +735,15 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		}
 		if len(res.Review) > 0 {
 			out["review"] = res.Review
+		}
+	}
+	if outcome.Head != "" {
+		out["head"] = outcome.Head
+	}
+	if outcome.Verdict == VerdictOK || outcome.Verdict == VerdictBlock {
+		out["verdict"] = outcome.Verdict
+		if outcome.Findings != "" {
+			out["findings"] = truncate(outcome.Findings, maxFindingsBytes)
 		}
 	}
 	record.Outcome = out

@@ -19,8 +19,15 @@ const (
 
 // Step types.
 const (
-	StepRun   = "run"
-	StepAgent = "agent"
+	StepRun    = "run"
+	StepAgent  = "agent"
+	StepReopen = "reopen"
+)
+
+// Review verdicts an agent step's outcome may carry.
+const (
+	VerdictOK    = "ok"
+	VerdictBlock = "block"
 )
 
 // Bounds.
@@ -35,6 +42,10 @@ const (
 	maxBriefRunes             = 20000
 	maxArgBytes               = 4096
 	maxCommandBytes           = 1024
+	MaxStepConditions         = 8
+	DefaultMaxRounds          = 2
+	MaxRounds                 = 5
+	maxReopenMessageRunes     = 4000
 )
 
 var (
@@ -57,13 +68,27 @@ type Scope struct {
 	Schedule string `json:"schedule,omitempty"`
 }
 
+// Condition is one test on an earlier step's outcome: its status
+// (succeeded or failed) or, for an agent step, the verdict of the review the
+// job it started recorded (ok or block). Exactly one of Status and Verdict.
+type Condition struct {
+	Step    string `json:"step"`
+	Status  string `json:"status,omitempty"`
+	Verdict string `json:"verdict,omitempty"`
+}
+
 // Step is one thing an automation does. A run step runs a script of the
-// folder in the folder's sandbox; an agent step gives a worker a job.
+// folder in the folder's sandbox; an agent step gives a worker a job; a
+// reopen step sends an earlier step's findings into the triggering job's own
+// session as a follow-up.
 type Step struct {
 	ID                string `json:"id"`
 	Type              string `json:"type"`
 	TimeoutSeconds    int    `json:"timeout_seconds"`
 	ContinueOnFailure bool   `json:"continue_on_failure"`
+	// If lists conditions that must all hold for the step to run; otherwise
+	// it is skipped (not failed) and later steps still run.
+	If []Condition `json:"if,omitempty"`
 	// run
 	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
@@ -74,6 +99,10 @@ type Step struct {
 	// agent
 	Worker string `json:"worker,omitempty"`
 	Brief  string `json:"brief,omitempty"`
+	// reopen
+	From      string `json:"from,omitempty"`
+	Message   string `json:"message,omitempty"`
+	MaxRounds int    `json:"max_rounds,omitempty"`
 }
 
 // Automation is a durable, account-owned definition. Revision changes on
@@ -157,6 +186,7 @@ func NormalizeSteps(steps []Step) error {
 		return invalid("an automation needs 1 to %d steps", MaxSteps)
 	}
 	seen := map[string]bool{}
+	types := map[string]string{}
 	for i := range steps {
 		step := &steps[i]
 		step.ID = strings.TrimSpace(step.ID)
@@ -169,7 +199,6 @@ func NormalizeSteps(steps []Step) error {
 		if seen[step.ID] {
 			return invalid("step id %q is used twice", step.ID)
 		}
-		seen[step.ID] = true
 		if step.TimeoutSeconds == 0 {
 			step.TimeoutSeconds = DefaultStepTimeoutSeconds
 		}
@@ -186,16 +215,79 @@ func NormalizeSteps(steps []Step) error {
 			if err := step.normalizeAgent(); err != nil {
 				return err
 			}
+		case StepReopen:
+			if err := step.normalizeReopen(types); err != nil {
+				return err
+			}
 		default:
-			return invalid("step %s: type must be run or agent", step.ID)
+			return invalid("step %s: type must be run, agent or reopen", step.ID)
+		}
+		if err := step.normalizeConditions(types); err != nil {
+			return err
+		}
+		seen[step.ID] = true
+		types[step.ID] = step.Type
+	}
+	return nil
+}
+
+// normalizeConditions checks a step's if: each names an earlier step and
+// tests exactly one of its status or (an agent step's) verdict.
+func (s *Step) normalizeConditions(earlier map[string]string) error {
+	if len(s.If) > MaxStepConditions {
+		return invalid("step %s: at most %d conditions in if", s.ID, MaxStepConditions)
+	}
+	for i := range s.If {
+		c := &s.If[i]
+		c.Step = strings.TrimSpace(c.Step)
+		c.Status = strings.ToLower(strings.TrimSpace(c.Status))
+		c.Verdict = strings.ToLower(strings.TrimSpace(c.Verdict))
+		typ, ok := earlier[c.Step]
+		if !ok {
+			return invalid("step %s: a condition names %q, which is not an earlier step", s.ID, c.Step)
+		}
+		if (c.Status == "") == (c.Verdict == "") {
+			return invalid("step %s: a condition on %s has either status (succeeded|failed) or verdict (ok|block)", s.ID, c.Step)
+		}
+		if c.Status != "" && c.Status != StateSucceeded && c.Status != StateFailed {
+			return invalid("step %s: a condition's status must be succeeded or failed", s.ID)
+		}
+		if c.Verdict != "" {
+			if c.Verdict != VerdictOK && c.Verdict != VerdictBlock {
+				return invalid("step %s: a condition's verdict must be ok or block", s.ID)
+			}
+			if typ != StepAgent {
+				return invalid("step %s: a verdict condition needs an agent step; %s is a %s step", s.ID, c.Step, typ)
+			}
 		}
 	}
 	return nil
 }
 
+func (s *Step) normalizeReopen(earlier map[string]string) error {
+	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 || s.Worker != "" || s.Brief != "" {
+		return invalid("step %s: a reopen step has from, message and max_rounds, not command, args, secrets, worker or brief", s.ID)
+	}
+	s.From = strings.TrimSpace(s.From)
+	if typ, ok := earlier[s.From]; !ok || typ != StepAgent {
+		return invalid("step %s: from must name an earlier agent step whose findings are sent", s.ID)
+	}
+	s.Message = strings.TrimSpace(s.Message)
+	if utf8.RuneCountInString(s.Message) > maxReopenMessageRunes {
+		return invalid("step %s: message is at most %d characters", s.ID, maxReopenMessageRunes)
+	}
+	if s.MaxRounds == 0 {
+		s.MaxRounds = DefaultMaxRounds
+	}
+	if s.MaxRounds < 1 || s.MaxRounds > MaxRounds {
+		return invalid("step %s: max_rounds must be 1 to %d", s.ID, MaxRounds)
+	}
+	return nil
+}
+
 func (s *Step) normalizeRun() error {
-	if s.Worker != "" || s.Brief != "" {
-		return invalid("step %s: a run step has command and args, not worker or brief", s.ID)
+	if s.Worker != "" || s.Brief != "" || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
+		return invalid("step %s: a run step has command and args, not worker, brief, from, message or max_rounds", s.ID)
 	}
 	s.Command = strings.TrimSpace(s.Command)
 	if err := ValidCommandPath(s.Command); err != nil {
@@ -222,8 +314,8 @@ func (s *Step) normalizeRun() error {
 }
 
 func (s *Step) normalizeAgent() error {
-	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 {
-		return invalid("step %s: an agent step has worker and brief, not command, args or secrets", s.ID)
+	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
+		return invalid("step %s: an agent step has worker and brief, not command, args, secrets, from, message or max_rounds", s.ID)
 	}
 	s.Worker, s.Brief = strings.TrimSpace(s.Worker), strings.TrimSpace(s.Brief)
 	if s.Worker == "" || len(s.Worker) > 200 {

@@ -103,6 +103,28 @@ func (ws *WorkerStore) GetJobReview(account, worker, run string) (*JobReview, er
 	return &record.Latest, nil
 }
 
+// GetJobReviewByReviewer returns the review a given reviewer job recorded on
+// worker/<worker>/<run>, or nil when that reviewer recorded none (or a newer
+// review of the same head replaced it).
+func (ws *WorkerStore) GetJobReviewByReviewer(account, worker, run, reviewerJobID string) (*JobReview, error) {
+	var record JobReviewRecord
+	found, err := ws.store.GetJSON(jobReviewKey(account, worker, run), &record)
+	if err != nil || !found || !record.RecordedJobs[reviewerJobID] {
+		return nil, err
+	}
+	if record.Latest.ReviewerJobID == reviewerJobID {
+		review := record.Latest
+		return &review, nil
+	}
+	for _, review := range record.ByHead {
+		if review.ReviewerJobID == reviewerJobID {
+			out := review
+			return &out, nil
+		}
+	}
+	return nil, nil
+}
+
 // SetJobReviewObserver follows the worker terminal-signal pattern. Installed
 // during daemon composition; notifications occur after the durable write.
 func (s *Store) SetJobReviewObserver(fn func(account, worker, run string, review JobReview)) {
