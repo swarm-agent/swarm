@@ -24,6 +24,7 @@ const (
 	keyByJobPrefix      = "job_automation/by_job/"
 	keyActivePrefix     = "job_automation/active/"
 	keyStepLogPrefix    = "job_automation/log/"
+	keyReopenPrefix     = "job_automation/reopen/"
 	keyStop             = "job_automation_meta/stop"
 	keyCursor           = "job_automation_meta/cursor"
 	// MaxLogTailBytes is how much of a step's output is kept: the last 64 KiB.
@@ -39,7 +40,13 @@ const (
 	StateFailed    = "failed"
 	StateSkipped   = "skipped"
 	StateStopped   = "stopped"
+	// StateBlocked ends a delivery whose reopen step ran out of rounds.
+	StateBlocked = "blocked"
 )
+
+// ReasonRoundsExhausted is a reopen step's failure when another reopen
+// would exceed its max_rounds.
+const ReasonRoundsExhausted = "rounds_exhausted"
 
 // ErrNotFound is an automation or delivery that does not exist (for this
 // account).
@@ -55,9 +62,12 @@ type Delivery struct {
 	AutomationRevision uint64 `json:"automation_revision"`
 	JobID              string `json:"job_id"`
 	Followup           string `json:"followup,omitempty"`
-	// Round counts how many times the job's session was reopened for this
-	// delivery (part B); 0 for now.
+	// Round counts the reopens that led to this job end: a delivery created
+	// by the follow-up a reopen step sent has the reopening delivery's round
+	// plus one. RoundBase is where an explicit re-run of a blocked delivery
+	// restarted the count; a reopen step allows max_rounds past it.
 	Round      int          `json:"round"`
+	RoundBase  int          `json:"round_base,omitempty"`
 	State      string       `json:"state"`
 	Retries    int          `json:"retries"`
 	Folder     string       `json:"folder"`
@@ -69,6 +79,22 @@ type Delivery struct {
 	FinishedAt int64        `json:"finished_at,omitempty"`
 	// Reruns counts explicit re-runs (swarm_deliver_job automation: true).
 	Reruns int `json:"reruns,omitempty"`
+	// Head is the commit the delivery delivers: the triggering job's head,
+	// moved forward by an agent step whose job committed on top of it.
+	// HeadWorktree is the checkout that commit can be fetched from.
+	Head         string `json:"head,omitempty"`
+	HeadWorktree string `json:"head_worktree,omitempty"`
+	// BlockedReason is why the delivery ended blocked (rounds_exhausted).
+	BlockedReason string `json:"blocked_reason,omitempty"`
+}
+
+// ReopenRecord is what a reopen step left for the follow-up it sent, so the
+// follow-up's end continues the round count.
+type ReopenRecord struct {
+	DeliveryID   string `json:"delivery_id"`
+	AutomationID string `json:"automation_id"`
+	Round        int    `json:"round"`
+	RoundBase    int    `json:"round_base,omitempty"`
 }
 
 // StepRecord is one step of one delivery.
@@ -91,7 +117,7 @@ type StepRecord struct {
 // Terminal reports whether a delivery or step state is final.
 func Terminal(state string) bool {
 	switch state {
-	case StateSucceeded, StateFailed, StateSkipped, StateStopped:
+	case StateSucceeded, StateFailed, StateSkipped, StateStopped, StateBlocked:
 		return true
 	}
 	return false
@@ -127,6 +153,28 @@ func deliveryKey(account, id string) string {
 
 func byJobKey(account, jobID, deliveryID string) string {
 	return keyByJobPrefix + hexKey(account) + "/" + hexKey(jobID) + "/" + deliveryID
+}
+
+func reopenKey(account, jobID, followup string) string {
+	return keyReopenPrefix + hexKey(account) + "/" + hexKey(jobID) + "/" + hexKey(followup)
+}
+
+// PutReopen records the follow-up a reopen step sent into a job's session.
+func (s *Store) PutReopen(account, jobID, followup string, rec ReopenRecord) error {
+	if strings.TrimSpace(followup) == "" {
+		return errors.New("a reopen needs the follow-up it sent")
+	}
+	return s.db.PutJSON(reopenKey(account, jobID, followup), rec)
+}
+
+// GetReopen reads what a reopen step recorded for a follow-up.
+func (s *Store) GetReopen(account, jobID, followup string) (ReopenRecord, bool, error) {
+	var rec ReopenRecord
+	if strings.TrimSpace(followup) == "" {
+		return rec, false, nil
+	}
+	found, err := s.db.GetJSON(reopenKey(account, jobID, followup), &rec)
+	return rec, found, err
 }
 
 func stepLogKey(deliveryID, stepID string) string {
@@ -275,6 +323,15 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 		ID: id, Account: a.Account, AutomationID: a.ID, AutomationName: a.Name, AutomationRevision: a.Revision,
 		JobID: result.JobID, Followup: result.Followup, State: StatePending, Retries: a.Retries, Folder: a.Scope.Folder,
 		Definition: append([]Step(nil), a.Steps...), Result: result, CreatedAt: s.now().UnixMilli(),
+	}
+	if result.Git != nil {
+		d.Head, d.HeadWorktree = result.Git.Head, result.Git.Worktree
+	}
+	// A follow-up this automation's reopen step sent continues its rounds.
+	if reopen, found, err := s.GetReopen(a.Account, result.JobID, result.Followup); err != nil {
+		return Delivery{}, false, err
+	} else if found && reopen.AutomationID == a.ID {
+		d.Round, d.RoundBase = reopen.Round+1, reopen.RoundBase
 	}
 	for _, step := range a.Steps {
 		d.Steps = append(d.Steps, StepRecord{ID: step.ID, Type: step.Type, State: StatePending})
@@ -488,10 +545,24 @@ func (s *Store) Rerun(account, id string) (Delivery, bool, error) {
 	if !found || d.Account != account {
 		return Delivery{}, false, ErrNotFound
 	}
-	if !Terminal(d.State) || (d.State != StateFailed && d.State != StateStopped) {
+	if !Terminal(d.State) || (d.State != StateFailed && d.State != StateStopped && d.State != StateBlocked) {
 		return d, false, nil
 	}
 	reset := false
+	if d.State == StateBlocked {
+		// A blocked review loop runs again from the top with a new round
+		// budget; a run step that already succeeded is never run again.
+		for i := range d.Steps {
+			if step := &d.Steps[i]; step.Type != StepRun || step.State != StateSucceeded {
+				*step = StepRecord{ID: step.ID, Type: step.Type, State: StatePending}
+				reset = true
+			}
+		}
+		d.RoundBase, d.BlockedReason = d.Round, ""
+		if d.Result.Git != nil {
+			d.Head, d.HeadWorktree = d.Result.Git.Head, d.Result.Git.Worktree
+		}
+	}
 	for i := range d.Steps {
 		step := &d.Steps[i]
 		switch step.State {

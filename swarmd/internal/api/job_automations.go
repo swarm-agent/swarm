@@ -382,6 +382,90 @@ func (s *Server) automationAgentReview(account, workerID, runID string, result *
 	return review.Verdict, findings
 }
 
+// ---- reopen steps ------------------------------------------------------------
+
+// JobAutomationReopener sends reopen steps' follow-ups.
+func (s *Server) JobAutomationReopener() jobautomation.Reopener {
+	return jobAutomationReopener{s: s}
+}
+
+type jobAutomationReopener struct{ s *Server }
+
+// jobAutomationWriteCall is the Swarm Control call a reopen step sends its
+// follow-up with: the machine owner, allowed to read jobs and write to their
+// sessions only.
+func (s *Server) jobAutomationWriteCall(ctx context.Context) (*controlMCPCall, error) {
+	if s.jobAutomationCallFn != nil {
+		return s.jobAutomationCallFn(ctx)
+	}
+	if s.identitySessions == nil {
+		return nil, errors.New("identity unavailable")
+	}
+	actor, err := s.identitySessions.ActorForCurrentSelection()
+	if err != nil || !isCompleteProductActor(actor) {
+		return nil, errors.New("the machine owner's account is not set up")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/mcp", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Host, req.RemoteAddr = "127.0.0.1", "127.0.0.1:0"
+	req = requestWithActorContext(req, actor)
+	req = requestWithScopedToken(req, &pebblestore.ScopedTokenRecord{
+		ID: "job-automation-reopen", Name: "Swarm job automation reopen (internal)",
+		Scopes:         []string{"swarm:read", "sessions:read", "sessions:write", "automations:read"},
+		AccountScopeID: actor.AccountScopeID, UserID: actor.UserID,
+	})
+	return &controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}, nil
+}
+
+// Reopen sends the follow-up into the job's own session through
+// swarm_message_job's own path (controlMCPMessageJob): the same session and
+// worktree, never a new job. A job that is cancelled or still running is
+// refused with the reason.
+func (a jobAutomationReopener) Reopen(ctx context.Context, req jobautomation.ReopenRequest) (string, error) {
+	c, err := a.s.jobAutomationWriteCall(ctx)
+	if err != nil {
+		return "", err
+	}
+	principal, ok := PrincipalFromRequest(c.request)
+	if !ok || principal.AccountScopeID != req.Account {
+		return "", &jobautomation.RefusedError{Reason: "reopen steps run only for the machine owner's automations"}
+	}
+	args := map[string]any{"job_id": req.JobID, "message": req.Message, "client_request_id": req.RequestID}
+	kind, w, r, err := controlMCPParseJobID(args)
+	if err != nil || kind != controlMCPJobWorker {
+		return "", &jobautomation.RefusedError{Reason: "only a worker job's session can be reopened: " + req.JobID}
+	}
+	state, _, err := c.jobState(kind, w, r)
+	if err != nil {
+		return "", err
+	}
+	status, _ := state["status"].(string)
+	switch status {
+	case "cancelled":
+		return "", &jobautomation.RefusedError{Reason: "the job " + req.JobID + " was cancelled: it is not reopened"}
+	case "in_progress", "queued", "planning", "pending_approval", "needs_input", "waiting_on_approval":
+		return "", &jobautomation.RefusedError{Reason: "the job " + req.JobID + " is still running (" + status + "): it is not reopened"}
+	}
+	if active, _ := state["run_active"].(bool); active {
+		return "", &jobautomation.RefusedError{Reason: "the job " + req.JobID + " is still running: it is not reopened"}
+	}
+	out, err := controlMCPMessageJob(c, args)
+	if err != nil {
+		var refused controlMCPToolError
+		if errors.As(err, &refused) {
+			return "", &jobautomation.RefusedError{Reason: refused.message}
+		}
+		return "", err
+	}
+	followup, _ := controlMCPMap(controlMCPMap(out)["sent"])["run_id"].(string)
+	if followup == "" {
+		return "", errors.New("the follow-up was accepted without a run id")
+	}
+	return followup, nil
+}
+
 // ---- job head --------------------------------------------------------------
 
 // ImportJobRef brings a job's exact head into the folder (importJobHead) and
@@ -454,6 +538,12 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 	}
 	if d.Reruns > 0 {
 		out["reruns"] = d.Reruns
+	}
+	if d.Head != "" {
+		out["head"] = d.Head
+	}
+	if d.BlockedReason != "" {
+		out["blocked_reason"] = d.BlockedReason
 	}
 	return out
 }

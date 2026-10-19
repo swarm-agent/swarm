@@ -98,6 +98,26 @@ type AgentRunner interface {
 	Wait(ctx context.Context, account, jobID string) (AgentOutcome, error)
 }
 
+// ReopenRequest is a reopen step's follow-up into a job's own session.
+type ReopenRequest struct {
+	Account string
+	JobID   string
+	Message string
+	// RequestID makes the send idempotent across a restart.
+	RequestID string
+}
+
+// Reopener sends a follow-up into a job's own session exactly as
+// swarm_message_job does and returns the follow-up's run id once it is
+// accepted. It refuses (RefusedError) a job that is cancelled or still
+// running.
+type Reopener interface {
+	Reopen(ctx context.Context, req ReopenRequest) (followup string, err error)
+}
+
+// ReopenClosing is the text a reopen step's follow-up ends with.
+const ReopenClosing = "Fix these in this worktree, commit, and report what you changed."
+
 // HeadImporter brings a job's head into the folder as refs/swarm/jobs/<run>
 // and returns the ref.
 type HeadImporter func(ctx context.Context, folder string, result Result) (string, error)
@@ -111,11 +131,16 @@ type Runner struct {
 	results ResultSource
 	run     RunExecutor
 	agent   AgentRunner
+	reopen  Reopener
 	head    HeadImporter
 	emit    func(pebblestore.Signal)
 	now     func() time.Time
 	backoff func(attempt int) time.Duration
 
+	// reopenMu spans a reopen's send and its durable record, and the
+	// consumer's delivery creation, so a follow-up's end is never recorded
+	// before the reopen that started it.
+	reopenMu sync.Mutex
 	mu       sync.Mutex
 	active   map[string]bool
 	attempts map[uint64]int
@@ -131,13 +156,14 @@ type Options struct {
 	Results ResultSource
 	Run     RunExecutor
 	Agent   AgentRunner
+	Reopen  Reopener
 	Head    HeadImporter
 	Emit    func(pebblestore.Signal)
 }
 
 func NewRunner(opts Options) *Runner {
 	return &Runner{
-		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent,
+		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent, reopen: opts.Reopen,
 		head: opts.Head, emit: opts.Emit, now: time.Now, backoff: defaultBackoff,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
 	}
@@ -324,6 +350,8 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 	if result.FinishedAt == 0 {
 		result.FinishedAt = sig.At
 	}
+	r.reopenMu.Lock()
+	defer r.reopenMu.Unlock()
 	for _, a := range candidates {
 		if !a.Matches(result) {
 			continue
@@ -470,6 +498,11 @@ func (r *Runner) runDelivery(ctx context.Context, account, id string) {
 		if record.State == StatePending {
 			return // waits for its retry
 		}
+		if !ok && d.BlockedReason != "" {
+			r.skipRest(&d, i, "not run: the delivery is blocked")
+			r.finish(&d, StateBlocked)
+			return
+		}
 		if !ok && !step.ContinueOnFailure {
 			r.skipRest(&d, i, "not run: an earlier step failed")
 			r.finish(&d, StateFailed)
@@ -545,6 +578,24 @@ func (r *Runner) finish(d *Delivery, state string) {
 	for _, step := range d.Steps {
 		counts[step.State]++
 	}
+	if state == StateBlocked {
+		findings := ""
+		for _, step := range d.Steps {
+			if f, _ := step.Outcome["findings"].(string); f != "" {
+				findings = f
+			}
+		}
+		attrs := map[string]string{"automation": d.AutomationName, "reason": d.BlockedReason, "round": strconv.Itoa(d.Round),
+			"next": "send the findings by hand with swarm_message_job, or after a fix re-run the automation with swarm_deliver_job automation=true"}
+		if findings != "" {
+			attrs["findings"] = truncate(findings, 500)
+		}
+		if d.Head != "" {
+			attrs["head"] = d.Head
+		}
+		r.signal(*d, "automation.delivery.blocked", pebblestore.SignalSeverityWarning,
+			fmt.Sprintf("Automation %s blocked job %s after %d rounds: %s", d.AutomationName, d.JobID, d.Round-d.RoundBase, d.BlockedReason), "", attrs, "")
+	}
 	r.signal(*d, "automation.delivery.finished", severity, fmt.Sprintf("Automation %s %s for job %s", d.AutomationName, state, d.JobID), "", map[string]string{
 		"automation": d.AutomationName, "state": state, "steps_succeeded": strconv.Itoa(counts[StateSucceeded]), "steps_failed": strconv.Itoa(counts[StateFailed]),
 	}, "")
@@ -570,6 +621,8 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 		failure = r.runScript(stepCtx, d, record, step)
 	case StepAgent:
 		failure = r.runAgent(stepCtx, d, record, step)
+	case StepReopen:
+		failure = r.runReopen(stepCtx, d, record, step)
 	default:
 		failure = stepFailure{reason: "unknown step type " + step.Type, next: "fix the script"}
 	}
@@ -751,6 +804,63 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
 		return stepFailure{reason: "the job " + jobID + " ended " + outcome.Status, next: "rerun"}
 	}
+	return stepFailure{}
+}
+
+// runReopen sends the findings of the step named by from into the triggering
+// job's own session as a follow-up and succeeds once it is accepted; it does
+// not wait. The follow-up's end is a new job end, whose delivery continues
+// the round count. Past max_rounds it sends nothing and blocks the delivery.
+func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord, step Step) stepFailure {
+	if followup, _ := record.Outcome["followup"].(string); followup != "" {
+		return stepFailure{} // sent before a restart
+	}
+	if r.reopen == nil {
+		return stepFailure{reason: "reopen steps are not available on this daemon", next: "rerun", refused: true}
+	}
+	if d.Result.Kind != KindWorker {
+		return stepFailure{reason: "only a worker job's session can be reopened; " + d.JobID + " is a " + d.Result.Kind + " job", next: "fix the automation", refused: true}
+	}
+	if d.Result.Status == StatusCancelled {
+		return stepFailure{reason: "the job " + d.JobID + " was cancelled: it is not reopened", next: "swarm_message_job by hand", refused: true}
+	}
+	findings := ""
+	for _, s := range d.Steps {
+		if s.ID == step.From {
+			findings, _ = s.Outcome["findings"].(string)
+		}
+	}
+	if strings.TrimSpace(findings) == "" {
+		return stepFailure{reason: "step " + step.From + " recorded no findings to send", next: "fix the automation", refused: true}
+	}
+	used := d.Round - d.RoundBase
+	if used >= step.MaxRounds {
+		d.BlockedReason = ReasonRoundsExhausted
+		record.Output = fmt.Sprintf("%d of %d reopens used without an ok verdict; nothing was sent", used, step.MaxRounds)
+		return stepFailure{reason: ReasonRoundsExhausted, next: "swarm_message_job by hand, or swarm_deliver_job automation=true after a fix", refused: true}
+	}
+	text := findings + "\n\n" + ReopenClosing
+	if step.Message != "" {
+		text = step.Message + "\n\n" + text
+	}
+	r.reopenMu.Lock()
+	defer r.reopenMu.Unlock()
+	followup, err := r.reopen.Reopen(ctx, ReopenRequest{Account: d.Account, JobID: d.JobID, Message: text, RequestID: agentIdempotencyKey(*d, step.ID)})
+	if err != nil {
+		var refused *RefusedError
+		if errors.As(err, &refused) {
+			return stepFailure{reason: truncate(refused.Reason, 300), next: "swarm_message_job by hand", refused: true}
+		}
+		if ctx.Err() != nil {
+			return stepFailure{}
+		}
+		return stepFailure{reason: truncate("could not send the follow-up: "+err.Error(), 300), next: "rerun"}
+	}
+	if err := r.store.PutReopen(d.Account, d.JobID, followup, ReopenRecord{DeliveryID: d.ID, AutomationID: d.AutomationID, Round: d.Round, RoundBase: d.RoundBase}); err != nil {
+		return stepFailure{reason: truncate("record the reopen: "+err.Error(), 300), next: "rerun"}
+	}
+	record.Outcome = map[string]any{"followup": followup, "round": d.Round + 1}
+	record.Output = "reopened " + d.JobID + " (round " + strconv.Itoa(d.Round+1) + ")"
 	return stepFailure{}
 }
 

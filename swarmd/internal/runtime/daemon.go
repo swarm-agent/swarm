@@ -844,7 +844,8 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	// the owner set for it, and nothing when there are none.
 	jobAutomationRunner := jobautomation.NewRunner(jobautomation.Options{
 		Store: jobautomation.NewStore(store), Feed: signalStore, Account: apiServer.OutboxAccount,
-		Results: apiServer.JobAutomationResults(), Agent: apiServer.JobAutomationAgents(), Head: api.ImportJobRef, Emit: signalEmitter.Emit,
+		Results: apiServer.JobAutomationResults(), Agent: apiServer.JobAutomationAgents(), Reopen: apiServer.JobAutomationReopener(),
+		Head: api.ImportJobRef, Emit: signalEmitter.Emit,
 		Run: jobautomation.SandboxExecutor{Grants: func(folder string) ([]string, error) {
 			grants, err := secretSlots.ActiveGrantsForWorkspace(folder)
 			if err != nil {
