@@ -360,7 +360,7 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 			if out.Result != nil && out.Result.Git != nil && len(out.Result.Git.Commits) > 0 {
 				out.Head = out.Result.Git.Head
 			}
-			out.Verdict, out.Findings = s.automationAgentReview(account, workerID, runID)
+			out.Verdict, out.Findings, out.ReviewUnreadable = s.automationAgentReview(account, workerID, runID)
 			return out, nil
 		}
 		timer := time.NewTimer(time.Minute)
@@ -459,34 +459,40 @@ func (s *Server) reviewFixCheckout(ctx context.Context, account, workerID, runID
 // reviewer job, so it is read there, never from the reviewer's own result.
 // A job that recorded no review has no verdict. Findings are the record's
 // verbatim FINDINGS section (bounded at 16,000 bytes when it was recorded);
-// a BLOCK record without findings gives its reason. The job's task summary
-// (result.Report, cut at 4,000 characters) is never a source of findings.
-func (s *Server) automationAgentReview(account, workerID, runID string) (string, string) {
+// a readable BLOCK record without findings gives its reason. A record whose
+// reason is the parser's malformed-report reason (no verdict could be read)
+// is unreadable: block, no findings, unreadable true, so no reopen sends the
+// reason to the coder as findings. The job's task summary (result.Report,
+// cut at 4,000 characters) is never a source of findings.
+func (s *Server) automationAgentReview(account, workerID, runID string) (verdict, findings string, unreadable bool) {
 	if s.sessions == nil || s.sessions.Store() == nil {
-		return "", ""
+		return "", "", false
 	}
 	ws := s.sessions.Store().WorkerStore()
 	run, found, err := ws.GetWorkerRun(account, workerID, runID)
 	if err != nil || !found {
-		return "", ""
+		return "", "", false
 	}
 	target, _ := run.Input["review_job"].(string)
 	parts := strings.Split(target, "/")
 	if len(parts) != 3 || parts[0] != controlMCPJobWorker {
-		return "", ""
+		return "", "", false
 	}
 	review, err := ws.GetJobReviewByReviewer(account, parts[1], parts[2], controlMCPJobID(controlMCPJobWorker, workerID, runID))
 	if err != nil || review == nil || (review.Verdict != jobautomation.VerdictOK && review.Verdict != jobautomation.VerdictBlock) {
-		return "", ""
+		return "", "", false
 	}
-	findings := strings.TrimSpace(review.Findings)
+	if review.Verdict == jobautomation.VerdictBlock && review.Reason == pebblestore.JobReviewMalformedReason {
+		return jobautomation.VerdictBlock, "", true
+	}
+	findings = strings.TrimSpace(review.Findings)
 	if strings.EqualFold(strings.TrimRight(findings, "."), "none") {
 		findings = ""
 	}
 	if findings == "" && review.Verdict == jobautomation.VerdictBlock {
 		findings = review.Reason
 	}
-	return review.Verdict, findings
+	return review.Verdict, findings, false
 }
 
 // ---- reopen steps ------------------------------------------------------------

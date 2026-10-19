@@ -267,3 +267,54 @@ func TestReopenStepIsValidated(t *testing.T) {
 		t.Fatalf("default max_rounds = %d %v", steps[1].MaxRounds, err)
 	}
 }
+
+// Requirement: when the from step's review was unreadable (outcome
+// review_unreadable, verdict block, no findings), a reopen step sends
+// nothing, uses no round, fails with "review unreadable: <reviewer job>",
+// and the delivery ends blocked with that reason; automation.delivery.blocked
+// names it and tells the reader to open the reviewer's session. Findings on
+// an unreadable outcome are dropped, never sent.
+// Threat (forge run): the malformed reason sent to the coder as findings,
+// the round counted and a second unreadable review exhausting the loop.
+// Owners: Runner.runAgent, Runner.runReopen, Runner.runDelivery/finish over
+// the real store and signal feed; the agent and session are stubbed hosts.
+func TestUnreadableReviewBlocksWithoutReopening(t *testing.T) {
+	h := newHarness(t)
+	reopener := &sessionReopener{}
+	h.withReopener(reopener)
+	folder := t.TempDir()
+	writeScript(t, folder, "push.sh", "echo pushed\n")
+	h.agents.outcomes = []AgentOutcome{{Verdict: VerdictBlock, ReviewUnreadable: true, Findings: "missing or malformed review verdict"}}
+	h.process()
+	h.automation(reviewLoop(folder, 2))
+	h.results.results["run-1"] = workerResult(folder, "run-1")
+	h.jobEnd("run-1", "", "succeeded", "direct")
+	h.process()
+
+	d := h.deliveries("worker/coder-1/run-1")[0]
+	review := d.Steps[0]
+	if review.Outcome["verdict"] != VerdictBlock || review.Outcome["review_unreadable"] != true {
+		t.Fatalf("review outcome = %+v", review.Outcome)
+	}
+	if _, ok := review.Outcome["findings"]; ok {
+		t.Fatalf("an unreadable review kept findings: %+v", review.Outcome)
+	}
+	reviewer, _ := review.Outcome["job_id"].(string)
+	want := ReasonReviewUnreadable + ": " + reviewer
+	if reviewer == "" || d.State != StateBlocked || d.BlockedReason != want || d.Round != 0 {
+		t.Fatalf("delivery = state %s reason %q round %d", d.State, d.BlockedReason, d.Round)
+	}
+	if fix := d.Steps[1]; fix.State != StateFailed || fix.Reason != want || fix.Attempts != 1 || fix.Outcome["followup"] != nil {
+		t.Fatalf("reopen step = %+v", fix)
+	}
+	if d.Steps[2].State != StateSkipped {
+		t.Fatalf("push after an unreadable review = %s", d.Steps[2].State)
+	}
+	if len(reopener.sent) != 0 {
+		t.Fatalf("an unreadable review sent %d follow-ups", len(reopener.sent))
+	}
+	sigs := h.signalsOf("automation.delivery.blocked")
+	if len(sigs) != 1 || sigs[0].Attrs["reason"] != want || !strings.Contains(sigs[0].Attrs["next"], "reviewer job's session") {
+		t.Fatalf("blocked signals = %+v", sigs)
+	}
+}

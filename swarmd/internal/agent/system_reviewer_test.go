@@ -74,3 +74,26 @@ TESTS RUN: none (review is read-only)`
 		t.Error("reviewer prompt must require the fixed TESTS RUN response")
 	}
 }
+
+// Purpose: both reviewer prompts (the read-only ReviewerAgentPrompt and the
+// fixing ReviewerFixerAgentPrompt used by system-reviewer-fixer) ask for the
+// four headings as plain text at the start of a line, without Markdown
+// emphasis, so reports match what ParseJobReview reads without relying on
+// its bold-wrapper tolerance. The fixer prompt is checked to be the fixer's
+// own text (its fixes rule substituted), so the rule is not merely inherited
+// from a substitution that silently failed.
+// Threat (forge run): a reviewer bolded its headings and its review was
+// recorded as malformed. This checks prompt text, not model compliance; the
+// parser still accepts bold headings because models do not always comply.
+func TestReviewerAgentPromptAsksForPlainHeadings(t *testing.T) {
+	const rule = "Write the four headings (VERDICT:, SUMMARY:, FINDINGS:, TESTS RUN:) as plain text at the start of a line, without Markdown emphasis such as ** or __"
+	fixer := ReviewerFixerAgentPrompt()
+	if !strings.Contains(fixer, reviewerFixesRule) || strings.Contains(fixer, reviewerReadOnlyRule) {
+		t.Fatal("fixer prompt is not the fixer's own prompt (fixes rule not substituted)")
+	}
+	for name, prompt := range map[string]string{"reviewer": ReviewerAgentPrompt(), "fixer": fixer} {
+		if !strings.Contains(prompt, rule) {
+			t.Errorf("%s prompt missing the plain-heading rule %q", name, rule)
+		}
+	}
+}

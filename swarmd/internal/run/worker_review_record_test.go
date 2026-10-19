@@ -136,3 +136,38 @@ func TestRecordReviewResultReadsTheReportAfterProgressNotes(t *testing.T) {
 		t.Fatalf("two verdict lines = %+v", malformed)
 	}
 }
+
+// Requirement: recordReviewResult records the forge reviewer's final message
+// (progress notes, then Markdown-bold headings, three findings) as block with
+// the full FINDINGS body, and the same report with **VERDICT: OK** as ok; a
+// bold heading quoted or inside the notes still records the malformed reason.
+// Threat (forge run): bold headings recorded as "missing or malformed review
+// verdict" with no findings.
+// Owners: WorkerExecutionService.recordReviewResult, reviewFromResult,
+// pebblestore.ParseJobReview and WorkerStore.RecordJobReview over a real
+// Pebble store and session.
+func TestRecordReviewResultReadsBoldHeadings(t *testing.T) {
+	var findings strings.Builder
+	for i, severity := range []string{"Medium", "Medium", "High"} {
+		fmt.Fprintf(&findings, "%d. **%s: internal/upload/upload.go:%d the limit is not enforced**\n   Detail: the report claims it is.\n\n", i+1, severity, i+1)
+	}
+	want := strings.TrimSpace(findings.String())
+	message := func(verdict, body string) string {
+		return "I'm checking step 1.\nI'm checking step 2.\n\n**VERDICT: " + verdict + "**\n\n**SUMMARY:**\nReviewed.\n\n**FINDINGS:**\n\n" + body + "\n\n**TESTS RUN:** none (review is read-only)\n"
+	}
+	block := newReviewRecordFixture(t, message("BLOCK", want)).record(t)
+	if block.Verdict != "block" || block.Findings != want || block.Reason == pebblestore.JobReviewMalformedReason {
+		t.Fatalf("bold block review = verdict %q reason %.60q findings %q", block.Verdict, block.Reason, block.Findings)
+	}
+	if ok := newReviewRecordFixture(t, message("OK", "None")).record(t); ok.Verdict != "ok" || ok.Reason != "" {
+		t.Fatalf("bold ok review = %+v", ok)
+	}
+	for name, final := range map[string]string{
+		"quoted bold verdict":       "I'm checking.\n> **VERDICT: OK**\n**SUMMARY:** fine\n**FINDINGS:** None\n**TESTS RUN:** none",
+		"bold heading in the notes": "**SUMMARY:** early\n**VERDICT: OK**\n**SUMMARY:** fine\n**FINDINGS:** None\n**TESTS RUN:** none",
+	} {
+		if got := newReviewRecordFixture(t, final).record(t); got.Verdict != "block" || got.Reason != pebblestore.JobReviewMalformedReason || got.Findings != "" {
+			t.Errorf("%s: review = %+v", name, got)
+		}
+	}
+}

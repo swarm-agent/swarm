@@ -86,14 +86,20 @@ type AgentRequest struct {
 // AgentOutcome is how the job an agent step started ended. Verdict and
 // Findings are set when that job recorded a review (a reviewer job's verdict
 // on the job it reviewed); "" otherwise. Head is the job's own head when it
-// committed.
+// committed. ReviewUnreadable is set, with Verdict block and no Findings,
+// when the recorded review is the parser's malformed-report record (no
+// verdict could be read from the reviewer's report).
 type AgentOutcome struct {
 	JobID    string
 	Status   string
 	Result   *Result
 	Verdict  string
 	Findings string
-	Head     string
+	// ReviewUnreadable is true when the job's review record carries the
+	// malformed-review reason (no verdict could be parsed). The verdict is
+	// then block with no findings, and a reopen step must not send it.
+	ReviewUnreadable bool
+	Head             string
 	// ResultError is why the job's result (or, for a reviewer allowed to
 	// fix, its own checkout) could not be read; "" when it was read. A
 	// reviewer allowed to fix fails closed on it with an OK verdict.
@@ -614,8 +620,11 @@ func (r *Runner) finish(d *Delivery, state string) {
 				findings = f
 			}
 		}
-		attrs := map[string]string{"automation": d.AutomationName, "reason": d.BlockedReason, "round": strconv.Itoa(d.Round),
-			"next": "send the findings by hand with swarm_message_job, or after a fix re-run the automation with swarm_deliver_job automation=true"}
+		next := "send the findings by hand with swarm_message_job, or after a fix re-run the automation with swarm_deliver_job automation=true"
+		if strings.HasPrefix(d.BlockedReason, ReasonReviewUnreadable+":") {
+			next = "read the reviewer job's session (swarm_get_job), then send its findings by hand with swarm_message_job or re-run the automation with swarm_deliver_job automation=true"
+		}
+		attrs := map[string]string{"automation": d.AutomationName, "reason": d.BlockedReason, "round": strconv.Itoa(d.Round), "next": next}
 		if findings != "" {
 			attrs["findings"] = truncate(findings, 500)
 		}
@@ -854,7 +863,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	}
 	if outcome.Verdict == VerdictOK || outcome.Verdict == VerdictBlock {
 		out["verdict"] = outcome.Verdict
-		if outcome.Findings != "" {
+		if outcome.Verdict == VerdictBlock && outcome.ReviewUnreadable {
+			// The reviewer's report could not be read: there are no
+			// findings, and a reopen step refuses to send anything.
+			out["review_unreadable"] = true
+		} else if outcome.Findings != "" {
 			out["findings"] = truncate(outcome.Findings, maxFindingsBytes)
 		}
 	}
@@ -879,6 +892,8 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 // job's own session as a follow-up and succeeds once it is accepted; it does
 // not wait. The follow-up's end is a new job end, whose delivery continues
 // the round count. Past max_rounds it sends nothing and blocks the delivery.
+// When the from step's review was unreadable it sends nothing, uses no
+// round, and blocks the delivery with "review unreadable: <reviewer job>".
 func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord, step Step) stepFailure {
 	if followup, _ := record.Outcome["followup"].(string); followup != "" {
 		return stepFailure{} // sent before a restart
@@ -892,11 +907,19 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	if d.Result.Status == StatusCancelled {
 		return stepFailure{reason: "the job " + d.JobID + " was cancelled: it is not reopened", next: "swarm_message_job by hand", refused: true}
 	}
-	findings := ""
+	findings, reviewer, unreadable := "", "", false
 	for _, s := range d.Steps {
 		if s.ID == step.From {
 			findings, _ = s.Outcome["findings"].(string)
+			reviewer, _ = s.Outcome["job_id"].(string)
+			unreadable, _ = s.Outcome["review_unreadable"].(bool)
 		}
+	}
+	if unreadable {
+		reason := ReasonReviewUnreadable + ": " + reviewer
+		d.BlockedReason = reason
+		record.Output = "the reviewer's report could not be read; nothing was sent and no round was used"
+		return stepFailure{reason: reason, next: "read the reviewer job's session (swarm_get_job), then swarm_message_job by hand or swarm_deliver_job automation=true", refused: true}
 	}
 	if strings.TrimSpace(findings) == "" {
 		return stepFailure{reason: "step " + step.From + " recorded no findings to send", next: "fix the automation", refused: true}

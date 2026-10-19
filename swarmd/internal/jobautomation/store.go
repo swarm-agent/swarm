@@ -40,13 +40,19 @@ const (
 	StateFailed    = "failed"
 	StateSkipped   = "skipped"
 	StateStopped   = "stopped"
-	// StateBlocked ends a delivery whose reopen step ran out of rounds.
+	// StateBlocked ends a delivery whose reopen step ran out of rounds or
+	// had an unreadable review to send.
 	StateBlocked = "blocked"
 )
 
 // ReasonRoundsExhausted is a reopen step's failure when another reopen
 // would exceed its max_rounds.
 const ReasonRoundsExhausted = "rounds_exhausted"
+
+// ReasonReviewUnreadable starts a reopen step's failure ("review unreadable:
+// <reviewer job id>") when the review its from step recorded could not be
+// read: nothing is sent and no round is used.
+const ReasonReviewUnreadable = "review unreadable"
 
 // ErrNotFound is an automation or delivery that does not exist (for this
 // account).
@@ -84,7 +90,8 @@ type Delivery struct {
 	// HeadWorktree is the checkout that commit can be fetched from.
 	Head         string `json:"head,omitempty"`
 	HeadWorktree string `json:"head_worktree,omitempty"`
-	// BlockedReason is why the delivery ended blocked (rounds_exhausted).
+	// BlockedReason is why the delivery ended blocked (rounds_exhausted, or
+	// "review unreadable: <reviewer job id>").
 	BlockedReason string `json:"blocked_reason,omitempty"`
 }
 

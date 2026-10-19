@@ -220,11 +220,13 @@ func TestReviewLoopOkAfterProgressNotesSatisfiesAnOkCondition(t *testing.T) {
 	}
 }
 
-// Requirement: an agent step's findings come from the review record only.
-// A BLOCK record without findings (a malformed report, or a record written
-// before findings were kept) sends its reason, never the reviewer job's cut
-// task summary.
-// Threat: the 4,000-character summary (result.Report) reaching a reopen.
+// Requirement: an agent step's findings come from the review record only,
+// never the reviewer job's cut task summary. A malformed record (no verdict
+// could be read) gives no findings and is marked unreadable, so the reopen
+// sends nothing (the readable BLOCK without findings, which sends its
+// reason, is TestReviewLoopReadableBlockWithoutFindingsSendsTheReason).
+// Threat: the 4,000-character summary (result.Report), or the malformed
+// reason, reaching the coder as findings.
 // Owner: Server.automationAgentReview.
 func TestAutomationAgentReviewNeverReadsTheTaskSummary(t *testing.T) {
 	loop := newReviewLoop(t, "I'm checking whether the limit is enforced.\nSUMMARY: early\nVERDICT: OK\nSUMMARY: fine\nFINDINGS: None\nTESTS RUN: none")
@@ -233,22 +235,18 @@ func TestAutomationAgentReviewNeverReadsTheTaskSummary(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("reviewer run = %v %v", found, err)
 	}
-	verdict, findings := loop.f.server.automationAgentReview(p.AccountScopeID, run.WorkerID, run.ID)
-	if verdict != jobautomation.VerdictBlock || findings != "missing or malformed review verdict" {
-		t.Fatalf("malformed review = %q %q", verdict, findings)
+	verdict, findings, unreadable := loop.f.server.automationAgentReview(p.AccountScopeID, run.WorkerID, run.ID)
+	if verdict != jobautomation.VerdictBlock || findings != "" || !unreadable {
+		t.Fatalf("malformed review = %q %q unreadable %v", verdict, findings, unreadable)
 	}
-	// Through the runner: the reopen sends the record's reason, never the
-	// cut task summary the step's job result carries.
+	// Through the runner: nothing is sent, neither the record's reason nor
+	// the cut task summary the step's job result carries.
 	before := len(loop.f.userMessages(t, loop.f.session.ID))
 	d := loop.process(t)
-	if d.Steps[0].Outcome["findings"] != "missing or malformed review verdict" {
+	if _, ok := d.Steps[0].Outcome["findings"]; ok || d.Steps[0].Outcome["review_unreadable"] != true {
 		t.Fatalf("review step outcome = %+v", d.Steps[0].Outcome)
 	}
-	got := loop.f.userMessages(t, loop.f.session.ID)
-	if len(got) != before+1 {
+	if got := loop.f.userMessages(t, loop.f.session.ID); len(got) != before {
 		t.Fatalf("reopen sent %d messages (steps %+v)", len(got)-before, d.Steps)
-	}
-	if want := "The reviewer blocked your work. Its findings:\n\nmissing or malformed review verdict\n\n" + jobautomation.ReopenClosing; got[len(got)-1] != want {
-		t.Fatalf("reopen message = %q", got[len(got)-1])
 	}
 }

@@ -101,8 +101,15 @@ failed), and the steps after it still run. There is no expression language.
   job it reviewed), `verdict` (`ok` or `block`) and `findings`. Verdict and
   findings come from the review record: the reviewer's FINDINGS section in
   full, up to 16,000 bytes (longer findings are cut at a line boundary and
-  say so), never the job's shortened report. A `block` review whose report
-  was malformed has the record's reason as its findings.
+  say so), never the job's shortened report. Headings the reviewer wrapped
+  in Markdown bold at the start of their lines (`**VERDICT: BLOCK**`,
+  `**FINDINGS:**`) are read like plain ones, although the reviewer prompt
+  asks for plain headings (see [reviewer](reviewer.md)). A readable `block`
+  review whose FINDINGS section is empty has the record's reason as its
+  findings. A review whose report could not be read (recorded with the reason
+  "missing or malformed review verdict") is **unreadable**: the outcome has
+  `verdict: block`, `review_unreadable: true` and no findings, so a
+  `verdict: block` condition still holds but there is nothing to send.
 - The delivery's **head** starts as the triggering job's head. When the job
   the step started committed on top of it, Swarm checks with Git that the
   job's head descends from the current delivery head and moves the delivery
@@ -153,6 +160,12 @@ With `fixes`:
   verdict) does not move the head; the step keeps its verdict, so a `reopen`
   step still sends its findings to the coder. A security problem the
   reviewer fixed is not a reason for it to block.
+- An unreadable report (`review_unreadable: true`, see
+  [Reopen steps](#reopen-steps)) is a `block` too: the fix commits are
+  listed but never applied, the head does not move, an `ok`-gated step does
+  not run, and a `reopen` step sends nothing and ends the delivery `blocked`
+  with `review unreadable: <reviewer job id>`. The fixing reviewer's prompt
+  asks for plain headings, like the read-only reviewer's.
 - An `ok` verdict may mean "I fixed it", so it fails closed: Swarm reads the
   reviewer's head and fix commits from its own checkout with Git, and when
   that read fails (or the head moved without readable fix commits) the step
@@ -198,6 +211,12 @@ With `fixes`:
   would exceed it, the step sends nothing, fails with reason
   `rounds_exhausted`, and the delivery ends `blocked`
   (`automation.delivery.blocked`).
+- An unreadable review is never sent: when the `from` step's outcome has
+  `review_unreadable: true`, the step sends nothing into the coder's session,
+  uses no round, fails with `review unreadable: <reviewer job id>`, and the
+  delivery ends `blocked` with that reason (`automation.delivery.blocked`),
+  so the delegating AI can read the reviewer's session (`swarm_get_job`) and
+  send findings by hand or re-run the delivery.
 - A job that is cancelled or still running is never reopened: the step fails
   with the reason. A step without findings to send fails too.
 
@@ -282,9 +301,11 @@ and `step_id`:
   automatic retries remain, also `will_retry` and `retry_at`)
 - `automation.delivery.finished` (attrs: `state`, step counts)
 - `automation.delivery.blocked` (severity warning; attrs: `reason`
-  `rounds_exhausted`, `round`, `head`, the last `findings` shortened, and
-  `next`: send the findings by hand with `swarm_message_job`, or after a fix
-  `swarm_deliver_job` with `automation: true`)
+  `rounds_exhausted` or `review unreadable: <reviewer job id>`, `round`,
+  `head`, the last `findings` shortened, and `next`: send the findings by
+  hand with `swarm_message_job`, or after a fix `swarm_deliver_job` with
+  `automation: true`; for an unreadable review, first read the reviewer
+  job's session)
 
 Design jobs now end with `design.job.completed`, `design.job.failed` or
 `design.job.cancelled`, and a stopped media job with `media.job.cancelled`.
@@ -367,7 +388,10 @@ automation says so: there is no built-in review chain.
    follow-up's end triggers the automation again (round 1), and a new
    reviewer job reviews the new head.
 4. After two reopens without an `ok`, the next `fix` fails with
-   `rounds_exhausted` and the delivery ends `blocked`.
+   `rounds_exhausted` and the delivery ends `blocked`. A review whose report
+   could not be read reopens nothing: `fix` fails with
+   `review unreadable: <reviewer job id>`, no round is used and the delivery
+   ends `blocked`.
 5. On `ok`, `fix` is skipped and `push` runs `deliver/push.sh` with
    `SWARM_HEAD` (and `refs/swarm/jobs/<run-id>`) at the reviewed head, or at
    the reviewer's fix head when it committed fixes within the limit. Fixes
@@ -394,9 +418,10 @@ It reviews the exact head in its own session and judges four things: is every
 requirement of the brief fully done; do the report's claims match the
 evidence (a test the report says passed must appear among the commands run,
 with exit code 0; unbacked claims are findings); are there gaps; are there
-security problems. It answers `VERDICT: OK` or `VERDICT: BLOCK` with findings
-at `file:line`, which a `reopen` step sends to the coder verbatim. With
-`fixes: "security"` it may also commit small security fixes, listed as
+security problems. It answers `VERDICT: OK` or `VERDICT: BLOCK` (plain
+headings at the start of a line; bold-wrapped headings are read too) with
+findings at `file:line`, which a `reopen` step sends to the coder verbatim.
+With `fixes: "security"` it may also commit small security fixes, listed as
 `FIXED` findings (see [Reviewer fixes](#reviewer-fixes-fixes-security)).
 Reviewer jobs started outside automations work as before. See
 [the reviewer](reviewer.md).

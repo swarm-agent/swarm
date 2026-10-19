@@ -29,19 +29,62 @@ const MaxJobReviewFindingsBytes = 16000
 // JobReviewFindingsCutNote ends findings cut at MaxJobReviewFindingsBytes.
 const JobReviewFindingsCutNote = "[findings cut at 16000 bytes; the reviewer job's session has the full report]"
 
+// JobReviewMalformedReason is the reason of a review record whose report
+// could not be read (no parsed verdict); it is recorded as block.
+const JobReviewMalformedReason = "missing or malformed review verdict"
+
 // jobReviewHeadings are the report's structural headings, in order.
 var jobReviewHeadings = []string{"VERDICT:", "SUMMARY:", "FINDINGS:", "TESTS RUN:"}
+
+// unwrapJobReviewHeading returns a structural heading line with its Markdown
+// bold wrapper (** or __) removed, when the line starts with the wrapper and
+// the heading follows it directly: "**VERDICT: BLOCK**" and
+// "**VERDICT:** BLOCK" give "VERDICT: BLOCK", "**SUMMARY:** text" gives
+// "SUMMARY: text". The closing marker must come right after the colon or,
+// for a verdict, right after OK or BLOCK at the end of the line. Any other
+// line is returned unchanged, so a heading behind other markup (quote, list,
+// indentation, fence, prose) or with an unclosed or mismatched wrapper still
+// fails closed.
+func unwrapJobReviewHeading(line string) string {
+	for _, marker := range []string{"**", "__"} {
+		rest, ok := strings.CutPrefix(line, marker)
+		if !ok {
+			continue
+		}
+		for _, heading := range jobReviewHeadings {
+			after, ok := strings.CutPrefix(rest, heading)
+			if !ok {
+				continue
+			}
+			if body, ok := strings.CutPrefix(after, marker); ok {
+				return heading + body
+			}
+			if heading == "VERDICT:" && (after == " OK"+marker || after == " BLOCK"+marker) {
+				return heading + strings.TrimSuffix(after, marker)
+			}
+			return line
+		}
+	}
+	return line
+}
 
 // ParseJobReview reads the structured report (VERDICT, SUMMARY, FINDINGS,
 // TESTS RUN) from the line that starts with "VERDICT: OK" or
 // "VERDICT: BLOCK"; text before it (a reviewer's progress notes) is ignored.
-// It fails closed on absent, duplicate or malformed verdicts, missing, empty
-// or reordered sections, and headings that are quoted, fenced, indented or
-// embedded in prose, including a heading at the start of a line in the text
-// before the verdict. It never interprets quoted prose as an approval.
+// A heading may be wrapped in Markdown bold at the start of its line
+// (unwrapJobReviewHeading); only that wrapper is removed. It fails closed on
+// absent, duplicate (in any form) or malformed verdicts, missing, empty or
+// reordered sections, and headings that are quoted, fenced, indented or
+// embedded in prose, including a heading (plain or emphasised) at the start
+// of a line in the text before the verdict. It never interprets quoted prose
+// as an approval.
 func ParseJobReview(report, head, reviewerJobID, model string, now int64) JobReview {
-	r := JobReview{Verdict: "block", Head: head, ReviewerJobID: reviewerJobID, Model: model, RecordedAt: now, Reason: "missing or malformed review verdict"}
-	lines := strings.Split(strings.TrimSpace(report), "\n")
+	r := JobReview{Verdict: "block", Head: head, ReviewerJobID: reviewerJobID, Model: model, RecordedAt: now, Reason: JobReviewMalformedReason}
+	raw := strings.Split(strings.TrimSpace(report), "\n")
+	lines := make([]string, len(raw))
+	for i, line := range raw {
+		lines[i] = unwrapJobReviewHeading(line)
+	}
 	start := -1
 	for i, line := range lines {
 		if strings.HasPrefix(line, "VERDICT:") {
@@ -55,7 +98,7 @@ func ParseJobReview(report, head, reviewerJobID, model string, now int64) JobRev
 		return r
 	}
 	fences := 0
-	for _, line := range lines[:start] {
+	for _, line := range raw[:start] {
 		// The notes before the report may not carry a heading at the start
 		// of a line, plain or behind quote, list, emphasis or fence markup,
 		// and may not leave a fence open around the verdict.
