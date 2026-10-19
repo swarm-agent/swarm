@@ -185,9 +185,14 @@ reviewer for a second look), you can offer a job automation:
   `failed` or `always`), `retries` (0-3) and ordered steps. A `run` step runs
   an executable script of the folder in its sandbox (it gets the job's result
   JSON on stdin and `SWARM_*` variables, and only the folder's secrets); an
-  `agent` step gives a worker a job (a reviewer reviews the job's exact head).
-  The person writes and commits the scripts; do not invent ones that push or
-  deploy without their say-so.
+  `agent` step gives a worker a job (a reviewer reviews the job's exact head
+  and records a verdict, `ok` or `block`, with findings); a `reopen` step
+  sends an agent step's findings back into the job's own session as a
+  follow-up, at most `max_rounds` times before the delivery ends `blocked`.
+  A step's `if` runs it only when an earlier step's status or verdict match,
+  so a person can compose a review loop (docs/automations.md has the exact
+  call). The person writes and commits the scripts; do not invent ones that
+  push or deploy without their say-so.
 - `swarm_give_job` / `swarm_schedule_job` take `then` with the same steps,
   for that job or that schedule's jobs only.
 - `swarm_get_job` shows a job's deliveries and steps; `swarm_list_automations`

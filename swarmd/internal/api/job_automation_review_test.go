@@ -144,3 +144,47 @@ func TestVerifyJobHeadAcceptsOnlyDescendants(t *testing.T) {
 		t.Fatal("a ref name was accepted as a commit id")
 	}
 }
+
+// Requirement: swarm_set_automation (and then) accept if, reopen, from,
+// message and max_rounds in the same shape as the API, validated by the
+// shared NormalizeSteps; swarm_get_job and swarm_list_automations show each
+// delivery's round, head and blocked reason.
+// Threat: a review loop the MCP tools silently drop fields of, or a blocked
+// delivery an AI cannot see.
+// Owners: controlMCPAutomationSteps, controlMCPAutomationStepsSchema and
+// jobDeliveryView.
+func TestAutomationToolsCarryConditionsReopenAndRounds(t *testing.T) {
+	var raw any
+	if err := json.Unmarshal([]byte(`[
+		{"id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this job."},
+		{"id": "fix", "type": "reopen", "from": "review", "message": "Blocked:", "max_rounds": 3, "if": [{"step": "review", "verdict": "block"}]},
+		{"id": "push", "type": "run", "command": "deliver/push.sh", "if": [{"step": "review", "verdict": "ok"}]}
+	]`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	steps, err := controlMCPAutomationSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steps[1].Type != jobautomation.StepReopen || steps[1].From != "review" || steps[1].Message != "Blocked:" || steps[1].MaxRounds != 3 ||
+		len(steps[1].If) != 1 || steps[1].If[0].Verdict != jobautomation.VerdictBlock || steps[2].If[0].Verdict != jobautomation.VerdictOK {
+		t.Fatalf("steps = %+v", steps)
+	}
+	if err := json.Unmarshal([]byte(`[{"id": "fix", "type": "reopen", "from": "nope"}]`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controlMCPAutomationSteps(raw); err == nil {
+		t.Fatal("a reopen step without an earlier agent step was accepted")
+	}
+	schema, _ := json.Marshal(controlMCPAutomationStepsSchema())
+	for _, want := range []string{`"reopen"`, `"if"`, `"from"`, `"max_rounds"`, `"verdict"`} {
+		if !strings.Contains(string(schema), want) {
+			t.Fatalf("steps schema lacks %s", want)
+		}
+	}
+	view := jobDeliveryView(jobautomation.Delivery{ID: "jdel_1", JobID: "worker/w/r", Round: 2, Head: strings.Repeat("a", 40), State: jobautomation.StateBlocked,
+		BlockedReason: jobautomation.ReasonRoundsExhausted})
+	if view["round"] != 2 || view["head"] != strings.Repeat("a", 40) || view["blocked_reason"] != jobautomation.ReasonRoundsExhausted || view["state"] != jobautomation.StateBlocked {
+		t.Fatalf("delivery view = %+v", view)
+	}
+}

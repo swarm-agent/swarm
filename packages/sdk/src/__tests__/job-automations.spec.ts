@@ -41,3 +41,28 @@ test('job automations use only the job-automation routes', async () => {
     assert.ok(!path.startsWith('/v3/automations'), `reached the older automations API: ${path}`);
   }
 });
+
+// Purpose: a review loop (agent step, reopen step with max_rounds, `if` on a
+// verdict) is sent to the daemon exactly as written; the daemon owns its
+// validation. Boundary: SwarmJobAutomationsNamespace.set over a transport
+// fixture.
+test('a review loop definition is sent as given', async () => {
+  const bodies: unknown[] = [];
+  const transport = {
+    request: async (_path: string, options: { body?: unknown } = {}) => {
+      bodies.push(options.body);
+      return { data: { ok: true, automation: { id: 'jauto_2' }, created: true } };
+    },
+  } as unknown as SwarmTransport;
+  const loop = {
+    name: 'review loop',
+    scope: { folder: '/srv/site', worker: 'coder' },
+    steps: [
+      { id: 'review', type: 'agent' as const, worker: 'reviewer', brief: 'Review this job.' },
+      { id: 'fix', type: 'reopen' as const, from: 'review', message: 'The reviewer blocked it.', max_rounds: 2, if: [{ step: 'review', verdict: 'block' as const }] },
+      { id: 'push', type: 'run' as const, command: 'deliver/push.sh', if: [{ step: 'review', verdict: 'ok' as const }] },
+    ],
+  };
+  await new SwarmJobAutomationsNamespace(transport).set(loop);
+  assert.deepEqual(bodies, [loop]);
+});

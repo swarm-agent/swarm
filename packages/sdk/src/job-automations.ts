@@ -9,8 +9,18 @@ import type { SwarmTransport } from './transport.js';
  */
 
 export type JobAutomationWhen = 'succeeded' | 'failed' | 'always';
-export type JobAutomationStepType = 'run' | 'agent';
-export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'stopped';
+export type JobAutomationStepType = 'run' | 'agent' | 'reopen';
+export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'stopped' | 'blocked';
+export type JobReviewVerdict = 'ok' | 'block';
+
+/**
+ * One condition of a step's `if`, on an earlier step: its status, or (an
+ * agent step) the verdict of the review its job recorded. A missing verdict
+ * never matches.
+ */
+export type JobAutomationCondition =
+  | { step: string; status: 'succeeded' | 'failed'; verdict?: never }
+  | { step: string; verdict: JobReviewVerdict; status?: never };
 
 /** Which job ends an automation applies to. */
 export interface JobAutomationScope {
@@ -32,6 +42,8 @@ export interface JobAutomationStep {
   timeout_seconds?: number;
   /** Default false: a failed step stops the rest. */
   continue_on_failure?: boolean;
+  /** Conditions that must all hold for the step to run; otherwise it is skipped and later steps still run. */
+  if?: JobAutomationCondition[];
   /** run: path of an executable script inside the folder, e.g. `deliver/push.sh`. */
   command?: string;
   args?: string[];
@@ -39,8 +51,14 @@ export interface JobAutomationStep {
   secrets?: string[];
   /** agent: `coder`, `designer`, `finder`, `reviewer` or a worker id. */
   worker?: string;
-  /** agent: the job's brief; the triggering job's result is attached. */
+  /** agent: the job's brief; the triggering job's result is attached (a reviewer also gets its brief, report, commands run and diff). */
   brief?: string;
+  /** reopen: the earlier agent step whose findings are sent into the triggering job's own session. */
+  from?: string;
+  /** reopen: text placed before the findings. */
+  message?: string;
+  /** reopen: reopens allowed before the delivery ends `blocked` (`rounds_exhausted`); 1 to 5, default 2. */
+  max_rounds?: number;
 }
 
 export interface JobAutomation {
@@ -81,9 +99,13 @@ export interface JobDeliveryStep {
   /** The last non-empty line the step printed (a run step), or the job id (an agent step). */
   output?: string;
   reason?: string;
-  /** The next allowed action after a failure: `rerun` or `fix the script`. */
+  /** The next allowed action after a failure, e.g. `rerun` or `fix the script`. */
   next?: string;
-  /** An agent step's job: `job_id`, `status`, `head`, `report`, `review`. */
+  /**
+   * An agent step's job: `job_id`, `status`, `head`, `report`, `review`, and
+   * `verdict`/`findings` when the job recorded a review (`moved_head` when it
+   * moved the delivery head); a reopen step's `followup` and `round`.
+   */
   outcome?: Record<string, unknown>;
   /** The last 64 KiB of a run step's output (single-delivery reads only). */
   log_tail?: string;
@@ -98,9 +120,13 @@ export interface JobDelivery {
   job_id: string;
   /** The follow-up this job end belongs to; absent for the job's first run. */
   followup?: string;
-  /** Reopen rounds (reserved; 0 for now). */
+  /** Reopens that led to this job end: a follow-up a reopen step sent is the previous round + 1. */
   round: number;
   state: JobDeliveryState;
+  /** The commit the delivery delivers: the job's head, moved forward by an agent step that committed on top of it. */
+  head?: string;
+  /** Why the delivery ended `blocked`, e.g. `rounds_exhausted`. */
+  blocked_reason?: string;
   steps: JobDeliveryStep[];
   created_at: number;
   started_at?: number;
@@ -218,7 +244,11 @@ export class SwarmJobAutomationsNamespace {
     return res.data.delivery;
   }
 
-  /** Re-runs only the delivery's failed or stopped steps; `rerun` is false when there were none. */
+  /**
+   * Re-runs only the delivery's failed or stopped steps (a blocked delivery
+   * runs again from its first step with a new round budget); `rerun` is false
+   * when there were none.
+   */
   async rerun(id: string): Promise<{ rerun: boolean; delivery: JobDelivery }> {
     const res = await this.transport.request<{ ok: boolean; rerun: boolean; delivery: JobDelivery }>(`/v3/job-deliveries/${encodeURIComponent(id)}/rerun`, {
       method: 'POST',

@@ -813,7 +813,7 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	}
 	var steps []jobautomation.Step
 	if err := json.Unmarshal(encoded, &steps); err != nil {
-		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent, command, args, secrets, worker, brief, timeout_seconds, continue_on_failure}: %s", err.Error())
+		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen, if, command, args, secrets, worker, brief, from, message, max_rounds, timeout_seconds, continue_on_failure}: %s", err.Error())
 	}
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())
@@ -1021,10 +1021,19 @@ func (c *controlMCPCall) rerunJobAutomations(jobID string) (any, error) {
 
 // controlMCPAutomationStepsSchema is the JSON schema of an automation's steps.
 func controlMCPAutomationStepsSchema() map[string]any {
-	return map[string]any{"type": "array", "minItems": 1, "maxItems": jobautomation.MaxSteps, "description": "Ordered steps. A failed step stops the rest unless continue_on_failure.",
+	return map[string]any{"type": "array", "minItems": 1, "maxItems": jobautomation.MaxSteps, "description": "Ordered steps. A failed step stops the rest unless continue_on_failure; a step whose if does not hold is skipped and the rest still run.",
 		"items": map[string]any{"type": "object", "required": []string{"type"}, "properties": map[string]any{
-			"id":                  controlMCPStringProp("Step id (lowercase, digits, - or _). Default step-N.", 0, 64),
-			"type":                map[string]any{"type": "string", "enum": []string{jobautomation.StepRun, jobautomation.StepAgent}},
+			"id":   controlMCPStringProp("Step id (lowercase, digits, - or _). Default step-N.", 0, 64),
+			"type": map[string]any{"type": "string", "enum": []string{jobautomation.StepRun, jobautomation.StepAgent, jobautomation.StepReopen}},
+			"if": map[string]any{"type": "array", "maxItems": jobautomation.MaxStepConditions, "description": "Conditions that must all hold for the step to run, else it is skipped: {step, status: succeeded|failed} or, for an agent step, {step, verdict: ok|block} (the verdict of the review its job recorded; no verdict never matches).",
+				"items": map[string]any{"type": "object", "required": []string{"step"}, "properties": map[string]any{
+					"step":    controlMCPStringProp("An earlier step's id.", 1, 64),
+					"status":  map[string]any{"type": "string", "enum": []string{jobautomation.StateSucceeded, jobautomation.StateFailed}},
+					"verdict": map[string]any{"type": "string", "enum": []string{jobautomation.VerdictOK, jobautomation.VerdictBlock}},
+				}}},
+			"from":                controlMCPStringProp("reopen: the earlier agent step whose findings are sent into the triggering job's own session (as swarm_message_job does).", 0, 64),
+			"message":             controlMCPStringProp("reopen: text placed before the findings.", 0, 4000),
+			"max_rounds":          map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxRounds, "description": "reopen: how many times this loop may reopen the job; past it the delivery ends blocked (rounds_exhausted). Default 2."},
 			"command":             controlMCPStringProp("run: path of an executable script inside the folder, e.g. deliver/push.sh. It gets the job's result JSON on stdin and SWARM_* variables; its last output line is the step's output.", 0, 1024),
 			"args":                map[string]any{"type": "array", "maxItems": jobautomation.MaxStepArgs, "items": map[string]any{"type": "string"}},
 			"secrets":             map[string]any{"type": "array", "maxItems": jobautomation.MaxStepSecrets, "items": map[string]any{"type": "string"}, "description": "run: secret names the script needs (granted to the folder); refused when the secrets gateway is off."},
@@ -1048,7 +1057,7 @@ func controlMCPAutomationTools() []controlMCPTool {
 	return []controlMCPTool{
 		{
 			Name: "swarm_set_automation", Title: "Set a job automation",
-			Description: "Create or update (by name) what Swarm runs when a job ends in a folder: ordered steps, each a script of the folder run in its sandbox (run) or a job for a worker (agent). Scope it to every job in the folder, one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. Swarm runs only these steps and reports what happened; with no automation a job just ends with its branch and the person integrates it by hand. Offer it; do not set it up unasked.",
+			Description: "Create or update (by name) what Swarm runs when a job ends in a folder: ordered steps, each a script of the folder run in its sandbox (run), a job for a worker (agent), or a follow-up that sends an agent step's findings into the triggering job's own session (reopen, bounded by max_rounds). A step's if runs it only when earlier steps' status or review verdict match. Scope it to every job in the folder, one worker's jobs, one job or one schedule's jobs; when succeeded, failed or always. Swarm runs only these steps and reports what happened; with no automation a job just ends with its branch and the person integrates it by hand. Offer it; do not set it up unasked.",
 			InputSchema: controlMCPObject([]string{"name", "steps"}, map[string]any{
 				"name":      controlMCPStringProp("Unique name; setting an existing name updates it (its revision rises).", 1, 200),
 				"project":   controlMCPStringProp("Project (id or name) whose folder the automation watches, when scope.folder is not given.", 0, 256),
@@ -1068,7 +1077,7 @@ func controlMCPAutomationTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_list_automations", Title: "List job automations",
-			Description: "This account's job automations (scope, when, steps, revision) with each one's latest deliveries and their steps (state, attempts, exit code, output line), and whether the machine-wide stop switch is on.",
+			Description: "This account's job automations (scope, when, steps, revision) with each one's latest deliveries (state, round, head, blocked reason) and their steps (state, attempts, exit code, output line, verdict and findings), and whether the machine-wide stop switch is on.",
 			InputSchema: controlMCPObject(nil, map[string]any{}), Annotations: controlMCPReadOnly, call: controlMCPListAutomations,
 		},
 		{
