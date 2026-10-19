@@ -152,7 +152,13 @@ type WorkerScheduler struct {
 	nextMidnight time.Time
 	v2Dirty      bool
 	v2Next       time.Time
-	wakeups      atomic.Int64
+	// v2LastDirty is when the last change-driven V2 pass ran.
+	v2LastDirty time.Time
+	// v2BlockedThrough is the latest due time a full pass left unadmitted;
+	// only a record due later triggers another full pass.
+	v2BlockedThrough int64
+	v2Overflow       bool
+	wakeups          atomic.Int64
 	// waitHook observes each wait (test seam).
 	waitHook func(next time.Time)
 }
@@ -540,25 +546,67 @@ func (sch *WorkerScheduler) admitDue(ctx context.Context, now time.Time) error {
 	return errors.Join(failures...)
 }
 
-// processV2 sweeps V2 automations only when one is due or occurrences are
-// unfinished. A due pass visits every page once; pending observation keeps
-// the prior one page per second.
+// v2DueTimes derives, from a hint, the latest already-due and the earliest
+// upcoming V2 due times in unix milliseconds (zero when none).
+func v2DueTimes(hint store.AutomationV2ScheduleHint, nowMs int64) (latestDue, upcoming int64) {
+	latestDue, upcoming = hint.LatestDueAt, hint.UpcomingDueAt
+	if e := hint.EarliestDueAt; e > 0 {
+		if e <= nowMs && e > latestDue {
+			latestDue = e
+		}
+		if e > nowMs && upcoming == 0 {
+			upcoming = e
+		}
+	}
+	return latestDue, upcoming
+}
+
+// processV2 sweeps V2 automations only when one is newly due or occurrences
+// are unfinished.
+//   - A record that fell due since the last full pass gets one full pass:
+//     every page once, then one hint read to see what advanced.
+//   - A record still due after that pass could not be admitted (serialize
+//     overlap, a conflict or an admission error). It is blocked: no further
+//     full passes until a committed V2 change, the safety rescan or UTC
+//     midnight clears the block.
+//   - While occurrences are pending, the prior cadence holds: at most one
+//     hint read and one sweep page per second, which also re-ticks blocked
+//     records as their page comes round.
+//   - Committed changes are coalesced to at most one pass per second.
+//   - Above the bounded hint the catalog is paged one page per second.
 func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error {
 	if sch.v2 == nil {
 		return nil
 	}
-	if !sch.v2Dirty && (sch.v2Next.IsZero() || now.Before(sch.v2Next)) {
+	if sch.v2Dirty {
+		if !sch.v2LastDirty.IsZero() {
+			if at := sch.v2LastDirty.Add(workerSchedulerMinSpacing); now.Before(at) {
+				if sch.v2Next.IsZero() || at.Before(sch.v2Next) {
+					sch.v2Next = at
+				}
+				return nil
+			}
+		}
+		sch.v2Dirty = false
+		sch.v2LastDirty = now
+		sch.v2BlockedThrough = 0
+	} else if sch.v2Next.IsZero() || now.Before(sch.v2Next) {
 		return nil
 	}
-	sch.v2Dirty = false
-	hint, err := sch.v2Hints.AutomationV2ScheduleHint(now.UnixMilli())
+	nowMs := now.UnixMilli()
+	hint, err := sch.v2Hints.AutomationV2ScheduleHint(nowMs)
 	if err != nil {
-		sch.v2Next = now.Add(workerSchedulerMinSpacing)
+		sch.v2Next = now.Add(workerSchedulerBusyInterval)
 		return err
 	}
 	var failures []error
-	swept := false
-	if hint.EarliestDueAt > 0 && hint.EarliestDueAt <= now.UnixMilli() {
+	if hint.Overflow {
+		return sch.pageV2Overflow(ctx, now)
+	}
+	sch.v2Overflow = false
+	latestDue, upcoming := v2DueTimes(hint, nowMs)
+	switch {
+	case latestDue > sch.v2BlockedThrough:
 		passes := hint.AcceptedKeys/automationV2SweepPage + 2
 		if passes > automationV2MaxSweepPasses {
 			passes = automationV2MaxSweepPasses
@@ -569,31 +617,40 @@ func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error 
 			}
 			failures = append(failures, sch.v2.Sweep(ctx, now))
 		}
-		swept = true
-	} else if hint.Pending {
-		failures = append(failures, sch.v2.Sweep(ctx, now))
-		swept = true
-	}
-	if swept {
-		if hint, err = sch.v2Hints.AutomationV2ScheduleHint(now.UnixMilli()); err != nil {
-			sch.v2Next = now.Add(workerSchedulerMinSpacing)
+		if hint, err = sch.v2Hints.AutomationV2ScheduleHint(nowMs); err != nil {
+			sch.v2Next = now.Add(workerSchedulerBusyInterval)
 			return errors.Join(append(failures, err)...)
 		}
+		if hint.Overflow {
+			return errors.Join(append(failures, sch.pageV2Overflow(ctx, now))...)
+		}
+		latestDue, upcoming = v2DueTimes(hint, nowMs)
+		sch.v2BlockedThrough = latestDue
+	case hint.Pending:
+		failures = append(failures, sch.v2.Sweep(ctx, now))
 	}
 	sch.v2Next = time.Time{}
-	if hint.EarliestDueAt > 0 {
-		due := time.UnixMilli(hint.EarliestDueAt)
-		if !due.After(now) {
-			// An admission that did not advance its record retries at the
-			// prior cadence instead of spinning.
-			due = now.Add(workerSchedulerMinSpacing)
-		}
-		sch.v2Next = due
+	if upcoming > 0 {
+		sch.v2Next = time.UnixMilli(upcoming)
 	}
 	if hint.Pending {
 		if p := now.Add(automationV2PendingInterval); sch.v2Next.IsZero() || p.Before(sch.v2Next) {
 			sch.v2Next = p
 		}
 	}
+	return errors.Join(failures...)
+}
+
+// pageV2Overflow keeps a catalog above the bounded hint swept at the prior
+// one-page-per-second cadence and reports the degradation once.
+func (sch *WorkerScheduler) pageV2Overflow(ctx context.Context, now time.Time) error {
+	var failures []error
+	if !sch.v2Overflow {
+		failures = append(failures, errors.New("automation v2 catalog exceeds the bounded schedule hint; sweeping one page per second"))
+	}
+	sch.v2Overflow = true
+	sch.v2BlockedThrough = 0
+	failures = append(failures, sch.v2.Sweep(ctx, now))
+	sch.v2Next = now.Add(automationV2PendingInterval)
 	return errors.Join(failures...)
 }

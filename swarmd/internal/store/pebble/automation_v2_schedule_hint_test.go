@@ -56,6 +56,23 @@ func TestAutomationV2ScheduleHintUsesAuthoritativeEntryAfterDailyCap(t *testing.
 	if hint.AcceptedKeys != 2 {
 		t.Fatalf("AcceptedKeys = %d, want 2 raw index entries for sweep paging", hint.AcceptedKeys)
 	}
+	if hint.LatestDueAt != 0 || hint.UpcomingDueAt != tomorrow || hint.Overflow || hint.Pending {
+		t.Fatalf("hint = %+v, want nothing due now and the capped record upcoming tomorrow", hint)
+	}
+	// Negative control: an un-capped automation whose entries agree is still
+	// reported as due, so de-duplication does not hide real due work.
+	dueNow := hintTestRecord("acct-hint", "auto-due", "sess-due", stale)
+	for _, key := range []string{automationV2Key("accepted", "acct-hint", "auto-due"), automationV2Key("accepted", "acct-hint", "sess-due")} {
+		if err := s.PutJSON(key, dueNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if hint, err = NewSessionStore(s).AutomationV2ScheduleHint(now); err != nil {
+		t.Fatal(err)
+	}
+	if hint.EarliestDueAt != stale || hint.LatestDueAt != stale || hint.UpcomingDueAt != tomorrow || hint.AcceptedKeys != 4 {
+		t.Fatalf("hint with a due automation = %+v, want earliest/latest due %d and upcoming %d over 4 keys", hint, stale, tomorrow)
+	}
 }
 
 // Requirement: a catalog larger than the bounded hint scan must still be
@@ -75,8 +92,12 @@ func TestAutomationV2ScheduleHintOverflowIsNotAnError(t *testing.T) {
 	if err := batch.Commit(nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewSessionStore(s).AutomationV2ScheduleHint(time.Now().UnixMilli()); err != nil {
+	hint, err := NewSessionStore(s).AutomationV2ScheduleHint(time.Now().UnixMilli())
+	if err != nil {
 		t.Fatalf("over-limit catalog hint returned %v, want an overflow hint the scheduler can page through", err)
+	}
+	if !hint.Overflow || hint.EarliestDueAt != 0 || hint.LatestDueAt != 0 || hint.UpcomingDueAt != 0 {
+		t.Fatalf("over-limit hint = %+v, want Overflow with no claimed due times", hint)
 	}
 }
 

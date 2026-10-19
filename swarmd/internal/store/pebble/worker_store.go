@@ -2792,6 +2792,7 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	now := time.Now().UnixMilli()
 	batch := ws.store.NewBatch()
 	defer batch.Close()
+	var createdWorkers []string
 
 	for _, rec := range toMigrate {
 		targetWorkerID := rec.AutomationID
@@ -2947,6 +2948,7 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 			summary.Errors = append(summary.Errors, fmt.Sprintf("batch set worker %s: %v", w.ID, err))
 			continue
 		}
+		createdWorkers = append(createdWorkers, w.ID)
 
 		// Only persist revisions for which legacy data actually contains a snapshot.
 		for _, r := range []uint64{w.Revision} {
@@ -3126,6 +3128,10 @@ func (ws *WorkerStore) MigrateLegacyAutomationsV2(account string) (WorkerMigrati
 	if err := batch.Commit(pebble.Sync); err != nil {
 		summary.MigratedCount = 0
 		return summary, err
+	}
+	// Migrated workers are new scheduling inputs, like any other worker write.
+	for _, id := range createdWorkers {
+		ws.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalWorker, AccountScopeID: account, WorkerID: id})
 	}
 	return summary, nil
 }

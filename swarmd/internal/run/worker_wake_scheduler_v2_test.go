@@ -113,7 +113,8 @@ func TestWorkerSchedulerDrivesAutomationV2OnlyWhenDueOrPending(t *testing.T) {
 // two hint scans on every wake. Owner: WorkerScheduler.processV2; the V2
 // sweeper and hint are replaced at their interfaces, as above.
 func TestWorkerSchedulerBacksOffDueV2RecordThatDoesNotAdvance(t *testing.T) {
-	start := time.Now()
+	// Fixed mid-day start: no UTC midnight or safety rescan falls in a window.
+	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
 	clock := newFakeSchedulerClock(start)
 	sweeper := &fakeV2Sweeper{}
 	hinter := &fakeV2Hinter{}
@@ -172,5 +173,71 @@ func TestWorkerSchedulerBacksOffDueV2RecordThatDoesNotAdvance(t *testing.T) {
 	}
 	if got := hinter.calls - hints; got != 0 {
 		t.Errorf("blocked due record, nothing pending: %d hint scans in 10s, want 0", got)
+	}
+}
+
+// Requirement: a blocked V2 record must not hide a different record that
+// falls due later; that one still gets a full pass at its due time. Threat:
+// the blocked-record backoff suppressing admission of every later slot.
+// Owner: WorkerScheduler.processV2 (v2BlockedThrough vs hint LatestDueAt).
+func TestWorkerSchedulerBlockedV2RecordDoesNotHideALaterDueRecord(t *testing.T) {
+	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	clock := newFakeSchedulerClock(start)
+	sweeper := &fakeV2Sweeper{}
+	hinter := &fakeV2Hinter{}
+	sch := NewWorkerScheduler(nil, WorkerSchedulerOptions{Clock: clock, V2: sweeper, V2Hints: hinter})
+	ctx := context.Background()
+	blocked := start.Add(-time.Minute).UnixMilli()
+	later := start.Add(30 * time.Second)
+	hinter.hint = pebblestore.AutomationV2ScheduleHint{AcceptedKeys: 30, EarliestDueAt: blocked, LatestDueAt: blocked, UpcomingDueAt: later.UnixMilli()}
+	if err := sch.process(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	fullPass := 30/automationV2SweepPage + 2
+	if got := len(sweeper.sweeps); got != fullPass {
+		t.Fatalf("startup sweeps = %d, want one full pass (%d)", got, fullPass)
+	}
+	if got := sch.nextWake(); !got.Equal(later) {
+		t.Fatalf("next wake with a blocked record = %v, want the later record's due %v", got, later)
+	}
+	// At the later due time both records are due; the later one is new.
+	clock.Set(later)
+	hinter.hint = pebblestore.AutomationV2ScheduleHint{AcceptedKeys: 30, EarliestDueAt: blocked, LatestDueAt: later.UnixMilli()}
+	if err := sch.process(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(sweeper.sweeps) - fullPass; got != fullPass {
+		t.Fatalf("later due record got %d sweeps, want a full pass (%d)", got, fullPass)
+	}
+}
+
+// Requirement: a V2 catalog above the bounded hint scan is still swept at the
+// prior one page per second, and the degradation is reported once rather
+// than every second. Threat: the hint bound stopping V2 scheduling entirely.
+// Owner: WorkerScheduler.pageV2Overflow.
+func TestWorkerSchedulerPagesV2CatalogAboveHintBound(t *testing.T) {
+	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	clock := newFakeSchedulerClock(start)
+	sweeper := &fakeV2Sweeper{}
+	hinter := &fakeV2Hinter{hint: pebblestore.AutomationV2ScheduleHint{AcceptedKeys: 10000, Overflow: true}}
+	var reports int
+	sch := NewWorkerScheduler(nil, WorkerSchedulerOptions{Clock: clock, V2: sweeper, V2Hints: hinter})
+	ctx := context.Background()
+	if err := sch.process(ctx, start); err == nil {
+		t.Fatal("overflow was not reported")
+	}
+	reports++
+	end := start.Add(10 * time.Second)
+	for next := sch.nextWake(); !next.After(end); next = sch.nextWake() {
+		clock.Set(next)
+		if err := sch.process(ctx, next); err != nil {
+			reports++
+		}
+	}
+	if reports != 1 {
+		t.Fatalf("overflow reported %d times, want once", reports)
+	}
+	if got := len(sweeper.sweeps); got != 11 {
+		t.Fatalf("overflow sweeps over 10s = %d, want one page per second (11 including startup)", got)
 	}
 }
