@@ -211,7 +211,7 @@ func writeScript(t *testing.T, folder, name, body string) {
 func workerResult(folder, runID string) *Result {
 	return &Result{V: ResultVersion, JobID: "worker/coder-1/" + runID, Kind: KindWorker, Role: "coder", Worker: &ResultWorker{ID: "coder-1", Name: "Coder"},
 		RunID: runID, ProjectID: "proj-1", Folder: folder, Status: StatusSucceeded, JobStatus: "needs_review", Brief: "add a logo", Report: "Added it.",
-		Git: &ResultGit{Branch: "agent/" + runID, BaseCommit: strings.Repeat("a", 40), Head: strings.Repeat("b", 40), Commits: []ResultCommit{{SHA: strings.Repeat("b", 40), Subject: "add logo"}}, Files: []string{"logo.png"}},
+		Git:  &ResultGit{Branch: "agent/" + runID, BaseCommit: strings.Repeat("a", 40), Head: strings.Repeat("b", 40), Commits: []ResultCommit{{SHA: strings.Repeat("b", 40), Subject: "add logo"}}, Files: []string{"logo.png"}},
 		Cost: &ResultCost{Tokens: 1200, Model: "model-x"}}
 }
 

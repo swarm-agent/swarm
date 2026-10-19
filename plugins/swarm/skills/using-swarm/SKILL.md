@@ -170,6 +170,34 @@ done. `swarm_list_providers` shows whether a media provider is ready.
 Anything that acts in the world (for example publishing a post) waits for the
 person's approval in Swarm. You never approve those.
 
+## 8b. Job automations (offer them; the default is by hand)
+
+By default a job just ends with its branch and worktree, and the person (or
+you, with their go-ahead) integrates it by hand with `swarm_deliver_job` or
+their own git. Swarm has no built-in merge, push, check or review chain.
+
+When the person wants something to happen every time a job ends (push the
+branch, open a pull request with their own script, upload a media file, ask a
+reviewer for a second look), you can offer a job automation:
+
+- `swarm_set_automation`: a name, the folder (or `project`), optionally only
+  one worker's jobs, one job or one schedule's jobs, `when` (`succeeded`,
+  `failed` or `always`), `retries` (0-3) and ordered steps. A `run` step runs
+  an executable script of the folder in its sandbox (it gets the job's result
+  JSON on stdin and `SWARM_*` variables, and only the folder's secrets); an
+  `agent` step gives a worker a job (a reviewer reviews the job's exact head).
+  The person writes and commits the scripts; do not invent ones that push or
+  deploy without their say-so.
+- `swarm_give_job` / `swarm_schedule_job` take `then` with the same steps,
+  for that job or that schedule's jobs only.
+- `swarm_get_job` shows a job's deliveries and steps; `swarm_list_automations`
+  lists automations with their latest deliveries. A failed step says why and
+  what to do next; `swarm_deliver_job` with `automation: true` re-runs only
+  the failed or stopped steps.
+- `swarm_stop_automations` is the machine-wide stop switch.
+
+Set one up only when the person asks for it or agrees to your offer.
+
 ## 9. Watch the box
 
 - `swarm_status`: one call for "is everything all right".
