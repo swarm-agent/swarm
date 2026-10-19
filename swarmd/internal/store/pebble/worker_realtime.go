@@ -270,6 +270,7 @@ func (s *Store) commitWorkerRealtime(m *workerRealtimeMutation) error {
 	}
 
 	m.outbox = &outbox
+	s.signalScheduling(SchedulingSignal{Kind: SchedulingSignalWorker, AccountScopeID: m.accountScopeID, WorkerID: m.workerID})
 	return nil
 }
 

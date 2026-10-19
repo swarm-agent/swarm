@@ -15,6 +15,7 @@ func usageScopeDayKey(account string, scope UsageScopeTotal, date string) string
 }
 
 func (s *SessionStore) GetUsageScopeDay(account, kind, project, id, date string) (UsageScopeTotal, bool, error) {
+	s.store.observeBudgetRead(BudgetReadUsageScopeDay)
 	total := UsageScopeTotal{Kind: kind, ProjectID: project, ID: id, Coverage: "no_records"}
 	parsed, err := time.Parse("2006-01-02", date)
 	if err != nil || parsed.Format("2006-01-02") != date || account == "" || id == "" {

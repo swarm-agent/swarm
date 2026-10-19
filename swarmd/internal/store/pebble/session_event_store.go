@@ -1829,6 +1829,12 @@ func (s *SessionStore) applyFreshV3SessionMutation(input V3SessionMutationInput,
 	if err := s.store.sessionMutations.commitOutbox(s.store, reservedOutbox); err != nil {
 		return V3SessionMutationResult{}, err
 	}
+	if runIntentProvided || lifecycleProvided {
+		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalRun, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
+	}
+	if input.automationV2 != nil {
+		s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalAutomationV2, AccountScopeID: input.AccountScopeID, SessionID: input.SessionID})
+	}
 	if input.designProjectOutbox != nil {
 		*input.designProjectOutbox = pendingDesignProjectOutbox
 	}

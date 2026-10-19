@@ -157,6 +157,7 @@ func (s *Store) SetWorkerBudgetPublisher(publish func(NotificationRecord)) {
 }
 
 func (s *SessionStore) publishWorkerBudgetHolds(account string) {
+	s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: account})
 	s.store.workerPublisherMu.RLock()
 	publish := s.store.workerBudgetPublisher
 	s.store.workerPublisherMu.RUnlock()

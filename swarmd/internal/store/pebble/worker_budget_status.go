@@ -52,6 +52,7 @@ func (s *SessionStore) GetWorkerBudgetStatus(account, worker string) (WorkerBudg
 	if s == nil || s.store == nil {
 		return status, errors.New("store is not configured")
 	}
+	s.store.observeBudgetRead(BudgetReadWorkerBudgetStatus)
 	unlock := s.store.sessionMutations.lockSessions("account:" + account)
 	defer func() {
 		unlock()

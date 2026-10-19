@@ -845,7 +845,11 @@ func (s *SessionStore) PutUsageLimit(record UsageLimitRecord) error {
 	if err := batch.Set([]byte(key), payload, nil); err != nil {
 		return err
 	}
-	return batch.Commit(pebble.Sync)
+	if err := batch.Commit(pebble.Sync); err != nil {
+		return err
+	}
+	s.store.signalScheduling(SchedulingSignal{Kind: SchedulingSignalBudget, AccountScopeID: record.AccountScopeID})
+	return nil
 }
 
 // GetDailyUsageAccumulator retrieves the cached daily spending and token count for a date.
@@ -853,6 +857,7 @@ func (s *SessionStore) GetDailyUsageAccumulator(accountScopeID, date string) (Da
 	if s == nil || s.store == nil {
 		return DailyUsageAccumulator{}, false, errors.New("store is not configured")
 	}
+	s.store.observeBudgetRead(BudgetReadDailyUsageAccumulator)
 	accountScopeID = strings.TrimSpace(accountScopeID)
 	date = strings.TrimSpace(date)
 	key := KeyDailyUsageAccumulator(accountScopeID, date)

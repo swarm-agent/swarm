@@ -52,6 +52,8 @@ type Store struct {
 	workerPublisherMu           sync.RWMutex
 	workerPublisher             func(V3RealtimeOutboxRecord)
 	workerBudgetPublisher       func(NotificationRecord)
+	schedulingObserver          atomic.Pointer[func(SchedulingSignal)]
+	budgetReadObserver          atomic.Pointer[func(string)]
 }
 
 func Open(path string) (*Store, error) {
