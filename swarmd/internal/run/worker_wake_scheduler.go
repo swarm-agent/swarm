@@ -372,6 +372,13 @@ func (sch *WorkerScheduler) applySignals(now time.Time) {
 	sch.v2Signal = false
 	sch.mu.Unlock()
 	for k, at := range changed {
+		// Notify stamps the wall clock. A change committed during this pass
+		// (above all, the pass's own admission) is later than now; moving the
+		// cursor past now would skip a sibling slot that fell due while
+		// Dispatch ran. The old sweep's cursor was its start time, so clamp.
+		if at.After(now) {
+			at = now
+		}
 		e := sch.entry(k, at)
 		if e == nil {
 			sch.report(errors.New("worker scheduler exceeded 250-worker budget"))
