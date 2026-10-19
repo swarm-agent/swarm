@@ -35,6 +35,9 @@ filter_allowed_runtime_paths() {
   # The headless installer and the sandbox image name the fixed server and
   # container layout they create; each is one exact declaration. The
   # installer refuses publish commands under home folders by naming them.
+  # The headless core installer, its package test and the isolated package
+  # probe declare that core layout once each; the probe runs only inside the
+  # test's own Bubblewrap filesystem.
   filter_guest_image_paths | grep -Ev \
     -e '^(\./)?scripts/rebuild\.sh:[0-9]+:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm\.service; do$' \
     -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
@@ -58,6 +61,18 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemConfigMarker[[:space:]]*=[[:space:]]*"/etc/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/permission/policy\.go:[0-9]+:[[:space:]]*criticalBashSystemDataMarker[[:space:]]*=[[:space:]]*"/var/lib/"[[:space:]]*$' \
     -e '^(\./)?swarmd/internal/htmlcapture/renderer\.go:[0-9]+:[[:space:]]*SystemChromePath[[:space:]]*=[[:space:]]*"/opt/google/chrome/chrome"[[:space:]]*$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:OPT=/opt/swarm$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:UNIT=/etc/systemd/system/swarm-headless\.service$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:DATA_DIRS=\(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /run/swarmd\)$' \
+    -e '^(\./)?containers/headless/core/install\.sh:[0-9]+:CA_BUNDLE=/etc/ssl/certs/ca-certificates\.crt$' \
+    -e '^(\./)?scripts/test-headless-core\.sh:[0-9]+:opt_dir=/opt/swarm$' \
+    -e '^(\./)?scripts/test-headless-core\.sh:[0-9]+:unit_path=/etc/systemd/system/swarm-headless\.service$' \
+    -e '^(\./)?scripts/test-headless-core\.sh:[0-9]+:  --tmpfs /tmp --tmpfs /home --dir /home/swarm --dir /project \\$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*installedSwarmd[[:space:]]*=[[:space:]]*"/opt/swarm/current/bin/swarmd"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*installedSearch[[:space:]]*=[[:space:]]*"/opt/swarm/current/bin/swarm-fff-search"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*configDir[[:space:]]*=[[:space:]]*"/etc/swarmd"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*isolatedHome[[:space:]]*=[[:space:]]*"/home/swarm"$' \
+    -e '^(\./)?tests/headlesscore/main\.go:[0-9]+:[[:space:]]*isolatedPasswd[[:space:]]*=[[:space:]]*"/etc/passwd"$' \
     || true
 }
 

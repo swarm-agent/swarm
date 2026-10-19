@@ -22,6 +22,16 @@ import (
 	"time"
 )
 
+// The fixed layout of an installed headless core, inside the probe's own
+// isolated filesystem (scripts/test-headless-core.sh); each path is declared once.
+const (
+	installedSwarmd = "/opt/swarm/current/bin/swarmd"
+	installedSearch = "/opt/swarm/current/bin/swarm-fff-search"
+	configDir       = "/etc/swarmd"
+	isolatedHome    = "/home/swarm"
+	isolatedPasswd  = "/etc/passwd"
+)
+
 const base = "http://127.0.0.1:7781"
 
 var client = &http.Client{Timeout: 3 * time.Second}
@@ -37,7 +47,7 @@ func start(args ...string) (*daemon, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("/opt/swarm/current/bin/swarmd", append([]string{"--cwd=/var/lib/swarm"}, args...)...)
+	cmd := exec.Command(installedSwarmd, append([]string{"--cwd=/var/lib/swarm"}, args...)...)
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if err := cmd.Start(); err != nil {
@@ -150,12 +160,12 @@ func run() error {
 	if os.Getenv("SWARM_PACKAGE_PROBE_ISOLATED") != "1" {
 		return errors.New("run only through scripts/test-headless-core.sh isolation")
 	}
-	for _, dir := range []string{"/etc/swarmd", "/var/lib/swarmd", "/var/cache/swarmd", "/var/log/swarmd", "/run/swarmd", "/var/lib/swarm", "/home/swarm", "/project"} {
+	for _, dir := range []string{configDir, "/var/lib/swarmd", "/var/cache/swarmd", "/var/log/swarmd", "/run/swarmd", "/var/lib/swarm", isolatedHome, "/project"} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return err
 		}
 	}
-	if err := os.WriteFile("/etc/passwd", []byte(fmt.Sprintf("swarm:x:%d:%d:Swarm:/var/lib/swarm:/bin/bash\n", os.Getuid(), os.Getgid())), 0644); err != nil {
+	if err := os.WriteFile(isolatedPasswd, []byte(fmt.Sprintf("swarm:x:%d:%d:Swarm:/var/lib/swarm:/bin/bash\n", os.Getuid(), os.Getgid())), 0644); err != nil {
 		return err
 	}
 	if err := os.WriteFile("/project/README.md", []byte("Isolated Headless package verification.\n"), 0600); err != nil {
@@ -167,7 +177,7 @@ func run() error {
 		}
 	}
 	searchCtx, cancelSearch := context.WithTimeout(context.Background(), 15*time.Second)
-	search := exec.CommandContext(searchCtx, "/opt/swarm/current/bin/swarm-fff-search")
+	search := exec.CommandContext(searchCtx, installedSearch)
 	search.Stdin = strings.NewReader(`{"protocol_version":1,"request_id":"package-search","index_root":"/project","target_path":"/project","operation":"content","queries":["Headless"],"max_results":10,"page_limit":10,"timeout_ms":8000}` + "\n")
 	searchOutput, searchErr := search.Output()
 	cancelSearch()
@@ -317,7 +327,7 @@ func run() error {
 	for _, line := range strings.Split(string(unit), "\n") {
 		if strings.HasPrefix(line, "ExecStart=") {
 			argv := strings.Fields(strings.TrimPrefix(line, "ExecStart="))
-			if len(argv) < 2 || argv[0] != "/opt/swarm/current/bin/swarmd" {
+			if len(argv) < 2 || argv[0] != installedSwarmd {
 				return errors.New("unexpected unit command")
 			}
 			unitArgs = argv[1:]
@@ -353,7 +363,7 @@ func run() error {
 	if _, err := expect("GET", "/v3/sessions", token.Token, nil, 401); err != nil {
 		return err
 	}
-	for file, mode := range map[string]os.FileMode{"/etc/swarmd/swarm.conf": 0600, "/var/lib/swarmd/local-transport": 0700, "/var/lib/swarmd/local-transport/api.sock": 0600} {
+	for file, mode := range map[string]os.FileMode{filepath.Join(configDir, "swarm.conf"): 0600, "/var/lib/swarmd/local-transport": 0700, "/var/lib/swarmd/local-transport/api.sock": 0600} {
 		st, err := os.Stat(file)
 		if err != nil || st.Mode().Perm() != mode {
 			return fmt.Errorf("private path permission mismatch: %s", filepath.Base(file))

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Fresh-install only. Stage 2C owns drain, replacement, rollback and updates.
 set -euo pipefail
+# The fixed layout this installer creates; each system path is declared once.
+OPT=/opt/swarm
+UNIT=/etc/systemd/system/swarm-headless.service
+DATA_DIRS=(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /run/swarmd)
+CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 usage() {
   echo 'Usage: bash install.sh --stage-root EMPTY_DESTINATION | --install'
   echo 'Verifies this extracted package. --stage-root writes files only under a new root.'
@@ -22,13 +27,13 @@ case "$mode" in
     root=''
     for command in git jq runuser useradd groupadd getent; do command -v "$command" >/dev/null; done
     command -v bwrap >/dev/null || { echo 'Bubblewrap (bwrap) is required for default agent execution. Install it before installing Swarm.' >&2; exit 1; }
-    [[ -s /etc/ssl/certs/ca-certificates.crt ]] || { echo 'Install CA certificates first.' >&2; exit 1; }
+    [[ -s $CA_BUNDLE ]] || { echo 'Install CA certificates first.' >&2; exit 1; }
     ;;
   *) usage >&2; exit 2 ;;
 esac
 # Refuse existing installs and data before any mutation. Never adopt or stop a
 # live daemon, create update timers, install dependencies or change networking.
-for owned in /opt/swarm /usr/local/bin/swarmctl /etc/systemd/system/swarm-headless.service /usr/local/lib/systemd/system/swarm-headless.service /etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd /run/swarmd /var/lib/swarm; do
+for owned in "$OPT" /usr/local/bin/swarmctl "$UNIT" /usr/local/lib/systemd/system/swarm-headless.service "${DATA_DIRS[@]}" /var/lib/swarm; do
   [[ ! -e "$root$owned" && ! -L "$root$owned" ]] || { echo "Existing Swarm path; fresh install refused: $owned" >&2; exit 1; }
 done
 if [[ $mode == --install ]]; then
@@ -45,21 +50,21 @@ if [[ $mode == --install ]]; then
   useradd --system --gid swarm --home-dir /var/lib/swarm --shell /usr/sbin/nologin swarm
 fi
 version=$(jq -r .version "$package/manifest.json")
-release="$root/opt/swarm/releases/$version"
-install -d -m 0755 "$release" "$root/usr/local/bin" "$root/etc/systemd/system"
+release="$root$OPT/releases/$version"
+install -d -m 0755 "$release" "$root/usr/local/bin" "$root${UNIT%/*}"
 cp -R -- "$package/bin" "$package/lib" "$package/doc" "$release/"
 install -m 0644 "$package/manifest.json" "$package/SHA256SUMS" "$release/"
-ln -s "releases/$version" "$root/opt/swarm/current"
-install -m 0644 "$package/systemd/swarm-headless.service" "$root/etc/systemd/system/swarm-headless.service"
+ln -s "releases/$version" "$root$OPT/current"
+install -m 0644 "$package/systemd/swarm-headless.service" "$root$UNIT"
 # The private owner socket is accessed as the daemon account, not exposed on TCP.
-cat > "$root/usr/local/bin/swarmctl" <<'WRAPPER'
+cat > "$root/usr/local/bin/swarmctl" <<WRAPPER
 #!/bin/sh
 set -eu
-export LD_LIBRARY_PATH=/opt/swarm/current/lib
-if [ "$(id -u)" = 0 ]; then
-  exec runuser -u swarm -- /opt/swarm/current/bin/swarmctl "$@"
+export LD_LIBRARY_PATH=$OPT/current/lib
+if [ "\$(id -u)" = 0 ]; then
+  exec runuser -u swarm -- $OPT/current/bin/swarmctl "\$@"
 fi
-exec /opt/swarm/current/bin/swarmctl "$@"
+exec $OPT/current/bin/swarmctl "\$@"
 WRAPPER
 chmod 0755 "$root/usr/local/bin/swarmctl"
 install -d -m 0700 "$root/var/lib/swarm"
