@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -126,77 +125,28 @@ func (s *Server) OutboxResultBuilder() outbox.ResultBuilder {
 	}
 }
 
-// outboxResultFromView turns a job's swarm_get_job view into its export.
+// outboxResultFromView turns a job's swarm_get_job view into its export: the
+// shared job result (job_result.go) plus the job's media files and a Git
+// bundle of its commits.
 func outboxResultFromView(ctx context.Context, b *outbox.Builder, workerID, workerName, runID string, view map[string]any) (*outbox.Export, error) {
-	// Read the view as an AI receives it: the tool's values are Go types
-	// ([]string, []map[string]any) until they are encoded.
-	if encoded, err := json.Marshal(view); err != nil {
-		return nil, err
-	} else if err := json.Unmarshal(encoded, &view); err != nil {
+	core, err := workerJobResultFromView(ctx, b.GitOutput, b.LastAttempt, workerID, workerName, runID, view)
+	if err != nil {
 		return nil, err
 	}
-	jobID := controlMCPJobID(controlMCPJobWorker, workerID, runID)
-	manifest := map[string]any{"job_id": jobID, "run_id": runID, "status": view["status"]}
-	worker := map[string]any{"id": workerID}
-	if workerName != "" {
-		worker["name"] = workerName
-	}
-	manifest["worker"] = worker
-	for _, key := range []string{"project_id", "session_id", "error", "deliverables"} {
-		if value, ok := view[key]; ok {
-			manifest[key] = value
-		}
-	}
-	result := controlMCPMap(view["result"])
-	for _, key := range []string{"workspace_path", "report", "what_did_do", "what_not_done", "cost", "delivery_state", "integration"} {
-		if value, ok := result[key]; ok {
-			manifest[key] = value
-		}
-	}
-	export := &outbox.Export{JobID: jobID, RunID: runID, Manifest: manifest}
+	manifest := core.manifest
+	export := &outbox.Export{JobID: core.jobID, RunID: runID, Manifest: manifest}
 	outcome := "report"
-	repo, _ := result["workspace_path"].(string)
-	branch, _ := result["worktree_branch"].(string)
-	base, _ := result["base_commit"].(string)
-	head, _ := result["head"].(string)
-	commits := controlMCPList(result["commits"])
-	if head == "" && repo != "" && controlMCPGitRevision.MatchString(branch) {
-		if resolved, err := b.GitOutput(ctx, repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch+"^{commit}"); err == nil {
-			head = strings.TrimSpace(resolved)
-		}
-	}
-	// A job's run ends a moment before Swarm has assessed its commits: a
-	// job with work whose commits are not readable yet is retried, and
-	// exported as it is on the last attempt.
-	state, _ := result["delivery_state"].(string)
-	pending := state == "" || state == "unavailable" || (state == "candidate_work" && (head == "" || len(commits) == 0))
-	if view["status"] == "needs_review" && pending && !b.LastAttempt {
-		return nil, outbox.ErrNotReady
-	}
-	if text, _ := result["changes_error"].(string); text != "" {
-		manifest["changes_error"] = text
-	}
-	if repo != "" && head != "" && len(commits) > 0 {
+	if core.hasGit {
 		outcome = "code"
-		git := map[string]any{"branch": branch, "base_branch": result["base_branch"], "base_commit": base, "head": head}
-		list := make([]map[string]string, 0, len(commits))
-		for _, raw := range commits {
-			line, _ := raw.(string)
-			sha, subject, _ := strings.Cut(line, " ")
-			list = append(list, map[string]string{"sha": sha, "subject": subject})
-		}
-		git["commits"] = list
+		repo, branch, base, head := core.repo, core.branch, core.base, core.head
+		git := map[string]any{"branch": branch, "base_branch": core.result["base_branch"], "base_commit": base, "head": head}
+		git["commits"] = core.commits
 		paths := []string{}
 		skipped := []map[string]string{}
-		for _, raw := range controlMCPList(result["files"]) {
-			file := controlMCPMap(raw)
-			name, _ := file["path"].(string)
-			status, _ := file["status"].(string)
-			if name == "" {
-				continue
-			}
+		for _, file := range core.files {
+			name := file.path
 			paths = append(paths, name)
-			if outbox.MediaType(name) == "" || status == "deleted" || strings.HasPrefix(status, "D") || status == "untracked" {
+			if !file.mediaPath() {
 				continue
 			}
 			blob, err := b.File(ctx, repo, head, name)
@@ -252,24 +202,14 @@ func (s *Server) outboxMediaResult(sig pebblestore.Signal, b *outbox.Builder) (*
 	return outboxMediaExport(task, b), nil
 }
 
-// outboxMediaExport is a media job's export: its manifest and its files.
+// outboxMediaExport is a media job's export: the shared media result
+// (job_result.go) and its files.
 func outboxMediaExport(task *pebblestore.ProjectTaskRecord, b *outbox.Builder) *outbox.Export {
-	projectID, taskID := task.ProjectID, task.ID
-	jobID := controlMCPJobID(controlMCPJobMedia, projectID, taskID)
-	manifest := map[string]any{"job_id": jobID, "run_id": taskID, "status": task.Status, "outcome": "media",
-		"kind": task.Agent, "project_id": projectID, "title": task.Title, "brief": controlMCPTruncate(task.Description, 4000)}
-	for key, value := range map[string]string{"model": task.Model, "aspect_ratio": task.AspectRatio, "resolution": task.Resolution, "error": task.LastError, "workspace_path": task.WorkspacePath} {
-		if value != "" {
-			manifest[key] = value
-		}
-	}
-	if task.DurationSeconds > 0 {
-		manifest["duration_seconds"] = task.DurationSeconds
-	}
-	export := &outbox.Export{JobID: jobID, RunID: taskID, Manifest: manifest}
+	manifest := mediaJobManifest(task)
+	export := &outbox.Export{JobID: manifest["job_id"].(string), RunID: task.ID, Manifest: manifest}
 	files, skipped := []map[string]any{}, []map[string]string{}
-	for i, file := range mediaTaskFiles(task) {
-		name := file.filename(task.Title, i+1)
+	for _, file := range mediaJobFiles(task) {
+		name := file.name
 		if len(file.data) == 0 {
 			if file.record.Status == "failed" {
 				skipped = append(skipped, map[string]string{"path": name, "reason": controlMCPTruncate(file.record.Description, 200)})

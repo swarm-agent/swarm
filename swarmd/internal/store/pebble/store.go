@@ -48,6 +48,7 @@ type Store struct {
 	limitSignals                *SignalStore
 	workerRunObserver           func(worker WorkerRecord, run WorkerRunRecord)
 	jobReviewObserver           func(account, worker, run string, review JobReview)
+	designJobEndObserver        func(task ProjectTaskRecord)
 	workerPublisherMu           sync.RWMutex
 	workerPublisher             func(V3RealtimeOutboxRecord)
 	workerBudgetPublisher       func(NotificationRecord)

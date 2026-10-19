@@ -253,7 +253,7 @@ func (s *SessionStore) ReconcileInterruptedDesignJobs(nowUnixMs int64) (int, err
 			}
 			continue
 		}
-		_, err = s.UpdateProjectTask(ref.AccountScopeID, ref.ProjectID, ref.TaskID, func(t *ProjectTaskRecord) error {
+		updated, err := s.UpdateProjectTask(ref.AccountScopeID, ref.ProjectID, ref.TaskID, func(t *ProjectTaskRecord) error {
 			if !designJobRunning(*t) {
 				return errors.New("design job settled during reconciliation")
 			}
@@ -267,6 +267,9 @@ func (s *SessionStore) ReconcileInterruptedDesignJobs(nowUnixMs int64) (int, err
 			return marked, fmt.Errorf("reconcile design job %s/%s: %w", ref.ProjectID, ref.TaskID, err)
 		}
 		marked++
+		if observe := s.store.designJobEndObserver; observe != nil && updated != nil {
+			observe(*updated)
+		}
 	}
 	return marked, nil
 }

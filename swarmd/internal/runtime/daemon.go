@@ -460,6 +460,15 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	permissionSvc.SetSignalEmitter(signalEmitter)
 	store.SetWorkerRunObserver(workerRunSignal(signalEmitter))
 	store.SetJobReviewObserver(jobReviewSignal(signalEmitter))
+	// A design job the restart marks failed ends like any other: its
+	// design.job.failed signal feeds the activity feed, outbox and automations.
+	store.SetDesignJobEndObserver(func(task pebblestore.ProjectTaskRecord) {
+		if sig, ok := api.DesignJobEndSignal(task); ok {
+			if _, err := signalStore.AppendOnce(sig); err != nil {
+				log.Printf("swarmd signal %s not recorded: %v", sig.Kind, err)
+			}
+		}
+	})
 	workspaceStore := pebblestore.NewWorkspaceStore(store)
 	sandboxMgr, err := newSandboxManager(context.Background(), cfg, workspaceStore, store)
 	if err != nil {

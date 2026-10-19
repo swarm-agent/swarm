@@ -381,15 +381,49 @@ func (s *Server) executeDesignJob(ctx context.Context, p identity.Principal, pro
 	jobs.mu.Lock()
 	stopped := handle.stopped
 	jobs.mu.Unlock()
-	if _, err := s.updateDesignJob(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
+	finished, err := s.updateDesignJob(p.AccountScopeID, projectID, taskID, func(t *pebblestore.ProjectTaskRecord) error {
 		if t.Design == nil || t.Design.State != pebblestore.DesignJobRunning {
 			return errors.New("design job is no longer running")
 		}
 		finishDesignJob(t, result, runErr, stopped, time.Now().UnixMilli())
 		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		log.Printf("design job %s outcome not recorded: %v", taskID, err)
+		return
 	}
+	if s.signals != nil && finished != nil {
+		if sig, ok := DesignJobEndSignal(*finished); ok {
+			if _, err := s.signals.AppendOnce(sig); err != nil {
+				log.Printf("swarmd signal %s not recorded: %v", sig.Kind, err)
+			}
+		}
+	}
+}
+
+// DesignJobEndSignal is design.job.completed, design.job.failed or
+// design.job.cancelled for a design job that ended, so the activity feed, the
+// outbox and job automations see it. ok is false while the job runs.
+func DesignJobEndSignal(task pebblestore.ProjectTaskRecord) (pebblestore.Signal, bool) {
+	job := task.Design
+	if job == nil || job.State == pebblestore.DesignJobRunning || job.State == "" {
+		return pebblestore.Signal{}, false
+	}
+	kind := "design.job." + job.State
+	severity, summary := pebblestore.SignalSeverityInfo, fmt.Sprintf("Design job %s: %d of %d design(s) finished", job.State, job.Finished(), job.Count)
+	if job.State == pebblestore.DesignJobFailed {
+		severity = pebblestore.SignalSeverityWarning
+		summary = "Design job failed: " + controlMCPTruncate(job.Error, 160)
+	}
+	attrs := map[string]string{"job_id": controlMCPJobID(controlMCPJobDesign, task.ProjectID, task.ID), "mode": job.Mode}
+	if job.Model != "" {
+		attrs["model"] = job.Model
+	}
+	return pebblestore.Signal{
+		Kind: kind, Severity: severity, Source: pebblestore.SignalSourceSwarmd, Account: task.AccountID,
+		Summary: summary, DedupKey: kind + ":" + task.ID,
+		Refs: map[string]string{"project_id": task.ProjectID, "task_id": task.ID}, Attrs: attrs,
+	}, true
 }
 
 // finishDesignJob settles the record: cancelled when stopped, completed when

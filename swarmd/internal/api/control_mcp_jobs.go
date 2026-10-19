@@ -1080,7 +1080,13 @@ func controlMCPStopJob(c *controlMCPCall, args map[string]any) (any, error) {
 		if refs.sessionID == "" {
 			return nil, controlMCPToolFailure("this media job has not started; nothing to stop")
 		}
-		return controlMCPStopRun(c, map[string]any{"session_id": refs.sessionID, "reason": controlMCPString(args, "reason")})
+		out, err := controlMCPStopRun(c, map[string]any{"session_id": refs.sessionID, "reason": controlMCPString(args, "reason")})
+		if err == nil && c.server != nil {
+			if principal, ok := PrincipalFromRequest(c.request); ok {
+				c.server.signalMediaCancelled(principal, a, b, controlMCPString(args, "reason"))
+			}
+		}
+		return out, err
 	}
 	response, err := c.dispatch(http.MethodPost, "/v3/workers/"+a+"/runs/"+b+"/cancel", nil, map[string]any{})
 	if err != nil {
