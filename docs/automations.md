@@ -70,7 +70,7 @@ after it, which are recorded as `skipped`).
   starts the job through the normal job admission (workspace and worker
   checks) with request source `automation`, the brief with the triggering
   job's result attached, and the delivery id and step id as its idempotency
-  key (a restart never starts it twice).
+  key (a restart never starts it twice; an explicit re-run starts a new job).
 - A reviewer reviews the triggering job's exact head (`review_job`).
 - The step waits, within its timeout, for that job to end; the job's status
   is the step's status. The step's `outcome` records the job id, its head,
@@ -147,9 +147,9 @@ and `step_id`:
 
 - `automation.step.started`
 - `automation.step.succeeded` (attrs: `step`, `output`)
-- `automation.step.failed` (severity warning; attrs: `step`, `reason`,
-  `next` = `rerun`, `fix the script` or `fix the setup, then rerun`, and
-  `retrying automatically` while retries remain)
+- `automation.step.failed` (severity warning; attrs: `step`, `reason` and
+  `next`, the next allowed action: `rerun` or `fix the script`; while
+  automatic retries remain, also `will_retry` and `retry_at`)
 - `automation.delivery.finished` (attrs: `state`, step counts)
 
 Design jobs now end with `design.job.completed`, `design.job.failed` or

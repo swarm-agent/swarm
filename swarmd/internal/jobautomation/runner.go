@@ -568,12 +568,22 @@ func (r *Runner) runStep(ctx context.Context, d *Delivery, i int, step Step) boo
 		attrs["exit_code"] = strconv.Itoa(*record.ExitCode)
 	}
 	if retry {
-		attrs["next"] = "retrying automatically"
+		attrs["will_retry"] = "true"
 		attrs["retry_at"] = strconv.FormatInt(record.NextAttemptAt, 10)
 	}
 	r.signal(*d, "automation.step.failed", pebblestore.SignalSeverityWarning, fmt.Sprintf("Automation %s step %s failed: %s", d.AutomationName, step.ID, failure.reason), step.ID, attrs,
 		strconv.Itoa(record.Attempts))
 	return false
+}
+
+// agentIdempotencyKey is the delivery id plus the step id, so a restart
+// never starts an agent step's job twice; an explicit re-run is a new job.
+func agentIdempotencyKey(d Delivery, stepID string) string {
+	key := d.ID + "." + stepID
+	if d.Reruns > 0 {
+		key += ".rerun" + strconv.Itoa(d.Reruns)
+	}
+	return key
 }
 
 type stepFailure struct {
@@ -624,7 +634,7 @@ func (r *Runner) runScript(ctx context.Context, d *Delivery, record *StepRecord,
 	record.Output = lastLine(logTail)
 	var refused *RefusedError
 	if errors.As(err, &refused) {
-		return stepFailure{reason: truncate(refused.Reason, 300), next: "fix the setup, then rerun", refused: true}
+		return stepFailure{reason: truncate(refused.Reason, 300), next: "rerun", refused: true}
 	}
 	if err != nil {
 		if ctx.Err() != nil {
@@ -651,11 +661,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	jobID, _ := record.Outcome["job_id"].(string)
 	if jobID == "" {
 		started, err := r.agent.Start(ctx, AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result,
-			IdempotencyKey: d.ID + "." + step.ID + "." + strconv.Itoa(d.Reruns)})
+			IdempotencyKey: agentIdempotencyKey(*d, step.ID)})
 		if err != nil {
 			var refused *RefusedError
 			if errors.As(err, &refused) {
-				return stepFailure{reason: truncate(refused.Reason, 300), next: "fix the setup, then rerun", refused: true}
+				return stepFailure{reason: truncate(refused.Reason, 300), next: "rerun", refused: true}
 			}
 			return stepFailure{reason: truncate("could not start the job: "+err.Error(), 300), next: "rerun"}
 		}

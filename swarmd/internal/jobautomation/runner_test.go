@@ -466,7 +466,7 @@ func TestAgentStepRecordsTheJobAndAutomationJobsTriggerNothing(t *testing.T) {
 	}
 	req := h.agents.started[0]
 	d := h.deliveries("worker/coder-1/run-1")[0]
-	if req.Worker != "reviewer" || req.Folder != folder || req.Result.JobID != "worker/coder-1/run-1" || req.IdempotencyKey != d.ID+".review.0" {
+	if req.Worker != "reviewer" || req.Folder != folder || req.Result.JobID != "worker/coder-1/run-1" || req.IdempotencyKey != d.ID+".review" {
 		t.Fatalf("agent request = %+v", req)
 	}
 	step := d.Steps[0]
