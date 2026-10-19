@@ -612,7 +612,12 @@ dev_sync() {
   repo=$(realpath "$repo")
   [[ -d $repo/.git && -f $repo/containers/headless/app/install.sh ]] || die "$repo is not a Swarm checkout"
   # The checkout belongs to another user; trust it for this one fetch only.
-  git -C "$SRC" -c safe.directory="$repo" fetch -q "$repo" HEAD || die "could not read $repo"
+  # A local fetch reads it in a separate `git upload-pack`, which does not see
+  # `-c` given to this git, so the trust goes to upload-pack itself: the git
+  # directory, and the worktree for older git. The command runs in a shell.
+  local upload_pack
+  upload_pack="git -c safe.directory=$(printf %q "$repo/.git") -c safe.directory=$(printf %q "$repo") upload-pack"
+  git -C "$SRC" fetch -q --upload-pack="$upload_pack" "$repo" HEAD || die "could not read $repo"
   sed -i '/^DEV_SOURCE=/d' "$CONF" && echo "DEV_SOURCE=$repo" >>"$CONF"
   git -C "$SRC" reset -q --hard FETCH_HEAD
   echo "swarm: building $(git -C "$SRC" rev-parse --short HEAD) from $repo"
