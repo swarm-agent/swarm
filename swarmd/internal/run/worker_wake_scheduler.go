@@ -158,7 +158,12 @@ type WorkerScheduler struct {
 	// only a record due later triggers another full pass.
 	v2BlockedThrough int64
 	v2Overflow       bool
-	wakeups          atomic.Int64
+	// v2Pending and v2Upcoming are from the last hint. Pending observation
+	// wakes page the catalog without re-reading the hint; a settling
+	// occurrence commits a V2 mutation, which signals and refreshes them.
+	v2Pending  bool
+	v2Upcoming time.Time
+	wakeups    atomic.Int64
 	// waitHook observes each wait (test seam).
 	waitHook func(next time.Time)
 }
@@ -486,12 +491,18 @@ func (sch *WorkerScheduler) reconcileEntry(ctx context.Context, ws *store.Worker
 		e.after = e.changedSince
 	}
 	e.changedSince = time.Time{}
-	return errors.Join(err, sch.reschedule(ws, e))
+	return errors.Join(err, sch.reschedule(ws, e, now))
 }
 
-func (sch *WorkerScheduler) reschedule(ws *store.WorkerStore, e *workerSchedEntry) error {
+// reschedule recomputes the entry's next due slot. When the worker cannot be
+// read, a due time that is not in the future backs off by the busy interval:
+// a past due time would make nextWake return the past and spin the loop.
+func (sch *WorkerScheduler) reschedule(ws *store.WorkerStore, e *workerSchedEntry, now time.Time) error {
 	w, found, err := ws.GetWorker(e.key.account, e.key.id)
 	if err != nil {
+		if !e.due.After(now) {
+			e.due = now.Add(workerSchedulerBusyInterval)
+		}
 		sch.fix(e)
 		return err
 	}
@@ -541,7 +552,7 @@ func (sch *WorkerScheduler) admitDue(ctx context.Context, now time.Time) error {
 		if now.After(e.after) {
 			e.after = now
 		}
-		failures = append(failures, sch.reschedule(ws, e))
+		failures = append(failures, sch.reschedule(ws, e, now))
 	}
 	return errors.Join(failures...)
 }
@@ -569,9 +580,10 @@ func v2DueTimes(hint store.AutomationV2ScheduleHint, nowMs int64) (latestDue, up
 //     overlap, a conflict or an admission error). It is blocked: no further
 //     full passes until a committed V2 change, the safety rescan or UTC
 //     midnight clears the block.
-//   - While occurrences are pending, the prior cadence holds: at most one
-//     hint read and one sweep page per second, which also re-ticks blocked
-//     records as their page comes round.
+//   - While occurrences are pending, the prior cadence holds: one sweep page
+//     per second, without re-reading the hint, which also re-ticks blocked
+//     records as their page comes round. The hint is re-read only on a
+//     committed V2 change, a newly due time, the rescan or UTC midnight.
 //   - Committed changes are coalesced to at most one pass per second.
 //   - Above the bounded hint the catalog is paged one page per second.
 func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error {
@@ -592,11 +604,22 @@ func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error 
 		sch.v2BlockedThrough = 0
 	} else if sch.v2Next.IsZero() || now.Before(sch.v2Next) {
 		return nil
+	} else if (sch.v2Pending || sch.v2Overflow) && (sch.v2Upcoming.IsZero() || now.Before(sch.v2Upcoming)) {
+		// Timed observation wake: one page, the old loop's cost. The hint
+		// decodes every accepted record, so it is re-read only on a
+		// committed V2 change, a newly due time, the rescan or midnight.
+		err := sch.v2.Sweep(ctx, now)
+		sch.v2Next = now.Add(automationV2PendingInterval)
+		if !sch.v2Upcoming.IsZero() && sch.v2Upcoming.Before(sch.v2Next) {
+			sch.v2Next = sch.v2Upcoming
+		}
+		return err
 	}
 	nowMs := now.UnixMilli()
 	hint, err := sch.v2Hints.AutomationV2ScheduleHint(nowMs)
 	if err != nil {
 		sch.v2Next = now.Add(workerSchedulerBusyInterval)
+		sch.v2Pending, sch.v2Overflow = false, false
 		return err
 	}
 	var failures []error
@@ -619,6 +642,7 @@ func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error 
 		}
 		if hint, err = sch.v2Hints.AutomationV2ScheduleHint(nowMs); err != nil {
 			sch.v2Next = now.Add(workerSchedulerBusyInterval)
+			sch.v2Pending, sch.v2Overflow = false, false
 			return errors.Join(append(failures, err)...)
 		}
 		if hint.Overflow {
@@ -629,9 +653,11 @@ func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error 
 	case hint.Pending:
 		failures = append(failures, sch.v2.Sweep(ctx, now))
 	}
+	sch.v2Pending, sch.v2Upcoming = hint.Pending, time.Time{}
 	sch.v2Next = time.Time{}
 	if upcoming > 0 {
-		sch.v2Next = time.UnixMilli(upcoming)
+		sch.v2Upcoming = time.UnixMilli(upcoming)
+		sch.v2Next = sch.v2Upcoming
 	}
 	if hint.Pending {
 		if p := now.Add(automationV2PendingInterval); sch.v2Next.IsZero() || p.Before(sch.v2Next) {
@@ -650,6 +676,7 @@ func (sch *WorkerScheduler) pageV2Overflow(ctx context.Context, now time.Time) e
 	}
 	sch.v2Overflow = true
 	sch.v2BlockedThrough = 0
+	sch.v2Pending, sch.v2Upcoming = false, time.Time{}
 	failures = append(failures, sch.v2.Sweep(ctx, now))
 	sch.v2Next = now.Add(automationV2PendingInterval)
 	return errors.Join(failures...)

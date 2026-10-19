@@ -12,24 +12,29 @@ import (
 // NextWorkerScheduledAt reports the earliest eligible schedule slot strictly
 // after after. It is an estimate, not a dispatch guarantee: TickWorker skips
 // missed slots and still checks ownership, budget and admission at dispatch.
+// An automation whose next slot cannot be computed is skipped and its error
+// returned alongside the earliest slot of the others, so one bad schedule
+// never stops a worker's other automations.
 func NextWorkerScheduledAt(w store.WorkerRecord, after time.Time) (int64, error) {
 	if w.LifecycleState != store.WorkerLifecycleStateActive {
 		return 0, nil
 	}
 	var earliest int64
+	var failures []error
 	for _, a := range w.Automations {
 		if !workerAutomationScheduled(a) {
 			continue
 		}
 		next, err := workerAutomationNextDue(a, after)
 		if err != nil {
-			return 0, err
+			failures = append(failures, fmt.Errorf("worker %s automation %s: %w", w.ID, a.ID, err))
+			continue
 		}
 		if next > 0 && (earliest == 0 || next < earliest) {
 			earliest = next
 		}
 	}
-	return earliest, nil
+	return earliest, errors.Join(failures...)
 }
 
 func workerAutomationScheduled(a store.WorkerAutomationDefinition) bool {

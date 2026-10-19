@@ -90,9 +90,11 @@ func TestWorkerSchedulerDrivesAutomationV2OnlyWhenDueOrPending(t *testing.T) {
 	if wakes := simulate(ctx, sch, clock, clock.Now().Add(5*time.Second)); wakes != 5 || len(sweeper.sweeps)-sweepsBefore != 5 {
 		t.Fatalf("pending: wakes=%d sweeps=%d over 5s, want 5/5", wakes, len(sweeper.sweeps)-sweepsBefore)
 	}
-	// Once settled, the scheduler sleeps until the next due time.
+	// Once settled, the scheduler sleeps until the next due time. Settling
+	// commits a V2 occurrence mutation, which signals the scheduler.
 	hinter.hint.Pending = false
 	clock.Set(clock.Now().Add(time.Second))
+	sch.Notify(pebblestore.SchedulingSignal{Kind: pebblestore.SchedulingSignalAutomationV2})
 	if err := sch.process(ctx, clock.Now()); err != nil {
 		t.Fatal(err)
 	}
