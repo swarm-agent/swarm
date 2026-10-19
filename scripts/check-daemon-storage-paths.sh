@@ -60,6 +60,9 @@ filter_allowed() {
   # exempt the exact lookup, not other home defaults or appended operations.
   # Git recovery uses a disposable private alternate index, removed on return;
   # permit only this exact temporary allocation, never a daemon storage root.
+  # Managed environments stage one file's bytes in a private scratch directory
+  # removed on return, and hand managed Git the process temp root as TMPDIR;
+  # exempt only those exact lines.
   # Setup recovery atomically publishes a synced record in the same trusted
   # directory; this exact call is not a storage migration.
   grep -vFx -f <(printf '%s\n' \
@@ -70,6 +73,8 @@ filter_allowed() {
     'internal/launcher/system_paths.go:	return filepath.IsAbs(home) && filepath.Clean(home) != "/" && filepath.Clean(home) != "/root" && !strings.ContainsAny(home, "\n\r\"%")' \
     'cmd/swarmsetup/main.go:	fmt.Fprintln(os.Stderr, "OS installation identity is not Swarm authentication. Open Swarm and complete its authenticated account setup or sign in; existing Swarm account/provider/workspace state is retained on retry.")') < <(sed -E 's/^(internal\/launcher\/system_paths\.go|cmd\/swarmsetup\/main\.go|swarmd\/internal\/run\/worker_execution\.go|swarmd\/internal\/tool\/search_coordinator\.go):[0-9]+:/\1:/') | grep -Ev \
     -e '^swarmd/internal/tool/runtime_git_recovery\.go:[0-9]+:[[:blank:]]*tmp, err := os\.MkdirTemp\("", "swarm-recovery-index-"\)$' \
+    -e '^swarmd/internal/tool/runtime_managed_checkout\.go:[0-9]+:[[:blank:]]*temp, err := os\.MkdirTemp\("", "swarm-managed-file-"\)$' \
+    -e '^swarmd/internal/worktree/managed_handoff\.go:[0-9]+:[[:blank:]]*cmd\.Env = \[\]string\{"PATH=" \+ os\.Getenv\("PATH"\), "TMPDIR=" \+ os\.TempDir\(\), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0"\}$' \
     -e '^internal/launcher/onboarding_recovery\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(f\.Name\(\), filepath\.Join\(dir, "onboarding\.json"\)\); err != nil \{$' \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
