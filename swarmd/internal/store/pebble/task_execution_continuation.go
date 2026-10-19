@@ -30,6 +30,11 @@ func (s *SessionStore) prepareTaskExecutionContinuation(input V3SessionMutationI
 	if task.ExecutionRunID() == intent.RunID {
 		return nil, nil // Initial admission keeps its reserved lifecycle.
 	}
+	if task.WorkerRunID != "" && task.WorkerRunID == intent.RunID && task.Status == "queued" {
+		// A direct worker job's first message runs as the job's own run while
+		// its task is still queued; the job marks the task in_progress itself.
+		return nil, nil
+	}
 	if task.Archived || task.IsIntegrated || task.Status == "completed" || task.Status == "rejected" || task.Status == "pending_approval" || task.Status == "planning" || task.Status == "queued" {
 		return nil, errors.New("task continuation requires an admitted task; use the canonical task approval or reopen lifecycle")
 	}
