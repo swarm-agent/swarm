@@ -1786,6 +1786,16 @@ func defaultPolicyDecision(mode, toolName, toolArguments string) PolicyDecision 
 			return PolicyDecisionDeny
 		}
 		return PolicyDecisionAllow
+	case "swarm_design":
+		// Design generation is auto-approved like other workspace writes: it only
+		// creates new files under its batch folder (or replaces the one edit_path
+		// file it read), and every model call is held to the daily spending limit
+		// and any worker budget. Read-only sessions cannot write files. An
+		// explicit deny rule still wins over this default.
+		if mode == "read" {
+			return PolicyDecisionDeny
+		}
+		return PolicyDecisionAllow
 	case "bash":
 		if mode == "read" || mode == "readwrite" {
 			return PolicyDecisionDeny

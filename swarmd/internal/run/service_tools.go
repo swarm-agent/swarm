@@ -1374,11 +1374,11 @@ func (s *Service) prepareDelegatedSubagentLaunchWithProfile(parentSession pebble
 			childMetadata["integration_contract"] = contract
 		}
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged && launch.ArtifactV3AuthorContext == nil {
-		return taskLaunchPrepared{}, errors.New("managed Designer launch is missing its trusted Artifact V3 author capability")
+	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
+		return taskLaunchPrepared{}, errDesignerManagedOutputRemoved
 	}
-	if isDesignerTarget && strings.TrimSpace(launch.OutputMode) != taskOutputModeManaged && launch.ArtifactV3AuthorContext != nil {
-		return taskLaunchPrepared{}, errors.New("workspace Designer launch cannot carry an Artifact V3 author capability")
+	if isDesignerTarget && launch.ArtifactV3AuthorContext != nil {
+		return taskLaunchPrepared{}, errors.New("a Designer launch cannot carry an Artifact V3 author capability: Designer writes HTML designs with swarm_design")
 	}
 	if isDesignerTarget && launch.ArtifactV3AuthorContext != nil {
 		grant := launch.ArtifactV3AuthorContext.Grant
@@ -2307,7 +2307,13 @@ func (s *Service) executeControlPlaneToolWithLifecycleRunContext(ctx context.Con
 		output, err := s.executeManageWorkspaceTool(sessionID, arguments, principal, applySessionMutation)
 		result.Output = output
 		return true, result, err
-	case "manage_design", "manage_actions", "manage_connections", "manage_environments":
+	case tool.SwarmDesignToolName:
+		// Design model calls run inside this run and record usage on this
+		// session; the tool runtime never executes swarm_design itself.
+		output, err := s.executeSwarmDesignTool(ctx, sessionID, call)
+		result.Output = output
+		return true, result, err
+	case "manage_actions", "manage_connections", "manage_environments":
 		return false, tool.Result{}, nil
 	case "manage_todos":
 		output, err := s.executeManageTodosTool(sessionID, call, approvedArguments)
@@ -5329,8 +5335,8 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 	if parsed.Swarm != nil && parsed.Swarm.AgentType == "video" {
 		return s.executeDirectVideoSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
 	}
-	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.OutputMode != taskOutputModeWorkspace {
-		return s.executeDirectDesignerSwarm(ctx, sessionID, sessionMode, step, call, emit, req, parsed, description, prompt)
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.Strategy != taskSwarmStrategyAssembly {
+		return "", errDesignerIterationSwarmReplaced
 	}
 	launchSpecs := append([]taskLaunchSpec(nil), parsed.Launches...)
 	if len(launchSpecs) == 0 {
@@ -5655,6 +5661,9 @@ func (s *Service) executeTaskToolWithParsed(ctx context.Context, sessionID, sess
 				profile, err = s.agents.ReconcileSystemAgentSnapshot(agentruntime.DesignerAgentID, profile)
 				if err != nil {
 					return "", fmt.Errorf("reconcile compiled Designer launch snapshot: %w", err)
+				}
+				if strings.EqualFold(strings.TrimSpace(launchSpecs[i].OutputMode), taskOutputModeManaged) {
+					return "", fmt.Errorf("approved task manifest launch %d: %w", i, errDesignerManagedOutputRemoved)
 				}
 				if strings.EqualFold(strings.TrimSpace(launchSpecs[i].OutputMode), taskOutputModeWorkspace) {
 					workspaceProfile := agentruntime.DesignerWorkspaceAgentProfileForParent(profile)
@@ -7185,7 +7194,8 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("- output mode: managed image; publish exactly one durable ready image with one manage_artifact generate_image call; omit provider, model, collection_id, variant_id, and output_requirements; do not inspect, write, or edit the workspace checkout\n")
 			} else {
-				b.WriteString("- output mode: managed Artifact V3; use only artifact_v3_author to inspect and edit the complete conventional project tree, run repeatable build_preview gates, repair against diagnostics, and call finish_turn exactly once; never call manage_artifact, artifact_v2_author, declare_parts/write_part, or write/edit the repository checkout\n")
+				b.WriteString("- output contract: managed Designer output was removed; fail without mutating anything and tell the parent to launch Designer with an owned_scope for swarm_design\n")
+				break
 			}
 			if config.ArtifactV3Source != nil {
 				encoded, _ := json.Marshal(config.ArtifactV3Source)
@@ -7198,25 +7208,6 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 				encoded, _ := json.Marshal(config.SourceArtifact)
 				b.Write(encoded)
 				b.WriteString("\n- source artifact contract: inspect or derive from this exact authenticated ready reference; never substitute a preview, download, or guessed workspace path. When publishing the derived managed output, copy it as source_session_id/source_collection_id/source_variant_id/source_event_seq so lineage remains exact.\n")
-			}
-			if agentruntime.IsDesignerAgentName(config.RequestedSubagent) {
-				if config.ArtifactV3AuthorContext == nil {
-					b.WriteString("- output contract: trusted Artifact V3 author capability is missing; fail without mutating the checkout or any artifact\n")
-					break
-				}
-				grant := config.ArtifactV3AuthorContext.Grant
-				b.WriteString("- Artifact V3 authoring contract: call inspect_context first. Artifact, repository, turn, candidate branch, exact base commit, policy, build commands, preview destination, and locks are server-bound and absent from model arguments. Target Parts guide intent but do not limit coherent cross-project edits. Use ordinary full-tree create/edit/rename/delete operations, repeat build_preview until ready, then call finish_turn exactly once.\n")
-				if len(grant.TargetPartIDs) != 0 {
-					b.WriteString("- target Part IDs (intent only): ")
-					b.WriteString(strings.Join(grant.TargetPartIDs, ", "))
-					b.WriteString("\n")
-				}
-				if len(grant.LockedPaths) != 0 {
-					b.WriteString("- explicitly locked paths (immutable): ")
-					b.WriteString(strings.Join(grant.LockedPaths, ", "))
-					b.WriteString("\n")
-				}
-				break
 			}
 			if config.ArtifactRunContext == nil {
 				b.WriteString("- output contract: trusted artifact destination is missing; fail without mutating the checkout or managed artifacts\n")
@@ -7238,7 +7229,7 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 			b.WriteString("- shared checkout: use the parent's exact checkout; do not run Git or create a worktree\n")
 			b.WriteString("- owned scope/output target: ")
 			b.WriteString(strings.Join(config.OwnedScope, ", "))
-			b.WriteString("\n- output contract: create or revise ordinary reusable workspace artifacts only within that declared target; do not use manage_artifact; artifacts remain available after this child finishes\n")
+			b.WriteString("\n- output contract: make or edit HTML designs only with swarm_design, with its folder or edit_path inside that declared target; do not use manage_artifact; the files remain available after this child finishes\n")
 			if config.SourceArtifact != nil {
 				b.WriteString("- exact source artifact (backend supplied; immutable input): ")
 				encoded, _ := json.Marshal(config.SourceArtifact)
@@ -7285,11 +7276,9 @@ func buildTaskDelegationPrompt(config taskDelegationPromptConfig) string {
 		if strings.EqualFold(strings.TrimSpace(config.OutputMode), taskOutputModeManaged) {
 			if agentruntime.IsImageAgentName(config.RequestedSubagent) {
 				b.WriteString("9. For managed Image work, call manage_artifact exactly once with action=generate_image and finish only after it returns the trusted exact ready reference. Do not call another tool or inspect or mutate the checkout.\n")
-			} else {
-				b.WriteString("9. For managed Designer work, use only artifact_v3_author. Inspect the context-bound complete project, make ordinary coherent full-tree edits, repeat build_preview until the exact whole project is ready, and call finish_turn exactly once. Target Parts express user intent and never forbid necessary shared-code or cross-Part repairs. Never call manage_artifact, artifact_v2_author, write/edit the repository checkout, create legacy placeholders, or choose destination identity.\n")
 			}
 		} else {
-			b.WriteString("9. For workspace Designer work, do not use Git or manage_artifact. Inspect nearby code as needed and create or revise the assigned reusable variant only within the declared owned scope.\n")
+			b.WriteString("9. For Designer work, make or edit designs only with swarm_design inside the declared owned scope; do not use Git or manage_artifact. Report every design's path and status exactly as swarm_design returned it.\n")
 		}
 	}
 	return strings.TrimSpace(b.String())
@@ -7732,6 +7721,20 @@ func parseTaskChildBlockedReport(report string, outcome *taskLaunchOutcome) erro
 	return taskChildBlockedError{code: outcome.BlockerCode, message: message}
 }
 
+// taskChildDisabledTools is taskDisabledTools for one launched child. Only a
+// Designer child keeps swarm_design: it is the Designer's only way to write
+// designs, while every other task child must not start design model calls. A
+// task Designer works in the parent's shared checkout, so it never commits;
+// the parent owns integration.
+func taskChildDisabledTools(requested string, allowBash bool) map[string]bool {
+	disabled := taskDisabledTools(allowBash)
+	if agentruntime.IsDesignerAgentName(requested) {
+		delete(disabled, tool.SwarmDesignToolName)
+		disabled["git_add"], disabled["git_commit"] = true, true
+	}
+	return disabled
+}
+
 func taskDisabledTools(allowBash bool) map[string]bool {
 	disabled := map[string]bool{
 		"ask_user":            true,
@@ -7740,7 +7743,7 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 		"exit-plan-mode":      true,
 		"plan_manage":         true,
 		"plan-manage":         true,
-		"manage_design":       true,
+		"swarm_design":        true,
 		"manage_actions":      true,
 		"manage-actions":      true,
 		"manage_connections":  true,
@@ -7956,14 +7959,8 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return requirement, true
 		}
 		return toolName, false
-	case "manage_design":
-		var input struct {
-			Action string `json:"action"`
-		}
-		if json.Unmarshal([]byte(arguments), &input) != nil {
-			return "design_change", true
-		}
-		return "design_change", input.Action != "status" && input.Action != "history" && input.Action != "read"
+	case tool.SwarmDesignToolName:
+		return toolName, false
 	case "manage_actions":
 		if isManageActionsMutation(arguments) {
 			return "action_change", true

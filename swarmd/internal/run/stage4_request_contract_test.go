@@ -67,9 +67,12 @@ func TestStage4RequestCapture(t *testing.T) {
 }
 
 // Requirement H2-H4: each resolved role gets relevant guidance with its original
-// tool authority, including negative capability boundaries. Owners are the
-// shared request composer and compileResolvedAgentToolContract; this layer
-// observes concrete schemas/policy and instructions before provider transport.
+// tool authority, including negative capability boundaries; Designer resolves
+// to swarm_design with read/search and scoped Git and nothing that writes HTML
+// another way. Threat: a role regains a retired or parent-only capability.
+// Owners are the shared request composer and compileResolvedAgentToolContract;
+// this layer observes concrete schemas/policy and instructions before provider
+// transport.
 func TestStage4RoleRequestContracts(t *testing.T) {
 	svc := &Service{tools: &tool.Runtime{}}
 	base := store.AgentProfile{}
@@ -125,17 +128,20 @@ func TestStage4RoleRequestContracts(t *testing.T) {
 					t.Fatal("Finder instructed to use absent find")
 				}
 			case agent.DesignerAgentID:
-				assertDenied("bash", "task", "ask_user", "plan_manage")
-				if contract.Tools["artifact_v3_author"].Enabled {
-					assertDenied("write", "edit")
-					if strings.Contains(text, "Workspace output: use") {
-						t.Fatal("workspace instructions in managed Designer")
+				// Designer has one contract for both profile names: designs only
+				// through swarm_design, plus read/search and scoped Git.
+				assertDenied("bash", "task", "ask_user", "plan_manage", "write", "edit", "media_inspect", "manage_artifact")
+				for _, name := range []string{tool.SwarmDesignToolName, "read", "search", "find", "list", "git_status", "git_diff", "git_add", "git_commit"} {
+					if !contract.Tools[name].Enabled || disabled[name] {
+						t.Errorf("Designer lost %s", name)
 					}
-				} else {
-					assertDenied("artifact_v3_author")
-					if strings.Contains(text, "Start with inspect_context") {
-						t.Fatal("managed instructions in workspace Designer")
-					}
+				}
+				// artifact_v3_author is no longer a registered tool at all.
+				if contract.Tools["artifact_v3_author"].Enabled || contract.Tools["manage_design"].Enabled {
+					t.Error("retired Designer authoring tool unexpectedly enabled")
+				}
+				if !strings.Contains(text, "swarm_design") || strings.Contains(text, "inspect_context") || strings.Contains(text, "artifact_v3_author") {
+					t.Fatal("Designer instructions do not match the swarm_design contract")
 				}
 			}
 		})

@@ -185,7 +185,6 @@ type Daemon struct {
 	toolRuntime               *tool.Runtime
 	videoRenderService        *videorender.Service
 	aiTaskDispatcher          *run.AITaskV2Dispatcher
-	designDispatcher          *run.DesignDispatcher
 	deploymentMgr             *lifecycle.DeploymentManager
 	localTransportRuntimeName string
 	localTransportBaseURL     string
@@ -992,17 +991,22 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	apiServer.SetUpdateService(updateSvc)
 	apiServer.SetTopologyService(topologySvc)
 
-	if htmlRenderer != nil {
-		runSvc.SetDesignRenderer(htmlRenderer)
-	}
-	// Design jobs check each design in the sandboxed headless Chrome; without a
-	// renderer every check reports unavailable (never a pass).
+	// Design jobs and in-session swarm_design calls check each design in the
+	// sandboxed headless Chrome; without a renderer every check reports
+	// unavailable (never a pass).
 	designChecker := design.ChromeChecker{}
 	if htmlRenderer != nil {
 		designChecker.Browser = htmlRenderer
 	}
 	apiServer.SetDesignJobs(designChecker, runSvc)
-	designDispatcher := runSvc.StartDesignDispatcher(bgCtx)
+	runSvc.SetDesignChecker(designChecker)
+	// manage_design was replaced by swarm_design: its queue is no longer
+	// dispatched, so requests still pending from before are ended once here.
+	if ended, err := sessionSvc.DesignStore().RetirePendingDesignRequests(); err != nil {
+		log.Printf("warning: retire pending manage_design requests: %v", err)
+	} else if ended > 0 {
+		log.Printf("ended %d pending manage_design candidate(s): manage_design was replaced by swarm_design", ended)
+	}
 	localTransportRuntimeName := ""
 
 	d := &Daemon{
@@ -1022,7 +1026,6 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 		toolRuntime:               toolRuntime,
 		videoRenderService:        videoRenderSvc,
 		aiTaskDispatcher:          aiTaskDispatcher,
-		designDispatcher:          designDispatcher,
 		workerExecution:           workerExecution,
 		worktreeService:           worktreeSvc,
 		deploymentMgr:             deploymentMgr,
@@ -1213,10 +1216,6 @@ func (d *Daemon) cleanup() error {
 				errs = append(errs, fmt.Errorf("close deployment manager: %w", err))
 			}
 			d.deploymentMgr = nil
-		}
-		if d.designDispatcher != nil {
-			d.designDispatcher.Close()
-			d.designDispatcher = nil
 		}
 		if d.aiTaskDispatcher != nil {
 			d.aiTaskDispatcher.Close()

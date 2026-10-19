@@ -116,22 +116,28 @@ func TestStage4InstructionProjectionCoderMissingCommitAndProgress(t *testing.T) 
 	}
 }
 
-func TestStage4InstructionProjectionDesignerMissingAuthor(t *testing.T) {
-	// Requirement: missing author capability blocks the selected Designer mode.
-	// Threat: static author instructions cause invented outputs or destination
-	// switching. Owners: InstructionProfileForTools and Designer composition;
-	// the complete instruction text is the narrowest observable boundary.
+func TestStage4InstructionProjectionDesignerMissingSwarmDesign(t *testing.T) {
+	// Requirement: Designer makes designs only through swarm_design; when a
+	// request does not expose it, the projected prompt says no design can be
+	// made instead of keeping the normal Designer instructions.
+	// Threat: Designer writes HTML another way or reports an invented design
+	// when its only design tool is removed. Owners: InstructionProfileForTools
+	// and Designer composition; the complete instruction text is the narrowest
+	// observable boundary.
 	projected, text := stage4ProjectedInstructions(t, agent.DesignerAgentProfileForParent(store.AgentProfile{}), "auto", "read", "search", "list")
-	if profileHasCapability(projected, "artifact_v3_author") {
-		t.Fatal("Designer author restored")
+	if profileHasCapability(projected, tool.SwarmDesignToolName) {
+		t.Fatal("Designer swarm_design restored")
 	}
-	for _, absent := range []string{"Start with inspect_context", "Run build_preview", "call finish_turn", "Managed output uses only artifact_v3_author"} {
-		if strings.Contains(text, absent) {
-			t.Fatalf("Designer instructed to call absent author: %q", absent)
-		}
+	if strings.Contains(text, "Call swarm_design with the brief") {
+		t.Fatal("Designer instructed to call absent swarm_design")
 	}
-	if !strings.Contains(text, "required authoring capability is unavailable") || !strings.Contains(text, "Do not mutate another destination") {
+	if !strings.Contains(text, "swarm_design, your only way to make or edit designs, is unavailable") || !strings.Contains(text, "Do not write HTML any other way") {
 		t.Fatal("Designer lost missing-capability failure boundary")
+	}
+	// With swarm_design exposed the normal Designer prompt stays in force.
+	_, full := stage4ProjectedInstructions(t, agent.DesignerAgentProfileForParent(store.AgentProfile{}), "auto", "read", "search", "list", tool.SwarmDesignToolName)
+	if !strings.Contains(full, agent.DesignerAgentPrompt()) || strings.Contains(full, "is unavailable in this request") {
+		t.Fatal("Designer with swarm_design lost its prompt")
 	}
 }
 

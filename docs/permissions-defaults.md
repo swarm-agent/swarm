@@ -106,12 +106,11 @@ whose compiled contract pre-approves the action.
 | `manage_workers` | list, get, review, context, progress | read-only | allow (`automation_read`) | unchanged | Orchestrator only. |
 | `manage_workers` | propose | creates a gated proposal | pending review | unchanged | Proposal waits for acceptance. |
 | `manage_workers` | other changes, run, cancel | writes state, dispatches runs | ask! | unchanged | — |
-| `manage_design` | status, history, read / submit, select, cancel | read-only / queues Designer runs | ask; overlay: Swarm, Orchestrator | unchanged | Execution is admitted by the subagent policy. |
+| `swarm_design` | make or edit designs | model calls (daily spending limit and worker budget), writes new files under its batch folder or the one `edit_path` file | — (new tool) | allow; deny r | Replaced `manage_design`; enabled for the Orchestrator and Designer only. |
 | `manage_artifact` | read actions | read-only | allow | unchanged | — |
-| `manage_artifact` | create, import, select, author/revise, publish parts, materialize, promote, delete | writes app storage, the workspace (materialize/promote) or deletes | allow; deny r | unchanged | Session-owned storage. |
+| `manage_artifact` | import, select, publish parts, materialize, promote, delete | writes app storage, the workspace (materialize/promote) or deletes | allow; deny r | unchanged | Session-owned storage. |
 | `manage_artifact` | generate_image, generate_video(_story), chain_video, generate_audio | spends money (media providers) | ask; **overlay: Swarm, Orchestrator, Image, Video** | unchanged | Listed for the owner (trusted workers rely on the overlay). |
 | `manage_video` | all | reads, writes app state; start_transcription spends and reaches the network | allow | unchanged | Studio acceptance remains the gate; transcription listed for the owner. |
-| `artifact_v3_author` | all | writes the managed artifact project | ask by default; overlay: Designer | unchanged | Managed storage only. |
 | Custom tools | — | fixed command or client tool | ask; client tools wait for the client; confirmed client tools (write by default) first wait for the person's approval | unchanged | See `containers/sealed/README.md` (Confirmations). |
 
 ## What changed

@@ -1,7 +1,9 @@
 package run
 
 import (
+	"errors"
 	"fmt"
+	"reflect"
 
 	"strings"
 	"testing"
@@ -73,18 +75,54 @@ func TestParseTaskSwarmImageBuildsDirectRouterHydratedItems(t *testing.T) {
 	}
 }
 
-func TestParseTaskSwarmDesignerRejectsWorkspaceOutput(t *testing.T) {
+// Requirement: Designer Iteration Swarms were replaced by swarm_design (count
+// and variations), and Designer has no managed artifact output; every request
+// for either is refused with an error that names swarm_design, while a
+// Designer launch with a concrete owned_scope stays a valid workspace launch.
+// Threat: a Designer swarm or managed Designer launch still reaches the removed
+// artifact-authoring path, or the refusal is a generic error the caller cannot
+// act on. Owners: parseTaskSwarmArguments, buildTaskSwarmHydrationRequest and
+// applyTaskDesignerOutputMode via parseTaskCallArguments; argument parsing and
+// hydration are the narrowest layers that see the request before any launch.
+func TestParseTaskSwarmDesignerIterationSwarmIsReplacedBySwarmDesign(t *testing.T) {
 	for _, raw := range []string{
+		`{"mode":"swarm","description":"objects","prompt":"make objects","agent_type":"designer","count":3}`,
+		`{"mode":"swarm","description":"objects","prompt":"make objects","agent_type":"designer","count":3,"output_mode":"managed"}`,
 		`{"mode":"swarm","description":"objects","prompt":"make objects","agent_type":"designer","count":3,"output_mode":"workspace"}`,
-		`{"mode":"swarm","description":"objects","prompt":"make objects","agent_type":"designer","count":3,"owned_scope_template":"web/src/objects/item-{index}.tsx"}`,
+		`{"mode":"swarm","swarm_strategy":"explore","prompt":"make objects","agent_type":"system-designer","count":1}`,
 	} {
-		_, err := parseTaskCallArguments(raw)
-		if err == nil {
-			t.Fatalf("workspace Designer Iteration Swarm was accepted: %s", raw)
+		parsed, err := parseTaskCallArguments(raw)
+		if !errors.Is(err, errDesignerIterationSwarmReplaced) || !strings.Contains(err.Error(), "swarm_design") {
+			t.Fatalf("Designer Iteration Swarm %s: err = %v", raw, err)
 		}
-		if !strings.Contains(err.Error(), "regular task launches") && !strings.Contains(err.Error(), "unsupported field") {
-			t.Fatalf("workspace Designer Iteration Swarm error = %v", err)
+		if parsed.Swarm != nil || len(parsed.Launches) != 0 {
+			t.Fatalf("a refused Designer swarm produced launches: %#v", parsed)
 		}
+	}
+	// A swarm-only field the parser does not know is still refused first.
+	if _, err := parseTaskCallArguments(`{"mode":"swarm","prompt":"x","agent_type":"designer","count":3,"owned_scope_template":"web/item-{index}.tsx"}`); err == nil || !strings.Contains(err.Error(), "unsupported field") {
+		t.Fatalf("owned_scope_template error = %v", err)
+	}
+	// The hydration boundary refuses a Designer Iteration Swarm that reaches it.
+	parsed := taskCallArguments{Swarm: &taskSwarmSpec{Strategy: taskSwarmStrategyExplore, AgentType: "designer", Count: 1}}
+	launches := []taskLaunchSpec{{RequestedSubagentType: "designer", SwarmStrategy: taskSwarmStrategyExplore, OutputMode: taskOutputModeManaged}}
+	if _, err := buildTaskSwarmHydrationRequest(parsed, launches); !errors.Is(err, errDesignerIterationSwarmReplaced) {
+		t.Fatalf("hydration accepted a Designer Iteration Swarm: %v", err)
+	}
+	// Regular Designer launches: managed output is refused, a missing
+	// owned_scope is refused, and an owned_scope makes a workspace launch.
+	if _, err := parseTaskCallArguments(`{"prompt":"design","launches":[{"subagent_type":"designer","meta_prompt":"design a page","output_mode":"managed"}]}`); !errors.Is(err, errDesignerManagedOutputRemoved) {
+		t.Fatalf("managed Designer launch error = %v", err)
+	}
+	if _, err := parseTaskCallArguments(`{"prompt":"design","launches":[{"subagent_type":"designer","meta_prompt":"design a page"}]}`); err == nil || !strings.Contains(err.Error(), "owned_scope") {
+		t.Fatalf("Designer launch without owned_scope error = %v", err)
+	}
+	ok, err := parseTaskCallArguments(`{"prompt":"design","launches":[{"subagent_type":"designer","meta_prompt":"design a page","owned_scope":["designs/landing"]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ok.Launches) != 1 || ok.Launches[0].OutputMode != taskOutputModeWorkspace || !reflect.DeepEqual(ok.Launches[0].OwnedScope, []string{"designs/landing"}) {
+		t.Fatalf("Designer launch = %#v", ok.Launches)
 	}
 }
 

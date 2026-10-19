@@ -1,8 +1,12 @@
 package pebblestore
 
 import (
-	"github.com/cockroachdb/pebble"
+	"errors"
+	"fmt"
+	"strconv"
 	"strings"
+
+	"github.com/cockroachdb/pebble"
 )
 
 // DesignWake is a coalesced hint only. Durable discovery repairs missed hints.
@@ -84,7 +88,7 @@ func (s *Store) FailQueuedDesign(p DesignPrincipal, id string, revision uint64, 
 	if err := designOwner(p); err != nil {
 		return zero, err
 	}
-	if !designID(id) || (reason != "model_unavailable" && reason != "allocation_unavailable") {
+	if !designID(id) || (reason != "model_unavailable" && reason != "allocation_unavailable" && reason != DesignReplacedReason) {
 		return zero, ErrDesignInvalid
 	}
 	s.designMu.Lock()
@@ -100,14 +104,19 @@ func (s *Store) FailQueuedDesign(p DesignPrincipal, id string, revision uint64, 
 		return zero, ErrDesignInvalid
 	}
 	c := &r.Candidates[candidate]
-	if c.State != DesignQueued || len(c.Attempts) != 0 {
+	// A retired queued candidate may keep earlier attempts' provenance; it is
+	// failed as a whole without touching them.
+	if c.State != DesignQueued || (len(c.Attempts) != 0 && reason != DesignReplacedReason) {
 		return zero, ErrDesignConflict
 	}
 	c.State = DesignFailed
 	c.FailureReason = reason
 	c.RouterAlert = "Designer execution unavailable; no child was allocated."
-	if reason == "model_unavailable" {
+	switch reason {
+	case "model_unavailable":
 		c.RouterAlert = "Designer assignment and account default model are unavailable; configure an account model before submitting again."
+	case DesignReplacedReason:
+		c.RouterAlert = designReplacedAlert
 	}
 	b := s.db.NewBatch()
 	defer b.Close()
@@ -116,4 +125,77 @@ func (s *Store) FailQueuedDesign(p DesignPrincipal, id string, revision uint64, 
 		Candidate int
 		Reason    string
 	}{revision, candidate, reason}, b)
+}
+
+// DesignReplacedReason is the failure reason of manage_design requests the
+// daemon retired when swarm_design replaced it.
+const DesignReplacedReason = "manage_design_replaced"
+
+// designReplacedAlert is the message every retired candidate carries.
+const designReplacedAlert = "manage_design was replaced by swarm_design; nothing was generated for this request. Submit the brief to swarm_design instead."
+
+// RetirePendingDesignRequests is the daemon's one-shot startup pass after
+// manage_design was replaced by swarm_design: every still-pending request's
+// queued candidates fail and its running or cancel-requested attempts end
+// (interrupted or cancelled) with DesignReplacedReason. No provider is
+// called and no output is published. It returns how many candidates it ended.
+func (s *Store) RetirePendingDesignRequests() (int, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("design store is not configured")
+	}
+	ended := 0
+	cursor := ""
+	for page := 0; page < 1<<16; page++ {
+		rows, next, err := s.ScanDesignPending(cursor)
+		if err != nil {
+			return ended, err
+		}
+		for _, r := range rows {
+			n, err := s.retireDesignRequest(r.Owner, r.ID)
+			ended += n
+			if err != nil {
+				return ended, err
+			}
+		}
+		if next == "" {
+			return ended, nil
+		}
+		cursor = next
+	}
+	return ended, errors.New("design retirement did not finish scanning pending requests")
+}
+
+func (s *Store) retireDesignRequest(p DesignPrincipal, id string) (int, error) {
+	ended := 0
+	r, err := s.GetDesignRequest(p, id)
+	if err != nil {
+		return 0, err
+	}
+	for i := range r.Candidates {
+		c := r.Candidates[i]
+		switch c.State {
+		case DesignQueued:
+			r, err = s.FailQueuedDesign(p, id, r.Revision, i, DesignReplacedReason)
+		case DesignRunning, DesignCancelRequested:
+			if len(c.Attempts) == 0 {
+				return ended, fmt.Errorf("design request %s candidate %d is %s without an attempt", id, i, c.State)
+			}
+			a := c.Attempts[len(c.Attempts)-1]
+			state := DesignInterrupted
+			if c.State == DesignCancelRequested {
+				state = DesignCancelled
+			}
+			r, err = s.RecordDesignAttempt(p, id, DesignAttemptMutation{
+				IdempotencyKey: "retire-" + strconv.Itoa(i) + "-" + strconv.FormatUint(r.Revision, 10), ExpectedRevision: r.Revision, Candidate: i,
+				State: state, ChildSessionID: a.ChildSessionID, RunID: a.RunID, ReasonCode: DesignReplacedReason,
+			})
+		default:
+			continue
+		}
+		if err != nil {
+			return ended, fmt.Errorf("retire design request %s candidate %d: %w", id, i, err)
+		}
+		ended++
+	}
+	return ended, nil
 }

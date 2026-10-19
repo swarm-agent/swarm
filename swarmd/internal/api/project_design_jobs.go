@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/design"
@@ -127,28 +126,7 @@ func normalizeDesignJobRequest(in designJobCreateRequest) (designJobCreateReques
 }
 
 // designJobSlug names a batch folder from the batch name or the brief.
-func designJobSlug(name string) string {
-	var b strings.Builder
-	dash := false
-	for _, r := range strings.ToLower(name) {
-		if r < utf8.RuneSelf && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
-			if dash && b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			b.WriteRune(r)
-			dash = false
-			if b.Len() >= 40 {
-				break
-			}
-			continue
-		}
-		dash = true
-	}
-	if b.Len() == 0 {
-		return "design"
-	}
-	return strings.TrimRight(b.String(), "-")
-}
+func designJobSlug(name string) string { return design.BatchSlug(name) }
 
 func newDesignTaskID() (string, error) {
 	b := make([]byte, 8)

@@ -172,57 +172,55 @@ var (
 )
 
 type Runtime struct {
-	maxParallel           int
-	httpClient            *http.Client
-	exaConfigResolver     func(context.Context) (ExaRuntimeConfig, error)
-	sessions              manageSessionService
-	publishSessionOutbox  func(pebblestore.V3RealtimeOutboxRecord) error
-	workspace             manageWorktreeWorkspaceService
-	worktrees             manageWorktreeConfigService
-	agents                manageAgentService
-	orchestration         manageOrchestrationPolicyService
-	todos                 manageTodoService
-	automations           *automation.Service
-	automationExecution   *automation.ExecutionService
-	automationPolicy      *automation.PolicyApproval
-	actions               manageActionService
-	uiSettings            manageThemeUISettingsService
-	themeWorkspace        manageThemeWorkspaceService
-	artifacts             *artifact.Registry
-	artifactAuthority     ArtifactAuthority
-	artifactV3Importer    ArtifactV3NativeImporter
-	artifactV2Author      *artifactv2.AuthorService
-	artifactV3Author      *ArtifactV3AuthorService
-	directArtifactV3Mu    sync.Mutex
-	directArtifactV3ByRun map[string]directArtifactV3Publication
-	artifactV2Video       *artifactv2.VideoConversionService
-	artifactV3Video       ArtifactV3VideoConversionService
-	htmlCapture           htmlcapture.Renderer
-	htmlAnimationCapture  htmlcapture.AnimationRenderer
-	svgRasterizer         videogen.SVGRasterizer
-	animationJobsMu       sync.Mutex
-	animationJobs         map[string]context.CancelFunc
-	imageGeneration       ManagedImageGenerationService
-	videoGeneration       ManagedVideoGenerationService
-	audioGeneration       ManagedAudioGenerationService
-	video                 manageVideoService
-	videoSources          *videosource.Service
-	videoProjects         manageVideoProjectService
-	videoRender           manageVideoRenderService
-	searchCoordinator     *SearchCoordinator
-	focusedPartMu         sync.Mutex
-	focusedPartProtocols  map[string]focusedPartProtocolState
-	sessionController     manageSessionController
-	capacityProvider      manageSessionCapacityProvider
-	connections           manageConnectionStore
-	environmentsStore     manageEnvironmentStore
-	deploymentsStore      manageDeploymentStore
-	deploymentManager     manageDeploymentLifecycleService
-	workspaceSettings     manageWorkspaceSettingsStore
-	providerRegistry      *provider.Registry
-	projects              manageProjectStore
-	projectTaskDeployer   ProjectTaskDeployer
-	projectTaskLifecycle  ProjectTaskLifecycleService
+	maxParallel          int
+	httpClient           *http.Client
+	exaConfigResolver    func(context.Context) (ExaRuntimeConfig, error)
+	sessions             manageSessionService
+	publishSessionOutbox func(pebblestore.V3RealtimeOutboxRecord) error
+	workspace            manageWorktreeWorkspaceService
+	worktrees            manageWorktreeConfigService
+	agents               manageAgentService
+	orchestration        manageOrchestrationPolicyService
+	todos                manageTodoService
+	automations          *automation.Service
+	automationExecution  *automation.ExecutionService
+	automationPolicy     *automation.PolicyApproval
+	actions              manageActionService
+	uiSettings           manageThemeUISettingsService
+	themeWorkspace       manageThemeWorkspaceService
+	artifacts            *artifact.Registry
+	artifactAuthority    ArtifactAuthority
+	artifactV3Importer   ArtifactV3NativeImporter
+	artifactV2Author     *artifactv2.AuthorService
+	artifactV3Author     *ArtifactV3AuthorService
+	artifactV2Video      *artifactv2.VideoConversionService
+	artifactV3Video      ArtifactV3VideoConversionService
+	htmlCapture          htmlcapture.Renderer
+	htmlAnimationCapture htmlcapture.AnimationRenderer
+	svgRasterizer        videogen.SVGRasterizer
+	animationJobsMu      sync.Mutex
+	animationJobs        map[string]context.CancelFunc
+	imageGeneration      ManagedImageGenerationService
+	videoGeneration      ManagedVideoGenerationService
+	audioGeneration      ManagedAudioGenerationService
+	video                manageVideoService
+	videoSources         *videosource.Service
+	videoProjects        manageVideoProjectService
+	videoRender          manageVideoRenderService
+	searchCoordinator    *SearchCoordinator
+	focusedPartMu        sync.Mutex
+	focusedPartProtocols map[string]focusedPartProtocolState
+	sessionController    manageSessionController
+	capacityProvider     manageSessionCapacityProvider
+	connections          manageConnectionStore
+	environmentsStore    manageEnvironmentStore
+	deploymentsStore     manageDeploymentStore
+	deploymentManager    manageDeploymentLifecycleService
+	workspaceSettings    manageWorkspaceSettingsStore
+	providerRegistry     *provider.Registry
+	projects             manageProjectStore
+	projectTaskDeployer  ProjectTaskDeployer
+	projectTaskLifecycle ProjectTaskLifecycleService
 }
 
 type manageSessionController interface {
@@ -776,69 +774,6 @@ func (r *Runtime) GenerateManagedVideoArtifact(ctx context.Context, scope Worksp
 		}
 	}
 	return r.executeManageArtifact(ctx, scope, callID, args)
-}
-
-// CreateManagedHTMLArtifactV3 creates a managed HTML or animation Artifact V3 document directly.
-func (r *Runtime) CreateManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID, title, content string, parts []map[string]any, profile *pebblestore.SessionArtifactAnimationProfile, run ArtifactRunContext) (string, error) {
-	if r == nil {
-		return "", errors.New("manage_artifact runtime is not configured")
-	}
-	ctx = WithWorkspaceScope(ctx, scope)
-	ctx = WithArtifactRunContext(ctx, run)
-	args := map[string]any{
-		"action":     "create",
-		"title":      strings.TrimSpace(title),
-		"media_type": "text/html",
-		"content":    content,
-	}
-	if len(parts) > 0 {
-		args["parts"] = parts
-	}
-	if profile != nil {
-		args["animation_profile"] = map[string]any{"profile": profile.ProfileID}
-	}
-	return r.executeManageArtifact(ctx, scope, callID, args)
-}
-
-// ReviseManagedHTMLArtifactV3 performs a targeted revision on an existing Artifact V3 document.
-func (r *Runtime) ReviseManagedHTMLArtifactV3(ctx context.Context, scope WorkspaceScope, callID string, artifactRef map[string]any, targetPartIDs []string, content string, run ArtifactRunContext) (string, error) {
-	if r == nil {
-		return "", errors.New("manage_artifact runtime is not configured")
-	}
-	ctx = WithWorkspaceScope(ctx, scope)
-	ctx = WithArtifactRunContext(ctx, run)
-	args := map[string]any{
-		"action":                "revise_v3",
-		"artifact_v3_reference": artifactRef,
-		"target_part_ids":       targetPartIDs,
-		"content":               content,
-	}
-	return r.executeManageArtifact(ctx, scope, callID, args)
-}
-
-// ReadManagedArtifactV3HTML reads the exact HTML content and parts of a native Artifact V3 document.
-func (r *Runtime) ReadManagedArtifactV3HTML(ctx context.Context, scope WorkspaceScope, artifactRef map[string]any) (string, []pebblestore.ArtifactV3Part, error) {
-	if r == nil {
-		return "", nil, errors.New("manage_artifact runtime is not configured")
-	}
-	ctx = WithWorkspaceScope(ctx, scope)
-	ctx = WithArtifactRunContext(ctx, ArtifactRunContext{SessionID: scope.SessionID, RunID: "direct-read-" + scope.SessionID})
-	args := map[string]any{
-		"action":                "read_v3",
-		"artifact_v3_reference": artifactRef,
-	}
-	raw, err := r.executeManageArtifact(ctx, scope, "direct-read-base", args)
-	if err != nil {
-		return "", nil, err
-	}
-	var resp struct {
-		Content string                       `json:"content"`
-		Parts   []pebblestore.ArtifactV3Part `json:"parts"`
-	}
-	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
-		return "", nil, fmt.Errorf("decode read_v3 response: %w", err)
-	}
-	return resp.Content, resp.Parts, nil
 }
 
 func (r *Runtime) SetArtifactV2VideoConversionService(service *artifactv2.VideoConversionService) {
@@ -1565,8 +1500,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageEnvironmentsDefinition(),
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
-		artifactV3AuthorDefinition(),
-		manageDesignDefinition(),
+		swarmDesignDefinition(),
 		manageArtifactDefinition(),
 		manageVideoDefinition(),
 		taskProgressDefinition(),
@@ -2257,11 +2191,13 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 	case "manage-deployments", "manage_deployments":
 		return "", errors.New("manage_deployments has been removed; use manage_environments instead")
 	case "artifact-v2-author", "artifact_v2_author":
-		return "", errors.New("artifact_v2_author is retired; managed authoring uses the context-bound artifact_v3_author capability")
+		return "", errors.New("artifact_v2_author is retired; standalone HTML designs are made with swarm_design")
 	case "artifact-v3-author", "artifact_v3_author":
-		return r.executeArtifactV3Author(ctx, scope, call.CallID, args)
+		return "", errors.New("artifact_v3_author was removed; standalone HTML designs are made with swarm_design")
 	case "manage_design":
-		return r.executeManageDesign(ctx, scope, args)
+		return "", errors.New("manage_design was replaced by swarm_design")
+	case SwarmDesignToolName:
+		return "", errSwarmDesignRunServiceOnly
 	case "manage-artifact", "manage_artifact":
 		return r.executeManageArtifact(ctx, scope, call.CallID, args)
 	case "manage-video", "manage_video":
@@ -10862,8 +10798,8 @@ func toolPathID(name string) string {
 		return "tool.manage-connections.v1"
 	case "manage-environments", "manage_environments":
 		return "tool.manage-environments.v1"
-	case "manage_design":
-		return "tool.manage-design.v1"
+	case SwarmDesignToolName:
+		return "tool.swarm-design.v1"
 	case "manage-artifact", "manage_artifact":
 		return "tool.manage-artifact.v1"
 	case "manage-todos", "manage_todos":

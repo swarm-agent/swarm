@@ -1426,6 +1426,9 @@ func parseTaskSwarmArguments(args map[string]any, prompt, description string) (*
 	default:
 		return nil, nil, errors.New("task swarm mode agent_type must be coder, designer, image, video, or idea")
 	}
+	if agentType == "designer" && strategy == taskSwarmStrategyExplore {
+		return nil, nil, errDesignerIterationSwarmReplaced
+	}
 	if strategy == taskSwarmStrategyAssembly && (agentType == "idea" || agentType == "image" || agentType == "video") {
 		return nil, nil, fmt.Errorf("task %s swarms support only swarm_strategy=explore", taskSwarmAgentLabel(agentType))
 	}
@@ -2381,17 +2384,19 @@ func applyTaskDesignerOutputMode(launch *taskLaunchSpec, rawMode, label string) 
 		launch.OutputMode = taskOutputModeManaged
 		return nil
 	}
+	// Designer has one contract: it writes HTML designs with swarm_design into
+	// its own worktree. Managed artifact output was removed.
 	if mode == "" {
-		mode = taskOutputModeManaged
+		mode = taskOutputModeWorkspace
 	}
-	if mode != taskOutputModeManaged && mode != taskOutputModeWorkspace {
-		return fmt.Errorf("%s Designer output_mode must be managed or workspace", label)
+	if mode == taskOutputModeManaged {
+		return fmt.Errorf("%s: %w", label, errDesignerManagedOutputRemoved)
 	}
-	if mode == taskOutputModeManaged && len(launch.OwnedScope) != 0 {
-		return fmt.Errorf("%s managed Designer must omit owned_scope", label)
+	if mode != taskOutputModeWorkspace {
+		return fmt.Errorf("%s Designer output_mode must be workspace (or omitted)", label)
 	}
-	if mode == taskOutputModeWorkspace && len(launch.OwnedScope) == 0 {
-		return fmt.Errorf("%s workspace Designer requires a concrete workspace-relative owned_scope", label)
+	if len(launch.OwnedScope) == 0 {
+		return fmt.Errorf("%s Designer requires a concrete workspace-relative owned_scope: the folder its swarm_design designs are written to", label)
 	}
 	launch.OutputMode = mode
 	return nil
@@ -2404,13 +2409,16 @@ func validateTaskDesignerScopes(launches []taskLaunchSpec) error {
 			continue
 		}
 		if launches[i].OutputMode == taskOutputModeManaged {
+			if agentruntime.IsDesignerAgentName(launches[i].RequestedSubagentType) {
+				return fmt.Errorf("task launches[%d]: %w", i, errDesignerManagedOutputRemoved)
+			}
 			if len(launches[i].OwnedScope) != 0 {
 				return fmt.Errorf("task launches[%d] managed Designer must omit owned_scope", i)
 			}
 			continue
 		}
 		if launches[i].OutputMode != taskOutputModeWorkspace {
-			return fmt.Errorf("task launches[%d] Designer output_mode must be managed or workspace", i)
+			return fmt.Errorf("task launches[%d] Designer output_mode must be workspace", i)
 		}
 		if len(launches[i].OwnedScope) == 0 {
 			return fmt.Errorf("task launches[%d] Designer requires a concrete workspace-relative owned_scope or output target", i)
@@ -4083,17 +4091,16 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 			}
 		}
 		if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) || agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
+			isDesigner := agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType)
 			switch strings.TrimSpace(launchSpecs[i].OutputMode) {
 			case taskOutputModeManaged:
-				requiredManagedTool := "artifact_v3_author"
-				if agentruntime.IsImageAgentName(launchSpecs[i].RequestedSubagentType) {
-					requiredManagedTool = "manage_artifact"
+				if isDesigner {
+					// A durable manifest approved before the Designer pipeline was
+					// replaced must not reach artifact authoring.
+					return taskLaunchManifest{}, fmt.Errorf("approved task manifest launch %d: %w", i, errDesignerManagedOutputRemoved)
 				}
-				if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, requiredManagedTool) {
-					return taskLaunchManifest{}, fmt.Errorf("approved managed creative manifest launch %d is missing %s", i, requiredManagedTool)
-				}
-				if agentruntime.IsDesignerAgentName(launchSpecs[i].RequestedSubagentType) && taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
-					return taskLaunchManifest{}, fmt.Errorf("approved managed Designer manifest launch %d retains legacy manage_artifact write authority", i)
+				if row.ResolvedTools == nil || !taskToolNameInSlice(row.ResolvedTools.AllowedTools, "manage_artifact") {
+					return taskLaunchManifest{}, fmt.Errorf("approved managed creative manifest launch %d is missing manage_artifact", i)
 				}
 				for _, name := range []string{"write", "edit"} {
 					if !taskToolNameInSlice(row.DisabledTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) || taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
@@ -4104,15 +4111,20 @@ func parseApprovedTaskLaunchManifest(approved string, launchSpecs []taskLaunchSp
 				if row.ResolvedTools == nil {
 					return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d is missing resolved tools", i)
 				}
-				for _, name := range []string{"read", "search", "find", "list", "write", "edit"} {
+				for _, name := range []string{"read", "search", "find", "list", tool.SwarmDesignToolName} {
 					if !taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) {
 						return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d is missing tool %q", i, name)
 					}
 				}
-				for _, name := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
+				for _, name := range []string{"write", "edit", "media_inspect", "bash", "manage_artifact"} {
 					if taskToolNameInSlice(row.ResolvedTools.AllowedTools, name) || !taskToolNameInSlice(row.ResolvedTools.DisabledTools, name) {
 						return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d retains forbidden tool %q", i, name)
 					}
+				}
+				// artifact_v3_author is no longer a registered tool; it must
+				// never be allowed by a stale manifest either.
+				if taskToolNameInSlice(row.ResolvedTools.AllowedTools, "artifact_v3_author") {
+					return taskLaunchManifest{}, fmt.Errorf("approved workspace Designer manifest launch %d retains forbidden tool %q", i, "artifact_v3_author")
 				}
 			}
 		}
@@ -4242,53 +4254,8 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
 		return manifest, nil
 	}
-	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.OutputMode != taskOutputModeWorkspace {
-		designers := make([]taskDesignerManifestRow, len(parsed.Launches))
-		for i, launch := range parsed.Launches {
-			theme := ""
-			if i < len(parsed.Swarm.Themes) {
-				theme = strings.TrimSpace(parsed.Swarm.Themes[i])
-			}
-			designers[i] = taskDesignerManifestRow{
-				Index:              i + 1,
-				Theme:              theme,
-				StreamKey:          strings.TrimSpace(launch.StreamKey),
-				OutputRequirements: cloneTaskOutputRequirements(launch.OutputRequirements),
-				AnimationProfile:   cloneTaskAnimationProfile(parsed.Swarm.AnimationProfile),
-				SourceArtifact:     cloneTaskImageSourceArtifact(parsed.Swarm.SourceArtifact),
-				ArtifactV3Source:   cloneTaskArtifactV3Source(parsed.Swarm.ArtifactV3Source),
-				SectionTarget:      cloneTaskSwarmSectionTarget(parsed.Swarm.SectionTarget),
-				SectionTargets:     cloneTaskSwarmSectionTargets(parsed.Swarm.SectionTargets),
-			}
-		}
-		manifest := taskLaunchManifest{
-			PathID:          taskLaunchPermissionPathID,
-			Goal:            parsed.Description,
-			DesignerCount:   len(designers),
-			Description:     parsed.Description,
-			Prompt:          parsed.Prompt,
-			Action:          parsed.Action,
-			ParentMode:      sessionruntime.NormalizeMode(sessionMode),
-			TaskMode:        parsed.Mode,
-			SwarmAgentType:  "designer",
-			SwarmStrategy:   parsed.Swarm.Strategy,
-			Designers:       designers,
-			ExecutionFormat: taskExecutionFormatDesignerDirect,
-			SourceArguments: parsed.SourceArguments,
-		}
-		if parent, found := s.lookupTaskLaunchParentSession(sessionID, manifest.ParentMode); found {
-			manifest.Parent = parent
-			manifest.TargetWorkspacePath = strings.TrimSpace(firstNonEmptyString(parent.WorktreeRootPath, parent.WorkspacePath))
-			manifest.TargetWorkspaceName = strings.TrimSpace(parent.WorkspaceName)
-		}
-		digest, digestErr := taskLaunchManifestDigest(manifest)
-		if digestErr != nil {
-			return taskLaunchManifest{}, fmt.Errorf("hash direct designer swarm manifest: %w", digestErr)
-		}
-		manifest.ManifestHash = digest
-		approvedManifest := manifest
-		manifest.ApprovedArguments = map[string]any{"manifest_hash": digest, "manifest": approvedManifest}
-		return manifest, nil
+	if parsed.Swarm != nil && parsed.Swarm.AgentType == "designer" && parsed.Swarm.Strategy != taskSwarmStrategyAssembly {
+		return taskLaunchManifest{}, errDesignerIterationSwarmReplaced
 	}
 	if err := validatePlanSidechatTaskTargets(parentSession, parsed.Launches); err != nil {
 		return taskLaunchManifest{}, err
@@ -4387,7 +4354,13 @@ func (s *Service) buildTaskLaunchPermissionPayload(sessionID, sessionMode string
 			return taskLaunchManifest{}, fmt.Errorf("task launches[%d] cannot resolve subagent %q tool contract: %w", i, requested, toolErr)
 		}
 		launchDisabledTools := append([]string(nil), defaultDisabledTools...)
-		if (agentruntime.IsDesignerAgentName(requested) || agentruntime.IsImageAgentName(requested)) && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
+		if agentruntime.IsDesignerAgentName(requested) {
+			if strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
+				return taskLaunchManifest{}, fmt.Errorf("task launches[%d]: %w", i, errDesignerManagedOutputRemoved)
+			}
+			launchDisabledTools = sortedDisabledToolNames(taskChildDisabledTools(requested, false))
+		}
+		if agentruntime.IsImageAgentName(requested) && strings.TrimSpace(launch.OutputMode) == taskOutputModeManaged {
 			launchDisabledTools = disabledTaskToolNames("write", "edit")
 		}
 		resolvedTools := buildTaskLaunchResolvedToolSummary(toolContract, profileDisabledTools, launchDisabledTools, executionMode)

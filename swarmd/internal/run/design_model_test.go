@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
@@ -19,6 +20,7 @@ import (
 )
 
 type designFakeRunner struct {
+	mu       sync.Mutex // swarm_design runs designs concurrently
 	requests []provideriface.Request
 	text     string
 	usage    provideriface.TokenUsage
@@ -31,9 +33,12 @@ func (r *designFakeRunner) CreateResponse(ctx context.Context, req provideriface
 }
 
 func (r *designFakeRunner) CreateResponseStreaming(_ context.Context, req provideriface.Request, onEvent func(provideriface.StreamEvent)) (provideriface.Response, error) {
+	r.mu.Lock()
 	r.requests = append(r.requests, req)
-	onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: r.text})
-	return provideriface.Response{Text: r.text, Usage: r.usage}, nil
+	text, usage := r.text, r.usage
+	r.mu.Unlock()
+	onEvent(provideriface.StreamEvent{Type: provideriface.StreamEventOutputTextDelta, Delta: text})
+	return provideriface.Response{Text: text, Usage: usage}, nil
 }
 
 type designModelFixture struct {

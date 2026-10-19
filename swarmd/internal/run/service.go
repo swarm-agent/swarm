@@ -19,6 +19,7 @@ import (
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/agentmodelsettings"
 	compactruntime "swarm/packages/swarmd/internal/compact"
+	"swarm/packages/swarmd/internal/design"
 	"swarm/packages/swarmd/internal/discovery"
 	"swarm/packages/swarmd/internal/executioncapacity"
 	"swarm/packages/swarmd/internal/identity"
@@ -114,7 +115,7 @@ type Service struct {
 	model                        *model.Service
 	modelProfiles                *modelprofile.Service
 	providers                    *registry.Registry
-	designRenderer               DesignRenderer
+	designChecker                design.Checker
 	tools                        *tool.Runtime
 	permissions                  *permission.Service
 	agents                       *agentruntime.Service
@@ -3058,7 +3059,6 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 		runtimeScope.SessionID = strings.TrimSpace(sessionSnapshot.ID)
 		runtimeScope.ReadOnlyBash = agentruntime.IsFinderAgentName(agentProfile.Name) || agentProfile.Name == agentruntime.HelperAgentID
 		runtimeCtx := tool.WithWorkspaceScope(ctx, runtimeScope)
-		runtimeCtx = s.withDesignSourcePermission(runtimeCtx, runtimeScope, runID, emit)
 		runtimeCtx = tool.WithArtifactRunContext(runtimeCtx, s.providerManagedArtifactRunContext(providerToolInvokerConfig{
 			sessionID:          sessionID,
 			runID:              runID,

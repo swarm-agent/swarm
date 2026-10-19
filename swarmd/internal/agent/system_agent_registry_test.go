@@ -116,10 +116,14 @@ func TestSystemAgentRegistryRejectsMissingDuplicateAndInvalidDefinitions(t *test
 }
 
 // Requirement: registry reconciliation preserves account model context while
-// restoring immutable role/output authority. Threat: stale snapshots grant tools
-// or leak an incompatible Designer output mode. Owners: SystemAgentRegistry and
-// designerAgentProfileForParent; this direct contract test is the narrowest
-// layer, with malformed/stale snapshots and both output-mode postconditions.
+// restoring immutable role authority; Designer has exactly one contract
+// (read/search, swarm_design, scoped Git) and the primary agents carry
+// swarm_design instead of manage_design. Threat: stale snapshots grant tools,
+// Designer regains checkout write/edit, Bash or artifact authoring, or a
+// retired design tool stays reachable. Owners: SystemAgentRegistry,
+// designerAgentProfileForParent, SwarmAgentToolContract and
+// SwarmOrchestratorAgentToolContract; this direct contract test is the
+// narrowest layer, with malformed/stale snapshots as input.
 func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *testing.T) {
 	registry, err := BuiltinSystemAgentRegistry()
 	if err != nil {
@@ -275,21 +279,25 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	if designer.Name != DesignerAgentID || designer.Mode != ModeSubagent || designer.Prompt != DesignerAgentPrompt() || designer.RuntimeMode != pebblestore.AgentRuntimeModeReadWrite || designer.DefaultSessionMode != pebblestore.AgentDefaultSessionModeAuto || !designer.Enabled || !designer.Protected || designer.ExitPlanModeEnabled == nil || *designer.ExitPlanModeEnabled {
 		t.Fatalf("Designer immutable contract was not restored: %+v", designer)
 	}
-	for _, allowed := range []string{"read", "search", "find", "list", "artifact_v3_author"} {
+	// Designer has one contract: read/search, swarm_design and scoped Git; no
+	// checkout write/edit, commands, media, managed artifacts or orchestration.
+	for _, allowed := range []string{"read", "search", "find", "list", "swarm_design", "git_status", "git_diff", "git_add", "git_commit"} {
 		if cfg := designer.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("managed Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
+			t.Fatalf("Designer locked tool %q unavailable: %+v", allowed, designer.ToolContract)
 		}
 	}
-	for _, denied := range []string{"write", "edit", "bash", "git_status", "git_diff", "git_add", "git_commit", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
+	for _, denied := range []string{"write", "edit", "bash", "media_inspect", "manage_artifact", "task", "skill_use", "manage_skill", "manage_agent", "manage_theme", "manage_sessions", "manage_worktree", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode"} {
 		if cfg := designer.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
 			t.Fatalf("Designer mandatory denial %q was not restored: %+v", denied, designer.ToolContract)
 		}
 	}
-	if _, exists := designer.ToolContract.Tools["artifact_v2_author"]; exists {
-		t.Fatal("retired author capability must be absent from compiled contract; custom defaults deny it")
-	}
-	if _, exists := designer.ToolContract.Tools["create_file"]; exists || strings.Contains(DesignerAgentPrompt(), "create_file") {
-		t.Fatalf("Designer must not register or reference create_file: %+v", designer.ToolContract)
+	for _, retired := range []string{"artifact_v2_author", "artifact_v3_author", "manage_design", "create_file"} {
+		if cfg, exists := designer.ToolContract.Tools[retired]; exists && cfg.Enabled != nil && *cfg.Enabled {
+			t.Fatalf("Designer enables retired tool %q: %+v", retired, designer.ToolContract)
+		}
+		if strings.Contains(DesignerAgentPrompt(), retired) {
+			t.Fatalf("Designer prompt references retired tool %q", retired)
+		}
 	}
 	imageWorker, err := registry.ReconcileSnapshot(ImageAgentID, pebblestore.AgentProfile{Name: ImageAgentID, Provider: "openai", Model: "utility-model", Thinking: "medium", Prompt: "mutable", ToolContract: &pebblestore.AgentToolContract{Preset: "read_write"}})
 	if err != nil {
@@ -305,33 +313,15 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 		t.Fatalf("Image prompt is missing generation restrictions: %s", ImageAgentPrompt())
 	}
 
+	// The workspace profile name remains for callers but is the same contract.
 	workspaceDesigner := DesignerWorkspaceAgentProfileForParent(designer)
-	for _, allowed := range []string{"read", "search", "find", "list", "write", "edit"} {
-		if cfg := workspaceDesigner.ToolContract.Tools[allowed]; cfg.Enabled == nil || !*cfg.Enabled {
-			t.Fatalf("workspace Designer locked tool %q unavailable: %+v", allowed, workspaceDesigner.ToolContract)
-		}
+	if !reflect.DeepEqual(workspaceDesigner.ToolContract, designer.ToolContract) || workspaceDesigner.Prompt != designer.Prompt || DesignerWorkspaceAgentPrompt() != DesignerAgentPrompt() || !reflect.DeepEqual(DesignerWorkspaceAgentToolContract(), DesignerAgentToolContract()) {
+		t.Fatalf("Designer workspace profile diverged from the one Designer contract: %+v vs %+v", workspaceDesigner, designer)
 	}
-	for _, denied := range []string{"media_inspect", "bash", "git_status", "git_diff", "git_add", "git_commit", "manage_artifact"} {
-		if cfg := workspaceDesigner.ToolContract.Tools[denied]; cfg.Enabled == nil || *cfg.Enabled {
-			t.Fatalf("workspace Designer must not authorize %q: %+v", denied, workspaceDesigner.ToolContract)
-		}
-	}
-	for _, want := range []string{"backend-supplied output contract", "Managed output uses only artifact_v3_author", "inspect_context", "complete conventional project tree", "artifact-scoped list/read/write/edit/delete", "Parts are stable navigation and user-intent targets", "shared files", "build_preview repeatedly", "finish_turn exactly once", "base commit", "output policy", "exactly three top-level keys", "non-empty label", "and locator", "Never use shorthand selector", "Do not call manage_artifact or artifact_v2_author", "safe diagnostic", "Never classify raw errors", "fall back to legacy publication"} {
+	for _, want := range []string{"swarm_design", "count for several designs", "edit_path", "Do not write or edit HTML any other way", "exactly as swarm_design returned it", "never claim a design works", "git_add and git_commit"} {
 		if !strings.Contains(DesignerAgentPrompt(), want) {
-			t.Fatalf("Designer prompt missing immutable output contract %q", want)
+			t.Fatalf("Designer prompt missing %q", want)
 		}
-	}
-
-	if strings.Contains(DesignerAgentPrompt(), "Workspace output") {
-		t.Fatal("managed Designer received workspace authoring instructions")
-	}
-	for _, want := range []string{"Workspace output: use write and edit", "concrete declared owned scope", "exact workspace-relative output paths", "Managed publication is unavailable"} {
-		if !strings.Contains(workspaceDesigner.Prompt, want) {
-			t.Fatalf("workspace Designer missing %q", want)
-		}
-	}
-	if strings.Contains(workspaceDesigner.Prompt, "Start with inspect_context") || strings.Contains(workspaceDesigner.Prompt, "build_preview repeatedly") {
-		t.Fatal("workspace Designer received unavailable managed author instructions")
 	}
 
 	swarm, err := registry.ReconcileSnapshot(SwarmAgentID, pebblestore.AgentProfile{
@@ -346,6 +336,22 @@ func TestSystemAgentSnapshotReconciliationPreservesDynamicContextAndModels(t *te
 	}
 	if !reflect.DeepEqual(swarm.ToolContract, SwarmAgentToolContract()) {
 		t.Fatalf("Swarm exact tool contract mismatch: got %+v want %+v", swarm.ToolContract, SwarmAgentToolContract())
+	}
+	// swarm_design replaced manage_design: disabled for Swarm (it delegates to
+	// Designer), enabled for the Orchestrator; manage_design is gone from both.
+	if cfg := SwarmAgentToolContract().Tools["swarm_design"]; cfg.Enabled == nil || *cfg.Enabled {
+		t.Fatalf("Swarm swarm_design must be explicitly disabled: %+v", cfg)
+	}
+	if cfg := SwarmOrchestratorAgentToolContract().Tools["swarm_design"]; cfg.Enabled == nil || !*cfg.Enabled {
+		t.Fatalf("Orchestrator swarm_design must be enabled: %+v", cfg)
+	}
+	for _, contract := range []*pebblestore.AgentToolContract{SwarmAgentToolContract(), SwarmOrchestratorAgentToolContract()} {
+		if _, exists := contract.Tools["manage_design"]; exists {
+			t.Fatalf("retired manage_design is still in a primary contract: %+v", contract)
+		}
+	}
+	if strings.Contains(SwarmOrchestratorAgentPrompt(), "manage_design") || !strings.Contains(SwarmOrchestratorAgentPrompt(), "swarm_design") {
+		t.Fatal("Orchestrator prompt still points at manage_design or omits swarm_design")
 	}
 	if swarm.Provider != "" || swarm.Model != "" || swarm.Thinking != "" || swarm.AutoServiceTier != "" {
 		t.Fatalf("Swarm system identity retained model-bearing profile fields: %+v", swarm)

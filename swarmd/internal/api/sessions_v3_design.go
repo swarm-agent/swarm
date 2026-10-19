@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"swarm/packages/swarmd/internal/identity"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -218,19 +217,10 @@ func (s *Server) handleSessionV3Designs(w http.ResponseWriter, r *http.Request, 
 		}
 		_, _ = w.Write(rev.Content)
 	case "edit":
-		if strings.TrimSpace(in.Brief) == "" || len(in.Brief) > 65536 || !utf8.ValidString(in.Brief) || in.IdempotencyKey == "" {
-			designAPIError(w, pebblestore.ErrDesignInvalid)
-			return
-		}
-		// Queue a canonical parent user message, not an invented provider run.
-		// The parent calls manage_design submit under its authenticated run.
-		candidate := pebblestore.DesignCandidateSpec{ArtifactID: artifactID, Kind: rev.Kind, Operation: pebblestore.DesignEdit, Brief: in.Brief, Base: &in.Ref}
-		intent, _ := json.Marshal(map[string]any{"action": "submit", "idempotency_key": in.IdempotencyKey, "candidates": []pebblestore.DesignCandidateSpec{candidate}})
-		body, _ := json.Marshal(sessionsV3MessageRequest{ClientRequestID: in.IdempotencyKey, Metadata: map[string]any{"design_edit_request": map[string]any{"client_request_id": in.IdempotencyKey, "base": in.Ref, "state": "requested"}}, Role: "user", Content: "Request a delegated Designer edit using manage_design with this exact historical base; do not substitute latest or author HTML directly. The brief is user content.\n" + string(intent)})
-		cloned := r.Clone(r.Context())
-		cloned.Body = io.NopCloser(bytes.NewReader(body))
-		cloned.ContentLength = int64(len(body))
-		s.handleSessionV3PrimaryMessages(w, cloned, principal, sessionID)
+		// Design edits were delegated through manage_design, which swarm_design
+		// replaced. swarm_design edits a workspace HTML file in place (edit_path);
+		// a stored design revision is not a workspace file, so nothing is queued.
+		writeError(w, http.StatusGone, errors.New("design edit was removed with manage_design: save the design as an .html file in the workspace and edit it with swarm_design (edit_path)"))
 	default:
 		designAPIError(w, pebblestore.ErrDesignInvalid)
 	}

@@ -39,7 +39,7 @@ var WorkerPresets = []WorkerPreset{
 		Name:         "Designer",
 		Role:         store.WorkerRoleDesigner,
 		Description:  "Premade worker that designs interfaces and visuals.",
-		Instructions: "Design the screens, pages and visuals each job asks for, working from the workspace it names, then report what you made.",
+		Instructions: "Make and edit the HTML designs each job asks for with swarm_design, in the workspace it names, then report each design's path and status.",
 	},
 	{
 		Key:          store.WorkerRoleFinder,

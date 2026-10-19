@@ -18,7 +18,8 @@ import (
 )
 
 // Purpose: initial and continued V3 requests must preserve assignment/rules while
-// advertising only each regular agent's resolved tools and lifecycle authority.
+// advertising only each regular agent's resolved tools and lifecycle authority
+// (Designer: swarm_design, never artifact authoring, write/edit or Bash).
 // Threat: the second request builder bypasses role scoping or regains parent
 // tools on continuation. Owners: resolveSessionV3Runtime, ComposeRuntimeInstructions
 // and ScopeDurableRunStateInstructions. This real executor/temporary-store layer
@@ -118,8 +119,8 @@ func TestHeadlessV3RequestsPreserveRoleAuthorityAcrossContinuation(t *testing.T)
 					if role == "system-finder" && (names["find"] || names["write"] || names["edit"]) {
 						t.Fatalf("Finder gained unsupported tools: %v", names)
 					}
-					if role == "system-designer" && (!names["artifact_v3_author"] || names["write"] || names["edit"] || names["bash"]) {
-						t.Fatalf("managed Designer schema boundary changed: %v", names)
+					if role == "system-designer" && (!names[tool.SwarmDesignToolName] || names["artifact_v3_author"] || names["manage_artifact"] || names["write"] || names["edit"] || names["bash"]) {
+						t.Fatalf("Designer schema boundary changed (want swarm_design, no artifact authoring, write/edit or bash): %v", names)
 					}
 				}
 				t.Logf("%s turn=%d instructions_bytes=%d tools=%d", role, turn, len(req.Instructions), len(req.Tools))

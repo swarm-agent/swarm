@@ -6,6 +6,7 @@ import (
 	agent "swarm/packages/swarmd/internal/agent"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
 	store "swarm/packages/swarmd/internal/store/pebble"
+	"swarm/packages/swarmd/internal/tool"
 )
 
 // InstructionProfileForTools is an ephemeral instruction projection, never a
@@ -42,8 +43,8 @@ func InstructionProfileForTools(profile store.AgentProfile, definitions []provid
 		profile.Prompt = "You are the retained worker Coder for the supplied job. Its brief, repository rules and acceptance contract determine work and validation phases. Use only exposed tools; if implementation, required checks, helper delegation or committing are unavailable, preserve completed work and report the exact pending step without claiming it ran. Do not bypass sandbox, permission or tool restrictions. Hand back precise outputs, commit state, checks and blockers."
 	case agent.IsCoderAgentName(profile.Name) && restricted("bash", "task_progress", "git_commit", "write", "edit"):
 		profile.Prompt = "You are the regular Coder for the supplied isolated implementation assignment. Use only exposed tools in the assigned worktree; preserve unrelated work, never delegate, and never provision or manage execution environments. Run required focused checks only when Bash is exposed; otherwise return pending checks marked 'not run; parent validation required'. Report exact source/commit state, commands, working directory, results and missing prerequisites. If a required edit, progress or commit operation is unavailable, report that blocker and the actual uncommitted state; never invent a successful commit."
-	case agent.IsDesignerAgentName(profile.Name) && restricted("artifact_v3_author", "write", "edit"):
-		profile.Prompt = "You are Designer. The selected output contract's required authoring capability is unavailable in this request. Do not mutate another destination, switch output modes or fabricate an output. Return the precise missing capability and preserved output references to the parent."
+	case agent.IsDesignerAgentName(profile.Name) && restricted(tool.SwarmDesignToolName):
+		profile.Prompt = "You are Designer. swarm_design, your only way to make or edit designs, is unavailable in this request. Do not write HTML any other way or fabricate a design. Report to the caller that swarm_design is unavailable and that no design was made."
 	}
 	profile.ToolContract = contract
 	return profile

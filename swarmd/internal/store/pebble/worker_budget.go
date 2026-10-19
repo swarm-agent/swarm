@@ -475,6 +475,38 @@ func (s *SessionStore) CheckWorkerUnmeteredOperation(account, session string) er
 	return nil
 }
 
+// WorkerBudgetActive reports whether session is worker-owned (through durable
+// lineage) and a worker or account budget applies to it, so each provider
+// call must reserve and settle one operation before the next may start.
+func (s *SessionStore) WorkerBudgetActive(account, session string) (bool, error) {
+	if s == nil || s.store == nil {
+		return false, errors.New("store is not configured")
+	}
+	unlock := s.store.sessionMutations.lockSessions("account:" + account)
+	defer unlock()
+	scopes, err := s.resolveUsageScopes(account, session)
+	if err != nil {
+		return false, err
+	}
+	for _, scope := range scopes {
+		if scope.Kind != "worker" {
+			continue
+		}
+		policy, err := s.GetWorkerBudget(account, scope.ID)
+		if err != nil {
+			return false, err
+		}
+		_, accountActive, err := s.accountBudgetActive(account)
+		if err != nil {
+			return false, err
+		}
+		if accountActive || policy.DailyCostLimitUSD > 0 || policy.DailyTokensLimit > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func unknownBudgetReceipt(status string) int64 {
 	switch status {
 	case "known", "free", "subscription":

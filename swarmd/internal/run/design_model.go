@@ -13,6 +13,7 @@ import (
 	"swarm/packages/swarmd/internal/design"
 	"swarm/packages/swarmd/internal/identity"
 	provideriface "swarm/packages/swarmd/internal/provider/interfaces"
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Bounds of one design model call.
@@ -115,6 +116,20 @@ func (m *designModel) Complete(ctx context.Context, call design.ModelCall) (desi
 
 	callCtx, cancel := context.WithTimeout(identity.ContextWithPrincipal(ctx, m.principal), m.timeout)
 	defer cancel()
+	// A calling session under a worker budget (in-session swarm_design) owns one
+	// fresh operation slot per call: reserve before dispatch, settle after the
+	// receipt. A held reservation is the fail-closed one-unsettled-operation rule.
+	operation := ""
+	if budget, ok := ctx.Value(workerBudgetContextKey{}).(*workerBudgetContext); ok {
+		callCtx = withWorkerBudget(callCtx, budget.repository, budget.account, budget.session)
+		if err := checkProviderWorkerBudget(callCtx, m.runner, req); err != nil {
+			if errors.Is(err, pebblestore.ErrWorkerBudget) {
+				return reply(""), fmt.Errorf("%w: %w", design.ErrBudgetExceeded, err)
+			}
+			return reply(""), fmt.Errorf("check the worker budget: %w", err)
+		}
+		operation = providerBudgetOperation(callCtx)
+	}
 	var out strings.Builder
 	runes, overLimit := 0, false
 	response, runErr := m.runner.CreateResponseStreaming(callCtx, req, func(event provideriface.StreamEvent) {
@@ -130,8 +145,14 @@ func (m *designModel) Complete(ctx context.Context, call design.ModelCall) (desi
 		out.WriteString(event.Delta)
 	})
 	// Usage the provider reported is recorded even when the call failed.
+	response.Usage.BudgetOperationID = operation
 	if err := m.record(runID, response.Usage, &usage); err != nil {
 		return reply(""), fmt.Errorf("record design call usage: %w", err)
+	}
+	if operation != "" {
+		if err := m.s.sessions.Store().ReleaseWorkerBudgetReservation(m.principal.AccountScopeID, m.receiptSessionID, operation); err != nil {
+			return reply(""), fmt.Errorf("settle the worker budget operation: %w", err)
+		}
 	}
 	if overLimit {
 		return reply(""), fmt.Errorf("the model's reply exceeded %d characters", m.maxRunes)

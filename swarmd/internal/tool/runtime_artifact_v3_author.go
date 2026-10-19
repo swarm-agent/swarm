@@ -365,24 +365,6 @@ func NewArtifactV3AuthorService(root string, repository ArtifactV3AuthorReposito
 	return &ArtifactV3AuthorService{root: root, repository: repository, builder: builder, previewer: previewer, now: time.Now, turns: map[string]*artifactV3TurnState{}}
 }
 
-func artifactV3AuthorDefinition() Definition {
-	return Definition{Type: "function", Name: "artifact_v3_author", Description: "Context-bound whole-project Artifact V3 authoring. Call action='help' topic='workflow' for authoring instructions.", Parameters: map[string]any{
-		"type": "object", "properties": map[string]any{
-			"action":       map[string]any{"type": "string", "enum": []string{artifactV3ActionInspect, artifactV3ActionList, artifactV3ActionRead, artifactV3ActionCreate, artifactV3ActionEdit, artifactV3ActionRename, artifactV3ActionDelete, artifactV3ActionDiff, artifactV3ActionBuild, artifactV3ActionFinish, artifactV3ActionReconcile}},
-			"native_parts": artifactV3NativePartsSchema(),
-			"path":         map[string]any{"type": "string", "maxLength": 512},
-			"to_path":      map[string]any{"type": "string", "maxLength": 512},
-			"content":      map[string]any{"type": "string"},
-			"old_string":   map[string]any{"type": "string", "description": "Exact literal substring to replace."},
-			"new_string":   map[string]any{"type": "string"},
-			"replace_all":  map[string]any{"type": "boolean"},
-			"cursor":       map[string]any{"type": "string", "maxLength": 1024},
-			"limit":        map[string]any{"type": "integer", "minimum": 1},
-			"offset":       map[string]any{"type": "integer", "minimum": 0},
-		}, "required": []string{"action"}, "additionalProperties": false,
-	}}
-}
-
 // ArtifactV3SceneContractSchema is shared by task and direct native authoring.
 func ArtifactV3SceneContractSchema() map[string]any {
 	return map[string]any{"type": "object", "additionalProperties": false, "required": []string{"duration_ms", "scenes"}, "description": "Explicit required complete scene sequence for native animation. Preserve stable scene IDs; no duration-only fragmentation. Producer cannot downgrade this contract.", "properties": map[string]any{"duration_ms": map[string]any{"type": "integer", "minimum": 100}, "scenes": map[string]any{"type": "array", "minItems": 1, "maxItems": 256, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"scene_id", "start_ms", "end_ms"}, "properties": map[string]any{"scene_id": map[string]any{"type": "string"}, "start_ms": map[string]any{"type": "integer", "minimum": 0}, "end_ms": map[string]any{"type": "integer", "minimum": 1}}}}}}
@@ -416,29 +398,6 @@ func ParseArtifactV3SceneContract(raw any) (*pebblestore.ArtifactV3SceneContract
 		return nil, err
 	}
 	return &c, nil
-}
-
-// Share the exact native Part contract across primary and managed authoring.
-func artifactV3NativePartsSchema() map[string]any {
-	return map[string]any{
-		"type":        "array",
-		"description": "Complete replacement Parts. Call action='help' topic='workflow' for schema.",
-		"items":       map[string]any{"type": "object"},
-	}
-}
-
-func parseArtifactV3NativeParts(raw any) ([]pebblestore.ArtifactV3Part, error) {
-	body, err := json.Marshal(raw)
-	if err != nil {
-		return nil, ErrArtifactV3AuthorInvalid
-	}
-	var parts []pebblestore.ArtifactV3Part
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&parts) != nil || len(parts) == 0 || len(parts) > 256 {
-		return nil, ErrArtifactV3AuthorInvalid
-	}
-	return parts, nil
 }
 
 // ReconcileParts is the sole revision manifest mutation path. Validate the
@@ -493,12 +452,6 @@ func (s *ArtifactV3AuthorService) ReconcileParts(ctx context.Context, p Artifact
 	}
 	s.invalidate(state)
 	return s.persist(ctx, state, nil)
-}
-
-// File payloads are bytes, not identifiers: never trim meaningful whitespace.
-func artifactV3LiteralString(args map[string]any, key string) string {
-	value, _ := args[key].(string)
-	return value
 }
 
 func (r *Runtime) SetArtifactV3AuthorService(service *ArtifactV3AuthorService) {
@@ -605,90 +558,6 @@ func (s *ArtifactV3AuthorService) Discard(grant ArtifactV3AuthorGrant) error {
 		return nil
 	}
 	return os.RemoveAll(state.root)
-}
-
-func (r *Runtime) executeArtifactV3Author(ctx context.Context, scope WorkspaceScope, callID string, args map[string]any) (string, error) {
-	if r == nil || r.artifactV3Author == nil {
-		return "", errors.New("artifact_v3_author service is not configured")
-	}
-	run, ok := ctx.Value(artifactV3AuthorContextKey{}).(ArtifactV3AuthorRunContext)
-	if !ok || strings.TrimSpace(run.Grant.ID) == "" {
-		return "", errors.New("artifact_v3_author requires trusted context-bound capability")
-	}
-	if strings.TrimSpace(scope.SessionID) != strings.TrimSpace(run.Grant.ProducerSessionID) || strings.TrimSpace(scope.Principal.AccountScopeID) == "" || strings.TrimSpace(scope.Principal.UserID) == "" {
-		return "", errors.New("artifact_v3_author producer or authenticated principal does not match the capability")
-	}
-	action := strings.TrimSpace(mapString(args, "action"))
-	principal := ArtifactV3AuthorPrincipal{AccountScopeID: scope.Principal.AccountScopeID, UserID: scope.Principal.UserID, ProducerSessionID: scope.SessionID, ProducerRunID: run.Grant.ProducerRunID}
-	var result any
-	var err error
-	switch action {
-	case artifactV3ActionInspect:
-		if err = requireOnlyArtifactV3Fields(args, "action"); err == nil {
-			result, err = r.artifactV3Author.Inspect(ctx, principal, run.Grant)
-		}
-	case artifactV3ActionList:
-		if err = requireOnlyArtifactV3Fields(args, "action", "cursor", "limit"); err == nil {
-			result, err = r.artifactV3Author.List(ctx, principal, run.Grant, mapString(args, "cursor"), int(nonnegativeUint64(args["limit"])))
-		}
-	case artifactV3ActionRead:
-		if err = requireOnlyArtifactV3Fields(args, "action", "path", "offset", "limit"); err == nil {
-			result, err = r.artifactV3Author.Read(ctx, principal, run.Grant, mapString(args, "path"), int(nonnegativeUint64(args["offset"])), int(nonnegativeUint64(args["limit"])))
-		}
-	case artifactV3ActionCreate:
-		if err = requireOnlyArtifactV3Fields(args, "action", "path", "content"); err == nil {
-			err = r.artifactV3Author.Create(ctx, principal, run.Grant, mapString(args, "path"), []byte(artifactV3LiteralString(args, "content")))
-			result = map[string]any{"path": mapString(args, "path")}
-		}
-	case artifactV3ActionEdit:
-		if err = requireOnlyArtifactV3Fields(args, "action", "path", "old_string", "new_string", "replace_all"); err == nil {
-			replaceAll, _ := args["replace_all"].(bool)
-			err = r.artifactV3Author.Edit(ctx, principal, run.Grant, mapString(args, "path"), []byte(artifactV3LiteralString(args, "old_string")), []byte(artifactV3LiteralString(args, "new_string")), replaceAll)
-			result = map[string]any{"path": mapString(args, "path")}
-		}
-	case artifactV3ActionRename:
-		if err = requireOnlyArtifactV3Fields(args, "action", "path", "to_path"); err == nil {
-			err = r.artifactV3Author.Rename(ctx, principal, run.Grant, mapString(args, "path"), mapString(args, "to_path"))
-			result = map[string]any{"path": mapString(args, "to_path")}
-		}
-	case artifactV3ActionDelete:
-		if err = requireOnlyArtifactV3Fields(args, "action", "path"); err == nil {
-			err = r.artifactV3Author.Delete(ctx, principal, run.Grant, mapString(args, "path"))
-			result = map[string]any{"path": mapString(args, "path")}
-		}
-	case artifactV3ActionReconcile:
-		if err = requireOnlyArtifactV3Fields(args, "action", "native_parts"); err == nil {
-			var parts []pebblestore.ArtifactV3Part
-			parts, err = parseArtifactV3NativeParts(args["native_parts"])
-			if err == nil {
-				err = r.artifactV3Author.ReconcileParts(ctx, principal, run.Grant, parts)
-			}
-			result = map[string]any{"parts": parts, "message": "Parts reconciled; build_preview is required before finish_turn."}
-		}
-	case artifactV3ActionDiff:
-		if err = requireOnlyArtifactV3Fields(args, "action"); err == nil {
-			result, err = r.artifactV3Author.Diff(ctx, principal, run.Grant)
-		}
-	case artifactV3ActionBuild:
-		if err = requireOnlyArtifactV3Fields(args, "action"); err == nil {
-			result, err = r.artifactV3Author.BuildPreview(ctx, principal, run.Grant)
-		}
-	case artifactV3ActionFinish:
-		if err = requireOnlyArtifactV3Fields(args, "action"); err == nil {
-			result, err = r.artifactV3Author.Finish(ctx, principal, run.Grant)
-		}
-	default:
-		err = fmt.Errorf("artifact_v3_author action %q is unsupported", action)
-	}
-	if err != nil {
-		return "", err
-	}
-	payload, err := json.Marshal(map[string]any{"tool": "artifact_v3_author", "action": action, "status": "ok", "result": result})
-	if err != nil {
-		return "", err
-	}
-	_ = callID
-	return string(payload), nil
 }
 
 type ArtifactV3AuthorPrincipal struct{ AccountScopeID, UserID, ProducerSessionID, ProducerRunID string }
