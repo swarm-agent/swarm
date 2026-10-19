@@ -102,3 +102,75 @@ func TestWorkerSchedulerDrivesAutomationV2OnlyWhenDueOrPending(t *testing.T) {
 		t.Fatalf("settled: wakes=%d sweeps=%d over a minute, want %d/0", wakes, len(sweeper.sweeps)-sweepsBefore, want)
 	}
 }
+
+// Requirement: a V2 automation that is due but cannot be admitted (serialize
+// overlap while the previous occurrence runs, or an admission conflict) must
+// not drive full-catalog sweeps every second. While occurrences are pending,
+// the scheduler keeps the prior cadence of at most one sweep page and one
+// hint read per second; with nothing pending it sleeps until a committed V2
+// change retries the record. Threat: processV2 re-arming a one-second timer
+// for an un-advanced due record and re-running AcceptedKeys/10+2 sweeps plus
+// two hint scans on every wake. Owner: WorkerScheduler.processV2; the V2
+// sweeper and hint are replaced at their interfaces, as above.
+func TestWorkerSchedulerBacksOffDueV2RecordThatDoesNotAdvance(t *testing.T) {
+	start := time.Now()
+	clock := newFakeSchedulerClock(start)
+	sweeper := &fakeV2Sweeper{}
+	hinter := &fakeV2Hinter{}
+	sch := NewWorkerScheduler(nil, WorkerSchedulerOptions{Clock: clock, V2: sweeper, V2Hints: hinter})
+	ctx := context.Background()
+	if err := sch.process(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	// 201 index entries; the record is due in 10s while an earlier serialized
+	// occurrence is still running, so admission keeps returning a conflict
+	// and NextDueAt never advances.
+	due := start.Add(10 * time.Second)
+	hinter.hint = pebblestore.AutomationV2ScheduleHint{AcceptedKeys: 201, EarliestDueAt: due.UnixMilli(), Pending: true}
+	clock.Set(start.Add(time.Second))
+	sch.Notify(pebblestore.SchedulingSignal{Kind: pebblestore.SchedulingSignalAutomationV2})
+	if err := sch.process(ctx, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fullPass := 201/automationV2SweepPage + 2
+	simulate(ctx, sch, clock, time.UnixMilli(due.UnixMilli()))
+	if got := len(sweeper.sweeps); got < fullPass {
+		t.Fatalf("sweeps at the due time = %d, want at least one full pass (%d)", got, fullPass)
+	}
+
+	sweeps, hints := len(sweeper.sweeps), hinter.calls
+	wakes := simulate(ctx, sch, clock, clock.Now().Add(10*time.Second))
+	if got := len(sweeper.sweeps) - sweeps; got > 10 {
+		t.Errorf("blocked due record with pending work: %d sweep pages in 10s, want at most one per second (10)", got)
+	}
+	if got := hinter.calls - hints; got > 10 {
+		t.Errorf("blocked due record with pending work: %d hint scans in 10s, want at most one per second (10)", got)
+	}
+	if wakes > 10 {
+		t.Errorf("blocked due record with pending work: %d wakes in 10s, want at most 10", wakes)
+	}
+
+	// Nothing pending (for example the occurrence finished but admission
+	// still conflicts): the committed V2 change retries once, then the
+	// scheduler sleeps instead of polling.
+	hinter.hint.Pending = false
+	clock.Set(clock.Now().Add(time.Second))
+	sch.Notify(pebblestore.SchedulingSignal{Kind: pebblestore.SchedulingSignalAutomationV2})
+	sweeps = len(sweeper.sweeps)
+	if err := sch.process(ctx, clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(sweeper.sweeps) - sweeps; got != fullPass {
+		t.Fatalf("V2 change retried the blocked record with %d sweeps, want one full pass (%d)", got, fullPass)
+	}
+	sweeps, hints = len(sweeper.sweeps), hinter.calls
+	if wakes := simulate(ctx, sch, clock, clock.Now().Add(10*time.Second)); wakes != 0 {
+		t.Errorf("blocked due record, nothing pending: %d wakes in 10s, want 0", wakes)
+	}
+	if got := len(sweeper.sweeps) - sweeps; got != 0 {
+		t.Errorf("blocked due record, nothing pending: %d sweeps in 10s, want 0", got)
+	}
+	if got := hinter.calls - hints; got != 0 {
+		t.Errorf("blocked due record, nothing pending: %d hint scans in 10s, want 0", got)
+	}
+}
