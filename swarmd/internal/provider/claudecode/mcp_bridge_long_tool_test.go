@@ -20,13 +20,13 @@ import (
 )
 
 // cliRequestTimeout models the ~60 s cut-off seen with the Claude Code CLI
-// in the forge runs as a client per-request timeout on its MCP HTTP
-// transport: a request whose response has not started by then is abandoned,
-// which cancels the tool call on Swarm's side. That model is this job's
-// inference (the CLI binary was not available to inspect); if the CLI's
-// limit is instead a JSON-RPC-level timeout, only MCP_TOOL_TIMEOUT (checked
-// below) addresses it, and only a live claudecode turn confirms either. It
-// is shortened so the test is fast; the commands below run well past it.
+// in the forge runs. Inspecting the published CLI 2.1.303 package, its
+// wrapFetchWithTimeout aborts each POST to an HTTP MCP server after the
+// server's timeout, else MCP_TOOL_TIMEOUT, else 60000 ms, and clears the
+// timer once the response headers arrive: a response-header timeout, which
+// is what this client sets. The abort cancels the tool call on Swarm's
+// side. A live claudecode turn has not yet confirmed it end to end. It is
+// shortened so the test is fast; the commands below run well past it.
 const cliRequestTimeout = 300 * time.Millisecond
 
 // runtimeBash is the Swarm tool runtime behind the bridge: the real bash tool

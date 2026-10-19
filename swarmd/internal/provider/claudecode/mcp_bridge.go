@@ -268,12 +268,17 @@ func acceptsEventStream(r *http.Request) bool {
 }
 
 // streamToolCall answers one tools/call as an event stream: the response
-// starts at once (so a client per-request timeout that waits for the
-// response to begin cannot abandon a long tool call and cancel it; the
-// ~60 s cut-off seen with Claude Code is taken to be such a timeout, which
-// is inferred and not yet confirmed against the CLI), carries a
-// keep-alive while the tool runs, and ends with the JSON-RPC response as its
-// last event. A client that drops the request still cancels the tool.
+// starts at once, carries a keep-alive while the tool runs, and ends with
+// the JSON-RPC response as its last event. A client that drops the request
+// still cancels the tool.
+//
+// Why (finding from inspecting the published Claude Code CLI 2.1.303; not
+// yet confirmed by a live claudecode turn): the CLI's wrapFetchWithTimeout
+// aborts each POST to an HTTP MCP server with "The operation timed out."
+// after the server's timeout, else MCP_TOOL_TIMEOUT, else 60000 ms, and
+// clears that timer once the response headers arrive, so a response that
+// starts at once is not cut off. Its idle watchdog (300 s for HTTP servers)
+// is reset by the progress notifications sent here.
 func (b *mcpBridge) streamToolCall(w http.ResponseWriter, flusher http.Flusher, r *http.Request, message jsonRPCMessage) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
