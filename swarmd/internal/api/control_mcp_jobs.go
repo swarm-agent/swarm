@@ -985,6 +985,12 @@ func controlMCPMessageJob(c *controlMCPCall, args map[string]any) (any, error) {
 	return out, nil
 }
 
+// controlMCPFollowupBusy is how a send refused because another follow-up is
+// already running in the job says so: the run-intent store's one-active-run
+// refusal and the worker run gate's own conflict both carry it. A reopen
+// step answers it busy and waits (jobAutomationReopener.Reopen).
+const controlMCPFollowupBusy = "a follow-up is already running in this job"
+
 // controlMCPFollowupRefused says plainly that a follow-up was not sent when
 // Swarm refuses to start it: the job's state does not allow it (409), or
 // another run in the job's session won the race to start.
@@ -995,7 +1001,7 @@ func controlMCPFollowupRefused(err error) error {
 	}
 	switch {
 	case strings.Contains(refused.message, "already has active v3 run"):
-		return controlMCPToolFailure("the follow-up was not sent: a follow-up is already running in this job; wait for it with swarm_get_job (wait_seconds), then send the next message")
+		return controlMCPToolFailure("the follow-up was not sent: " + controlMCPFollowupBusy + "; wait for it with swarm_get_job (wait_seconds), then send the next message")
 	case refused.status == http.StatusConflict:
 		return controlMCPToolFailure("the follow-up was not sent: %s", refused.message)
 	}

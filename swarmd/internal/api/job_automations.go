@@ -569,6 +569,11 @@ func (a jobAutomationReopener) Reopen(ctx context.Context, req jobautomation.Reo
 	if err != nil {
 		var refused controlMCPToolError
 		if errors.As(err, &refused) {
+			// A follow-up that started after the busy check above, before
+			// this send: the job is busy again, not refusing.
+			if strings.Contains(refused.message, controlMCPFollowupBusy) {
+				return "", &jobautomation.BusyError{Reason: "the job " + req.JobID + " is still running a follow-up: " + refused.message}
+			}
 			return "", &jobautomation.RefusedError{Reason: refused.message}
 		}
 		return "", err
