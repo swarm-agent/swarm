@@ -6,6 +6,13 @@ Release entries are the source checkpoint for public docs verification. Each ent
 
 ## Unreleased
 
+- Add `swarm_design` (MCP, `POST /v3/projects/{project}/design-jobs`, SDK `createDesignJob`/`cancelDesignJob`): one model call per design, a browser check, and at most one repair that returns exact edits, written as plain HTML files with a `results.json` per batch; edits to an existing file are refused when it changed meanwhile. The Designer worker and the orchestrator use it. `manage_design`, the managed-artifact HTML authoring actions and the old design repair loops are removed, and the old design edit route answers 410. Docs impact: design contracts, permission defaults and orchestrator notes updated.
+- A design model call may take up to 300 s, and an attempt that ended before any output is sent once more. Docs impact: none.
+- A Gemini stream that ends without a finish reason before any output is replayed once instead of failing the turn. Docs impact: none.
+- Add the dedicated headless core package (`cmd/swarm-headless`, `scripts/build-headless-core.sh`, its installer and service unit) with Bubblewrap sandboxing by default and sandbox-off only when set explicitly. Docs impact: headless core README and plugin setup instructions.
+- Managed environments: a delegated Coder's lease and Git handoff complete under the environment that owns them, owned lease controls survive managed mode, and managed Git imports are queued behind lease fences. Docs impact: managed local systemd environments now require stable temporary mounts for Podman.
+- SDK development dependency `tsx` 4.23.15 for the fixed esbuild. Docs impact: none.
+
 - Remove a consumer application example and its deployment templates from the product repository. Swarm continues to provide the supported authenticated API and SDK; consumer applications own their implementation and infrastructure. Docs impact: remove the application example documentation and obsolete setup references.
 
 - Pull-request delivery brings the job's head commit from its clone into the folder before running the publish command; it failed with "commit is not in the folder" for every worker job. Docs impact: none.
