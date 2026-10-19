@@ -23,9 +23,6 @@ type TaskDeliveryInput struct {
 	Identity   pebblestore.TaskDeliveryAssessment
 	SourcePath string
 	TargetPath string
-	// PreferPublishTarget observes the landing ref when present, while still
-	// validating the captured target checkout and branch.
-	PreferPublishTarget bool
 }
 
 type deliveryFlight struct {
@@ -37,7 +34,6 @@ type deliveryKey struct {
 	Account, Task, Session, Attempt, Workspace, Base, Source, Target, SourceBranch, TargetBranch, SourcePath, TargetPath string
 	Revision                                                                                                             int
 	Generation                                                                                                           int64
-	PublishTarget                                                                                                        bool
 }
 
 var deliveryFlights = struct {
@@ -132,27 +128,6 @@ func (d *deliveryInspector) cloneIdentity(in TaskDeliveryInput) bool {
 	return err == nil && sameCleanPath(origin, in.TargetPath)
 }
 
-// targetLane preserves checkout ownership checks but observes the forge's
-// landing target rather than a deliberately lagging local branch. A missing
-// publish ref falls back to that branch; other Git failures remain failures.
-func (d *deliveryInspector) targetLane(in TaskDeliveryInput, branch string) (string, string, error) {
-	head, repo, err := d.lane(in.TargetPath, branch)
-	if err != nil || !in.PreferPublishTarget {
-		return head, repo, err
-	}
-	ref := "refs/swarm/publish/" + branch
-	_, err = d.run(in.TargetPath, "show-ref", "--verify", "--quiet", ref)
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 1 {
-			return head, repo, nil
-		}
-		return "", repo, err
-	}
-	head, err = d.run(in.TargetPath, "rev-parse", "--verify", ref+"^{commit}")
-	return head, repo, err
-}
-
 // inspectionFailure reports a failed Git read as what it was: the time budget
 // running out, the caller cancelling, or Git failing. None of these is evidence
 // that the task's heads moved.
@@ -237,7 +212,7 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	if err != nil {
 		return d.initialLaneFailure(a, err)
 	}
-	target, targetRepo, err := d.targetLane(in, a.TargetBranch)
+	target, targetRepo, err := d.lane(in.TargetPath, a.TargetBranch)
 	if err != nil {
 		return d.initialLaneFailure(a, err)
 	}
@@ -246,7 +221,7 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	}
 	d.targetRepo = targetRepo
 	a.SourceOID, a.TargetOID = source, target
-	key := deliveryKey{a.AccountID, a.TaskID, a.SessionID, a.AttemptID, a.WorkspaceID, a.BaseOID, source, target, a.SourceBranch, a.TargetBranch, gitstatus.NormalizePath(in.SourcePath), gitstatus.NormalizePath(in.TargetPath), a.TaskRevision, a.WorkspaceGeneration, in.PreferPublishTarget}
+	key := deliveryKey{a.AccountID, a.TaskID, a.SessionID, a.AttemptID, a.WorkspaceID, a.BaseOID, source, target, a.SourceBranch, a.TargetBranch, gitstatus.NormalizePath(in.SourcePath), gitstatus.NormalizePath(in.TargetPath), a.TaskRevision, a.WorkspaceGeneration}
 	deliveryFlights.Lock()
 	if flight := deliveryFlights.active[key]; flight != nil {
 		deliveryFlights.Unlock()
@@ -323,7 +298,7 @@ func (d *deliveryInspector) finish(in TaskDeliveryInput, a pebblestore.TaskDeliv
 		a.AllowedActions = []string{}
 	}
 	source, sourceRepo, e1 := d.lane(in.SourcePath, a.SourceBranch)
-	target, targetRepo, e2 := d.targetLane(in, a.TargetBranch)
+	target, targetRepo, e2 := d.lane(in.TargetPath, a.TargetBranch)
 	// Stale only on observed movement: both reads succeeded and an OID or
 	// repository differs, or a read saw another root or branch.
 	moved := (e1 == nil && e2 == nil && (source != a.SourceOID || target != a.TargetOID || sourceRepo != repo || targetRepo != d.targetRepo)) || errors.Is(e1, errLaneMoved) || errors.Is(e2, errLaneMoved)

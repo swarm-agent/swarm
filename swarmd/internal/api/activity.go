@@ -63,7 +63,7 @@ func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, b
 		state = "finished"
 	case "session.review.recorded":
 		state = "recorded"
-	case "session.delivery.updated", "session.landing.updated", "session.lifecycle.updated", "session.task.reported", "session.task.delivered", "session.run.waiting_tasks", "session.run.tasks_ready", "session.run_intent.updated", "session.run_intent.recorded":
+	case "session.delivery.updated", "session.lifecycle.updated", "session.task.reported", "session.task.delivered", "session.run.waiting_tasks", "session.run.tasks_ready", "session.run_intent.updated", "session.run_intent.recorded":
 		state = "changed"
 	default:
 		return activityEvent{}, false
@@ -84,7 +84,7 @@ func activityMetadata(row sessionruntime.RealtimeOutboxRecord) (activityEvent, b
 		}
 		if json.Unmarshal(row.Event.Payload, &receipt) == nil {
 			switch receipt.State {
-			case "job.queued", "job.landing", "job.sent_back", "job.delivered", "job.publish_failed", "job.pull_request", "job.landed", "job.landing_stopped", "job.land_failed":
+			case "job.delivered", "job.publish_failed", "job.pull_request":
 				event.State = receipt.State
 			}
 			event.JobID, event.ProjectID = receipt.JobID, receipt.ProjectID

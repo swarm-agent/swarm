@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Purpose: review admission must include immutable landing evidence even when
+// Purpose: review admission must include immutable base evidence even when
 // only a private folder ref contains it, without changing the coder clone.
 // Real local Git exercises the allocator/object boundary, not a provider.
 func TestReviewPrivateBaseHydration(t *testing.T) {
@@ -36,7 +36,7 @@ func TestReviewPrivateBaseHydration(t *testing.T) {
 	defer removeManagedWorktree(repo, job.WorkspacePath)
 	git(job.WorkspacePath, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "job")
 	head := git(job.WorkspacePath, "rev-parse", "HEAD")
-	base := git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", git(repo, "rev-parse", "HEAD^{tree}"), "-p", original, "-m", "landing")
+	base := git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", git(repo, "rev-parse", "HEAD^{tree}"), "-p", original, "-m", "base")
 	git(repo, "update-ref", "refs/swarm/publish/dev", base)
 	// Explicit evidence must import this private commit from the folder.
 	review, err := s.allocateReviewWorkspaceContext(context.Background(), repo, "base-review", head, time.Minute, base, original)

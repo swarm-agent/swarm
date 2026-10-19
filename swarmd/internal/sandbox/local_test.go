@@ -333,9 +333,6 @@ func TestLocalContainerAPIsRefuseWithoutEngine(t *testing.T) {
 	if _, err := m.BuildEnvironment(context.Background(), EnvironmentBuild{}); err == nil {
 		t.Fatal("container build accepted")
 	}
-	if _, err := m.AcquireLanding(context.Background(), root, root); err == nil {
-		t.Fatal("container landing accepted")
-	}
 	if err := m.ReconcileContainers(context.Background(), func(string) (bool, error) {
 		t.Fatal("local reconciliation called container callback")
 		return false, nil

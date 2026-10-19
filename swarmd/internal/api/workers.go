@@ -1302,7 +1302,6 @@ type setAutomationEnabledRequestBody struct {
 // workspace this job works in; without either, the job uses its automation's
 // workspace or the worker's primary binding.
 type directWorkerRequestBody struct {
-	Proof          string                                   `json:"proof,omitempty"`
 	ReviewJob      string                                   `json:"review_job,omitempty"`
 	ModelProfile   *pebblestore.SessionModelProfileSnapshot `json:"model_profile,omitempty"`
 	Prompt         string                                   `json:"prompt,omitempty"`
@@ -1753,13 +1752,6 @@ func (s *Server) handleWorkerDirectRequest(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		workerHTTPError(w, err)
 		return
-	}
-	if len(req.Proof) > 8192 {
-		writeError(w, http.StatusBadRequest, errors.New("proof exceeds 8192 bytes"))
-		return
-	}
-	if strings.TrimSpace(req.Proof) != "" {
-		inputMap["proof"] = strings.TrimSpace(req.Proof)
 	}
 	if req.ReviewJob != "" {
 		inputMap["review_job"] = req.ReviewJob

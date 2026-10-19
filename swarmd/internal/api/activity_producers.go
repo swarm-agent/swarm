@@ -9,10 +9,10 @@ import (
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
-// recordJobActivity persists delivery/landing receipts on the owning session's
+// recordJobActivity persists delivery receipts on the owning session's
 // existing event log and realtime outbox. Content from publish tools is excluded.
 // The receipt key is stable across retries of one durable transition. Callers
-// without a queue transition retain the job/state/head identity.
+// without a transition retain the job/state/head identity.
 func (c *controlMCPCall) recordJobActivity(kind, a, b string, refs controlMCPJobRefs, state, head string, transitionID ...string) error {
 	principal, ok := PrincipalFromRequest(c.request)
 	if !ok || c.server == nil || refs.sessionID == "" {

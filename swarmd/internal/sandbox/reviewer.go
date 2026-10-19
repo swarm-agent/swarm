@@ -5,15 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 )
 
 func scopeContainerName(scope Scope) string {
-	if scope.landingID != "" {
-		return ContainerName(scope.Root) + "-landing-" + scope.landingID
-	}
 	if scope.daemonGit {
 		scope.daemonGit = false
 		return scopeContainerName(scope) + "-daemon-git"
@@ -139,7 +135,7 @@ func (m *Manager) scopeRunArgs(name, root, spec string, mounts []string, secret 
 	guards, _ := reviewGitMounts(checkout, root) // validated by acquire
 	extra := []string{"--env", "GIT_OPTIONAL_LOCKS=0", "--mount", "type=bind,src=" + checkout + ",dst=" + checkout}
 	if values, ok := reviewEnvironments.Load(checkout); ok {
-		for _, name := range []string{"SWARM_REVIEW_HEAD", "SWARM_REVIEW_BASE", "SWARM_REVIEW_JOB", "SWARM_REVIEW_CHECKS", "SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS"} {
+		for _, name := range []string{"SWARM_REVIEW_HEAD", "SWARM_REVIEW_BASE", "SWARM_REVIEW_JOB"} {
 			extra = append(extra, "--env", name+"="+values.(map[string]string)[name])
 		}
 	}
@@ -175,14 +171,6 @@ func (m *Manager) SetReviewEnvironment(checkout string, env map[string]string) e
 			return fmt.Errorf("missing %s", name)
 		}
 		values[name] = env[name]
-	}
-	if env["SWARM_REVIEW_CHECKS"] != "" || env["SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS"] != "" {
-		seconds, err := strconv.Atoi(env["SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS"])
-		if env["SWARM_REVIEW_CHECKS"] == "" || err != nil || seconds <= 0 || seconds > 3600 {
-			return fmt.Errorf("review checks require a timeout between 1 and 3600 seconds")
-		}
-		values["SWARM_REVIEW_CHECKS"] = env["SWARM_REVIEW_CHECKS"]
-		values["SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS"] = env["SWARM_REVIEW_CHECKS_TIMEOUT_SECONDS"]
 	}
 	reviewEnvironments.Store(checkout, values)
 	return nil

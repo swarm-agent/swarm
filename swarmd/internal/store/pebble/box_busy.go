@@ -5,9 +5,9 @@ import (
 	"strings"
 )
 
-// BoxExecutionCounts reads durable work across accounts. Queued landing and
-// follow-up work also prevents shutdown: it is work the daemon must resume.
-func (ws *WorkerStore) BoxExecutionCounts() (followups, reviews, landing int, err error) {
+// BoxExecutionCounts reads durable work across accounts. Follow-up work also
+// prevents shutdown: it is work the daemon must resume.
+func (ws *WorkerStore) BoxExecutionCounts() (followups, reviews int, err error) {
 	err = ws.store.IteratePrefix(keyWorkerRunActivePrefix, int(^uint(0)>>1), func(key string, data []byte) error {
 		var entry workerRunIndexEntry
 		if err := json.Unmarshal(data, &entry); err != nil {
@@ -30,25 +30,6 @@ func (ws *WorkerStore) BoxExecutionCounts() (followups, reviews, landing int, er
 		}
 		if r.Role == WorkerRoleReviewer && !AutomationV2Terminal(r.Status) {
 			reviews++
-		}
-		return nil
-	})
-	if err != nil {
-		return
-	}
-	err = ws.store.IteratePrefix("publish_queue/", int(^uint(0)>>1), func(_ string, data []byte) error {
-		var entries []struct {
-			State               string `json:"delivery_state"`
-			NotificationPending bool   `json:"notification_pending"`
-			SendBackPending     bool   `json:"send_back_pending"`
-		}
-		if err := json.Unmarshal(data, &entries); err != nil {
-			return err
-		}
-		for _, e := range entries {
-			if e.State == "queued" || e.State == "landing" || e.NotificationPending || e.SendBackPending {
-				landing++
-			}
 		}
 		return nil
 	})

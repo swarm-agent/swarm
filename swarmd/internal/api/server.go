@@ -18,7 +18,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/memory"
 	"swarm/packages/swarmd/internal/publish"
 	"swarm/packages/swarmd/internal/sandbox"
@@ -137,22 +136,13 @@ type Server struct {
 	agentBoundLimits            *agentBoundRateLimiter // gateway and end-user rate limits, kept in the daemon store; nil refuses them
 	secretSlots                 *pebblestore.SecretSlotStore
 	signals                     *pebblestore.SignalStore
-	runnerStore                 *pebblestore.Store
 	secretsGatewayEnabled       bool
 	sandboxEnvironments         *pebblestore.SandboxEnvironmentStore
-	landingEnvironmentProvider  environment.Provider
-	cloudBuildProvider          environment.Provider
 	envBuildMu                  sync.Mutex
 	envBuildDone                map[string]chan struct{}
 	signalSinks                 *pebblestore.SignalSinkStore
 	outboxStatus                func() outbox.Status
 	publishConfig               string
-	landingSlots                chan struct{}
-	landingWake                 chan struct{} // guarded by landQueueMu
-	landingParallel             int
-	landingMaxConcurrent        int
-	landQueueMu                 sync.Mutex
-	landQueue                   *publish.Queue
 	secretValues                secretValueSetter
 	webPush                     *webpush.Service
 	hub                         *stream.Hub
@@ -4379,19 +4369,15 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Runner bearer credentials never inherit a cookie or local-owner bypass,
-		// including otherwise public routes.
+		// Credentials of the removed runner kind are refused everywhere and
+		// never inherit a cookie or local-owner bypass.
 		if token := extractAttachToken(r); token != "" {
 			rec, err := s.security.ValidateScopedToken(token)
 			if err != nil {
 				writeError(w, http.StatusUnauthorized, err)
 				return
 			}
-			if rec != nil && rec.Kind == "runner" {
-				if !gateRunnerKey(w, r, rec) {
-					return
-				}
-				next.ServeHTTP(w, requestWithScopedToken(r, rec))
+			if !refuseRunnerKey(w, rec) {
 				return
 			}
 		}
@@ -4432,7 +4418,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 					}
 					reqWithAuth := requestWithActorContext(r, actor)
 					reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !gateRunnerKey(w, reqWithAuth, scopedRec) {
+					if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !refuseRunnerKey(w, scopedRec) {
 						return
 					}
 					next.ServeHTTP(w, reqWithAuth)
@@ -4475,7 +4461,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 			reqWithAuth := requestWithActorContext(r, actor)
 			reqWithAuth = requestWithScopedToken(reqWithAuth, scopedRec)
-			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !gateRunnerKey(w, reqWithAuth, scopedRec) {
+			if !s.gateAgentBoundToken(w, reqWithAuth, scopedRec) || !gateAIKey(w, reqWithAuth, scopedRec) || !gateClientAppKey(w, reqWithAuth, scopedRec) || !refuseRunnerKey(w, scopedRec) {
 				return
 			}
 			next.ServeHTTP(w, reqWithAuth)
@@ -4515,8 +4501,6 @@ func (s *Server) isAuthExemptRequest(r *http.Request) bool {
 		return true
 	}
 	switch r.URL.Path {
-	case "/v3/runners/join":
-		return r.Method == http.MethodPost
 	case "/healthz", "/readyz":
 		return true
 	case "/v1/onboarding":

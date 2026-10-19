@@ -5,26 +5,17 @@ import (
 	"testing"
 )
 
-// Purpose: the auto-publisher must skip terminal report-only jobs without a
-// retry, allowing the next deliverable job immediately; publishJob must refuse
-// even fabricated commit evidence before any publication side effect. These
-// policy boundaries are the narrowest deterministic decision-layer proof.
-func TestAutoPublishReviewerDoesNotDelayCoder(t *testing.T) {
-	jobs := []map[string]any{
-		{"delivery_state": "report_only", "head": "review", "commits": []any{"review"}},
-		{"delivery_state": "ready", "head": "coder", "commits": []any{"coder"}},
-	}
-	if autoPublishNext("needs_review", jobs[0], nil) != autoPublishSkip {
-		t.Fatal("reviewer held cursor")
-	}
-	if autoPublishNext("needs_review", jobs[1], nil) != autoPublishDeliver {
-		t.Fatal("coder not immediately deliverable")
-	}
+// Purpose: publishJob must refuse reviewer and report-only jobs, even with
+// fabricated commit evidence, before any publication side effect. The
+// decision layer is the narrowest deterministic proof of this policy.
+func TestPublishJobRefusesReportOnlyJobs(t *testing.T) {
+	ready := map[string]any{"delivery_state": "ready", "head": "coder", "commits": []any{"coder"}}
+	reportOnly := map[string]any{"delivery_state": "report_only", "head": "review", "commits": []any{"review"}}
 	c := &controlMCPCall{}
-	if _, err := c.publishJob(controlMCPJobWorker, "w", "r", controlMCPJobRefs{run: map[string]any{"role": "reviewer"}}, publish.Rule{Mode: "land"}, jobs[1], false); err == nil {
+	if _, err := c.publishJob(controlMCPJobWorker, "w", "r", controlMCPJobRefs{run: map[string]any{"role": "reviewer"}}, publish.Rule{}, ready); err == nil {
 		t.Fatal("reviewer published")
 	}
-	if _, err := c.publishJob(controlMCPJobWorker, "w", "r", controlMCPJobRefs{}, publish.Rule{Mode: "land"}, jobs[0], false); err == nil {
+	if _, err := c.publishJob(controlMCPJobWorker, "w", "r", controlMCPJobRefs{}, publish.Rule{}, reportOnly); err == nil {
 		t.Fatal("report-only published")
 	}
 }

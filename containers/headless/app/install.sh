@@ -131,7 +131,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
        swarmctl workspace add PATH [--for-user NAME] | remove PATH | list
-       swarmctl workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync] | publish PATH --off
+       swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off
 
   --for-user NAME  the person this install is for (default: the account that
                 ran sudo); used for the AI connection and workspace folders
@@ -235,24 +235,17 @@ Readiness is generation-bound and checked again immediately before restart.
                    the machine up runs this as root; Swarm never changes the
                    machine itself. Then register the folder in place with
                    swarm_add_workspace. remove reverses it.
-  workspace publish PATH COMMAND [--land] [--require-review] [--require-proof] [--pipeline] [--auto] [--sync]
+  workspace publish PATH COMMAND [--sync]
                    deliver jobs in PATH as pull requests instead of merging
                    them into the folder: Swarm runs COMMAND (root-owned,
                    outside home folders) on this machine with the job in
                    SWARM_PUBLISH_FOLDER, _JOB_ID, _BRANCH, _HEAD, _BASE_BRANCH,
                    _TITLE and _BODY_FILE; its last output line is the pull
-                   request URL. --auto delivers each finished job with commits
-                   without asking. --sync starts each job from the forge's
-                   latest base branch (COMMAND with SWARM_PUBLISH_ACTION=update
-                   fetches it and prints COMMIT BRANCH). publish PATH --off
-                   goes back to merging. --land queues fast-forward delivery:
-                   checks run in the sandbox before COMMAND's land action,
-                   which prints LANDED COMMIT or MOVED (refresh and retry).
-                   Conflicts or failed checks send work back to the worker;
-                   retries are bounded. Deliver a stopped job again to retry.
-                   --require-review requires an independent OK review of the
-                   current head (give the reviewer review_job). With --auto,
-                   landing waits for that review's job.reviewed signal.
+                   request URL. A pull request is opened only when a job is
+                   delivered (swarm_deliver_job). --sync starts each job from
+                   the forge's latest base branch (COMMAND with
+                   SWARM_PUBLISH_ACTION=update fetches it and prints COMMIT
+                   BRANCH). publish PATH --off goes back to merging.
 USAGE
 }
 
@@ -291,6 +284,12 @@ conf_migrate() {
     PERMISSIONS=auto
     conf_set PERMISSIONS auto
     echo "swarm: agents now run without permission prompts while the sandbox is active (install.sh permissions ask turns them back on)"
+  fi
+  # The removed runner listener's port: units are written without it.
+  if [[ -n ${RUNNER_GATEWAY_PORT+set} ]]; then
+    sed -i '/^RUNNER_GATEWAY_PORT=/d' "$CONF"
+    unset RUNNER_GATEWAY_PORT
+    echo "swarm: dropped the removed RUNNER_GATEWAY_PORT setting"
   fi
   if [[ -z ${AUTO_UPDATE:-} ]]; then
     AUTO_UPDATE=off
@@ -804,28 +803,8 @@ post_update_smoke() {
   done
 }
 
-# Captured folder checks run in the project sandbox, never the publisher host.
-ensure_app_landing_checks() {
-  [[ -s $PUBLISH ]] || return 0
-  local folder publisher options encoded current payload
-  while IFS=$'\t' read -r folder publisher options; do
-    [[ ,$options, == *,land,* ]] || continue
-    # Sync can leave the working tree behind the fetched landing base.
-    if git -C "$folder" show-ref --verify --quiet refs/swarm/publish/dev; then
-      git -C "$folder" cat-file -e refs/swarm/publish/dev:scripts/test-app-runs.sh 2>/dev/null || continue
-    else
-      [[ -f $folder/scripts/test-app-runs.sh ]] || continue
-    fi
-    encoded=$(jq -rn --arg path "$folder" '$path|@uri')
-    current=$(local_api "/v3/sandbox-environments?workspace_path=$encoded") || return 1
-    payload=$(jq -ce --arg path "$folder" '.environment.definition as $e | {workspace_path:$path, base_image:($e.base_image // "swarm-sandbox:local"), setup:($e.setup // []), env:($e.env // {}), checks:(($e.checks // []) | if index("bash scripts/test-app-runs.sh") then . else . + ["bash scripts/test-app-runs.sh"] end), check_timeout_minutes:([$e.check_timeout_minutes // 0, 10]|max)}' <<<"$current") || return 1
-    local_api /v3/sandbox-environments -X PUT -H 'Content-Type: application/json' -d "$payload" >/dev/null || return 1
-  done <"$PUBLISH"
-}
-
 update() {
   load_conf
-  ensure_app_landing_checks
   if [[ -n ${DEV_SOURCE:-} ]]; then
     echo "swarm: built from $DEV_SOURCE; not following $SWARM_REF (install.sh dev-sync off to resume)"
     finish_update
@@ -868,8 +847,6 @@ update() {
 # runs, switch, and go back if it does not come up.
 finish_update() (
   load_conf
-  # Older installers exec this new entrypoint directly, bypassing update().
-  ensure_app_landing_checks
   local commit running why sandboxed
   commit=$(git -C "$SRC" rev-parse HEAD)
   running=$(running_commit)
@@ -1088,14 +1065,10 @@ daemon_env() {
 install_units() {
   load_conf
   conf_migrate
-  local runner_args='' sdk_args='' runtime_arg='' secrets_arg='' permissions_arg ai_url='' ai_ip='' release
+  local sdk_args='' runtime_arg='' secrets_arg='' permissions_arg ai_url='' ai_ip='' release
   # The app starts only when run as the main module, which Node decides on
   # the symlink-resolved path, so its unit names the release itself.
   release=$(readlink -f "$OPT/current")
-  if [[ ${RUNNER_GATEWAY_PORT:-0} != 0 ]]; then
-    [[ $RUNNER_GATEWAY_PORT =~ ^[1-9][0-9]{0,4}$ && $RUNNER_GATEWAY_PORT -le 65535 ]] || die "invalid RUNNER_GATEWAY_PORT"
-    runner_args="--runner-gateway-port=$RUNNER_GATEWAY_PORT"
-  fi
   # Swarm's MCP for AI keys, on loopback (and on the tailnet through Serve).
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
   [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'
@@ -1138,8 +1111,8 @@ UNIT
 [Unit]
 Description=Low-priority Swarm agent commands
 [Slice]
-# Agents are admitted by RAM (worker_max_concurrent_runs); landings by CPU
-# (landing_max_concurrent). Weights affect contention, not idle CPU availability.
+# Agents are admitted by RAM (worker_max_concurrent_runs). Weights affect
+# contention, not idle CPU availability.
 CPUWeight=25
 IOWeight=25
 UNIT
@@ -1183,7 +1156,7 @@ WorkingDirectory=$PROJECT
 Slice=swarm.slice
 CPUWeight=1000
 IOWeight=1000
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $cgroup_arg $permissions_arg $runtime_arg $sdk_args $runner_args $secrets_arg
+ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $cgroup_arg $permissions_arg $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -1628,42 +1601,6 @@ tailnet_cmd() {
   esac
 }
 
-# Separate runner protocol entry point: no Swarm app capability grants.
-runner_gateway_cmd() {
-  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
-  [[ $# == 1 ]] || die "usage: install.sh runner-gateway on|off|status"
-  load_conf
-  case $1 in
-    on)
-      local port=${RUNNER_GATEWAY_PORT:-7784} TS_DNS
-      [[ $port =~ ^[1-9][0-9]{0,4}$ && $port -le 65535 ]] || die "invalid RUNNER_GATEWAY_PORT"
-      TS_DNS=$(tailscale status --json | jq -r '(.Self.DNSName // "") | rtrimstr(".")')
-      [[ -n $TS_DNS ]] || die "join the hub to your tailnet first"
-      conf_set RUNNER_GATEWAY_PORT "$port"
-      install_units
-      systemctl restart "$DAEMON_UNIT"
-      tailscale serve --bg --https=8445 "http://127.0.0.1:$port" >/dev/null || die "tailscale serve for runner gateway failed"
-      echo "Runner hub URL: https://$TS_DNS:8445"
-      echo "Tailnet policy should allow runner machines only tcp:8445 on the hub."
-      ;;
-    off)
-      tailscale serve --https=8445 off >/dev/null || die "could not remove runner gateway Serve entry"
-      sed -i '/^RUNNER_GATEWAY_PORT=/d' "$CONF"
-      unset RUNNER_GATEWAY_PORT
-      install_units
-      systemctl restart "$DAEMON_UNIT"
-      ;;
-    status)
-      echo "Runner gateway port: ${RUNNER_GATEWAY_PORT:-0} (0 = off)"
-      local service_status=0
-      systemctl status "$DAEMON_UNIT" --no-pager || service_status=$?
-      tailscale serve status || return $?
-      return "$service_status"
-      ;;
-    *) die "usage: install.sh runner-gateway on|off|status" ;;
-  esac
-}
-
 # Agents without prompts (auto, inside the sandbox only) or asking first.
 set_permissions() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
@@ -2048,7 +1985,7 @@ idle_off_response_is_idle() {
   "$OPT/current/bin/node" -e '
     try {
       const v = JSON.parse(require("fs").readFileSync(0, "utf8"));
-      const counts = ["sessions", "worker_runs", "followups", "reviews", "landing"];
+      const counts = ["sessions", "worker_runs", "followups", "reviews"];
       if (!v || Array.isArray(v) || v.busy !== false ||
           counts.some(k => v[k] !== 0) ||
           Object.entries(v).some(([k,n]) => k !== "busy" && n !== 0)) process.exit(1);
@@ -2099,14 +2036,7 @@ main() {
     -*) install_all "$@" ;;
     reinstall) shift; reinstall_all "$@" ;;
     uninstall) shift; uninstall_all "$@" ;;
-    runner) shift; source "$(dirname "${BASH_SOURCE[0]}")/runner-install.sh"; install_runner "$@" ;;
-    update)
-      if [[ -f /etc/swarm-runner/ref ]]; then
-        source "$(dirname "${BASH_SOURCE[0]}")/runner-install.sh"
-        update_runner
-      else
-        update
-      fi ;;
+    update) update ;;
     finish-update) finish_update ;;
     build-release) shift; load_conf; build_release "${1:?build-release needs a commit}" ;;
     idle-off) shift; exec "$SWARMCTL" idle-off "$@" ;;
@@ -2127,7 +2057,6 @@ main() {
     connect-ai) shift; connect_ai "$@" ;;
     key) shift; provider_key "$@" ;;
     secret) shift; secret_cmd "$@" ;;
-    runner-gateway) shift; runner_gateway_cmd "$@" ;;
     tailnet) shift; tailnet_cmd "$@" ;;
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
     secrets-gateway) shift; set_secrets_gateway "$@" ;;

@@ -28,9 +28,7 @@
 #     BASE_BRANCH=main                 (optional: the branch pull requests target;
 #                                       default: the branch the job started from)
 # The App needs Contents read/write and Pull requests read/write on the
-# repository only; PR-mode branch rules keep it from pushing to the base.
-# Land mode needs Contents read/write; base branch rules should allow only
-# this App to push. SWARM_PUBLISH_ACTION=land prints LANDED COMMIT or MOVED.
+# repository only; branch rules keep it from pushing to the base.
 set -euo pipefail
 
 conf="${PUBLISH_GITHUB_CONF:-$0.conf}"
@@ -59,7 +57,7 @@ done <"$conf"
 # Repository hooks (a pre-push release gate) need a scratch folder.
 if [[ -z ${TMPDIR:-} ]]; then TMPDIR=$(mktemp -d) && export TMPDIR && trap 'rm -rf "$TMPDIR"' EXIT; fi
 action="${SWARM_PUBLISH_ACTION:-publish}"
-[[ $action == publish || $action == update || $action == land ]] || die "SWARM_PUBLISH_ACTION must be publish, update or land"
+[[ $action == publish || $action == update ]] || die "SWARM_PUBLISH_ACTION must be publish or update"
 folder="${SWARM_PUBLISH_FOLDER:?}"
 base="${BASE_BRANCH:-${SWARM_PUBLISH_BASE_BRANCH:-main}}"
 [[ $base =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "the base branch is not a branch name"
@@ -74,15 +72,6 @@ if [[ $action == publish ]]; then
   # One branch per job: a follow-up of the same job updates the same pull request.
   branch="$BRANCH_PREFIX$(printf '%s' "$job" | sha256sum | cut -c1-12)"
   permissions='{"contents":"write","pull_requests":"write","metadata":"read"}'
-fi
-
-if [[ $action == land ]]; then
-  base="${SWARM_PUBLISH_BASE_BRANCH:?}"
-  base_commit="${SWARM_PUBLISH_BASE_COMMIT:?}" head="${SWARM_PUBLISH_HEAD:?}"
-  [[ $base_commit =~ ^[0-9a-f]{40}$ && $head =~ ^[0-9a-f]{40}$ ]] || die "land requires commit ids"
-  git_folder check-ref-format "refs/heads/$base" || die "invalid land base branch"
-  git_folder merge-base --is-ancestor "$base_commit" "$head" || die "land head is not based on the supplied base"
-  permissions='{"contents":"write","metadata":"read"}'
 fi
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
@@ -114,26 +103,6 @@ if [[ $action == update ]]; then
   ref="refs/swarm/publish/$base"
   git_forge fetch --quiet --no-tags "$git_base/$REPO.git" "+refs/heads/$base:$ref" || die "fetch of $base from $REPO failed"
   echo "$(git_folder rev-parse --verify "$ref^{commit}") $base"
-  exit 0
-fi
-
-if [[ $action == land ]]; then
-  # Porcelain reports the precise rejection class. Never infer MOVED from
-  # arbitrary stderr (hooks, permissions and branch rules are real failures).
-  if receipt=$(git_forge push --porcelain "$git_base/$REPO.git" "$head:refs/heads/$base" 2>"$TMPDIR/land-push-error"); then
-    echo "LANDED $head"
-  else
-    # Preserve Git's diagnostic verbatim; the daemon redacts it before display.
-    cat "$TMPDIR/land-push-error" >&2
-    printf '%s\n' "$receipt" >&2
-    reason=$(awk -F '\t' '$1 == "!" { print $3; exit }' <<<"$receipt")
-    printf 'LAND_REFUSED: %s\n' "${reason:-fast-forward push to $base was refused}" >&2
-    if awk -F '\t' '$1 == "!" && ($3 == "[rejected] (non-fast-forward)" || $3 == "[rejected] (fetch first)") { found=1 } END { exit !found }' <<<"$receipt"; then
-      echo MOVED
-    else
-      die "fast-forward push to $base was refused"
-    fi
-  fi
   exit 0
 fi
 

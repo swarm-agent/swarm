@@ -22,11 +22,11 @@ func taskDeliveredState(state, prURL string) string {
 	return ""
 }
 
-func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore, servers ...*Server) taskGitState {
-	return inspectTaskGitStateContext(context.Background(), task, db, servers...)
+func inspectTaskGitState(task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
+	return inspectTaskGitStateContext(context.Background(), task, db)
 }
 
-func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore, servers ...*Server) taskGitState {
+func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTaskRecord, db *pebblestore.SessionStore) taskGitState {
 	a := &pebblestore.TaskDeliveryAssessment{
 		AccountID: task.AccountID, TaskID: task.ID, TaskRevision: task.Revision,
 		AttemptID: task.ActiveAttemptID, SessionID: task.SessionID,
@@ -65,14 +65,6 @@ func inspectTaskGitStateContext(ctx context.Context, task pebblestore.ProjectTas
 	res.worktreeName = strings.TrimPrefix(strings.TrimPrefix(res.worktreeBranch, "agent/"), "worktree/")
 	a.BaseOID, a.SourceBranch, a.TargetBranch = base, res.worktreeBranch, res.baseBranch
 	in := worktree.TaskDeliveryInput{Identity: *a, SourcePath: session.WorktreeRootPath, TargetPath: source}
-	if len(servers) > 0 && servers[0] != nil {
-		rule, found, err := servers[0].publishRule(source)
-		if err != nil {
-			a.ReasonCode, a.Reason = "publish_rule_unavailable", "Could not read the folder's publish rule"
-			return res
-		}
-		in.PreferPublishTarget = found && rule.Mode == "land"
-	}
 	assessment := worktree.AssessTaskDelivery(ctx, in)
 	in.Identity = assessment
 	assessment = worktree.ObserveTaskDeltaReceipt(ctx, in, task.Integration)
@@ -126,11 +118,11 @@ func reconcileTaskGitState(db *pebblestore.SessionStore, task *pebblestore.Proje
 	return reconcileTaskGitStateContext(context.Background(), db, task)
 }
 
-func reconcileTaskGitStateContext(ctx context.Context, db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord, servers ...*Server) error {
+func reconcileTaskGitStateContext(ctx context.Context, db *pebblestore.SessionStore, task *pebblestore.ProjectTaskRecord) error {
 	if task == nil || task.Design != nil {
 		return nil
 	}
-	state := inspectTaskGitStateContext(ctx, *task, db, servers...)
+	state := inspectTaskGitStateContext(ctx, *task, db)
 	task.DeliveryAssessment = state.deliveryAssessment
 	task.GitStatus, task.UnintegratedCommits, task.IsIntegrated = state.gitStatus, state.unintegratedCommits, state.isIntegrated
 	task.IsDirty, task.DirtyCount = state.isDirty, state.dirtyCount

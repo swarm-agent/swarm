@@ -32,7 +32,6 @@ import (
 	"swarm/packages/swarmd/internal/config"
 	"swarm/packages/swarmd/internal/design"
 	"swarm/packages/swarmd/internal/discovery"
-	"swarm/packages/swarmd/internal/environment"
 	"swarm/packages/swarmd/internal/environments/lifecycle"
 	"swarm/packages/swarmd/internal/environments/provider"
 	"swarm/packages/swarmd/internal/htmlcapture"
@@ -161,7 +160,6 @@ type Daemon struct {
 	localTransportServer      *http.Server
 	peerTransportServer       *http.Server
 	containerSDKServer        *http.Server
-	runnerGatewayServer       *http.Server
 	listener                  net.Listener
 	localTransportListener    net.Listener
 	peerTransportListener     net.Listener
@@ -176,7 +174,6 @@ type Daemon struct {
 	remoteTransport           *remote.Service
 	signalForwarder           *signals.Forwarder
 	resultOutbox              *outbox.Exporter
-	autoPublisher             *api.AutoPublisher
 	bgCtx                     context.Context
 	bgCancel                  context.CancelFunc
 	memoryDone                <-chan struct{}
@@ -787,21 +784,6 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	if configureClient != nil {
 		configureClient(apiServer, store)
 	}
-	if err := apiServer.SetEnvironmentProvider(cfg.EnvironmentProvider, cfg.EnvironmentRunnerWaitSeconds); err != nil {
-		return nil, err
-	}
-	if err := apiServer.SetEnvironmentRunnerWakeCommand(cfg.EnvironmentRunnerWakeCommand); err != nil {
-		return nil, err
-	}
-	if err := apiServer.ConfigureCloudBuild(bgCtx, cfg.EnvironmentProvider, environment.CloudBuildConfig{Cache: &cfg.CloudBuildCache, Project: cfg.CloudBuildProject, Region: cfg.CloudBuildRegion, Bucket: cfg.CloudBuildBucket, MachineType: cfg.CloudBuildMachineType, TimeoutMinutes: cfg.CloudBuildTimeoutMinutes, ServiceAccount: cfg.CloudBuildServiceAccount}, store); err != nil {
-		return nil, err
-	}
-	if err := apiServer.SetLandingParallel(cfg.LandingParallel); err != nil {
-		return nil, err
-	}
-	if err := apiServer.SetLandingMaxConcurrent(cfg.LandingMaxConcurrent); err != nil {
-		return nil, err
-	}
 	toolRuntime.SetProjectTaskLifecycleService(apiServer)
 	// Automation mutations always commit through canonical V3 authority before
 	// waking realtime. Wake failures cannot turn a committed execution into retry.
@@ -825,8 +807,6 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
 	apiServer.SetSignalStore(signalStore)
-	apiServer.SetRunnerStore(store)
-	store.StartRunnerLeaseExpiry(func(err error) { log.Printf("runner lease expiry failed: %v", err) })
 	apiServer.SetSecretsGatewayEnabled(cfg.SecretsGateway == "on")
 	signalSinks := pebblestore.NewSignalSinkStore(store)
 	apiServer.SetSignalSinkStore(signalSinks)
@@ -850,7 +830,7 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 		}
 	}
 	// Jobs in folders whose owner set a publish command (swarmctl workspace
-	// publish) are delivered as pull requests; auto rules deliver them unasked.
+	// publish) are delivered as pull requests when swarm_deliver_job asks.
 	apiServer.SetPublishConfig(os.Getenv(publish.ConfigEnv))
 	// A sync rule starts each worker job from the forge's latest base branch.
 	runSvc.SetPublishBaseResolver(func(ctx context.Context, folder, current string) (string, string, bool, error) {
@@ -868,7 +848,6 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 		}
 		return base.Commit, base.Branch, true, nil
 	})
-	autoPublisher := apiServer.NewAutoPublisher(signalStore, store)
 	var secretGatewayStop func()
 	if cfg.SecretsGateway == "on" {
 		broker, stopGateway, err := startSecretGateway(cfg, secretSlots, authStore, signalEmitter)
@@ -1033,7 +1012,6 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 		remoteTransport:           remoteSvc,
 		signalForwarder:           signalForwarder,
 		resultOutbox:              resultOutbox,
-		autoPublisher:             autoPublisher,
 	}
 	d.secretGatewayStop = secretGatewayStop
 	apiServer.SetShutdownHandler(func(reason string) {
@@ -1052,15 +1030,6 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	}
 
 	d.httpServer = httpServer
-	if cfg.RunnerGatewayPort > 0 {
-		d.runnerGatewayServer = &http.Server{
-			Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.RunnerGatewayPort)),
-			Handler:           apiServer.RunnerGatewayHandler(),
-			ReadTimeout:       10 * time.Second,
-			ReadHeaderTimeout: 5 * time.Second,
-			IdleTimeout:       60 * time.Second,
-		}
-	}
 	if cfg.ContainerSDKPort > 0 {
 		d.containerSDKServer = &http.Server{
 			Addr:              net.JoinHostPort(cfg.ContainerSDKHost, strconv.Itoa(cfg.ContainerSDKPort)),
@@ -1382,18 +1351,6 @@ func (d *Daemon) Run() error {
 			}
 		}()
 	}
-	if d.runnerGatewayServer != nil {
-		ln, err := net.Listen("tcp4", d.runnerGatewayServer.Addr)
-		if err != nil {
-			return fmt.Errorf("listen on runner gateway port: %w", err)
-		}
-		defer d.runnerGatewayServer.Close()
-		go func() {
-			if err := d.runnerGatewayServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				d.requestStop("runner-gateway-serve-error")
-			}
-		}()
-	}
 	if d.containerSDKServer != nil {
 		sdkLn, err := net.Listen("tcp4", d.containerSDKServer.Addr)
 		if err != nil {
@@ -1414,9 +1371,6 @@ func (d *Daemon) Run() error {
 	}
 	if d.resultOutbox != nil && d.bgCtx != nil {
 		go d.resultOutbox.Run(d.bgCtx)
-	}
-	if d.autoPublisher != nil && d.bgCtx != nil {
-		go d.autoPublisher.Run(d.bgCtx)
 	}
 	// Start only V2, after listeners succeed; never migrate or execute V1 records.
 	if d.automationV2Scheduler != nil {
@@ -1466,7 +1420,6 @@ func (d *Daemon) waitForShutdown() error {
 	}{
 		{name: "api", server: d.httpServer},
 		{name: "container SDK", server: d.containerSDKServer},
-		{name: "runner gateway", server: d.runnerGatewayServer},
 		{name: "peer transport", server: d.peerTransportServer},
 		{name: "local transport", server: d.localTransportServer},
 	}

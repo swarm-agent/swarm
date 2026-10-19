@@ -99,25 +99,11 @@ out=$(PUBLISH_GITHUB_CONF="$work/publish-github.conf" PUBLISH_GITHUB_API="http:/
 jq -se 'any(.[]; .url == "/app/installations/7/access_tokens" and (.body | fromjson | .permissions == {"contents":"read","metadata":"read"}))' "$work/requests.log" >/dev/null \
   || fail "update asked for more than read access"
 
-# Purpose: the land boundary must push only fast-forward, classify a stale base
-# as MOVED, and reject other refusals without moving the remote. Real local Git
-# repositories exercise receive-pack; the fake API only supplies an App token.
-land() { SWARM_PUBLISH_ACTION=land SWARM_PUBLISH_BASE_BRANCH=main SWARM_PUBLISH_BASE_COMMIT="$merged" run; }
-head=$(git -C "$work/folder" -c user.name=t -c user.email=t@example.invalid commit-tree "$merged^{tree}" -p "$merged" -m land)
-out=$(land) || fail "land failed: $out"
-[[ $(tail -n1 <<<"$out") == "LANDED $head" ]] || fail "bad land receipt: $out"
-[[ $(git --git-dir="$work/git/example/models.git" rev-parse main) == "$head" ]] || fail "land did not move main"
-landed=$head
-head=$(git -C "$work/folder" -c user.name=t -c user.email=t@example.invalid commit-tree "$merged^{tree}" -p "$merged" -m stale)
-out=$(land) || fail "stale land failed instead of MOVED: $out"
-[[ $(tail -n1 <<<"$out") == MOVED ]] || fail "stale base not MOVED: $out"
-[[ $(git --git-dir="$work/git/example/models.git" rev-parse main) == "$landed" ]] || fail "stale push changed main"
-head=$(git -C "$work/folder" -c user.name=t -c user.email=t@example.invalid commit-tree "$landed^{tree}" -p "$landed" -m refused)
-printf '#!/bin/sh\necho branch-rule-refused >&2\nexit 1\n' > "$work/git/example/models.git/hooks/pre-receive"
-chmod +x "$work/git/example/models.git/hooks/pre-receive"
-if out=$(land 2>&1); then fail "branch rule refusal succeeded: $out"; fi
-grep -q 'fast-forward push to main was refused' <<<"$out" || fail "unclear refusal: $out"
-[[ $(git --git-dir="$work/git/example/models.git" rev-parse main) == "$landed" ]] || fail "refused push changed main"
+# The removed land action is refused before any token request or push.
+before=$(wc -l <"$work/requests.log")
+if out=$(SWARM_PUBLISH_ACTION=land run 2>&1); then fail "land action accepted: $out"; fi
+grep -q 'SWARM_PUBLISH_ACTION must be publish or update' <<<"$out" || fail "unclear land refusal: $out"
+[[ $(wc -l <"$work/requests.log") == "$before" ]] || fail "land action reached the API"
 
 # The token only goes to curl on stdin and to git in the environment, never on a
 # command line: its only uses are those two.

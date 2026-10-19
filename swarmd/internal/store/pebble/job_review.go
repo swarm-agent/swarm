@@ -2,8 +2,7 @@ package pebblestore
 
 import "strings"
 
-// JobReview is independent review evidence for one immutable head. Landing
-// policy may consume CurrentJobReview; this does not impose a landing gate.
+// JobReview is independent review evidence for one immutable head.
 type JobReview struct {
 	Verdict       string `json:"verdict"`
 	Head          string `json:"head"`
@@ -67,14 +66,4 @@ func ParseJobReview(report, head, reviewerJobID, model string, now int64) JobRev
 	}
 	r.Verdict, r.Reason = "ok", ""
 	return r
-}
-
-// CurrentJobReview returns evidence only for the current exact head. New
-// commits make prior evidence stale regardless of its stored verdict.
-func CurrentJobReview(review *JobReview, head string) *JobReview {
-	if review == nil || head == "" || review.Head != head {
-		return nil
-	}
-	copy := *review
-	return &copy
 }

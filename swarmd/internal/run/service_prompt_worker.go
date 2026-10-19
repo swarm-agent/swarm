@@ -71,7 +71,7 @@ func harnessForProfile(scope tool.WorkspaceScope, profile store.AgentProfile) st
 			lines = append(lines, "Worker validation and handoff: preserve the brief's required checks and declared phases. Execute only operations supported by the exposed tools. If command execution or committing is unavailable, report the exact pending checks or uncommitted state and return a blocked handoff when required; never claim those operations completed. Preserve existing evidence, output references and blockers.")
 		}
 	case profile.Name == agent.ReviewerAgentID:
-		lines = append(lines, "Review only the assigned tree without modifying it. When a job declares proof, check that it tests the actual requirement and inspect recorded proof.base and proof.head results. Missing results are unverified; report precise findings and evidence.")
+		lines = append(lines, "Review only the assigned tree without modifying it. Report precise findings and evidence.")
 	case agent.IsFinderAgentName(profile.Name):
 		lines = append(lines, "Investigate read-only. Return paths/lines or source links, distinguish findings from inference and identify unresolved questions. Do not modify source, commit, deploy children or control a parent checkpoint.")
 	case agent.IsDesignerAgentName(profile.Name):
@@ -107,8 +107,7 @@ const workerBoundarySection = `Filesystem, permissions and security:
 - Use scoped Git tools where available. Do not change identity configuration, switch or integrate branches, or overwrite unrelated work without authority.`
 
 const workerEvidenceSection = `Worker validation and handoff:
-- Execute checks required by the brief, repository rules and declared job acceptance contract in their designated phase. A failing-then-passing reproduction is required only when that contract requires it. Do not add an unsolicited universal build or reproduction stage.
-- A declared landing proof belongs to the landing phase. If the folder requires proof, supply the declared job proof command or .swarm-proof.json with its folder-root command and reproduction files. The command runs under bash -lc in the landing sandbox; never claim landing results before they exist.
+- Execute checks required by the brief, repository rules and declared job acceptance contract before handoff: a job ends when its work is built, tested and committed. A failing-then-passing reproduction is required only when that contract requires it. Do not add an unsolicited universal build or reproduction stage.
 - Report each executed command and result, plus skipped or unavailable checks and the exact missing prerequisite. Finish with scoped commits and a clean worktree, or report the precise blocked/uncommitted state. Preserve output references and blockers across follow-ups.`
 
 func workerModeInstructions(profile store.AgentProfile, bypass bool) string {

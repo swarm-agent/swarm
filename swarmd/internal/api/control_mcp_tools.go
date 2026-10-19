@@ -2043,8 +2043,8 @@ func controlMCPGetProject(c *controlMCPCall, args map[string]any) (any, error) {
 			return nil, err
 		}
 		if found {
-			// Expose policy, not the privileged command or credentials.
-			ws["publish"] = map[string]any{"mode": rule.Mode, "auto": rule.Auto, "sync": rule.Sync, "require_review": rule.RequireReview, "pipeline": rule.Pipeline, "require_proof": rule.RequireProof}
+			// Expose the command path and sync policy, never credentials.
+			ws["publish"] = map[string]any{"command": rule.Command, "sync": rule.Sync}
 		}
 	}
 	out := map[string]any{"project": summary}

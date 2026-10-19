@@ -103,21 +103,6 @@ func (ws *WorkerStore) GetJobReview(account, worker, run string) (*JobReview, er
 	return &record.Latest, nil
 }
 
-// CurrentValidJobReview is the landing-policy hook: exact-head evidence only,
-// including BLOCK evidence, never an approval inferred from an older head.
-func (ws *WorkerStore) CurrentValidJobReview(account, worker, run, head string) (*JobReview, error) {
-	var record JobReviewRecord
-	found, err := ws.store.GetJSON(jobReviewKey(account, worker, run), &record)
-	if err != nil || !found {
-		return nil, err
-	}
-	review, ok := record.ByHead[head]
-	if !ok {
-		return nil, nil
-	}
-	return CurrentJobReview(&review, head), nil
-}
-
 // SetJobReviewObserver follows the worker terminal-signal pattern. Installed
 // during daemon composition; notifications occur after the durable write.
 func (s *Store) SetJobReviewObserver(fn func(account, worker, run string, review JobReview)) {

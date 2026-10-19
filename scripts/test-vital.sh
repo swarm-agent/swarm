@@ -5,14 +5,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 # CPU override regression check (without running suites):
 # SWARM_TEST_CPUS=7 bash -c 'source <(sed "/^status=0/,$ d" scripts/test-vital.sh | tail -n +6); test "$GOMAXPROCS" = "$SWARM_TEST_CPUS"'
-cpus=${SWARM_TEST_CPUS:-}
-if [[ -z "$cpus" ]]; then
-  if [[ -n "${SWARM_LANDING_HEAD:-}" ]]; then
-    cpus=$(nproc) || exit 1
-  else
-    cpus=4
-  fi
-fi
+cpus=${SWARM_TEST_CPUS:-4}
 export GOMAXPROCS="$cpus"
 status=0
 output_dir=$(mktemp -d -t swarm-vital.XXXXXX) || exit 1

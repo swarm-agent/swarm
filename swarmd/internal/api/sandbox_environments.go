@@ -74,12 +74,10 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		var req struct {
-			WorkspacePath       string            `json:"workspace_path"`
-			BaseImage           string            `json:"base_image"`
-			Checks              []string          `json:"checks,omitempty"`
-			CheckTimeoutMinutes int               `json:"check_timeout_minutes,omitempty"`
-			Setup               []string          `json:"setup,omitempty"`
-			Env                 map[string]string `json:"env,omitempty"`
+			WorkspacePath string            `json:"workspace_path"`
+			BaseImage     string            `json:"base_image"`
+			Setup         []string          `json:"setup,omitempty"`
+			Env           map[string]string `json:"env,omitempty"`
 		}
 		if err := decodeJSONStrict(w, r, 256*1024, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
@@ -116,7 +114,7 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusConflict, errors.New("daemon is draining; retry environment definition after restart"))
 			return
 		}
-		env, build, err := s.sandboxEnvironments.Define(principal.AccountScopeID, root, pebblestore.SandboxEnvironmentDefinition{BaseImage: req.BaseImage, Setup: req.Setup, Env: req.Env, Checks: req.Checks, CheckTimeoutMinutes: req.CheckTimeoutMinutes})
+		env, build, err := s.sandboxEnvironments.Define(principal.AccountScopeID, root, pebblestore.SandboxEnvironmentDefinition{BaseImage: req.BaseImage, Setup: req.Setup, Env: req.Env})
 		s.envBuildMu.Unlock()
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)

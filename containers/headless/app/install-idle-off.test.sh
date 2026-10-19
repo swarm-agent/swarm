@@ -7,7 +7,7 @@ source <(sed '$d' "$here/install.sh")
 STATE=$(mktemp -d "${TMPDIR:?}/idle-off.XXXXXX")
 trap 'rm -rf "$STATE"' EXIT
 printf '2\n' >"$STATE/idle-off-minutes"
-response='{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0,"landing":0}'
+response='{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0}'
 local_api() { [[ $response != unreachable ]] || return 1; printf '%s' "$response"; }
 OPT=$STATE
 mkdir -p "$OPT/current/bin"
@@ -22,12 +22,12 @@ clock=219; idle_off_check
 [[ $shutdowns == 0 ]]
 clock=220; idle_off_check
 [[ $shutdowns == 1 && $signals == 1 ]]
-for response in true unreachable malformed '{"busy":false,"landing":1}' '{"busy":"false","landing":0}' '{"busy":"false","sessions":0,"worker_runs":0,"followups":0,"reviews":0,"landing":0}' '{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0,"landing":1}'; do
+for response in true unreachable malformed '{"busy":false,"reviews":1}' '{"busy":"false","reviews":0}' '{"busy":"false","sessions":0,"worker_runs":0,"followups":0,"reviews":0}' '{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0,"environment_builds":1}'; do
  clock=300; idle_off_check
  clock=1000; idle_off_check
  [[ $shutdowns == 1 && ! -f $STATE/idle-off-since ]]
 done
-response='{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0,"landing":0}'; clock=1100; idle_off_check
+response='{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0}'; clock=1100; idle_off_check
 clock=1219; idle_off_check
 [[ $shutdowns == 1 ]]
 echo 'idle-off decisions passed (no real shutdown)'

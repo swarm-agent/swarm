@@ -130,7 +130,7 @@ func (f fakeOwnerInfo) Sys() any { return &syscall.Stat_t{Uid: f.uid} }
 // An incomplete, busy, or future nonzero activity response must never authorize
 // poweroff. This pure contract test is the narrowest layer and cannot touch the host.
 func TestMachineIdleResponseFailsClosed(t *testing.T) {
-	valid := `{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0,"landing":0}`
+	valid := `{"busy":false,"sessions":0,"worker_runs":0,"followups":0,"reviews":0}`
 	for _, tt := range []struct {
 		name, body string
 		want       bool
@@ -158,15 +158,19 @@ func TestMachineIdleResponseFailsClosed(t *testing.T) {
 }
 
 // Purpose: machinePublish must reject invalid policy before any root-owned file
-// mutation or daemon call. Invalid flag dependencies and unregistered folders
-// are checked directly at the parser boundary without requiring root or services.
+// mutation or daemon call. Unknown flags (including the removed land, auto,
+// require-review, require-proof and pipeline options), flags with --off and
+// unregistered folders are checked directly at the parser boundary without
+// requiring root or services.
 func TestMachinePublishRejectsInvalidPolicy(t *testing.T) {
 	for _, args := range [][]string{
+		{"/project", "/publisher", "--land"},
+		{"/project", "/publisher", "--auto"},
 		{"/project", "/publisher", "--pipeline"},
 		{"/project", "/publisher", "--require-review"},
 		{"/project", "/publisher", "--require-proof"},
 		{"/project", "/publisher", "--unknown"},
-		{"/project", "--off", "--land"},
+		{"/project", "--off", "--sync"},
 		{"/unregistered", "--off"},
 	} {
 		if err := machinePublish(args, []string{"/project"}); err == nil {

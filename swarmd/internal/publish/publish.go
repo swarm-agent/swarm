@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,16 +27,8 @@ const ConfigEnv = "SWARM_PUBLISH_CONFIG"
 
 // Rule is one folder's publish setting.
 type Rule struct {
-	Pipeline bool   `json:"pipeline"`
-	Folder   string `json:"folder"`
-	Command  string `json:"command"`
-	Mode     string `json:"mode"`
-	// Auto delivers a worker job that finished with commits without
-	// waiting for an AI to call swarm_deliver_job.
-	Auto bool `json:"auto"`
-	// RequireReview gates landing on independent exact-head OK evidence.
-	RequireReview bool `json:"require_review"`
-	RequireProof  bool `json:"require_proof"`
+	Folder  string `json:"folder"`
+	Command string `json:"command"`
 	// Sync starts each worker job from the forge's latest base branch (the
 	// command's update step) instead of the folder's checked-out branch, so a
 	// pull request merged on the forge is the next job's starting point.
@@ -55,7 +48,6 @@ type Request struct {
 	JobID      string
 	Branch     string // the job's branch in Folder
 	Head       string // the commit to publish
-	BaseCommit string // the exact base used for landing
 	BaseBranch string // the branch the job started from
 	Title      string
 	Body       string // the job's report
@@ -73,8 +65,12 @@ var (
 	branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
 )
 
+// removedOptions are rule options of removed features. A rule file written
+// for an older Swarm still loads: each is ignored with one log line.
+var removedOptions = map[string]bool{"land": true, "auto": true, "require-proof": true, "require-review": true, "pipeline": true}
+
 // Load reads the rules: one per line, `FOLDER<TAB>COMMAND[<TAB>OPTIONS]`, where
-// OPTIONS is a comma-separated list of land, auto, sync, require-proof, require-review and pipeline; blank lines and
+// OPTIONS is a comma-separated list; sync is the only option. Blank lines and
 // #comments are ignored. A missing file is no rules. The file must be
 // owned by root and not writable by anyone else, like the commands it names:
 // only the machine's administrator decides what runs.
@@ -103,35 +99,23 @@ func Load(path string) ([]Rule, error) {
 		if len(fields) < 2 || len(fields) > 3 {
 			return nil, fmt.Errorf("publish config line %d: want FOLDER<TAB>COMMAND[<TAB>OPTIONS]", line)
 		}
-		rule := Rule{Folder: filepath.Clean(strings.TrimSpace(fields[0])), Command: strings.TrimSpace(fields[1]), Mode: "pr"}
+		rule := Rule{Folder: filepath.Clean(strings.TrimSpace(fields[0])), Command: strings.TrimSpace(fields[1])}
 		if len(fields) == 3 {
+			var ignored []string
 			for _, option := range strings.Split(fields[2], ",") {
-				switch strings.TrimSpace(option) {
-				case "land":
-					rule.Mode = "land"
-				case "auto":
-					rule.Auto = true
-				case "pipeline":
-					rule.Pipeline = true
-				case "require-proof":
-					rule.RequireProof = true
-				case "require-review":
-					rule.RequireReview = true
-				case "sync":
+				option = strings.TrimSpace(option)
+				switch {
+				case option == "sync":
 					rule.Sync = true
+				case removedOptions[option]:
+					ignored = append(ignored, option)
 				default:
-					return nil, fmt.Errorf("publish config line %d: options are land, auto, sync, require-proof, require-review and pipeline, comma-separated", line)
+					return nil, fmt.Errorf("publish config line %d: the only option is sync", line)
 				}
 			}
-		}
-		if rule.Pipeline && (!rule.Auto || !rule.RequireReview || rule.Mode != "land") {
-			return nil, fmt.Errorf("publish config line %d: pipeline requires land, require-review and auto", line)
-		}
-		if rule.RequireProof && rule.Mode != "land" {
-			return nil, fmt.Errorf("publish config line %d: require-proof requires land", line)
-		}
-		if rule.RequireReview && rule.Mode != "land" {
-			return nil, fmt.Errorf("publish config line %d: require-review requires land", line)
+			if len(ignored) > 0 {
+				log.Printf("publish config line %d: ignoring removed options %s", line, strings.Join(ignored, ","))
+			}
 		}
 		if !filepath.IsAbs(rule.Folder) || !filepath.IsAbs(rule.Command) {
 			return nil, fmt.Errorf("publish config line %d: folder and command must be absolute paths", line)
@@ -241,9 +225,6 @@ func command(ctx context.Context, rule Rule, scratch string, limit time.Duration
 	output := strings.TrimSpace(stdout.String())
 	if runErr != nil {
 		reason := strings.TrimSpace(stderr.String())
-		if action == "land" {
-			reason = redactLandOutput(strings.TrimSpace(output+"\n"+reason), cmd.Env)
-		}
 		if reason == "" {
 			reason = output
 		}

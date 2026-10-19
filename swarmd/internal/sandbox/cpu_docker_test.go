@@ -70,11 +70,11 @@ func TestCPUDockerGitUnderLoad(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	// Code-owned landing preparation must run while an agent consumes CPU.
+	// Code-owned daemon Git work must run while an agent consumes CPU.
 	for _, args := range [][]string{{"git", "branch", "--show-current"}, {"git", "status", "--porcelain"}, {"git", "rebase", "HEAD"}, {"bash", "-o", "pipefail", "-c", "git diff --binary HEAD | git patch-id --stable"}} {
 		res, err := m.ExecDaemon(ctx, Scope{Root: root}, ExecRequest{WorkingDir: root, Command: args, Timeout: 12 * time.Second, MaxTimeout: 12 * time.Second})
 		if err != nil || res.ExitCode != 0 {
-			t.Fatalf("landing command %v: %+v %v", args, res, err)
+			t.Fatalf("daemon command %v: %+v %v", args, res, err)
 		}
 	}
 	old := Default()

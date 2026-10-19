@@ -400,7 +400,6 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/direct", nil, map[string]any{
 		"prompt":          brief,
 		"review_job":      controlMCPString(args, "review_job"),
-		"proof":           controlMCPString(args, "proof"),
 		"input":           input,
 		"idempotency_key": key,
 		"workspace_path":  place.path,
@@ -587,32 +586,6 @@ func (c *controlMCPCall) jobState(kind, a, b string) (map[string]any, controlMCP
 		status = "blocked"
 	}
 	state["status"] = status
-	if command, _ := controlMCPMap(refs.run["input"])["proof"].(string); command != "" {
-		state["proof"] = map[string]any{"command": command}
-	}
-	if principal, ok := PrincipalFromRequest(c.request); ok && c.server != nil {
-		if q, err := c.server.landingQueue(); err == nil {
-			entry, pos, err := q.Get(principal.AccountScopeID, controlMCPJobID(kind, a, b))
-			if err != nil {
-				return nil, refs, err
-			}
-			if entry.State != "" {
-				state["delivery_state"] = entry.State
-				state["queue_position"] = pos
-				state["landed_commit"] = entry.Commit
-				state["delivery_reason"] = entry.Reason
-				state["checks"] = entry.Checks
-				state["environment"] = entry.Environment
-				state["environment_note"] = entry.EnvironmentNote
-				if entry.Proof != nil {
-					state["proof"] = entry.Proof
-				}
-				if len(entry.Checks) == 0 && entry.State == "landed" {
-					state["checks_note"] = "checks: none defined"
-				}
-			}
-		}
-	}
 	return state, refs, nil
 }
 
@@ -642,36 +615,7 @@ func controlMCPJobNext(status string, committed bool) string {
 	return ""
 }
 
-// controlMCPApplyJobDelivery reconciles the result assessment with the queue
-// receipt. Integration receipts still override this guidance in jobView.
-func controlMCPApplyJobDelivery(out map[string]any) {
-	state := controlMCPString(out, "delivery_state")
-	if state == "" {
-		return
-	}
-	if result, ok := out["result"].(map[string]any); ok {
-		result["delivery_state"] = state
-	}
-	switch state {
-	case "queued":
-		position, _ := out["queue_position"].(int)
-		out["next"] = "the job is queued for delivery (position " + strconv.Itoa(position) + "): call swarm_get_job with wait_seconds to wait; do not deliver it again"
-	case "landing":
-		out["next"] = "the job is being delivered (checks run first): call swarm_get_job with wait_seconds to wait"
-	case "landed":
-		out["next"] = "the job is delivered: landed as " + controlMCPString(out, "landed_commit")
-	case "sent_back", "landing_stopped", "land_failed":
-		out["next"] = "delivery failed: " + controlMCPString(out, "delivery_reason") + "; fix it and deliver again"
-	}
-}
-
 func controlMCPJobWaitSettled(state map[string]any) bool {
-	switch controlMCPString(state, "delivery_state") {
-	case "queued", "landing":
-		return false
-	case "landed", "sent_back", "landing_stopped", "land_failed":
-		return true
-	}
 	return controlMCPJobSettled[controlMCPString(state, "status")]
 }
 
@@ -848,20 +792,6 @@ func (c *controlMCPCall) jobView(kind, a, b string, wait int, includeDiff bool, 
 	if _, uncommitted := result["uncommitted_changes"]; uncommitted && status == "needs_review" {
 		out["next"] = controlMCPUncommittedNext
 	}
-	if c.server != nil && c.server.sessions != nil && c.server.sessions.Store() != nil {
-		if principal, ok := PrincipalFromRequest(c.request); ok {
-			var chain ReviewPipeline
-			found, err := c.server.sessions.Store().Underlying().GetJSON(pipelineKey(principal.AccountScopeID, controlMCPJobID(kind, a, b)), &chain)
-			if err != nil {
-				return nil, err
-			}
-			if found {
-				out["review_chain"] = chain
-				out["next"] = chain.Next
-			}
-		}
-	}
-	controlMCPApplyJobDelivery(out)
 	integration := controlMCPMap(result["integration"])
 	if delivered := taskDeliveredState(controlMCPString(integration, "state"), controlMCPString(integration, "pull_request_url")); delivered != "" {
 		delete(out, "action_needed")
@@ -1084,7 +1014,7 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 			return nil, controlMCPToolFailure("this folder's publish setting cannot be read: %s", controlMCPTruncate(err.Error(), 200))
 		}
 		if ok {
-			return c.publishJob(kind, a, b, refs, rule, result, true)
+			return c.publishJob(kind, a, b, refs, rule, result)
 		}
 	}
 	out, err := controlMCPIntegrate(c, map[string]any{"project_id": refs.projectID, "task_id": refs.taskID}, "swarm_deliver_job", "swarm_get_job")
@@ -1500,7 +1430,6 @@ func controlMCPJobTools() []controlMCPTool {
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),
-				"proof":           controlMCPStringProp("Optional unless the folder rule has require-proof. Reproduction command from folder root must run under bash -lc in the landing sandbox, fail at landing base and pass at job head. If adding .swarm-proof.json, commit new reproduction files and list them in files.", 1, 8192),
 				"review_job":      controlMCPStringProp("Required only for reviewer workers: worker/<worker>/<run> of a job in the same project with commits. Reviews its exact head in a disposable detached checkout; report-only, never delivered.", 1, 700),
 				"model":           controlMCPWorkerModelSchema(false),
 				"project":         project,
@@ -1549,7 +1478,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_deliver_job", Title: "Merge a job's result into its folder",
-			Description: "Deliver a needs_review job's commits: by default a real local git merge from its branch into the folder's branch; when the folder's owner set up publishing for it on the machine, a pull request instead (the result names it), or a queued landing receipt in land mode. Swarm never pushes otherwise. Read the result with swarm_get_job first. Refused when the job committed nothing; a merge is also refused on conflicts.",
+			Description: "Deliver a needs_review job's commits: by default a real local git merge from its branch into the folder's branch; when the folder's owner set up publishing for it on the machine, a pull request instead (the result names it). Swarm never pushes otherwise. Read the result with swarm_get_job first. Refused when the job committed nothing; a merge is also refused on conflicts.",
 			InputSchema: controlMCPObject([]string{"job_id"}, map[string]any{"job_id": jobID}),
 			Annotations: controlMCPDestructive, call: controlMCPDeliverJob,
 		},

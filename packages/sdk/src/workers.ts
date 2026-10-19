@@ -729,7 +729,6 @@ export class SwarmWorkersNamespace {
     const body: Record<string, unknown> = {};
     if (hasPrompt) body.prompt = params.prompt!.trim();
     if (params.review_job !== undefined) body.review_job = params.review_job.trim();
-    if (params.proof !== undefined) body.proof = params.proof.trim();
     if (params.input) body.input = params.input;
     if (params.idempotency_key) body.idempotency_key = params.idempotency_key.trim();
     if (params.workspace_id && params.workspace_id.trim() !== '') body.workspace_id = params.workspace_id.trim();

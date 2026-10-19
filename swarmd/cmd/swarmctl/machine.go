@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -409,7 +408,7 @@ func cmdMachineWorkspace(args []string) error {
 	return nil
 }
 func machinePublish(args, paths []string) error {
-	usage := fmt.Errorf("usage: swarmctl workspace publish PATH COMMAND [--land] [--auto] [--sync] [--require-review] [--require-proof] [--pipeline] | publish PATH --off")
+	usage := fmt.Errorf("usage: swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off")
 	if len(args) < 2 {
 		return usage
 	}
@@ -419,25 +418,16 @@ func machinePublish(args, paths []string) error {
 	}
 	var options []string
 	for _, flag := range args[2:] {
-		if !machineContains([]string{"--land", "--auto", "--sync", "--require-review", "--require-proof", "--pipeline"}, flag) {
+		if flag != "--sync" {
 			return usage
 		}
 		options = append(options, strings.TrimPrefix(flag, "--"))
 	}
-	has := func(s string) bool { return machineContains(options, s) }
 	if command == "--off" {
 		if len(options) > 0 {
 			return usage
 		}
 	} else {
-		if has("pipeline") && (!has("land") || !has("require-review") || !has("auto")) {
-			return fmt.Errorf("--pipeline requires --land --require-review --auto")
-		}
-		for _, s := range []string{"require-proof", "require-review"} {
-			if has(s) && !has("land") {
-				return fmt.Errorf("--%s requires --land", s)
-			}
-		}
 		info, err := os.Stat(command)
 		if err != nil || !filepath.IsAbs(command) || strings.Contains(command, "..") || strings.ContainsAny(command, "\t\r\n") || !info.Mode().IsRegular() || info.Mode().Perm()&0111 == 0 {
 			return fmt.Errorf("COMMAND must be an absolute path to an executable file")
@@ -495,54 +485,7 @@ func machinePublish(args, paths []string) error {
 		fmt.Printf("Jobs in %s are merged into the folder again.\n", path)
 		return nil
 	}
-	if err = machineLandingChecks(kept); err != nil {
-		return err
-	}
 	fmt.Printf("Jobs in %s use publish command %s (%s).\n", path, command, strings.Join(options, ","))
-	return nil
-}
-func machineLandingChecks(rules []string) error {
-	for _, r := range rules {
-		f := strings.Split(r, "\t")
-		if len(f) < 3 || !machineContains(strings.Split(f[2], ","), "land") {
-			continue
-		}
-		if info, err := os.Stat(filepath.Join(f[0], "scripts/test-app-runs.sh")); err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		var current struct {
-			Environment struct {
-				Definition map[string]any `json:"definition"`
-			} `json:"environment"`
-		}
-		if err := machineRequest(http.MethodGet, "/v3/sandbox-environments?workspace_path="+url.QueryEscape(f[0]), nil, &current); err != nil {
-			return err
-		}
-		d := current.Environment.Definition
-		payload := map[string]any{"workspace_path": f[0], "base_image": "swarm-sandbox:local", "setup": []any{}, "env": map[string]any{}, "check_timeout_minutes": 10}
-		for _, k := range []string{"base_image", "setup", "env"} {
-			if d[k] != nil {
-				payload[k] = d[k]
-			}
-		}
-		checks, _ := d["checks"].([]any)
-		found := false
-		for _, c := range checks {
-			if c == "bash scripts/test-app-runs.sh" {
-				found = true
-			}
-		}
-		if !found {
-			checks = append(checks, "bash scripts/test-app-runs.sh")
-		}
-		payload["checks"] = checks
-		if n, ok := d["check_timeout_minutes"].(float64); ok && n > 10 {
-			payload["check_timeout_minutes"] = n
-		}
-		if err := machineRequest(http.MethodPut, "/v3/sandbox-environments", payload, nil); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
@@ -615,7 +558,7 @@ func machineIdleResponse(v map[string]json.RawMessage) bool {
 	if string(v["busy"]) != "false" {
 		return false
 	}
-	for _, k := range []string{"sessions", "worker_runs", "followups", "reviews", "landing"} {
+	for _, k := range []string{"sessions", "worker_runs", "followups", "reviews"} {
 		if _, ok := v[k]; !ok {
 			return false
 		}
