@@ -77,6 +77,10 @@ type AgentRequest struct {
 	Brief          string
 	Result         Result
 	IdempotencyKey string
+	// Fixes is the step's fixes option (FixesSecurity or ""): a reviewer
+	// started with it may commit small security fixes on a writable branch at
+	// the reviewed head.
+	Fixes string
 }
 
 // AgentOutcome is how the job an agent step started ended. Verdict and
@@ -132,6 +136,11 @@ type HeadVerifier func(ctx context.Context, folder string, ancestor, head HeadRe
 // and returns the ref.
 type HeadImporter func(ctx context.Context, folder string, result Result) (string, error)
 
+// LineCounter reports, with Git in the folder, how many lines the commits
+// from base to head change in total (added plus removed). A binary change
+// counts as more than MaxReviewerFixLines.
+type LineCounter func(ctx context.Context, folder string, base, head HeadRef) (int, error)
+
 // Runner is the durable consumer: it reads job ends from the signal feed,
 // records a delivery for each matching automation and runs its steps.
 type Runner struct {
@@ -144,6 +153,7 @@ type Runner struct {
 	reopen  Reopener
 	head    HeadImporter
 	verify  HeadVerifier
+	lines   LineCounter
 	emit    func(pebblestore.Signal)
 	now     func() time.Time
 	backoff func(attempt int) time.Duration
@@ -170,13 +180,14 @@ type Options struct {
 	Reopen  Reopener
 	Head    HeadImporter
 	Verify  HeadVerifier
+	Lines   LineCounter
 	Emit    func(pebblestore.Signal)
 }
 
 func NewRunner(opts Options) *Runner {
 	return &Runner{
 		store: opts.Store, feed: opts.Feed, account: opts.Account, results: opts.Results, run: opts.Run, agent: opts.Agent, reopen: opts.Reopen,
-		head: opts.Head, verify: opts.Verify, emit: opts.Emit, now: time.Now, backoff: defaultBackoff,
+		head: opts.Head, verify: opts.Verify, lines: opts.Lines, emit: opts.Emit, now: time.Now, backoff: defaultBackoff,
 		active: map[string]bool{}, attempts: map[uint64]int{}, wake: make(chan struct{}, 1),
 	}
 }
@@ -792,7 +803,7 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	jobID, _ := record.Outcome["job_id"].(string)
 	if jobID == "" {
 		started, err := r.agent.Start(ctx, AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result,
-			IdempotencyKey: agentIdempotencyKey(*d, step.ID)})
+			IdempotencyKey: agentIdempotencyKey(*d, step.ID), Fixes: step.Fixes})
 		if err != nil {
 			var refused *RefusedError
 			if errors.As(err, &refused) {
@@ -836,7 +847,13 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	}
 	record.Outcome = out
 	record.Output = jobID
-	if failure := r.moveHead(ctx, d, outcome, out); failure.reason != "" {
+	move := r.moveHead
+	if step.Fixes != "" {
+		move = func(ctx context.Context, d *Delivery, outcome AgentOutcome, out map[string]any) stepFailure {
+			return r.applyReviewerFixes(ctx, d, record, outcome, out)
+		}
+	}
+	if failure := move(ctx, d, outcome, out); failure.reason != "" {
 		return failure
 	}
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
@@ -913,8 +930,20 @@ func (r *Runner) moveHead(ctx context.Context, d *Delivery, outcome AgentOutcome
 	if NormalizeStatus(outcome.Status) != StatusSucceeded {
 		return stepFailure{} // the job's own failure is reported below
 	}
+	worktree, failure := r.verifyDescends(ctx, d, outcome)
+	if failure.reason != "" || ctx.Err() != nil {
+		return failure
+	}
+	out["moved_head"] = map[string]any{"from": d.Head, "to": outcome.Head}
+	d.Head, d.HeadWorktree = outcome.Head, worktree
+	return stepFailure{}
+}
+
+// verifyDescends checks with Git that the job's head descends from the
+// delivery head and returns the checkout the job's head can be fetched from.
+func (r *Runner) verifyDescends(ctx context.Context, d *Delivery, outcome AgentOutcome) (string, stepFailure) {
 	if r.verify == nil {
-		return stepFailure{reason: "the job " + outcome.JobID + " committed, but this daemon cannot verify its head against the delivery head", next: "rerun", refused: true}
+		return "", stepFailure{reason: "the job " + outcome.JobID + " committed, but this daemon cannot verify its head against the delivery head", next: "rerun", refused: true}
 	}
 	worktree := ""
 	if outcome.Result != nil && outcome.Result.Git != nil {
@@ -923,14 +952,69 @@ func (r *Runner) moveHead(ctx context.Context, d *Delivery, outcome AgentOutcome
 	descends, err := r.verify(ctx, d.Folder, HeadRef{Commit: d.Head, Worktree: d.HeadWorktree}, HeadRef{Commit: outcome.Head, Worktree: worktree})
 	if err != nil {
 		if ctx.Err() != nil {
-			return stepFailure{}
+			return "", stepFailure{}
 		}
-		return stepFailure{reason: truncate("could not verify the job's head against the delivery head: "+err.Error(), 300), next: "rerun"}
+		return "", stepFailure{reason: truncate("could not verify the job's head against the delivery head: "+err.Error(), 300), next: "rerun"}
 	}
 	if !descends {
-		return stepFailure{reason: "the job " + outcome.JobID + " head " + outcome.Head + " does not descend from the delivery head " + d.Head + ": the delivery head is not moved",
+		return "", stepFailure{reason: "the job " + outcome.JobID + " head " + outcome.Head + " does not descend from the delivery head " + d.Head + ": the delivery head is not moved",
 			next: "fix the automation", refused: true}
 	}
+	return worktree, stepFailure{}
+}
+
+// applyReviewerFixes moves the delivery head to the head of a reviewer that
+// was allowed to commit security fixes (an agent step with fixes), only when
+// the reviewer's verdict is OK, its head descends from the delivery head and
+// its commits change at most MaxReviewerFixLines lines. A BLOCK (or missing)
+// verdict keeps the head and the step's own outcome; too many changed lines
+// fail the step with ReasonFixesTooLarge. The reviewer's fix commits are
+// recorded either way.
+func (r *Runner) applyReviewerFixes(ctx context.Context, d *Delivery, record *StepRecord, outcome AgentOutcome, out map[string]any) stepFailure {
+	if outcome.Head == "" || d.Head == "" || outcome.Head == d.Head {
+		return stepFailure{}
+	}
+	if NormalizeStatus(outcome.Status) != StatusSucceeded {
+		return stepFailure{} // the job's own failure is reported below
+	}
+	if outcome.Result != nil && outcome.Result.Git != nil && len(outcome.Result.Git.Commits) > 0 {
+		commits := make([]map[string]any, 0, len(outcome.Result.Git.Commits))
+		for _, c := range outcome.Result.Git.Commits {
+			commits = append(commits, map[string]any{"sha": c.SHA, "subject": c.Subject})
+		}
+		out["fix_commits"] = commits
+	}
+	if outcome.Verdict != VerdictOK {
+		verdict := outcome.Verdict
+		if verdict == "" {
+			verdict = "missing"
+		}
+		out["fixes_applied"] = false
+		out["fixes_reason"] = "the review verdict is " + verdict + ", not ok: the reviewer's commits do not move the delivery head"
+		return stepFailure{}
+	}
+	worktree, failure := r.verifyDescends(ctx, d, outcome)
+	if failure.reason != "" || ctx.Err() != nil {
+		return failure
+	}
+	if r.lines == nil {
+		return stepFailure{reason: "the reviewer committed fixes, but this daemon cannot measure them against the delivery head", next: "rerun", refused: true}
+	}
+	changed, err := r.lines(ctx, d.Folder, HeadRef{Commit: d.Head, Worktree: d.HeadWorktree}, HeadRef{Commit: outcome.Head, Worktree: worktree})
+	if err != nil {
+		if ctx.Err() != nil {
+			return stepFailure{}
+		}
+		return stepFailure{reason: truncate("could not measure the reviewer's fixes: "+err.Error(), 300), next: "rerun"}
+	}
+	out["fix_lines"] = changed
+	if changed > MaxReviewerFixLines {
+		out["fixes_applied"] = false
+		out["fixes_reason"] = fmt.Sprintf("%d changed lines; at most %d: the delivery head is not moved", changed, MaxReviewerFixLines)
+		record.Output = fmt.Sprintf("%s: %d changed lines (at most %d)", outcome.JobID, changed, MaxReviewerFixLines)
+		return stepFailure{reason: ReasonFixesTooLarge, next: "send the findings with swarm_message_job, or fix by hand and re-run the automation", refused: true}
+	}
+	out["fixes_applied"] = true
 	out["moved_head"] = map[string]any{"from": d.Head, "to": outcome.Head}
 	d.Head, d.HeadWorktree = outcome.Head, worktree
 	return stepFailure{}

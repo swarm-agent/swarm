@@ -10,7 +10,48 @@ import (
 	"time"
 )
 
-func validateReviewRequest(role string, input map[string]any) error {
+// ReviewFixesSecurity is the only review_fixes value: a reviewer an
+// automation agent step (fixes "security") started may commit small security
+// fixes on its own branch at the reviewed head.
+const ReviewFixesSecurity = "security"
+
+// reviewFixesRequestSource is the only request source that may set
+// review_fixes: a job automation's agent step. A reviewer started any other
+// way stays read-only; Swarm never decides on its own to let one write.
+const reviewFixesRequestSource = "automation"
+
+// reviewFixesAllowed reports whether a run's input lets its reviewer commit
+// security fixes (admission validated it).
+func reviewFixesAllowed(input map[string]any) bool {
+	value, _ := input["review_fixes"].(string)
+	return value == ReviewFixesSecurity
+}
+
+// sessionReviewFixes reports whether a reviewer session was admitted with
+// review fixes (its pinned metadata).
+func sessionReviewFixes(meta map[string]any) bool {
+	return mapString(meta, "worker_role") == store.WorkerRoleReviewer && mapString(meta, "worker_review_fixes") == ReviewFixesSecurity
+}
+
+// reviewFixBranch is the writable branch of a reviewer allowed to commit
+// security fixes: agent/review-<run>.
+func reviewFixBranch(runID string) string {
+	return "agent/review-" + runID
+}
+
+func validateReviewRequest(role, source string, input map[string]any) error {
+	if raw, exists := input["review_fixes"]; exists {
+		value, ok := raw.(string)
+		if !ok || value != ReviewFixesSecurity {
+			return errors.New("review_fixes must be \"security\"")
+		}
+		if role != store.WorkerRoleReviewer {
+			return errors.New("review_fixes is only accepted for reviewer workers")
+		}
+		if source != reviewFixesRequestSource {
+			return errors.New("review_fixes is only accepted from a job automation agent step")
+		}
+	}
 	job, _ := input["review_job"].(string)
 	if raw, exists := input["review_job"]; exists {
 		if _, ok := raw.(string); !ok {
@@ -36,7 +77,7 @@ func validateReviewRequest(role string, input map[string]any) error {
 // resolveReviewTarget uses only account-authorized durable job/task identities;
 // it never treats a caller-supplied path or head as source authority.
 func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r store.WorkerRunRecord, w store.WorkerRecord) (map[string]any, error) {
-	if err := validateReviewRequest(w.Role, r.Input); err != nil {
+	if err := validateReviewRequest(w.Role, r.RequestSource, r.Input); err != nil {
 		return nil, err
 	}
 	project, err := s.resolveWorkerProject(r, w)
@@ -113,6 +154,12 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 		brief = brief[:24000]
 	}
 	captured := map[string]any{"head": state.HeadCommit, "base": base, "commits": commits, "job": r.Input["review_job"], "brief": brief, "report": report}
+	if reviewFixesAllowed(r.Input) {
+		// The fix branch starts from the reviewed job's own clone (validated
+		// above as that job's session lane).
+		captured["fixes"] = ReviewFixesSecurity
+		captured["checkout"] = task.WorkspacePath
+	}
 	return captured, nil
 }
 
@@ -129,6 +176,12 @@ func reviewEnvironment(meta map[string]any) map[string]string {
 
 func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) error {
 	if snapshot.Metadata["worker_role"] != store.WorkerRoleReviewer {
+		return nil
+	}
+	// A reviewer allowed to commit security fixes runs in its own writable
+	// branch checkout like a coder job: it is never registered as a read-only
+	// review checkout (read-only .git mounts, detached identity).
+	if sessionReviewFixes(snapshot.Metadata) {
 		return nil
 	}
 	m := sandbox.Default()
@@ -167,6 +220,12 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 
 func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	if r.Role != store.WorkerRoleReviewer {
+		return nil
+	}
+	// A reviewer allowed to commit security fixes keeps its branch checkout
+	// like a coder job's clone: the automation delivery reads its head from
+	// it after the job ends.
+	if reviewFixesAllowed(r.Input) {
 		return nil
 	}
 	snapshot, found, err := s.host.runs.sessions.GetSession(r.SessionID)

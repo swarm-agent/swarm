@@ -244,6 +244,16 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 	}
 	workerID, _ := worker["id"].(string)
 	role, _ := worker["role"].(string)
+	if req.Fixes != "" {
+		// Only an agent step that opted in passes fixes, and only to a
+		// reviewer; Swarm never lets a reviewer write on its own.
+		if req.Fixes != jobautomation.FixesSecurity {
+			return "", &jobautomation.RefusedError{Reason: "fixes must be " + jobautomation.FixesSecurity}
+		}
+		if role != pebblestore.WorkerRoleReviewer {
+			return "", &jobautomation.RefusedError{Reason: "fixes is only for a reviewer worker; " + req.Worker + " is a " + firstNonEmptyString(role, "swarm") + " worker"}
+		}
+	}
 	execution, err := s.workerExecutionService()
 	if err != nil {
 		return "", err
@@ -253,6 +263,9 @@ func (a jobAutomationAgents) Start(ctx context.Context, req jobautomation.AgentR
 		return "", &jobautomation.RefusedError{Reason: err.Error()}
 	}
 	input := map[string]any{"prompt": agentStepBrief(req.Brief, req.Result), "project_id": req.Result.ProjectID}
+	if req.Fixes != "" {
+		input["review_fixes"] = req.Fixes
+	}
 	if role == pebblestore.WorkerRoleReviewer {
 		if req.Result.Kind != jobautomation.KindWorker {
 			return "", &jobautomation.RefusedError{Reason: "a reviewer reviews a worker job's commits; " + req.Result.JobID + " is not a worker job"}
@@ -519,6 +532,104 @@ func VerifyJobHead(ctx context.Context, folder string, ancestor, head jobautomat
 	return false, fmt.Errorf("git merge-base: %w", err)
 }
 
+// JobHeadChangedLines is how many lines the commits from base to head change
+// in total (added plus removed), with Git in the folder after both commits
+// are brought in from their checkouts (importJobHead). A binary file counts
+// as more than the reviewer fix limit: its size in lines is unknown. Git runs
+// routed like all daemon Git on a folder.
+func JobHeadChangedLines(ctx context.Context, folder string, base, head jobautomation.HeadRef) (int, error) {
+	for _, ref := range []jobautomation.HeadRef{base, head} {
+		if !controlMCPCommitID.MatchString(ref.Commit) {
+			return 0, fmt.Errorf("%q is not a commit id", ref.Commit)
+		}
+		if err := importJobHead(ctx, folder, ref.Worktree, ref.Commit); err != nil {
+			return 0, err
+		}
+	}
+	gitCtx := sandbox.WithGitCommandTimeout(ctx, time.Minute)
+	out, err := sandbox.TimedGitOutput(gitCtx, folder, nil, "-c", "safe.directory="+folder, "diff", "--numstat", "--no-renames", "--no-ext-diff", "--no-textconv", base.Commit, head.Commit, "--")
+	if err != nil {
+		return 0, fmt.Errorf("git diff --numstat: %w", err)
+	}
+	return countNumstatLines(string(out))
+}
+
+// countNumstatLines sums git diff --numstat's added and removed columns; a
+// binary file ("-") counts as one more line than the reviewer fix limit.
+func countNumstatLines(numstat string) (int, error) {
+	total := 0
+	for _, line := range strings.Split(strings.TrimSpace(numstat), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 {
+			return 0, fmt.Errorf("unexpected git diff --numstat line %q", controlMCPTruncate(line, 120))
+		}
+		if fields[0] == "-" || fields[1] == "-" {
+			total += jobautomation.MaxReviewerFixLines + 1
+			continue
+		}
+		added, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return 0, fmt.Errorf("unexpected git diff --numstat line %q", controlMCPTruncate(line, 120))
+		}
+		removed, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return 0, fmt.Errorf("unexpected git diff --numstat line %q", controlMCPTruncate(line, 120))
+		}
+		total += added + removed
+	}
+	return total, nil
+}
+
+// jobAutomationFixesError refuses fixes on an agent step whose worker is not
+// a reviewer. A role name is checked by NormalizeSteps; a worker id or name
+// is resolved here against the account's workers, and one that does not
+// resolve to a reviewer is refused: fixes are never granted on a guess.
+func (s *Server) jobAutomationFixesError(account string, steps []jobautomation.Step) error {
+	for _, step := range steps {
+		if step.Type != jobautomation.StepAgent || step.Fixes == "" {
+			continue
+		}
+		if strings.EqualFold(step.Worker, pebblestore.WorkerRoleReviewer) {
+			continue
+		}
+		if s.sessions == nil || s.sessions.Store() == nil {
+			return errors.New("workers are not available to check the fixes option")
+		}
+		ws := s.sessions.Store().WorkerStore()
+		worker, found, err := ws.GetWorker(account, step.Worker)
+		if err != nil {
+			return err
+		}
+		cursor := ""
+		for page := 0; !found && page < 50; page++ {
+			list, err := ws.ListWorkers(account, pebblestore.ListWorkersQuery{Limit: 200, After: cursor})
+			if err != nil {
+				return err
+			}
+			for _, candidate := range list.Workers {
+				if strings.EqualFold(candidate.Name, step.Worker) {
+					worker, found = candidate, true
+					break
+				}
+			}
+			if list.NextCursor == "" || list.NextCursor == cursor {
+				break
+			}
+			cursor = list.NextCursor
+		}
+		if !found {
+			return jobautomation.NonReviewerFixesError(step.ID, step.Worker, "unknown")
+		}
+		if worker.Role != pebblestore.WorkerRoleReviewer {
+			return jobautomation.NonReviewerFixesError(step.ID, step.Worker, firstNonEmptyString(worker.Role, "swarm"))
+		}
+	}
+	return nil
+}
+
 // ---- views -----------------------------------------------------------------
 
 func jobAutomationView(a jobautomation.Automation) map[string]any {
@@ -573,6 +684,25 @@ func jobDeliveryView(d jobautomation.Delivery) map[string]any {
 	}
 	if d.BlockedReason != "" {
 		out["blocked_reason"] = d.BlockedReason
+	}
+	// The reviewer fix commits the delivery head moved to (an agent step
+	// with fixes whose commits were applied).
+	fixes := []any{}
+	for _, step := range d.Steps {
+		if applied, _ := step.Outcome["fixes_applied"].(bool); !applied {
+			continue
+		}
+		switch commits := step.Outcome["fix_commits"].(type) {
+		case []any:
+			fixes = append(fixes, commits...)
+		case []map[string]any:
+			for _, c := range commits {
+				fixes = append(fixes, c)
+			}
+		}
+	}
+	if len(fixes) > 0 {
+		out["fix_commits"] = fixes
 	}
 	return out
 }
@@ -656,7 +786,16 @@ func (s *Server) handleJobAutomations(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		saved, created, err := store.Put(account, body.automation())
+		automation := body.automation()
+		if err := automation.Normalize(); err != nil {
+			jobAutomationHTTPError(w, err)
+			return
+		}
+		if err := s.jobAutomationFixesError(account, automation.Steps); err != nil {
+			jobAutomationHTTPError(w, err)
+			return
+		}
+		saved, created, err := store.Put(account, automation)
 		if err != nil {
 			jobAutomationHTTPError(w, err)
 			return
@@ -813,10 +952,25 @@ func controlMCPAutomationSteps(raw any) ([]jobautomation.Step, error) {
 	}
 	var steps []jobautomation.Step
 	if err := json.Unmarshal(encoded, &steps); err != nil {
-		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen, if, command, args, secrets, worker, brief, from, message, max_rounds, timeout_seconds, continue_on_failure}: %s", err.Error())
+		return nil, controlMCPToolFailure("steps must be a list of {id, type: run|agent|reopen, if, command, args, secrets, worker, brief, fixes, from, message, max_rounds, timeout_seconds, continue_on_failure}: %s", err.Error())
 	}
 	if err := jobautomation.NormalizeSteps(steps); err != nil {
 		return nil, controlMCPToolFailure("%s", err.Error())
+	}
+	return steps, nil
+}
+
+// automationSteps reads and validates the steps argument, including that
+// fixes names a reviewer worker of the caller's account.
+func (c *controlMCPCall) automationSteps(raw any, account string) ([]jobautomation.Step, error) {
+	steps, err := controlMCPAutomationSteps(raw)
+	if err != nil {
+		return nil, err
+	}
+	if c.server != nil {
+		if err := c.server.jobAutomationFixesError(account, steps); err != nil {
+			return nil, controlMCPToolFailure("%s", err.Error())
+		}
 	}
 	return steps, nil
 }
@@ -826,7 +980,7 @@ func controlMCPSetAutomation(c *controlMCPCall, args map[string]any) (any, error
 	if err != nil {
 		return nil, err
 	}
-	steps, err := controlMCPAutomationSteps(args["steps"])
+	steps, err := c.automationSteps(args["steps"], account)
 	if err != nil {
 		return nil, err
 	}
@@ -934,7 +1088,7 @@ func (c *controlMCPCall) controlMCPThen(raw any, name, folder string, scope joba
 	if err != nil {
 		return nil, err
 	}
-	steps, err := controlMCPAutomationSteps(then["steps"])
+	steps, err := c.automationSteps(then["steps"], account)
 	if err != nil {
 		return nil, err
 	}
@@ -955,10 +1109,11 @@ func controlMCPValidateThen(c *controlMCPCall, raw any) error {
 	if raw == nil {
 		return nil
 	}
-	if _, _, err := c.jobAutomationAccount("automations:write"); err != nil {
+	_, account, err := c.jobAutomationAccount("automations:write")
+	if err != nil {
 		return err
 	}
-	_, err := controlMCPAutomationSteps(controlMCPMap(raw)["steps"])
+	_, err = c.automationSteps(controlMCPMap(raw)["steps"], account)
 	return err
 }
 
@@ -1039,6 +1194,7 @@ func controlMCPAutomationStepsSchema() map[string]any {
 			"secrets":             map[string]any{"type": "array", "maxItems": jobautomation.MaxStepSecrets, "items": map[string]any{"type": "string"}, "description": "run: secret names the script needs (granted to the folder); refused when the secrets gateway is off."},
 			"worker":              controlMCPStringProp("agent: coder, designer, finder, reviewer or a worker id. A reviewer reviews the triggering job's exact head.", 0, 200),
 			"brief":               controlMCPStringProp("agent: the job's brief; the triggering job's result is attached.", 0, 20000),
+			"fixes":               map[string]any{"type": "string", "enum": []string{jobautomation.FixesSecurity}, "description": "agent, reviewer worker only: \"security\" lets the reviewer commit small security-only fixes on a branch at the reviewed head instead of blocking for them. Its commits move the delivery head only with an OK verdict and at most " + strconv.Itoa(jobautomation.MaxReviewerFixLines) + " changed lines (else the step fails: reviewer fixes too large). Without it a reviewer is read-only."},
 			"timeout_seconds":     map[string]any{"type": "integer", "minimum": 1, "maximum": jobautomation.MaxStepTimeoutSeconds, "description": "Default 600."},
 			"continue_on_failure": map[string]any{"type": "boolean", "description": "Default false: a failed step stops the rest."},
 		}}}

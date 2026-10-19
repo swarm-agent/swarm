@@ -278,7 +278,7 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 	if w.LifecycleState == store.WorkerLifecycleStatePending {
 		return store.WorkerRunRecord{}, fmt.Errorf("%w: pending worker cannot be dispatched before human acceptance", store.ErrWorkerConflict)
 	}
-	if err := validateReviewRequest(w.Role, req.Input); err != nil {
+	if err := validateReviewRequest(w.Role, req.RequestSource, req.Input); err != nil {
 		return store.WorkerRunRecord{}, err
 	}
 	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {
@@ -331,7 +331,7 @@ func (s *WorkerExecutionService) Dispatch(ctx context.Context, account, user str
 		return store.WorkerRunRecord{}, err
 	}
 	if !replay {
-		candidate := store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, Input: req.Input, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource}
+		candidate := store.WorkerRunRecord{AccountScopeID: account, UserID: user, WorkerID: w.ID, AutomationID: req.AutomationID, RequestSource: req.RequestSource, Input: req.Input, WorkspaceID: workspaceID, WorkspaceSource: workspaceSource}
 		if w.Role == store.WorkerRoleReviewer {
 			target, err := s.resolveReviewTarget(ctx, candidate, w)
 			if err != nil {
@@ -633,7 +633,14 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			// Legacy Swarm-role workers explicitly retain their accepted-plan workflow.
 			profileContext.DefaultSessionMode = store.AgentDefaultSessionModePlan
 		}
-		profile, err := h.runs.agents.ResolveSystemAgent(workerRoleAgentID(role), profileContext)
+		agentID := workerRoleAgentID(role)
+		fixes := role == store.WorkerRoleReviewer && reviewFixesAllowed(r.Input)
+		if fixes {
+			// Only a reviewer an automation agent step opted in for fixes
+			// (validated at admission) may edit and commit; never delegate.
+			agentID = agentruntime.ReviewerFixerAgentID
+		}
+		profile, err := h.runs.agents.ResolveSystemAgent(agentID, profileContext)
 		if err != nil {
 			return err
 		}
@@ -699,7 +706,14 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 					commits = append(commits, text)
 				}
 			}
-			allocation, err = h.trees.AllocateReviewWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, head, commits...)
+			if fixes {
+				// A writable branch at the reviewed head, from the reviewed
+				// job's own clone, kept like a coder's job clone.
+				checkout, _ := target["checkout"].(string)
+				allocation, err = h.trees.AllocateReviewFixWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, checkout, head, reviewFixBranch(r.ID))
+			} else {
+				allocation, err = h.trees.AllocateReviewWorkspace(p, canonical.SourceWorkspacePath, r.SessionID, head, commits...)
+			}
 		} else {
 			allocation, err = h.trees.AllocateDetachedWorkspaceRequestedForPrincipal(p, canonical.SourceWorkspacePath, r.SessionID, base, "agent/worker-"+r.ID[:16])
 		}
@@ -726,6 +740,9 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["worker_role"] = role
 		if role == store.WorkerRoleReviewer {
 			meta["worker_review_target"] = r.Input["captured_review_target"]
+			if fixes {
+				meta["worker_review_fixes"] = ReviewFixesSecurity
+			}
 		}
 		meta["worker_workspace_id"] = canonical.SourceWorkspaceID
 		meta["navigation_hidden"] = true
@@ -1793,7 +1810,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if !reflect.DeepEqual(current.WorkspaceGrants, pinned.WorkspaceGrants) {
 		return store.ErrWorkerConflict
 	}
-	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_review_target", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
+	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_review_target", "worker_review_fixes", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
 		if !reflect.DeepEqual(current.Metadata[key], pinned.Metadata[key]) {
 			return store.ErrWorkerConflict
 		}
@@ -1856,6 +1873,10 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	}
 	if current.Metadata["worker_role"] == store.WorkerRoleReviewer {
 		if !reflect.DeepEqual(current.Metadata["worker_review_target"], r.Input["captured_review_target"]) {
+			return store.ErrWorkerConflict
+		}
+		// The session's fixes must be exactly what its receipt admitted.
+		if sessionReviewFixes(current.Metadata) != reviewFixesAllowed(r.Input) {
 			return store.ErrWorkerConflict
 		}
 		execution := &WorkerExecutionService{host: &AutomationV2ExecutionHost{runs: s}}

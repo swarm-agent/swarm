@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SwarmJobAutomationsNamespace } from '../job-automations.js';
+import { JOB_REVIEWER_FIX_MAX_LINES, SwarmJobAutomationsNamespace, type JobAutomationStep } from '../job-automations.js';
 import type { SwarmTransport } from '../transport.js';
 
 // Purpose: the SDK reaches job automations only under /v3/job-automations and
@@ -65,4 +65,26 @@ test('a review loop definition is sent as given', async () => {
   };
   await new SwarmJobAutomationsNamespace(transport).set(loop);
   assert.deepEqual(bodies, [loop]);
+});
+
+// Purpose: an agent step's `fixes` (reviewer workers only) is typed as the
+// single value `security` and sent to the daemon as written; the daemon owns
+// the reviewer-only check and the 80-line limit (JOB_REVIEWER_FIX_MAX_LINES).
+// Boundary: the JobAutomationStep type (checked by the SDK typecheck) and
+// SwarmJobAutomationsNamespace.set over a transport fixture.
+test('a reviewer step with fixes is typed and sent as given', async () => {
+  const bodies: unknown[] = [];
+  const transport = {
+    request: async (_path: string, options: { body?: unknown } = {}) => {
+      bodies.push(options.body);
+      return { data: { ok: true, automation: { id: 'jauto_3' }, created: true } };
+    },
+  } as unknown as SwarmTransport;
+  const review: JobAutomationStep = { id: 'review', type: 'agent', worker: 'reviewer', brief: 'Review this job.', fixes: 'security' };
+  // @ts-expect-error fixes has exactly one value
+  const typo: JobAutomationStep = { id: 'review', type: 'agent', worker: 'reviewer', brief: 'Review this job.', fixes: 'all' };
+  assert.equal(typo.fixes, 'all');
+  await new SwarmJobAutomationsNamespace(transport).set({ name: 'review fixes', scope: { folder: '/srv/site' }, steps: [review] });
+  assert.deepEqual(bodies, [{ name: 'review fixes', scope: { folder: '/srv/site' }, steps: [review] }]);
+  assert.equal(JOB_REVIEWER_FIX_MAX_LINES, 80);
 });

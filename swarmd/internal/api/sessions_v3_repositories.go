@@ -218,7 +218,9 @@ func (s *Server) authorizeRepositoryItem(principal identity.Principal, item sess
 	if err != nil {
 		return err
 	}
-	if found && sessionsV3MetadataString(owner.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer {
+	// A reviewer allowed to commit security fixes owns a branch checkout
+	// (agent/review-<run>) validated like any owned lane below.
+	if found && sessionsV3MetadataString(owner.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer && sessionsV3MetadataString(owner.Metadata, "worker_review_fixes") == "" {
 		target, _ := owner.Metadata["worker_review_target"].(map[string]any)
 		head, _ := target["head"].(string)
 		if owner.AccountScopeID != principal.AccountScopeID || owner.UserID != principal.UserID || !owner.WorktreeEnabled || sessionsV3MetadataString(owner.Metadata, "swarm_v3_worktree_owner_session_id") != owner.ID || item.Branch != "HEAD" || item.BaseCommit != head || item.WorkspacePath != owner.WorktreeRootPath || item.SourcePath != sessionsV3MetadataString(owner.Metadata, "swarm_v3_source_workspace_path") {

@@ -186,7 +186,9 @@ reviewer for a second look), you can offer a job automation:
   an executable script of the folder in its sandbox (it gets the job's result
   JSON on stdin and `SWARM_*` variables, and only the folder's secrets); an
   `agent` step gives a worker a job (a reviewer reviews the job's exact head
-  and records a verdict, `ok` or `block`, with findings); a `reopen` step
+  and records a verdict, `ok` or `block`, with findings; only with
+  `fixes: "security"` on its step may it commit small security fixes, at most
+  80 changed lines, which move the delivery head only on `ok`); a `reopen` step
   sends an agent step's findings back into the job's own session as a
   follow-up, at most `max_rounds` times before the delivery ends `blocked`.
   A step's `if` runs it only when an earlier step's status or verdict match,

@@ -18,6 +18,7 @@ const (
 	CompactAgentID               = "system-compact"
 	CompactAgentName             = "Compact"
 	ReviewerAgentID              = "system-reviewer"
+	ReviewerFixerAgentID         = "system-reviewer-fixer"
 	FinderAgentID                = "system-finder"
 	FinderAgentName              = "Finder"
 	CoderAgentID                 = "system-coder"
@@ -308,6 +309,13 @@ var builtinSystemAgentDefinitions = []SystemAgentDefinition{
 		DisplayName: "Reviewer",
 		Materialize: ReviewerAgentProfileForParent,
 		Reconcile:   reconcileReviewerAgentProfile,
+	},
+	{
+		// Only an automation agent step with fixes "security" starts it.
+		ID:          ReviewerFixerAgentID,
+		DisplayName: "Reviewer",
+		Materialize: ReviewerFixerAgentProfileForParent,
+		Reconcile:   reconcileReviewerFixerAgentProfile,
 	},
 	{
 		ID:          HelperAgentID,

@@ -108,8 +108,60 @@ failed), and the steps after it still run. There is no expression language.
   job's head descends from the current delivery head and moves the delivery
   head forward (`outcome.moved_head`); later `run` steps get the moved head.
   A head that does not descend fails the step and the delivery head stays.
-  (Reviewer checkouts are read-only today, so a reviewer job does not move
-  the head.)
+  A reviewer is read-only (a detached, disposable checkout) and so never
+  moves the head, unless its step sets `fixes` (below).
+
+#### Reviewer fixes (`fixes: "security"`)
+
+```json
+{ "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this job.", "fixes": "security" }
+```
+
+An `agent` step whose worker is a reviewer may set `fixes` to `security`
+(the only value), so that the reviewer may commit small, security-only
+fixes (a missing escape, a path check, a secret in a log line) instead of
+blocking for them. It is opt-in per step and never the default: a reviewer
+started any other way (`swarm_give_job` with `review_job`, or an `agent` step
+without `fixes`) stays read-only, detached and report-only. Swarm never
+decides on its own to let a reviewer write. `swarm_set_automation`, `then`
+and the API refuse `fixes` on a step whose worker is not a reviewer (a role
+name, a worker id or name that resolves to another role, or one that does
+not resolve); the daemon refuses it again when the job starts and at job
+admission, where only a job automation's request may carry it.
+
+With `fixes`:
+
+- The reviewer job gets a writable branch `agent/review-<run>` started at
+  the reviewed head, in its own checkout: a clone of the folder seeded from
+  the reviewed job's own clone, whose `.git` is writable for this job only
+  (like a coder's job checkout). Every tool call checks that the checkout is
+  on that branch and that its `HEAD` descends from the reviewed head.
+- It may edit files and commit (`git_add`, `git_commit`), and run the
+  narrowest test that proves a fix; it cannot start other agents.
+- Its prompt says: commit only small, security-only fixes on top of the
+  reviewed head; list every fix in FINDINGS marked `FIXED`, with what it was,
+  why, and `file:line`; anything that is not a small security fix is a BLOCK
+  finding; run only the narrowest test that proves a fix and list it under
+  TESTS RUN.
+- The limit is enforced in code, after the reviewer job ends: its commits on
+  top of the delivery head may change **at most 80 lines** in total (added
+  plus removed, `git diff --numstat`; a binary file counts as over the
+  limit). Over the limit the step fails with reason `reviewer fixes too
+  large`, is not retried, and the delivery head does not move.
+- Only an `ok` verdict moves the head (after the same ancestry check). A
+  reviewer that committed while its verdict is `block` (or that recorded no
+  verdict) does not move the head; the step keeps its verdict, so a `reopen`
+  step still sends its findings to the coder.
+- The step's `outcome` shows the reviewer's `fix_commits`, `fix_lines`,
+  `fixes_applied` and, when not applied, `fixes_reason`; the reviewer job's
+  own result shows its commits and head. `swarm_get_job` on the reviewed job
+  and the delivery views show the moved `head` and the applied
+  `fix_commits`.
+- The reviewer's checkout is kept after the job ends, like a coder's job
+  checkout, so the delivery and later `run` steps can read its head; it is
+  not deleted as a read-only reviewer's checkout is. Reviewer jobs stay
+  undeliverable with `swarm_deliver_job`: their fixes reach a job only
+  through the delivery head.
 
 ### `reopen` steps
 
@@ -263,9 +315,10 @@ The step's output is the branch URL; a failed push signals
 
 ## Example: a review loop
 
-A coder's job is reviewed by a reviewer job in its own session; a block sends
-the findings back into the coder's session until the reviewer says ok, at
-most twice; an ok pushes the head. Swarm runs this only because the
+A coder's job is reviewed by a reviewer job in its own session, which may
+fix small security problems itself; a block sends the findings back into the
+coder's session until the reviewer says ok, at most twice; an ok pushes the
+head, including the reviewer's fixes. Swarm runs this only because the
 automation says so: there is no built-in review chain.
 
 ```json
@@ -276,7 +329,7 @@ automation says so: there is no built-in review chain.
     "scope": { "folder": "/srv/site", "worker": "<coder worker id>" },
     "when": "succeeded",
     "steps": [
-      { "id": "review", "type": "agent", "worker": "reviewer",
+      { "id": "review", "type": "agent", "worker": "reviewer", "fixes": "security",
         "brief": "Review this job's exact head against its brief." },
       { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2,
         "message": "The reviewer blocked your work. Its findings:",
@@ -289,7 +342,10 @@ automation says so: there is no built-in review chain.
 ```
 
 1. The coder's job succeeds: delivery round 0 starts.
-2. `review` starts a reviewer job, in its own session, for that exact head.
+2. `review` starts a reviewer job, in its own session, on a branch at that
+   exact head. It may commit small security fixes (at most 80 changed lines
+   in total) and lists each as `FIXED` in its findings; anything else is a
+   BLOCK finding.
 3. On `block`, `push` is skipped and `fix` sends the findings into the coder
    job's original session. The coder fixes them in the same worktree; that
    follow-up's end triggers the automation again (round 1), and a new
@@ -297,10 +353,14 @@ automation says so: there is no built-in review chain.
 4. After two reopens without an `ok`, the next `fix` fails with
    `rounds_exhausted` and the delivery ends `blocked`.
 5. On `ok`, `fix` is skipped and `push` runs `deliver/push.sh` with
-   `SWARM_HEAD` (and `refs/swarm/jobs/<run-id>`) at the reviewed head.
+   `SWARM_HEAD` (and `refs/swarm/jobs/<run-id>`) at the reviewed head, or at
+   the reviewer's fix head when it committed fixes within the limit. Fixes
+   over the limit fail `review` (`reviewer fixes too large`): nothing is
+   pushed and the head stays the coder's.
 
-`swarm_get_job` on the coder's job shows each delivery's round, head, state
-and blocked reason, and each step's verdict and findings.
+`swarm_get_job` on the coder's job shows each delivery's round, head, state,
+blocked reason and the reviewer's applied fix commits, and each step's
+verdict and findings.
 
 ## What the reviewer receives
 
@@ -319,8 +379,11 @@ requirement of the brief fully done; do the report's claims match the
 evidence (a test the report says passed must appear among the commands run,
 with exit code 0; unbacked claims are findings); are there gaps; are there
 security problems. It answers `VERDICT: OK` or `VERDICT: BLOCK` with findings
-at `file:line`, which a `reopen` step sends to the coder verbatim. Reviewer
-jobs started outside automations work as before. See [the reviewer](reviewer.md).
+at `file:line`, which a `reopen` step sends to the coder verbatim. With
+`fixes: "security"` it may also commit small security fixes, listed as
+`FIXED` findings (see [Reviewer fixes](#reviewer-fixes-fixes-security)).
+Reviewer jobs started outside automations work as before. See
+[the reviewer](reviewer.md).
 
 ## Example: upload a media file
 

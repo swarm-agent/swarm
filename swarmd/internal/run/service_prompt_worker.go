@@ -13,7 +13,7 @@ import (
 // Worker audiences have no parent lifecycle or deployment authority. Keep this
 // selection explicit: a read-only interactive session is not a worker.
 func usesWorkerContext(profile store.AgentProfile) bool {
-	return profile.Name == agent.WorkerCoderAgentID || profile.Name == agent.ReviewerAgentID || agent.IsFinderAgentName(profile.Name)
+	return profile.Name == agent.WorkerCoderAgentID || profile.Name == agent.ReviewerAgentID || profile.Name == agent.ReviewerFixerAgentID || agent.IsFinderAgentName(profile.Name)
 }
 
 // profileHasCapability uses the same code-owned profile-state resolver as the
@@ -72,6 +72,8 @@ func harnessForProfile(scope tool.WorkspaceScope, profile store.AgentProfile) st
 		}
 	case profile.Name == agent.ReviewerAgentID:
 		lines = append(lines, "Review only the assigned tree without modifying it. Report precise findings and evidence.")
+	case profile.Name == agent.ReviewerFixerAgentID:
+		lines = append(lines, "Review the assigned tree. Modify it only for small, security-only fixes committed on your own branch on top of the reviewed head; list each as FIXED in FINDINGS. Report precise findings and evidence, and the narrowest test run for each fix.")
 	case agent.IsFinderAgentName(profile.Name):
 		lines = append(lines, "Investigate read-only. Return paths/lines or source links, distinguish findings from inference and identify unresolved questions. Do not modify source, commit, deploy children or control a parent checkpoint.")
 	case agent.IsDesignerAgentName(profile.Name):

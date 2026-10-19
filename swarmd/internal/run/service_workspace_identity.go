@@ -21,6 +21,18 @@ func validateSessionExecutionRepositoryIdentity(session pebblestore.SessionSnaps
 		if !session.WorktreeEnabled {
 			return errors.New("review session requires its isolated checkout")
 		}
+		if sessionReviewFixes(session.Metadata) {
+			// A reviewer allowed to commit security fixes: its own
+			// agent/review-<run> branch, whose HEAD descends from the
+			// reviewed head (instead of a detached HEAD equal to it).
+			return validateSessionRepositoryIdentityWith(session, func(source, lane, branch, base string) error {
+				head := reviewEnvironment(session.Metadata)["SWARM_REVIEW_HEAD"]
+				if run := mapString(session.Metadata, "worker_execution_run_id"); run == "" || branch != reviewFixBranch(run) || head == "" || base != head || session.WorktreeBaseBranch != head || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != session.ID {
+					return errors.New("review fix session worktree identity mismatch")
+				}
+				return worktreeruntime.ValidateReviewFixExecutionIdentity(source, lane, branch, head)
+			})
+		}
 		return validateSessionRepositoryIdentityWith(session, func(source, lane, branch, base string) error {
 			head := reviewEnvironment(session.Metadata)["SWARM_REVIEW_HEAD"]
 			if branch != "HEAD" || base != head || session.WorktreeBaseBranch != head || mapString(session.Metadata, "swarm_v3_worktree_owner_session_id") != session.ID {

@@ -120,10 +120,17 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			roots = []string{resolvedPath}
 		}
 		reviewCheckout := ""
+		reviewFixes := false
 		if mapString(session.Metadata, "worker_role") == pebblestore.WorkerRoleReviewer {
-			reviewCheckout = resolvedPath
 			roots = []string{resolvedPath}
 			readOnlyRoots = nil
+			if sessionReviewFixes(session.Metadata) {
+				// Its own writable branch checkout only (a job checkout,
+				// not a read-only review checkout).
+				reviewFixes = true
+			} else {
+				reviewCheckout = resolvedPath
+			}
 		}
 		return tool.WorkspaceScope{
 			ReviewCheckout:       reviewCheckout,
@@ -131,7 +138,7 @@ func (s *Service) resolveRunWorkspaceScope(session pebblestore.SessionSnapshot, 
 			Roots:                roots,
 			ReadOnlyRoots:        readOnlyRoots,
 			MutationScopes:       mutationScopes,
-			RejectScopeExpansion: reviewCheckout != "" || agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
+			RejectScopeExpansion: reviewCheckout != "" || reviewFixes || agentruntime.IsCoderAgentName(mapString(session.Metadata, "requested_subagent")),
 			Principal:            principal,
 			SessionID:            strings.TrimSpace(session.ID),
 			WorktreeEnabled:      true,

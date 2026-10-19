@@ -30,6 +30,21 @@ const (
 	VerdictBlock = "block"
 )
 
+// Reviewer fixes: an agent step whose worker is a reviewer may set fixes to
+// FixesSecurity (the only value), so the reviewer may commit small,
+// security-only fixes on top of the reviewed head instead of blocking for
+// them. Its commits move the delivery head only with an OK verdict and at
+// most MaxReviewerFixLines changed lines (added plus removed).
+const (
+	FixesSecurity       = "security"
+	MaxReviewerFixLines = 80
+	ReasonFixesTooLarge = "reviewer fixes too large"
+)
+
+// nonReviewerRoles are the worker role names an agent step may name that
+// are not a reviewer.
+var nonReviewerRoles = map[string]bool{"coder": true, "designer": true, "finder": true, "swarm": true}
+
 // Bounds.
 const (
 	DefaultStepTimeoutSeconds = 600
@@ -99,6 +114,9 @@ type Step struct {
 	// agent
 	Worker string `json:"worker,omitempty"`
 	Brief  string `json:"brief,omitempty"`
+	// Fixes ("security", a reviewer worker only) lets the reviewer commit
+	// small security fixes on top of the reviewed head. Never the default.
+	Fixes string `json:"fixes,omitempty"`
 	// reopen
 	From      string `json:"from,omitempty"`
 	Message   string `json:"message,omitempty"`
@@ -265,8 +283,8 @@ func (s *Step) normalizeConditions(earlier map[string]string) error {
 }
 
 func (s *Step) normalizeReopen(earlier map[string]string) error {
-	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 || s.Worker != "" || s.Brief != "" {
-		return invalid("step %s: a reopen step has from, message and max_rounds, not command, args, secrets, worker or brief", s.ID)
+	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 || s.Worker != "" || s.Brief != "" || s.Fixes != "" {
+		return invalid("step %s: a reopen step has from, message and max_rounds, not command, args, secrets, worker, brief or fixes", s.ID)
 	}
 	s.From = strings.TrimSpace(s.From)
 	if typ, ok := earlier[s.From]; !ok || typ != StepAgent {
@@ -286,8 +304,8 @@ func (s *Step) normalizeReopen(earlier map[string]string) error {
 }
 
 func (s *Step) normalizeRun() error {
-	if s.Worker != "" || s.Brief != "" || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
-		return invalid("step %s: a run step has command and args, not worker, brief, from, message or max_rounds", s.ID)
+	if s.Worker != "" || s.Brief != "" || s.Fixes != "" || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
+		return invalid("step %s: a run step has command and args, not worker, brief, fixes, from, message or max_rounds", s.ID)
 	}
 	s.Command = strings.TrimSpace(s.Command)
 	if err := ValidCommandPath(s.Command); err != nil {
@@ -324,7 +342,23 @@ func (s *Step) normalizeAgent() error {
 	if s.Brief == "" || utf8.RuneCountInString(s.Brief) > maxBriefRunes {
 		return invalid("step %s: brief is required (at most %d characters)", s.ID, maxBriefRunes)
 	}
+	s.Fixes = strings.ToLower(strings.TrimSpace(s.Fixes))
+	if s.Fixes != "" {
+		if s.Fixes != FixesSecurity {
+			return invalid("step %s: fixes must be %q (the only value)", s.ID, FixesSecurity)
+		}
+		if nonReviewerRoles[strings.ToLower(s.Worker)] {
+			return invalid("step %s: fixes is only for a reviewer worker; %s is not a reviewer", s.ID, s.Worker)
+		}
+	}
 	return nil
+}
+
+// NonReviewerFixesError refuses fixes on an agent step whose worker
+// resolved to a role other than reviewer (a worker id is resolved by the
+// caller, which knows the account's workers).
+func NonReviewerFixesError(stepID, worker, role string) error {
+	return invalid("step %s: fixes is only for a reviewer worker; %s is a %s worker", stepID, worker, role)
 }
 
 // ValidCommandPath checks a run step's command: a path to a script inside

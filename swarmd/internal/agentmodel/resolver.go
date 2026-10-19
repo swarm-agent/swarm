@@ -76,7 +76,7 @@ func configuredAgentSettingsForID(settings agentmodelsettings.Settings, agentID 
 		return settings.SystemAgents.Finder, true
 	case agentruntime.CoderAgentID:
 		return settings.SystemAgents.Coder, true
-	case agentruntime.ReviewerAgentID:
+	case agentruntime.ReviewerAgentID, agentruntime.ReviewerFixerAgentID:
 		if settings.SystemAgents.Reviewer.Model != "" {
 			return settings.SystemAgents.Reviewer, true
 		}

@@ -66,6 +66,11 @@ func (s *WorkerExecutionService) cleanupReviewAdmissionMode(r store.WorkerRunRec
 			return err
 		}
 		if admitted {
+			// A reviewer that ran with fixes keeps its branch checkout like a
+			// coder job's clone; only an interrupted admission is discarded.
+			if reviewFixesAllowed(r.Input) {
+				return nil
+			}
 			if err := s.cleanupReview(r); err != nil {
 				return err
 			}

@@ -12,6 +12,13 @@ export type JobAutomationWhen = 'succeeded' | 'failed' | 'always';
 export type JobAutomationStepType = 'run' | 'agent' | 'reopen';
 export type JobDeliveryState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'stopped' | 'blocked';
 export type JobReviewVerdict = 'ok' | 'block';
+/**
+ * An agent step's `fixes` option (reviewer workers only; the only value).
+ * The daemon refuses it for any other worker.
+ */
+export type JobReviewerFixes = 'security';
+/** The most lines (added plus removed) a reviewer's fix commits may change. */
+export const JOB_REVIEWER_FIX_MAX_LINES = 80;
 
 /**
  * One condition of a step's `if`, on an earlier step: its status, or (an
@@ -53,6 +60,14 @@ export interface JobAutomationStep {
   worker?: string;
   /** agent: the job's brief; the triggering job's result is attached (a reviewer also gets its brief, report, commands run and diff). */
   brief?: string;
+  /**
+   * agent, reviewer worker only: `security` lets the reviewer commit small,
+   * security-only fixes on a branch at the reviewed head instead of blocking
+   * for them. Its commits move the delivery head only with an OK verdict and
+   * at most {@link JOB_REVIEWER_FIX_MAX_LINES} changed lines; more fails the
+   * step (`reviewer fixes too large`). Without it a reviewer is read-only.
+   */
+  fixes?: JobReviewerFixes;
   /** reopen: the earlier agent step whose findings are sent into the triggering job's own session. */
   from?: string;
   /** reopen: text placed before the findings. */
@@ -104,7 +119,9 @@ export interface JobDeliveryStep {
   /**
    * An agent step's job: `job_id`, `status`, `head`, `report`, `review`, and
    * `verdict`/`findings` when the job recorded a review (`moved_head` when it
-   * moved the delivery head); a reopen step's `followup` and `round`.
+   * moved the delivery head); with `fixes`, the reviewer's `fix_commits`,
+   * `fix_lines`, `fixes_applied` and `fixes_reason`; a reopen step's
+   * `followup` and `round`.
    */
   outcome?: Record<string, unknown>;
   /** The last 64 KiB of a run step's output (single-delivery reads only). */
@@ -127,6 +144,8 @@ export interface JobDelivery {
   head?: string;
   /** Why the delivery ended `blocked`, e.g. `rounds_exhausted`. */
   blocked_reason?: string;
+  /** The reviewer fix commits the delivery head was moved to (agent steps with `fixes`). */
+  fix_commits?: Array<{ sha: string; subject: string }>;
   steps: JobDeliveryStep[];
   created_at: number;
   started_at?: number;

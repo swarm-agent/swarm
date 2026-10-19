@@ -41,7 +41,7 @@ func TestReviewLoopAcceptanceBlockReopenThenOkDeliversTheFinalHead(t *testing.T)
 	h.process()
 	// The exact automation of the docs' example.
 	h.automation(Automation{Name: "review loop", Scope: Scope{Folder: folder, Worker: "coder-1"}, When: WhenSucceeded, Enabled: true, Steps: []Step{
-		{ID: "review", Type: StepAgent, Worker: "reviewer", Brief: "Review this job's exact head against its brief."},
+		{ID: "review", Type: StepAgent, Worker: "reviewer", Fixes: FixesSecurity, Brief: "Review this job's exact head against its brief."},
 		{ID: "fix", Type: StepReopen, From: "review", MaxRounds: 2, Message: "The reviewer blocked your work. Its findings:", If: []Condition{{Step: "review", Verdict: VerdictBlock}}},
 		{ID: "push", Type: StepRun, Command: "deliver/push.sh", If: []Condition{{Step: "review", Verdict: VerdictOK}}},
 	}})
@@ -54,7 +54,7 @@ func TestReviewLoopAcceptanceBlockReopenThenOkDeliversTheFinalHead(t *testing.T)
 	h.process()
 
 	// 2. A reviewer job reviews that exact head.
-	if len(h.agents.started) != 1 || h.agents.started[0].Worker != "reviewer" || h.agents.started[0].Result.Git.Head != firstHead {
+	if len(h.agents.started) != 1 || h.agents.started[0].Worker != "reviewer" || h.agents.started[0].Result.Git.Head != firstHead || h.agents.started[0].Fixes != FixesSecurity {
 		t.Fatalf("first review = %+v", h.agents.started)
 	}
 	round0 := h.deliveries("worker/coder-1/run-1")[0]

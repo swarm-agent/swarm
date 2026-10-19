@@ -1031,7 +1031,7 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, controlMCPToolFailure("this job has no result to merge yet (see swarm_get_job)")
 	}
 	if refs.run["role"] == pebblestore.WorkerRoleReviewer {
-		return nil, controlMCPToolFailure("reviewer jobs are report-only; there is no branch or file delivery to publish or merge")
+		return nil, controlMCPToolFailure("reviewer jobs are report-only; there is no branch or file delivery to publish or merge (a reviewer's security fixes reach a job only through the automation step that allowed them: see the delivery's head)")
 	}
 	// A folder whose owner set a publish command gets a pull request, never
 	// a local merge.

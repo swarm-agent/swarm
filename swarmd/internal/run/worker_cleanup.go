@@ -8,13 +8,14 @@ import (
 )
 
 func markReviewCleanupPending(r *store.WorkerRunRecord) {
-	if r.Role == store.WorkerRoleReviewer && r.Cleanup == nil {
+	if r.Role == store.WorkerRoleReviewer && !reviewFixesAllowed(r.Input) && r.Cleanup == nil {
 		r.Cleanup = &store.WorkerRunCleanup{State: "pending"}
 	}
 }
 
 func (s *WorkerExecutionService) retryReviewCleanup(r store.WorkerRunRecord) error {
-	if r.Role != store.WorkerRoleReviewer || !store.AutomationV2Terminal(r.Status) || strings.HasPrefix(r.Error, "run stalled:") {
+	// A reviewer that ran with fixes keeps its checkout (a coder-style clone).
+	if r.Role != store.WorkerRoleReviewer || reviewFixesAllowed(r.Input) || !store.AutomationV2Terminal(r.Status) || strings.HasPrefix(r.Error, "run stalled:") {
 		return nil
 	}
 	s.cleanupMu.Lock()
@@ -78,11 +79,14 @@ func (s *WorkerExecutionService) performReviewCleanup(r store.WorkerRunRecord) e
 	if err != nil {
 		return err
 	}
-	if !found || !store.AutomationV2Terminal(current.Status) {
+	if !found || !store.AutomationV2Terminal(current.Status) || reviewFixesAllowed(current.Input) {
 		return nil
 	}
 	r = current
 	markReviewCleanupPending(&r)
+	if r.Cleanup == nil {
+		return nil
+	}
 	c := *r.Cleanup
 	now := time.Now()
 	if c.State == "done" || c.NextAttemptAt > now.UnixMilli() {
