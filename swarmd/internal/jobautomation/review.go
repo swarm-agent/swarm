@@ -1,10 +1,15 @@
 package jobautomation
 
-import "strings"
+import (
+	"strings"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
+)
 
 // maxFindingsBytes bounds the findings an agent step's outcome keeps and a
-// reopen step sends.
-const maxFindingsBytes = 16000
+// reopen step sends. It is the review record's own bound: findings come from
+// the record (store.JobReview.Findings), already cut at a line boundary.
+const maxFindingsBytes = pebblestore.MaxJobReviewFindingsBytes
 
 // FindingsOf is the FINDINGS section of a reviewer's report (VERDICT,
 // SUMMARY, FINDINGS, TESTS RUN), verbatim; "" when the report has none or it

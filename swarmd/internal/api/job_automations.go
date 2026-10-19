@@ -329,7 +329,7 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 			if out.Result != nil && out.Result.Git != nil && len(out.Result.Git.Commits) > 0 {
 				out.Head = out.Result.Git.Head
 			}
-			out.Verdict, out.Findings = s.automationAgentReview(account, workerID, runID, out.Result)
+			out.Verdict, out.Findings = s.automationAgentReview(account, workerID, runID)
 			return out, nil
 		}
 		timer := time.NewTimer(time.Minute)
@@ -354,8 +354,11 @@ func (a jobAutomationAgents) Wait(ctx context.Context, account, jobID string) (j
 // step's job recorded: a reviewer job's store.JobReview is recorded against
 // the job it reviewed (its input review_job) with ReviewerJobID set to the
 // reviewer job, so it is read there, never from the reviewer's own result.
-// A job that recorded no review has no verdict.
-func (s *Server) automationAgentReview(account, workerID, runID string, result *jobautomation.Result) (string, string) {
+// A job that recorded no review has no verdict. Findings are the record's
+// verbatim FINDINGS section (bounded at 16,000 bytes when it was recorded);
+// a BLOCK record without findings gives its reason. The job's task summary
+// (result.Report, cut at 4,000 characters) is never a source of findings.
+func (s *Server) automationAgentReview(account, workerID, runID string) (string, string) {
 	if s.sessions == nil || s.sessions.Store() == nil {
 		return "", ""
 	}
@@ -373,12 +376,9 @@ func (s *Server) automationAgentReview(account, workerID, runID string, result *
 	if err != nil || review == nil || (review.Verdict != jobautomation.VerdictOK && review.Verdict != jobautomation.VerdictBlock) {
 		return "", ""
 	}
-	findings := ""
-	if review.Verdict == jobautomation.VerdictBlock {
-		findings = jobautomation.FindingsOf(review.Reason)
-	}
-	if findings == "" && result != nil {
-		findings = jobautomation.FindingsOf(result.Report)
+	findings := strings.TrimSpace(review.Findings)
+	if strings.EqualFold(strings.TrimRight(findings, "."), "none") {
+		findings = ""
 	}
 	if findings == "" && review.Verdict == jobautomation.VerdictBlock {
 		findings = review.Reason

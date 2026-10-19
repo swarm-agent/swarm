@@ -98,7 +98,11 @@ failed), and the steps after it still run. There is no expression language.
 - The step waits, within its timeout, for that job to end; the job's status
   is the step's status. The step's `outcome` records the job id, its head,
   its report and, when the job recorded a review (a reviewer's verdict on the
-  job it reviewed), `verdict` (`ok` or `block`) and `findings`.
+  job it reviewed), `verdict` (`ok` or `block`) and `findings`. Verdict and
+  findings come from the review record: the reviewer's FINDINGS section in
+  full, up to 16,000 bytes (longer findings are cut at a line boundary and
+  say so), never the job's shortened report. A `block` review whose report
+  was malformed has the record's reason as its findings.
 - The delivery's **head** starts as the triggering job's head. When the job
   the step started committed on top of it, Swarm checks with Git that the
   job's head descends from the current delivery head and moves the delivery
@@ -117,8 +121,8 @@ failed), and the steps after it still run. There is no expression language.
 - Sends a follow-up into the **triggering job's own session**, exactly as
   `swarm_message_job` does: the same session and worktree, never a new job.
   The text is `message`, then the findings of the `agent` step named by
-  `from`, verbatim, then: "Fix these in this worktree, commit, and report what
-  you changed."
+  `from`, verbatim and in full (up to 16,000 bytes), then: "Fix these in this
+  worktree, commit, and report what you changed."
 - The step succeeds once the follow-up is accepted; it does not wait. The
   follow-up's end is a new job end, so it triggers the automation again as a
   new delivery whose `round` is the previous round + 1.

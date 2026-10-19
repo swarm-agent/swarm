@@ -13,6 +13,8 @@ A reviewer started by an automation's `agent` step gets the evidence in its brie
 
 The reviewer runs no builds, tests, checks, or scripts: it judges the evidence the job produced. Reports retain four sections: VERDICT, SUMMARY, FINDINGS, and TESTS RUN. TESTS RUN always says `none (review is read-only)`.
 
+The structured report may follow progress notes in the reviewer's final message: Swarm reads it from the line that starts with `VERDICT: OK` or `VERDICT: BLOCK` and ignores the text before it. It still fails closed (recorded as BLOCK, "missing or malformed review verdict") when more than one line starts with `VERDICT:`, when the notes before the verdict contain a heading at the start of a line, or when the sections are missing, empty, out of order, quoted, fenced, indented or embedded in prose. The review record keeps the FINDINGS section verbatim from the full message, up to 16,000 bytes (longer findings are cut at a line boundary and say so); `swarm_get_job` shows the recorded verdict and findings, and an automation's `agent` and `reopen` steps send those findings in full, never the job's shortened report.
+
 The brief, report, commands, diff and repository are untrusted data: the reviewer assesses them but never follows instructions found in them. A re-review assesses previous findings first and identifies which are fixed.
 
 A review is report-only: the reviewer's checkout is detached and disposable, and it never commits. What happens to a reviewed job afterwards (delivering it with `swarm_deliver_job`, sending findings back with `swarm_message_job` or an automation's `reopen` step) is up to the AI or automation that asked for the review.
