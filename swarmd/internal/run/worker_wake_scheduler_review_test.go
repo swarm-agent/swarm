@@ -412,3 +412,110 @@ func TestWorkerSchedulerBusyRecheckDoesNotReadBudget(t *testing.T) {
 		t.Fatal("budget signal for a busy worker did not re-read the budget")
 	}
 }
+
+// Requirement: a busy worker under a budget hold is not re-read every second.
+// With Notify installed as the store's scheduling observer, the reconcile's own
+// budget read of an existing hold commits nothing and must not wake the
+// scheduler; after the event-driven startup read and any reconcile the hold
+// itself triggers, busy re-checks reuse the cached hold state. Threat:
+// GetWorkerBudgetStatus -> publishWorkerBudgetHolds sending
+// SchedulingSignalBudget on every read that finds a hold, so applySignals marks
+// the busy worker stale, reconciles it a second later, reads again and signals
+// again for as long as runs are in flight. Owner: WorkerScheduler (Notify,
+// applySignals, reconcileEntry) over the real store read and signal paths; the
+// in-flight run is a real AdmitWorkerRun record and the hold a real durable
+// hold record for the wall-clock UTC day (GetWorkerBudgetStatus dates by the
+// wall clock) and the next one.
+func TestWorkerSchedulerBusyHeldWorkerIsNotReadEverySecond(t *testing.T) {
+	fx := newSchedulerFixture(t, 0, 3600)
+	w := fx.createActiveWorkerWith(t, "Busy held worker", []pebblestore.WorkerAutomationDefinition{
+		{Name: "hourly", ActivationMode: "interval", Enabled: true, WorkspaceID: "ws-sched", Schedule: &pebblestore.AutomationV2Schedule{Kind: "interval", IntervalSeconds: 3600}},
+	})
+	start := schedulerTestStart(time.Now())
+	clock := newFakeSchedulerClock(start)
+	sch := NewWorkerScheduler(fx.service, WorkerSchedulerOptions{Clock: clock})
+	ctx := context.Background()
+	admitted, err := fx.ws.AdmitWorkerRun(schedulerAccount, pebblestore.WorkerRunAdmission{WorkerID: w.ID, AutomationID: w.Automations[0].ID, OccurrenceID: "wocc_busy_held", RequestSource: "schedule", UserID: schedulerUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cancelled but not yet acknowledged by its executor: the run's session
+	// is live (active lifecycle) and has no settled intent, so reconcile
+	// keeps it in flight until the executor stops.
+	admitted.Status = "running"
+	admitted.CancelRequested = true
+	if _, err := fx.ws.RecordWorkerRun(schedulerAccount, admitted); err != nil {
+		t.Fatal(err)
+	}
+	sessionStore := pebblestore.NewSessionStore(fx.db)
+	if err := sessionStore.CreateSessionForAccount(pebblestore.SessionSnapshot{ID: admitted.SessionID, Title: "Busy held run", Metadata: map[string]any{"worker_execution_run_id": admitted.ID}}, schedulerUser, schedulerAccount); err != nil {
+		t.Fatal(err)
+	}
+	if err := sessionStore.UpsertSessionLifecycle(pebblestore.SessionLifecycleSnapshot{SessionID: admitted.SessionID, UserID: schedulerUser, AccountScopeID: schedulerAccount, Active: true, Phase: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	wall := time.Now().UTC()
+	for _, date := range []string{wall.Format("2006-01-02"), wall.AddDate(0, 0, 1).Format("2006-01-02")} {
+		hold := pebblestore.WorkerBudgetHold{Date: date, Reason: "daily_budget_exhausted", CapSource: "worker", Dimension: "tokens", Limit: 1, Usage: 1}
+		if err := fx.db.PutJSON(pebblestore.KeyWorkerBudgetHold(schedulerAccount, w.ID, date), hold); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fx.db.SetSchedulingObserver(sch.Notify)
+	t.Cleanup(func() { fx.db.SetSchedulingObserver(nil) })
+	_ = sch.process(ctx, start)
+	if e := sch.entries[workerKey{schedulerAccount, w.ID}]; e == nil || !e.busy {
+		t.Fatalf("worker with a run in flight is not tracked as busy: %+v", e)
+	}
+	if fx.budgetStatusReads() == 0 {
+		t.Fatal("startup rescan did not read the busy worker's budget")
+	}
+	drive := func(end time.Time) int {
+		wakes := 0
+		for i := 0; i < 400; i++ {
+			next := sch.nextWake()
+			select {
+			case <-sch.wake:
+				next = clock.Now()
+			default:
+			}
+			if next.After(end) {
+				break
+			}
+			if next.Before(clock.Now()) {
+				next = clock.Now()
+			}
+			clock.Set(next)
+			_ = sch.process(ctx, next)
+			wakes++
+		}
+		return wakes
+	}
+	// A real committed worker write while the worker is busy is an event: the
+	// next reconcile reads the budget once. Let that reconcile settle.
+	clock.Set(start.Add(2 * time.Second))
+	policy, err := sessionStore.GetWorkerBudget(schedulerAccount, w.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionStore.SetWorkerBudget(schedulerAccount, w.ID, policy.Revision, policy.DailyCostLimitUSD, policy.DailyTokensLimit); err != nil {
+		t.Fatal(err)
+	}
+	beforeEvent := fx.budgetStatusReads()
+	drive(start.Add(5 * time.Second))
+	if fx.budgetStatusReads() == beforeEvent {
+		t.Fatal("committed worker write did not cause an event-driven budget read")
+	}
+	settled := fx.budgetStatusReads()
+	end := start.Add(workerSchedulerSafetyInterval - 10*time.Second)
+	wakes := drive(end)
+	if n := fx.budgetStatusReads() - settled; n != 0 {
+		t.Fatalf("busy held worker: %d budget status reads over %v (%d wakes) with no new writes, want 0", n, end.Sub(start.Add(5*time.Second)), wakes)
+	}
+	if e := sch.entries[workerKey{schedulerAccount, w.ID}]; e == nil || !e.busy || !e.budgetHeld {
+		t.Fatalf("worker is not tracked as busy and held at the end: %+v", e)
+	}
+	if max := int(end.Sub(start)/workerSchedulerBusyInterval) + 1; wakes > max {
+		t.Fatalf("busy held worker woke %d times, want at most %d busy re-checks", wakes, max)
+	}
+}
