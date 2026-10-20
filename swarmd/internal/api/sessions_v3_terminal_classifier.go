@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	runruntime "swarm/packages/swarmd/internal/run"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 )
 
@@ -76,14 +75,6 @@ func sessionV3TerminalFailure(reason string) TerminalClassification {
 func sessionV3RuntimeErrorReason(err error) string {
 	if err == nil {
 		return ""
-	}
-	// A cancellation that recorded its cause (the executor's own, or one from
-	// run.Service such as an overflow compaction) reports it. The fixed text
-	// remains only for a cancellation whose cause was never recorded.
-	var named *sessionV3RunCancelledError
-	var runNamed *runruntime.RunCancelledError
-	if errors.As(err, &named) || errors.As(err, &runNamed) {
-		return strings.TrimSpace(err.Error())
 	}
 	if errors.Is(err, context.Canceled) {
 		return "executor context canceled"

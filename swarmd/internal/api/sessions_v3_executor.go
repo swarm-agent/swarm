@@ -93,94 +93,10 @@ type sessionV3ExecutorJob struct {
 }
 
 type sessionV3ExecutorRunState struct {
-	cancel   context.CancelCauseFunc
+	cancel   context.CancelFunc
 	canceled bool
 	reason   string
-	cause    error
 	job      sessionV3ExecutorJob
-}
-
-// What can end a V3 run. A run is cancelled only by its own stop (CancelRun),
-// its run timeout or the executor's context ending (daemon shutdown); the
-// progress sink also ends its provider stream when progress cannot be
-// recorded. Anything else that returns context.Canceled did not cancel the
-// run's context, and the run's reason says so.
-const (
-	sessionV3CancelledByStop     = "a stop request"
-	sessionV3CancelledByTimeout  = "its run timeout"
-	sessionV3CancelledByShutdown = "the daemon shutting down"
-	sessionV3CancelledBySink     = "its durable progress sink"
-	sessionV3CancelledByWatchdog = "worker execution tracking"
-	sessionV3CancelledUnrecorded = "an unrecorded cancel of the run's context"
-	sessionV3CancelledByOther    = "a context other than the run's own"
-)
-
-// sessionV3RunCancelledError names what cancelled a V3 run. It is the cause
-// recorded on the run's context and the error the run ends with; it unwraps
-// to the context error, so cancellation checks keep working.
-type sessionV3RunCancelledError struct {
-	By     string
-	Reason string
-	Err    error
-}
-
-func (e *sessionV3RunCancelledError) Error() string {
-	reason := strings.TrimSpace(e.Reason)
-	if reason == "" {
-		reason = "no reason given"
-	}
-	return "run cancelled by " + e.By + ": " + reason
-}
-
-func (e *sessionV3RunCancelledError) Unwrap() error {
-	if e.Err != nil {
-		return e.Err
-	}
-	return context.Canceled
-}
-
-func sessionV3StopCause(reason string) error {
-	return &sessionV3RunCancelledError{By: sessionV3CancelledByStop, Reason: strings.TrimSpace(reason)}
-}
-
-// nameRunCancellation returns err naming what cancelled the run when err is a
-// cancellation, and err unchanged otherwise. ctx is the run's context (or a
-// context derived from it); its recorded cause wins.
-func (e *sessionV3Executor) nameRunCancellation(ctx context.Context, err error) error {
-	if err == nil {
-		return nil
-	}
-	canceled := errors.Is(err, context.Canceled)
-	if !canceled && !errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-	var named *sessionV3RunCancelledError
-	if errors.As(err, &named) {
-		return err
-	}
-	var runNamed *runruntime.RunCancelledError
-	if errors.As(err, &runNamed) {
-		return err
-	}
-	if ctx != nil && ctx.Err() != nil {
-		cause := context.Cause(ctx)
-		if errors.As(cause, &named) {
-			return &sessionV3RunCancelledError{By: named.By, Reason: named.Reason, Err: err}
-		}
-		if (e != nil && e.ctx != nil && e.ctx.Err() != nil) || (e != nil && e.server != nil && e.server.isShuttingDown()) {
-			reason := "the executor's context ended"
-			if e.ctx != nil && e.ctx.Err() != nil {
-				reason += " (" + context.Cause(e.ctx).Error() + ")"
-			}
-			return &sessionV3RunCancelledError{By: sessionV3CancelledByShutdown, Reason: reason, Err: err}
-		}
-		return &sessionV3RunCancelledError{By: sessionV3CancelledUnrecorded, Reason: cause.Error(), Err: err}
-	}
-	if !canceled {
-		// A deadline that is not the run's: the error already says what.
-		return err
-	}
-	return &sessionV3RunCancelledError{By: sessionV3CancelledByOther, Reason: strings.TrimSpace(err.Error()) + " (the run's own context was not cancelled: it was not stopped, timed out or shut down)", Err: err}
 }
 
 func isSessionArchived(metadata map[string]any) bool {
@@ -644,7 +560,7 @@ func (e *sessionV3Executor) drainRefillPasses(ctx context.Context) {
 	}
 }
 
-func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel context.CancelCauseFunc) {
+func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel context.CancelFunc) {
 	if e == nil || cancel == nil {
 		return
 	}
@@ -662,13 +578,9 @@ func (e *sessionV3Executor) attachCancel(job sessionV3ExecutorJob, cancel contex
 	state.cancel = cancel
 	state.job = job
 	shouldCancel = state.canceled
-	cause := state.cause
-	if cause == nil {
-		cause = sessionV3StopCause(state.reason)
-	}
 	e.mu.Unlock()
 	if shouldCancel {
-		cancel(cause)
+		cancel()
 	}
 }
 
@@ -712,8 +624,7 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		return sessionruntime.SessionMutationResult{}, false, errors.New("session id and run id are required")
 	}
 	runKey := sessionV3ExecutorRunKey(job.SessionID, job.RunID)
-	var cancel context.CancelCauseFunc
-	cause := sessionV3StopCause(reason)
+	var cancel context.CancelFunc
 	tracked := false
 	e.mu.Lock()
 	if e.runStates == nil {
@@ -724,12 +635,11 @@ func (e *sessionV3Executor) CancelRun(job sessionV3ExecutorJob, reason string) (
 		tracked = true
 		state.canceled = true
 		state.reason = reason
-		state.cause = cause
 		cancel = state.cancel
 	}
 	e.mu.Unlock()
 	if cancel != nil {
-		cancel(cause)
+		cancel()
 	}
 	if e.server != nil && e.server.deployments != nil {
 		wsIDs := make(map[string]bool)
@@ -1067,13 +977,11 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if e.server == nil || e.server.sessions == nil {
 		return
 	}
-	runCtx, runCancel := context.WithCancelCause(ctx)
-	defer runCancel(nil)
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
 	e.attachCancel(job, runCancel)
 	if execution, err := e.server.workerExecutionService(); err == nil {
-		defer execution.TrackV3Execution(job.SessionID, func() {
-			runCancel(&sessionV3RunCancelledError{By: sessionV3CancelledByWatchdog, Reason: "the worker's execution was ended"})
-		})()
+		defer execution.TrackV3Execution(job.SessionID, runCancel)()
 	}
 	if e.startDelay > 0 {
 		select {
@@ -1215,7 +1123,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	select {
 	case <-runCtx.Done():
 		if !e.isRunCanceled(job) {
-			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped: "+e.nameRunCancellation(runCtx, runCtx.Err()).Error(), "session.run.failed")
+			_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
 		}
 		return
 	default:
@@ -1224,7 +1132,7 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 		select {
 		case <-runCtx.Done():
 			if !e.isRunCanceled(job) {
-				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped: "+e.nameRunCancellation(runCtx, runCtx.Err()).Error(), "session.run.failed")
+				_, _ = e.recordRunStatus(job, sessionruntime.RunIntentFailed, "executor stopped", "session.run.failed")
 			}
 			return
 		case <-time.After(e.modelDelay):
@@ -1241,13 +1149,11 @@ func (e *sessionV3Executor) run(ctx context.Context, job sessionV3ExecutorJob) {
 	if errors.Is(err, errSessionV3StaleProviderAttempt) {
 		response, job, err = e.staleCompactedAssistantResponse(runCtx, job, err)
 	}
-	err = e.nameRunCancellation(runCtx, err)
 	if err != nil {
 		if !e.isRunCanceled(job) {
 			if e.shouldTriggerContextOverflowCompaction(job, err) {
 				e.recordSessionV3ContextOverflowDecision(job, "assistant_response_error", err)
 				response, job, err = e.contextOverflowCompactedAssistantResponse(runCtx, job, err)
-				err = e.nameRunCancellation(runCtx, err)
 			}
 			if err != nil {
 				classification := sessionV3TerminalClassifier.Classify(TerminalClassifierInput{Err: err})
@@ -2814,15 +2720,11 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 	ctx = providerdiagnostics.ContextWithRecorder(ctx, func(_ context.Context, event providerdiagnostics.Event) {
 		e.recordSessionV3ProviderAPIDiagnostic(job, event)
 	})
-	streamCtx, cancelStreamCause := context.WithCancelCause(ctx)
-	defer cancelStreamCause(nil)
-	cancelStream := func() {
-		cancelStreamCause(&sessionV3RunCancelledError{By: sessionV3CancelledBySink, Reason: "the run's progress could not be recorded"})
-	}
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
 	if timeout := resolved.Limits.RunTimeoutMS; timeout > 0 {
-		limit := time.Duration(timeout) * time.Millisecond
 		var cancelDeadline context.CancelFunc
-		streamCtx, cancelDeadline = context.WithTimeoutCause(streamCtx, limit, &sessionV3RunCancelledError{By: sessionV3CancelledByTimeout, Reason: "the run took longer than " + limit.String(), Err: context.DeadlineExceeded})
+		streamCtx, cancelDeadline = context.WithTimeout(streamCtx, time.Duration(timeout)*time.Millisecond)
 		defer cancelDeadline()
 	}
 	var sink *sessionV3DurableProgressSink
@@ -2832,7 +2734,6 @@ func (e *sessionV3Executor) providerAssistantResponse(ctx context.Context, job s
 		sink = newSessionV3DurableProgressSink(e, job, cancelStream)
 	}
 	loopResult, err := e.runProviderToolLoop(streamCtx, job, resolved, runner, baseReq, sink, planContextGuard)
-	err = e.nameRunCancellation(streamCtx, err)
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer flushCancel()
 	closeErr := sink.CloseAndFlush(flushCtx)
