@@ -29,7 +29,7 @@ func (p *rootedWorkspacePath) openLocalMutationParent(create bool) (*os.File, st
 	}
 	for _, part := range parts[:len(parts)-1] {
 		created := false
-		fd, openErr := unix.Openat(int(dir.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		fd, openErr := openNoFollowDirAt(int(dir.Fd()), part)
 		if errors.Is(openErr, unix.ENOENT) && create {
 			mkdirErr := unix.Mkdirat(int(dir.Fd()), part, uint32(sharedDirMode.Perm()))
 			if mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
@@ -37,7 +37,7 @@ func (p *rootedWorkspacePath) openLocalMutationParent(create bool) (*os.File, st
 				return nil, "", mkdirErr
 			}
 			created = mkdirErr == nil
-			fd, openErr = unix.Openat(int(dir.Fd()), part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+			fd, openErr = openNoFollowDirAt(int(dir.Fd()), part)
 		}
 		dir.Close()
 		if openErr != nil {
@@ -52,6 +52,32 @@ func (p *rootedWorkspacePath) openLocalMutationParent(create bool) (*os.File, st
 		}
 	}
 	return dir, parts[len(parts)-1], nil
+}
+
+// openNoFollowDirAt opens one directory component without following a
+// symlink. Some runtimes (gVisor) follow a symlinked final component despite
+// O_NOFOLLOW when O_DIRECTORY is set, so the opened directory must also be the
+// very non-symlink entry named in its parent (same device and inode); a
+// followed symlink, or an entry swapped in between, is refused with ELOOP.
+func openNoFollowDirAt(dirfd int, name string) (int, error) {
+	fd, err := unix.Openat(dirfd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	var entry, opened unix.Stat_t
+	if err := unix.Fstatat(dirfd, name, &entry, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+	if err := unix.Fstat(fd, &opened); err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+	if entry.Mode&unix.S_IFMT != unix.S_IFDIR || entry.Dev != opened.Dev || entry.Ino != opened.Ino {
+		unix.Close(fd)
+		return -1, unix.ELOOP
+	}
+	return fd, nil
 }
 
 func (p *rootedWorkspacePath) openLocalMutationFile(flags int, perm fs.FileMode) (*os.File, error) {

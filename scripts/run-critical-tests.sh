@@ -95,11 +95,32 @@ run_swarmd_tests() {
   )
 }
 
-run_web_critical_tests() {
-  if [[ ! -d "${ROOT_DIR}/web/node_modules" ]]; then
-    echo "[critical/fast] FAIL: web/node_modules is missing; run 'cd web && corepack pnpm install --frozen-lockfile'" >&2
+# ensure_web_node_modules installs web dependencies once, from the pinned
+# lockfile, when a clean checkout has none. An existing web/node_modules is
+# used unchanged. --prefer-offline reuses a configured pnpm store when present.
+ensure_web_node_modules() {
+  local label="$1"
+  if [[ -d "${ROOT_DIR}/web/node_modules" ]]; then
+    return 0
+  fi
+  if ! command -v corepack > /dev/null 2>&1; then
+    echo "[critical/${label}] FAIL: web/node_modules is missing and corepack is unavailable; run 'cd web && corepack pnpm install --frozen-lockfile'" >&2
     return 1
   fi
+  echo "[critical/${label}] web/node_modules is missing; installing with 'corepack pnpm install --frozen-lockfile --prefer-offline'"
+  if ! (cd "${ROOT_DIR}/web" && corepack pnpm install --frozen-lockfile --prefer-offline); then
+    echo "[critical/${label}] FAIL: web dependency install failed; run 'cd web && corepack pnpm install --frozen-lockfile'" >&2
+    return 1
+  fi
+  if [[ ! -d "${ROOT_DIR}/web/node_modules" ]]; then
+    echo "[critical/${label}] FAIL: web dependency install did not create web/node_modules" >&2
+    return 1
+  fi
+  echo "[critical/${label}] installed web dependencies"
+}
+
+run_web_critical_tests() {
+  ensure_web_node_modules fast || return 1
   if [[ ! -f "${PNPM_LIB}" ]]; then
     echo "missing pnpm resolver script at ${PNPM_LIB}" >&2
     return 1
@@ -153,10 +174,7 @@ run_fast() {
 }
 
 run_agent_web_tests() {
-  if [[ ! -d "${ROOT_DIR}/web/node_modules" ]]; then
-    echo "[critical/agents] FAIL: web/node_modules is missing; run 'cd web && corepack pnpm install --frozen-lockfile'" >&2
-    return 1
-  fi
+  ensure_web_node_modules agents || return 1
   if [[ ! -f "${PNPM_LIB}" ]]; then
     echo "missing pnpm resolver script at ${PNPM_LIB}" >&2
     return 1

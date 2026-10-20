@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -73,6 +74,43 @@ func (r *Runtime) managedCommand(ctx context.Context, scope WorkspaceScope, b Ma
 	}
 	return result, nil
 }
+
+// managedCommandOutput runs a checkout command whose stdout is parsed. The
+// managed wrapper merges stderr into stdout and runs a login shell, so profile,
+// logout, locale or other shell-startup output can surround the payload. The
+// script's output is framed by per-call random markers and only the framed
+// region is returned; a missing or repeated frame fails closed.
+func (r *Runtime) managedCommandOutput(ctx context.Context, scope WorkspaceScope, b ManagedExecutionBinding, script string) (string, error) {
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	begin, end := managedFrameMarkers(hex.EncodeToString(nonce[:]))
+	framed := "printf '\\n%s\\n' " + managedQuote(begin) + "\n" + script + "\nprintf '\\n%s\\n' " + managedQuote(end)
+	result, err := r.managedCommand(ctx, scope, b, framed, true)
+	if err != nil {
+		return "", err
+	}
+	return managedFramedOutput(result.Stdout, begin, end)
+}
+
+func managedFrameMarkers(nonce string) (string, string) {
+	return "swarm-managed-begin-" + nonce, "swarm-managed-end-" + nonce
+}
+
+func managedFramedOutput(stdout, begin, end string) (string, error) {
+	open, closing := "\n"+begin+"\n", "\n"+end+"\n"
+	if strings.Count(stdout, open) != 1 || strings.Count(stdout, closing) != 1 {
+		return "", errors.New("managed operation returned no framed result")
+	}
+	_, rest, _ := strings.Cut(stdout, open)
+	payload, _, found := strings.Cut(rest, closing)
+	if !found {
+		return "", errors.New("managed operation returned no framed result")
+	}
+	return payload, nil
+}
+
 func (r *Runtime) prepareManagedCheckout(ctx context.Context, childID string) error {
 	scope, b, err := r.managedChildScope(childID)
 	if err != nil {
@@ -119,11 +157,11 @@ func (r *Runtime) CompleteManagedCheckout(ctx context.Context, childID string) e
 		return err
 	}
 	base := scope.WorktreeBaseCommit
-	result, err := r.managedCommand(ctx, scope, b, "test -z \"$(git status --porcelain --untracked-files=all)\"; git merge-base --is-ancestor "+managedQuote(base)+" HEAD; git rev-parse HEAD; git rev-list --objects --no-object-names "+managedQuote(base+"..HEAD")+" | git pack-objects --stdout | base64 -w0", true)
+	output, err := r.managedCommandOutput(ctx, scope, b, "test -z \"$(git status --porcelain --untracked-files=all)\"; git merge-base --is-ancestor "+managedQuote(base)+" HEAD; git rev-parse HEAD; git rev-list --objects --no-object-names "+managedQuote(base+"..HEAD")+" | git pack-objects --stdout | base64 -w0")
 	if err != nil {
 		return err
 	}
-	head, encoded, found := strings.Cut(result.Stdout, "\n")
+	head, encoded, found := strings.Cut(output, "\n")
 	head = strings.TrimSpace(head)
 	if !found || !validCommitID(head) || head == base {
 		return errors.New("managed Coder completed without a new commit")
@@ -181,11 +219,11 @@ func (r *Runtime) executeManagedFile(ctx context.Context, scope WorkspaceScope, 
 		}
 	}
 	script := managedFileGuard(rel) + "if test -e \"$p\"; then test -f \"$p\"; test \"$(stat -c %s -- \"$p\")\" -le 1048576; printf 'present\\n'; base64 -w0 -- \"$p\"; else printf 'absent\\n'; fi"
-	result, err := r.managedCommand(ctx, scope, b, script, true)
+	receipt, err := r.managedCommandOutput(ctx, scope, b, script)
 	if err != nil {
 		return "", err
 	}
-	state, encoded, ok := strings.Cut(result.Stdout, "\n")
+	state, encoded, ok := strings.Cut(receipt, "\n")
 	if !ok || (state != "present" && state != "absent") {
 		return "", errors.New("invalid managed file receipt")
 	}
@@ -239,11 +277,11 @@ func (r *Runtime) executeManagedFile(ctx context.Context, scope WorkspaceScope, 
 		}
 		// Bound each command argument below the OS argv string limit. The staging
 		// file is unique; traps remove it on any failed write or CAS.
-		staged, stageErr := r.managedCommand(ctx, scope, b, "mktemp .git/swarm-file.XXXXXXXX", true)
+		staged, stageErr := r.managedCommandOutput(ctx, scope, b, "mktemp .git/swarm-file.XXXXXXXX")
 		if stageErr != nil {
 			return "", stageErr
 		}
-		staging := strings.TrimSpace(staged.Stdout)
+		staging := strings.TrimSpace(staged)
 		if filepath.Dir(staging) != ".git" || !strings.HasPrefix(staging, ".git/swarm-file.") || strings.ContainsAny(staging, "\r\n ") {
 			return "", errors.New("invalid managed staging path")
 		}
