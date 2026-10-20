@@ -75,13 +75,14 @@ func TestSetupSDKTokensListsIDsWithoutSecrets(t *testing.T) {
 	}
 }
 
-// Requirement: the daemon refuses a key without an expiry, so swarmctl setup
-// sdk-token keeps its one-hour default but always sends it explicitly, for
-// every kind (session, monitor, AI and gateway keys), and refuses a lifetime
-// over its kind's CLI maximum before calling the daemon. Boundary:
+// Requirement: keys need no lifetime (they work while used and stop after 90
+// days unused), so swarmctl setup sdk-token sends none by default for every
+// kind (session, monitor, AI and bot keys); --expires-in-seconds is an
+// optional fixed end date, the same bound for every kind (60 seconds to 365
+// days), refused before calling the daemon when out of range. Boundary:
 // runSetupSDKToken payload construction. Narrowest layer: the CLI over a
 // socket fixture that records each mint request.
-func TestSetupSDKTokenAlwaysSendsAnExpiry(t *testing.T) {
+func TestSetupSDKTokenSendsNoLifetimeUnlessAFixedDateIsAsked(t *testing.T) {
 	var bodies []map[string]any
 	socket := setupFixture(t, func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -99,16 +100,15 @@ func TestSetupSDKTokenAlwaysSendsAnExpiry(t *testing.T) {
 		t.Fatalf("sent %d mint requests, want 4", len(bodies))
 	}
 	for i, body := range bodies {
-		if body["expires_in_seconds"] != float64(3600) {
-			t.Fatalf("request %d sent expires_in_seconds=%v, want the explicit 3600 default: %v", i, body["expires_in_seconds"], body)
+		if seconds, _ := body["expires_in_seconds"].(float64); seconds != 0 {
+			t.Fatalf("request %d sent expires_in_seconds=%v, want none: %v", i, body["expires_in_seconds"], body)
 		}
 	}
 	for _, args := range [][]string{
-		{"--expires-in-seconds", "86401"},
-		{"--agent", "frontdesk", "--expires-in-seconds", "2592001"},
+		{"--expires-in-seconds", "59"},
+		{"--agent", "frontdesk", "--expires-in-seconds", "31536001"},
 		{"--monitor", "--expires-in-seconds", "31536001"},
-		{"--ai-access", "read", "--expires-in-seconds", "31536001"},
-		{"--expires-in-seconds", "0"},
+		{"--ai-access", "read", "--expires-in-seconds", "-5"},
 	} {
 		var out bytes.Buffer
 		if err := runSetup(append([]string{"sdk-token", "--socket", socket}, args...), strings.NewReader(""), &out); err == nil {
@@ -116,7 +116,14 @@ func TestSetupSDKTokenAlwaysSendsAnExpiry(t *testing.T) {
 		}
 	}
 	if len(bodies) != 4 {
-		t.Fatalf("an over-limit lifetime reached the daemon: %v", bodies[4:])
+		t.Fatalf("an out-of-range date reached the daemon: %v", bodies[4:])
+	}
+	var out bytes.Buffer
+	if err := runSetup([]string{"sdk-token", "--socket", socket, "--agent", "frontdesk", "--expires-in-seconds", "15552000"}, strings.NewReader(""), &out); err != nil {
+		t.Fatalf("a 180-day bot key date was refused: %v", err)
+	}
+	if bodies[4]["expires_in_seconds"] != float64(15552000) {
+		t.Fatalf("fixed date not sent: %v", bodies[4])
 	}
 }
 

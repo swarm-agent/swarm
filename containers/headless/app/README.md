@@ -236,8 +236,8 @@ Claude Code on the web and routines.
 
 To watch the machine from a dashboard, mint a **monitor key**:
 `sudo -u swarm swarmctl setup sdk-token --monitor --name dashboard
---expires-in-seconds 31536000 > monitor.json` (a private file; the key is never
-printed). It reads `GET /v3/box/summary` (is the machine all right, does
+> monitor.json` (a private file; the key is never printed). Like every key it
+works while it is used and stops after 90 days unused. It reads `GET /v3/box/summary` (is the machine all right, does
 anything need a person) and `GET /v3/signals` (the event feed) on the same
 gateway and nothing else: no sessions, no setup. A key with `signals:write`
 lets a source on the machine, such as a host security monitor, report

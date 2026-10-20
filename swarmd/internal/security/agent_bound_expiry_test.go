@@ -15,7 +15,7 @@ import (
 // Purpose: an agent-bound token (gateway or operator) stored without an expiry
 // is refused when used, with a token.denied signal and one log line however
 // often it is tried; it is not revoked or changed. Other keys stored without an
-// expiry keep working (they are only warned about at start), and an agent-bound
+// expiry keep working (under the idle rule), and an agent-bound
 // token with an expiry still validates.
 // Threat: a gateway or operator token minted before agent-bound tokens had to
 // expire staying valid forever on an internet-facing host.
@@ -46,7 +46,7 @@ func TestAgentBoundTokenWithoutExpiryIsRefused(t *testing.T) {
 	sdk := put("tok_sdk_old", pebblestore.ScopedTokenRecord{})
 
 	for _, raw := range []string{gateway, gateway, operator} {
-		if record, err := svc.ValidateScopedToken(raw); err == nil || record != nil || !strings.Contains(err.Error(), "no expiry") {
+		if record, err := svc.ValidateScopedToken(raw); err == nil || record != nil || !strings.Contains(err.Error(), "predates key expiry") {
 			t.Fatalf("agent-bound token without expiry: record=%v err=%v", record, err)
 		}
 	}
@@ -55,10 +55,10 @@ func TestAgentBoundTokenWithoutExpiryIsRefused(t *testing.T) {
 			t.Fatalf("token %s refused: %v", raw, err)
 		}
 	}
-	if got := strings.Count(logs.String(), "refusing agent-bound token tok_gw_old"); got != 1 {
+	if got := strings.Count(logs.String(), "refusing bot key tok_gw_old"); got != 1 {
 		t.Fatalf("gateway refusal logged %d times, want once:\n%s", got, logs.String())
 	}
-	if !strings.Contains(logs.String(), "refusing agent-bound token tok_op_old") {
+	if !strings.Contains(logs.String(), "refusing bot key tok_op_old") {
 		t.Fatalf("operator refusal not logged:\n%s", logs.String())
 	}
 	page, err := feed.ListAfter(0, 100, pebblestore.SignalFilter{Account: account, KindPrefixes: []string{"token.denied"}})
@@ -67,7 +67,7 @@ func TestAgentBoundTokenWithoutExpiryIsRefused(t *testing.T) {
 	}
 	denied := map[string]bool{}
 	for _, sig := range page.Signals {
-		if sig.Attrs["reason"] == "agent-bound token has no expiry" {
+		if sig.Attrs["reason"] == "bot key predates key expiry" {
 			denied[sig.DedupKey] = true
 		}
 	}

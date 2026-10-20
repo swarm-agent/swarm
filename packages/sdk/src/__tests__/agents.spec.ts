@@ -23,6 +23,8 @@ test('gateway, operator and takeover calls use the reviewed wire shape', async (
   await agents.createOperatorToken('frontdesk', { expiresInSeconds: 3600 });
   assert.deepEqual(calls[0], ['POST', '/v3/auth/tokens', { name: 'frontdesk gateway', agent_name: 'frontdesk', expires_in_seconds: 3600, max_concurrent_runs: 2 }]);
   assert.deepEqual(calls[1], ['POST', '/v3/auth/tokens', { name: 'frontdesk operator', agent_name: 'frontdesk', operator: true, expires_in_seconds: 3600 }]);
+  await agents.createGatewayToken('frontdesk');
+  assert.deepEqual(calls.pop(), ['POST', '/v3/auth/tokens', { name: 'frontdesk gateway', agent_name: 'frontdesk', expires_in_seconds: undefined }]);
 
   assert.equal((await agents.takeOver('s/1', { clientRequestId: 'take-1' })).state, 'human');
   await agents.replyAsOperator('s/1', 'Hi, a person here.', { clientRequestId: 'reply-1' });

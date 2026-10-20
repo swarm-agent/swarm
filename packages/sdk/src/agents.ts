@@ -461,9 +461,10 @@ export class SwarmAgentsNamespace {
    * Mints the token a gateway holds to serve one sealed agent. It can only
    * create and use that agent's sessions and answer its client tool calls;
    * it stops working if the agent is given any built-in tool. Owner only.
-   * The daemon requires an expiry of at most 30 days (2592000 seconds).
+   * Like every key it works while used and stops after 90 days unused;
+   * expiresInSeconds adds an optional fixed end date (at most 365 days).
    */
-  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds: number } & GatewayTokenLimits): Promise<{ token: string; record: Record<string, unknown> }> {
+  async createGatewayToken(agentName: string, options: { name?: string; expiresInSeconds?: number } & GatewayTokenLimits = {}): Promise<{ token: string; record: Record<string, unknown> }> {
     const agent = toolName(agentName);
     const res = await this.transport.request<{ token: string; record: Record<string, unknown> }>('/v3/auth/tokens', {
       method: 'POST',
@@ -534,9 +535,10 @@ export class SwarmAgentsNamespace {
    * Mints the human-takeover token for one sealed agent: it can read that
    * agent's conversations, take one over (the agent stops replying), reply as a
    * person and hand it back. It cannot post as the visitor, start runs or answer
-   * tool calls. Owner only; the daemon requires an expiry of at most 30 days.
+   * tool calls. Owner only. Like every key it works while used and stops after
+   * 90 days unused; expiresInSeconds adds an optional fixed end date.
    */
-  async createOperatorToken(agentName: string, options: { name?: string; expiresInSeconds: number }): Promise<{ token: string; record: Record<string, unknown> }> {
+  async createOperatorToken(agentName: string, options: { name?: string; expiresInSeconds?: number } = {}): Promise<{ token: string; record: Record<string, unknown> }> {
     const agent = toolName(agentName);
     const res = await this.transport.request<{ token: string; record: Record<string, unknown> }>('/v3/auth/tokens', {
       method: 'POST',

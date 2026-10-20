@@ -266,7 +266,7 @@ the project**, then run without shell tracing:
 set -eu
 umask 077
 set -C
-docker exec swarm-headless swarmctl setup sdk-token --expires-in-seconds 3600 \
+docker exec swarm-headless swarmctl setup sdk-token \
   > "${SWARM_SDK_TOKEN_FILE:?choose a new private file outside the project}"
 )
 </copy>

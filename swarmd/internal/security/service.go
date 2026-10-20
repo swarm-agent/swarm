@@ -138,43 +138,45 @@ func (s *Service) AuditDenied(method, path, remoteAddr, reason, suppliedToken st
 	_, _ = s.events.Append("system:security", "security.attach.denied", "attach", payload, "", "")
 }
 
-// Lifetime bounds for keys an API caller mints (POST /v3/auth/tokens: client,
-// SDK, monitoring and AI keys, and gateway/operator tokens). Every such key
-// must expire; there is no default lifetime.
-const (
-	// ScopedTokenMaxLifetime caps client, SDK, monitoring and AI keys.
-	ScopedTokenMaxLifetime = 365 * 24 * time.Hour
-	// AgentBoundMaxLifetime caps gateway and operator tokens, which sit on
-	// internet-facing hosts.
-	AgentBoundMaxLifetime = 30 * 24 * time.Hour
-)
-
-// requireLifetime refuses a missing, zero, negative or over-limit lifetime.
-func requireLifetime(expiresIn, max time.Duration) error {
-	if expiresIn <= 0 {
-		return errors.New("an expiry is required: every key must expire")
+// checkFixedDate accepts an optional fixed end date: 0 means none (the key
+// lapses only from disuse, KeyIdleLimit); otherwise at most KeyFixedDateMax.
+func checkFixedDate(expiresIn time.Duration) error {
+	if expiresIn < 0 {
+		return errors.New("a fixed end date must be in the future")
 	}
-	if expiresIn > max {
-		return fmt.Errorf("a key of this kind expires within %d days at most", int64(max/(24*time.Hour)))
+	if expiresIn > KeyFixedDateMax {
+		return fmt.Errorf("a fixed end date is at most %d days away", int64(KeyFixedDateMax/(24*time.Hour)))
 	}
 	return nil
 }
 
-// CreateScopedToken mints a credential bound to a resource that owns its
-// lifecycle (a trigger worker's deploy token, the remote transport's device
-// token); expiresIn 0 means it lasts until revoked. Keys an API caller asks
-// for go through CreateScopedTokenUnder, which requires an expiry.
+// CreateScopedToken mints a key for a resource Swarm makes on the owner's
+// behalf (a trigger worker's key). Like every key it works while used and
+// lapses after KeyIdleLimit unused; expiresIn > 0 adds a fixed end date.
 func (s *Service) CreateScopedToken(name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
+	if err := checkFixedDate(expiresIn); err != nil {
+		return "", pebblestore.ScopedTokenRecord{}, err
+	}
 	return s.createScopedTokenRecord(nil, name, scopes, accountScopeID, userID, expiresIn, bindWorker(workerID, workerName))
 }
 
+// CreateInternalToken mints one of Swarm's own keys (the remote transport's
+// device key): it never lapses on its own and is revoked with the setup that
+// made it. It is never shown as a person's key.
+func (s *Service) CreateInternalToken(name string, scopes []string, accountScopeID, userID string) (string, pebblestore.ScopedTokenRecord, error) {
+	return s.createScopedTokenRecord(nil, name, scopes, accountScopeID, userID, 0, func(record *pebblestore.ScopedTokenRecord) {
+		record.Kind = KeyKindInternal
+	})
+}
+
 // CreateScopedTokenUnder mints a key an API caller asked for, on behalf of the
-// scoped token parent (nil: the owner). It must expire within
-// ScopedTokenMaxLifetime. A token never outlives its parent: its lifetime is
-// capped at the parent's, and it stops validating once the parent is revoked,
-// expired or deleted.
+// scoped token parent (nil: the owner). It works while used and lapses after
+// KeyIdleLimit unused; expiresIn > 0 adds a fixed end date (at most
+// KeyFixedDateMax). A token never outlives its parent: a parent's fixed date
+// caps the child's, and the child stops validating once the parent is
+// revoked, lapsed or deleted.
 func (s *Service) CreateScopedTokenUnder(parent *pebblestore.ScopedTokenRecord, name string, scopes []string, accountScopeID, userID string, expiresIn time.Duration, workerID, workerName string) (string, pebblestore.ScopedTokenRecord, error) {
-	if err := requireLifetime(expiresIn, ScopedTokenMaxLifetime); err != nil {
+	if err := checkFixedDate(expiresIn); err != nil {
 		return "", pebblestore.ScopedTokenRecord{}, err
 	}
 	return s.createScopedTokenRecord(parent, name, scopes, accountScopeID, userID, expiresIn, bindWorker(workerID, workerName))
@@ -203,9 +205,10 @@ type AgentBoundLimits struct {
 	Operator bool
 }
 
-// CreateAgentBoundToken mints a session token limited to one sealed agent's
-// sessions. The caller must have checked the agent is sealed. It must expire
-// within AgentBoundMaxLifetime.
+// CreateAgentBoundToken mints a bot key: a session token limited to one sealed
+// agent's sessions. The caller must have checked the agent is sealed. Like
+// every key it lapses after KeyIdleLimit unused; expiresIn > 0 adds a fixed
+// end date.
 func (s *Service) CreateAgentBoundToken(name, accountScopeID, userID string, expiresIn time.Duration, agentName string, limits AgentBoundLimits) (string, pebblestore.ScopedTokenRecord, error) {
 	return s.CreateAgentBoundTokenUnder(nil, name, accountScopeID, userID, expiresIn, agentName, limits)
 }
@@ -216,7 +219,7 @@ func (s *Service) CreateAgentBoundTokenUnder(parent *pebblestore.ScopedTokenReco
 	if strings.TrimSpace(agentName) == "" {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("agent name is required")
 	}
-	if err := requireLifetime(expiresIn, AgentBoundMaxLifetime); err != nil {
+	if err := checkFixedDate(expiresIn); err != nil {
 		return "", pebblestore.ScopedTokenRecord{}, err
 	}
 	if err := limits.validate(); err != nil {
@@ -316,13 +319,18 @@ func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord,
 	if s == nil || s.authStore == nil {
 		return "", pebblestore.ScopedTokenRecord{}, errors.New("auth store not configured")
 	}
-	if parent != nil && parent.ExpiresAt > 0 {
-		remaining := time.Until(time.UnixMilli(parent.ExpiresAt))
-		if remaining <= 0 {
+	if parent != nil {
+		if lapsed, _ := keyLapsed(*parent, time.Now().UnixMilli()); lapsed {
 			return "", pebblestore.ScopedTokenRecord{}, errors.New("the issuing key has expired")
 		}
-		if expiresIn <= 0 || expiresIn > remaining {
-			expiresIn = remaining
+		if date := fixedDate(*parent); date > 0 {
+			remaining := time.Until(time.UnixMilli(date))
+			if remaining <= 0 {
+				return "", pebblestore.ScopedTokenRecord{}, errors.New("the issuing key has expired")
+			}
+			if expiresIn <= 0 || expiresIn > remaining {
+				expiresIn = remaining
+			}
 		}
 	}
 	rawSecret, err := pebblestore.GenerateToken(32)
@@ -368,7 +376,11 @@ func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord,
 		UserID:         userID,
 		CreatedAt:      now,
 		ExpiresAt:      expiresAt,
+		ExpiryRule:     expiryRuleIdle,
 		Revoked:        false,
+	}
+	if expiresAt > 0 {
+		record.ExpiryRule = expiryRuleDate
 	}
 
 	bind(&record)
@@ -383,7 +395,16 @@ func (s *Service) createScopedTokenRecord(parent *pebblestore.ScopedTokenRecord,
 	return token, record, nil
 }
 
+// ValidateScopedToken checks a presented key without knowing where it came
+// from; see ValidateScopedTokenFrom.
 func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedTokenRecord, error) {
+	return s.ValidateScopedTokenFrom(rawToken, "")
+}
+
+// ValidateScopedTokenFrom checks a presented key and records its use from
+// source (where the request came from, KeySource; empty when unknown). A key
+// used from a place it has not been used from before raises key.new_address.
+func (s *Service) ValidateScopedTokenFrom(rawToken, source string) (*pebblestore.ScopedTokenRecord, error) {
 	if s == nil || s.authStore == nil {
 		return nil, nil
 	}
@@ -405,19 +426,24 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 		s.emitTokenDenied(record, "revoked")
 		return nil, errors.New("token has been revoked")
 	}
-	if record.ExpiresAt > 0 && time.Now().UnixMilli() >= record.ExpiresAt {
-		s.emitTokenDenied(record, "expired")
-		return nil, errors.New("token has expired")
-	}
-	if NeverExpires(record) && strings.TrimSpace(record.AgentName) != "" {
-		// Gateway and operator tokens sit on internet-facing hosts and are
-		// minted to expire within AgentBoundMaxLifetime; one stored without an
-		// expiry (minted before that rule) is refused, not trusted forever.
-		if _, logged := s.unexpiringAgentBoundLogged.LoadOrStore(record.ID, true); !logged {
-			log.Printf("swarmd: refusing agent-bound token %s (agent %q): it has no expiry; mint a new one, which expires within %d days", record.ID, record.AgentName, int(AgentBoundMaxLifetime/(24*time.Hour)))
+	now := time.Now().UnixMilli()
+	if lapsed, reason := keyLapsed(record, now); lapsed {
+		why := "expired: unused for 90 days"
+		if reason == "date" {
+			why = "expired: past its fixed end date"
 		}
-		s.emitTokenDenied(record, "agent-bound token has no expiry")
-		return nil, errors.New("agent-bound token has no expiry; mint a new one")
+		s.emitTokenDenied(record, why)
+		return nil, errors.New("key has " + why + "; make a new one")
+	}
+	if record.ExpiryRule == "" && record.ExpiresAt <= 0 && strings.TrimSpace(record.AgentName) != "" {
+		// A bot key stored without any expiry was minted before bot keys had
+		// to expire (2026-10-16) and has been refused since; it stays refused
+		// rather than coming back to life under the idle rule.
+		if _, logged := s.unexpiringAgentBoundLogged.LoadOrStore(record.ID, true); !logged {
+			log.Printf("swarmd: refusing bot key %s (agent %q): it predates key expiry; make a new one", record.ID, record.AgentName)
+		}
+		s.emitTokenDenied(record, "bot key predates key expiry")
+		return nil, errors.New("bot key predates key expiry; make a new one")
 	}
 	// Every ancestor must still be valid: revoking, deleting or expiring a key
 	// cuts off every key minted beneath it, however deep.
@@ -431,14 +457,24 @@ func (s *Service) ValidateScopedToken(rawToken string) (*pebblestore.ScopedToken
 		if err != nil {
 			return nil, err
 		}
-		if !found || parent.Revoked || (parent.ExpiresAt > 0 && time.Now().UnixMilli() >= parent.ExpiresAt) {
+		// A parent that is revoked, deleted or past its fixed date cuts its
+		// keys off; one that merely went unused does not (its keys keep their
+		// own clocks).
+		parentDate := fixedDate(parent)
+		if !found || parent.Revoked || (parentDate > 0 && now >= parentDate) {
 			s.emitTokenDenied(record, "issuing key no longer valid")
 			return nil, errors.New("the key that issued this token is no longer valid")
 		}
 		parentID = parent.ParentTokenID
 	}
 
-	_ = s.authStore.UpdateScopedTokenLastUsed(record.AccountScopeID, record.ID, time.Now().UnixMilli())
+	if isNew, err := s.authStore.UpdateScopedTokenUse(record.AccountScopeID, record.ID, now, source, maxKeySources); err == nil && isNew {
+		s.emitKeyNewSource(record, source)
+	}
+	record.LastUsedAt = now
+	if source != "" {
+		record.LastUsedFrom = source
+	}
 
 	return &record, nil
 }

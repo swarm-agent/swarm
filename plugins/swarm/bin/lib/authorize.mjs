@@ -29,10 +29,12 @@ async function readPrivateConfig(path) {
 
 // The caller must already have approval to issue a write key on this daemon and,
 // if requested, use sudo. This helper does not discover or grant owner authority.
-export async function authorizeConnection({ path, binary, sudo = false, seconds = 3600 }, run = ownerCommand) {
+// The key works while it is used and stops after 90 days unused; seconds > 0
+// adds a fixed end date (60 seconds to 365 days).
+export async function authorizeConnection({ path, binary, sudo = false, seconds = 0 }, run = ownerCommand) {
   if (process.platform === 'win32') throw Error('AI-key file authorization is not qualified on Windows.');
-  if (!isAbsolute(path) || !isAbsolute(binary) || !Number.isInteger(seconds) || seconds < 60 || seconds > 86400) {
-    throw Error('Use absolute config/swarmctl paths and a lifetime of 60–86400 seconds.');
+  if (!isAbsolute(path) || !isAbsolute(binary) || !Number.isInteger(seconds) || (seconds !== 0 && (seconds < 60 || seconds > 31536000))) {
+    throw Error('Use absolute config/swarmctl paths, and a fixed end date of 60–31536000 seconds or none.');
   }
   let snapshot, connection;
   try {
@@ -68,7 +70,8 @@ export async function authorizeConnection({ path, binary, sudo = false, seconds 
     started = true;
     let result;
     try {
-      const raw = await run(binary, sudo, ['setup', 'sdk-token', '--name', name, '--ai-access', 'write', '--expires-in-seconds', String(seconds)]);
+      const date = seconds > 0 ? ['--expires-in-seconds', String(seconds)] : [];
+      const raw = await run(binary, sudo, ['setup', 'sdk-token', '--name', name, '--ai-access', 'write', ...date]);
       result = JSON.parse(raw);
       // Keep a valid revocation ID even if the rest of the response is malformed.
       if (typeof result?.id === 'string' && /^[a-zA-Z0-9_-]{1,256}$/.test(result.id)) issuedID = result.id;

@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"swarm/packages/swarmd/internal/identity"
 	runruntime "swarm/packages/swarmd/internal/run"
 	"swarm/packages/swarmd/internal/sandbox"
+	"swarm/packages/swarmd/internal/security"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
@@ -220,6 +222,8 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	keys := s.boxKeys(account, now, raise)
+
 	exportState, hasOutbox := s.outboxState()
 	if hasOutbox && exportState.Failing {
 		raise(BoxStatusAttention, "the outbox cannot export: "+exportState.LastError)
@@ -244,6 +248,7 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 		"automations":     automations,
 		"workspaces":      s.boxWorkspaces(principal),
 		"usage":           usage,
+		"keys":            keys,
 		"signals":         signalFeed,
 		"outbox":          exportState,
 	})
@@ -397,4 +402,43 @@ func (s *Server) boxWorkspaces(principal identity.Principal) map[string]any {
 		}
 	}
 	return map[string]any{"total": len(entries), "names": names}
+}
+
+// boxKeys is the keys part of the summary: active keys by kind, keys that
+// stop working on their own within a week, and keys used from a new place in
+// the last day, which also raise attention.
+func (s *Server) boxKeys(account string, now time.Time, raise func(level, reason string)) map[string]any {
+	keys := map[string]any{"active": map[string]int{}, "stopping_soon": []map[string]any{}, "new_places": []map[string]any{}}
+	if s.security == nil {
+		return keys
+	}
+	records, err := s.security.ListScopedTokens(account)
+	if err != nil {
+		return keys
+	}
+	nowMs := now.UnixMilli()
+	active := map[string]int{}
+	stopping := []map[string]any{}
+	newPlaces := []map[string]any{}
+	for _, record := range records {
+		item := newScopedTokenListItem(record, nowMs)
+		if item.KeyKind == security.KeyKindInternal || item.State != "active" {
+			continue
+		}
+		active[item.KeyKind]++
+		if item.LapsesAt > 0 && item.LapsesAt-nowMs <= security.KeyExpiringNotice.Milliseconds() {
+			stopping = append(stopping, map[string]any{"id": record.ID, "name": record.Name, "kind": item.KeyKind, "stops_working_at": item.LapsesAt, "because": item.LapseReason})
+		}
+		if record.NewSourceAt > 0 && nowMs-record.NewSourceAt <= (24*time.Hour).Milliseconds() {
+			newPlaces = append(newPlaces, map[string]any{"id": record.ID, "name": record.Name, "kind": item.KeyKind, "from": record.LastUsedFrom, "at": record.NewSourceAt})
+		}
+	}
+	if len(stopping) > 0 {
+		raise(BoxStatusAttention, fmt.Sprintf("%d key(s) stop working within 7 days (swarm_list_keys)", len(stopping)))
+	}
+	if len(newPlaces) > 0 {
+		raise(BoxStatusAttention, fmt.Sprintf("%d key(s) used from a new place today; revoke any the person does not recognize (swarm_list_keys)", len(newPlaces)))
+	}
+	keys["active"], keys["stopping_soon"], keys["new_places"] = active, stopping, newPlaces
+	return keys
 }

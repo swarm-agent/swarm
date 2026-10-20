@@ -13,11 +13,19 @@ import (
 )
 
 type createScopedTokenRequest struct {
-	Name             string   `json:"name"`
-	Scopes           []string `json:"scopes"`
-	ExpiresInSeconds int64    `json:"expires_in_seconds,omitempty"`
-	WorkerID         string   `json:"worker_id,omitempty"`
-	WorkerName       string   `json:"worker_name,omitempty"`
+	// Kind, when given, must match the other fields: "ai" (ai_access), "bot"
+	// (agent_name) or "app" (scopes, monitor or a worker).
+	Kind   string   `json:"kind,omitempty"`
+	Name   string   `json:"name"`
+	Scopes []string `json:"scopes"`
+	// Monitor makes an app key that reads only the machine summary and the
+	// signal feed; scopes must then be empty.
+	Monitor bool `json:"monitor,omitempty"`
+	// ExpiresInSeconds is an optional fixed end date. Without one the key
+	// works while it is used and lapses after 90 days unused.
+	ExpiresInSeconds int64  `json:"expires_in_seconds,omitempty"`
+	WorkerID         string `json:"worker_id,omitempty"`
+	WorkerName       string `json:"worker_name,omitempty"`
 	// AgentName mints a token limited to one sealed agent's sessions; scopes
 	// and worker fields must then be empty.
 	AgentName         string `json:"agent_name,omitempty"`
@@ -35,27 +43,69 @@ type createScopedTokenRequest struct {
 	AIAccess string `json:"ai_access,omitempty"`
 }
 
-// scopedTokenListItem is a stored token as GET /v3/auth/tokens lists it, with
-// never_expires set on one stored without an expiry (minted before expiry was
-// required, or a trigger worker, remote transport or runner credential).
+// scopedTokenListItem is a stored key as GET /v3/auth/tokens lists it, with
+// what it is for and when it stops working on its own (security.KeyLapse).
 type scopedTokenListItem struct {
 	pebblestore.ScopedTokenRecord
-	NeverExpires bool `json:"never_expires,omitempty"`
+	KeyKind      string   `json:"key_kind"`
+	Options      []string `json:"options,omitempty"`
+	State        string   `json:"state"`
+	LapsesAt     int64    `json:"lapses_at,omitempty"`
+	LapseReason  string   `json:"lapse_reason,omitempty"`
+	FixedDate    bool     `json:"fixed_date,omitempty"`
+	NeverExpires bool     `json:"never_expires,omitempty"`
 }
 
-// requestedLifetime is the lifetime a mint request asks for. Every key an API
-// caller mints must expire: a missing, zero or negative expires_in_seconds is
-// refused, never defaulted, and so is one over the kind's maximum.
-func requestedLifetime(seconds int64, kind string, max time.Duration) (time.Duration, error) {
-	maxSeconds := int64(max / time.Second)
-	days := maxSeconds / 86400
-	if seconds <= 0 {
-		return 0, fmt.Errorf("expires_in_seconds is required: every key must expire (%s lasts at most %d days, %d seconds)", kind, days, maxSeconds)
+func newScopedTokenListItem(record pebblestore.ScopedTokenRecord, now int64) scopedTokenListItem {
+	at, reason := security.KeyLapse(record)
+	state := "active"
+	switch {
+	case record.Revoked:
+		state = "revoked"
+	case at > 0 && now >= at:
+		state = "expired"
+	}
+	return scopedTokenListItem{ScopedTokenRecord: record, KeyKind: security.KeyKind(record), Options: security.KeyOptions(record),
+		State: state, LapsesAt: at, LapseReason: reason, FixedDate: security.HasFixedDate(record), NeverExpires: security.NeverExpires(record)}
+}
+
+// requestedLifetime is a mint request's optional fixed end date: 0 (none,
+// the key lapses only after 90 days unused) or 1 second to 365 days.
+func requestedLifetime(seconds int64) (time.Duration, error) {
+	maxSeconds := int64(security.KeyFixedDateMax / time.Second)
+	if seconds < 0 {
+		return 0, errors.New("expires_in_seconds must be positive (a fixed end date) or left out (the key lapses after 90 days unused)")
 	}
 	if seconds > maxSeconds {
-		return 0, fmt.Errorf("%s lasts at most %d days: expires_in_seconds must be at most %d", kind, days, maxSeconds)
+		return 0, fmt.Errorf("a fixed end date is at most 365 days away: expires_in_seconds must be at most %d", maxSeconds)
 	}
 	return time.Duration(seconds) * time.Second, nil
+}
+
+// checkRequestedKind refuses a kind that does not match the request's fields.
+func checkRequestedKind(req createScopedTokenRequest) error {
+	kind := strings.ToLower(strings.TrimSpace(req.Kind))
+	derived := security.KeyKindApp
+	switch {
+	case strings.TrimSpace(req.AIAccess) != "":
+		derived = security.KeyKindAI
+	case strings.TrimSpace(req.AgentName) != "":
+		derived = security.KeyKindBot
+	}
+	if req.Monitor && (derived != security.KeyKindApp || len(req.Scopes) > 0 || req.WorkerID != "") {
+		return errors.New("monitor is an app key that reads status and signals only; it takes no scopes, worker, agent or AI access")
+	}
+	switch kind {
+	case "", derived:
+		return nil
+	case security.KeyKindAI:
+		return errors.New(`kind "ai" needs ai_access ("read", "write" or "full")`)
+	case security.KeyKindBot:
+		return errors.New(`kind "bot" needs agent_name (a sealed agent)`)
+	case security.KeyKindApp:
+		return errors.New(`kind "app" takes scopes or monitor, not ai_access or agent_name`)
+	}
+	return errors.New(`kind must be "ai", "app" or "bot"`)
 }
 
 // aiKeyScopes are the API scopes plus Swarm Control levels for an AI key.
@@ -119,8 +169,9 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items := make([]scopedTokenListItem, 0, len(tokens))
+		now := time.Now().UnixMilli()
 		for _, token := range tokens {
-			items = append(items, scopedTokenListItem{ScopedTokenRecord: token, NeverExpires: security.NeverExpires(token)})
+			items = append(items, newScopedTokenListItem(token, now))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     true,
@@ -139,14 +190,14 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		kind, maxLifetime := "a client key", security.ScopedTokenMaxLifetime
-		if strings.TrimSpace(req.AIAccess) != "" {
-			kind = "an AI key"
-		} else if strings.TrimSpace(req.AgentName) != "" {
-			// A gateway or operator token sits on an internet-facing host.
-			kind, maxLifetime = "an agent-bound token", security.AgentBoundMaxLifetime
+		if err := checkRequestedKind(req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
-		expiresIn, lifetimeErr := requestedLifetime(req.ExpiresInSeconds, kind, maxLifetime)
+		if req.Monitor {
+			req.Scopes = append([]string(nil), security.MonitorScopes...)
+		}
+		expiresIn, lifetimeErr := requestedLifetime(req.ExpiresInSeconds)
 		if lifetimeErr != nil {
 			writeError(w, http.StatusBadRequest, lifetimeErr)
 			return
@@ -197,7 +248,7 @@ func (s *Server) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     true,
 			"token":  rawToken,
-			"record": record,
+			"record": newScopedTokenListItem(record, time.Now().UnixMilli()),
 		})
 
 	default:

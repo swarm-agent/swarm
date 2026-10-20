@@ -180,11 +180,13 @@ await gateway.agents.converse(sessionId, text, handlers, { endUser: 'cust_8f2c' 
 ```sh
 docker exec -i swarm-sealed swarmctl setup sealed-agent --stdin < frontdesk.json
 (umask 077; docker exec swarm-sealed swarmctl setup sdk-token --agent frontdesk \
-   --name gateway --expires-in-seconds 2592000 > gateway-token.json)
+   --name gateway > gateway-token.json)
 ```
 
-The token is refused unless the agent is sealed, and it must expire within 30
-days (`--expires-in-seconds`, or `expiresInSeconds` in the SDK). When it creates
+The token is refused unless the agent is sealed. Like every key it works while
+the gateway uses it and stops after 90 days unused, so a running bot never
+needs it renewed (`--expires-in-seconds`, or `expiresInSeconds` in the SDK,
+adds an optional fixed end date). When it creates
 a session it may send only `agent_name`, `client_request_id`,
 `idempotency_key`, `title`, `mode`, `workspace_path`, `workspace_id`, `end_user`
 and `labels`; any other field is refused. Tool names cannot reuse built-in
@@ -194,22 +196,16 @@ real bash. In the SDK, `client.agents.defineClientTool`, `defineSealedAgent` and
 calls with `client.agents.serve(sessionId, handlers)`, or with `pendingCalls`,
 `answer` and `fail`.
 
-Every key minted over `POST /v3/auth/tokens` must expire. A request without
-`expires_in_seconds`, or with 0 or less, is refused with 400 (there is no
-default lifetime), and so is one over the kind's maximum: 30 days (2592000) for
-gateway and operator tokens, 365 days (31536000) for client, SDK, monitoring and
-AI keys. `swarmctl setup sdk-token` still defaults to one hour and always sends
-it; its own maxima are unchanged (1 day for session keys, 30 days with
-`--agent`, 365 days with `--monitor` or `--ai-access`). In the SDK the expiry is
-a required parameter of `createGatewayToken`, `createOperatorToken`
-(`expiresInSeconds`), `auth.createScopedToken` and `auth.createAIKey`
-(`expires_in_seconds`). A gateway or operator token stored before this rule
-is refused when used (a `token.denied` signal and one daemon log line): mint
-a new one. Other keys stored before this rule keep working until revoked: `GET /v3/auth/tokens` and `swarmctl setup sdk-tokens` mark them
-`"never_expires": true`, and at each start the daemon raises one
-`token.never_expires` warning signal per account listing their IDs. Nothing is
-revoked automatically. Trigger worker, remote transport and runner credentials
-are minted without an expiry by their own features and are marked the same way.
+Every key, of every kind (AI, app and bot keys), follows one rule: it works
+while it is used and stops after 90 days without use. `expires_in_seconds` is
+an optional fixed end date, the same for every kind (at most 365 days). A week
+before a key stops on its own Swarm raises `key.expiring`, and a key used from a
+place it has not been used from before raises `key.new_address`; `GET
+/v3/auth/tokens`, `swarmctl setup sdk-tokens`, the box summary and the MCP tool
+`swarm_list_keys` show each key's kind, state, last use, where from and when it
+stops. Keys stored before this rule move to it by themselves (a key made to be
+temporary, under 29 days, keeps its date). A gateway or operator token stored
+with no expiry at all (before 2026-10-16) stays refused: mint a new one.
 
 ## Confirmations
 
@@ -307,7 +303,7 @@ read the agent's conversations, take them over, reply and hand back:
 
 ```sh
 (umask 077; docker exec swarm-sealed swarmctl setup sdk-token --agent frontdesk --operator \
-   --name hub --expires-in-seconds 2592000 > operator-token.json)
+   --name hub > operator-token.json)
 ```
 
 In the SDK: `agents.createOperatorToken`, `takeOver`, `replyAsOperator`,

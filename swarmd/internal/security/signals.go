@@ -79,17 +79,46 @@ func (s *Service) emitTokenDenied(record pebblestore.ScopedTokenRecord, reason s
 	})
 }
 
-// NeverExpires reports whether a stored token has no expiry. Keys minted
-// before every API-minted key had to expire, and resource-bound credentials
-// (trigger worker, remote transport and runner tokens), are stored so.
+// NeverExpires reports whether a key never lapses on its own: only Swarm's
+// internal keys, which live as long as the setup that made them.
 func NeverExpires(record pebblestore.ScopedTokenRecord) bool {
-	return record.ExpiresAt <= 0
+	return KeyKind(record) == KeyKindInternal
 }
 
-// WarnNeverExpiringTokens raises one token.never_expires warning per account
-// that holds unrevoked tokens without an expiry, listing their ids, and
-// returns those ids. It revokes nothing: the owner decides.
-func (s *Service) WarnNeverExpiringTokens() ([]string, error) {
+func keySignalFields(record pebblestore.ScopedTokenRecord) (map[string]string, map[string]string) {
+	refs, attrs := tokenSignalFields(record)
+	attrs["kind"] = KeyKind(record)
+	return refs, attrs
+}
+
+// emitKeyNewSource raises key.new_address: a key was used from a place it had
+// not been used from before. A stolen key shows up here first.
+func (s *Service) emitKeyNewSource(record pebblestore.ScopedTokenRecord, source string) {
+	if s == nil || s.signals == nil {
+		return
+	}
+	refs, attrs := keySignalFields(record)
+	attrs["from"] = source
+	if len(record.SeenFrom) > 0 {
+		attrs["seen_from"] = strings.Join(record.SeenFrom, ", ")
+	}
+	name := firstNonEmptyString(record.Name, record.ID)
+	s.signals.Emit(pebblestore.Signal{
+		Kind:     "key.new_address",
+		Severity: pebblestore.SignalSeverityWarning,
+		Account:  record.AccountScopeID,
+		Summary:  fmt.Sprintf("Key %s (%s) was used from a new place: %s. If that was not you, revoke it.", name, attrs["kind"], source),
+		DedupKey: "key.new_address:" + record.ID + ":" + source,
+		Refs:     refs,
+		Attrs:    attrs,
+	})
+}
+
+// WarnExpiringKeys raises key.expiring, once per lapse, for every key that
+// stops working on its own within KeyExpiringNotice of now (it is going
+// unused, or its fixed end date is near), and returns their ids. It revokes
+// nothing.
+func (s *Service) WarnExpiringKeys(now time.Time) ([]string, error) {
 	if s == nil || s.authStore == nil {
 		return nil, errors.New("auth store not configured")
 	}
@@ -97,61 +126,40 @@ func (s *Service) WarnNeverExpiringTokens() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	byAccount := map[string][]string{}
-	var all []string
+	nowMs := now.UnixMilli()
+	var warned []string
 	for _, record := range records {
-		if record.Revoked || !NeverExpires(record) {
+		if record.Revoked {
 			continue
 		}
-		byAccount[record.AccountScopeID] = append(byAccount[record.AccountScopeID], record.ID)
-		all = append(all, record.ID)
-	}
-	sort.Strings(all)
-	if s.signals == nil {
-		return all, nil
-	}
-	accounts := make([]string, 0, len(byAccount))
-	for account := range byAccount {
-		accounts = append(accounts, account)
-	}
-	sort.Strings(accounts)
-	for _, account := range accounts {
-		ids := byAccount[account]
-		sort.Strings(ids)
-		listed := fitTokenIDs(ids, pebblestore.MaxSignalValueRunes)
-		s.signals.Emit(pebblestore.Signal{
-			Kind:     "token.never_expires",
-			Severity: pebblestore.SignalSeverityWarning,
-			Account:  account,
-			Summary:  fmt.Sprintf("%d key(s) never expire (swarmctl setup sdk-tokens marks them); revoke or replace them: %s", len(ids), listed),
-			DedupKey: "token.never_expires",
-			Attrs:    map[string]string{"token_ids": listed, "count": fmt.Sprint(len(ids))},
-		})
-	}
-	return all, nil
-}
-
-// fitTokenIDs joins ids within max runes, ending with "+N more" when they do
-// not all fit, so the signal never carries a cut-off id.
-func fitTokenIDs(ids []string, max int) string {
-	var b strings.Builder
-	for i, id := range ids {
-		sep := ""
-		if i > 0 {
-			sep = ","
+		at, reason := KeyLapse(record)
+		if at <= nowMs || at-nowMs > KeyExpiringNotice.Milliseconds() || record.ExpiringWarnedFor == at {
+			continue
 		}
-		// Room for this id, plus the "+N more" a later id might need.
-		reserve := 0
-		if rest := len(ids) - i - 1; rest > 0 {
-			reserve = len(fmt.Sprintf(" +%d more", rest))
+		warned = append(warned, record.ID)
+		if s.signals != nil {
+			refs, attrs := keySignalFields(record)
+			day := time.UnixMilli(at).UTC().Format("2006-01-02")
+			attrs["lapses_at"] = time.UnixMilli(at).UTC().Format(time.RFC3339)
+			attrs["reason"] = reason
+			why := "it has not been used for almost 90 days; any use keeps it working"
+			if reason == "date" {
+				why = "its fixed end date; make a replacement before then"
+			}
+			s.signals.Emit(pebblestore.Signal{
+				Kind:     "key.expiring",
+				Severity: pebblestore.SignalSeverityWarning,
+				Account:  record.AccountScopeID,
+				Summary:  fmt.Sprintf("Key %s (%s) stops working on %s: %s.", firstNonEmptyString(record.Name, record.ID), attrs["kind"], day, why),
+				DedupKey: fmt.Sprintf("key.expiring:%s:%d", record.ID, at),
+				Refs:     refs,
+				Attrs:    attrs,
+			})
 		}
-		if b.Len()+len(sep)+len(id)+reserve > max {
-			fmt.Fprintf(&b, " +%d more", len(ids)-i)
-			return b.String()
-		}
-		b.WriteString(sep + id)
+		_ = s.authStore.MarkScopedTokenExpiringWarned(record.AccountScopeID, record.ID, at)
 	}
-	return b.String()
+	sort.Strings(warned)
+	return warned, nil
 }
 
 func firstNonEmptyString(values ...string) string {

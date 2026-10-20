@@ -49,13 +49,57 @@ export interface ScopedTokenRecord {
   scopes: TokenScope[];
   worker_id?: string;
   worker_name?: string;
+  /** The fixed end date, when the key has one (milliseconds; 0 or absent: none). */
   expires_at?: number;
-  /** True for a key stored without an expiry (minted before every key had to expire, or a worker, remote or runner credential). It works until revoked. */
+  /** ai, app, bot or internal (Swarm's own keys). */
+  key_kind?: KeyKind | 'internal';
+  /** An AI key's level (read, write, full); a bot key's gateway or operator; an app key's monitor or trigger. */
+  options?: string[];
+  /** active, expired or revoked. */
+  state?: 'active' | 'expired' | 'revoked';
+  /** When the key stops working on its own (milliseconds): 90 days after its last use, or its fixed end date if sooner. */
+  lapses_at?: number;
+  /** unused (90 days without use) or date (its fixed end date). */
+  lapse_reason?: 'unused' | 'date';
+  /** True when the key carries a fixed end date. */
+  fixed_date?: boolean;
+  /** True only for Swarm's internal keys, which last as long as the setup that made them. */
   never_expires?: boolean;
   last_used_at?: number;
+  /** Where the key was last used from: "this machine", "tailnet LOGIN" or a network such as 203.0.113.0/24. */
+  last_used_from?: string;
+  /** Every place the key has been used from (newest last, bounded). */
+  seen_from?: string[];
   created_at: number;
   revoked?: boolean;
   revoked_at?: number;
+}
+
+/** The three kinds of key a person or their AI holds. */
+export type KeyKind = 'ai' | 'app' | 'bot';
+
+/**
+ * A key for createKey. Every key works while it is used and stops after 90
+ * days unused; expires_in_seconds adds an optional fixed end date (at most 365
+ * days). kind ai: access read, write or full. kind app: scopes, or monitor for
+ * a status-only key. kind bot: agent_name (a sealed agent), operator for the
+ * staff key, and its limits.
+ */
+export interface CreateKeyParams {
+  kind: KeyKind;
+  name: string;
+  access?: 'read' | 'write' | 'full';
+  scopes?: TokenScope[];
+  monitor?: boolean;
+  agent_name?: string;
+  operator?: boolean;
+  messages_per_minute?: number;
+  sessions_per_hour?: number;
+  max_concurrent_runs?: number;
+  end_user_messages_per_minute?: number;
+  end_user_sessions_per_hour?: number;
+  end_user_max_tokens_per_day?: number;
+  expires_in_seconds?: number;
 }
 
 export interface CreateScopedTokenParams {
@@ -63,8 +107,8 @@ export interface CreateScopedTokenParams {
   scopes: TokenScope[];
   worker_id?: string;
   worker_name?: string;
-  /** Required: every key expires, within 365 days (31536000 seconds). */
-  expires_in_seconds: number;
+  /** Optional fixed end date (at most 365 days). Without it the key works while used and stops after 90 days unused. */
+  expires_in_seconds?: number;
 }
 
 export interface CreateScopedTokenResult {

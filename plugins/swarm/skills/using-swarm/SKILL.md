@@ -229,6 +229,22 @@ Set one up only when the person asks for it or agrees to your offer.
 - `swarm_get_usage`: tokens and cost per model. Sign-in (subscription)
   providers show no metered cost; say so.
 
+## 9b. Keys
+
+Every key that reaches the box (AI keys like yours, app keys for programs and
+monitoring, bot keys for a public chat bot) works while it is used and stops
+after 90 days unused, or at a fixed end date if one was given. Nothing needs
+renewing.
+
+- `swarm_list_keys`: every key, its kind, when and where it was last used,
+  and when it stops on its own.
+- `swarm_revoke_key`: stop a key now (and every key made with it).
+- `swarm_create_key` (full keys): an app key (`access` sessions or monitor)
+  or a bot key (`agent`, `operator`), shown once.
+- `swarm_status` lists keys used from a new place today and keys stopping
+  within a week; the signals are `key.new_address` and `key.expiring`. Tell
+  the person about a new place and revoke the key if they do not recognize it.
+
 ## 10. Secrets
 
 `swarm_list_secrets` shows which secrets exist, the websites each may be sent

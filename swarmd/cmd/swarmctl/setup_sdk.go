@@ -13,24 +13,29 @@ import (
 	"strings"
 )
 
+// maxFixedDateSeconds is the furthest fixed end date a key may have (the
+// daemon's security.KeyFixedDateMax). Keys need none: they work while used and
+// stop after 90 days unused.
+const maxFixedDateSeconds = 365 * 86400
+
 func runSetupSDKToken(args []string, output io.Writer) error {
 	fs := flag.NewFlagSet("setup "+args[0], flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	socket := fs.String("socket", "", "private daemon Unix socket")
 	name := fs.String("name", "headless-sdk", "token name")
-	seconds := fs.Int64("expires-in-seconds", 3600, "token lifetime (60-86400 seconds)")
+	seconds := fs.Int64("expires-in-seconds", 0, "optional fixed end date, 60 to 31536000 seconds from now; without it the key works while it is used and stops after 90 days unused")
 	id := fs.String("id", "", "token record ID to revoke")
 	workers := fs.Bool("workers", false, "also allow creating, managing and tasking workers (Swarm Control worker tools)")
 	usageLimits := fs.Bool("usage-limits", false, "also allow changing the account's daily usage limits")
 	settings := fs.Bool("settings", false, "also allow changing agent role default models")
-	agent := fs.String("agent", "", "mint a gateway token limited to this sealed agent's sessions and client tool calls (lifetime up to 30 days)")
+	agent := fs.String("agent", "", "mint a bot key: a gateway token limited to this sealed agent's sessions and client tool calls")
 	messagesPerMinute := fs.Int("messages-per-minute", 0, "with --agent: most messages (model runs) the token may start per minute (default 120)")
 	sessionsPerHour := fs.Int("sessions-per-hour", 0, "with --agent: most new conversations per hour (default 300)")
 	maxConcurrentRuns := fs.Int("max-concurrent-runs", 0, "with --agent: most model runs the agent may have going at once across its conversations (default 4, at most 64)")
 	endUser := endUserLimitFlags(fs)
 	operator := fs.Bool("operator", false, "with --agent: mint the human-takeover key instead (read the agent's conversations, take one over, reply as a person, hand it back; starts no runs)")
-	aiAccess := fs.String("ai-access", "", "mint an AI key for Swarm Control (/mcp): read (default level for AI clients), write, or full (the AI runs this box: approvals, models, workers, custom agents, client keys); lifetime up to 365 days")
-	monitor := fs.Bool("monitor", false, "mint a read-only monitoring key: the machine summary and signal feed (signals:read) and nothing else; lifetime up to 365 days")
+	aiAccess := fs.String("ai-access", "", "mint an AI key for Swarm Control (/mcp): read (default level for AI clients), write, or full (the AI runs this box: approvals, models, workers, custom agents, client keys)")
+	monitor := fs.Bool("monitor", false, "mint a read-only monitoring key: the machine summary and signal feed (signals:read) and nothing else")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fs.SetOutput(output)
@@ -46,7 +51,6 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 	if revoke && strings.TrimSpace(*id) == "" {
 		return errors.New("--id is required")
 	}
-	maxSeconds := int64(86400)
 	if *operator && strings.TrimSpace(*agent) == "" {
 		return errors.New("--operator needs --agent")
 	}
@@ -54,7 +58,6 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 		if *workers || *usageLimits || *settings {
 			return errors.New("--agent tokens take no other authority")
 		}
-		maxSeconds = 30 * 86400
 	}
 	if endUser.set() && (strings.TrimSpace(*agent) == "" || *operator) {
 		return errors.New("--end-user-* limits need --agent (a gateway token)")
@@ -63,7 +66,6 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
 			return errors.New("--monitor keys take no other authority")
 		}
-		maxSeconds = 365 * 86400
 	}
 	if level := strings.TrimSpace(*aiAccess); level != "" {
 		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" {
@@ -72,11 +74,13 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 		if level != "read" && level != "write" && level != "full" {
 			return errors.New("--ai-access must be read, write or full")
 		}
-		maxSeconds = 365 * 86400
 	}
 	if !revoke {
-		if *seconds < 60 || *seconds > maxSeconds || strings.TrimSpace(*name) == "" {
-			return fmt.Errorf("token name and lifetime of 60-%d seconds required", maxSeconds)
+		if strings.TrimSpace(*name) == "" {
+			return errors.New("--name is required")
+		}
+		if *seconds != 0 && (*seconds < 60 || *seconds > maxFixedDateSeconds) {
+			return fmt.Errorf("--expires-in-seconds is a fixed end date of 60-%d seconds, or left out (the key then works until 90 days unused)", maxFixedDateSeconds)
 		}
 		// Token export is explicit, pipe/file only. Never display it in a terminal.
 		if f, ok := output.(*os.File); ok {
@@ -134,7 +138,6 @@ func runSetupSDKToken(args []string, output io.Writer) error {
 		if *workers || *usageLimits || *settings || strings.TrimSpace(*agent) != "" || strings.TrimSpace(*aiAccess) != "" {
 			return errors.New("--monitor keys take no other authority")
 		}
-		maxSeconds = 365 * 86400
 	}
 	if level := strings.TrimSpace(*aiAccess); level != "" {
 		// The daemon derives scopes and Swarm Control levels from the level.
@@ -291,6 +294,11 @@ func runSetupSDKTokens(args []string, output io.Writer) error {
 			LastUsedAt               int64    `json:"last_used_at"`
 			Revoked                  bool     `json:"revoked"`
 			NeverExpires             bool     `json:"never_expires"`
+			KeyKind                  string   `json:"key_kind"`
+			State                    string   `json:"state"`
+			LapsesAt                 int64    `json:"lapses_at"`
+			LapseReason              string   `json:"lapse_reason"`
+			LastUsedFrom             string   `json:"last_used_from"`
 		} `json:"tokens"`
 	}
 	if err := setupRequest(client, http.MethodGet, "/v3/auth/tokens", nil, &result); err != nil {
@@ -311,15 +319,22 @@ func runSetupSDKTokens(args []string, output io.Writer) error {
 		ExpiresAt                int64    `json:"expires_at"`
 		LastUsedAt               int64    `json:"last_used_at,omitempty"`
 		Revoked                  bool     `json:"revoked"`
-		// NeverExpires marks a key stored without an expiry (minted before
-		// every key had to expire, or a worker, remote or runner
-		// credential); it keeps working until revoked.
+		// KeyKind is ai, app, bot or internal; State is active, expired or
+		// revoked; LapsesAt is when the key stops on its own (LapseReason
+		// "unused": 90 days after its last use; "date": its fixed end date).
+		KeyKind      string `json:"key_kind,omitempty"`
+		State        string `json:"state,omitempty"`
+		LapsesAt     int64  `json:"lapses_at,omitempty"`
+		LapseReason  string `json:"lapse_reason,omitempty"`
+		LastUsedFrom string `json:"last_used_from,omitempty"`
+		// NeverExpires marks Swarm's own internal keys, which last as long
+		// as the setup that made them.
 		NeverExpires bool `json:"never_expires,omitempty"`
 	}
 	tokens := make([]listed, 0, len(result.Tokens))
 	for _, token := range result.Tokens {
 		item := listed{ID: token.ID, Name: token.Name, Kind: "scoped", Scopes: token.Scopes, CreatedAt: token.CreatedAt, ExpiresAt: token.ExpiresAt, LastUsedAt: token.LastUsedAt, Revoked: token.Revoked,
-			NeverExpires: token.NeverExpires}
+			NeverExpires: token.NeverExpires, KeyKind: token.KeyKind, State: token.State, LapsesAt: token.LapsesAt, LapseReason: token.LapseReason, LastUsedFrom: token.LastUsedFrom}
 		switch {
 		case token.AgentName != "" && token.AgentOperator:
 			item.Kind, item.Scopes = "operator:"+token.AgentName, nil

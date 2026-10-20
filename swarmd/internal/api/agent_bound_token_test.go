@@ -25,12 +25,13 @@ var lookupOrderSchema = map[string]any{
 	"additionalProperties": false,
 }
 
-// Purpose: a gateway token lives on an internet-facing host, so it must always
-// expire, within 30 days. A missing, zero, negative or longer lifetime is
-// refused at mint time with nothing created; 30 days exactly is accepted.
-// Boundary: Server.handleAuthTokens agent-bound branch and security.AgentBoundMaxLifetime.
+// Purpose: a bot key (gateway token) follows the same rule as every key: made
+// without a lifetime it works while used and stops after 90 days unused, so a
+// running bot never dies on a date; a fixed end date is optional and bounded
+// like every kind (a negative or over-365-day one is refused with nothing
+// created). Boundary: Server.handleAuthTokens agent-bound branch.
 // Narrowest layer: the owner-only mint handler with a real sealed agent.
-func TestAgentBoundTokenMustExpireWithinThirtyDays(t *testing.T) {
+func TestBotKeyWorksWhileUsedWithAnOptionalFixedDate(t *testing.T) {
 	s, _, _, cleanup := setupScopedAuthTestServer(t)
 	defer cleanup()
 	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "agent-bound-expiry"))
@@ -69,21 +70,24 @@ func TestAgentBoundTokenMustExpireWithinThirtyDays(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, body := range []string{
-		`{"name":"gw","agent_name":"frontdesk"}`,
-		`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":0}`,
 		`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":-60}`,
-		`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":2592001}`,
+		`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":31536001}`,
+		`{"name":"gw","kind":"app","agent_name":"frontdesk"}`,
 	} {
 		if code, _ := mint(body); code != http.StatusBadRequest {
-			t.Fatalf("minted a gateway token without a bounded expiry: %s -> %d", body, code)
+			t.Fatalf("minted a bot key from a bad request: %s -> %d", body, code)
 		}
 	}
 	if after, _ := s.security.ListScopedTokens(account); len(after) != len(before) {
 		t.Fatalf("a refused mint stored a token: %d -> %d", len(before), len(after))
 	}
-	code, record := mint(`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":2592000}`)
-	if code != http.StatusOK || record.ExpiresAt <= 0 {
-		t.Fatalf("30-day gateway token: %d expires_at=%d", code, record.ExpiresAt)
+	code, record := mint(`{"name":"gw","kind":"bot","agent_name":"frontdesk"}`)
+	if code != http.StatusOK || record.ExpiresAt != 0 || record.ExpiryRule != "idle" {
+		t.Fatalf("bot key without a date: %d %+v", code, record)
+	}
+	code, record = mint(`{"name":"gw","agent_name":"frontdesk","expires_in_seconds":15552000}`)
+	if code != http.StatusOK || record.ExpiresAt <= 0 || record.ExpiryRule != "date" {
+		t.Fatalf("bot key with a 180-day date: %d %+v", code, record)
 	}
 }
 

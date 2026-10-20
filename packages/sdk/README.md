@@ -399,8 +399,11 @@ console.log(`Authenticated as user ${session.user_id}`);
 const { token, record } = await client.auth.createScopedToken({
   name: 'GitHub Actions Trigger',
   scopes: ['automations:trigger'],
-  expires_in_seconds: 86400, // required: every key expires (at most 365 days)
 });
+// Every key works while it is used and stops after 90 days unused; nothing to
+// renew. Pass expires_in_seconds only for a fixed end date (at most 365 days).
+// client.auth.createKey({ kind: 'app' | 'bot' | 'ai', ... }), listKeys() and
+// revokeKey(id) cover all three kinds.
 console.log(`Created deploy token: ${token} (hint: ${record.token_hint})`);
 
 // List active tokens

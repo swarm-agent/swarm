@@ -853,10 +853,10 @@ func controlMCPTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_create_client_key", Title: "Create a key for a client app",
-			Description: "Mint a key that a client app (for example a UI you build) uses over this box's HTTP API to start sessions, read them, send messages, stop runs and answer permission requests. It reaches those session routes only (never /mcp, settings, agents or keys). Shown once; keep it in a server process, never in browser code.",
+			Description: "Same as swarm_create_key kind app (prefer that): a key a client app (for example a UI you build) uses over this box's HTTP API to start sessions, read them, send messages, stop runs and answer permission requests. It reaches those session routes only (never /mcp, settings, agents or keys). It works while used and stops after 90 days unused. Shown once; keep it in a server process, never in browser code.",
 			InputSchema: controlMCPObject([]string{"name"}, map[string]any{
 				"name": controlMCPStringProp("What the key is for, e.g. my-chat-ui.", 1, 64),
-				"days": map[string]any{"type": "integer", "enum": controlMCPClientKeyDays, "description": "Lifetime in days. Default 30."},
+				"days": map[string]any{"type": "integer", "enum": controlMCPClientKeyDays, "description": "Optional fixed end date in days. Leave it out: the key works until 90 days unused."},
 			}),
 			Annotations: controlMCPWrites, call: controlMCPCreateClientKey,
 		},
@@ -891,7 +891,7 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
 		controlMCPClaudeCodeTool(),
-	}, append(append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...), controlMCPAutomationTools()...)...)
+	}, append(append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...), append(controlMCPAutomationTools(), controlMCPKeyTools()...)...)...)
 }
 
 // ---- sessions ------------------------------------------------------------

@@ -108,8 +108,6 @@ LOCAL_APP_ORIGIN=http://127.0.0.1:8443
 LOCAL_MCP_URL=http://127.0.0.1:7783/mcp
 # Revocation IDs of the AI keys connect-ai gave each person (root-only).
 AI_KEY_IDS=$STATE/ai-keys
-# AI keys from connect-ai last a year; run it again to replace one.
-AI_KEY_SECONDS=31536000
 
 # The earlier layout ran Swarm itself inside a container; reinstall/uninstall
 # remove what it left behind.
@@ -2000,8 +1998,9 @@ mint_ai_key() {
   idfile=$AI_KEY_IDS/$who
   [[ -f $idfile ]] && old_id=$(<"$idfile")
   tmp=$(mktemp "$AI_KEY_IDS/.mint.XXXXXX")
-  if ! "$SWARMCTL" setup sdk-token --ai-access "$access" --name "local-ai-$who" \
-    --expires-in-seconds "$AI_KEY_SECONDS" >"$tmp"; then
+  # The key works while the AI uses it and stops after 90 days unused; nothing
+  # renews it. connect-ai again replaces it.
+  if ! "$SWARMCTL" setup sdk-token --ai-access "$access" --name "local-ai-$who" >"$tmp"; then
     rm -f "$tmp"
     die "no AI key was made; if Swarm made one anyway it shows under AI keys on the setup page"
   fi
@@ -2016,7 +2015,7 @@ mint_ai_key() {
     "$SWARMCTL" setup revoke-sdk-token --id "$old_id" >/dev/null ||
       echo "warning: could not revoke $who's previous AI key (id $old_id); revoke it on the setup page" >&2
   fi
-  echo "Made a $access AI key for $who in ~/.config/swarm/ai-key (only $who can read it; valid for a year)."
+  echo "Made a $access AI key for $who in ~/.config/swarm/ai-key (only $who can read it; it works while used and stops after 90 days unused)."
 }
 
 connect_ai() {

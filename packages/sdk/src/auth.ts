@@ -2,6 +2,7 @@ import { SwarmCredentialsNamespace, SwarmCodexAuthNamespace } from './provider-a
 import { SwarmSettingsNamespace } from './settings.js';
 import type { SwarmTransport } from './transport.js';
 import type {
+  CreateKeyParams,
   CreateScopedTokenParams,
   CreateScopedTokenResult,
   DesktopSessionBootstrap,
@@ -55,7 +56,8 @@ export class SwarmAuthNamespace {
 
   /**
    * Creates a new scoped deploy token with granular permission scopes.
-   * `expires_in_seconds` is required: every key expires, within 365 days.
+   * Every key works while it is used and stops after 90 days unused;
+   * `expires_in_seconds` adds an optional fixed end date (at most 365 days).
    * Returns the plaintext token (prefixed with 'swk_') along with the token record.
    * Store the token securely—it cannot be retrieved again in plaintext!
    */
@@ -80,10 +82,11 @@ export class SwarmAuthNamespace {
    * their own browser); neither may approve tool calls or manage anything. `full`
    * keys are for an AI the owner trusts to run the box: they also approve
    * tool calls and manage models, workers, limits, custom agents and client app
-   * keys. Every level reaches only `/mcp`. `expires_in_seconds` is
-   * required (at most 365 days, 31536000 seconds); there is no default. Owner only.
+   * keys. Every level reaches only `/mcp`. The key works while it is used and
+   * stops after 90 days unused; `expires_in_seconds` adds an optional fixed
+   * end date (at most 365 days). Owner only.
    */
-  async createAIKey(params: { name: string; access: 'read' | 'write' | 'full'; expires_in_seconds: number }): Promise<CreateScopedTokenResult> {
+  async createAIKey(params: { name: string; access: 'read' | 'write' | 'full'; expires_in_seconds?: number }): Promise<CreateScopedTokenResult> {
     const res = await this.transport.request<CreateScopedTokenResult>('/v3/auth/tokens', {
       method: 'POST',
       body: { name: params.name, ai_access: params.access, expires_in_seconds: params.expires_in_seconds },
@@ -100,6 +103,32 @@ export class SwarmAuthNamespace {
       method: 'GET',
     });
     return res.data?.tokens ?? [];
+  }
+
+  /**
+   * Makes a key of one of the three kinds (see CreateKeyParams) and returns it
+   * once with its record (key_kind, lapses_at, lapse_reason). Owner only.
+   */
+  async createKey(params: CreateKeyParams): Promise<CreateScopedTokenResult> {
+    const { kind, name, access, expires_in_seconds, ...rest } = params;
+    const body: Record<string, unknown> = { kind, name, ...rest };
+    if (kind === 'ai') body.ai_access = access;
+    if (expires_in_seconds !== undefined) body.expires_in_seconds = expires_in_seconds;
+    const res = await this.transport.request<CreateScopedTokenResult>('/v3/auth/tokens', { method: 'POST', body });
+    return res.data;
+  }
+
+  /**
+   * Every key that reaches this box, with its kind, state, last use and where
+   * from, and when it stops working on its own. Owner only.
+   */
+  async listKeys(): Promise<ScopedTokenRecord[]> {
+    return this.listScopedTokens();
+  }
+
+  /** Stops a key working now, and every key made with it. Owner only. */
+  async revokeKey(keyId: string): Promise<ScopedTokenRecord> {
+    return this.revokeScopedToken(keyId);
   }
 
   /**

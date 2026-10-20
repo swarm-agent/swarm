@@ -27,7 +27,7 @@ test('private handoff uses write scope, preserves revocation ID and refuses dupl
   const result = await authorizeConnection({ ...input, sudo: true }, run);
   assert.equal(JSON.stringify(result).includes(token), false);
   assert.equal(calls.length, 2);
-  assert.deepEqual(calls[1][2].slice(4), ['--ai-access', 'write', '--expires-in-seconds', '3600']);
+  assert.deepEqual(calls[1][2].slice(4), ['--ai-access', 'write']);
   assert.equal(calls.every(c => c[0] === input.binary && c[1] === true), true);
   const config = JSON.parse(await readFile(input.path, 'utf8'));
   assert.equal(config.url, 'https://swarm.example/mcp');

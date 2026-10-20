@@ -24,7 +24,7 @@ func (s *Server) ContainerSDKHandler() http.Handler {
 			writeError(w, http.StatusUnauthorized, errors.New("scoped bearer token required"))
 			return
 		}
-		rec, err := s.security.ValidateScopedToken(auth[1])
+		rec, err := s.security.ValidateScopedTokenFrom(auth[1], keySource(r))
 		if err != nil || rec == nil || rec.UserID == "" || rec.AccountScopeID == "" {
 			writeError(w, http.StatusUnauthorized, errors.New("invalid scoped bearer token"))
 			return

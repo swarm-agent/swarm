@@ -4410,7 +4410,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 						return
 					}
 				}
-				if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+				if scopedRec, scopedErr := s.security.ValidateScopedTokenFrom(token, keySource(r)); scopedErr != nil {
 					writeError(w, http.StatusUnauthorized, scopedErr)
 					return
 				} else if scopedRec != nil {
@@ -4453,7 +4453,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		if scopedRec, scopedErr := s.security.ValidateScopedToken(token); scopedErr != nil {
+		if scopedRec, scopedErr := s.security.ValidateScopedTokenFrom(token, keySource(r)); scopedErr != nil {
 			writeError(w, http.StatusUnauthorized, scopedErr)
 			return
 		} else if scopedRec != nil {

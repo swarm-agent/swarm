@@ -557,13 +557,6 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	mcpSvc := mcpruntime.NewService(pebblestore.NewMCPStore(store), events)
 	securitySvc := security.NewService(pebblestore.NewClientAuthStoreWithSecretStore(store, secretStore), events)
 	securitySvc.SetSignalEmitter(signalEmitter)
-	// Keys stored without an expiry keep working (agent-bound ones are refused
-	// when used); the owner is told which.
-	if ids, err := securitySvc.WarnNeverExpiringTokens(); err != nil {
-		log.Printf("swarmd could not check stored keys for missing expiry: %v", err)
-	} else if len(ids) > 0 {
-		log.Printf("swarmd: %d stored key(s) never expire: %s", len(ids), strings.Join(ids, ", "))
-	}
 	voiceSvc := voice.NewService(
 		pebblestore.NewVoiceStore(store),
 		voice.NewWhisperLocalAdapter(),
@@ -1141,6 +1134,7 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	startV3SessionRetention(bgCtx, sessionSvc)
 	startAgentSessionRetention(bgCtx, apiServer)
 	startMediaStagingCleanup(bgCtx, mediaStagingSvc)
+	startKeyExpiryWarnings(bgCtx, securitySvc)
 	startArtifactMaintenance(bgCtx, artifactRegistry)
 	startVideoRenderRecovery(bgCtx, videoRenderSvc)
 	startMintReport(bgCtx, swarmSvc)
