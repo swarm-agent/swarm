@@ -21,11 +21,19 @@ import (
 // controlMCPKeyProviders reads /v1/providers and returns every provider id,
 // with whether it takes an API key.
 func (c *controlMCPCall) controlMCPKeyProviders() (map[string]map[string]any, error) {
+	out, _, err := c.controlMCPProviderAuth()
+	return out, err
+}
+
+// controlMCPProviderAuth is controlMCPKeyProviders plus each provider's
+// advertised credential types, from which its connect method is derived.
+func (c *controlMCPCall) controlMCPProviderAuth() (map[string]map[string]any, map[string][]string, error) {
 	response, err := c.dispatch(http.MethodGet, "/v1/providers", nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	out := map[string]map[string]any{}
+	authTypes := map[string][]string{}
 	for _, raw := range controlMCPList(response["providers"]) {
 		provider := controlMCPMap(raw)
 		id, _ := provider["id"].(string)
@@ -33,15 +41,31 @@ func (c *controlMCPCall) controlMCPKeyProviders() (map[string]map[string]any, er
 			continue
 		}
 		acceptsKey := false
+		types := []string{}
 		for _, method := range controlMCPList(provider["auth_methods"]) {
-			if kind, _ := controlMCPMap(method)["credential_type"].(string); kind == "api" {
+			kind, _ := controlMCPMap(method)["credential_type"].(string)
+			if kind == "api" {
 				acceptsKey = true
+			}
+			if kind != "" {
+				types = append(types, kind)
 			}
 		}
 		ready, _ := provider["ready"].(bool)
 		out[id] = map[string]any{"provider": id, "ready": ready, "accepts_api_key": acceptsKey}
+		authTypes[id] = types
 	}
-	return out, nil
+	return out, authTypes, nil
+}
+
+// controlMCPRunsAgents reports whether provider has a registered runner, so
+// it can serve agent turns (web search providers, for example, cannot).
+func (c *controlMCPCall) controlMCPRunsAgents(provider string) bool {
+	if c.server == nil || c.server.providers == nil {
+		return false
+	}
+	runner, ok := c.server.providers.GetRunner(provider)
+	return ok && runner != nil
 }
 
 func controlMCPVerification(connection *auth.ConnectionStatus) (string, string) {
@@ -102,7 +126,7 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 		}
 		c.waitForKeyRequest(principal.AccountScopeID, only, seconds)
 	}
-	providers, err := c.controlMCPKeyProviders()
+	providers, authTypes, err := c.controlMCPProviderAuth()
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +156,7 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 	sort.Strings(ids)
 	out := make([]map[string]any, 0, len(ids))
 	anyReady := false
+	options := []string{}
 	for _, id := range ids {
 		entry := providers[id]
 		if _, ok := entry["stored_credentials"]; !ok {
@@ -140,17 +165,28 @@ func controlMCPListProviders(c *controlMCPCall, args map[string]any) (any, error
 		if outcome := c.server.providerKeys.outcome(principal.AccountScopeID, id); outcome != nil {
 			entry["key_request"] = outcome
 		}
-		if ready, _ := entry["ready"].(bool); ready {
+		ready, _ := entry["ready"].(bool)
+		if ready {
 			anyReady = true
+		}
+		// Only a provider the registry advertises can be connected; a stored
+		// credential for an unregistered one gets no connect method.
+		if types, advertised := authTypes[id]; advertised {
+			runsAgents := c.controlMCPRunsAgents(id)
+			entry["runs_agents"] = runsAgents
+			if !ready {
+				connect := controlMCPProviderConnect(id, types, runsAgents, c.levelAllows)
+				entry["connect"] = connect
+				if runsAgents {
+					options = append(options, controlMCPConnectSummary(id, connect))
+				}
+			}
 		}
 		out = append(out, entry)
 	}
 	result := map[string]any{"providers": out}
 	if only == "" && !anyReady {
-		result["next"] = "No provider is connected yet: the person adds one on Swarm's setup page or by script on the machine (install.sh key PROVIDER)."
-		if c.levelAllows("swarm_connect_chatgpt") {
-			result["next"] = "No provider is connected yet: first offer the person to sign in with their ChatGPT plan (swarm_connect_chatgpt action start; give them the link and code at once, then action status until success); an API key, on Swarm's setup page or by script on the machine (install.sh key PROVIDER), is the alternative."
-		}
+		result["next"] = controlMCPNoProviderNext(options)
 	}
 	return result, nil
 }

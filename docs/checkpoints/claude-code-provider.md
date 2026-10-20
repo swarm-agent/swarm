@@ -9,6 +9,8 @@ Swarm can run turns through the Claude Code CLI installed on the daemon's machin
 3. If `claude` is not on the daemon's `PATH`, set `SWARM_CLAUDE_CODE_CLI_PATH` in the daemon's environment to the executable.
 4. In Settings > Auth, choose **Claude Code**, then **Claude Code CLI login**, then **Save and make active**. This enables the provider for your Swarm account. Each account opts in separately, and the record holds no secrets.
 
+On a headless box from `install.sh`, the daemon runs as the `swarm` user (home `/var/lib/swarm`), so step 2 is `sudo -u swarm -H claude auth login`, and step 4 is on the setup page: provider `claudecode`, key type **Claude Code CLI login** (the key field is not used for this type). Swarm has no MCP tool, `swarmctl` command or installer command for this sign-in or for the account opt-in; the person does both themselves. `swarm_list_providers` returns these steps in the provider's `connect` field, next to the other options (ChatGPT sign-in, API keys, Vertex AI).
+
 Swarm checks readiness with `claude --version` and `claude auth status`. The provider status shows the result.
 
 ## How a turn runs

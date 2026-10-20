@@ -51,23 +51,77 @@ Other machines reach the box over the tailnet ([connection.md](connection.md),
 
 ## A model provider
 
-`swarm_list_providers` shows which providers are ready. If none is, first offer
-the person to sign in with their ChatGPT plan: `swarm_connect_chatgpt` with
-action `start` returns a link and a one-time code. Give both to the person at
-once; they approve in their own browser. Then call action `status` with the
-`login_id` and `wait_seconds` until it reports `success`. Never reuse a code
-from an earlier attempt; on `error`, start again. The same sign-in by script
-on the machine prints the link and code and waits until it is approved:
+`swarm_list_providers` shows which providers are ready; each one that is not
+has a `connect` field with the exact steps for this connection. If none is
+ready, ask the person which they have, present all of these options in one
+short list with what each needs, and follow their choice:
+
+| Option | Provider | What it needs |
+| --- | --- | --- |
+| ChatGPT plan | `codex` | A ChatGPT plan; the person signs in in their own browser. |
+| Claude plan through Claude Code | `claudecode` | Claude Code 2.1.248+ on this machine, signed in by the person as Swarm's user. |
+| API key | `anthropic`, `openai`, `google`, `openrouter`, `fireworks` | A key the person adds themselves. |
+| Vertex AI | `vertex` | A Google Cloud identity on this machine with `roles/aiplatform.user`. |
+
+Never ask for a key in chat, and never handle Claude credentials. Tokens and
+keys stay in Swarm's credential store. Once a provider is ready, Swarm gives
+every role its recommended model; do not overwrite them with fixed models.
+
+### ChatGPT plan
+
+`swarm_connect_chatgpt` with action `start` returns a link and a one-time
+code. Give both to the person at once; they approve in their own browser. Then
+call action `status` with the `login_id` and `wait_seconds` until it reports
+`success`. Never reuse a code from an earlier attempt; on `error`, start
+again. The same sign-in by script on the machine prints the link and code and
+waits until it is approved:
 
 ```sh
 sudo swarmctl setup codex-login --timeout 15m
 ```
 
-The alternative is an API key the person adds themselves: on the setup page,
-or `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
-Never ask for a key in chat. Tokens and keys stay in Swarm's credential store.
-Swarm then gives every role its recommended model; do not overwrite them with
-fixed models.
+### Claude Code
+
+Swarm runs the person's own signed-in Claude Code CLI and never sees, stores
+or forwards Claude credentials. There is no Swarm tool or installer command
+for this sign-in; the person does all three steps:
+
+1. Install Claude Code 2.1.248 or later where Swarm's daemon finds it: on its
+   `PATH` (for example `/usr/local/bin`), or named by
+   `SWARM_CLAUDE_CODE_CLI_PATH` in the daemon's environment.
+2. Sign in as the OS user that runs Swarm. On the box that user is `swarm`:
+
+   ```sh
+   sudo -u swarm -H claude auth login
+   ```
+
+3. Turn it on for their Swarm account on the setup page: provider
+   `claudecode`, key type **Claude Code CLI login**. That record holds no
+   secret; the page's key field is not used for this type (type any word,
+   never a real key).
+
+### API key
+
+The person adds it on the setup page, or, as the first provider, by script on
+the machine:
+
+```sh
+sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file
+```
+
+With a full AI key, `swarm_request_provider_key` gives them a one-time link to
+paste it on instead.
+
+### Vertex AI
+
+Only on a machine with a Google Cloud identity (its attached service account,
+or `GOOGLE_APPLICATION_CREDENTIALS`). No key is stored:
+
+```sh
+sudo swarmctl setup credential --provider vertex --project PROJECT
+```
+
+(`setup add-credential` adds it next to an existing provider.)
 
 This signs Swarm into a model provider. It does not grant an MCP client access,
 create an OpenAI tunnel, or substitute for a tunnel's runtime API key.

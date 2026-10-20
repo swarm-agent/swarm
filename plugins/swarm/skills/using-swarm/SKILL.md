@@ -23,15 +23,21 @@ For connecting a client, use the `setup` skill. For raw MCP probes, see the
 - `swarm_status` says whether the box is all right (`ok`, `attention`,
   `degraded` with reasons) and what needs attention, and gives an
   `activity_cursor`.
-- `swarm_list_providers` shows which model providers are ready. With none,
-  first offer the person to sign in with their ChatGPT plan:
-  `swarm_connect_chatgpt` (on the machine's own MCP, not over a relay),
-  action `start`, gives a link and a code for them at once; then action
-  `status` with `login_id` and `wait_seconds` until `success`. The
-  alternative is an API key the person adds: on Swarm's setup page, or by
-  script on the machine (`install.sh key PROVIDER`). With a full key,
-  `swarm_request_provider_key` gives them a one-time link instead. Never ask
-  for a key in chat.
+- `swarm_list_providers` shows which model providers are ready, and each one
+  that is not has a `connect` field with the exact steps. With none ready,
+  ask the person which they have, list every option in one short message
+  with what each needs, and follow their choice: a ChatGPT plan (`codex`:
+  `swarm_connect_chatgpt` on the machine's own MCP, not over a relay; action
+  `start` gives a link and a code for them at once, then action `status`
+  with `login_id` and `wait_seconds` until `success`); a Claude plan through
+  Claude Code (`claudecode`: they sign in with `claude auth login` as the
+  user that runs Swarm and turn it on in Swarm's setup page; Swarm never
+  handles Claude credentials); an API key for `anthropic`, `openai`,
+  `google`, `openrouter` or `fireworks` (on Swarm's setup page, or by
+  script on the machine with `install.sh key PROVIDER`; with a full key,
+  `swarm_request_provider_key` gives them a one-time link); or Vertex AI
+  with the machine's Google identity (`vertex`). Never ask for a key in
+  chat.
 - Tell the person in one or two lines what is ready and what is missing.
 
 A 401/403 is a connection or key problem (see the `setup` skill), not a broken

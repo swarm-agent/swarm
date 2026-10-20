@@ -59,19 +59,28 @@ and [remote access](references/remote.md).
 
 ## 4. A model provider
 
-`swarm_list_providers` shows which providers are ready. If none is, first
-offer the person to sign in with their ChatGPT plan: `swarm_connect_chatgpt`
-with action `start` returns a link and a code. Give both to the person at
-once; they finish sign-in in their own browser. Then call it with action
-`status`, the `login_id` and `wait_seconds` until it reports `success`.
+`swarm_list_providers` shows which providers are ready. For each one that is
+not, its `connect` field says exactly how to connect it. If none is ready, ask
+the person which they have, show every option below in one short list with
+what each needs, and follow their choice. No option is the default.
 
-The alternative is an API key, which the person adds in one of two ways;
-never ask for a key in chat, and if one is pasted, tell them to revoke it:
+- **ChatGPT plan** (`codex`): `swarm_connect_chatgpt` with action `start`
+  returns a link and a code. Give both to the person at once; they finish
+  sign-in in their own browser. Then call action `status` with the
+  `login_id` and `wait_seconds` until it reports `success`.
+- **Claude plan through Claude Code** (`claudecode`): the person signs in
+  themselves; Swarm never sees or handles Claude credentials. See
+  [Claude Code](references/local-deployment.md#claude-code) for the three
+  steps (install it, `claude auth login` as Swarm's user, turn it on).
+- **API key** for `anthropic`, `openai`, `google`, `openrouter` or
+  `fireworks`: the person adds it on the setup page (`http://127.0.0.1:8443`
+  on the machine; on a server, the installer printed the `ssh -L` line to open
+  it from their computer), or as the first provider by script on the machine:
+  `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
+- **Vertex AI** (`vertex`), only on a machine with a Google Cloud identity:
+  `sudo swarmctl setup credential --provider vertex --project PROJECT`.
 
-- the setup page: `http://127.0.0.1:8443` on the machine (on a server, the
-  installer printed the `ssh -L` line to open it from their computer);
-- by script on the machine: `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
-
+Never ask for a key in chat; if one is pasted, tell them to revoke it.
 Call `swarm_list_providers` again to confirm it is ready. Swarm then gives
 every role its recommended model: `swarm_list_models` shows what the coder,
 designer and finder agents will use. Do not change models unless the person
