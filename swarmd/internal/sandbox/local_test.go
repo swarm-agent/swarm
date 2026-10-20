@@ -339,15 +339,15 @@ func TestLocalContainerAPIsRefuseWithoutEngine(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if m.MaxWorkerRuns() <= 0 || m.Status().Memory != "" {
-		t.Fatal("local mode reserved a per-worker RAM budget")
+	if m.MaxWorkerRuns() != 0 || m.Status().Memory != "" {
+		t.Fatal("local mode set a default run or RAM limit")
 	}
 }
 
 func TestLocalWorkerAdmissionWithoutRAMReservation(t *testing.T) {
-	// Purpose: local execution can actually admit workers while imposing no
-	// fixed RAM allocation. Owner: newLocalManager/MaxWorkerRuns; worker capacity
-	// reserves only positive limits. Threat: zero queues every worker forever.
+	// Purpose: local execution sets no default run or RAM limit; an owner
+	// limit is kept. Owner: newLocalManager/MaxWorkerRuns; worker capacity
+	// treats 0 as no limit.
 	for _, tc := range []struct {
 		limit int
 		want  int
@@ -356,7 +356,7 @@ func TestLocalWorkerAdmissionWithoutRAMReservation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if m.MaxWorkerRuns() <= 0 || tc.want > 0 && m.MaxWorkerRuns() != tc.want || m.Status().Memory != "" {
+		if m.MaxWorkerRuns() != tc.want || m.Status().Memory != "" {
 			t.Fatalf("limit=%d status=%+v actual=%d", tc.limit, m.Status(), m.MaxWorkerRuns())
 		}
 		m.Close()

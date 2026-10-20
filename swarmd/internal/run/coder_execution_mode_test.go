@@ -29,10 +29,13 @@ func TestCoderExecutionModeReachesBashPermission(t *testing.T) {
 	if danger.Decision != permission.PolicyDecisionDeny {
 		t.Fatalf("dangerous command must remain denied: %+v", danger)
 	}
-	for _, name := range []string{"task", "manage_environments", "manage_agent", "plan_manage"} {
+	for _, name := range []string{"task", "manage_agent", "plan_manage"} {
 		if profileHasCapability(p, name) {
 			t.Fatalf("unexpected Coder authority: %s", name)
 		}
+	}
+	if !profileHasCapability(p, "manage_environments") {
+		t.Fatal("Coder lost manage_environments")
 	}
 }
 

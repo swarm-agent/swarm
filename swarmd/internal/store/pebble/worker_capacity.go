@@ -7,6 +7,7 @@ import (
 )
 
 // ReserveWorkerCapacity atomically reserves box-wide capacity across accounts.
+// A limit of 0 (the default) is no box-wide limit: every run is admitted.
 // Queued receipts remain durable and are retried by worker reconciliation before
 // any checkout or provider execution is created. Preparation counts as active.
 func (ws *WorkerStore) ReserveWorkerCapacity(r WorkerRunRecord, limit int) (bool, error) {
@@ -45,7 +46,7 @@ func (ws *WorkerStore) ReserveWorkerCapacity(r WorkerRunRecord, limit int) (bool
 	if err := it.Error(); err != nil {
 		return false, err
 	}
-	admitted := limit > 0 && active < limit
+	admitted := limit <= 0 || active < limit
 	if admitted {
 		current.Status, current.QueueReason = "preparing", ""
 	} else {

@@ -18,7 +18,7 @@ UNITS=$work/units OPT=$work/opt SRC=$work/src PROJECT=$work/project
 install() { if [[ $1 == -d && ${2:-} == -o ]]; then mkdir -p "${@: -2}"; else command install "$@"; fi; }
 SERVICE_USER=test
 DATA_DIRS=("$work/data") APP_CONFIG=$work/config
-PERMISSIONS=ask APP_ORIGIN=http://127.0.0.1 APP_RELAY_URL='' APP_DEVICE_NAME=test
+PERMISSIONS=ask APP_ORIGIN=http://127.0.0.1 APP_RELAY_URL='' APP_DEVICE_NAME=test SANDBOX=off
 mkdir -p "$OPT/current" "$SRC" "$PROJECT"
 install_units
 for directive in Slice=swarm.slice CPUWeight=1000 IOWeight=1000 ProtectControlGroups=yes; do
@@ -27,6 +27,14 @@ done
 grep -q -- '--sandbox-cgroup-parent=swarm-sandbox.slice' "$UNITS/$DAEMON_UNIT"
 grep -qx CPUWeight=25 "$UNITS/swarm-sandbox.slice"
 grep -qx IOWeight=25 "$UNITS/swarm-sandbox.slice"
+# The sandbox is off by default and on only when the owner sets it.
+grep -q -- ' --sandbox=off ' "$UNITS/$DAEMON_UNIT"
+SANDBOX=on
+install_units
+grep -q -- ' --sandbox=required --sandbox-backend=docker ' "$UNITS/$DAEMON_UNIT"
+SANDBOX=bogus
+if (install_units) 2>/dev/null; then echo 'invalid SANDBOX accepted' >&2; exit 1; fi
+SANDBOX=off
 driver=cgroupfs
 install_units
 grep -q -- '--sandbox-cgroup-parent= ' "$UNITS/$DAEMON_UNIT"

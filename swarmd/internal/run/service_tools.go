@@ -7732,6 +7732,11 @@ func taskChildDisabledTools(requested string, allowBash bool) map[string]bool {
 		delete(disabled, tool.SwarmDesignToolName)
 		disabled["git_add"], disabled["git_commit"] = true, true
 	}
+	// A Coder child can use the environments the user set up.
+	if agentruntime.IsCoderAgentName(requested) {
+		delete(disabled, "manage_environments")
+		delete(disabled, "manage-environments")
+	}
 	return disabled
 }
 

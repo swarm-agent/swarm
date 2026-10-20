@@ -24,5 +24,5 @@ func NewHeadless(cfg config.Config) (*Daemon, error) {
 	if cfg.SandboxBackend != "bubblewrap" && cfg.SandboxBackend != "docker" {
 		return nil, fmt.Errorf("sandbox-backend must be bubblewrap or docker")
 	}
-	return newDaemon(cfg, nil)
+	return newDaemon(cfg, true, nil)
 }

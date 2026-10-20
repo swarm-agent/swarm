@@ -396,7 +396,7 @@ func TestCoderBashDoesNotGrantManagementAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	denied := []string{"task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode", "manage_worktree", "manage_environments", "manage_workers", "manage_automation"}
+	denied := []string{"task", "manage_sessions", "manage_agent", "manage_todos", "plan_manage", "ask_user", "exit_plan_mode", "manage_worktree", "manage_workers", "manage_automation"}
 	injected := &pebblestore.AgentToolContract{Preset: "read_write", Tools: map[string]pebblestore.AgentToolConfig{"bash": {Enabled: pebblestore.BoolPtr(false)}}}
 	for _, name := range denied {
 		injected.Tools[name] = pebblestore.AgentToolConfig{Enabled: pebblestore.BoolPtr(true)}
@@ -415,12 +415,16 @@ func TestCoderBashDoesNotGrantManagementAuthority(t *testing.T) {
 		if !agentToolEnabled(profile.ToolContract, "bash") || profile.ToolContract.Preset != "custom" {
 			t.Fatal("Coder did not restore explicit scoped Bash contract")
 		}
+		// Coders may use the environments the user set up.
+		if !agentToolEnabled(profile.ToolContract, "manage_environments") {
+			t.Fatalf("reconcile=%v Coder lost manage_environments", reconcile)
+		}
 		for _, name := range denied {
 			if agentToolEnabled(profile.ToolContract, name) {
 				t.Fatalf("reconcile=%v retained unauthorized %s", reconcile, name)
 			}
 		}
-		if profile.Provider != parent.Provider || profile.Model != parent.Model || !agentToolEnabled(parent.ToolContract, "manage_environments") || agentToolEnabled(parent.ToolContract, "bash") {
+		if profile.Provider != parent.Provider || profile.Model != parent.Model || !agentToolEnabled(parent.ToolContract, "manage_workers") || agentToolEnabled(parent.ToolContract, "bash") {
 			t.Fatal("materialization changed account model context or mutated input authority")
 		}
 	}

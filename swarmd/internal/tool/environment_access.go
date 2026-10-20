@@ -12,7 +12,7 @@ import (
 // authorizeEnvironmentAccess deliberately does not accept role or profile arguments.
 // Reload the durable session on every call, including calls from resumed children.
 func (r *Runtime) authorizeEnvironmentAccess(scope WorkspaceScope, toolName string) (pebblestore.SessionSnapshot, error) {
-	deny := errors.New("environment access denied: authenticated Swarm or Orchestrator session required")
+	deny := errors.New("environment access denied: authenticated Swarm, Orchestrator or Coder session required")
 	if r == nil || r.sessions == nil || !scope.Principal.Valid() || scope.SessionID == "" || (scope.Principal.SessionID != "" && scope.Principal.SessionID != scope.SessionID) {
 		return pebblestore.SessionSnapshot{}, deny
 	}
@@ -35,7 +35,7 @@ func EnvironmentToolAllowed(metadata map[string]any, toolName string) bool {
 		return false
 	}
 	for _, name := range []string{profile.Name, asString(metadata["agent_name"]), asString(metadata["subagent"])} {
-		if agentruntime.IsCoderAgentName(name) || strings.EqualFold(strings.TrimSpace(name), "clone") || strings.EqualFold(strings.TrimSpace(name), "system-clone") {
+		if strings.EqualFold(strings.TrimSpace(name), "clone") || strings.EqualFold(strings.TrimSpace(name), "system-clone") {
 			return false
 		}
 	}
@@ -46,5 +46,6 @@ func EnvironmentToolAllowed(metadata map[string]any, toolName string) bool {
 			}
 		}
 	}
-	return strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.SwarmAgentID) || agentruntime.IsOrchestratorAgentName(profile.Name)
+	return strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.SwarmAgentID) || agentruntime.IsOrchestratorAgentName(profile.Name) ||
+		agentruntime.IsCoderAgentName(profile.Name) || strings.EqualFold(strings.TrimSpace(profile.Name), agentruntime.WorkerCoderAgentID)
 }

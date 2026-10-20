@@ -27,9 +27,6 @@ func newLocalManager(ctx context.Context, cfg Config) (*Manager, error) {
 	if cfg.MaxWorkerRuns < 0 {
 		return nil, fmt.Errorf("worker_max_concurrent_runs must be non-negative")
 	}
-	if cfg.MaxWorkerRuns == 0 {
-		cfg.MaxWorkerRuns = max(1, runtime.NumCPU())
-	}
 	m := &Manager{cfg: cfg, boxes: map[string]*box{}, used: map[string]struct{}{}, stop: make(chan struct{}), localRuns: map[string]int{}}
 	m.status = Status{Mode: cfg.Mode, Runtime: BackendBubblewrap}
 	if cfg.Mode == ModeOff {

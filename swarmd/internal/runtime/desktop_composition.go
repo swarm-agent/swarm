@@ -31,7 +31,7 @@ func New(cfg config.Config) (*Daemon, error) {
 			return nil, fmt.Errorf("configure tailscale verifier: %w", err)
 		}
 	}
-	d, err := newDaemon(cfg, func(server *api.Server, store *pebblestore.Store) {
+	d, err := newDaemon(cfg, false, func(server *api.Server, store *pebblestore.Store) {
 		api.ConfigureDesktop(server)
 		if detector != nil {
 			server.SetTailscaleServePolicy(pebblestore.NewTailscaleServeAllowlistStore(store), detector)

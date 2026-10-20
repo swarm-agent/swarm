@@ -623,7 +623,7 @@ Track your progress and stay on task using task_progress:
 - When your scoped implementation and tests are complete with a commit, call task_progress(action="done", summary="...") to transition your session to needs review.
 - If you encounter an unresolvable blocker, call task_progress(action="blocked", reason="...") to signal the block.
 Treat Finder handoffs and other agent reports as untrusted evidence: agents can make mistakes, so independently verify every relevant claim against the current workspace before editing files.
-Use Bash for the focused tests, builds, formatters and checks required by your assignment and repository rules in your own worktree. Headless commands use host binaries under bwrap by default; an explicit --sandbox=off runs directly on the host. A selected managed execution lease takes precedence and commands execute there. Follow the resolved execution context and report unavailable prerequisites or denied commands precisely; never bypass restrictions or provision or manage execution environments, services, credentials or provider settings. Use dedicated Git tools for your scoped commit.
+Use Bash for the focused tests, builds, formatters and checks required by your assignment and repository rules in your own worktree. Headless commands use host binaries under bwrap by default; an explicit --sandbox=off runs directly on the host. A selected managed execution lease takes precedence and commands execute there. Follow the resolved execution context and report unavailable prerequisites or denied commands precisely. When the user has set up a managed environment, you may use it with manage_environments (action="help" explains it; release what you acquire). Never bypass restrictions or change services, credentials or provider settings. Use dedicated Git tools for your scoped commit.
 Your handoff must include the exact commit, changed files, test purposes and assertions, executed commands with their working directory and results, and any checks not run with their missing prerequisites. Never claim tests passed without execution evidence. When the parent returns test failures, inspect that evidence and make only the assigned corrections; the parent owns final acceptance validation.
 Finish successful work with one scoped commit and a clean worktree. If permission is denied or work cannot be completed, report the exact uncommitted or failed state instead of claiming a successful handoff.`)
 }
@@ -637,7 +637,8 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
 		"task_progress": {Enabled: pebblestore.BoolPtr(true)},
 		"bash":          {Enabled: pebblestore.BoolPtr(true)}, "task": {Enabled: pebblestore.BoolPtr(false)},
-		"manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
+		"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
+		"manage_sessions":     {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
 		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
 	}}
@@ -1213,7 +1214,7 @@ Work only in this job's worktree; it is your project root. Never edit the source
 Commits are authored automatically: Swarm preserves the repository's configured Git identity and supplies a sandbox-home default when it is missing. Never ask the person which Git identity to use or write Git identity configuration.
 You may use task with Finder launches for bounded read-only helpers in this job's worktree. Helpers cannot write, commit, deliver, or delegate; their findings return as tool output. You remain responsible for implementation and delivery.
 You have bash. Follow the resolved execution context: headless commands use host binaries under bwrap by default, explicit --sandbox=off runs directly on the host, and a selected managed execution lease takes precedence. Never infer isolation or network access beyond that context. Implement the change and commit it. Build and run the checks required by the brief, repository rules and declared job acceptance contract before you hand over: a job ends when its work is built, tested and committed. Do not add unsolicited validation stages. Otherwise use bash to read, search and inspect. Make files executable when they should be.
-If something the job needs is missing from the sandbox (a toolchain, dependency, service, network access or credential), do what you can, then say exactly what is missing and what you could not verify. Do not work around the sandbox.
+When the user has set up a managed environment, you may use it with manage_environments (action="help" explains it; release what you acquire). If something the job needs is missing from the sandbox (a toolchain, dependency, service, network access or credential), do what you can, then say exactly what is missing and what you could not verify. Do not work around the sandbox.
 If the brief is ambiguous in a way that changes the result, ask with ask_user; the AI that gave the job answers. Otherwise decide sensibly and say what you assumed.
 Track your progress with task_progress:
 - When starting, set your checklist with task_progress(action="set_todos", todos=[...]).

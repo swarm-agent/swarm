@@ -112,7 +112,10 @@ func TestStage4RoleRequestContracts(t *testing.T) {
 					t.Fatal("Swarm lost specialists")
 				}
 			case agent.CoderAgentID:
-				assertDenied("task", "ask_user", "plan_manage", "manage_workers", "manage_automation", "manage_environments", "manage_worktree")
+				assertDenied("task", "ask_user", "plan_manage", "manage_workers", "manage_automation", "manage_worktree")
+				if !contract.Tools["manage_environments"].Enabled {
+					t.Fatal("Coder lost manage_environments")
+				}
 				if !contract.Tools["bash"].Enabled {
 					t.Fatal("regular Coder lost Bash")
 				}

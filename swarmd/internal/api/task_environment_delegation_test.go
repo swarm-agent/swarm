@@ -74,8 +74,9 @@ func TestManagedDelegatedExecutionAdmission(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("untrusted delegated consumer admitted")
 			}
-			if tool.EnvironmentToolAllowed(child.Metadata, "manage_environments") {
-				t.Fatal("Coder gained management authority")
+			// Coders may use the environments the user set up.
+			if !tool.EnvironmentToolAllowed(child.Metadata, "manage_environments") && test == "current" {
+				t.Fatal("Coder lost manage_environments")
 			}
 		})
 	}

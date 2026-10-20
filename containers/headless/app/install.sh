@@ -27,15 +27,15 @@
 # swarmagent.dev/cap/swarm (see containers/headless/app/TAILNET.md).
 #
 # Swarm runs as a system service under its own "swarm" user and keeps its keys,
-# login and local socket to itself. Agents' commands, and Swarm's Git on their
-# projects, run in one sandbox per project: a container (under gVisor when it
-# works on this machine) with no capabilities, Swarm's non-root user, memory
-# and process limits, only that project and its worktrees mounted, and a
-# network that reaches the internet but never this server, your tailnet,
-# private networks or cloud metadata. Agents run without permission prompts
-# (questions and hard denials can still pause jobs) only while that sandbox is
-# active: Swarm runs with --sandbox=required and fails closed without it;
-# --ask-permissions (or `install.sh permissions ask`) keeps the prompts. The
+# login and local socket to itself. By default the agent sandbox is off:
+# agents run in Swarm on this machine. --sandbox on (or `install.sh sandbox
+# on`) runs agents' commands, and Swarm's Git on their projects, in one
+# sandbox per project: a container (under gVisor when it works on this
+# machine) with no capabilities, Swarm's non-root user, only that project and
+# its worktrees mounted, and a network that reaches the internet but never this
+# server, your tailnet, private networks or cloud metadata. Agents run without
+# permission prompts, sandbox or not (questions and hard denials can still
+# pause jobs); --ask-permissions (or `install.sh permissions ask`) keeps the prompts. The
 # secret gateway is on by default (--secrets-gateway off turns it off).
 #
 # The first visit to the setup page creates your login (username, password
@@ -113,7 +113,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'USAGE'
 Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref BRANCH] [--no-ai-access]
-                  [--secrets-gateway on|off] [--ask-permissions] [--auto-update] [--tailnet [--tag TAG] [--lock-ssh]]
+                  [--secrets-gateway on|off] [--ask-permissions] [--sandbox on|off] [--auto-update] [--tailnet [--tag TAG] [--lock-ssh]]
        install.sh reinstall [--yes] [--delete-projects] [install options]
        install.sh uninstall [--yes] [--delete-projects]
        install.sh update | up | reset-login | status | check-isolation | check-sandbox
@@ -131,6 +131,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
        install.sh permissions auto|ask
+       install.sh sandbox on|off
        swarmctl workspace add PATH [--for-user NAME] | remove PATH | list
        swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off
 
@@ -153,7 +154,10 @@ Readiness is generation-bound and checked again immediately before restart.
                 Timeout reports blockers and leaves admission held until restart.
   --ask-permissions
                 agents ask before commands and file changes; by default they
-                run without prompts, which Swarm allows only inside the sandbox
+                run without prompts
+  --sandbox on|off
+                off (the default): agents run in Swarm on this machine; on:
+                their commands run in one sandbox per project
   --tailnet     also reach this machine from your other devices over
                 Tailscale (installs and joins it; TS_AUTHKEY in the
                 environment joins without a login link)
@@ -180,9 +184,11 @@ Readiness is generation-bound and checked again immediately before restart.
                    tailnet and go back to loopback only (Tailscale and ufw
                    stay installed)
   permissions auto|ask
-                   auto: agents run without prompts while the sandbox is
-                   active (the default); ask: they ask first. Applied at
-                   every start of Swarm.
+                   auto (the default): agents run without prompts, sandbox
+                   or not; ask: they ask first. Applied at every start of
+                   Swarm.
+  sandbox on|off   off (the default): agents run in Swarm on this machine;
+                   on: their commands run in one sandbox per project.
 
   reinstall / uninstall remove Swarm's services, binaries, sandboxes and state
   (owner, provider sign-in, AI keys, relay pairing, agent worktrees), its
@@ -293,7 +299,12 @@ conf_migrate() {
   if [[ -z ${PERMISSIONS:-} ]]; then
     PERMISSIONS=auto
     conf_set PERMISSIONS auto
-    echo "swarm: agents now run without permission prompts while the sandbox is active (install.sh permissions ask turns them back on)"
+    echo "swarm: agents now run without permission prompts (install.sh permissions ask turns them back on)"
+  fi
+  if [[ -z ${SANDBOX:-} ]]; then
+    SANDBOX=off
+    conf_set SANDBOX off
+    echo "swarm: the agent sandbox is off: agents run in Swarm on this machine (install.sh sandbox on turns it on)"
   fi
   # The removed runner listener's port: units are written without it.
   if [[ -n ${RUNNER_GATEWAY_PORT+set} ]]; then
@@ -818,6 +829,15 @@ post_update_smoke() {
   done
 }
 
+# A running build that no branch on GitHub contains any more was left behind
+# by a rewritten branch: it can never come back, so moving to the branch's new
+# head (once it passes its checks) is not a downgrade. A build still on some
+# branch (an older channel) is not orphaned.
+running_build_orphaned() {
+  git -C "$SRC" fetch -q --prune origin '+refs/heads/*:refs/remotes/origin/*' || return 1
+  [[ -z $(git -C "$SRC" branch -r --contains "$1" 2>/dev/null) ]]
+}
+
 update() {
   load_conf
   if [[ -n ${DEV_SOURCE:-} ]]; then
@@ -838,7 +858,8 @@ update() {
     if ! git -C "$SRC" merge-base --is-ancestor "$head" "$new" &&
       ! { git -C "$SRC" rev-parse -q --verify "$head^2" >/dev/null &&
         git -C "$SRC" merge-base --is-ancestor "$head^2" "$new" &&
-        git -C "$SRC" diff --quiet "$head^2" "$head"; }; then
+        git -C "$SRC" diff --quiet "$head^2" "$head"; } &&
+      ! running_build_orphaned "$head"; then
       update_state waiting "$SWARM_REF (${new:0:9}) does not contain the build ${head:0:9}; waiting until it does" "$new"
       return 0
     fi
@@ -1095,13 +1116,20 @@ install_units() {
   [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on ]] && ai_url=${APP_AI_URL:-} ai_ip=${APP_AI_IP:-}
   [[ ${SANDBOX_RUNTIME:-default} == default ]] && runtime_arg='--sandbox-runtime=runc'
   [[ ${SECRETS_GATEWAY:-off} == on ]] && secrets_arg=--secrets-gateway=on
-  # Jobs normally skip tool approvals: with --sandbox=required Swarm does
-  # not start without its sandbox, and bypass applies only while it is active.
-  # The installer's choice is applied at every start.
+  # Jobs skip tool approvals by default (auto), sandbox or not: nobody is
+  # there to answer a prompt on a headless machine. The installer's choice is applied at every start.
   case ${PERMISSIONS:-} in
     auto) permissions_arg=--bypass-permissions ;;
     ask) permissions_arg=--bypass-permissions=false ;;
     *) die "install.env has no valid PERMISSIONS (auto or ask); run install.sh permissions auto|ask" ;;
+  esac
+  # Off by default: agents run in Swarm on this machine. On: their commands
+  # run in one Docker sandbox per project.
+  local sandbox_arg
+  case ${SANDBOX:-} in
+    off) sandbox_arg=--sandbox=off ;;
+    on) sandbox_arg="--sandbox=required --sandbox-backend=docker" ;;
+    *) die "install.env has no valid SANDBOX (on or off); run install.sh sandbox on|off" ;;
   esac
   install -d "$UNITS"
   cat > "$UNITS/$FIREWALL_UNIT" <<UNIT
@@ -1131,8 +1159,7 @@ UNIT
 [Unit]
 Description=Low-priority Swarm agent commands
 [Slice]
-# Agents are admitted by RAM (worker_max_concurrent_runs). Weights affect
-# contention, not idle CPU availability.
+# No cap: weights affect contention only, never idle CPU or memory.
 CPUWeight=25
 IOWeight=25
 UNIT
@@ -1176,7 +1203,7 @@ WorkingDirectory=$PROJECT
 Slice=swarm.slice
 CPUWeight=1000
 IOWeight=1000
-ExecStart=$OPT/current/bin/swarmd --desktop-port=0 --cwd=$PROJECT --sandbox=required $cgroup_arg $permissions_arg $runtime_arg $sdk_args $secrets_arg
+ExecStart=$OPT/current/bin/swarmd --cwd=$PROJECT $sandbox_arg $cgroup_arg $permissions_arg $runtime_arg $sdk_args $secrets_arg
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
@@ -1401,7 +1428,7 @@ reinstall_all() {
   done
   if [[ -f $CONF ]]; then
     # shellcheck disable=SC1090
-    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}" "${PERMISSIONS:-}" "${AUTO_UPDATE:-}" "${UPDATE_CHECKS:-}" "${UPDATE_HOOK:-}")
+    mapfile -t saved < <(. "$CONF" && printf '%s\n' "${APP_RELAY_URL:-}" "${APP_DEVICE_NAME:-}" "${SWARM_REF:-}" "${AI_ACCESS:-}" "${SECRETS_GATEWAY:-}" "${PERMISSIONS:-}" "${AUTO_UPDATE:-}" "${UPDATE_CHECKS:-}" "${UPDATE_HOOK:-}" "${SANDBOX:-}")
     saved=("${saved[@]:0:6}" "$(saved_tailnet)" "${saved[@]:6}")
   fi
   [[ -n ${saved[0]:-} ]] && args+=(--relay "${saved[0]}")
@@ -1414,6 +1441,7 @@ reinstall_all() {
   [[ ${saved[7]:-} == on ]] && args+=(--auto-update)
   [[ -n ${saved[8]:-} ]] && args+=(--update-checks "${saved[8]}")
   [[ -n ${saved[9]:-} ]] && args+=(--update-hook "${saved[9]}")
+  [[ ${saved[10]:-} == on ]] && args+=(--sandbox on)
   [[ ${saved[6]:-} == on ]] && args+=(--tailnet)
   # Later options win, so anything passed now overrides the saved settings.
   uninstall_all "${uninstall[@]}"
@@ -1621,7 +1649,26 @@ tailnet_cmd() {
   esac
 }
 
-# Agents without prompts (auto, inside the sandbox only) or asking first.
+# Agents in Swarm on this machine (off, the default) or their commands in one
+# Docker sandbox per project (on).
+set_sandbox() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  load_conf
+  case ${1:-} in
+    on|off) ;;
+    *) die "usage: install.sh sandbox on|off" ;;
+  esac
+  conf_set SANDBOX "$1"
+  install_units
+  restart_swarm
+  if [[ $1 == on ]]; then
+    echo "Agents' commands run in one sandbox per project."
+  else
+    echo "The sandbox is off: agents run in Swarm on this machine."
+  fi
+}
+
+# Agents without prompts (auto, the default) or asking first.
 set_permissions() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
   load_conf
@@ -1633,7 +1680,7 @@ set_permissions() {
   install_units
   restart_swarm
   if [[ $1 == auto ]]; then
-    echo "Agents run without permission prompts, only while their sandbox is active."
+    echo "Agents run without permission prompts."
   else
     echo "Agents ask before commands and file changes."
   fi
@@ -1881,7 +1928,7 @@ secret_cmd() {
 }
 
 install_all() {
-  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=on permissions=auto tailnet=off for_user='' auto_update=off update_checks='' update_hook=''
+  local relay='' name=swarm ref=main lock_ssh=0 ai_access=on tag='' secrets_gateway=on permissions=auto sandbox=off tailnet=off for_user='' auto_update=off update_checks='' update_hook=''
   while (($#)); do
     case $1 in
       --for-user) for_user=${2:?--for-user needs a user name}; shift 2 ;;
@@ -1896,6 +1943,7 @@ install_all() {
       --ai-access) ai_access=on; shift ;;
       --secrets-gateway) secrets_gateway=${2:?--secrets-gateway needs on or off}; shift 2 ;;
       --ask-permissions) permissions=ask; shift ;;
+      --sandbox) sandbox=${2:?--sandbox needs on or off}; [[ $sandbox == on || $sandbox == off ]] || die "--sandbox needs on or off"; shift 2 ;;
       --auto-update) auto_update=on; shift ;;
       --update-checks) update_checks=${2:?--update-checks needs CONTEXT=APP[,...] or none}; shift 2 ;;
       --update-hook) update_hook=${2:?--update-hook needs a path}; shift 2 ;;
@@ -1993,6 +2041,7 @@ AI_ACCESS=$ai_access
 TAILNET_IDENTITY=$tailnet_identity
 SECRETS_GATEWAY=$secrets_gateway
 PERMISSIONS=$permissions
+SANDBOX=$sandbox
 AUTO_UPDATE=$auto_update
 UPDATE_CHECKS=$update_checks
 UPDATE_HOOK=$update_hook
@@ -2037,9 +2086,9 @@ install_done() {
   load_conf
   echo
   echo "Swarm is running on this machine; its services listen on 127.0.0.1 only:"
-  echo "  Swarm          swarm-headless: agents in one sandbox per project ($(
-    [[ $SANDBOX_RUNTIME == runsc ]] && echo gVisor || echo Docker runc)), $(
-    [[ $PERMISSIONS == auto ]] && echo 'no permission prompts inside the sandbox' || echo 'agents ask first'), secret gateway $SECRETS_GATEWAY"
+  echo "  Swarm          swarm-headless: $(
+    if [[ ${SANDBOX:-off} == on ]]; then echo "agents in one sandbox per project ($([[ $SANDBOX_RUNTIME == runsc ]] && echo gVisor || echo Docker runc))"; else echo "agents in Swarm on this machine (sandbox off)"; fi), $(
+    [[ $PERMISSIONS == auto ]] && echo 'no permission prompts' || echo 'agents ask first'), secret gateway $SECRETS_GATEWAY"
   if [[ $TAILNET == on ]]; then
     echo "  Setup page     127.0.0.1:8443, opened as $APP_ORIGIN (swarm-headless-app)"
   else
@@ -2177,6 +2226,7 @@ main() {
     tailnet-identity) shift; set_tailnet_identity "$@" ;;
     secrets-gateway) shift; set_secrets_gateway "$@" ;;
     permissions) shift; set_permissions "$@" ;;
+    sandbox) shift; set_sandbox "$@" ;;
     workspace) shift; exec "$SWARMCTL" workspace "$@" ;;
     status) status_cmd ;;
     -h|--help|help) usage ;;

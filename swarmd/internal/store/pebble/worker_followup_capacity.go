@@ -44,7 +44,7 @@ func (ws *WorkerStore) ReserveWorkerFollowup(account, worker, run, intent string
 	if err != nil {
 		return false, err
 	}
-	admitted := intent != "" && limit > 0 && active < limit
+	admitted := intent != "" && (limit <= 0 || active < limit)
 	r.SandboxCleanupDone = false
 	r.FollowupError = ""
 	r.FollowupStatus, r.FollowupRunID = "queued", intent

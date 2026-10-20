@@ -203,7 +203,8 @@ account/user, task attempt, source and worktree ownership must match. The child'
 receipt records the parent receipt; each Bash dispatch and provider boundary
 rechecks the current parent selection, lease and attachment. Approval remains in
 the parent's permission scope while execution uses the child's session identity.
-Coder receives no environment-management authority.
+A Coder can also use `manage_environments` itself for the environments the
+user set up; its calls cross the same durable role, task and receipt checks.
 
 A missing or invalid managed selection never falls back to local execution,
 including with `--sandbox=off`. Binding failures retain a blocked selector and
@@ -398,7 +399,7 @@ deployment and lease association in its durable task attachment.
 A managed selection keeps the Swarm owner's receipt controls available through
 `manage_environments`: release, operation inspection/cancellation, deployment
 inspection and attachment listing. These still cross the existing durable
-role/task/receipt checks; Coder does not gain environment management authority.
+role/task/receipt checks. Coders have `manage_environments` too.
 Provisioning, reassignment and alternate execution remain blocked while that
 selection is active. Task receipts must be released through the owning task's
 control path with explicit project, task, attachment, workspace and lease

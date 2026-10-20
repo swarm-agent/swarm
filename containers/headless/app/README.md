@@ -300,15 +300,13 @@ This does not qualify any cloud deployment, live provider run or external post.
 
 Restart after changing these keys in the daemon startup config (`swarm.conf`):
 
-- `worker_max_concurrent_runs`: concurrent agents, defaulting to three quarters
-  of host RAM divided by a 3 GiB per-run admission budget (at least one), with
-  no CPU cap. A positive setting overrides this RAM-derived default.
+- `worker_max_concurrent_runs`: optional limit on concurrent agents; 0 (the
+  default) is no limit. Sandboxes have no default memory or process cap either.
 - Agents have no default CPU quota or command slot queue. `sandbox_cpus` remains
   available only as an explicit per-container override; empty means unrestricted.
 - `sandbox_cgroup_parent`: optional Docker cgroup parent. The headless installer
   supplies `--sandbox-cgroup-parent=swarm-sandbox.slice` on install and update.
 
-A 22-CPU, 64 GiB host defaults to 16 agents.
 The installer gives agent containers a lower-weight slice (CPUWeight/IOWeight 25), versus daemon weights 1000,
 and retains `ProtectControlGroups=yes`. Install/update detects Docker's cgroup
  driver: systemd uses the slice; cgroupfs explicitly clears the parent override

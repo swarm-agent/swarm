@@ -44,8 +44,7 @@ const (
 const (
 	DefaultImage       = "swarm-sandbox:local"
 	DefaultNetwork     = "swarm-sandbox"
-	DefaultMemory      = "" // host-derived; see ResourceDefaults
-	DefaultPidsLimit   = 1024
+	DefaultMemory      = "" // no cap unless the owner sets sandbox_memory
 	DefaultIdleTimeout = 30 * time.Minute
 	gvisorRuntime      = "runsc"
 	sandboxHome        = "/home/sandbox"
@@ -229,9 +228,6 @@ func NewManager(ctx context.Context, cfg Config, runner provider.CommandRunner) 
 	}
 	if err := resolveResources(&cfg); err != nil {
 		return nil, err
-	}
-	if cfg.PidsLimit <= 0 {
-		cfg.PidsLimit = DefaultPidsLimit
 	}
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = DefaultIdleTimeout
@@ -627,8 +623,9 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--user", user,
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
-		"--memory", m.cfg.Memory, "--memory-swap", m.cfg.Memory,
-		"--pids-limit", strconv.Itoa(m.cfg.PidsLimit),
+	)
+	args = append(args, m.limitArgs()...)
+	args = append(args,
 		"--network", m.cfg.Network,
 		"--hostname", "sandbox",
 		"--ipc", "private",
@@ -1114,4 +1111,17 @@ func (m *Manager) WasSandboxed(root string) bool {
 	defer m.mu.Unlock()
 	_, ok := m.used[filepath.Clean(root)]
 	return ok
+}
+
+// limitArgs caps a container only with the owner's explicit settings; by
+// default a sandbox has no memory or process cap.
+func (m *Manager) limitArgs() []string {
+	var args []string
+	if m.cfg.Memory != "" {
+		args = append(args, "--memory", m.cfg.Memory, "--memory-swap", m.cfg.Memory)
+	}
+	if m.cfg.PidsLimit > 0 {
+		args = append(args, "--pids-limit", strconv.Itoa(m.cfg.PidsLimit))
+	}
+	return args
 }

@@ -42,8 +42,22 @@ func (m *Manager) EndJob(ctx context.Context, checkout string, terminal func() (
 	if err != nil {
 		return err
 	}
-	if !ok || scope.JobCheckout == "" || scope.ReviewCheckout != "" {
+	if !ok || scope.ReviewCheckout != "" {
 		return ErrCleanupDeferred
+	}
+	if scope.JobCheckout == "" {
+		// The job ran in its project's shared sandbox: nothing to remove.
+		if terminal == nil {
+			return fmt.Errorf("job cleanup requires durable terminal state")
+		}
+		done, err := terminal()
+		if err != nil {
+			return err
+		}
+		if !done {
+			return ErrCleanupDeferred
+		}
+		return nil
 	}
 	name := scopeContainerName(scope)
 	m.mu.Lock()

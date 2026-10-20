@@ -188,14 +188,15 @@ func (m *Manager) BuildEnvironment(ctx context.Context, b EnvironmentBuild) (Env
 		"--runtime", envBuildRuntime,
 		"--user", "0:0",
 		"--security-opt", "no-new-privileges",
-		"--memory", m.cfg.Memory, "--memory-swap", m.cfg.Memory,
-		"--pids-limit", strconv.Itoa(m.cfg.PidsLimit),
+	}
+	args = append(args, m.limitArgs()...)
+	args = append(args,
 		"--network", m.cfg.Network,
 		"--hostname", "sandbox",
 		"--ipc", "private",
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
 		"--env", "LANG=C.UTF-8",
-	}
+	)
 	if m.cfg.CPUs != "" {
 		args = append(args, "--cpus", m.cfg.CPUs)
 	}

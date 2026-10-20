@@ -129,7 +129,7 @@ func parse(args []string, desktop bool) (Config, error) {
 	sandboxHelp := "agent sandbox mode: auto (use when Docker, the sandbox image and network are ready at startup), required (fail closed without them), off (no sandbox; permission bypass is disabled)"
 	if !desktop {
 		defaultSandboxMode = "required"
-		sandboxHelp = "agent sandbox mode: required (default; unavailable isolation blocks commands while setup remains accessible), off (explicit host execution; permission bypass disabled); auto is unsupported"
+		sandboxHelp = "agent sandbox mode: required (default; unavailable isolation blocks commands while setup remains accessible), off (agents run on this machine; --bypass-permissions still applies); auto is unsupported"
 	}
 	fs.StringVar(&cfg.SandboxMode, "sandbox", defaultSandboxMode, sandboxHelp)
 	backend := "docker"
@@ -140,10 +140,10 @@ func parse(args []string, desktop bool) (Config, error) {
 	fs.StringVar(&cfg.SandboxImage, "sandbox-image", "swarm-sandbox:local", "image for agent sandboxes")
 	fs.StringVar(&cfg.SandboxNetwork, "sandbox-network", "swarm-sandbox", "isolated container network for agent sandboxes")
 	fs.StringVar(&cfg.SandboxRuntime, "sandbox-runtime", "", "OCI runtime for agent sandboxes (default: gVisor runsc when installed)")
-	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "Docker memory cap per sandbox (empty: host-derived; bubblewrap has no per-worker RAM reservation)")
+	fs.StringVar(&cfg.SandboxMemory, "sandbox-memory", startupCfg.SandboxMemory, "Docker memory cap per sandbox (empty: no cap)")
 	fs.StringVar(&cfg.SandboxCPUs, "sandbox-cpus", startupCfg.SandboxCPUs, "CPU quota per agent container (empty: unrestricted)")
 	fs.StringVar(&cfg.SandboxCgroupParent, "sandbox-cgroup-parent", startupCfg.SandboxCgroupParent, "agent container cgroup parent")
-	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: CPU-count for bubblewrap, RAM-derived for docker)")
+	fs.IntVar(&cfg.WorkerMaxConcurrentRuns, "worker-max-concurrent-runs", startupCfg.WorkerMaxConcurrentRuns, "box-wide worker run limit (0: no limit)")
 	fs.StringVar(&cfg.SecretsGateway, "secrets-gateway", "off", "agent secret gateway: off (default) or on; on starts the egress gateway so granted secrets inject without the agent seeing them")
 	fs.StringVar(&cfg.SecretsGatewayAddr, "secrets-gateway-addr", "172.31.251.1:8080", "address:port the secret gateway listens on (the sandbox bridge gateway)")
 	fs.StringVar(&cfg.DataDir, "data-dir", defaultDataDir, "data directory root")

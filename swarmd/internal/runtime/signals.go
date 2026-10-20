@@ -11,7 +11,7 @@ import (
 
 // emitStartupSignals records that the daemon started and whether agent
 // commands are confined, blocked by required isolation, or explicitly unconfined.
-func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
+func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status, headless bool) {
 	emitter.Emit(pebblestore.Signal{
 		Kind:     "daemon.started",
 		Severity: pebblestore.SignalSeverityInfo,
@@ -37,6 +37,17 @@ func emitStartupSignals(emitter *signals.Emitter, status sandbox.Status) {
 			Kind:     "sandbox.unavailable",
 			Severity: pebblestore.SignalSeverityWarning,
 			Summary:  "Agent commands blocked: required sandbox unavailable; inspect the sandbox readiness reason and repair the configured isolation backend, then restart",
+			DedupKey: "sandbox.state",
+			Attrs:    map[string]string{"reason": status.Reason, "mode": string(status.Mode)},
+		})
+		return
+	}
+	if headless {
+		// Off is the headless default, not a fault.
+		emitter.Emit(pebblestore.Signal{
+			Kind:     "sandbox.inactive",
+			Severity: pebblestore.SignalSeverityInfo,
+			Summary:  "Agent sandbox is off: agents run on this machine",
 			DedupKey: "sandbox.state",
 			Attrs:    map[string]string{"reason": status.Reason, "mode": string(status.Mode)},
 		})

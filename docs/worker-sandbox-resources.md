@@ -1,29 +1,22 @@
 # Worker sandbox resources
 
-Managed worker checkouts use separate containers (approach **a**): one OOM
-cannot kill another checkout's gVisor sentry. Containers share the project's
-image, project/worktree mounts and home cache volume. This is resource isolation,
-not a new filesystem authorization boundary. Reviewer containers retain their
-separate writable cache and read-only project/Git mounts. The umask guard and
-in-flight lifecycle leases remain unchanged. Tool execution pins the checkout's
-container even when a command changes its working directory.
+The agent sandbox is off by default on a headless install: agents run in Swarm
+on the machine. With the Docker sandbox on, each project has one sandbox, shared
+by all its jobs (never one container per job); it mounts the project and its
+worktrees. Under bubblewrap a command sees only its own checkout. Reviewer
+containers retain their separate writable cache and read-only project/Git
+mounts. The umask guard and in-flight lifecycle leases remain unchanged.
 
-Defaults reserve 25% of physical host RAM for the OS/daemon. Worker concurrency
-is the smaller of half the logical CPUs and the number of 3 GiB budgets in the
-remaining RAM (minimum one). Each container gets that remaining RAM divided by
-concurrency, with no swap. On **8 vCPU / 31 GiB** this is **4 workers**, each
-limited to **6,241,124,352 bytes (5.8125 GiB)**. This is a capacity budget, not a
-reservation or measured workload guarantee. Other sessions/reviewers and idle
-containers still consume memory; operators should reduce concurrency when other
-services or large caches share the box.
+There are no default caps. Without owner settings the box admits every worker
+run, and a sandbox has no memory, swap or process cap.
 
-The install config (`swarm.conf`) accepts `sandbox_memory` (Docker size syntax;
-empty means automatic) and `worker_max_concurrent_runs` (0 means automatic).
-Daemon overrides are `--sandbox-memory` and `--worker-max-concurrent-runs`.
-Restart the daemon after changing these settings. Linux host memory is read from
-`/proc/meminfo`; when unavailable, configure both values explicitly.
+An owner who wants caps sets them in the install config (`swarm.conf`):
+`sandbox_memory` (Docker size syntax; empty means no cap) and
+`worker_max_concurrent_runs` (0 means no limit). Daemon overrides are
+`--sandbox-memory` and `--worker-max-concurrent-runs`. Restart the daemon after
+changing these settings.
 
-The box-wide limit spans accounts. Preparation counts against the limit before
+When set, the box-wide limit spans accounts. Preparation counts against the limit before
 worktree allocation/provider dispatch. Overflow receipts persist `status: queued`
 and `queue_reason`; the existing worker reconciliation sweep admits them as
 capacity becomes available. Queue order follows reconciliation order, not strict

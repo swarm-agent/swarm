@@ -240,7 +240,7 @@ func htmlCaptureConcurrency() int {
 	return 1
 }
 
-func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore.Store)) (*Daemon, error) {
+func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Server, *pebblestore.Store)) (*Daemon, error) {
 	if err := ensurePrivateDirectory(cfg.DataDir); err != nil {
 		return nil, fmt.Errorf("secure data directory: %w", err)
 	}
@@ -507,6 +507,11 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 	})
 	provider.BuildSourceGitRouter = sandbox.RoutedArgv
 	permissionSvc.SetBypassGate(func() (bool, string) {
+		// Headless runs unattended: the owner's bypass setting applies with or
+		// without a sandbox, and worker jobs never wait on a prompt.
+		if headless {
+			return true, ""
+		}
 		status := sandboxMgr.Status()
 		return status.Active, status.Reason
 	})
@@ -518,10 +523,12 @@ func newDaemon(cfg config.Config, configureClient func(*api.Server, *pebblestore
 		log.Printf("swarmd agent sandbox active (%s); agent commands and Git on projects use the configured isolation backend", runtimeName)
 	} else if status.Mode == sandbox.ModeRequired {
 		log.Printf("swarmd agent execution blocked: required sandbox unavailable (%s); inspect the readiness reason and repair the configured isolation backend, then restart; setup and diagnostics remain available", status.Reason)
+	} else if headless {
+		log.Printf("swarmd agent sandbox off (%s); agents run on this machine", status.Reason)
 	} else {
 		log.Printf("swarmd agent sandbox inactive (%s); agent commands run on this machine and permission bypass is disabled", status.Reason)
 	}
-	emitStartupSignals(signalEmitter, sandboxMgr.Status())
+	emitStartupSignals(signalEmitter, sandboxMgr.Status(), headless)
 	if err := reconcileWorkerSandboxes(context.Background(), sandboxMgr, store); err != nil {
 		sandboxMgr.Close()
 		_ = secretStore.Close()

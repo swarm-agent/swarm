@@ -259,6 +259,24 @@ set +e; checks_passed "$changed" >/dev/null; rc=$?; set -e
 [[ $rc == 2 ]] || fail "a release merge that changed the tree passed without its own review ($rc)"
 UPDATE_CHECKS=none checks_passed "$changed" || fail "UPDATE_CHECKS=none still checked"
 
+# 7b. A rewritten branch: while another branch (keep) still has the running
+# build, it waits; once no branch has it, the branch's new reviewed head is taken.
+running=$(git -C "$SRC" rev-parse HEAD)
+git -C "$SRC" push -q origin "$running:refs/heads/keep"
+git -C "$work/dev" push -q "$work/origin.git" :main
+git -C "$work/dev" checkout -q dev
+git -C "$work/dev" reset -q --hard "$c1"
+git -C "$work/dev" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m rewritten
+c5=$(git -C "$work/dev" rev-parse HEAD)
+git -C "$work/dev" push -q -f "$work/origin.git" HEAD:dev
+reviewed "$c5" success
+run_update
+[[ $(state state) == waiting && $(git -C "$SRC" rev-parse HEAD) == "$running" ]] || fail "a build still on another branch was replaced: $(cat "$UPDATE_STATE")"
+git -C "$work/dev" push -q "$work/origin.git" :keep
+: >"$log"
+run_update
+[[ $(git -C "$SRC" rev-parse HEAD) == "$c5" ]] && grep -qx finish-update "$log" || fail "a build left behind by a rewritten branch was not updated: $(cat "$UPDATE_STATE")"
+
 # 8. A hook others can change is not run.
 chmod 0777 "$work/hook"
 : >"$work/hook-log"

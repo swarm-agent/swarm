@@ -2,14 +2,28 @@ package sandbox
 
 import "testing"
 
-// Purpose: ResourceDefaults owns worker admission. Exercise its arithmetic at
-// the unit boundary to prevent CPU count from suppressing RAM-funded agents.
-func TestResourceAdmissionRAMOnly(t *testing.T) {
-	for _, cpus := range []int{1, 2, 64} {
-		workers, budget := ResourceDefaults(cpus, 64*gib)
-		if workers != 16 || budget != 3*gib {
-			t.Fatalf("cpus=%d: workers=%d budget=%d", cpus, workers, budget)
-		}
+// Purpose: resolveResources owns default caps. Without owner settings a
+// sandbox has no memory cap and the box admits every worker run; explicit
+// settings still apply.
+func TestResourceDefaultsUncapped(t *testing.T) {
+	cfg := Config{}
+	if err := resolveResources(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Memory != "" || cfg.MaxWorkerRuns != 0 || cfg.PidsLimit != 0 {
+		t.Fatalf("derived caps memory=%q runs=%d pids=%d", cfg.Memory, cfg.MaxWorkerRuns, cfg.PidsLimit)
+	}
+	set := Config{Memory: "2g", MaxWorkerRuns: 3}
+	if err := resolveResources(&set); err != nil || set.Memory != "2g" || set.MaxWorkerRuns != 3 {
+		t.Fatalf("owner settings changed: %+v %v", set, err)
+	}
+	m := &Manager{cfg: Config{}}
+	if args := m.limitArgs(); len(args) != 0 {
+		t.Fatalf("default container caps %v", args)
+	}
+	m.cfg = Config{Memory: "2g", PidsLimit: 512}
+	if got := m.limitArgs(); len(got) != 6 {
+		t.Fatalf("owner caps not applied: %v", got)
 	}
 }
 

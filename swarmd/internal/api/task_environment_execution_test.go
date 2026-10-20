@@ -79,8 +79,9 @@ func TestManagedExecutionConsumerAndBinding(t *testing.T) {
 	if err := s.validateTaskExecutionConsumer(p, task, "child"); err != nil {
 		t.Fatal(err)
 	}
-	if tool.EnvironmentToolAllowed(metadata, "manage_environments") {
-		t.Fatal("Coder gained management authority")
+	// Coders may use the environments the user set up.
+	if !tool.EnvironmentToolAllowed(metadata, "manage_environments") {
+		t.Fatal("Coder lost manage_environments")
 	}
 	for _, name := range []string{"account", "user", "session", "task", "attempt", "archived"} {
 		t.Run(name, func(t *testing.T) {

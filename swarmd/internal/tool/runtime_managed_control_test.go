@@ -53,7 +53,11 @@ func TestManagedReceiptControlDispatch(t *testing.T) {
 				deployments.lease.Active = false
 			case "hyphen_alias":
 				action, toolName = "release", "manage-environments"
-			case "foreign_user", "foreign_account", "foreign_session", "coder":
+			case "coder":
+				// A Coder may use the environments the user set up.
+				action = "release"
+				sessions.snapshot.Metadata["agent_profile"] = map[string]any{"name": "coder"}
+			case "foreign_user", "foreign_account", "foreign_session":
 				action, wantCalls, wantError = "release", 0, true
 				switch name {
 				case "foreign_user":
@@ -62,8 +66,6 @@ func TestManagedReceiptControlDispatch(t *testing.T) {
 					scope.Principal.AccountScopeID = "foreign"
 				case "foreign_session":
 					scope.Principal.SessionID = "foreign"
-				case "coder":
-					sessions.snapshot.Metadata["agent_profile"] = map[string]any{"name": "coder"}
 				}
 			case "authority_denied":
 				action, wantError = "release", true

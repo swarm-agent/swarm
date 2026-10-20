@@ -110,10 +110,10 @@ func (m *Manager) ScopeFor(path string) (Scope, bool, error) {
 			if b, err := layout.Bucket(root); err == nil && b == bucket {
 				scope, ok, err := m.scopeForRoot(root, layout)
 				// The first directory below the project bucket is the durable
-				// managed checkout. All commands and daemon Git in it share only
-				// that job's container, not other workers' memory cgroup.
+				// managed checkout. Under bubblewrap a command sees only that
+				// checkout. Docker runs one sandbox per project, never one per job.
 				parts := strings.Split(rel, string(filepath.Separator))
-				if len(parts) > 1 && parts[1] != ".swarm-scratch" {
+				if m.Local() && len(parts) > 1 && parts[1] != ".swarm-scratch" {
 					scope.JobCheckout = filepath.Join(worktrees, bucket, parts[1])
 				}
 				return m.reviewScope(scope, target), ok, err

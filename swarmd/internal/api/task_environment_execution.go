@@ -30,20 +30,22 @@ func (s *Server) bindOrReleaseTaskExecution(ctx context.Context, p identity.Prin
 	return nil
 }
 
-// Execution admission is separate from management admission. Coder consumes only
-// its current task receipt and receives no environment-management capability.
+// Execution admission is separate from management admission. A task Coder
+// consumes its current task receipt here; its own manage_environments calls go
+// through management admission.
 func (s *Server) validateTaskExecutionConsumer(p identity.Principal, task *pebblestore.ProjectTaskRecord, sessionID string) error {
 	caller, found, err := s.sessions.GetSession(sessionID)
 	if err != nil || !found || caller.AccountScopeID != p.AccountScopeID || caller.UserID != p.UserID {
 		return errors.New("task execution consumer ownership mismatch")
 	}
-	if tool.EnvironmentToolAllowed(caller.Metadata, "manage_environments") {
+	var profile pebblestore.AgentProfile
+	raw, _ := json.Marshal(caller.Metadata["agent_profile"])
+	coder := json.Unmarshal(raw, &profile) == nil && agentruntime.IsCoderAgentName(profile.Name)
+	if !coder && tool.EnvironmentToolAllowed(caller.Metadata, "manage_environments") {
 		_, err := s.authorizeTaskEnvironment(identity.Principal{Type: p.Type, AccountScopeID: p.AccountScopeID, UserID: p.UserID}, sessionID, task.ProjectID, task.ID)
 		return err
 	}
-	var profile pebblestore.AgentProfile
-	raw, _ := json.Marshal(caller.Metadata["agent_profile"])
-	if json.Unmarshal(raw, &profile) != nil || !agentruntime.IsCoderAgentName(profile.Name) {
+	if !coder {
 		return errors.New("task execution requires current Coder consumer")
 	}
 	if task.SessionID != sessionID {
