@@ -82,7 +82,7 @@ what each needs, and follow their choice. No option is the default.
   `fireworks`: the person adds it on the setup page (`http://127.0.0.1:8443`
   on the machine; on a server, the installer printed the `ssh -L` line to open
   it from their computer), or as the first provider by script on the machine:
-  `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
+  `sudo bash /var/lib/swarm-headless/install.sh key PROVIDER < key-file`.
 - **Vertex AI** (`vertex`), only on a machine with a Google Cloud identity:
   `sudo swarmctl setup credential --provider vertex --project PROJECT`.
 

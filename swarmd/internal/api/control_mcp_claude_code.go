@@ -23,7 +23,7 @@ import (
 // controlMCPClaudeCodeSetupCommand is the command the person runs on the
 // machine: Swarm's headless installer keeps its checkout at this location
 // (INSTALLER in containers/headless/app/install.sh).
-const controlMCPClaudeCodeSetupCommand = "sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh claude-code"
+const controlMCPClaudeCodeSetupCommand = "sudo bash /var/lib/swarm-headless/install.sh claude-code"
 
 // claudeCodeStatusRefresher is the CLI's uncached probe, so a sign-in the
 // person just finished shows at once.

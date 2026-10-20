@@ -704,9 +704,14 @@ activate() {
     ln -sfn "$OPT/releases/$old" "$OPT/previous.new" && mv -T "$OPT/previous.new" "$OPT/previous" || return 1
   fi
   if environments_on; then docker tag "swarm-sandbox:$commit" "$SANDBOX_IMAGE" || return 1; fi
-  # A released build carries its own installer: later updates and the
-  # commands it prints use that copy.
-  if release_install; then install -m 0755 "$release/share/install.sh" "$STATE/install.sh" || return 1; fi
+  # Every install keeps its installer at $STATE/install.sh, the one path the
+  # docs and Swarm's own answers name: a released build carries its own (later
+  # updates use that copy); a source install copies the checkout's.
+  if release_install; then
+    install -m 0755 "$release/share/install.sh" "$STATE/install.sh" || return 1
+  elif [[ -f $SRC/containers/headless/app/install.sh ]]; then
+    install -m 0755 "$SRC/containers/headless/app/install.sh" "$STATE/install.sh" || return 1
+  fi
   # Switch current only after preparation succeeds; never prune rollback data here.
   install -m 0755 /dev/stdin "$SWARMCTL" <<WRAPPER || return 1
 #!/bin/sh

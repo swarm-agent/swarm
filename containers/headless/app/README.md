@@ -45,7 +45,7 @@ with `--for-user NAME`) the installer creates Swarm's owner for that person
 deploy workers, merge results) through `swarmctl setup sdk-token --ai-access`,
 writes it to their `~/.config/swarm/ai-key` (mode 0600, owned by them; never
 printed) and prints the connect lines.
-`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`
+`sudo bash /var/lib/swarm-headless/install.sh connect-ai`
 does the same later (`--access full` also approves tool calls and manages
 models, providers and workers); running it again replaces the key and revokes
 the old one.
@@ -74,7 +74,7 @@ credentials, and your own Claude login is not copied. In a terminal on the
 machine:
 
 <copy label="Claude Code for Swarm">
-sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh claude-code
+sudo bash /var/lib/swarm-headless/install.sh claude-code
 </copy>
 
 It finds or installs the CLI for that user (Anthropic's installer, into

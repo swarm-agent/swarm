@@ -60,7 +60,7 @@ CommonJS `require` and non-Node runtimes are not validated by this packaging ste
 
 On the Swarm box, `http://127.0.0.1:7783` is the scoped-token listener. The AI
 key the installer wrote to `~/.config/swarm/ai-key` (a new one:
-`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`)
+`sudo bash /var/lib/swarm-headless/install.sh connect-ai`)
 works only through its MCP, `http://127.0.0.1:7783/mcp`, with any MCP client;
 it reaches no SDK route. For the session routes there, use a client key (a full
 AI key's `swarm_create_client_key` mints one); **do not** use Desktop bootstrap

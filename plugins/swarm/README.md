@@ -33,7 +33,7 @@ offers ChatGPT sign-in with your plan first (you get a link and a code), or you
 add an API key on the setup page or by script, never in chat. Without the box
 key, `bin/swarm-mcp` uses an older `swarm mcp` install only if it has the
 bridge; otherwise it says how to install the box or get your key
-(`sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai`).
+(`sudo bash /var/lib/swarm-headless/install.sh connect-ai`).
 
 ## Choose the package and client
 

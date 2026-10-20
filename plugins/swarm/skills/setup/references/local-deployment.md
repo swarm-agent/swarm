@@ -25,7 +25,7 @@ to their `~/.config/swarm/ai-key` (mode 0600, only they can read it; never
 printed). For a new key, which replaces and revokes the old one:
 
 ```sh
-sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh connect-ai
+sudo bash /var/lib/swarm-headless/install.sh connect-ai
 ```
 
 `--for-user NAME` makes it for another person on the machine; `--access full`
@@ -91,7 +91,7 @@ On the box, the installer does steps 1 and 2 in the person's terminal, and
 then action `activate`; no setup page or owner password):
 
 ```sh
-sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh claude-code
+sudo bash /var/lib/swarm-headless/install.sh claude-code
 ```
 
 Or the person does all three steps by hand:
@@ -116,7 +116,7 @@ The person adds it on the setup page, or, as the first provider, by script on
 the machine:
 
 ```sh
-sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file
+sudo bash /var/lib/swarm-headless/install.sh key PROVIDER < key-file
 ```
 
 With a full AI key, `swarm_request_provider_key` gives them a one-time link to
