@@ -28,7 +28,7 @@ const (
 const (
 	BoxStatusOK        = "ok"
 	BoxStatusAttention = "attention" // something waits on a person or failed today
-	BoxStatusDegraded  = "degraded"  // agents are not confined, or spending is over the limit
+	BoxStatusDegraded  = "degraded"  // a wanted sandbox could not start, or spending is over the limit
 )
 
 // SetSecretsGatewayEnabled records whether the agent secret gateway runs, for
@@ -57,8 +57,8 @@ type boxWorker struct {
 // me?" in one call (GET /v3/box/summary, scope signals:read): sandbox and
 // secret-gateway state, sessions waiting on a person, workers that failed
 // today, usage against the daily limit, and the signal feed position. It
-// holds ids, names and counts only. Status is "degraded" when agents run
-// unconfined or spending is over the limit, "attention" when something waits
+// holds ids, names and counts only. Status is "degraded" when a sandbox
+// that should be on could not start, or spending is over the limit, "attention" when something waits
 // on a person or a worker failed today, else "ok"; reasons says why.
 func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -112,7 +112,9 @@ func (s *Server) handleBoxSummary(w http.ResponseWriter, r *http.Request) {
 	if !sb.Active {
 		if sb.Mode == sandbox.ModeRequired {
 			raise(BoxStatusDegraded, "agent execution blocked: required sandbox unavailable: "+sb.Reason)
-		} else {
+		} else if sb.Reason != "sandbox mode is off" {
+			// Off by the owner's setting is the headless default, not a fault;
+			// a sandbox that was wanted but could not start is.
 			raise(BoxStatusDegraded, "agent sandbox is off: "+sb.Reason)
 		}
 	}

@@ -21,9 +21,10 @@ key.
 
 ## 2. Install the box
 
-After the person agrees to the system changes (it installs Docker unless a
-working one is there, gVisor, and Swarm as a service), run on that machine, as
-the person, with sudo:
+After the person agrees to the system changes (it downloads Swarm's newest
+release, checks it, and runs it as a service under its own `swarm` user; no
+Docker is installed unless they want environments), run on that machine, as the
+person, with sudo:
 
 ```sh
 curl -fsSL https://swarmagent.dev/install | sudo bash
@@ -32,8 +33,11 @@ curl -fsSL https://swarmagent.dev/install | sudo bash
 Everything it starts listens on 127.0.0.1 only. At the end it creates Swarm's
 owner for the person who ran it, puts an AI key for their AI in
 `~/.config/swarm/ai-key` (only they can read it) and prints the connect lines.
-Workers run in a sandbox per project without permission prompts, and the
-secret gateway is on. `install.sh connect-ai` makes a new key later.
+Agents run on this machine without permission prompts (the sandbox is off by
+default; `install.sh sandbox on` turns it on). Environments, a folder's own
+container for its agents' commands with its secrets, need Docker: add
+`--environments on` to the install, or run `install.sh environments on` later.
+`install.sh connect-ai` makes a new key later.
 
 Add `--tailnet` only if the person wants to reach Swarm from other devices
 (see [remote access](references/remote.md)); it is not needed for a local AI.

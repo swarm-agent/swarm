@@ -1472,7 +1472,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_status", Title: "Is this box all right?",
-			Description: "One call: status ok, attention (something waits or a job failed today) or degraded (agents unconfined or spending over the limit) with reasons; the sandbox, the secret gateway, jobs waiting on someone, today's spend against the limit, and activity_cursor for swarm_activity. Exact counts: automations (schedules, how many are active and will run, the next run of each), runs today (total, succeeded, failed, unfinished, by source; the failed runs with job_id; everything running now) and the machine's workspaces and build. Today is the UTC day unless you pass the person's timezone.",
+			Description: "One call: status ok, attention (something waits or a job failed today) or degraded (a sandbox that should be on could not start, or spending is over the limit) with reasons; the sandbox, the secret gateway, jobs waiting on someone, today's spend against the limit, and activity_cursor for swarm_activity. Exact counts: automations (schedules, how many are active and will run, the next run of each), runs today (total, succeeded, failed, unfinished, by source; the failed runs with job_id; everything running now) and the machine's workspaces and build. Today is the UTC day unless you pass the person's timezone.",
 			InputSchema: controlMCPObject(nil, map[string]any{
 				"timezone": controlMCPStringProp("IANA timezone for \"today\" (for example Europe/Helsinki). Default UTC.", 0, 64),
 			}), Annotations: controlMCPReadOnly, call: controlMCPStatus,
@@ -1525,7 +1525,7 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_give_job", Title: "Give a worker a job",
-			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders, in Swarm's sandbox, with only that folder's secrets, and normally runs without tool-approval prompts (questions come back to the calling AI through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge. Reviewer workers require review_job, review an exact head in a detached disposable checkout, and return reports only; never deliver them.",
+			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders on this machine (in the folder's environment when it has one), with only that folder's secrets, and normally runs without tool-approval prompts (questions come back to the calling AI through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge. Reviewer workers require review_job, review an exact head in a detached disposable checkout, and return reports only; never deliver them.",
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),

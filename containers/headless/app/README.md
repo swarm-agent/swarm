@@ -11,16 +11,23 @@ apps, workers, sync, storage or publication APIs.
 
 For Ubuntu 24.04 **x86_64**: a server or your own PC. It works on the one
 machine with your own AI (Claude Code or Codex) and needs no Tailscale.
-Docker from snap cannot run the agent sandboxes; the installer stops and asks
-you to remove it. From your own account (the AI connection is made for you):
+From your own account (the AI connection is made for you):
 
 <copy label="Install">
 curl -fsSL https://swarmagent.dev/install | sudo bash
 </copy>
 
-`install.sh` installs Docker (it keeps a working Docker with buildx, such as
-docker-ce) and gVisor, builds Swarm and this app from source
-(`Dockerfile.host`, exported as files) and starts them. Everything listens on
+`install.sh` downloads the newest release from GitHub
+(`swarm-vX.Y.Z-linux-amd64.tar.gz`, built and signed by the release pipeline),
+checks it against its published `.sha256` and that it was built from the commit
+GitHub names, unpacks its `headless/` package (the daemon, `swarmctl`, this app
+and its Node) and starts them. Nothing is compiled and no Docker is installed.
+`--environments on` (or `install.sh environments on` later) installs Docker and
+gVisor for environments and the sandbox; Docker from snap cannot run them, so
+the installer then asks you to remove it. `--ref BRANCH` builds that branch
+from source with Docker instead (`Dockerfile.host`), for development machines;
+installs made before downloads keep doing that. `--release-file ARCHIVE`
+installs a release archive already on the machine. Everything listens on
 127.0.0.1 only and no firewall rule is opened: the setup page on
 `http://127.0.0.1:8443` and Swarm's MCP (Swarm Control) on
 `http://127.0.0.1:7783/mcp`, which answers only to AI keys. On a server, reach
@@ -91,7 +98,7 @@ MagicDNS and HTTPS certificates must be on. See [TAILNET.md](TAILNET.md).
 Tailscale was optional keep their tailnet setup on update.
 
 **Layout.** Swarm runs on the machine itself as two systemd services under a
-dedicated `swarm` user: `swarm-headless` (the daemon, `--sandbox=required`)
+dedicated `swarm` user: `swarm-headless` (the daemon; `--sandbox=off` by default)
 and `swarm-headless-app` (this app on 127.0.0.1:8443). Binaries live in
 `/opt/swarm/current`; Swarm's state in `/etc/swarmd`, `/var/lib/swarmd`,
 `/var/cache/swarmd` and `/var/log/swarmd` (mode 0700, systemd state
@@ -113,10 +120,11 @@ and what runs (`busy`); `auto-update on --hook PATH` also tells a root-owned
 command when a commit is installed, blocked or rolled back, and `--checks`
 names other checks (`none` for a fork without them).
 **Disk.** After a build comes up (an update, or `install.sh up`), the installer
-removes older releases under `/opt/swarm/releases` with their
-`swarm-sandbox:COMMIT` images, keeping the running build, the one before it
-(for rollback) and a build waiting to start, and trims Docker's build cache to
-`BUILD_CACHE_MAX` in `install.env` (default `8gb`, `none` keeps it all). Nothing
+removes older releases under `/opt/swarm/releases` (with their
+`swarm-sandbox:COMMIT` images when environments are on), keeping the running
+build, the one before it (for rollback) and a build waiting to start; a source
+install also trims Docker's build cache to `BUILD_CACHE_MAX` in `install.env`
+(default `8gb`, `none` keeps it all). Nothing
 is removed after a failed or rolled-back update. A trimmed cache can make the
 next build start from scratch and take longer; the running build is not
 affected.
@@ -164,9 +172,12 @@ folders (any `.name` folder), Swarm's storage, the whole home folder and
 other people's folders are refused. `workspace remove PATH` reverses `add`;
 `workspace list` shows the folders.
 
-**Agent sandboxes.** Swarm keeps its keys, login and local socket to itself.
-Agents' commands, and Swarm's own Git on their projects, run in one sandbox
-per project (`swarmd/internal/sandbox`, image `containers/sandbox`): gVisor
+**Environments and the sandbox (optional, need Docker).** Swarm keeps its
+keys, login and local socket to itself. By default agents run their commands on
+the machine as Swarm's user. A folder with an environment (`swarm_set_environment`
+with `max_leases`) runs its agents' bash in leased containers of it, with its
+secrets as stand-ins; with `install.sh sandbox on`, agents' commands, and
+Swarm's own Git on their projects, run in one sandbox per project (`swarmd/internal/sandbox`, image `containers/sandbox`): gVisor
 when it runs correctly on the machine (else Docker's default runtime), all
 capabilities dropped, no-new-privileges, the `swarm` user's uid, memory and
 process limits, only that project and its worktrees mounted at the same paths,
@@ -196,10 +207,9 @@ work; nothing is delivered until `swarm_deliver_job` asks.
 local merges.
 
 **Agent permissions.** Jobs normally run without tool-approval prompts: the installer
-starts Swarm with `--sandbox=required --bypass-permissions`, so agents run
-without ordinary prompts (plans to accept, agent questions and hard denials
-still stop). No sandbox, no autonomy: Swarm does not start without its
-sandbox, and bypass takes effect only while the sandbox is active.
+starts Swarm with `--bypass-permissions`, sandbox or not, so agents run without
+ordinary prompts (plans to accept, agent questions and hard denials still
+stop): a headless machine has nobody to answer a prompt.
 `--ask-permissions` at install, or `install.sh permissions ask`, starts it with
 `--bypass-permissions=false` instead (agents pause before commands and file
 changes); `permissions auto` goes back. The installer's choice applies at every

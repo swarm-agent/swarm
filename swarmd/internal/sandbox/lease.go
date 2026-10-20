@@ -204,6 +204,11 @@ func (m *Manager) TakeLease(ctx context.Context, path, owner string) (Lease, err
 	return *lease, nil
 }
 
+// EnvironmentsOffMessage is the answer when this machine cannot run
+// environments: they need Docker, which a headless install adds only when
+// the person turns environments on with its installer.
+const EnvironmentsOffMessage = "environments are off on this machine (they need Docker): the person turns them on with: sudo bash /var/lib/swarm-headless/install.sh environments on (on an install built from source: sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh environments on)"
+
 // LeaseInfo is a folder's lease maximum and how many are in use.
 type LeaseInfo struct {
 	Root  string

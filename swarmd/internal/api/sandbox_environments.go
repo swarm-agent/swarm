@@ -93,7 +93,7 @@ func (s *Server) handleSandboxEnvironments(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if environmentManager() == nil {
-			writeError(w, http.StatusConflict, errors.New("this machine has no working Docker, so no environment can be built or used"))
+			writeError(w, http.StatusConflict, errors.New(sandbox.EnvironmentsOffMessage))
 			return
 		}
 		if req.BaseImage == "" {

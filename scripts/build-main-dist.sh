@@ -93,6 +93,9 @@ SWARMD_ARTIFACT_DIR="${PLATFORM_DIR}/swarmd"
 WEB_ARTIFACT_DIR="${OUTPUT_DIR}/web"
 RELEASE_STAGE_DIR="${OUTPUT_DIR}/release-stage"
 HEADLESS_DIR="${OUTPUT_DIR}/headless"
+# The setup page's Node in the headless package: the official build.
+HEADLESS_NODE_VERSION="22.22.0"
+HEADLESS_NODE_SHA256="9aa8e9d2298ab68c600bd6fb86a6c13bce11a4eca1ba9b39d79fa021755d7c37"
 
 rm -rf "${PLATFORM_DIR}" "${WEB_ARTIFACT_DIR}" "${HEADLESS_DIR}" "${RELEASE_STAGE_DIR}" "${OUTPUT_DIR}/build-info.txt" "${OUTPUT_DIR}"/swarm-*.tar.gz "${OUTPUT_DIR}"/swarm-*.tar.gz.sha256
 mkdir -p "${ROOT_ARTIFACT_DIR}" "${SWARMD_ARTIFACT_DIR}"
@@ -179,6 +182,8 @@ fi
 echo "building the headless host package into ${HEADLESS_DIR}"
 require_cmd node
 require_cmd npm
+require_cmd curl
+require_cmd xz
 node_major="$(node -p 'process.versions.node.split(".")[0]')"
 if (( node_major < 22 )); then
   echo "the headless package needs Node 22 or newer to bundle; found $(node --version)" >&2
@@ -191,7 +196,15 @@ mkdir -p "${HEADLESS_DIR}/bin" "${HEADLESS_DIR}/lib" "${HEADLESS_DIR}/app/packag
 )
 cp "${SWARMD_ARTIFACT_DIR}/swarmctl" "${SWARMD_ARTIFACT_DIR}/swarm-fff-search" "${HEADLESS_DIR}/bin/"
 cp "${SWARMD_ARTIFACT_DIR}/libfff_c.so" "${HEADLESS_DIR}/lib/"
-cp "$(readlink -f "$(command -v node)")" "${HEADLESS_DIR}/bin/node"
+# The official Node.js build, pinned and checked (the same version as
+# Dockerfile.host): a distribution's node can need libraries a fresh machine
+# does not have (libatomic).
+node_archive="node-v${HEADLESS_NODE_VERSION}-linux-x64.tar.xz"
+curl -fsSL --retry 3 -o "${OUTPUT_DIR}/${node_archive}" "https://nodejs.org/dist/v${HEADLESS_NODE_VERSION}/${node_archive}"
+printf '%s  %s\n' "${HEADLESS_NODE_SHA256}" "${OUTPUT_DIR}/${node_archive}" | sha256sum --check --quiet
+tar -xJf "${OUTPUT_DIR}/${node_archive}" -C "${HEADLESS_DIR}/bin" --strip-components=2 "node-v${HEADLESS_NODE_VERSION}-linux-x64/bin/node"
+rm -f "${OUTPUT_DIR}/${node_archive}"
+"${HEADLESS_DIR}/bin/node" --version >/dev/null
 (
   # Build in a copy so the source checkout stays clean.
   sdk="${HEADLESS_DIR}/app/packages/sdk"

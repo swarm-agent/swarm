@@ -38,7 +38,7 @@ func leaseEnvironmentDefinition() Definition {
 func executeLeaseEnvironment(ctx context.Context, scope WorkspaceScope, args map[string]any) (string, error) {
 	manager := sandbox.Leases()
 	if manager == nil {
-		return "", errors.New("leases are unavailable on this machine (it has no working Docker)")
+		return "", errors.New(sandbox.EnvironmentsOffMessage)
 	}
 	owner := strings.TrimSpace(scope.SessionID)
 	if owner == "" {
