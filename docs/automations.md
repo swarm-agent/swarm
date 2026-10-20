@@ -267,6 +267,10 @@ With `fixes`:
   follow-up to finish. The follow-up's end is a new job end, so it triggers
   the automation again as a new delivery whose `round` is the previous
   round + 1. The round is counted once, when the follow-up is sent.
+- Rounds count per (automation, job), across deliveries: a delivery's
+  `round` is the number of reopens the automation already sent into that
+  job, so every later delivery of the job continues the count, including one
+  for a turn the person sent after a follow-up failed.
 - A job takes one follow-up at a time. When the job is still running (its run
   or another follow-up is in flight), the step **waits**, within its
   `timeout_seconds`, for it to settle, then sends its follow-up. A follow-up
@@ -279,8 +283,8 @@ With `fixes`:
   when its timeout expires (`timed out after N seconds waiting for job ... to
   settle (...); nothing was sent`), when the stop switch is turned on while
   it waits, or, at once, when the job is cancelled; nothing is sent then.
-- `max_rounds` (default 2, at most 5) bounds the loop: when another reopen
-  would exceed it, the step sends nothing, fails with reason
+- `max_rounds` (default 2, at most 5) bounds the loop: once the job has had
+  `max_rounds` reopens from the automation in total, the step sends nothing, fails with reason
   `rounds_exhausted`, and the delivery ends `blocked`
   (`automation.delivery.blocked`).
 - An unreadable review is never sent: when the `from` step's outcome has
@@ -297,10 +301,13 @@ With `fixes`:
 Each matching (job end, automation) pair is one **delivery** with a stable
 `delivery_id`, made from the job id, the follow-up, the automation id and the
 automation revision. A delivery runs at most once; a replayed job end does
-not deliver again. A delivery keeps the steps of the revision it started
-with, its `round` (0, or the reopening delivery's round + 1 for a follow-up a
-`reopen` step sent), its `head` and, when it ended `blocked`, its
-`blocked_reason`.
+not deliver again. An automation has at most one delivery per job and head:
+a job end whose head already has a delivery (running or finished) for the
+automation, such as a stopped follow-up or a turn that committed nothing,
+creates none, and `automation.delivery.skipped` records why. A delivery
+keeps the steps of the revision it started with, its `round` (the reopens
+the automation already sent into the job), its `head` and, when it ended
+`blocked`, its `blocked_reason`.
 
 Every delivery and step is recorded durably with its state (`pending`,
 `running`, `waiting` (a reopen step waiting for its job), `succeeded`,
@@ -312,11 +319,17 @@ finished step is never run again.
 The **stop switch** (`swarm_stop_automations`, `POST
 /v3/job-automations/stop`) is machine-wide: while it is on no new step
 starts; running steps finish, and the next step is recorded as `stopped`.
-`swarm_deliver_job` with `automation: true` (or `POST
-/v3/job-deliveries/{id}/rerun`) re-runs only failed or stopped steps (and the
-steps after them that did not run); a succeeded step is never re-run. A
-`blocked` delivery re-runs from its first step with a new round budget (a
-`run` step that already succeeded is still never re-run).
+`swarm_deliver_job` with `automation: true` re-runs, for each automation,
+only the job's **newest** delivery, and only while that delivery's head is
+still the job's current head; older deliveries are never re-run (they are
+listed under `unchanged` with reason `superseded`, a newest delivery for an
+older head with `stale_head`). To re-run one named delivery explicitly,
+whatever its head, use `POST /v3/job-deliveries/{id}/rerun` (SDK
+`client.jobAutomations.rerun`). Either way only failed or stopped steps (and
+the steps after them that did not run) run again; a succeeded step is never
+re-run. A `blocked` delivery re-runs from its first step with a new round
+budget of `max_rounds` reopens past those the job already had (a `run` step
+that already succeeded is still never re-run).
 
 ## The result JSON
 
@@ -406,6 +419,10 @@ and `step_id`:
   `next`, the next allowed action: `rerun` or `fix the script`; while
   automatic retries remain, also `will_retry` and `retry_at`)
 - `automation.delivery.finished` (attrs: `state`, step counts)
+- `automation.delivery.skipped` (a job end created no delivery; attrs:
+  `reason` `duplicate_head`, `head`, `followup`, `status`, and
+  `delivery_state` of the delivery, named in `refs.delivery_id`, that
+  already covers that head)
 - `automation.delivery.blocked` (severity warning; attrs: `reason`
   `rounds_exhausted` or `review unreadable: <reviewer job id>`, `round`,
   `head`, the last `findings` shortened, and `next`: send the findings by
@@ -527,7 +544,7 @@ automation says so: there is no built-in review chain.
    job's original session. The coder fixes them in the same worktree; that
    follow-up's end triggers the automation again (round 1), and a new
    reviewer job reviews the new head.
-4. After two reopens without an `ok`, the next `fix` fails with
+4. After two reopens of the job in total without an `ok`, the next `fix` fails with
    `rounds_exhausted` and the delivery ends `blocked`. A review whose report
    could not be read reopens nothing: `fix` fails with
    `review unreadable: <reviewer job id>`, no round is used and the delivery

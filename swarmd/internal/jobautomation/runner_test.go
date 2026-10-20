@@ -461,6 +461,9 @@ func TestSameJobEndDeliversOnceAndAFollowupDeliversAgain(t *testing.T) {
 		t.Fatalf("the step ran %d times for one job end", runs)
 	}
 
+	// A follow-up that committed a new head delivers again (one delivery per
+	// automation, job and head: see delivery_rounds_test.go).
+	h.results.results["run-1"].Git.Head = strings.Repeat("c", 40)
 	h.jobEnd("run-1", "followup-run-9", "succeeded", "direct")
 	h.process()
 	list := h.deliveries("worker/coder-1/run-1")

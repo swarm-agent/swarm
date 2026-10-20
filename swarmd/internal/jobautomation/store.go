@@ -53,6 +53,20 @@ const (
 // would exceed its max_rounds.
 const ReasonRoundsExhausted = "rounds_exhausted"
 
+// ReasonDuplicateHead is why a job end created no delivery: the automation
+// already has a delivery (active or finished) for the job at that head.
+const ReasonDuplicateHead = "duplicate_head"
+
+// Reasons swarm_deliver_job automation=true leaves a delivery unchanged.
+const (
+	// ReasonSuperseded: an older delivery; only the newest is re-run.
+	ReasonSuperseded = "superseded"
+	// ReasonStaleHead: the newest delivery's head is no longer the job's.
+	ReasonStaleHead = "stale_head"
+	// ReasonNothingToRerun: no failed or stopped step.
+	ReasonNothingToRerun = "nothing_to_rerun"
+)
+
 // ReasonReviewUnreadable starts a reopen step's failure ("review unreadable:
 // <reviewer job id>") when the review its from step recorded could not be
 // read: nothing is sent and no round is used.
@@ -72,10 +86,11 @@ type Delivery struct {
 	AutomationRevision uint64 `json:"automation_revision"`
 	JobID              string `json:"job_id"`
 	Followup           string `json:"followup,omitempty"`
-	// Round counts the reopens that led to this job end: a delivery created
-	// by the follow-up a reopen step sent has the reopening delivery's round
-	// plus one. RoundBase is where an explicit re-run of a blocked delivery
-	// restarted the count; a reopen step allows max_rounds past it.
+	// Round counts the reopens this automation already sent into the job,
+	// across all of its deliveries for the job (per automation and job, not
+	// per delivery). RoundBase is where an explicit re-run of a blocked
+	// delivery restarted the count; a reopen step allows max_rounds past it,
+	// and a later delivery of the same job keeps it.
 	Round      int          `json:"round"`
 	RoundBase  int          `json:"round_base,omitempty"`
 	State      string       `json:"state"`
@@ -176,6 +191,23 @@ func (s *Store) PutReopen(account, jobID, followup string, rec ReopenRecord) err
 		return errors.New("a reopen needs the follow-up it sent")
 	}
 	return s.db.PutJSON(reopenKey(account, jobID, followup), rec)
+}
+
+// ReopenCount is how many follow-ups the automation's reopen steps sent into
+// the job, over all of its deliveries.
+func (s *Store) ReopenCount(account, jobID, automationID string) (int, error) {
+	count := 0
+	err := s.db.IteratePrefix(keyReopenPrefix+hexKey(account)+"/"+hexKey(jobID)+"/", 100000, func(_ string, value []byte) error {
+		var rec ReopenRecord
+		if err := json.Unmarshal(value, &rec); err != nil {
+			return fmt.Errorf("decode reopen: %w", err)
+		}
+		if rec.AutomationID == automationID {
+			count++
+		}
+		return nil
+	})
+	return count, err
 }
 
 // GetReopen reads what a reopen step recorded for a follow-up.
@@ -316,8 +348,21 @@ func (s *Store) Delete(account, id string) error {
 
 // ---- deliveries ------------------------------------------------------------
 
+// TriggerHead is the head of the job end a delivery was created for (its
+// Head may since have moved forward); "" when the job had no commits.
+func (d Delivery) TriggerHead() string {
+	if d.Result.Git != nil {
+		return d.Result.Git.Head
+	}
+	return ""
+}
+
 // CreateDelivery records a delivery unless one with its id exists already.
-// created is false for a delivery that exists: a job end delivers once.
+// created is false for a delivery that exists: a job end delivers once. It is
+// also false when the automation already has a delivery (active or finished)
+// for the job at the job end's head: the existing delivery, whose id differs
+// from DeliveryID of this job end, is returned and nothing is recorded (at
+// most one delivery per automation, job and head).
 func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, error) {
 	id := DeliveryID(result.JobID, result.Followup, a.ID, a.Revision)
 	s.mu.Lock()
@@ -330,20 +375,45 @@ func (s *Store) CreateDelivery(a Automation, result Result) (Delivery, bool, err
 	if found {
 		return existing, false, nil
 	}
+	previous, err := s.JobDeliveries(a.Account, result.JobID)
+	if err != nil {
+		return Delivery{}, false, err
+	}
+	head := ""
+	if result.Git != nil {
+		head = result.Git.Head
+	}
+	createdAt := s.now().UnixMilli()
+	roundBase := 0
+	for _, p := range previous {
+		// Deliveries of one job are ordered by creation: a new one is
+		// always the newest, even within the same millisecond.
+		if p.CreatedAt >= createdAt {
+			createdAt = p.CreatedAt + 1
+		}
+		if p.AutomationID != a.ID {
+			continue
+		}
+		if head != "" && p.TriggerHead() == head {
+			return p, false, nil
+		}
+		roundBase = max(roundBase, p.RoundBase)
+	}
 	d := Delivery{
 		ID: id, Account: a.Account, AutomationID: a.ID, AutomationName: a.Name, AutomationRevision: a.Revision,
 		JobID: result.JobID, Followup: result.Followup, State: StatePending, Retries: a.Retries, Folder: a.Scope.Folder,
-		Definition: append([]Step(nil), a.Steps...), Result: result, CreatedAt: s.now().UnixMilli(),
+		Definition: append([]Step(nil), a.Steps...), Result: result, CreatedAt: createdAt,
 	}
 	if result.Git != nil {
 		d.Head, d.HeadWorktree = result.Git.Head, result.Git.Worktree
 	}
-	// A follow-up this automation's reopen step sent continues its rounds.
-	if reopen, found, err := s.GetReopen(a.Account, result.JobID, result.Followup); err != nil {
+	// Rounds count per automation and job: the delivery continues from the
+	// reopens this automation already sent into the job, whichever delivery
+	// sent them and whether or not this end is one of their follow-ups.
+	if d.Round, err = s.ReopenCount(a.Account, result.JobID, a.ID); err != nil {
 		return Delivery{}, false, err
-	} else if found && reopen.AutomationID == a.ID {
-		d.Round, d.RoundBase = reopen.Round+1, reopen.RoundBase
 	}
+	d.RoundBase = min(roundBase, d.Round)
 	for _, step := range a.Steps {
 		d.Steps = append(d.Steps, StepRecord{ID: step.ID, Type: step.Type, State: StatePending})
 	}
@@ -544,7 +614,8 @@ func (s *Store) Unfinished() ([]Delivery, error) {
 // Rerun makes a finished delivery run again from its failed or stopped
 // steps: those steps and the ones after them that never ran become pending;
 // a step that succeeded is never run again. It returns the delivery and
-// whether there was anything to re-run.
+// whether there was anything to re-run. This is the explicit re-run of one
+// named delivery (POST /v3/job-deliveries/<id>/rerun), whatever its head.
 func (s *Store) Rerun(account, id string) (Delivery, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -556,6 +627,59 @@ func (s *Store) Rerun(account, id string) (Delivery, bool, error) {
 	if !found || d.Account != account {
 		return Delivery{}, false, ErrNotFound
 	}
+	return s.rerunLocked(d)
+}
+
+// RerunOutcome is what RerunNewest did with one delivery of the job: re-ran
+// it, or left it unchanged for Reason.
+type RerunOutcome struct {
+	Delivery Delivery
+	Rerun    bool
+	Reason   string
+}
+
+// RerunNewest is swarm_deliver_job automation=true: for each automation with
+// deliveries for the job it re-runs (as Rerun does) only that automation's
+// newest delivery, and only when the delivery's head is still the job's
+// current head. jobHead is the job's current head as read from the job;
+// when "" (unknown, or a job without commits) the head of the job's newest
+// delivery stands for it. Older deliveries are never re-run here.
+func (s *Store) RerunNewest(account, jobID, jobHead string) ([]RerunOutcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.JobDeliveries(account, jobID) // newest first
+	if err != nil {
+		return nil, err
+	}
+	if jobHead == "" && len(list) > 0 {
+		jobHead = list[0].TriggerHead()
+	}
+	out := []RerunOutcome{}
+	newest := map[string]bool{}
+	for _, d := range list {
+		if newest[d.AutomationID] {
+			out = append(out, RerunOutcome{Delivery: d, Reason: ReasonSuperseded})
+			continue
+		}
+		newest[d.AutomationID] = true
+		if head := d.TriggerHead(); head != "" && jobHead != "" && head != jobHead {
+			out = append(out, RerunOutcome{Delivery: d, Reason: ReasonStaleHead})
+			continue
+		}
+		updated, rerun, err := s.rerunLocked(d)
+		if err != nil {
+			return nil, err
+		}
+		outcome := RerunOutcome{Delivery: updated, Rerun: rerun}
+		if !rerun {
+			outcome.Reason = ReasonNothingToRerun
+		}
+		out = append(out, outcome)
+	}
+	return out, nil
+}
+
+func (s *Store) rerunLocked(d Delivery) (Delivery, bool, error) {
 	if !Terminal(d.State) || (d.State != StateFailed && d.State != StateStopped && d.State != StateBlocked) {
 		return d, false, nil
 	}
@@ -569,6 +693,12 @@ func (s *Store) Rerun(account, id string) (Delivery, bool, error) {
 				reset = true
 			}
 		}
+		// The new budget starts from the reopens the job had in total.
+		used, err := s.ReopenCount(d.Account, d.JobID, d.AutomationID)
+		if err != nil {
+			return Delivery{}, false, err
+		}
+		d.Round = max(d.Round, used)
 		d.RoundBase, d.BlockedReason = d.Round, ""
 		if d.Result.Git != nil {
 			d.Head, d.HeadWorktree = d.Result.Git.Head, d.Result.Git.Worktree

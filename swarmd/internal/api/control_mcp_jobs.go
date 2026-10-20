@@ -1063,9 +1063,9 @@ func controlMCPDeliverJob(c *controlMCPCall, args map[string]any) (any, error) {
 		return nil, err
 	}
 	if rerun, _ := args["automation"].(bool); rerun {
-		// Re-run the job's automations (only their failed or stopped steps);
-		// nothing is merged.
-		return c.rerunJobAutomations(controlMCPJobID(kind, a, b))
+		// Re-run the failed or stopped steps of the job's newest delivery
+		// at its current head (per automation); nothing is merged.
+		return c.rerunJobAutomations(kind, a, b)
 	}
 	if kind == controlMCPJobDesign {
 		return nil, controlMCPDesignRefused("swarm_deliver_job")
@@ -1580,7 +1580,7 @@ func controlMCPJobTools() []controlMCPTool {
 			Name: "swarm_deliver_job", Title: "Merge a job's result into its folder",
 			Description: "Deliver a needs_review job's commits: by default a real local git merge from its branch into the folder's branch; when the folder's owner set up publishing for it on the machine, a pull request instead (the result names it). Swarm never pushes otherwise. Read the result with swarm_get_job first. Refused when the job committed nothing; a merge is also refused on conflicts.",
 			InputSchema: controlMCPObject([]string{"job_id"}, map[string]any{"job_id": jobID,
-				"automation": map[string]any{"type": "boolean", "description": "Instead of merging: re-run only the failed or stopped steps of the job's automation deliveries (swarm_get_job shows them)."}}),
+				"automation": map[string]any{"type": "boolean", "description": "Instead of merging: re-run only the failed or stopped steps of the job's newest automation delivery, and only while its head is still the job's head; older deliveries are never re-run (swarm_get_job shows them)."}}),
 			Annotations: controlMCPDestructive, call: controlMCPDeliverJob,
 		},
 		{

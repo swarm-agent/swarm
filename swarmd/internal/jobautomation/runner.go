@@ -406,11 +406,32 @@ func (r *Runner) consume(ctx context.Context, account string, sig pebblestore.Si
 		if !a.Matches(result) {
 			continue
 		}
-		if _, _, err := r.store.CreateDelivery(a, *result); err != nil {
+		d, created, err := r.store.CreateDelivery(a, *result)
+		if err != nil {
 			return fmt.Errorf("record delivery: %w", err)
+		}
+		if !created && d.ID != DeliveryID(result.JobID, result.Followup, a.ID, a.Revision) {
+			r.skippedDuplicateHead(d, *result)
 		}
 	}
 	return nil
+}
+
+// skippedDuplicateHead records why a job end created no delivery: the
+// automation's delivery existing for the same job and head covers it.
+func (r *Runner) skippedDuplicateHead(existing Delivery, result Result) {
+	head := existing.TriggerHead()
+	log.Printf("swarmd job automations: %s: job %s end %q at head %s creates no delivery (%s): delivery %s (%s) covers that head",
+		existing.AutomationName, result.JobID, result.Followup, head, ReasonDuplicateHead, existing.ID, existing.State)
+	if r.emit == nil {
+		return
+	}
+	r.emit(pebblestore.Signal{Kind: "automation.delivery.skipped", Severity: pebblestore.SignalSeverityInfo, Account: existing.Account,
+		Summary:  truncate(fmt.Sprintf("Automation %s: job %s ended again at head %s, which delivery %s (%s) already covers; no new delivery", existing.AutomationName, result.JobID, head, existing.ID, existing.State), 400),
+		DedupKey: "automation.delivery.skipped:" + existing.AutomationID + ":" + result.JobID + ":" + result.Followup,
+		Refs:     map[string]string{"job_id": result.JobID, "delivery_id": existing.ID},
+		Attrs: map[string]string{"automation": existing.AutomationName, "reason": ReasonDuplicateHead, "head": head, "followup": result.Followup,
+			"status": result.Status, "delivery_state": existing.State}})
 }
 
 // ---- deliveries ------------------------------------------------------------
@@ -942,6 +963,14 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	if strings.TrimSpace(findings) == "" {
 		return stepFailure{reason: "step " + step.From + " recorded no findings to send", next: "fix the automation", refused: true}
 	}
+	// Rounds count per automation and job: read how many reopens the job
+	// has had in total now, so a delivery created before another delivery's
+	// reopen never overruns max_rounds.
+	sent, err := r.store.ReopenCount(d.Account, d.JobID, d.AutomationID)
+	if err != nil {
+		return stepFailure{reason: truncate("read the round count: "+err.Error(), 300), next: "rerun"}
+	}
+	d.Round = max(d.Round, sent)
 	used := d.Round - d.RoundBase
 	if used >= step.MaxRounds {
 		d.BlockedReason = ReasonRoundsExhausted

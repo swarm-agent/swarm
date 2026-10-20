@@ -115,14 +115,23 @@ func TestReopenSendsFindingsIntoTheJobsSessionAndTheFollowupEndIsTheNextRound(t 
 	if len(reopener.sent) != 1 {
 		t.Fatalf("an ok verdict reopened the job: %d", len(reopener.sent))
 	}
-	// A follow-up the person sent by hand starts no round.
+	// A follow-up the person sent by hand continues the job's round count:
+	// rounds count per automation and job, across deliveries.
+	h.results.results["run-1"].Git.Head = strings.Repeat("d", 40)
 	h.jobEnd("run-1", "followup-by-hand", "succeeded", "direct")
 	h.agents.outcomes = append(h.agents.outcomes, AgentOutcome{Verdict: VerdictOK})
 	h.process()
+	byHand := false
 	for _, d := range h.deliveries("worker/coder-1/run-1") {
-		if d.Followup == "followup-by-hand" && d.Round != 0 {
-			t.Fatalf("a follow-up sent by hand got round %d", d.Round)
+		if d.Followup == "followup-by-hand" {
+			byHand = true
+			if d.Round != 1 {
+				t.Fatalf("a follow-up sent by hand got round %d, want 1", d.Round)
+			}
 		}
+	}
+	if !byHand {
+		t.Fatal("a follow-up on a new head created no delivery")
 	}
 }
 
@@ -149,6 +158,7 @@ func TestRoundsExhaustedBlocksTheDeliveryAndSignalsIt(t *testing.T) {
 	h.results.results["run-1"] = workerResult(folder, "run-1")
 	h.jobEnd("run-1", "", "succeeded", "direct")
 	h.process()
+	h.results.results["run-1"].Git.Head = strings.Repeat("c", 40)
 	h.jobEnd("run-1", "followup-1", "succeeded", "direct") // round 1 blocks again
 	h.process()
 

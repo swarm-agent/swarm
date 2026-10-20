@@ -1269,9 +1269,13 @@ func (c *controlMCPCall) jobDeliveries(jobID string) ([]map[string]any, bool) {
 	return out, true
 }
 
-// rerunJobAutomations re-runs only the failed or stopped steps of a job's
-// deliveries (swarm_deliver_job with automation: true).
-func (c *controlMCPCall) rerunJobAutomations(jobID string) (any, error) {
+// rerunJobAutomations is swarm_deliver_job with automation: true. Per
+// automation it re-runs only the failed or stopped steps of the job's newest
+// delivery, and only while that delivery's head is still the job's current
+// head; older deliveries are never re-run (POST
+// /v3/job-deliveries/<id>/rerun re-runs one named delivery explicitly).
+func (c *controlMCPCall) rerunJobAutomations(kind, a, b string) (any, error) {
+	jobID := controlMCPJobID(kind, a, b)
 	store, account, err := c.jobAutomationAccount("automations:write")
 	if err != nil {
 		return nil, err
@@ -1283,26 +1287,64 @@ func (c *controlMCPCall) rerunJobAutomations(jobID string) (any, error) {
 	if len(list) == 0 {
 		return nil, controlMCPToolFailure("job %s has no automation deliveries: set one with swarm_set_automation, or deliver the job by hand (swarm_deliver_job without automation)", jobID)
 	}
+	head, err := c.jobCurrentHead(kind, a, b)
+	if err != nil {
+		return nil, controlMCPToolFailure("could not read job %s's current head, so nothing was re-run: %s", jobID, controlMCPTruncate(err.Error(), 300))
+	}
+	outcomes, err := store.RerunNewest(account, jobID, head)
+	if err != nil {
+		return nil, err
+	}
 	rerun := []map[string]any{}
 	unchanged := []map[string]any{}
-	for _, d := range list {
-		updated, ok, err := c.server.rerunJobDelivery(account, d.ID)
-		if err != nil {
-			return nil, err
+	stale := false
+	for _, outcome := range outcomes {
+		d := outcome.Delivery
+		if outcome.Rerun {
+			rerun = append(rerun, jobDeliveryView(d))
+			continue
 		}
-		if ok {
-			rerun = append(rerun, jobDeliveryView(updated))
-		} else {
-			unchanged = append(unchanged, map[string]any{"delivery_id": d.ID, "automation": d.AutomationName, "state": d.State})
+		entry := map[string]any{"delivery_id": d.ID, "automation": d.AutomationName, "state": d.State, "reason": outcome.Reason}
+		if h := d.TriggerHead(); h != "" {
+			entry["head"] = h
 		}
+		stale = stale || outcome.Reason == jobautomation.ReasonStaleHead
+		unchanged = append(unchanged, entry)
+	}
+	if len(rerun) > 0 && c.server.jobAutomations != nil {
+		c.server.jobAutomations.Wake()
 	}
 	out := map[string]any{"job_id": jobID, "rerun": rerun, "unchanged": unchanged}
-	if len(rerun) == 0 {
-		out["next"] = "no delivery had a failed or stopped step to re-run"
-	} else {
-		out["next"] = "the failed or stopped steps run again; swarm_get_job shows their progress"
+	if head != "" {
+		out["job_head"] = head
+	}
+	switch {
+	case len(rerun) > 0:
+		out["next"] = "the failed or stopped steps of the newest delivery run again; swarm_get_job shows their progress"
+	case stale:
+		out["next"] = "nothing was re-run: the newest delivery is for an older head than the job's current head, and older deliveries are never re-run (POST /v3/job-deliveries/<id>/rerun re-runs one named delivery)"
+	default:
+		out["next"] = "the newest delivery had no failed or stopped step to re-run"
 	}
 	return out, nil
+}
+
+// jobCurrentHead is the commit a job's branch is at now, read from its
+// swarm_get_job view; "" for a job without commits (or a media or design
+// job, which has none).
+func (c *controlMCPCall) jobCurrentHead(kind, a, b string) (string, error) {
+	if kind != controlMCPJobWorker {
+		return "", nil
+	}
+	view, err := c.jobView(kind, a, b, 0, false, 0)
+	if err != nil {
+		return "", err
+	}
+	core, err := workerJobResultFromView(c.request.Context(), outbox.NewBuilder("automation", 256<<20).GitOutput, true, a, "", b, view)
+	if err != nil {
+		return "", err
+	}
+	return core.head, nil
 }
 
 // controlMCPAutomationStepsSchema is the JSON schema of an automation's steps.
