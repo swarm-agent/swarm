@@ -726,7 +726,7 @@ WRAPPER
   fi
   sed -i '/^SANDBOX_RUNTIME=/d' "$CONF" || return 1
   echo "SANDBOX_RUNTIME=$SANDBOX_RUNTIME" >>"$CONF" || return 1
-  install_units || return 1
+  install_units "$release" || return 1
   ln -sfn "$release" "$OPT/current.new" && mv -T "$OPT/current.new" "$OPT/current" || return 1
   UPDATE_SWITCHED=true
   systemctl restart "$DAEMON_UNIT" || return 1
@@ -1309,8 +1309,10 @@ install_units() {
   conf_migrate
   local sdk_args='' runtime_arg='' secrets_arg='' permissions_arg ai_url='' ai_ip='' release
   # The app starts only when run as the main module, which Node decides on
-  # the symlink-resolved path, so its unit names the release itself.
-  release=$(readlink -f "$OPT/current")
+  # the symlink-resolved path, so its unit names the release itself: the one
+  # being activated (activate passes it, before current points at it; on a
+  # first install current does not exist yet), else the running one.
+  release=${1:-$(readlink -f "$OPT/current")}
   # Swarm's MCP for AI keys, on loopback (and on the tailnet through Serve).
   [[ ${AI_ACCESS:-off} == on ]] && sdk_args='--container-sdk-port=7783 --container-sdk-host=127.0.0.1'
   [[ ${AI_ACCESS:-off} == on && ${TAILNET:-off} == on && ${TAILNET_IDENTITY:-off} == on ]] && sdk_args+=' --tailnet-identity'

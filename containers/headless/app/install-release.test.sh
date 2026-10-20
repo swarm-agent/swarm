@@ -109,6 +109,14 @@ unit=$UNITS/$DAEMON_UNIT
 [[ ! -e $UNITS/$FIREWALL_UNIT ]] || fail "a firewall unit was written with environments off"
 grep -q "ExecStart=/bin/bash $STATE/install.sh update" "$UNITS/swarm-headless-update.service" || fail "updates do not run the release's installer"
 
+# 5b. On a first install current does not exist yet when the units are
+# written: the setup page must still name the real release path (Node starts
+# it only when its path is the symlink-resolved one).
+rm -f "$OPT/current"
+install_units "$OPT/releases/$rel_commit" || fail "install_units for a first install failed"
+grep -q "^ExecStart=$OPT/releases/$rel_commit/bin/node $OPT/releases/$rel_commit/app/examples/headless-app/server.mjs$" "$UNITS/$APP_UNIT" ||
+  fail "the setup page names $(grep ^ExecStart= "$UNITS/$APP_UNIT"), not the release"
+
 # 6. Installs from before released builds keep building from source, with
 # environments on (they have Docker).
 cat >"$CONF" <<EOF
