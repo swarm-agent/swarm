@@ -7,7 +7,7 @@ type RemovedKey struct {
 	RemovedIn string
 }
 
-// RemovedKeys is the shared authority for parsing and installer migration.
+// RemovedKeys is the shared authority for parsing and for the installer, which drops removed keys from old config files.
 // Return a fresh slice so callers cannot change parser policy.
 func RemovedKeys() []RemovedKey {
 	keys := []RemovedKey{{Name: "sandbox_cpu_slots", RemovedIn: "a3f19d808"}}

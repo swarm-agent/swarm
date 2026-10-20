@@ -65,6 +65,9 @@ filter_allowed() {
   # exempt only those exact lines.
   # Setup recovery atomically publishes a synced record in the same trusted
   # directory; this exact call is not a storage migration.
+  # Worktree removal moves a receipted live checkout into its own trash entry
+  # before deletion, and publishes the synced admin-entry receipt in the same
+  # receipt directory; neither call moves daemon storage. Exempt only these lines.
   grep -vFx -f <(printf '%s\n' \
     'swarmd/internal/tool/search_coordinator.go:	home, err := os.UserHomeDir()' \
     'swarmd/internal/run/worker_execution.go:	if w.Provenance != nil && (w.Provenance.MigratedAt != 0 || w.Provenance.SourceProposalID != "") {' \
@@ -76,6 +79,8 @@ filter_allowed() {
     -e '^swarmd/internal/tool/runtime_managed_checkout\.go:[0-9]+:[[:blank:]]*temp, err := os\.MkdirTemp\("", "swarm-managed-file-"\)$' \
     -e '^swarmd/internal/worktree/managed_handoff\.go:[0-9]+:[[:blank:]]*cmd\.Env = \[\]string\{"PATH=" \+ os\.Getenv\("PATH"\), "TMPDIR=" \+ os\.TempDir\(\), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_NO_REPLACE_OBJECTS=1", "GIT_TERMINAL_PROMPT=0"\}$' \
     -e '^internal/launcher/onboarding_recovery\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(f\.Name\(\), filepath\.Join\(dir, "onboarding\.json"\)\); err != nil \{$' \
+    -e '^swarmd/internal/worktree/removal\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(receipt\.Path, checkout\); err != nil \{$' \
+    -e '^swarmd/internal/worktree/removal\.go:[0-9]+:[[:blank:]]*if err := os\.Rename\(filepath\.Join\(receiptDir, "admin-entry\.pending"\), filepath\.Join\(receiptDir, "admin-entry"\)\); err != nil \{$' \
     -e '^pkg/storagecontract/storagecontract\.go:.*(HOME|XDG_|\.local|\.config|Library|Desktop|Documents|Downloads|forbidden|reject|~|home-relative|WorkspaceRoots)' \
     -e '^internal/launcher/launcher\.go:.*(legacy|Legacy|XDG_STATE_HOME|XDG_DATA_HOME|UserHomeDir|UserConfigDir|\.local|\.config|resolve legacy|stat legacy|startupCWD|Getwd)' \
     -e '^swarmd/internal/config/config\.go:.*(resolveDefaultStartupCWD|UserHomeDir|user home directory|home = strings\.TrimSpace|return home)' \
@@ -169,6 +174,22 @@ if [[ "${self_test}" == "1" ]]; then
   recovery_hit='internal/launcher/onboarding_recovery.go:113: if err := os.Rename(f.Name(), filepath.Join(dir, "onboarding.json")); err != nil {'
   [[ -z "$(printf '%s\n' "${recovery_hit}" | filter_allowed)" ]] || exit 1
   for rejected_hit in "${recovery_hit/onboarding.json/other.json}" "${recovery_hit} os.Rename(a, b)" "${recovery_hit/onboarding_recovery.go/other.go}"; do
+    [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+  done
+  # Requirement: worktree removal's trash move and receipt publication are the
+  # only exempt renames in removal.go; other destinations, appended code and
+  # other files remain rejected.
+  trash_hit=$'swarmd/internal/worktree/removal.go:145:\t\tif err := os.Rename(receipt.Path, checkout); err != nil {'
+  receipt_hit=$'swarmd/internal/worktree/removal.go:309:\t\tif err := os.Rename(filepath.Join(receiptDir, "admin-entry.pending"), filepath.Join(receiptDir, "admin-entry")); err != nil {'
+  for removal_hit in "${trash_hit}" "${receipt_hit}"; do
+    [[ -z "$(printf '%s\n' "${removal_hit}" | filter_allowed)" ]] || exit 1
+    for rejected_hit in "${removal_hit} os.Rename(a, b)" "${removal_hit/removal.go/other.go}"; do
+      [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
+    done
+  done
+  receipt_dst='"admin-entry"))'
+  other_dst='"other"))'
+  for rejected_hit in "${trash_hit/checkout)/storageRoot)}" "${receipt_hit/"${receipt_dst}"/${other_dst}}"; do
     [[ -n "$(printf '%s\n' "${rejected_hit}" | filter_allowed)" ]] || exit 1
   done
   # Requirement: rejecting the root home is not a storage default. Only the
