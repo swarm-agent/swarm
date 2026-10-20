@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
 // Requirement: the AI that runs a box sees and controls every key through
@@ -59,6 +62,23 @@ func TestControlMCPKeysListCreateRevoke(t *testing.T) {
 			}
 		}
 		return out, text, isError
+	}
+
+	// The default tool list shows the key tools the key's level allows: a
+	// full key all three, a write key list and revoke.
+	writeScopes, _ := aiKeyScopes("write")
+	for scopes, want := range map[string]string{strings.Join(fullScopes, " "): "swarm_create_key,swarm_list_keys,swarm_revoke_key", strings.Join(writeScopes, " "): "swarm_list_keys,swarm_revoke_key"} {
+		req := requestWithScopedToken(requestWithTestPrincipalForAccount(httptest.NewRequest(http.MethodPost, "/mcp", nil), user, account), &pebblestore.ScopedTokenRecord{Scopes: strings.Fields(scopes)})
+		var listed []string
+		for _, tool := range (&controlMCPCall{request: req, next: s.internalRouteHandler(), server: s}).visibleTools() {
+			if tool.Name == "swarm_list_keys" || tool.Name == "swarm_create_key" || tool.Name == "swarm_revoke_key" {
+				listed = append(listed, tool.Name)
+			}
+		}
+		sort.Strings(listed)
+		if got := strings.Join(listed, ","); got != want {
+			t.Fatalf("key tools listed for %q: %s, want %s", scopes, got, want)
+		}
 	}
 
 	app, text, isErr := call("swarm_create_key", map[string]any{"kind": "app", "name": "my-ui"})

@@ -72,8 +72,9 @@ var controlMCPCoreTools = map[string]bool{
 	"swarm_give_job": true, "swarm_get_job": true, "swarm_message_job": true, "swarm_answer_job": true,
 	"swarm_deliver_job": true, "swarm_stop_job": true, "swarm_schedule_job": true,
 	"swarm_request_media": true, "swarm_media_models": true, "swarm_save_media": true, "swarm_set_media_models": true,
-	"swarm_design":         true,
-	"swarm_list_secrets":   true,
+	"swarm_design":       true,
+	"swarm_list_secrets": true,
+	"swarm_list_keys":    true, "swarm_create_key": true, "swarm_revoke_key": true,
 	"swarm_set_automation": true, "swarm_list_automations": true, "swarm_delete_automation": true, "swarm_stop_automations": true,
 }
 
