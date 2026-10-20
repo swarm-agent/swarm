@@ -278,6 +278,15 @@ func (m *Manager) ExecLease(ctx context.Context, id, owner string, req ExecReque
 	if err != nil {
 		return nil, err
 	}
+	// The lease runs as the folder's owner, while the agent's worktree and
+	// bucket belong to Swarm's user (and the folder may belong to the person):
+	// Git in the lease needs safe.directory for each of them, by exact path.
+	safe := append([]string(nil), l.scope.Mounts...)
+	safe = append(safe, filepath.Join(l.Root, ".git"))
+	if req.WorkingDir != "" {
+		safe = append(safe, filepath.Clean(req.WorkingDir))
+	}
+	req.Env = safeDirectoryEnvMap(req.Env, safe)
 	result, err := m.execOnce(ctx, l.scope, req)
 	if errors.Is(err, provider.ErrSupervisorUnavailable) && ctx.Err() == nil {
 		// The container went away (stopped or removed outside Swarm): nothing

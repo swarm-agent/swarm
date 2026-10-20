@@ -15,14 +15,26 @@ import (
 
 // boundedCloneArgs bounds both upload-pack's pack-objects and the client without
 // persisting configuration in either repository. Git passes the upload-pack
-// command through a shell; keep it static and pass paths as separate arguments.
+// command through a shell; its only paths are the source's, single-quoted.
+//
+// The source may belong to the person while Swarm's user runs Git (the sandbox
+// off, a folder made visible to Swarm). Git checks upload-pack's repository by
+// its .git directory and clears GIT_CONFIG_* from upload-pack's environment, so
+// the safe.directory the daemon passes in its environment never reaches it:
+// upload-pack gets it on its own command line, for exactly this source.
 func boundedCloneArgs(source, destination string) []string {
 	return []string{
 		"-c", "core.bigFileThreshold=1m",
 		"clone", "--no-local", "--no-checkout",
-		"--upload-pack=git -c pack.threads=1 -c pack.windowMemory=64m -c pack.deltaCacheSize=16m -c core.bigFileThreshold=1m -c pack.window=10 upload-pack",
+		"--upload-pack=git -c " + shellQuote("safe.directory="+source) + " -c " + shellQuote("safe.directory="+filepath.Join(source, ".git")) +
+			" -c pack.threads=1 -c pack.windowMemory=64m -c pack.deltaCacheSize=16m -c core.bigFileThreshold=1m -c pack.window=10 upload-pack",
 		"--", source, destination,
 	}
+}
+
+// shellQuote quotes s as one POSIX shell word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func (s *Service) allocateWorkerClone(source string, current bool, base, branch, owner string, exact bool, scopes []string, sparse bool, initialize ...func(string) error) (Allocation, error) {

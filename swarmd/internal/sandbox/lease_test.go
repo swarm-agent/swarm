@@ -166,3 +166,30 @@ func TestLeasesRecoveredAfterRestart(t *testing.T) {
 		t.Fatal("recovered lease of a finished agent was not released")
 	}
 }
+
+// Purpose: a command in a lease runs as the folder's owner while the agent's
+// worktree belongs to Swarm's user (and the folder may belong to the person),
+// so Git there gets safe.directory for the folder, its .git and the working
+// directory, instead of refusing "dubious ownership".
+func TestLeaseCommandsCarrySafeDirectories(t *testing.T) {
+	m, runner, project := newLeaseTestManager(t, 1, nil)
+	ctx := context.Background()
+	lease, err := m.TakeLease(ctx, project, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := runner.count()
+	_, _ = m.ExecLease(ctx, lease.ID, "owner", ExecRequest{Command: []string{"git", "status"}, WorkingDir: project})
+	runner.mu.Lock()
+	calls := append([][]string(nil), runner.calls[before:]...)
+	runner.mu.Unlock()
+	joined := ""
+	for _, c := range calls {
+		joined += strings.Join(c, " ") + "\n"
+	}
+	for _, want := range []string{"safe.directory", "GIT_CONFIG_VALUE_", project + "/.git"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("lease exec lacks %q:\n%s", want, joined)
+		}
+	}
+}

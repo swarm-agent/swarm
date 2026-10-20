@@ -100,7 +100,7 @@ func TestWorkerCloneMemory(t *testing.T) {
 	configs := map[string]map[string]string{}
 	packSIDs := map[string]bool{}
 	clones := 0
-	const upload = "--upload-pack=git -c pack.threads=1 -c pack.windowMemory=64m -c pack.deltaCacheSize=16m -c core.bigFileThreshold=1m -c pack.window=10 upload-pack"
+	const upload = " -c pack.threads=1 -c pack.windowMemory=64m -c pack.deltaCacheSize=16m -c core.bigFileThreshold=1m -c pack.window=10 upload-pack\x00"
 	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
 		var event struct {
 			Event, SID, Param string
@@ -117,7 +117,10 @@ func TestWorkerCloneMemory(t *testing.T) {
 			}
 			if strings.Contains(joined, "\x00clone\x00") {
 				clones++
-				for _, option := range []string{upload, "--no-local", "--no-checkout", "core.bigFileThreshold=1m"} {
+				if !strings.Contains(joined, "\x00--upload-pack=git -c 'safe.directory=") || !strings.Contains(joined, upload) {
+					t.Errorf("clone upload-pack not bounded with its safe.directory: %v", event.Argv)
+				}
+				for _, option := range []string{"--no-local", "--no-checkout", "core.bigFileThreshold=1m"} {
 					if !strings.Contains(joined, "\x00"+option+"\x00") {
 						t.Errorf("clone missing %q: %v", option, event.Argv)
 					}
@@ -146,6 +149,25 @@ func TestWorkerCloneMemory(t *testing.T) {
 			if got := configs[sid][key]; got != want {
 				t.Errorf("pack-objects %s = %q, want %q", key, got, want)
 			}
+		}
+	}
+}
+
+// Purpose: a worker clone of a folder Swarm's user does not own (the sandbox
+// off, a person's folder) is not refused as "dubious ownership": upload-pack
+// gets safe.directory for exactly the source on its own command line, quoted
+// for the shell Git runs it through.
+func TestBoundedCloneArgsCarrySafeDirectory(t *testing.T) {
+	args := boundedCloneArgs("/home/o'neil/repo", "/tmp/dest")
+	var upload string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--upload-pack=") {
+			upload = a
+		}
+	}
+	for _, want := range []string{`-c 'safe.directory=/home/o'\''neil/repo'`, `-c 'safe.directory=/home/o'\''neil/repo/.git'`, "-c pack.threads=1", " upload-pack"} {
+		if !strings.Contains(upload, want) {
+			t.Fatalf("upload-pack %q lacks %q", upload, want)
 		}
 	}
 }
