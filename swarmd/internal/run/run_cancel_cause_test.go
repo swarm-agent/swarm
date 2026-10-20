@@ -14,7 +14,10 @@ package run
 // boundary of runTurn; driving them with a real Pebble store and session
 // service exercises the production stop paths without a model provider, which
 // is the narrowest layer that proves both the named cause and the cross-job
-// isolation.
+// isolation. Scope limit: these registries belong to run.Service only. The V3
+// executor in swarmd/internal/api, where the incident's follow-up ran, keeps
+// its own cancel registry, so these tests are not evidence about that path.
+// run_cancel_runturn_test.go drives the same paths through a real runTurn.
 
 import (
 	"context"
@@ -116,7 +119,7 @@ func TestStopSessionRunNamesItsCauseAndSparesAnotherJobsRun(t *testing.T) {
 		t.Fatalf("the follow-up's lifecycle changed: %+v found=%v err=%v", lifecycle, ok, err)
 	}
 	stopped, ok, err := f.sessions.GetLifecycle("worker-execution-reviewer")
-	if err != nil || !ok || stopped.Active || stopped.Phase != lifecyclePhaseCancelled || stopped.StopReason != reason {
+	if err != nil || !ok || stopped.Active || stopped.Phase != lifecyclePhaseCancelled || stopped.StopReason != runCancelCause(RunCancelledByStopRequest, reason).Error() {
 		t.Fatalf("the stopped run's lifecycle = %+v found=%v err=%v", stopped, ok, err)
 	}
 }

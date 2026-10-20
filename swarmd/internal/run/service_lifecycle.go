@@ -182,7 +182,7 @@ func (s *Service) StopSessionRun(sessionID, runID, reason string) error {
 	current.Phase = lifecyclePhaseCancelled
 	current.EndedAt = now
 	current.UpdatedAt = now
-	current.StopReason = reason
+	current.StopReason = runCancelCause(RunCancelledByStopRequest, reason).Error()
 	current.Error = ""
 	if err := s.sessions.UpsertLifecycle(current); err != nil {
 		s.lifecycleMu.Unlock()
@@ -374,12 +374,22 @@ func classifyLifecycleFinish(runErr error, active *activeSessionRun) (phase, sto
 		}
 		return lifecyclePhaseCompleted, "", ""
 	case errors.Is(runErr, context.Canceled):
+		// A named cancellation (see namedRunCancellation) is recorded with its
+		// cause, so the durable record says what ended the run.
+		var named *RunCancelledError
+		isNamed := errors.As(runErr, &named)
 		if active != nil && active.userStop {
+			if isNamed {
+				return lifecyclePhaseCancelled, named.Error(), ""
+			}
 			reason := strings.TrimSpace(active.stopReason)
 			if reason == "" {
 				reason = "run stopped by user"
 			}
 			return lifecyclePhaseCancelled, reason, ""
+		}
+		if isNamed {
+			return lifecyclePhaseInterrupted, named.Error(), ""
 		}
 		reason := "run interrupted"
 		if active != nil && strings.TrimSpace(active.stopReason) != "" {
