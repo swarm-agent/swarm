@@ -38,6 +38,13 @@ filter_allowed_runtime_paths() {
   # The headless core installer, its package test and the isolated package
   # probe declare that core layout once each; the probe runs only inside the
   # test's own Bubblewrap filesystem.
+  # The headless installer names the fixed daemon startup config it writes.
+  # The sandbox container layout declares its project cache mount and the
+  # image's prebuilt Go cache once each; the cache scripts reuse the constants.
+  # Sandbox instance matching recognises its own container by the fixed
+  # resolv.conf mount destination.
+  # `swarmctl machine` refuses Swarm's fixed storage directories as project
+  # folders, and refuses publish commands under home folders by naming them.
   filter_guest_image_paths | grep -Ev \
     -e '^(\./)?scripts/rebuild\.sh:[0-9]+:  for path in /usr/local/share/swarm /etc/swarmd /var/lib/swarmd /var/cache/swarmd /run/swarmd /var/log/swarmd /etc/systemd/system/swarm\.service; do$' \
     -e '^(\./)?(install\.sh|cmd/swarm/main\.go|internal/launcher/service_lifecycle\.go):.*(/etc/swarmd|/etc/systemd/system/swarm\.service|/etc/tmpfiles\.d/swarmd\.conf)' \
@@ -47,6 +54,12 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?packages/swarm-fleet/claude-web-setup\.sh:[0-9]+:DIR=/opt/swarm-fleet$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:DATA_DIRS=\(/etc/swarmd /var/lib/swarmd /var/cache/swarmd /var/log/swarmd\)$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:APP_CONFIG=/etc/swarmd/headless-app$' \
+    -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:STARTUP_CONFIG=/etc/swarmd/swarm\.conf$' \
+    -e '^(\./)?swarmd/internal/sandbox/cache\.go:[0-9]+:const projectCachePath = "/opt/swarm-cache"$' \
+    -e '^(\./)?swarmd/internal/sandbox/cache\.go:[0-9]+:const imageGoCachePath = "/opt/go/cache"$' \
+    -e '^(\./)?swarmd/internal/sandbox/instance\.go:[0-9]+:[[:space:]]*if mount\.Destination == "/etc/resolv\.conf" && instanceIdentity\(filepath\.Dir\(mount\.Source\)\) == identity && filepath\.Base\(mount\.Source\) == "resolv\.conf" \{$' \
+    -e '^(\./)?swarmd/cmd/swarmctl/machine\.go:[0-9]+:[[:space:]]*for _, dir := range \[\]string\{"/etc/swarmd", "/var/lib/swarmd", "/var/cache/swarmd", "/var/log/swarmd", "/var/lib/swarm", machineState, "/opt/swarm"\} \{$' \
+    -e '^(\./)?swarmd/cmd/swarmctl/machine\.go:[0-9]+:[[:space:]]*if strings\.HasPrefix\(command, "/home/"\) \|\| strings\.HasPrefix\(command, "/root/"\) \{$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:GVISOR_LIST=/etc/apt/sources\.list\.d/gvisor\.list$' \
     -e '^(\./)?containers/headless/app/install\.sh:[0-9]+:[[:space:]]*\[\[ \$command != /home/\* && \$command != /root/\* \]\] \|\| \{ rm -f "\$PUBLISH\.new"; die "COMMAND must be outside home folders' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*sandboxHome[[:space:]]*=[[:space:]]*"/home/sandbox"$' \

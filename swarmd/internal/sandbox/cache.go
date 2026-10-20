@@ -9,6 +9,9 @@ import (
 )
 
 const projectCachePath = "/opt/swarm-cache"
+
+// imageGoCachePath is the sandbox image's fixed, prebuilt Go build cache.
+const imageGoCachePath = "/opt/go/cache"
 const DefaultProjectCacheBytes uint64 = 10 << 30
 
 // ProjectCacheVolume names a project-local cache, independent of job/review paths.
@@ -50,13 +53,13 @@ func (m *Manager) cacheHelper(ctx context.Context, root, script string, values .
 // Only initialization is locked. Go's build cache and pnpm's content-addressed
 // store support concurrent consumers; no job holds this lock while executing.
 const initializeCacheScript = `set -eu
-cd /opt/swarm-cache
+cd ` + projectCachePath + `
 exec 9>.init-lock
 flock -x 9
 if [ ! -e .ready ]; then
  if [ -z "$(find . -mindepth 1 -maxdepth 1 ! -name .init-lock -print -quit)" ]; then
   mkdir go-build go-mod pnpm
-  if [ -d /opt/go/cache ]; then cp -a /opt/go/cache/. go-build/; fi
+  if [ -d ` + imageGoCachePath + ` ]; then cp -a ` + imageGoCachePath + `/. go-build/; fi
   if [ -n "${GOMODCACHE:-}" ] && [ -d "$GOMODCACHE" ]; then cp -a "$GOMODCACHE/." go-mod/; fi
   if command -v pnpm >/dev/null 2>&1; then
    store=$(pnpm store path)
@@ -96,7 +99,7 @@ func (m *Manager) ProjectCacheUsage(ctx context.Context, root string) (CacheUsag
 	if _, err := m.runner.Run(ctx, m.cfg.Engine, "volume", "inspect", usage.Volume); err != nil {
 		return usage, err
 	}
-	out, err := m.cacheHelper(ctx, root, `du -sk /opt/swarm-cache`)
+	out, err := m.cacheHelper(ctx, root, `du -sk `+projectCachePath)
 	if err != nil {
 		return usage, err
 	}
@@ -110,7 +113,7 @@ func (m *Manager) ProjectCacheUsage(ctx context.Context, root string) (CacheUsag
 }
 
 const trimCacheScript = `set -eu
-size=$(du -sk /opt/swarm-cache | cut -f1)
+size=$(du -sk ` + projectCachePath + ` | cut -f1)
 if [ "$size" -gt "$1" ]; then
  if command -v go >/dev/null 2>&1; then go clean -cache; fi
 fi`
