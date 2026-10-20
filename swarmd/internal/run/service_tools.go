@@ -7768,6 +7768,7 @@ func taskDisabledTools(allowBash bool) map[string]bool {
 	}
 	if !allowBash {
 		disabled["bash"] = true
+		disabled[tool.LeaseEnvironmentToolName] = true
 	}
 	return disabled
 }
@@ -8010,6 +8011,14 @@ func permissionRequirement(mode, toolName, arguments string) (string, bool) {
 			return "bash", false
 		}
 		return "bash", true
+	case tool.LeaseEnvironmentToolName:
+		// Listing reads only; taking or releasing a lease starts or removes a
+		// container, so it asks like bash unless permissions are bypassed.
+		var args struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal([]byte(arguments), &args)
+		return toolName, strings.TrimSpace(strings.ToLower(args.Action)) != "list" && !bypass
 	default:
 		if bypass {
 			return toolName, false

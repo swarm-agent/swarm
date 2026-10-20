@@ -48,6 +48,11 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 	if scope.ReviewCheckout != "" && (sandbox.Default() == nil || !sandbox.Default().Active()) {
 		return "", sandbox.ErrSandboxRequired
 	}
+	if leaseID, err := bashLease(scope, args); err != nil {
+		return "", err
+	} else if leaseID != "" {
+		return executeLeasedBash(parent, sandbox.Leases(), leaseID, scope, command, timeout, onDelta)
+	}
 	if manager := sandbox.Default(); manager != nil && (manager.Active() || manager.Enforced()) {
 		return executeSandboxedBash(parent, manager, scope, command, timeout, onDelta)
 	}
@@ -150,6 +155,66 @@ func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scop
 		return "", fmt.Errorf("bash sandbox execution failed: %w", runErr)
 	}
 	return bashResponse(command, capture, streamWriter, result.ExitCode, false, nil, executionMode)
+}
+
+// bashLease is the lease a command runs in: the one named by environment,
+// else the agent's only lease. Without a lease the command runs as before.
+func bashLease(scope WorkspaceScope, args map[string]any) (string, error) {
+	id := strings.TrimSpace(asString(args["environment"]))
+	if scope.ReadOnlyBash || scope.ReviewCheckout != "" {
+		if id != "" {
+			return "", errors.New("a review cannot run in a lease")
+		}
+		return "", nil
+	}
+	manager := sandbox.Leases()
+	if manager == nil || strings.TrimSpace(scope.SessionID) == "" {
+		if id != "" {
+			return "", errors.New("leases are unavailable on this machine")
+		}
+		return "", nil
+	}
+	if id != "" {
+		return id, nil
+	}
+	held := manager.OwnerLeases(scope.SessionID)
+	switch len(held) {
+	case 0:
+		return "", nil
+	case 1:
+		return held[0].ID, nil
+	}
+	ids := make([]string, 0, len(held))
+	for _, l := range held {
+		ids = append(ids, l.ID)
+	}
+	return "", fmt.Errorf("you hold %d leases (%s): pass environment with the lease to run in", len(held), strings.Join(ids, ", "))
+}
+
+// executeLeasedBash runs the command in one of the agent's leases. The folder
+// is mounted at its own path there, so the working directory is unchanged.
+func executeLeasedBash(parent context.Context, manager *sandbox.Manager, leaseID string, scope WorkspaceScope, command string, timeout time.Duration, onDelta func(string)) (string, error) {
+	capture := newCappedBuffer(maxBashOutputViewerBytes)
+	streamWriter := newBashStreamWriter(capture, maxBashOutputViewerBytes, onDelta)
+	result, runErr := manager.ExecLease(parent, leaseID, strings.TrimSpace(scope.SessionID), sandbox.ExecRequest{
+		Command:    []string{"bash", "-c", sandboxBashScript, "swarm-bash", command},
+		WorkingDir: scope.PrimaryPath,
+		Timeout:    timeout,
+		MaxTimeout: maxBashTimeout,
+		MaxOutput:  maxBashOutputViewerBytes,
+		OnOutput:   func(chunk []byte) { _, _ = streamWriter.Write(chunk) },
+	})
+	streamWriter.Flush()
+	mode := "lease " + leaseID
+	switch {
+	case errors.Is(runErr, provider.ErrOperationTimedOut):
+		return bashResponse(command, capture, streamWriter, result.ExitCode, true, nil, mode)
+	case errors.Is(runErr, provider.ErrOperationCancelled):
+		return "", fmt.Errorf("bash execution cancelled: %w", parent.Err())
+	case runErr != nil:
+		return "", fmt.Errorf("bash in lease %s failed: %w", leaseID, runErr)
+	}
+	return bashResponse(command, capture, streamWriter, result.ExitCode, false, nil, mode)
 }
 
 func bashResponse(command string, capture *cappedBuffer, streamWriter *bashStreamWriter, exitCode int, timedOut bool, err error, executionMode ...string) (string, error) {

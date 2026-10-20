@@ -480,6 +480,11 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		return nil, fmt.Errorf("agent sandbox: %w", err)
 	}
 	sandbox.SetDefault(sandboxMgr)
+	leaseMgr, leaseOff := newLeaseManager(context.Background(), cfg, workspaceStore, store)
+	if leaseMgr == nil {
+		log.Printf("swarmd environment leases unavailable (%s)", leaseOff)
+	}
+	sandbox.SetLeases(leaseMgr)
 	emitWorkerRun := workerRunSignal(signalEmitter)
 	store.SetWorkerRunObserver(func(w pebblestore.WorkerRecord, r pebblestore.WorkerRunRecord) {
 		if snap, ok, err := pebblestore.NewSessionStore(store).GetSession(r.SessionID); err == nil && ok {
@@ -821,6 +826,10 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 		log.Printf("warning: sandbox environments: %v", err)
 	}
 	sandboxMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
+	if leaseMgr != nil {
+		leaseMgr.SetEnvironmentResolver(sandboxEnvironmentResolver{store: sandboxEnvironments})
+		leaseMgr.SetLeasePolicy(leaseLimit(sandboxEnvironments), leaseOwnerRunning(pebblestore.NewSessionStore(store)))
+	}
 	apiServer.SetSandboxEnvironmentStore(sandboxEnvironments)
 	secretSlots := pebblestore.NewSecretSlotStore(store)
 	apiServer.SetSecretServices(secretSlots, authStore)
@@ -888,6 +897,9 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 			return nil, fmt.Errorf("secret gateway: %w", err)
 		}
 		sandboxMgr.SetSecretBroker(broker)
+		if leaseMgr != nil {
+			leaseMgr.SetSecretBroker(broker)
+		}
 		secretGatewayStop = stopGateway
 		log.Printf("swarmd secret gateway enabled; granted secrets inject through the egress gateway without the agent seeing them")
 	}
@@ -897,6 +909,11 @@ func newDaemon(cfg config.Config, headless bool, configureClient func(*api.Serve
 	go deploymentMgr.RunReviewCleanup(bgCtx, func(err error) {
 		log.Printf("warning: environment review cleanup: %v", err)
 	})
+	if leaseMgr != nil {
+		leaseMgr.Start(bgCtx)
+		leaseMgr.StartLeases(bgCtx)
+		log.Printf("swarmd environment leases ready: agents lease their folder's environment for bash, up to its max_leases; leases end with the agent's run")
+	}
 	apiServer.SetMediaStagingService(mediaStagingSvc)
 	apiServer.SetVideoTranscriptionService(videoTranscriptionSvc)
 	apiServer.SetVideoProjectService(videoProjectSvc)

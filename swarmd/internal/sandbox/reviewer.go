@@ -14,6 +14,9 @@ func scopeContainerName(scope Scope) string {
 		scope.daemonGit = false
 		return scopeContainerName(scope) + "-daemon-git"
 	}
+	if scope.Lease != "" {
+		return leaseContainerName(scope.Root, scope.Lease)
+	}
 	if scope.ReviewCheckout != "" {
 		return ContainerName(scope.Root) + "-review-" + filepath.Base(ContainerName(scope.ReviewCheckout))
 	}

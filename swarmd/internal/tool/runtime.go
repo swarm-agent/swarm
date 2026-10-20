@@ -1029,6 +1029,7 @@ func (r *Runtime) Definitions() []Definition {
 					"workspace_path":   map[string]any{"type": "string", "description": "Optional explicit account-authorized repository root, including project chats without an ambient checkout. Does not bypass command permissions."},
 					"committed_source": map[string]any{"type": "object", "description": "Parent-owned validation of an exact completed Coder child. Use the committed_source tuple returned by manage-worktree recall; mutually exclusive with workspace_path. Account, lineage, inactive lifecycle and clean exact HEAD are revalidated before and after execution. Inspect validation_receipt.verified; command completion alone is not verified validation.", "properties": map[string]any{"task_call_id": map[string]any{"type": "string"}, "child_session_id": map[string]any{"type": "string"}, "head_commit": map[string]any{"type": "string"}}, "required": []string{"task_call_id", "child_session_id", "head_commit"}, "additionalProperties": false},
 					"command":          map[string]any{"type": "string", "description": "Shell command to execute"},
+					"environment":      map[string]any{"type": "string", "description": "A lease id from lease_environment to run the command in. With one lease held, commands run in it without this; with none, they run as usual."},
 					"explanation": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -1499,6 +1500,7 @@ func (r *Runtime) Definitions() []Definition {
 		manageProjectsDefinition(),
 		manageConnectionsDefinition(),
 		manageEnvironmentsDefinition(),
+		leaseEnvironmentDefinition(),
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
 		swarmDesignDefinition(),
@@ -2189,6 +2191,8 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageConnections(ctx, scope, args)
 	case "manage-environments", "manage_environments":
 		return r.executeManageEnvironments(ctx, scope, call.CallID, args)
+	case LeaseEnvironmentToolName:
+		return executeLeaseEnvironment(ctx, scope, args)
 	case "manage-deployments", "manage_deployments":
 		return "", errors.New("manage_deployments has been removed; use manage_environments instead")
 	case "artifact-v2-author", "artifact_v2_author":

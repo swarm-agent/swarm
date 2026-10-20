@@ -145,6 +145,8 @@ type Scope struct {
 	// ReviewCheckout selects a separate container with read-only project mounts
 	// and only this disposable checkout writable.
 	ReviewCheckout string
+	// Lease selects one leased container of the folder's environment (lease.go).
+	Lease string
 }
 
 // Manager owns the per-project sandbox containers.
@@ -178,6 +180,7 @@ type Manager struct {
 	safeMu     sync.Mutex
 	safeDirs   []string
 	safeDirsAt time.Time
+	leases     *leaseState
 }
 
 type box struct {
@@ -607,6 +610,7 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) []string {
 	m.mu.Lock()
 	runtime := m.runtime
+	leaseLabels := m.leaseLabelsLocked(name)
 	m.mu.Unlock()
 	uid, gid := m.sandboxUser(root)
 	user := fmt.Sprintf("%d:%d", uid, gid)
@@ -616,6 +620,7 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--label", labelRoot + "=" + root,
 		"--label", labelSpec + "=" + spec,
 	}
+	args = append(args, leaseLabels...)
 	if runtime != "" {
 		args = append(args, "--runtime", runtime)
 	}

@@ -309,6 +309,13 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		return ResolvedAgentToolContract{}, err
 	}
 	applyExplicitAgentTools(resolved.Tools, contract.Tools, "tool_contract")
+	if _, implemented := knownTools[tool.LeaseEnvironmentToolName]; implemented {
+		// Leasing the folder's environment is part of bash: every agent with
+		// bash may lease, unless its contract turns leasing off explicitly.
+		if _, explicit := contract.Tools[tool.LeaseEnvironmentToolName]; !explicit && resolved.Tools["bash"].Enabled {
+			resolved.Tools[tool.LeaseEnvironmentToolName] = ResolvedAgentTool{Enabled: true, Source: "runtime.bash_lease"}
+		}
+	}
 	if !accountMemoryAgentAllowed(profile) {
 		// Stale snapshots, permissive presets and custom agents cannot expose
 		// private account memory outside the primary Orchestrator boundary.

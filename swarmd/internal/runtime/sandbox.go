@@ -39,10 +39,44 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 	}
 	// File tools refuse the same paths, even with permissions bypassed.
 	tool.SetProtectedPaths(storage, credentials)
+	manager, err := sandbox.NewManager(ctx, sandboxConfig(cfg, db, mode, cfg.SandboxBackend, "sandbox", storage, credentials, ancestors), nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := setSandboxLayout(manager, workspaces); err != nil {
+		return nil, err
+	}
+	return manager, nil
+}
+
+// newLeaseManager returns the Docker manager that runs agents' leases
+// (sandbox/lease.go). It is its own manager, with its own state, whatever the
+// sandbox setting is, so leases work with the sandbox off and survive the
+// setting changing. It is nil, with the reason, when this machine has no
+// working Docker.
+func newLeaseManager(ctx context.Context, cfg config.Config, workspaces *pebblestore.WorkspaceStore, db *pebblestore.Store) (*sandbox.Manager, string) {
+	storage, credentials, ancestors, err := protectedDaemonPaths(cfg)
+	if err != nil {
+		return nil, err.Error()
+	}
+	manager, err := sandbox.NewManager(ctx, sandboxConfig(cfg, db, sandbox.ModeAuto, sandbox.BackendDocker, "sandbox-leases", storage, credentials, ancestors), nil)
+	if err != nil {
+		return nil, err.Error()
+	}
+	if !manager.Active() {
+		return nil, manager.Status().Reason
+	}
+	if err := setSandboxLayout(manager, workspaces); err != nil {
+		return nil, err.Error()
+	}
+	return manager, ""
+}
+
+func sandboxConfig(cfg config.Config, db *pebblestore.Store, mode sandbox.Mode, backend, stateDir string, storage, credentials, ancestors []string) sandbox.Config {
 	protected := append(append([]string(nil), storage...), credentials...)
-	manager, err := sandbox.NewManager(ctx, sandbox.Config{
+	return sandbox.Config{
 		Mode:    mode,
-		Backend: cfg.SandboxBackend,
+		Backend: backend,
 		Image:   cfg.SandboxImage,
 		Network: cfg.SandboxNetwork,
 		Runtime: cfg.SandboxRuntime,
@@ -55,21 +89,47 @@ func newSandboxManager(ctx context.Context, cfg config.Config, workspaces *pebbl
 		MaxWorkerRuns:      cfg.WorkerMaxConcurrentRuns,
 		ProtectedRoots:     protected,
 		ProtectedAncestors: ancestors,
-		StateDir:           filepath.Join(cfg.DataDir, "sandbox"),
-	}, nil)
-	if err != nil {
-		return nil, err
+		StateDir:           filepath.Join(cfg.DataDir, stateDir),
 	}
+}
+
+func setSandboxLayout(manager *sandbox.Manager, workspaces *pebblestore.WorkspaceStore) error {
 	worktrees, err := appstorage.WorktreesRoot()
 	if err != nil {
-		return nil, fmt.Errorf("sandbox worktrees root: %w", err)
+		return fmt.Errorf("sandbox worktrees root: %w", err)
 	}
 	manager.SetLayout(sandbox.Layout{
 		Projects:      workspaces.ListAllPaths,
 		WorktreesRoot: worktrees,
 		Bucket:        appstorage.WorktreeBucketName,
 	})
-	return manager, nil
+	return nil
+}
+
+// leaseLimit is a folder's lease maximum; a folder without a ready
+// environment cannot be leased.
+func leaseLimit(envs *pebblestore.SandboxEnvironmentStore) sandbox.LeaseLimit {
+	return func(root string) (int, error) {
+		env, found, err := envs.Get(root)
+		if err != nil {
+			return 0, err
+		}
+		if !found {
+			return 0, fmt.Errorf("no environment is defined for %s: the person's AI defines one with swarm_set_environment (base_image, setup, max_leases)", root)
+		}
+		if env.ReadyImage == "" {
+			return 0, fmt.Errorf("the environment of %s is %s, not ready: %s", root, env.Status, env.Error)
+		}
+		return env.MaxLeases, nil
+	}
+}
+
+// leaseOwnerRunning reports whether an agent session still has a run.
+func leaseOwnerRunning(sessions *pebblestore.SessionStore) sandbox.LeaseOwnerRunning {
+	return func(owner string) (bool, error) {
+		_, active, err := sessions.GetV3SessionActiveRunIntent(owner)
+		return active, err
+	}
 }
 
 func projectCacheLimit(ctx context.Context, db *pebblestore.Store) (uint64, error) {
