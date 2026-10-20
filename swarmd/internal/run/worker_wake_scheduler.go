@@ -325,7 +325,10 @@ func (sch *WorkerScheduler) process(ctx context.Context, now time.Time) error {
 	failures = append(failures, sch.reconcileDue(workerCtx, now))
 	failures = append(failures, sch.admitDue(workerCtx, now))
 	workerErr := errors.Join(failures...)
-	v2Err := sch.processV2(ctx, now)
+	// V2 runs at the time it starts, not the wake start: after a slow worker
+	// phase a resumed pass is already due, and its budget must not include
+	// the worker time.
+	v2Err := sch.processV2(ctx, sch.after(now, 0))
 	sch.busyWorkers.Store(int64(sch.countBusy()))
 	return errors.Join(labelSchedulerError("worker scheduling", workerErr), labelSchedulerError("automation v2 sweep", v2Err))
 }
@@ -731,15 +734,24 @@ func v2FullPassPages(hint store.AutomationV2ScheduleHint) int {
 // is done or this wake's budget is spent, then ends a finished pass with one
 // hint read. A record that fell due after the pass started gets a new pass;
 // one already due when it started and still due is blocked as before.
+//
+// The budget is measured from when V2 paging starts in this wake, not from
+// the wake start: a slow worker phase earlier in the same wake must not spend
+// it. Every wake sweeps at least one page before it may yield, so each
+// resumed wake moves the pass forward and a yield is never a wake without
+// progress.
 func (sch *WorkerScheduler) continueV2Pass(ctx context.Context, now time.Time) error {
 	var failures []error
+	pagingStart := sch.clock.Now()
+	swept := 0
 	for sch.v2PassLeft > 0 {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
-		if sch.clock.Now().Sub(now) >= automationV2PassBudget {
+		if swept > 0 && sch.clock.Now().Sub(pagingStart) >= automationV2PassBudget {
 			// The store is busy: yield and resume the remaining pages after
-			// the usual spacing. Bounded by v2PassLeft, so not a retry loop.
+			// the usual spacing. At least one page was swept this wake and
+			// v2PassLeft only decreases, so the pass always finishes.
 			sch.v2Next = sch.after(now, workerSchedulerMinSpacing)
 			return errors.Join(failures...)
 		}
@@ -752,6 +764,7 @@ func (sch *WorkerScheduler) continueV2Pass(ctx context.Context, now time.Time) e
 		}
 		failures = append(failures, err)
 		sch.v2PassLeft--
+		swept++
 	}
 	nowMs := now.UnixMilli()
 	hint, err := sch.v2Hints.AutomationV2ScheduleHint(nowMs)
