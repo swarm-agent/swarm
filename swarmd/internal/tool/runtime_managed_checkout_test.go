@@ -135,8 +135,9 @@ func TestManagedCheckoutFileTools(t *testing.T) {
 // Requirement: parsed managed checkout results (file receipt, staging path)
 // come only from the command's own payload. Threat: the managed wrapper merges
 // stderr into stdout and runs a login shell, so profile/logout output, BASH_ENV
-// output and locale warnings (for example in a sandbox whose user has no passwd
-// entry) corrupted the mktemp staging path and file receipts. Owners:
+// output and locale warnings can surround the payload and corrupt the mktemp
+// staging path and file receipts. (This is one candidate cause of the reported
+// job-sandbox staging failure; that failure was not reproduced.) Owners:
 // managedCommandOutput, managedFramedOutput, executeManagedFile. Real Bash with
 // injected shell-startup noise behind the recording lifecycle double is the
 // narrowest layer that exercises the actual wrapper; it is not evidence of live
@@ -216,6 +217,127 @@ func TestManagedCheckoutParsingIgnoresShellNoise(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Requirement: a parsed managed result is not corrupted by the payload
+// command's own stderr, and that stderr is still reported when the payload
+// fails. Threat: the managed wrapper merges stderr into stdout, so a mktemp,
+// stat, base64 or git diagnostic written inside the frame was parsed as part of
+// the staging path, file receipt or completion pack; separating it must not
+// hide failure detail or disable errexit inside the payload. Owners:
+// managedCommandOutput, executeManagedFile. BASH_ENV-defined wrappers make the
+// real commands write to stderr inside real Bash behind the recording lifecycle
+// double, the narrowest layer that exercises the actual wrapper; it is not
+// evidence of live Podman or provider execution.
+func TestManagedCheckoutParsingIgnoresCommandStderr(t *testing.T) {
+	home := t.TempDir()
+	wrappers := "mktemp() { printf '%s\\n' 'mktemp: warning: injected' '.git/swarm-file.decoy' >&2; command mktemp \"$@\"; }\n" +
+		"base64() { printf '%s\\n' 'base64: warning: injected' >&2; command base64 \"$@\"; }\n" +
+		"stat() { printf '%s\\n' 'stat: warning: injected' >&2; command stat \"$@\"; }\n"
+	if err := os.WriteFile(filepath.Join(home, "bash_env"), []byte(wrappers), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("BASH_ENV", filepath.Join(home, "bash_env"))
+
+	setup := func(t *testing.T) (*Runtime, WorkspaceScope, ManagedExecutionBinding, string) {
+		r, scope, _, d := newManagedExecutionFixture(t)
+		scope.WorktreeEnabled = true
+		scope.MutationScopes = []string{"fix.txt"}
+		d.lease.TaskBinding.ParentLeaseID = "parent"
+		remote := t.TempDir()
+		checkout := filepath.Join(remote, managedCheckoutName(d.lease))
+		if err := os.MkdirAll(filepath.Join(checkout, ".git"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		for path, content := range map[string]string{filepath.Join(checkout, ".git/swarm-ready"): "base", filepath.Join(checkout, "fix.txt"): "broken\n", filepath.Join(scope.PrimaryPath, "fix.txt"): "host unchanged\n"} {
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.deploymentManager = &managedCommandFixture{managedExecFixture: d, root: remote}
+		binding, err := r.managedExecutionBinding(scope)
+		if err != nil || binding == nil {
+			t.Fatalf("managed binding: %v", err)
+		}
+		return r, scope, *binding, checkout
+	}
+
+	t.Run("staging_path", func(t *testing.T) {
+		r, scope, binding, checkout := setup(t)
+		// The injected stderr is really merged into the raw output.
+		raw, err := r.managedCommand(context.Background(), scope, binding, "mktemp .git/swarm-file.XXXXXXXX", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(raw.Stdout, "mktemp: warning: injected") {
+			t.Fatalf("command stderr was not injected: %q", raw.Stdout)
+		}
+		staged, err := r.managedCommandOutput(context.Background(), scope, binding, "mktemp .git/swarm-file.XXXXXXXX")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(staged, "warning") || strings.Contains(staged, "decoy") {
+			t.Fatalf("command stderr inside parsed result: %q", staged)
+		}
+		staging := strings.TrimSpace(staged)
+		if filepath.Dir(staging) != ".git" || !strings.HasPrefix(staging, ".git/swarm-file.") || strings.ContainsAny(staging, "\r\n ") {
+			t.Fatalf("wrong staging path %q", staging)
+		}
+		if info, err := os.Stat(filepath.Join(checkout, staging)); err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("staging path %q not created in checkout: %v", staging, err)
+		}
+	})
+
+	for _, name := range []string{"write", "edit", "read"} {
+		t.Run(name, func(t *testing.T) {
+			r, scope, _, checkout := setup(t)
+			args := map[string]any{"path": "fix.txt", "old_string": "broken", "new_string": "fixed"}
+			if name == "write" {
+				args["content"] = "fixed\n"
+			}
+			encoded, _ := json.Marshal(args)
+			out, err := r.executeOne(context.Background(), scope, Call{Name: name, Arguments: string(encoded)}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, `"execution_mode":"managed"`) || strings.Contains(out, "injected") {
+				t.Fatalf("wrong managed result %s", out)
+			}
+			want := "fixed\n"
+			if name == "read" {
+				want = "broken\n"
+				if !strings.Contains(out, "broken") {
+					t.Fatalf("read result missing content: %s", out)
+				}
+			}
+			if got, _ := os.ReadFile(filepath.Join(checkout, "fix.txt")); string(got) != want {
+				t.Fatalf("remote content %q want %q", got, want)
+			}
+			if local, _ := os.ReadFile(filepath.Join(scope.PrimaryPath, "fix.txt")); string(local) != "host unchanged\n" {
+				t.Fatal("host changed")
+			}
+		})
+	}
+
+	t.Run("failure_reports_stderr", func(t *testing.T) {
+		r, scope, binding, _ := setup(t)
+		_, err := r.managedCommandOutput(context.Background(), scope, binding, "printf '%s\\n' payload-stderr-detail >&2; false")
+		if err == nil || !strings.Contains(err.Error(), "payload-stderr-detail") {
+			t.Fatalf("failed payload stderr not reported: %v", err)
+		}
+	})
+
+	t.Run("errexit_preserved", func(t *testing.T) {
+		r, scope, binding, _ := setup(t)
+		out, err := r.managedCommandOutput(context.Background(), scope, binding, "false\nprintf '%s' ran-after-failure")
+		if err == nil {
+			t.Fatalf("failing payload accepted: %q", out)
+		}
+		if strings.Contains(err.Error(), "ran-after-failure") {
+			t.Fatalf("payload continued after a failing command: %v", err)
+		}
+	})
 }
 
 // Requirement: a framed managed result fails closed unless exactly one frame

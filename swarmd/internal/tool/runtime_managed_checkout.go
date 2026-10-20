@@ -79,14 +79,22 @@ func (r *Runtime) managedCommand(ctx context.Context, scope WorkspaceScope, b Ma
 // managed wrapper merges stderr into stdout and runs a login shell, so profile,
 // logout, locale or other shell-startup output can surround the payload. The
 // script's output is framed by per-call random markers and only the framed
-// region is returned; a missing or repeated frame fails closed.
+// region is returned; a missing or repeated frame fails closed. The script's own
+// stderr (for example mktemp, git, stat or base64 diagnostics) is captured in a
+// private file outside the frame and is reported only when the script fails.
 func (r *Runtime) managedCommandOutput(ctx context.Context, scope WorkspaceScope, b ManagedExecutionBinding, script string) (string, error) {
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
 	}
 	begin, end := managedFrameMarkers(hex.EncodeToString(nonce[:]))
-	framed := "printf '\\n%s\\n' " + managedQuote(begin) + "\n" + script + "\nprintf '\\n%s\\n' " + managedQuote(end)
+	// The payload runs in a subshell with errexit re-enabled; errexit is off only
+	// around the subshell itself so a failing payload command still aborts it.
+	framed := "e=$(mktemp)\ntrap 'rm -f -- \"$e\"' EXIT\n" +
+		"printf '\\n%s\\n' " + managedQuote(begin) + "\n" +
+		"set +e\n(\nset -euo pipefail\n" + script + "\n) 2>\"$e\"\nrc=$?\nset -e\n" +
+		"if test \"$rc\" -ne 0; then cat -- \"$e\" >&2; exit \"$rc\"; fi\n" +
+		"printf '\\n%s\\n' " + managedQuote(end)
 	result, err := r.managedCommand(ctx, scope, b, framed, true)
 	if err != nil {
 		return "", err
