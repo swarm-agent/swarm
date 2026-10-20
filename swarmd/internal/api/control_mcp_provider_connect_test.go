@@ -277,7 +277,10 @@ func TestControlMCPListProvidersReturnsConnectMethodForEveryUnconnectedProvider(
 						t.Fatalf("codex steps lack the on-machine sign-in: %s", steps)
 					}
 				case controlMCPConnectClaudeCodeLogin:
-					if tool != "" || !strings.Contains(steps, "claude auth login") || !strings.Contains(steps, "Claude Code CLI login") {
+					if want := map[bool]string{true: "swarm_connect_claude_code", false: ""}[tc.chatTool]; tool != want || strings.Contains(steps, "swarm_connect_claude_code") != tc.chatTool {
+						t.Fatalf("claudecode tool = %q, want %q (a key never sees a tool it cannot call): %s", tool, want, steps)
+					}
+					if !strings.Contains(steps, "install.sh claude-code") || !strings.Contains(steps, "claude auth login") || !strings.Contains(steps, "Claude Code CLI login") {
 						t.Fatalf("claudecode connect must be the person's own Claude Code sign-in plus the account opt-in: %v", connect)
 					}
 					if strings.Contains(strings.ToLower(steps), "api key") || strings.Contains(steps, "--api-key-stdin") {

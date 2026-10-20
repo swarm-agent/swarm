@@ -83,8 +83,18 @@ sudo swarmctl setup codex-login --timeout 15m
 ### Claude Code
 
 Swarm runs the person's own signed-in Claude Code CLI and never sees, stores
-or forwards Claude credentials. There is no Swarm tool or installer command
-for this sign-in; the person does all three steps:
+or forwards Claude credentials. The person signs in themselves; Swarm never
+copies their own Claude login.
+
+On the box, the installer does steps 1 and 2 in the person's terminal, and
+`swarm_connect_claude_code` does step 3 (action `status` until `signed_in`,
+then action `activate`; no setup page or owner password):
+
+```sh
+sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh claude-code
+```
+
+Or the person does all three steps by hand:
 
 1. Install Claude Code 2.1.248 or later where Swarm's daemon finds it: on its
    `PATH` (for example `/usr/local/bin`), or named by

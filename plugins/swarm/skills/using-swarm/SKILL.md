@@ -32,7 +32,9 @@ For connecting a client, use the `setup` skill. For raw MCP probes, see the
   with `login_id` and `wait_seconds` until `success`); a Claude plan through
   Claude Code (`claudecode`: they sign in with `claude auth login` as the
   user that runs Swarm and turn it on in Swarm's setup page; Swarm never
-  handles Claude credentials); an API key for `anthropic`, `openai`,
+  handles Claude credentials; `swarm_connect_claude_code` action `status`
+  gives the installer command for this, then action `activate` turns it on
+  without the setup page); an API key for `anthropic`, `openai`,
   `google`, `openrouter` or `fireworks` (on Swarm's setup page, or by
   script on the machine with `install.sh key PROVIDER`; with a full key,
   `swarm_request_provider_key` gives them a one-time link); or Vertex AI

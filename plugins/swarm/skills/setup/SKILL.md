@@ -72,6 +72,8 @@ what each needs, and follow their choice. No option is the default.
   themselves; Swarm never sees or handles Claude credentials. See
   [Claude Code](references/local-deployment.md#claude-code) for the three
   steps (install it, `claude auth login` as Swarm's user, turn it on).
+  `swarm_connect_claude_code` does it from here: action `status` gives the
+  installer command the person runs on the machine, then action `activate`.
 - **API key** for `anthropic`, `openai`, `google`, `openrouter` or
   `fireworks`: the person adds it on the setup page (`http://127.0.0.1:8443`
   on the machine; on a server, the installer printed the `ssh -L` line to open
