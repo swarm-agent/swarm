@@ -16,7 +16,10 @@ package run
 // lifecycle both come from the production turn path. Scope limit: this covers
 // run.Service turns only; the V3 executor in swarmd/internal/api, where the
 // incident's follow-up ran, has its own cancel registry and classifier that
-// these tests do not exercise.
+// these tests do not exercise. They do not reproduce the incident. The
+// cross-job isolation check also passes on the code before this change
+// (stops were already keyed by session and run) and is kept only as a
+// regression guard.
 
 import (
 	"context"
