@@ -86,6 +86,7 @@ var toolScopes = map[string]string{
 	"swarm_define_agent":           ScopeManage,
 	"swarm_create_client_key":      ScopeManage,
 	"swarm_connect_chatgpt":        ScopeWrite, // the person signs in in their own browser; local only
+	"swarm_connect_claude_code":    ScopeWrite, // the person signs the CLI in on the machine; local only
 	"swarm_list_providers":         ScopeRead,
 	"swarm_request_provider_key":   ScopeManage,
 	"swarm_read_file":              ScopeRead,
@@ -134,6 +135,7 @@ var localOnlyTools = map[string]bool{
 	"swarm_define_agent":         true,
 	"swarm_create_client_key":    true,
 	"swarm_connect_chatgpt":      true,
+	"swarm_connect_claude_code":  true,
 	"swarm_request_provider_key": true,
 }
 

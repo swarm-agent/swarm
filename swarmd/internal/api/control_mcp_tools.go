@@ -172,6 +172,9 @@ var controlMCPRoutes = []string{
 	"POST v3/auth/tokens",
 	"POST v1/auth/codex/oauth/start",
 	"GET v1/auth/codex/oauth/status",
+	// Claude Code activation only: a fixed cli record with no secret
+	// (control_mcp_claude_code.go).
+	"POST v1/auth/credentials",
 }
 
 var controlMCPReservedIDs = map[string]bool{
@@ -887,6 +890,7 @@ func controlMCPTools() []controlMCPTool {
 			}),
 			Annotations: controlMCPWrites, call: controlMCPRequestProviderKey,
 		},
+		controlMCPClaudeCodeTool(),
 	}, append(append(append(controlMCPReviewTools(sessionID), controlMCPJobTools()...), controlMCPEnvironmentTools()...), controlMCPAutomationTools()...)...)
 }
 

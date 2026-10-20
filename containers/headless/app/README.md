@@ -60,6 +60,26 @@ websites and reads its value the same way (without `--hosts` it only sets the
 value); `install.sh secret grant NAME FOLDER --days N` (or `--hours N`) lets
 that workspace's agents use it.
 
+**Claude Code as the provider.** Swarm can run its agents through the Claude
+Code CLI with your Claude plan. It runs `claude` as its own `swarm` user, which
+needs its own install and sign-in; Swarm never reads, copies or stores Claude
+credentials, and your own Claude login is not copied. In a terminal on the
+machine:
+
+<copy label="Claude Code for Swarm">
+sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh claude-code
+</copy>
+
+It finds or installs the CLI for that user (Anthropic's installer, into
+`/var/lib/swarm/.local/bin`; an older one than Swarm needs is updated), sets
+`SWARM_CLAUDE_CODE_CLI_PATH` with `daemon-env` and starts `claude auth login`
+as that user: open the link it shows and finish in your browser. Without a
+terminal it does the rest and stops at the sign-in. Running it again is safe
+and reports what is set up. Then your AI makes Claude Code the active provider
+through MCP (`swarm_connect_claude_code`, action `status`, then `activate`); no
+setup-page form or owner password is needed. Details:
+[docs/checkpoints/claude-code-provider.md](../../../docs/checkpoints/claude-code-provider.md).
+
 **Tailscale (optional, for your other devices).** `--tailnet` at install, or
 `install.sh tailnet on` later, installs Tailscale and prints one login link
 (or joins with `TS_AUTHKEY` from the environment; `--tag tag:swarm`), turns on

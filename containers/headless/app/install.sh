@@ -126,6 +126,7 @@ Usage: install.sh [install] [--for-user NAME] [--relay URL] [--name NAME] [--ref
        install.sh secret set NAME [--hosts HOST,...] (the value on stdin)
        install.sh secret grant NAME FOLDER --days N | --hours N
        install.sh daemon-env list | set NAME... | unset NAME...
+       install.sh claude-code
        install.sh tailnet on [--tag TAG] [--lock-ssh] | off
        install.sh tailnet-identity on|off
        install.sh secrets-gateway on|off
@@ -214,6 +215,15 @@ Readiness is generation-bound and checked again immediately before restart.
                    applied with one restart: `list` shows names only,
                    `set NAME...` reads one value per name from stdin,
                    `unset NAME...` removes them
+  claude-code      set up the Claude Code CLI for Swarm's own user: find it
+                   (or install it with Anthropic's installer into
+                   ~swarm/.local/bin), point Swarm at it
+                   (SWARM_CLAUDE_CODE_CLI_PATH) and, in a terminal, start
+                   `claude auth login` as that user; you finish the sign-in
+                   in your browser. Swarm never reads or copies Claude
+                   credentials. Safe to run again: it reports what is set
+                   up. Then your AI makes Claude Code Swarm's provider
+                   (swarm_connect_claude_code action activate).
   check-isolation  prove from inside a sandbox that this server, the tailnet,
                    private networks and cloud metadata are unreachable
   check-sandbox    show each running agent sandbox and its hardening
@@ -1031,6 +1041,11 @@ channel() {
 # process list or shell history, and they are never printed.
 daemon_env() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  daemon_env_apply "$@"
+}
+
+# daemon_env without the root check, for commands that already made it.
+daemon_env_apply() {
   local action=${1:-list} name value line keep
   shift || true
   if [[ $action == list ]]; then
@@ -1722,6 +1737,101 @@ provider_key() {
   key=''
 }
 
+# Claude Code as Swarm's provider (install.sh claude-code). Swarm runs the
+# unmodified `claude` CLI as its own service user, so that user needs the CLI
+# and its own sign-in. Swarm never reads, copies or stores Claude credentials:
+# the person signs that user in through Anthropic's own flow, and their own
+# Claude login is never copied. Making the provider active is then the AI's
+# step (swarm_connect_claude_code action activate).
+CLAUDE_CODE_PATH_ENV=SWARM_CLAUDE_CODE_CLI_PATH
+# Anthropic's installer for the native Claude Code build (~/.local/bin/claude).
+CLAUDE_CODE_INSTALLER=https://claude.ai/install.sh
+# The first Claude Code with --restricted, which Swarm requires.
+CLAUDE_CODE_MIN_VERSION=2.1.248
+
+# Run a command as Swarm's service user. It has no login shell, so this runs
+# the command directly with that user's home.
+service_user_run() {
+  runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" PATH="$SERVICE_HOME/.local/bin:$PATH" "$@"
+}
+
+# The value of NAME in the daemon's settings file, if set.
+daemon_env_value() {
+  [[ -f $DAEMON_ENV ]] || return 0
+  sed -n "s/^$1=//p" "$DAEMON_ENV" | tail -n 1
+}
+
+# The claude executable Swarm's user can run: the one Swarm is already set to,
+# then Anthropic's per-user install location, then the user's PATH.
+claude_code_locate() {
+  local candidate
+  for candidate in "$(daemon_env_value "$CLAUDE_CODE_PATH_ENV")" "$SERVICE_HOME/.local/bin/claude" \
+    "$(service_user_run sh -c 'command -v claude' 2>/dev/null || true)"; do
+    [[ $candidate == /* ]] || continue
+    service_user_run test -x "$candidate" 2>/dev/null && { printf '%s' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+claude_code_version() {
+  { service_user_run "$1" --version 2>/dev/null || true; } | { grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' || true; } | head -n 1
+}
+
+# True when the first version is at least the second.
+version_at_least() {
+  [[ $(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1) == "$2" ]]
+}
+
+claude_code_signed_in() {
+  service_user_run "$1" auth status 2>/dev/null | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true'
+}
+
+stdin_is_terminal() { [[ -t 0 ]]; }
+
+claude_code() {
+  [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
+  claude_code_setup "$@"
+}
+
+claude_code_setup() {
+  (($# == 0)) || die "usage: install.sh claude-code"
+  load_conf
+  id -u "$SERVICE_USER" >/dev/null 2>&1 || die "Swarm's user $SERVICE_USER does not exist; install Swarm first"
+  local cli version
+  if ! cli=$(claude_code_locate); then
+    say "Installing Claude Code for Swarm's user ($SERVICE_USER) with Anthropic's installer"
+    service_user_run bash -c 'set -o pipefail; curl -fsSL "$1" | bash' claude-install "$CLAUDE_CODE_INSTALLER" ||
+      die "the Claude Code installer failed"
+    cli=$(claude_code_locate) || die "Claude Code was installed but $SERVICE_USER cannot run it; expected $SERVICE_HOME/.local/bin/claude"
+  fi
+  version=$(claude_code_version "$cli")
+  [[ -n $version ]] || die "$cli did not report a version"
+  if ! version_at_least "$version" "$CLAUDE_CODE_MIN_VERSION"; then
+    say "Updating Claude Code $version (Swarm needs $CLAUDE_CODE_MIN_VERSION or later)"
+    service_user_run "$cli" update || die "claude update failed"
+    version=$(claude_code_version "$cli")
+    version_at_least "${version:-0.0.0}" "$CLAUDE_CODE_MIN_VERSION" ||
+      die "Claude Code ${version:-unknown} is too old; Swarm needs $CLAUDE_CODE_MIN_VERSION or later"
+  fi
+  echo "Claude Code $version for Swarm's user ($SERVICE_USER): $cli"
+  if [[ $(daemon_env_value "$CLAUDE_CODE_PATH_ENV") == "$cli" ]]; then
+    echo "Swarm already uses it ($CLAUDE_CODE_PATH_ENV)."
+  else
+    printf '%s\n' "$cli" | daemon_env_apply set "$CLAUDE_CODE_PATH_ENV"
+  fi
+  if claude_code_signed_in "$cli"; then
+    echo "Claude Code is signed in for $SERVICE_USER."
+  elif stdin_is_terminal; then
+    say "Sign Claude Code in for Swarm's user: open the link it shows in your browser and finish there"
+    service_user_run "$cli" auth login || die "claude auth login did not finish; run install.sh claude-code again"
+    claude_code_signed_in "$cli" || die "Claude Code is still not signed in for $SERVICE_USER; run install.sh claude-code again"
+    echo "Claude Code is signed in for $SERVICE_USER."
+  else
+    die "Claude Code is installed but not signed in for $SERVICE_USER. Signing in needs the person at a terminal: they run 'sudo bash $INSTALLER claude-code' in their own terminal and finish the sign-in in their browser."
+  fi
+  echo "Next: your AI makes Claude Code Swarm's provider (swarm_connect_claude_code action activate)."
+}
+
 # Secrets agents can use but never see (swarmctl secret, over Swarm's socket).
 secret_cmd() {
   [[ $EUID -eq 0 ]] || die "run as root (sudo bash)"
@@ -2050,6 +2160,7 @@ main() {
     dev-sync) shift; dev_sync "$@" ;;
     channel) shift; channel "$@" ;;
     daemon-env) shift; daemon_env "$@" ;;
+    claude-code) shift; claude_code "$@" ;;
     up) up ;;
     reset-login) reset_login ;;
     # Installers before gated updates end their update here: finish it the
