@@ -561,3 +561,102 @@ func TestWorkerSchedulerV2PassProgressesEveryWakeUnderSlowWorkerPhase(t *testing
 		t.Fatalf("after the pass reported %v, want no failures", failures)
 	}
 }
+
+// Requirement: with no V2 work at all, a busy store must not make the worker
+// side of a scheduler wake fail with "context deadline exceeded". The safety
+// rescan reconciles the whole worker catalog; on a slow store it yields after
+// its per-wake budget and resumes on the next wake from the worker it reached
+// (every worker reconciled exactly once per pass, never started over), each
+// wake makes progress (no once-a-second wake that does nothing), and between
+// passes the loop is quiet. Threat: the reported forge incident, where the
+// worker phase (admission, rescan, reconcile) shared one 30s deadline per
+// wake: a slow rescan ran past it, the error was logged as a V2 sweep
+// failure, and the next rescan two minutes later started again from the
+// first worker. Owner: WorkerScheduler.process, rescan and reconcileEntry
+// over the real WorkerExecutionService and Pebble worker store. Only time is
+// simulated: reconcileHook charges fake store time to each real reconcile,
+// and the 30s shared deadline the daemon used is checked in fake time, since
+// a real context deadline cannot observe a fake clock. Admission's dispatch
+// boundary (scheduledDispatchForTest) is replaced so no real run starts.
+func TestWorkerSchedulerRescanOnSlowStoreResumesWithoutDeadlineFailures(t *testing.T) {
+	const workers = 30
+	// A reconcile costs 2s on the busy store, so one pass needs 60s: past
+	// the 30s the daemon used to allow a whole wake.
+	const reconcileCost = 2 * time.Second
+	const sharedDeadline = 30 * time.Second
+	fx := newSchedulerFixture(t, workers, 3600)
+	start := schedulerTestStart(time.Now())
+	clock := newFakeSchedulerClock(start)
+	fx.service.scheduledDispatchForTest = func(_, _ string, _ pebblestore.WorkerRunAdmission) error { return nil }
+	var failures []error
+	sch := NewWorkerScheduler(fx.service, WorkerSchedulerOptions{Clock: clock})
+
+	wakeStart := start
+	perWorker := map[workerKey]int{}
+	wakeReconciles, deadlineHits := 0, 0
+	sch.reconcileHook = func(k workerKey) {
+		perWorker[k]++
+		wakeReconciles++
+		clock.Set(clock.Now().Add(reconcileCost))
+		if clock.Now().Sub(wakeStart) > sharedDeadline {
+			deadlineHits++
+		}
+	}
+	ctx := context.Background()
+	wake := func(at time.Time) {
+		clock.Set(at)
+		wakeStart, wakeReconciles = at, 0
+		if err := sch.process(ctx, at); err != nil {
+			failures = append(failures, err)
+		}
+	}
+
+	// Six passes (startup and five safety rescans), each finished before
+	// the window ends.
+	end := start.Add(5*workerSchedulerSafetyInterval + 90*time.Second)
+	wake(start)
+	if wakeReconciles == 0 {
+		t.Fatal("startup wake reconciled no worker")
+	}
+	idleWakes := 0
+	for wakes := 1; ; wakes++ {
+		if wakes > 400 {
+			t.Fatalf("more than 400 wakes in %v: the loop is spinning", end.Sub(start))
+		}
+		next := sch.nextWake()
+		if next.IsZero() || next.After(end) {
+			break
+		}
+		if next.Before(clock.Now()) {
+			next = clock.Now()
+		}
+		wake(next)
+		if wakeReconciles == 0 {
+			// A wake with no reconcile must be a due worker slot.
+			idleWakes++
+		}
+	}
+	if deadlineHits != 0 {
+		t.Fatalf("%d reconciles ran more than %v after their wake started; a busy store would have failed the wake with a deadline", deadlineHits, sharedDeadline)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("slow store reported %v, want no failures", failures)
+	}
+	if len(perWorker) != workers {
+		t.Fatalf("reconciled %d workers, want all %d", len(perWorker), workers)
+	}
+	const passes = 6
+	for k, n := range perWorker {
+		if n != passes {
+			t.Fatalf("worker %s reconciled %d times over %d passes; a resumed pass must reconcile each worker exactly once", k.id, n, passes)
+		}
+	}
+	if len(sch.entries) != workers {
+		t.Fatalf("after the passes the scheduler tracks %d workers, want %d", len(sch.entries), workers)
+	}
+	// Each worker has one hourly slot at most in the window; any other wake
+	// without a reconcile is a wake that did nothing.
+	if idleWakes > workers {
+		t.Fatalf("%d wakes reconciled nothing, want at most one per worker slot (%d)", idleWakes, workers)
+	}
+}

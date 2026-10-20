@@ -74,10 +74,18 @@ const (
 	automationV2PendingInterval = time.Second
 	automationV2SweepPage       = 10
 	automationV2MaxSweepPasses  = 1002
-	// workerSchedulerPassTimeout bounds the worker admission and reconcile
-	// work of one wake. V2 sweeping does not share it: a slow worker phase
-	// must not leave the V2 pass an expired deadline.
-	workerSchedulerPassTimeout = 30 * time.Second
+	// workerSchedulerOpTimeout bounds one worker admission (TickWorker) or
+	// one worker reconcile. Every operation gets its own deadline, so a
+	// busy store that slows many operations never fails a wake; only a
+	// single stuck operation does.
+	workerSchedulerOpTimeout = 30 * time.Second
+	// workerRescanBudget is how long one wake keeps reconciling a safety
+	// rescan before yielding to a busy store. The rescan resumes on a later
+	// wake from the worker it reached; every wake reconciles at least one.
+	workerRescanBudget = 10 * time.Second
+	// workerSchedulerResumeInterval is the pause before a yielded safety
+	// rescan continues.
+	workerSchedulerResumeInterval = time.Second
 	// automationV2PageTimeout bounds one V2 sweep page; every page gets its
 	// own deadline, so a long pass is never failed by an accumulated one.
 	automationV2PageTimeout = 30 * time.Second
@@ -168,6 +176,16 @@ type WorkerScheduler struct {
 	queue        workerSchedHeap
 	nextRescan   time.Time
 	nextMidnight time.Time
+	// rescanActive marks a safety rescan that yielded and resumes at
+	// rescanResume from rescanCursor (page rescanPages), skipping workers in
+	// rescanSeen. rescanKnown holds the workers tracked when it started:
+	// only those may be dropped as gone when it completes.
+	rescanActive bool
+	rescanResume time.Time
+	rescanCursor string
+	rescanPages  int
+	rescanSeen   map[workerKey]bool
+	rescanKnown  map[workerKey]bool
 	v2Dirty      bool
 	v2Next       time.Time
 	// v2LastDirty is when the last change-driven V2 pass ran.
@@ -189,6 +207,9 @@ type WorkerScheduler struct {
 	wakeups      atomic.Int64
 	// waitHook observes each wait (test seam).
 	waitHook func(next time.Time)
+	// reconcileHook runs before each worker reconcile (test seam: it lets a
+	// test charge store time to the real reconcile).
+	reconcileHook func(k workerKey)
 }
 
 func NewWorkerScheduler(service *WorkerExecutionService, opts WorkerSchedulerOptions) *WorkerScheduler {
@@ -294,6 +315,9 @@ func (sch *WorkerScheduler) nextWake() time.Time {
 		earlier(sch.queue[0].at())
 	}
 	earlier(sch.nextMidnight)
+	if sch.rescanActive {
+		earlier(sch.rescanResume)
+	}
 	earlier(sch.v2Next)
 	return next
 }
@@ -302,14 +326,17 @@ func (sch *WorkerScheduler) nextWake() time.Time {
 // signals are applied, so a change never moves a cursor past an unadmitted
 // slot of the definition that was current when the slot fell due.
 func (sch *WorkerScheduler) process(ctx context.Context, now time.Time) error {
-	workerCtx, stop := context.WithTimeout(ctx, workerSchedulerPassTimeout)
-	defer stop()
+	// Worker operations carry their own deadlines (workerSchedulerOpTimeout);
+	// the wake shares none, so a busy store slows it but does not fail it.
 	var failures []error
-	failures = append(failures, sch.admitDue(workerCtx, now))
+	failures = append(failures, sch.admitDue(ctx, now))
 	sch.applySignals(now)
-	if sch.nextRescan.IsZero() || !now.Before(sch.nextRescan) {
-		failures = append(failures, sch.rescan(workerCtx, now))
+	rescanDue := sch.nextRescan.IsZero() || !now.Before(sch.nextRescan)
+	if rescanDue {
 		sch.nextRescan = now.Add(workerSchedulerSafetyInterval)
+	}
+	if rescanDue || (sch.rescanActive && !now.Before(sch.rescanResume)) {
+		failures = append(failures, sch.rescan(ctx, now))
 	}
 	if !sch.nextMidnight.IsZero() && !now.Before(sch.nextMidnight) {
 		// The UTC day rolled: budget holds lift and daily caps reset.
@@ -322,8 +349,8 @@ func (sch *WorkerScheduler) process(ctx context.Context, now time.Time) error {
 		y, m, d := now.UTC().Date()
 		sch.nextMidnight = time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
 	}
-	failures = append(failures, sch.reconcileDue(workerCtx, now))
-	failures = append(failures, sch.admitDue(workerCtx, now))
+	failures = append(failures, sch.reconcileDue(ctx, now))
+	failures = append(failures, sch.admitDue(ctx, now))
 	workerErr := errors.Join(failures...)
 	// V2 runs at the time it starts, not the wake start: after a slow worker
 	// phase a resumed pass is already due, and its budget must not include
@@ -446,52 +473,72 @@ func (sch *WorkerScheduler) applySignals(now time.Time) {
 
 // rescan is the startup pass and the slow drift safety net: it lists the
 // bounded worker catalog, reconciles each worker and recomputes its due time.
+// It starts a pass, or continues one that yielded. A wake reconciles until
+// workerRescanBudget is spent (at least one worker), then yields and resumes
+// a second later from the page and worker it reached, so a busy store spreads
+// the pass across wakes instead of failing it and starting over.
 func (sch *WorkerScheduler) rescan(ctx context.Context, now time.Time) error {
-	sch.v2Dirty = true
-	if sch.service == nil {
-		return nil
+	if !sch.rescanActive {
+		sch.v2Dirty = true
+		if sch.service == nil {
+			return nil
+		}
+		sch.rescanActive, sch.rescanCursor, sch.rescanPages = true, "", 0
+		sch.rescanSeen, sch.rescanKnown = map[workerKey]bool{}, map[workerKey]bool{}
+		for k := range sch.entries {
+			sch.rescanKnown[k] = true
+		}
 	}
+	sch.rescanResume = time.Time{}
 	ws, err := sch.service.WorkerStoreForScheduling()
 	if err != nil {
+		sch.rescanActive = false
 		return err
 	}
+	started := sch.clock.Now()
+	reconciled := 0
 	var failures []error
-	seen := map[workerKey]bool{}
-	cursor := ""
-	completed := false
-	for page := 0; page < 10; page++ {
-		rows, err := ws.ListWorkersForScheduling(cursor, 25)
+	for ; sch.rescanPages < 10; sch.rescanPages++ {
+		rows, err := ws.ListWorkersForScheduling(sch.rescanCursor, 25)
 		if err != nil {
+			sch.rescanActive = false
 			return errors.Join(append(failures, err)...)
 		}
 		for _, w := range rows.Workers {
+			k := workerKey{w.AccountScopeID, w.ID}
+			if sch.rescanSeen[k] {
+				// Reconciled on an earlier wake of this pass.
+				continue
+			}
 			if err = ctx.Err(); err != nil {
 				return err
 			}
-			k := workerKey{w.AccountScopeID, w.ID}
-			seen[k] = true
+			if reconciled > 0 && sch.clock.Now().Sub(started) >= workerRescanBudget {
+				sch.rescanResume = sch.after(now, workerSchedulerResumeInterval)
+				return errors.Join(failures...)
+			}
+			sch.rescanSeen[k] = true
 			e := sch.entry(k, now)
 			if e == nil {
 				continue
 			}
 			e.budgetStale = true
 			failures = append(failures, sch.reconcileEntry(ctx, ws, e, now))
+			reconciled++
 		}
 		if rows.NextCursor == "" {
-			completed = true
-			break
+			sch.rescanActive = false
+			for k, e := range sch.entries {
+				if sch.rescanKnown[k] && !sch.rescanSeen[k] {
+					sch.remove(e)
+				}
+			}
+			return errors.Join(failures...)
 		}
-		cursor = rows.NextCursor
+		sch.rescanCursor = rows.NextCursor
 	}
-	if !completed {
-		failures = append(failures, errors.New("worker sweep exceeded 250-worker budget"))
-		return errors.Join(failures...)
-	}
-	for k, e := range sch.entries {
-		if !seen[k] {
-			sch.remove(e)
-		}
-	}
+	sch.rescanActive = false
+	failures = append(failures, errors.New("worker sweep exceeded 250-worker budget"))
 	return errors.Join(failures...)
 }
 
@@ -527,7 +574,12 @@ func (sch *WorkerScheduler) reconcileDue(ctx context.Context, now time.Time) err
 // only when an event or the rescan marked it stale; a busy re-check applies
 // the hold state from that read. A failed read stays stale and is retried.
 func (sch *WorkerScheduler) reconcileEntry(ctx context.Context, ws *store.WorkerStore, e *workerSchedEntry, now time.Time) error {
-	busy, held, known, err := sch.service.reconcileWorker(ctx, e.key.account, e.key.id, e.budgetStale, e.budgetHeld)
+	if sch.reconcileHook != nil {
+		sch.reconcileHook(e.key)
+	}
+	opCtx, cancel := context.WithTimeout(ctx, workerSchedulerOpTimeout)
+	busy, held, known, err := sch.service.reconcileWorker(opCtx, e.key.account, e.key.id, e.budgetStale, e.budgetHeld)
+	cancel()
 	e.lastReconcile, e.reconcileAt = now, time.Time{}
 	if errors.Is(err, store.ErrWorkerNotFound) {
 		sch.remove(e)
@@ -596,7 +648,9 @@ func (sch *WorkerScheduler) admitDue(ctx context.Context, now time.Time) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		err := sch.service.TickWorker(ctx, e.key.account, e.key.id, e.after, now)
+		opCtx, cancel := context.WithTimeout(ctx, workerSchedulerOpTimeout)
+		err := sch.service.TickWorker(opCtx, e.key.account, e.key.id, e.after, now)
+		cancel()
 		if errors.Is(err, store.ErrWorkerNotFound) {
 			sch.remove(e)
 			continue
