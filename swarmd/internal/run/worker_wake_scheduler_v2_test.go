@@ -2,6 +2,9 @@ package run
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -241,5 +244,211 @@ func TestWorkerSchedulerPagesV2CatalogAboveHintBound(t *testing.T) {
 	}
 	if got := len(sweeper.sweeps); got != 11 {
 		t.Fatalf("overflow sweeps over 10s = %d, want one page per second (11 including startup)", got)
+	}
+}
+
+// slowStoreV2Sweeper pages the real accepted V2 index the way
+// AutomationV2Scheduler.Sweep does (one page per call, a cursor kept across
+// calls) and admits each due record by advancing its NextDueAt in the real
+// store, so the real schedule hint observes the progress. Every store row
+// costs rowDelay of simulated time: a busy store. passDeadline stands in for
+// a hard deadline measured from the start of each scheduler pass (passStart),
+// in simulated time, so a pass that holds the store too long fails exactly as
+// the daemon's context deadline did.
+type slowStoreV2Sweeper struct {
+	db           *pebblestore.Store
+	sessions     *pebblestore.SessionStore
+	clock        *fakeSchedulerClock
+	rowDelay     time.Duration
+	passDeadline time.Duration
+	passStart    time.Time
+	cursor       string
+	pages        int
+	// failPages makes the next pages time out before reading a row.
+	failPages        int
+	deadlineFailures int
+}
+
+func slowV2AcceptedKey(r pebblestore.AutomationV2Record) string {
+	return fmt.Sprintf("automation/v2/accepted/%x/%x", r.AccountID, r.SessionID)
+}
+
+func (f *slowStoreV2Sweeper) Sweep(ctx context.Context, now time.Time) error {
+	if f.failPages > 0 {
+		f.failPages--
+		f.deadlineFailures++
+		return context.DeadlineExceeded
+	}
+	rows, next, err := f.sessions.ScanAutomationV2Accepted(f.cursor)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		f.clock.Set(f.clock.Now().Add(f.rowDelay))
+		if f.clock.Now().Sub(f.passStart) > f.passDeadline {
+			f.deadlineFailures++
+			return context.DeadlineExceeded
+		}
+		if r.NextDueAt > 0 && r.NextDueAt <= now.UnixMilli() {
+			r.NextDueAt = now.Add(time.Hour).UnixMilli()
+			if err := f.db.PutJSON(slowV2AcceptedKey(r), r); err != nil {
+				return err
+			}
+		}
+	}
+	f.cursor = next
+	f.pages++
+	return nil
+}
+
+func newSlowStoreV2Fixture(t *testing.T, start time.Time, automations int) (*pebblestore.Store, *pebblestore.SessionStore, *fakeSchedulerClock, *slowStoreV2Sweeper) {
+	t.Helper()
+	db, err := pebblestore.Open(filepath.Join(t.TempDir(), "v2-slow.pebble"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sessions := pebblestore.NewSessionStore(db)
+	for i := 0; i < automations; i++ {
+		r := pebblestore.AutomationV2Record{AutomationID: fmt.Sprintf("auto-%02d", i), Enabled: true, AcceptedAt: 1, NextDueAt: start.Add(-time.Minute).UnixMilli()}
+		r.AccountID, r.SessionID, r.UserID = "acct-v2-slow", fmt.Sprintf("sess-%02d", i), "user-v2-slow"
+		if err := db.PutJSON(slowV2AcceptedKey(r), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock := newFakeSchedulerClock(start)
+	sweeper := &slowStoreV2Sweeper{db: db, sessions: sessions, clock: clock, rowDelay: 2 * time.Second, passDeadline: 30 * time.Second}
+	return db, sessions, clock, sweeper
+}
+
+// driveSlowV2 processes every wake up to end, stamping each pass start for
+// the sweeper's deadline, and returns the wakes and reported errors.
+func driveSlowV2(ctx context.Context, sch *WorkerScheduler, clock *fakeSchedulerClock, sweeper *slowStoreV2Sweeper, end time.Time) (int, []error) {
+	wakes := 0
+	var failures []error
+	for {
+		next := sch.nextWake()
+		if next.IsZero() || next.After(end) {
+			clock.Set(end)
+			return wakes, failures
+		}
+		if next.Before(clock.Now()) {
+			next = clock.Now()
+		}
+		clock.Set(next)
+		sweeper.passStart = next
+		if err := sch.process(ctx, next); err != nil {
+			failures = append(failures, err)
+		}
+		wakes++
+	}
+}
+
+// Requirement: a V2 sweep over a busy store must not run past the pass
+// deadline. It yields between pages, resumes on the next wake from the page
+// it reached (the sweeper cursor) instead of starting a new full pass, admits
+// every due record, and once done the scheduler is idle again: no per-second
+// sweeps, only the safety rescan. Threat: on a loaded daemon one scheduler
+// pass ran the whole V2 catalog under a single 30s deadline (shared with the
+// worker reconcile), so the pass died with "context deadline exceeded" and
+// every rescan repeated it from the start. Owner: WorkerScheduler.process /
+// processV2 / runV2Pass over the real Pebble accepted index and schedule
+// hint; only time and the per-row store cost are simulated.
+func TestWorkerSchedulerV2SweepOnSlowStoreResumesWithoutDeadlineFailures(t *testing.T) {
+	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	const automations = 30
+	_, sessions, clock, sweeper := newSlowStoreV2Fixture(t, start, automations)
+	sch := NewWorkerScheduler(nil, WorkerSchedulerOptions{Clock: clock, V2: sweeper, V2Hints: sessions})
+	ctx := context.Background()
+
+	sweeper.passStart = start
+	var failures []error
+	if err := sch.process(ctx, start); err != nil {
+		failures = append(failures, err)
+	}
+	_, more := driveSlowV2(ctx, sch, clock, sweeper, start.Add(workerSchedulerSafetyInterval-time.Second))
+	failures = append(failures, more...)
+	if sweeper.deadlineFailures != 0 || len(failures) != 0 {
+		t.Fatalf("slow store: %d deadline failures, reported %v; want a pass that yields before its deadline", sweeper.deadlineFailures, failures)
+	}
+	fullPass := automations/automationV2SweepPage + 2
+	if sweeper.pages != fullPass {
+		t.Fatalf("slow store swept %d pages, want exactly one full pass (%d) resumed across wakes", sweeper.pages, fullPass)
+	}
+	hint, err := sessions.AutomationV2ScheduleHint(clock.Now().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hint.LatestDueAt != 0 || hint.UpcomingDueAt == 0 {
+		t.Fatalf("after the resumed pass hint = %+v, want every record admitted and upcoming", hint)
+	}
+
+	// Idle again: only safety rescans wake the loop, and they do not sweep.
+	from := clock.Now()
+	end := from.Add(10 * time.Minute)
+	pages := sweeper.pages
+	wakes, failures := driveSlowV2(ctx, sch, clock, sweeper, end)
+	if want := housekeepingWakes(start, end) - housekeepingWakes(start, from); wakes != want || sweeper.pages != pages || len(failures) != 0 {
+		t.Fatalf("idle after the pass: wakes=%d sweeps=%d errors=%v over 10m, want %d/0/none", wakes, sweeper.pages-pages, failures, want)
+	}
+}
+
+// Requirement: a sweep page that does hit its own deadline is retried from
+// the same place after the busy back-off, not every second, and the rest of
+// the pass is not repeated. Threat: a timed-out page dropping the pass (due
+// records wait for the next rescan) or re-arming an immediate retry loop.
+// Owner: WorkerScheduler.runV2Pass.
+func TestWorkerSchedulerV2PageDeadlineBacksOffAndResumes(t *testing.T) {
+	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	const automations = 30
+	_, sessions, clock, sweeper := newSlowStoreV2Fixture(t, start, automations)
+	sweeper.rowDelay = 0
+	sweeper.failPages = 1
+	sch := NewWorkerScheduler(nil, WorkerSchedulerOptions{Clock: clock, V2: sweeper, V2Hints: sessions})
+	ctx := context.Background()
+	sweeper.passStart = start
+	err := sch.process(ctx, start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timed-out page reported %v, want the deadline error", err)
+	}
+	if got, want := sch.nextWake(), start.Add(workerSchedulerBusyInterval); !got.Equal(want) {
+		t.Fatalf("after a timed-out page next wake = %v, want the busy back-off %v", got, want)
+	}
+	_, failures := driveSlowV2(ctx, sch, clock, sweeper, start.Add(time.Minute))
+	if len(failures) != 0 || sweeper.deadlineFailures != 1 {
+		t.Fatalf("resumed pass: errors=%v deadline failures=%d, want none after the first", failures, sweeper.deadlineFailures)
+	}
+	if fullPass := automations/automationV2SweepPage + 2; sweeper.pages != fullPass {
+		t.Fatalf("resumed pass swept %d pages, want one full pass (%d)", sweeper.pages, fullPass)
+	}
+	hint, err := sessions.AutomationV2ScheduleHint(clock.Now().UnixMilli())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hint.LatestDueAt != 0 {
+		t.Fatalf("after the resumed pass hint = %+v, want every record admitted", hint)
+	}
+}
+
+// Requirement: an idle daemon whose real store holds no V2 automations does
+// no V2 sweeps and wakes only for the safety rescan. Threat: the slow-store
+// resume path leaving a pending continuation that polls every second. Owner:
+// WorkerScheduler.processV2 over the real Pebble schedule hint.
+func TestWorkerSchedulerIdleRealStoreDoesNoV2Sweeps(t *testing.T) {
+	start := time.Date(2026, 3, 4, 12, 0, 0, 0, time.UTC)
+	_, sessions, clock, sweeper := newSlowStoreV2Fixture(t, start, 0)
+	sch := NewWorkerScheduler(nil, WorkerSchedulerOptions{Clock: clock, V2: sweeper, V2Hints: sessions})
+	ctx := context.Background()
+	sweeper.passStart = start
+	if err := sch.process(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	end := start.Add(10 * time.Minute)
+	wakes, failures := driveSlowV2(ctx, sch, clock, sweeper, end)
+	if want := housekeepingWakes(start, end); wakes != want || sweeper.pages != 0 || len(failures) != 0 {
+		t.Fatalf("idle real store: wakes=%d sweeps=%d errors=%v over 10m, want %d/0/none", wakes, sweeper.pages, failures, want)
 	}
 }

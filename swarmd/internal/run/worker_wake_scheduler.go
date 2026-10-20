@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,6 +74,17 @@ const (
 	automationV2PendingInterval = time.Second
 	automationV2SweepPage       = 10
 	automationV2MaxSweepPasses  = 1002
+	// workerSchedulerPassTimeout bounds the worker admission and reconcile
+	// work of one wake. V2 sweeping does not share it: a slow worker phase
+	// must not leave the V2 pass an expired deadline.
+	workerSchedulerPassTimeout = 30 * time.Second
+	// automationV2PageTimeout bounds one V2 sweep page; every page gets its
+	// own deadline, so a long pass is never failed by an accumulated one.
+	automationV2PageTimeout = 30 * time.Second
+	// automationV2PassBudget is how long one wake keeps paging a V2 pass
+	// before yielding to a busy store. The pass resumes from the sweeper's
+	// cursor on a later wake with only its remaining pages.
+	automationV2PassBudget = 10 * time.Second
 )
 
 type workerKey struct{ account, id string }
@@ -169,7 +181,12 @@ type WorkerScheduler struct {
 	// occurrence commits a V2 mutation, which signals and refreshes them.
 	v2Pending  bool
 	v2Upcoming time.Time
-	wakeups    atomic.Int64
+	// v2PassLeft is the number of pages a started full pass still has to
+	// sweep; v2PassTarget is the latest due time the pass was started for.
+	// A pass that yields or times out resumes with only these pages.
+	v2PassLeft   int
+	v2PassTarget int64
+	wakeups      atomic.Int64
 	// waitHook observes each wait (test seam).
 	waitHook func(next time.Time)
 }
@@ -245,11 +262,11 @@ func (sch *WorkerScheduler) Notify(signal store.SchedulingSignal) {
 func (sch *WorkerScheduler) Run(ctx context.Context) {
 	for ctx.Err() == nil {
 		now := sch.clock.Now()
-		bounded, stop := context.WithTimeout(ctx, 30*time.Second)
-		if err := sch.process(bounded, now); err != nil && ctx.Err() == nil {
+		// process bounds each phase itself: worker work per wake, V2 work
+		// per sweep page and per-wake budget.
+		if err := sch.process(ctx, now); err != nil && ctx.Err() == nil {
 			sch.report(err)
 		}
-		stop()
 		next := sch.nextWake()
 		if sch.waitHook != nil {
 			sch.waitHook(next)
@@ -285,11 +302,13 @@ func (sch *WorkerScheduler) nextWake() time.Time {
 // signals are applied, so a change never moves a cursor past an unadmitted
 // slot of the definition that was current when the slot fell due.
 func (sch *WorkerScheduler) process(ctx context.Context, now time.Time) error {
+	workerCtx, stop := context.WithTimeout(ctx, workerSchedulerPassTimeout)
+	defer stop()
 	var failures []error
-	failures = append(failures, sch.admitDue(ctx, now))
+	failures = append(failures, sch.admitDue(workerCtx, now))
 	sch.applySignals(now)
 	if sch.nextRescan.IsZero() || !now.Before(sch.nextRescan) {
-		failures = append(failures, sch.rescan(ctx, now))
+		failures = append(failures, sch.rescan(workerCtx, now))
 		sch.nextRescan = now.Add(workerSchedulerSafetyInterval)
 	}
 	if !sch.nextMidnight.IsZero() && !now.Before(sch.nextMidnight) {
@@ -303,11 +322,21 @@ func (sch *WorkerScheduler) process(ctx context.Context, now time.Time) error {
 		y, m, d := now.UTC().Date()
 		sch.nextMidnight = time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
 	}
-	failures = append(failures, sch.reconcileDue(ctx, now))
-	failures = append(failures, sch.admitDue(ctx, now))
-	failures = append(failures, sch.processV2(ctx, now))
+	failures = append(failures, sch.reconcileDue(workerCtx, now))
+	failures = append(failures, sch.admitDue(workerCtx, now))
+	workerErr := errors.Join(failures...)
+	v2Err := sch.processV2(ctx, now)
 	sch.busyWorkers.Store(int64(sch.countBusy()))
-	return errors.Join(failures...)
+	return errors.Join(labelSchedulerError("worker scheduling", workerErr), labelSchedulerError("automation v2 sweep", v2Err))
+}
+
+// labelSchedulerError names the phase that failed, so a worker reconcile
+// deadline is not reported as a V2 sweep failure.
+func labelSchedulerError(phase string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", phase, err)
 }
 
 func (sch *WorkerScheduler) countBusy() int {
@@ -615,6 +644,11 @@ func v2DueTimes(hint store.AutomationV2ScheduleHint, nowMs int64) (latestDue, up
 //     committed V2 change, a newly due time, the rescan or UTC midnight.
 //   - Committed changes are coalesced to at most one pass per second.
 //   - Above the bounded hint the catalog is paged one page per second.
+//   - A full pass is bounded per page (automationV2PageTimeout) and per wake
+//     (automationV2PassBudget), never by one deadline for the whole pass.
+//     On a busy store it yields and resumes a second later with only its
+//     remaining pages, from the sweeper's cursor; a timed-out page is
+//     retried after the busy back-off. Neither restarts the pass.
 func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error {
 	if sch.v2 == nil {
 		return nil
@@ -636,67 +670,143 @@ func (sch *WorkerScheduler) processV2(ctx context.Context, now time.Time) error 
 		sch.v2BlockedThrough = 0
 	} else if sch.v2Next.IsZero() || now.Before(sch.v2Next) {
 		return nil
-	} else if (sch.v2Pending || sch.v2Overflow) && (sch.v2Upcoming.IsZero() || now.Before(sch.v2Upcoming)) {
+	} else if sch.v2PassLeft == 0 && (sch.v2Pending || sch.v2Overflow) && (sch.v2Upcoming.IsZero() || now.Before(sch.v2Upcoming)) {
 		// Timed observation wake: one page, the old loop's cost. The hint
 		// decodes every accepted record, so it is re-read only on a
 		// committed V2 change, a newly due time, the rescan or midnight.
-		err := sch.v2.Sweep(ctx, now)
-		sch.v2Next = now.Add(automationV2PendingInterval)
+		timedOut, err := sch.sweepV2Page(ctx, now)
+		if timedOut {
+			sch.v2Next = sch.after(now, workerSchedulerBusyInterval)
+			return err
+		}
+		sch.v2Next = sch.after(now, automationV2PendingInterval)
 		if !sch.v2Upcoming.IsZero() && sch.v2Upcoming.Before(sch.v2Next) {
 			sch.v2Next = sch.v2Upcoming
 		}
 		return err
 	}
+	if sch.v2PassLeft > 0 {
+		// A started pass continues from the sweeper's cursor. A V2 change
+		// committed meanwhile is covered by the hint read that ends it.
+		return sch.continueV2Pass(ctx, now)
+	}
 	nowMs := now.UnixMilli()
 	hint, err := sch.v2Hints.AutomationV2ScheduleHint(nowMs)
 	if err != nil {
-		sch.v2Next = now.Add(workerSchedulerBusyInterval)
+		sch.v2Next = sch.after(now, workerSchedulerBusyInterval)
 		sch.v2Pending, sch.v2Overflow = false, false
 		return err
 	}
-	var failures []error
 	if hint.Overflow {
 		return sch.pageV2Overflow(ctx, now)
 	}
 	sch.v2Overflow = false
 	latestDue, upcoming := v2DueTimes(hint, nowMs)
-	switch {
-	case latestDue > sch.v2BlockedThrough:
-		passes := hint.AcceptedKeys/automationV2SweepPage + 2
-		if passes > automationV2MaxSweepPasses {
-			passes = automationV2MaxSweepPasses
-		}
-		for i := 0; i < passes; i++ {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			failures = append(failures, sch.v2.Sweep(ctx, now))
-		}
-		if hint, err = sch.v2Hints.AutomationV2ScheduleHint(nowMs); err != nil {
-			sch.v2Next = now.Add(workerSchedulerBusyInterval)
-			sch.v2Pending, sch.v2Overflow = false, false
+	if latestDue > sch.v2BlockedThrough {
+		sch.v2PassLeft, sch.v2PassTarget = v2FullPassPages(hint), latestDue
+		return sch.continueV2Pass(ctx, now)
+	}
+	if !hint.Pending {
+		sch.setV2Wake(false, upcoming, now)
+		return nil
+	}
+	timedOut, err := sch.sweepV2Page(ctx, now)
+	sch.setV2Wake(true, upcoming, now)
+	if timedOut {
+		sch.v2Next = sch.after(now, workerSchedulerBusyInterval)
+	}
+	return err
+}
+
+// v2FullPassPages is the page count that visits every accepted entry once.
+func v2FullPassPages(hint store.AutomationV2ScheduleHint) int {
+	passes := hint.AcceptedKeys/automationV2SweepPage + 2
+	if passes > automationV2MaxSweepPasses {
+		passes = automationV2MaxSweepPasses
+	}
+	return passes
+}
+
+// continueV2Pass sweeps the remaining pages of the current full pass until it
+// is done or this wake's budget is spent, then ends a finished pass with one
+// hint read. A record that fell due after the pass started gets a new pass;
+// one already due when it started and still due is blocked as before.
+func (sch *WorkerScheduler) continueV2Pass(ctx context.Context, now time.Time) error {
+	var failures []error
+	for sch.v2PassLeft > 0 {
+		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
-		if hint.Overflow {
-			return errors.Join(append(failures, sch.pageV2Overflow(ctx, now))...)
+		if sch.clock.Now().Sub(now) >= automationV2PassBudget {
+			// The store is busy: yield and resume the remaining pages after
+			// the usual spacing. Bounded by v2PassLeft, so not a retry loop.
+			sch.v2Next = sch.after(now, workerSchedulerMinSpacing)
+			return errors.Join(failures...)
 		}
-		latestDue, upcoming = v2DueTimes(hint, nowMs)
-		sch.v2BlockedThrough = latestDue
-	case hint.Pending:
-		failures = append(failures, sch.v2.Sweep(ctx, now))
+		timedOut, err := sch.sweepV2Page(ctx, now)
+		if timedOut {
+			// The page is retried, from the same cursor, after the busy
+			// back-off; the pages already swept are not repeated.
+			sch.v2Next = sch.after(now, workerSchedulerBusyInterval)
+			return errors.Join(append(failures, err)...)
+		}
+		failures = append(failures, err)
+		sch.v2PassLeft--
 	}
-	sch.v2Pending, sch.v2Upcoming = hint.Pending, time.Time{}
+	nowMs := now.UnixMilli()
+	hint, err := sch.v2Hints.AutomationV2ScheduleHint(nowMs)
+	if err != nil {
+		sch.v2Next = sch.after(now, workerSchedulerBusyInterval)
+		sch.v2Pending, sch.v2Overflow = false, false
+		return errors.Join(append(failures, err)...)
+	}
+	if hint.Overflow {
+		return errors.Join(append(failures, sch.pageV2Overflow(ctx, now))...)
+	}
+	latestDue, upcoming := v2DueTimes(hint, nowMs)
+	if latestDue > sch.v2PassTarget {
+		// Fell due while the pass ran, possibly behind the cursor.
+		sch.v2PassLeft, sch.v2PassTarget = v2FullPassPages(hint), latestDue
+		sch.v2Pending, sch.v2Upcoming = hint.Pending, time.Time{}
+		sch.v2Next = sch.after(now, workerSchedulerMinSpacing)
+		return errors.Join(failures...)
+	}
+	sch.v2BlockedThrough = latestDue
+	sch.setV2Wake(hint.Pending, upcoming, now)
+	return errors.Join(failures...)
+}
+
+// sweepV2Page runs one sweep page under its own deadline. timedOut reports
+// that the page, not the scheduler, ran out of time.
+func (sch *WorkerScheduler) sweepV2Page(ctx context.Context, now time.Time) (timedOut bool, err error) {
+	pageCtx, stop := context.WithTimeout(ctx, automationV2PageTimeout)
+	defer stop()
+	err = sch.v2.Sweep(pageCtx, now)
+	return err != nil && ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded), err
+}
+
+// after is d past the later of now and the clock: spacing that work took
+// longer than d to do must not leave a wake in the past.
+func (sch *WorkerScheduler) after(now time.Time, d time.Duration) time.Time {
+	if c := sch.clock.Now(); c.After(now) {
+		now = c
+	}
+	return now.Add(d)
+}
+
+// setV2Wake records the hint's pending/upcoming state and the next V2 wake.
+func (sch *WorkerScheduler) setV2Wake(pending bool, upcoming int64, now time.Time) {
+	sch.v2Pending, sch.v2Upcoming = pending, time.Time{}
 	sch.v2Next = time.Time{}
 	if upcoming > 0 {
 		sch.v2Upcoming = time.UnixMilli(upcoming)
 		sch.v2Next = sch.v2Upcoming
 	}
-	if hint.Pending {
-		if p := now.Add(automationV2PendingInterval); sch.v2Next.IsZero() || p.Before(sch.v2Next) {
+	if pending {
+		if p := sch.after(now, automationV2PendingInterval); sch.v2Next.IsZero() || p.Before(sch.v2Next) {
 			sch.v2Next = p
 		}
 	}
-	return errors.Join(failures...)
 }
 
 // pageV2Overflow keeps a catalog above the bounded hint swept at the prior
@@ -708,8 +818,13 @@ func (sch *WorkerScheduler) pageV2Overflow(ctx context.Context, now time.Time) e
 	}
 	sch.v2Overflow = true
 	sch.v2BlockedThrough = 0
+	sch.v2PassLeft = 0
 	sch.v2Pending, sch.v2Upcoming = false, time.Time{}
-	failures = append(failures, sch.v2.Sweep(ctx, now))
-	sch.v2Next = now.Add(automationV2PendingInterval)
+	timedOut, err := sch.sweepV2Page(ctx, now)
+	failures = append(failures, err)
+	sch.v2Next = sch.after(now, automationV2PendingInterval)
+	if timedOut {
+		sch.v2Next = sch.after(now, workerSchedulerBusyInterval)
+	}
 	return errors.Join(failures...)
 }

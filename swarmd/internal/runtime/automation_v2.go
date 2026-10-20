@@ -22,7 +22,11 @@ func (d *Daemon) StartAutomationV2Scheduling(ctx context.Context) error {
 	scheduler := run.NewWorkerScheduler(d.workerExecution, run.WorkerSchedulerOptions{
 		V2:      d.automationV2Scheduler,
 		V2Hints: pebblestore.NewSessionStore(d.store),
-		Report:  func(err error) { log.Printf("automation v2 sweep failed: %v; durable pending work retained", err) },
+		// Errors carry their phase ("worker scheduling" or "automation v2
+		// sweep"), so a worker reconcile deadline is not logged as V2.
+		Report: func(err error) {
+			log.Printf("automation scheduler pass failed: %v; durable pending work retained", err)
+		},
 	})
 	d.store.SetSchedulingObserver(scheduler.Notify)
 	loopCtx, cancel := context.WithCancel(ctx)
