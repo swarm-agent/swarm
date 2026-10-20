@@ -33,10 +33,15 @@ type CacheUsage struct {
 
 // cacheHelper mounts only the cache; never host storage, credentials or projects.
 func (m *Manager) cacheHelper(ctx context.Context, root, script string, values ...string) ([]byte, error) {
+	uid, gid := m.sandboxUser(root)
+	return m.cacheHelperVolume(ctx, ProjectCacheVolume(root), uid, gid, script, values...)
+}
+
+// cacheHelperVolume is cacheHelper for one cache volume and its owner.
+func (m *Manager) cacheHelperVolume(ctx context.Context, volume string, uid, gid int, script string, values ...string) ([]byte, error) {
 	if m.Local() {
 		return nil, fmt.Errorf("container project cache is unavailable with bubblewrap")
 	}
-	uid, gid := m.sandboxUser(root)
 	args := []string{"run", "--network", "none", "--rm", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--memory", "512m"}
 	m.mu.Lock()
 	runtime := m.runtime
@@ -44,7 +49,7 @@ func (m *Manager) cacheHelper(ctx context.Context, root, script string, values .
 	if runtime != "" {
 		args = append(args, "--runtime", runtime)
 	}
-	args = append(args, "--user", "0", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--mount", "type=volume,src="+ProjectCacheVolume(root)+",dst="+projectCachePath, "--entrypoint", "sh", m.cfg.Image)
+	args = append(args, "--user", "0", "--cap-add", "CHOWN", "--cap-add", "FOWNER", "--cap-add", "DAC_OVERRIDE", "--mount", "type=volume,src="+volume+",dst="+projectCachePath, "--entrypoint", "sh", m.cfg.Image)
 	args = append(args, withSandboxUmask("sh", "-c", script, "swarm-cache", fmt.Sprintf("%d:%d", uid, gid))[1:]...)
 	args = append(args, values...)
 	return m.runner.Run(ctx, m.cfg.Engine, args...)
@@ -79,6 +84,18 @@ func (m *Manager) initializeProjectCache(ctx context.Context, root string) error
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	if _, err := m.cacheHelper(ctx, root, initializeCacheScript); err != nil {
+		return fmt.Errorf("initialize project cache: %w", err)
+	}
+	return nil
+}
+
+// initializeContainerCache prepares the cache volume the named container
+// mounts, owned by the user it runs as.
+func (m *Manager) initializeContainerCache(ctx context.Context, name, root string) error {
+	uid, gid, volume := m.containerUser(name, root)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	if _, err := m.cacheHelperVolume(ctx, volume, uid, gid, initializeCacheScript); err != nil {
 		return fmt.Errorf("initialize project cache: %w", err)
 	}
 	return nil

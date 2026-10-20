@@ -3,6 +3,8 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -191,5 +193,41 @@ func TestLeaseCommandsCarrySafeDirectories(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("lease exec lacks %q:\n%s", want, joined)
 		}
+	}
+}
+
+// Purpose: in a folder that belongs to the person, a lease for an agent
+// working in its own worktree (owned by Swarm's user) runs as Swarm's user
+// with a cache of its own, so the agent can open its worktree; a lease for an
+// agent working in the folder itself runs as the folder's owner.
+func TestLeaseRunsAsTheOwnerOfTheWorkingDirectory(t *testing.T) {
+	m, runner, project := newLeaseTestManager(t, 2, nil)
+	worktree := project + "/wt"
+	if err := os.Mkdir(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	person := m.cfg.UID + 1
+	m.owner = func(path string) (int, bool) {
+		if path == worktree {
+			return m.cfg.UID, true
+		}
+		return person, true
+	}
+	ctx := context.Background()
+	inWorktree, err := m.TakeLease(ctx, worktree, "job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFolder, err := m.TakeLease(ctx, project, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon := strings.Join(runner.runArgs(inWorktree.Container), " ")
+	if !strings.Contains(daemon, fmt.Sprintf("--user %d:%d", m.cfg.UID, m.cfg.GID)) || !strings.Contains(daemon, ProjectCacheVolume(project)+"-daemon,") || !strings.Contains(daemon, "swarm.lease.user=daemon") {
+		t.Fatalf("worktree lease does not run as Swarm's user with its own cache: %s", daemon)
+	}
+	owner := strings.Join(runner.runArgs(inFolder.Container), " ")
+	if !strings.Contains(owner, fmt.Sprintf("--user %d:%d", person, m.cfg.GID)) || !strings.Contains(owner, "src="+ProjectCacheVolume(project)+",") {
+		t.Fatalf("folder lease does not run as the folder owner: %s", owner)
 	}
 }

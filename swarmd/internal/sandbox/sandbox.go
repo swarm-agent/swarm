@@ -608,11 +608,11 @@ func (m *Manager) RunArgs(name, root, spec string, mounts []string, secret Secre
 // runArgsImage is RunArgs for the image a folder runs on; only the image and
 // its PATH differ, never the hardening.
 func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret SecretSetup, image EnvironmentImage) []string {
+	uid, gid, cacheVolume := m.containerUser(name, root)
 	m.mu.Lock()
 	runtime := m.runtime
 	leaseLabels := m.leaseLabelsLocked(name)
 	m.mu.Unlock()
-	uid, gid := m.sandboxUser(root)
 	user := fmt.Sprintf("%d:%d", uid, gid)
 	args := []string{"run", "-d", "--init", "--name", name,
 		"--label", labelSandbox + "=1",
@@ -637,7 +637,7 @@ func (m *Manager) runArgsImage(name, root, spec string, mounts []string, secret 
 		"--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=2g,mode=1777",
 		"--tmpfs", fmt.Sprintf("/run/swarm:rw,nosuid,nodev,noexec,size=16m,uid=%d,gid=%d,mode=0700", uid, gid),
 		"--mount", "type=volume,src="+homeVolumeName(name, root)+",dst="+sandboxHome,
-		"--mount", "type=volume,src="+ProjectCacheVolume(root)+",dst="+projectCachePath,
+		"--mount", "type=volume,src="+cacheVolume+",dst="+projectCachePath,
 		"--env", "GOCACHE="+projectCachePath+"/go-build",
 		"--env", "GOMODCACHE="+projectCachePath+"/go-mod",
 		"--env", "PNPM_HOME="+projectCachePath+"/pnpm-home",
@@ -886,7 +886,7 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 			return "", fmt.Errorf("replace sandbox: %w", err)
 		}
 	}
-	if err := m.initializeProjectCache(ctx, root); err != nil {
+	if err := m.initializeContainerCache(ctx, name, root); err != nil {
 		return "", err
 	}
 	args := m.scopeRunArgs(name, root, spec, mounts, secret, image, reviewCheckout)

@@ -18,7 +18,7 @@ import (
 func (m *Manager) initializeHome(ctx context.Context, name, root string, image EnvironmentImage) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	uid, gid := m.sandboxUser(root)
+	uid, gid, _ := m.containerUser(name, root)
 	owner := fmt.Sprintf("%d:%d", uid, gid)
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "exec", "-u", "0", name, "stat", "-c", "%u:%g %a", sandboxHome)
 	if err == nil && strings.TrimSpace(string(out)) == owner+" 700" {

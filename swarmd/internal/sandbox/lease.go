@@ -29,6 +29,7 @@ import (
 const (
 	labelLease      = "swarm.lease"
 	labelLeaseOwner = "swarm.lease.owner"
+	labelLeaseUser  = "swarm.lease.user"
 	// LeaseReapInterval is how often leases whose agent no longer runs are released.
 	LeaseReapInterval = 15 * time.Second
 )
@@ -41,6 +42,10 @@ type Lease struct {
 	Container string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
 	scope     Scope
+	// asDaemon runs the lease as Swarm's own user: the agent works in a
+	// directory Swarm's user owns (its worktree) in a folder that belongs to
+	// someone else, so the folder owner could not open it.
+	asDaemon bool
 }
 
 // LeaseLimit reports how many leases a folder allows. A folder without an
@@ -128,7 +133,11 @@ func (m *Manager) leaseLabelsLocked(name string) []string {
 	defer t.mu.Unlock()
 	for _, l := range t.byID {
 		if l.Container == name {
-			return []string{"--label", labelLease + "=" + l.ID, "--label", labelLeaseOwner + "=" + l.Owner}
+			labels := []string{"--label", labelLease + "=" + l.ID, "--label", labelLeaseOwner + "=" + l.Owner}
+			if l.asDaemon {
+				labels = append(labels, "--label", labelLeaseUser+"=daemon")
+			}
+			return labels
 		}
 	}
 	return nil
@@ -171,6 +180,7 @@ func (m *Manager) TakeLease(ctx context.Context, path, owner string) (Lease, err
 		return Lease{}, err
 	}
 	lease := &Lease{ID: id, Root: root, Owner: owner, Container: leaseContainerName(root, id), CreatedAt: time.Now(), scope: scope}
+	lease.asDaemon = m.leaseRunsAsDaemon(root, path)
 	lease.scope.Lease = id
 	t.mu.Lock()
 	inUse := 0
@@ -348,17 +358,17 @@ func (m *Manager) recoverLeases(ctx context.Context) error {
 	out, err := m.runner.Run(ctx, m.cfg.Engine, "ps", "-a",
 		"--filter", "label="+labelLease,
 		"--filter", "label="+labelInstance+"="+instanceIdentity(m.cfg.StateDir),
-		"--format", "{{.Names}}\t{{.Label \""+labelLease+"\"}}\t{{.Label \""+labelLeaseOwner+"\"}}\t{{.Label \""+labelRoot+"\"}}")
+		"--format", "{{.Names}}\t{{.Label \""+labelLease+"\"}}\t{{.Label \""+labelLeaseOwner+"\"}}\t{{.Label \""+labelRoot+"\"}}\t{{.Label \""+labelLeaseUser+"\"}}")
 	if err != nil {
 		return err
 	}
 	t := m.leaseTable()
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		f := strings.Split(line, "\t")
-		if len(f) != 4 || f[1] == "" || f[3] == "" {
+		if len(f) < 4 || f[1] == "" || f[3] == "" {
 			continue
 		}
-		l := &Lease{ID: f[1], Owner: f[2], Root: filepath.Clean(f[3]), Container: f[0]}
+		l := &Lease{ID: f[1], Owner: f[2], Root: filepath.Clean(f[3]), Container: f[0], asDaemon: len(f) > 4 && f[4] == "daemon"}
 		if scope, err := m.CommandScope(l.Root); err == nil {
 			scope.JobCheckout, scope.ReviewCheckout, scope.Lease = "", "", l.ID
 			l.scope = scope
@@ -430,4 +440,39 @@ func (m *Manager) StartLeases(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// leaseRunsAsDaemon reports whether a lease for an agent working at path must
+// run as Swarm's own user: the folder's sandbox runs as its owner, but path
+// (the agent's worktree) belongs to Swarm's user, which the owner cannot open.
+func (m *Manager) leaseRunsAsDaemon(root, path string) bool {
+	folderUID, _ := m.sandboxUser(root)
+	if folderUID == m.cfg.UID {
+		return false
+	}
+	owner := m.owner
+	if owner == nil {
+		owner = fileOwnerUID
+	}
+	uid, ok := owner(filepath.Clean(path))
+	return ok && uid == m.cfg.UID
+}
+
+// containerUser is the uid:gid a container runs as and its project cache
+// volume: the folder's sandbox user and the folder's cache, or Swarm's own
+// user and a cache of its own for a lease that runs as the daemon (the
+// folder's cache belongs to the folder owner).
+func (m *Manager) containerUser(name, root string) (int, int, string) {
+	if t := m.leaseTable(); t != nil {
+		t.mu.Lock()
+		for _, l := range t.byID {
+			if l.Container == name && l.asDaemon {
+				t.mu.Unlock()
+				return m.cfg.UID, m.cfg.GID, ProjectCacheVolume(root) + "-daemon"
+			}
+		}
+		t.mu.Unlock()
+	}
+	uid, gid := m.sandboxUser(root)
+	return uid, gid, ProjectCacheVolume(root)
 }
