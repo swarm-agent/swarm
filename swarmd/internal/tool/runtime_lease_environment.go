@@ -20,8 +20,9 @@ func leaseEnvironmentDefinition() Definition {
 		Type: "function",
 		Name: LeaseEnvironmentToolName,
 		Description: "Lease your folder's environment for bash. A lease is its own container of the environment the person set up for this folder (its image and setup), with your folder and your working directory (your worktree) mounted at the same paths, so bash runs where you already work and your file and Git tools see the same files; the folder's granted secrets are available as stand-ins. " +
-			"action=list shows the environment, how many leases it allows and how many are in use, and your leases. action=lease starts one (up to the folder's maximum; it says when all are in use). While you hold one lease, bash runs in it; with several, pass bash environment=<lease id>. " +
-			"action=release ends one early. You never clean up: Swarm releases all your leases when your run ends. Without a lease, bash runs as usual.",
+			"You don't need this tool to use the environment: when your folder has one set up for leases, your first bash command takes a lease by itself (waiting for a free one when all are in use) and bash keeps running in it. " +
+			"action=list shows the environment, how many leases it allows and how many are in use, and your leases. action=lease starts another one (up to the folder's maximum; it says when all are in use); with several, pass bash environment=<lease id>. " +
+			"action=release ends one early. You never clean up: Swarm releases all your leases when your run ends. In a folder without an environment set up for leases, bash runs as usual.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -62,6 +63,9 @@ func executeLeaseEnvironment(ctx context.Context, scope WorkspaceScope, args map
 			out["folder"] = info.Root
 			out["max_leases"] = info.Max
 			out["in_use"] = info.InUse
+			if info.Max <= 0 {
+				out["reason"] = "this folder has no environment set up for leases (the person's AI sets one up with swarm_set_environment and max_leases); bash runs as usual"
+			}
 		}
 	case "lease":
 		lease, err := manager.TakeLease(ctx, path, owner)

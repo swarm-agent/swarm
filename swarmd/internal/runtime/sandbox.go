@@ -106,16 +106,17 @@ func setSandboxLayout(manager *sandbox.Manager, workspaces *pebblestore.Workspac
 	return nil
 }
 
-// leaseLimit is a folder's lease maximum; a folder without a ready
-// environment cannot be leased.
+// leaseLimit is a folder's lease maximum: 0 for a folder without an
+// environment or without max_leases (its agents' bash runs as usual), an
+// error for one whose environment is set up for leases but not ready.
 func leaseLimit(envs *pebblestore.SandboxEnvironmentStore) sandbox.LeaseLimit {
 	return func(root string) (int, error) {
 		env, found, err := envs.Get(root)
 		if err != nil {
 			return 0, err
 		}
-		if !found {
-			return 0, fmt.Errorf("no environment is defined for %s: the person's AI defines one with swarm_set_environment (base_image, setup, max_leases)", root)
+		if !found || env.MaxLeases <= 0 {
+			return 0, nil
 		}
 		if env.ReadyImage == "" {
 			return 0, fmt.Errorf("the environment of %s is %s, not ready: %s", root, env.Status, env.Error)

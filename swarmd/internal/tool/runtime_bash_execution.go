@@ -48,7 +48,7 @@ func executeBashCommand(parent context.Context, scope WorkspaceScope, args map[s
 	if scope.ReviewCheckout != "" && (sandbox.Default() == nil || !sandbox.Default().Active()) {
 		return "", sandbox.ErrSandboxRequired
 	}
-	if leaseID, err := bashLease(scope, args); err != nil {
+	if leaseID, err := bashLease(parent, scope, args, timeout, onDelta); err != nil {
 		return "", err
 	} else if leaseID != "" {
 		return executeLeasedBash(parent, sandbox.Leases(), leaseID, scope, command, timeout, onDelta)
@@ -158,8 +158,10 @@ func executeSandboxedBash(parent context.Context, manager *sandbox.Manager, scop
 }
 
 // bashLease is the lease a command runs in: the one named by environment,
-// else the agent's only lease. Without a lease the command runs as before.
-func bashLease(scope WorkspaceScope, args map[string]any) (string, error) {
+// else the agent's only lease, else a new lease Swarm takes for the agent
+// when its folder's environment is set up for leases (autoLease). Otherwise
+// the command runs as before.
+func bashLease(ctx context.Context, scope WorkspaceScope, args map[string]any, wait time.Duration, onDelta func(string)) (string, error) {
 	id := strings.TrimSpace(asString(args["environment"]))
 	if scope.ReadOnlyBash || scope.ReviewCheckout != "" {
 		if id != "" {
@@ -180,7 +182,7 @@ func bashLease(scope WorkspaceScope, args map[string]any) (string, error) {
 	held := manager.OwnerLeases(scope.SessionID)
 	switch len(held) {
 	case 0:
-		return "", nil
+		return autoLease(ctx, manager, scope, wait, onDelta)
 	case 1:
 		return held[0].ID, nil
 	}
@@ -189,6 +191,49 @@ func bashLease(scope WorkspaceScope, args map[string]any) (string, error) {
 		ids = append(ids, l.ID)
 	}
 	return "", fmt.Errorf("you hold %d leases (%s): pass environment with the lease to run in", len(held), strings.Join(ids, ", "))
+}
+
+// leaseWaitPoll is how often a command waiting for a free lease retries.
+var leaseWaitPoll = 2 * time.Second
+
+// autoLease takes a lease for an agent without one when its folder's
+// environment is set up for leases (max_leases above 0), so the agent's bash
+// runs in it without the agent asking. When every lease is in use it waits up
+// to wait for one to free up. A folder without that runs as before; one whose
+// environment is set up for leases but not ready is refused, never run on the
+// host instead.
+func autoLease(ctx context.Context, manager *sandbox.Manager, scope WorkspaceScope, wait time.Duration, onDelta func(string)) (string, error) {
+	info, err := manager.LeaseInfo(scope.PrimaryPath)
+	if err != nil {
+		return "", fmt.Errorf("this folder's environment cannot be leased: %w", err)
+	}
+	if info.Max <= 0 {
+		return "", nil
+	}
+	deadline := time.Now().Add(wait)
+	announced := false
+	for {
+		lease, err := manager.TakeLease(ctx, scope.PrimaryPath, strings.TrimSpace(scope.SessionID))
+		if err == nil {
+			return lease.ID, nil
+		}
+		var full *sandbox.LeasesFullError
+		if !errors.As(err, &full) {
+			return "", err
+		}
+		if !time.Now().Before(deadline) {
+			return "", fmt.Errorf("%w (waited %s)", err, wait.Round(time.Second))
+		}
+		if !announced && onDelta != nil {
+			onDelta(fmt.Sprintf("waiting for a free lease of this folder's environment (%d of %d in use)\n", full.InUse, full.Max))
+			announced = true
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(leaseWaitPoll):
+		}
+	}
 }
 
 // executeLeasedBash runs the command in one of the agent's leases. The folder

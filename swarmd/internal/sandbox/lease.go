@@ -16,8 +16,10 @@ import (
 	"swarm/packages/swarmd/internal/environments/provider"
 )
 
-// Leases: an agent takes instances of its folder's environment for its bash,
-// as many as it decides up to the folder's maximum. Each lease is its own
+// Leases: an agent's bash runs in an instance of its folder's environment.
+// Swarm takes the first lease for the agent on its first bash command (the
+// tool package's autoLease); the agent may take more, up to the folder's
+// maximum. Each lease is its own
 // container of the folder's environment image, with the folder mounted at its
 // own path (so the agent's file tools on the host and bash in the lease see
 // the same files) and the folder's granted secrets as stand-ins. The agent
