@@ -77,6 +77,10 @@ done`
 	return nil
 }
 
+// The container's own user and group databases (inside the image, never the host's).
+const containerPasswd = "/etc/passwd"
+const containerGroup = "/etc/group"
+
 // ensureUserEntry gives the uid a container runs as a name. An image knows
 // only its own users; a sandbox or lease running as Swarm's user or a folder
 // owner the image does not list leaves `id -un`, `whoami` and tools that read
@@ -85,8 +89,8 @@ func (m *Manager) ensureUserEntry(ctx context.Context, name, root string) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	uid, gid, _ := m.containerUser(name, root)
-	script := `grep -q "^[^:]*:[^:]*:$1:" /etc/passwd || echo "sandbox:x:$1:$2:Swarm:` + sandboxHome + `:/bin/sh" >> /etc/passwd
-grep -q "^[^:]*:[^:]*:$2:" /etc/group || echo "sandbox:x:$2:" >> /etc/group`
+	script := `grep -q "^[^:]*:[^:]*:$1:" ` + containerPasswd + ` || echo "sandbox:x:$1:$2:Swarm:` + sandboxHome + `:/bin/sh" >> ` + containerPasswd + `
+grep -q "^[^:]*:[^:]*:$2:" ` + containerGroup + ` || echo "sandbox:x:$2:" >> ` + containerGroup
 	if _, err := m.runner.Run(ctx, m.cfg.Engine, "exec", "-u", "0", name, "sh", "-c", script, "swarm-user", strconv.Itoa(uid), strconv.Itoa(gid)); err != nil {
 		slog.Warn("add sandbox user entry failed", "error", err)
 	}

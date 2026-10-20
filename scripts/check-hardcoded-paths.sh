@@ -43,6 +43,8 @@ filter_allowed_runtime_paths() {
   # image's prebuilt Go cache once each; the cache scripts reuse the constants.
   # Sandbox instance matching recognises its own container by the fixed
   # resolv.conf mount destination.
+  # A container gets a user entry for its uid in its own (never the host's)
+  # passwd and group files, named once each.
   # `swarmctl machine` refuses Swarm's fixed storage directories as project
   # folders, and refuses publish commands under home folders by naming them.
   filter_guest_image_paths | grep -Ev \
@@ -65,6 +67,8 @@ filter_allowed_runtime_paths() {
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*sandboxHome[[:space:]]*=[[:space:]]*"/home/sandbox"$' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:.*dst=/etc/resolv\.conf' \
     -e '^(\./)?swarmd/internal/sandbox/sandbox\.go:[0-9]+:[[:space:]]*//.*/etc/resolv\.conf' \
+    -e '^(\./)?swarmd/internal/sandbox/git_identity\.go:[0-9]+:const containerPasswd = "/etc/passwd"$' \
+    -e '^(\./)?swarmd/internal/sandbox/git_identity\.go:[0-9]+:const containerGroup = "/etc/group"$' \
     -e '^(\./)?swarmd/internal/sandbox/environment\.go:[0-9]+:const envProfilePath = "/etc/profile\.d/zz-swarm-environment-path\.sh"$' \
     -e '^(\./)?swarmd/internal/sandbox/environment\.go:[0-9]+:[[:space:]]*args = append\(args, "--mount", "type=bind,src="\+m\.resolvConf\+",dst=/etc/resolv\.conf,readonly"\)$' \
     -e '^(\./)?swarmd/internal/runtime/egress\.go:[0-9]+:[[:space:]]*sandboxCADest[[:space:]]*=[[:space:]]*"/etc/swarm/egress-ca\.pem"$' \
