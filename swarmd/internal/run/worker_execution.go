@@ -1130,16 +1130,17 @@ func (s *WorkerExecutionService) cancelRun(r store.WorkerRunRecord, reason strin
 	if active != nil && active.runID == intent.RunID {
 		active.userStop = true
 		active.stopReason = reason
+		active.stopBy = RunCancelledByWorkerControl
 		cancel := active.cancel
 		runs.lifecycleMu.Unlock()
 		if cancel != nil {
-			cancel()
+			cancel(runCancelCause(RunCancelledByWorkerControl, reason))
 		}
 		return nil // finishSessionLifecycle owns the terminal acknowledgement
 	}
 	for pendingID, cancel := range runs.pendingAdmissions[r.SessionID] {
 		if pendingID == intent.RunID {
-			cancel()
+			cancel(runCancelCause(RunCancelledByWorkerControl, reason))
 		}
 	}
 	runs.lifecycleMu.Unlock()

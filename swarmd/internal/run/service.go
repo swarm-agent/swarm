@@ -141,7 +141,7 @@ type Service struct {
 	runCounter                   atomic.Uint64
 	lifecycleMu                  sync.Mutex
 	activeRuns                   map[string]*activeSessionRun
-	pendingAdmissions            map[string]map[string]context.CancelFunc
+	pendingAdmissions            map[string]map[string]context.CancelCauseFunc
 }
 
 func (s *Service) LongSessionSnapshot() map[string]any {
@@ -1338,6 +1338,11 @@ func forwardTargetedSubagentStreamEvent(emit StreamHandler, event StreamEvent) {
 
 func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOptions, onEvent StreamHandler) (result RunResult, runErr error) {
 	sessionID = strings.TrimSpace(sessionID)
+	// callerCtx is the context the run was started with; cancellationCtx
+	// becomes the run's own context once it exists. A cancelled run returns an
+	// error naming which of the two ended it (see namedRunCancellation).
+	callerCtx := ctx
+	var cancellationCtx context.Context
 	if s.workerExecution != nil {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
@@ -1355,6 +1360,9 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 				_ = ownedExecutionLease.Release()
 			}
 		}()
+		if cancellationCtx != nil {
+			runErr = namedRunCancellation(callerCtx, cancellationCtx, runErr)
+		}
 		if !sessionResolved || !lifecycleClaimed {
 			return
 		}
@@ -1545,10 +1553,11 @@ func (s *Service) runTurn(ctx context.Context, sessionID string, options RunOpti
 	if err != nil {
 		return RunResult{}, err
 	}
-	var runCancel context.CancelFunc
-	runCtx, cancelRun := context.WithCancel(ctx)
+	var runCancel context.CancelCauseFunc
+	runCtx, cancelRun := newRunContext(ctx)
 	runCancel = cancelRun
-	defer runCancel()
+	defer runCancel(nil)
+	cancellationCtx = runCtx
 	ctx = runCtx
 	runnerCtx = runCtx
 

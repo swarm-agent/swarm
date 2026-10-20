@@ -28,8 +28,9 @@ var (
 type activeSessionRun struct {
 	runID          string
 	generation     uint64
-	cancel         context.CancelFunc
+	cancel         context.CancelCauseFunc
 	stopReason     string
+	stopBy         string // RunCancelledBy* of the stop that set userStop
 	userStop       bool
 	requestedPhase string
 	summary        string
@@ -140,7 +141,7 @@ func (s *Service) StopSessionRun(sessionID, runID, reason string) error {
 	pendingCancelled := false
 	for pendingRunID, cancel := range s.pendingAdmissions[sessionID] {
 		if runID == "" || pendingRunID == runID {
-			cancel()
+			cancel(runCancelCause(RunCancelledByStopRequest, reason))
 			pendingCancelled = true
 		}
 	}
@@ -173,6 +174,7 @@ func (s *Service) StopSessionRun(sessionID, runID, reason string) error {
 	}
 	active.userStop = true
 	active.stopReason = reason
+	active.stopBy = RunCancelledByStopRequest
 	cancel := active.cancel
 
 	now := time.Now().UnixMilli()
@@ -191,7 +193,7 @@ func (s *Service) StopSessionRun(sessionID, runID, reason string) error {
 
 	s.publishLifecycleSnapshot(current)
 	if cancel != nil {
-		cancel()
+		cancel(runCancelCause(RunCancelledByStopRequest, reason))
 	}
 	return nil
 }
@@ -245,7 +247,7 @@ func (s *Service) beginSessionLifecycle(sessionID, runID, ownerTransport string)
 	return next, nil
 }
 
-func (s *Service) attachLifecycleCancel(sessionID, runID string, cancel context.CancelFunc) {
+func (s *Service) attachLifecycleCancel(sessionID, runID string, cancel context.CancelCauseFunc) {
 	if s == nil || cancel == nil {
 		return
 	}
@@ -256,15 +258,20 @@ func (s *Service) attachLifecycleCancel(sessionID, runID string, cancel context.
 	}
 
 	var cancelImmediately bool
+	var stopBy, stopReason string
 	s.lifecycleMu.Lock()
 	if active := s.activeRuns[sessionID]; active != nil && strings.EqualFold(strings.TrimSpace(active.runID), runID) {
 		active.cancel = cancel
 		cancelImmediately = active.userStop
+		stopBy, stopReason = active.stopBy, active.stopReason
 	}
 	s.lifecycleMu.Unlock()
 
 	if cancelImmediately {
-		cancel()
+		if stopBy == "" {
+			stopBy = RunCancelledByStopRequest
+		}
+		cancel(runCancelCause(stopBy, stopReason))
 	}
 }
 
