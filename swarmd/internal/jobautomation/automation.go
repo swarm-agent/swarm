@@ -73,8 +73,8 @@ var (
 	// supports: {{steps.<id>.output}}, the recorded output line of an
 	// earlier step.
 	stepOutputPlaceholder = regexp.MustCompile(`\{\{steps\.([a-z0-9][a-z0-9_-]{0,63})\.output\}\}`)
-	jobIDPattern  = regexp.MustCompile(`^(worker|media|design)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
-	refIDPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
+	jobIDPattern          = regexp.MustCompile(`^(worker|media|design)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
+	refIDPattern          = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 )
 
 // Scope is which job ends an automation applies to: every job in a folder,
