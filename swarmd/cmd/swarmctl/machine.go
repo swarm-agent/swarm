@@ -155,10 +155,10 @@ func machineWorkspaceCheck(path, who string) (*user.User, error) {
 		}
 	}
 	if who == "" {
-		who = os.Getenv("SUDO_USER")
+		who = machineInvokingUser()
 	}
 	if who == "" {
-		return nil, fmt.Errorf("cannot tell who this is for: run with sudo from your own account, or pass --for-user NAME")
+		return nil, fmt.Errorf("cannot tell who this is for: run with sudo (or pkexec) from your own account, or pass --for-user NAME")
 	}
 	if !regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`).MatchString(who) {
 		return nil, fmt.Errorf("--for-user must be a user name")
@@ -324,29 +324,43 @@ func cmdMachineWorkspace(args []string) error {
 	}
 	switch args[0] {
 	case "add":
-		who := ""
-		if len(args) == 4 && args[2] == "--for-user" {
-			who = args[3]
-		} else if len(args) != 2 {
-			return fmt.Errorf("usage: swarmctl workspace add PATH [--for-user NAME]")
-		}
-		person, err := machineWorkspaceCheck(args[1], who)
+		// Several folders in one call apply (and restart Swarm) once, so an app
+		// adding a project's folders asks for one password, not one per folder.
+		adds, who, err := machineWorkspaceAddArgs(args[1:])
 		if err != nil {
 			return err
 		}
-		if !machineContains(paths, args[1]) {
-			paths = append(paths, args[1])
+		owners := make([]string, len(adds))
+		for i, p := range adds {
+			person, err := machineWorkspaceCheck(p, who)
+			if err != nil {
+				return err
+			}
+			owners[i] = person.Username
+		}
+		changed := false
+		for _, p := range adds {
+			if !machineContains(paths, p) {
+				paths = append(paths, p)
+				changed = true
+			}
+		}
+		if changed {
 			if err = machineWrite(machineState+"/workspaces", strings.Join(paths, "\n")+"\n", 0644); err != nil {
 				return err
 			}
 		}
-		if err = machineWorkspaceGrant(args[1], person.Username); err != nil {
-			return err
+		for i, p := range adds {
+			if err = machineWorkspaceGrant(p, owners[i]); err != nil {
+				return err
+			}
 		}
 		if err = machineWorkspaceApply(paths); err != nil {
 			return err
 		}
-		fmt.Printf("%s is visible to Swarm (owner %s). Register it in place: swarm_add_workspace %s\n", args[1], person.Username, args[1])
+		for i, p := range adds {
+			fmt.Printf("%s is visible to Swarm (owner %s). Register it in place: swarm_add_workspace %s\n", p, owners[i], p)
+		}
 	case "remove":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: swarmctl workspace remove PATH")
@@ -634,4 +648,48 @@ func machineIdleCheck() error {
 		return err
 	}
 	return machineRun("systemctl", "poweroff")
+}
+
+// machineWorkspaceAddArgs reads `add PATH [PATH...] [--for-user NAME]`: one or
+// more absolute folders (each once) and an optional owner, in any order.
+func machineWorkspaceAddArgs(args []string) ([]string, string, error) {
+	usage := fmt.Errorf("usage: swarmctl workspace add PATH [PATH...] [--for-user NAME]")
+	var adds []string
+	who := ""
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case a == "--for-user":
+			if who != "" || i+1 >= len(args) {
+				return nil, "", usage
+			}
+			who = args[i+1]
+			i++
+		case strings.HasPrefix(a, "-"):
+			return nil, "", usage
+		default:
+			if !machineContains(adds, a) {
+				adds = append(adds, a)
+			}
+		}
+	}
+	if len(adds) == 0 {
+		return nil, "", usage
+	}
+	return adds, who, nil
+}
+
+// machineInvokingUser is the account that asked for a root command: sudo sets
+// SUDO_USER, pkexec (the desktop password prompt apps use) sets PKEXEC_UID.
+func machineInvokingUser() string {
+	if who := strings.TrimSpace(os.Getenv("SUDO_USER")); who != "" {
+		return who
+	}
+	if uid := strings.TrimSpace(os.Getenv("PKEXEC_UID")); uid != "" {
+		if _, err := strconv.Atoi(uid); err == nil {
+			if u, err := user.LookupId(uid); err == nil {
+				return u.Username
+			}
+		}
+	}
+	return ""
 }

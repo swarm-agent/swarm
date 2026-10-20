@@ -50,6 +50,12 @@ does the same later (`--access full` also approves tool calls and manages
 models, providers and workers); running it again replaces the key and revokes
 the old one.
 
+**An app on this machine** (a console or a frontend you build) gets its own key
+with `install.sh connect-app NAME [--access read|write|full]`, in
+`~/.config/swarm/apps/NAME.key`; it never replaces the AI key. The path for
+frontends, discovery (`GET /v3/hello`, no key) and installer progress lines
+(`--progress=json`) is in [docs/frontends.md](../../../docs/frontends.md).
+
 <copy label="Connect Claude Code (as yourself)">
 claude mcp add --scope user --transport http swarm http://127.0.0.1:7783/mcp \
   --header "Authorization: Bearer $(cat ~/.config/swarm/ai-key)"

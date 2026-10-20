@@ -82,7 +82,7 @@ func usage() {
 	fmt.Println("  swarmctl model set --provider codex --model gpt-5.4 --thinking xhigh [--addr URL]")
 	fmt.Println("  swarmctl model catalog get --provider codex [--model MODEL] [--limit N] [--addr URL]")
 	fmt.Println("  swarmctl workspace resolve [--cwd PATH] [--addr URL]")
-	fmt.Println("  swarmctl workspace add PATH [--for-user NAME] | remove PATH | list  # root")
+	fmt.Println("  swarmctl workspace add PATH [PATH...] [--for-user NAME] | remove PATH | list  # root")
 	fmt.Println("  swarmctl workspace publish PATH COMMAND [--sync] | publish PATH --off  # root")
 	fmt.Println("  swarmctl idle-off MINUTES|off|status  # root")
 	fmt.Println("  swarmctl context sources [--cwd PATH] [--addr URL]")
