@@ -19,7 +19,7 @@ func leaseEnvironmentDefinition() Definition {
 	return Definition{
 		Type: "function",
 		Name: LeaseEnvironmentToolName,
-		Description: "Lease your folder's environment for bash. A lease is its own container of the environment the person set up for this folder (its image and setup), with the folder mounted at the same path, so your file tools and bash see the same files, and the folder's granted secrets available as stand-ins. " +
+		Description: "Lease your folder's environment for bash. A lease is its own container of the environment the person set up for this folder (its image and setup), with your folder and your working directory (your worktree) mounted at the same paths, so bash runs where you already work and your file and Git tools see the same files; the folder's granted secrets are available as stand-ins. " +
 			"action=list shows the environment, how many leases it allows and how many are in use, and your leases. action=lease starts one (up to the folder's maximum; it says when all are in use). While you hold one lease, bash runs in it; with several, pass bash environment=<lease id>. " +
 			"action=release ends one early. You never clean up: Swarm releases all your leases when your run ends. Without a lease, bash runs as usual.",
 		Parameters: map[string]any{
@@ -59,7 +59,7 @@ func executeLeaseEnvironment(ctx context.Context, scope WorkspaceScope, args map
 			out["reason"] = err.Error()
 		} else {
 			out["available"] = info.Max > 0
-			out["workspace_path"] = info.Root
+			out["folder"] = info.Root
 			out["max_leases"] = info.Max
 			out["in_use"] = info.InUse
 		}
@@ -69,7 +69,7 @@ func executeLeaseEnvironment(ctx context.Context, scope WorkspaceScope, args map
 			return "", err
 		}
 		out["lease"] = lease
-		out["next"] = "bash runs in this lease while it is your only one; with several, pass bash environment=" + lease.ID + ". Swarm releases it when your run ends."
+		out["next"] = "Work as usual: bash now runs in this lease, in your own working directory (your folder and your worktree are mounted there at the same paths), and your file and Git tools see the same files. Do not pass workspace_path for this. While it is your only lease, bash uses it by itself; with several, pass bash environment=" + lease.ID + ". Swarm releases it when your run ends."
 	case "release":
 		id := strings.TrimSpace(asString(args["lease_id"]))
 		if id == "" {

@@ -34,7 +34,7 @@ const (
 // Lease is one leased instance of a folder's environment.
 type Lease struct {
 	ID        string    `json:"id"`
-	Root      string    `json:"workspace_path"`
+	Root      string    `json:"folder"`
 	Owner     string    `json:"-"`
 	Container string    `json:"-"`
 	CreatedAt time.Time `json:"created_at"`
