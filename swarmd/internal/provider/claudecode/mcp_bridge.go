@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,10 +45,37 @@ var (
 	mcpToolHeartbeat   = 30 * time.Second
 )
 
-// MCPToolTimeoutMillis is the MCP_TOOL_TIMEOUT the Claude Code CLI runs
+// MCPToolTimeoutMillis is the MCP tool timeout the Claude Code CLI runs
 // with: Swarm's longest tool call plus mcpToolTimeoutMargin.
 func MCPToolTimeoutMillis() int64 {
 	return (provideriface.MaxToolCallDuration + mcpToolTimeoutMargin).Milliseconds()
+}
+
+// mcpToolTimeoutEnv is the one place that gives the Claude Code CLI its MCP
+// tool timeouts, both set to MCPToolTimeoutMillis:
+//
+//   - MCP_TOOL_TIMEOUT: the CLI's per-call timeout (and, per the earlier
+//     inspection noted at streamToolCall, its per-POST timer).
+//   - CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: the CLI's idle watchdog for a tool
+//     call that sends no progress. Earlier inspection of the published CLI
+//     2.1.303 (not repeated here) found it defaults to 300 s for an HTTP
+//     server and that progress notifications reset it only when the CLI
+//     itself passes _meta.progressToken on tools/call.
+//
+// What was checked for this job: streamToolCall sends notifications/progress
+// only when tools/call carries _meta.progressToken (otherwise just
+// event-stream comments). No Claude Code CLI binary or package was available
+// in the sandbox to check whether the CLI sends that token, so the bridge's
+// progress cannot be relied on to reset the idle watchdog, and the watchdog
+// is raised to Swarm's own limit instead. The unit is assumed to be
+// milliseconds like MCP_TOOL_TIMEOUT; were it seconds, the value would be
+// longer still, so a call within Swarm's limit is never cut short either way.
+func mcpToolTimeoutEnv() []string {
+	value := strconv.FormatInt(MCPToolTimeoutMillis(), 10)
+	return []string{
+		"MCP_TOOL_TIMEOUT=" + value,
+		"CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=" + value,
+	}
 }
 
 var mcpSupportedProtocols = map[string]struct{}{
@@ -278,7 +306,9 @@ func acceptsEventStream(r *http.Request) bool {
 // after the server's timeout, else MCP_TOOL_TIMEOUT, else 60000 ms, and
 // clears that timer once the response headers arrive, so a response that
 // starts at once is not cut off. Its idle watchdog (300 s for HTTP servers)
-// is reset by the progress notifications sent here.
+// is reset by the progress notifications sent here only when the CLI passes
+// a progressToken, which was not confirmed; mcpToolTimeoutEnv raises that
+// watchdog to Swarm's own limit for that reason.
 func (b *mcpBridge) streamToolCall(w http.ResponseWriter, flusher http.Flusher, r *http.Request, message jsonRPCMessage) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

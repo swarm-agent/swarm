@@ -219,3 +219,138 @@ func TestTurnGivesTheCLIAToolTimeoutAboveSwarmsLongestToolCall(t *testing.T) {
 	}
 	t.Fatalf("the CLI environment has no MCP_TOOL_TIMEOUT: %q", plan.env)
 }
+
+// Requirement: the Claude Code CLI's MCP tool idle watchdog
+// (CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT) is set from Swarm's own longest tool
+// call plus the margin, the same single value as MCP_TOOL_TIMEOUT, so a
+// tool call that sends no progress the CLI counts is not ended before
+// Swarm's own timeout.
+// Threat: a bash call longer than the CLI's 300 s default idle timeout for
+// an HTTP server cut off, because whether the CLI passes a progressToken
+// (needed for progress to reset that watchdog) could not be confirmed.
+// Owner: Runner.planTurn via mcpToolTimeoutEnv (the CLI environment for a
+// turn with tools). A turn without tools gets neither variable.
+func TestTurnGivesTheCLIAToolIdleTimeoutFromSwarmsLongestToolCall(t *testing.T) {
+	r := &Runner{cli: &CLI{lookupEnv: func(string) (string, bool) { return "", false }}}
+	invoker := runtimeBash{runtime: tool.NewRuntime(1), scope: tool.WorkspaceScope{PrimaryPath: t.TempDir()}}
+	plan, err := r.planTurn(context.Background(), provideriface.Request{Model: "claude-test", Tools: []provideriface.ToolDefinition{{Name: "bash"}}, ToolInvoker: invoker}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plan.bridge.Close()
+	want := strconv.FormatInt((provideriface.MaxToolCallDuration + mcpToolTimeoutMargin).Milliseconds(), 10)
+	found := map[string]string{}
+	for _, entry := range plan.env {
+		for _, key := range []string{"CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", "MCP_TOOL_TIMEOUT"} {
+			if value, ok := strings.CutPrefix(entry, key+"="); ok {
+				if _, dup := found[key]; dup {
+					t.Fatalf("%s set twice in the CLI environment: %q", key, plan.env)
+				}
+				found[key] = value
+			}
+		}
+	}
+	for _, key := range []string{"CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT", "MCP_TOOL_TIMEOUT"} {
+		if found[key] != want {
+			t.Fatalf("%s = %q, want %s (Swarm's longest tool call plus the margin); env %q", key, found[key], want, plan.env)
+		}
+	}
+
+	noTools, err := r.planTurn(context.Background(), provideriface.Request{Model: "claude-test"}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range noTools.env {
+		if strings.HasPrefix(entry, "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=") || strings.HasPrefix(entry, "MCP_TOOL_TIMEOUT=") {
+			t.Fatalf("a turn without tools set %q", entry)
+		}
+	}
+}
+
+// Requirement: when the client passes _meta.progressToken on tools/call, the
+// bridge sends notifications/progress for that token, with increasing
+// progress, for the whole time the tool runs, and only then the response.
+// Threat: progress that stops (or never starts) partway through a long call,
+// so the CLI's idle watchdog ends it.
+// Owner: mcpBridge.streamToolCall over the real bash tool; the keep-alive
+// interval is shortened so the test is fast.
+func TestBridgeSendsProgressUntilALongToolCallEnds(t *testing.T) {
+	oldKeepAlive := mcpStreamKeepAlive
+	mcpStreamKeepAlive = 50 * time.Millisecond
+	t.Cleanup(func() { mcpStreamKeepAlive = oldKeepAlive })
+	bridge, _ := newBashBridge(t, context.Background())
+
+	args, _ := json.Marshal(map[string]any{"command": "sleep 1", "timeout_ms": 30000, "category": "read", "critical": false, "explanation": []string{"Run a fixture command in the temporary workspace"}})
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": map[string]any{
+		"name": "bash", "arguments": json.RawMessage(args), "_meta": map[string]any{"progressToken": "tok-9"}}})
+	req, err := http.NewRequest(http.MethodPost, bridge.URL(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bridge.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want an event stream", resp.Header.Get("Content-Type"))
+	}
+	start := time.Now()
+	var progressAt []time.Duration
+	lastProgress := 0.0
+	var responseAt time.Duration
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 1<<20), 8<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ProgressToken string  `json:"progressToken"`
+				Progress      float64 `json:"progress"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event); err != nil {
+			t.Fatalf("event data is not JSON-RPC: %q", line)
+		}
+		if event.Method == "notifications/progress" {
+			if responseAt != 0 {
+				t.Fatal("progress notification after the response")
+			}
+			if event.Params.ProgressToken != "tok-9" || event.Params.Progress <= lastProgress {
+				t.Fatalf("progress notification %+v after progress %v, want token tok-9 and increasing progress", event.Params, lastProgress)
+			}
+			lastProgress = event.Params.Progress
+			progressAt = append(progressAt, time.Since(start))
+			continue
+		}
+		if string(event.ID) == "9" {
+			responseAt = time.Since(start)
+		}
+	}
+	if responseAt == 0 {
+		t.Fatalf("the event stream ended without the tool call's response: %v", scanner.Err())
+	}
+	// A 1 s call with a 50 ms interval: progress must keep coming throughout,
+	// up to shortly before the response, not just at the start.
+	if len(progressAt) < 10 {
+		t.Fatalf("%d progress notifications during a 1 s tool call with a 50 ms interval", len(progressAt))
+	}
+	if gap := responseAt - progressAt[len(progressAt)-1]; gap > 500*time.Millisecond {
+		t.Fatalf("last progress %v before the response; progress stopped while the tool ran", gap)
+	}
+	for i := 1; i < len(progressAt); i++ {
+		if gap := progressAt[i] - progressAt[i-1]; gap > 500*time.Millisecond {
+			t.Fatalf("progress gap of %v while the tool ran", gap)
+		}
+	}
+}

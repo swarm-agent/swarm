@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -175,9 +174,9 @@ func (r *Runner) planTurn(ctx context.Context, req provideriface.Request, workDi
 
 	var extraEnv []string
 	if toolsEnabled {
-		// Without it the CLI ends a long Swarm tool call (bash runs up to
-		// provideriface.MaxToolCallDuration) on its own, shorter timeout.
-		extraEnv = append(extraEnv, "MCP_TOOL_TIMEOUT="+strconv.FormatInt(MCPToolTimeoutMillis(), 10))
+		// Without them the CLI ends a long Swarm tool call (bash runs up to
+		// provideriface.MaxToolCallDuration) on its own, shorter timeouts.
+		extraEnv = append(extraEnv, mcpToolTimeoutEnv()...)
 	}
 	effort, disableThinking := effortForThinking(req.Thinking)
 	if effort != "" {
