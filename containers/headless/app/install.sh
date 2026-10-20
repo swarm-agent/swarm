@@ -966,7 +966,10 @@ finish_update() (
       }
     done
   fi
+  # The new build must have its sandbox on only when this install keeps it on
+  # (SANDBOX=on); turning it off is a setting, not a failed update.
   sandboxed=$(local_api /v3/box/summary 2>/dev/null | json_get sandbox.active || true)
+  [[ ${SANDBOX:-off} == on ]] || sandboxed=false
   if ! migrate_removed_startup_keys "$OPT/releases/$commit"; then
     update_state failed "cannot migrate startup config; daemon left running" "$commit"
     return 1

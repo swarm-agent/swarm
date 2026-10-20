@@ -99,7 +99,7 @@ esac
 EOF
 # Activation switches the release; a commit listed in $work/broken never comes up.
 activate() { echo "activate $1" >>"$log"; [[ -n $(running_commit) && $(running_commit) != "$1" ]] && ln -sfn "$OPT/releases/$(running_commit)" "$OPT/previous"; ln -sfn "$OPT/releases/$1" "$OPT/current"; }
-came_up() { ! grep -qx "$1" "$work/broken" 2>/dev/null; }
+came_up() { echo "came_up $1 $2" >>"$log"; ! grep -qx "$1" "$work/broken" 2>/dev/null; }
 printf '#!/bin/sh\necho "$SWARM_UPDATE_EVENT $SWARM_UPDATE_COMMIT $SWARM_UPDATE_MACHINE" >>%s\n' "$work/hook-log" >"$work/hook"
 chmod 0755 "$work/hook"
 # The hook must be root-owned; the test runs as its owner, so pretend.
@@ -206,6 +206,9 @@ mkdir -p "$OPT/releases/not-a-release"
 : >"$log"
 finish_update
 [[ $(state state) == installed && $(running_commit) == "$c3" ]] || fail "the idle machine did not switch: $(cat "$UPDATE_STATE")"
+# The sandbox was on before, but this install has it off (no SANDBOX=on), so
+# the new build is not required to have it on.
+grep -qx "came_up $c3 false" "$log" || fail "an update with the sandbox off required it on: $(grep came_up "$log")"
 grep -qx "installed $c3 test-box" "$work/hook-log" || fail "the hook was not told of the install"
 [[ ! -e $OPT/releases/$old1 && ! -e $OPT/releases/$old2 ]] || fail "old releases were kept after an update"
 [[ -x $OPT/releases/$c3/bin/swarmd && -x $OPT/releases/$c1/bin/swarmd ]] || fail "the running release or the one before it was removed"
