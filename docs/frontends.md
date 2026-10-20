@@ -124,6 +124,11 @@ The onboarding a frontend runs, in order:
      local page (10 minutes) where the person pastes the key; then
      `swarm_list_providers {"provider":"…","wait_seconds":30}`. The key never
      passes through your frontend.
+     The page opens only on the machine itself (it checks that the request
+     comes from its own loopback address and port). A frontend on another
+     machine offers ChatGPT sign-in, or hands the person the command that
+     reads the key from a file on that machine:
+     `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
 2. **Models.** `swarm_list_models` shows each role's model. Swarm applies its
    recommended models when a provider connects; change one only when the
    person asks (`swarm_set_agent_model`).
