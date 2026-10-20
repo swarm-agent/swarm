@@ -34,8 +34,8 @@ func TestCoderExecutionModeReachesBashPermission(t *testing.T) {
 			t.Fatalf("unexpected Coder authority: %s", name)
 		}
 	}
-	if !profileHasCapability(p, "manage_environments") {
-		t.Fatal("Coder lost manage_environments")
+	if profileHasCapability(p, "manage_environments") {
+		t.Fatal("Coder still has the removed manage_environments")
 	}
 }
 

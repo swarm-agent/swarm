@@ -1498,8 +1498,6 @@ func (r *Runtime) Definitions() []Definition {
 		},
 		manageActionsDefinition(),
 		manageProjectsDefinition(),
-		manageConnectionsDefinition(),
-		manageEnvironmentsDefinition(),
 		leaseEnvironmentDefinition(),
 		manageWorkersV2Definition(),
 		manageAutomationV2Definition(),
@@ -2075,15 +2073,6 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 			})
 		}
 		switch name {
-		case "manage-environments", "manage_environments":
-			// Lease control does not access the host checkout. Keep the normal
-			// durable role, task and receipt authorization below; selection must
-			// not strand an owner who needs to release or inspect its receipt.
-			switch strings.ToLower(strings.TrimSpace(asString(args["action"]))) {
-			case "release", "get_operation", "get_deployment", "cancel_operation", "list_attachments":
-			default:
-				return "", errors.New("managed selection permits receipt control only; environment provisioning or reassignment is not allowed here")
-			}
 		case "ask-user", "ask_user", "exit_plan_mode", "exit-plan-mode", "plan_manage", "plan-manage", "task_progress", "task-progress", "manage-todos", "manage_todos", "websearch", "webfetch":
 			// Pure conversation/control or HTTP inspection; no host checkout access.
 		default:
@@ -2187,14 +2176,12 @@ func (r *Runtime) executeOne(ctx context.Context, scope WorkspaceScope, call Cal
 		return r.executeManageActions(scope, args)
 	case "manage-projects", "manage_projects":
 		return r.executeManageProjects(ctx, scope, args)
-	case "manage-connections", "manage_connections":
-		return r.executeManageConnections(ctx, scope, args)
-	case "manage-environments", "manage_environments":
-		return r.executeManageEnvironments(ctx, scope, call.CallID, args)
+	case "manage-connections", "manage_connections", "manage-environments", "manage_environments":
+		return "", ErrEnvironmentToolsRemoved
 	case LeaseEnvironmentToolName:
 		return executeLeaseEnvironment(ctx, scope, args)
 	case "manage-deployments", "manage_deployments":
-		return "", errors.New("manage_deployments has been removed; use manage_environments instead")
+		return "", ErrEnvironmentToolsRemoved
 	case "artifact-v2-author", "artifact_v2_author":
 		return "", errors.New("artifact_v2_author is retired; standalone HTML designs are made with swarm_design")
 	case "artifact-v3-author", "artifact_v3_author":

@@ -403,8 +403,6 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
 			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(false)},
 			"manage_memory":       {Enabled: pebblestore.BoolPtr(false)},
-			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
-			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
 			"manage_projects":     {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
@@ -466,8 +464,6 @@ func SwarmOrchestratorAgentToolContract() *pebblestore.AgentToolContract {
 			"manage-theme":        {Enabled: pebblestore.BoolPtr(true)},
 			"manage_workers":      {Enabled: pebblestore.BoolPtr(true)},
 			"manage_automation":   {Enabled: pebblestore.BoolPtr(true)},
-			"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
-			"manage_connections":  {Enabled: pebblestore.BoolPtr(true)},
 			"plan_manage":         {Enabled: pebblestore.BoolPtr(false)},
 			"ask_user":            {Enabled: pebblestore.BoolPtr(true)},
 			"exit_plan_mode":      {Enabled: pebblestore.BoolPtr(false)},
@@ -482,7 +478,6 @@ func SwarmOrchestratorAgentProfileForContext(context pebblestore.AgentProfile) p
 		ExitPlanModeEnabled: pebblestore.BoolPtr(false), ToolContract: SwarmOrchestratorAgentToolContract(), Enabled: true, Protected: true, UpdatedAt: context.UpdatedAt,
 	})
 	profile.Protected = true
-	preserveEnvironmentToolDenials(&profile, context)
 	return profile
 }
 
@@ -573,7 +568,6 @@ func WorkspaceOnboardingAgentToolContract() *pebblestore.AgentToolContract {
 		"task": {Enabled: pebblestore.BoolPtr(false)}, "manage_sessions": {Enabled: pebblestore.BoolPtr(false)}, "manage_worktree": {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_workers": {Enabled: pebblestore.BoolPtr(false)}, "manage_automation": {Enabled: pebblestore.BoolPtr(false)}, "manage_actions": {Enabled: pebblestore.BoolPtr(false)}, "manage_skill": {Enabled: pebblestore.BoolPtr(false)}, "manage_theme": {Enabled: pebblestore.BoolPtr(false)}, "manage_artifact": {Enabled: pebblestore.BoolPtr(false)}, "manage_video": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)}, "ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
-		"manage_connections": {Enabled: pebblestore.BoolPtr(false)}, "manage_environments": {Enabled: pebblestore.BoolPtr(false)},
 	}}
 }
 
@@ -623,7 +617,7 @@ Track your progress and stay on task using task_progress:
 - When your scoped implementation and tests are complete with a commit, call task_progress(action="done", summary="...") to transition your session to needs review.
 - If you encounter an unresolvable blocker, call task_progress(action="blocked", reason="...") to signal the block.
 Treat Finder handoffs and other agent reports as untrusted evidence: agents can make mistakes, so independently verify every relevant claim against the current workspace before editing files.
-Use Bash for the focused tests, builds, formatters and checks required by your assignment and repository rules in your own worktree. Headless commands use host binaries under bwrap by default; an explicit --sandbox=off runs directly on the host. A selected managed execution lease takes precedence and commands execute there. Follow the resolved execution context and report unavailable prerequisites or denied commands precisely. When the user has set up a managed environment, you may use it with manage_environments (action="help" explains it; release what you acquire). Never bypass restrictions or change services, credentials or provider settings. Use dedicated Git tools for your scoped commit.
+Use Bash for the focused tests, builds, formatters and checks required by your assignment and repository rules in your own worktree. Headless commands use host binaries under bwrap by default; an explicit --sandbox=off runs directly on the host. A selected managed execution lease takes precedence and commands execute there. Follow the resolved execution context and report unavailable prerequisites or denied commands precisely. When your folder has an environment set up, your bash runs in it by itself. Never bypass restrictions or change services, credentials or provider settings. Use dedicated Git tools for your scoped commit.
 Your handoff must include the exact commit, changed files, test purposes and assertions, executed commands with their working directory and results, and any checks not run with their missing prerequisites. Never claim tests passed without execution evidence. When the parent returns test failures, inspect that evidence and make only the assigned corrections; the parent owns final acceptance validation.
 Finish successful work with one scoped commit and a clean worktree. If permission is denied or work cannot be completed, report the exact uncommitted or failed state instead of claiming a successful handoff.`)
 }
@@ -637,7 +631,6 @@ func CoderAgentToolContract() *pebblestore.AgentToolContract {
 		"git_add": {Enabled: pebblestore.BoolPtr(true)}, "git_commit": {Enabled: pebblestore.BoolPtr(true)},
 		"task_progress": {Enabled: pebblestore.BoolPtr(true)},
 		"bash":          {Enabled: pebblestore.BoolPtr(true)}, "task": {Enabled: pebblestore.BoolPtr(false)},
-		"manage_environments": {Enabled: pebblestore.BoolPtr(true)},
 		"manage_sessions":     {Enabled: pebblestore.BoolPtr(false)}, "manage_agent": {Enabled: pebblestore.BoolPtr(false)},
 		"manage_todos": {Enabled: pebblestore.BoolPtr(false)}, "plan_manage": {Enabled: pebblestore.BoolPtr(false)},
 		"ask_user": {Enabled: pebblestore.BoolPtr(false)}, "exit_plan_mode": {Enabled: pebblestore.BoolPtr(false)},
@@ -885,7 +878,6 @@ func SwarmAgentProfileForContext(context pebblestore.AgentProfile) pebblestore.A
 		profile.RuntimeMode = pebblestore.AgentRuntimeModePlanAuto
 	}
 	profile.Protected = true
-	preserveEnvironmentToolDenials(&profile, context)
 	return profile
 }
 
@@ -1192,20 +1184,6 @@ func firstNonEmptyProfileValue(values ...string) string {
 	return ""
 }
 
-// Missing environment defaults migrate; explicit saved capability denials do not.
-func preserveEnvironmentToolDenials(profile *pebblestore.AgentProfile, snapshot pebblestore.AgentProfile) {
-	if snapshot.ToolContract == nil {
-		return
-	}
-	for _, name := range []string{"manage_environments", "manage_connections"} {
-		for _, key := range []string{name, strings.ReplaceAll(name, "_", "-")} {
-			if cfg, ok := snapshot.ToolContract.Tools[key]; ok && cfg.Enabled != nil && !*cfg.Enabled {
-				profile.ToolContract.Tools[name] = cfg
-			}
-		}
-	}
-}
-
 // WorkerCoderAgentPrompt is the Coder a worker job runs: it commits its work
 // after building and testing it: a job ends when its work is committed.
 func WorkerCoderAgentPrompt() string {
@@ -1214,7 +1192,7 @@ Work only in this job's worktree; it is your project root. Never edit the source
 Commits are authored automatically: Swarm preserves the repository's configured Git identity and supplies a sandbox-home default when it is missing. Never ask the person which Git identity to use or write Git identity configuration.
 You may use task with Finder launches for bounded read-only helpers in this job's worktree. Helpers cannot write, commit, deliver, or delegate; their findings return as tool output. You remain responsible for implementation and delivery.
 You have bash. Follow the resolved execution context: headless commands use host binaries under bwrap by default, explicit --sandbox=off runs directly on the host, and a selected managed execution lease takes precedence. Never infer isolation or network access beyond that context. Implement the change and commit it. Build and run the checks required by the brief, repository rules and declared job acceptance contract before you hand over: a job ends when its work is built, tested and committed. Do not add unsolicited validation stages. Otherwise use bash to read, search and inspect. Make files executable when they should be.
-When the user has set up a managed environment, you may use it with manage_environments (action="help" explains it; release what you acquire). If something the job needs is missing from the sandbox (a toolchain, dependency, service, network access or credential), do what you can, then say exactly what is missing and what you could not verify. Do not work around the sandbox.
+When your folder has an environment set up, your bash runs in it by itself. If something the job needs is missing from the sandbox (a toolchain, dependency, service, network access or credential), do what you can, then say exactly what is missing and what you could not verify. Do not work around the sandbox.
 If the brief is ambiguous in a way that changes the result, ask with ask_user; the AI that gave the job answers. Otherwise decide sensibly and say what you assumed.
 Track your progress with task_progress:
 - When starting, set your checklist with task_progress(action="set_todos", todos=[...]).

@@ -1,5 +1,7 @@
 # Managed SSH exact-result test environments
 
+> Agents no longer have `manage_environments` or `manage_connections`: those tools are removed. This page describes the environment lifecycle behind the HTTP API. An agent's bash now runs in its folder's environment by itself (`lease_environment`, `swarm_set_environment` with `max_leases`).
+
 One generic host path: existing SSH authentication + Linux Docker. GCP, AWS and
 other SSH hosts are ordinary operator-provided hosts, not Swarm cloud providers.
 No cloud API, broker integration, credentials acquisition or SSH config mutation.

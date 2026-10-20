@@ -358,19 +358,11 @@ func (s *Service) WorkspaceEnvironmentPromptBlockForWorkspace(ctx context.Contex
 	return FormatWorkspaceEnvironmentPromptBlock(envCtx)
 }
 
+// appendWorkspaceEnvironmentPromptBlock no longer adds the managed
+// environment block: it told agents how to use manage_environments, which is
+// removed. A folder's environment now reaches bash by itself (leases).
 func (s *Service) appendWorkspaceEnvironmentPromptBlock(base string, scope tool.WorkspaceScope) string {
-	if s == nil {
-		return strings.TrimSpace(base)
-	}
-	block := s.WorkspaceEnvironmentPromptBlock(context.Background(), scope)
-	if block == "" {
-		return strings.TrimSpace(base)
-	}
-	base = strings.TrimSpace(base)
-	if base == "" {
-		return block
-	}
-	return base + "\n\n" + block
+	return strings.TrimSpace(base)
 }
 
 func (s *Service) resolveWorkspaceIDForScope(scope tool.WorkspaceScope) string {

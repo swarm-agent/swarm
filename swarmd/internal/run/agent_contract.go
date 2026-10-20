@@ -487,6 +487,9 @@ func validateStoredV3AgentToolContractRuntime(agentName string, contract *pebble
 		if name == "" {
 			return fmt.Errorf("stored v3 agent profile %q tool_contract contains an empty tool name", strings.TrimSpace(agentName))
 		}
+		if retiredAgentTool(name) {
+			continue
+		}
 		if _, ok := knownTools[name]; ok {
 			continue
 		}
@@ -518,8 +521,21 @@ func validateResolvedV3AgentToolRuntime(agentName string, resolved ResolvedAgent
 	return nil
 }
 
+// retiredAgentTool reports a tool that no longer exists. Saved agent
+// profiles may still name it; it is ignored rather than failing the agent.
+func retiredAgentTool(name string) bool {
+	switch strings.ReplaceAll(canonicalToolName(name), "-", "_") {
+	case "manage_environments", "manage_connections", "manage_deployments":
+		return true
+	}
+	return false
+}
+
 func applyExplicitAgentTools(target map[string]ResolvedAgentTool, tools map[string]pebblestore.AgentToolConfig, sourcePrefix string) {
 	for rawName, cfg := range tools {
+		if retiredAgentTool(rawName) {
+			continue
+		}
 		name := resolveExplicitAgentToolName(target, rawName)
 		if name == "" {
 			continue

@@ -54,7 +54,7 @@ func (r *Runtime) inspectProjectFiles(ctx context.Context, scope WorkspaceScope,
 	if err != nil {
 		return "", err
 	}
-	response := map[string]any{"target": target, "inspection_only": true, "guidance": "Inspection is not testing, acceptance or integration. For validation use manage_environments with project_result equal to target.reference, then ensure/exec/release with the returned receipts. Never run against the source checkout instead."}
+	response := map[string]any{"target": target, "inspection_only": true, "guidance": "Inspection is not testing, acceptance or integration. Never validate against the source checkout instead."}
 	if rawOperation, present := args["inspection"]; present && rawOperation != nil {
 		// Models sometimes JSON-encode nested objects. Decode an encoded object
 		// here instead of failing, or silently skipping, the requested read.

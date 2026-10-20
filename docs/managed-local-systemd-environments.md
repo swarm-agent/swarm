@@ -1,5 +1,7 @@
 # Managed local systemd test environments
 
+> Agents no longer have `manage_environments` or `manage_connections`: those tools are removed. This page describes the environment lifecycle behind the HTTP API. An agent's bash now runs in its folder's environment by itself (`lease_environment`, `swarm_set_environment` with `max_leases`).
+
 This is an explicit `local_podman` adapter to the existing environment lifecycle,
 not a workspace execution profile. Docker/SSH defaults are unchanged. The
 running daemon must contain these changes before these actions are available.

@@ -415,9 +415,9 @@ func TestCoderBashDoesNotGrantManagementAuthority(t *testing.T) {
 		if !agentToolEnabled(profile.ToolContract, "bash") || profile.ToolContract.Preset != "custom" {
 			t.Fatal("Coder did not restore explicit scoped Bash contract")
 		}
-		// Coders may use the environments the user set up.
-		if !agentToolEnabled(profile.ToolContract, "manage_environments") {
-			t.Fatalf("reconcile=%v Coder lost manage_environments", reconcile)
+		// manage_environments is removed: bash runs in the folder's environment by itself.
+		if agentToolEnabled(profile.ToolContract, "manage_environments") {
+			t.Fatalf("reconcile=%v Coder still has the removed manage_environments", reconcile)
 		}
 		for _, name := range denied {
 			if agentToolEnabled(profile.ToolContract, name) {
