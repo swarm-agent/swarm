@@ -69,6 +69,10 @@ const (
 
 var (
 	stepIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	// stepOutputPlaceholder is the only substitution a reopen message
+	// supports: {{steps.<id>.output}}, the recorded output line of an
+	// earlier step.
+	stepOutputPlaceholder = regexp.MustCompile(`\{\{steps\.([a-z0-9][a-z0-9_-]{0,63})\.output\}\}`)
 	jobIDPattern  = regexp.MustCompile(`^(worker|media|design)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
 	refIDPattern  = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 )
@@ -98,8 +102,8 @@ type Condition struct {
 // Step is one thing an automation does. A run step runs the owner's
 // root-owned script on the host, as the daemon's user, in the folder; an
 // agent step gives a worker a job; a
-// reopen step sends an earlier step's findings into the triggering job's own
-// session as a follow-up.
+// reopen step sends its message and/or an earlier agent step's findings into
+// the triggering job's own session as a follow-up.
 type Step struct {
 	ID                string `json:"id"`
 	Type              string `json:"type"`
@@ -121,7 +125,9 @@ type Step struct {
 	// Fixes ("security", a reviewer worker only) lets the reviewer commit
 	// small security fixes on top of the reviewed head. Never the default.
 	Fixes string `json:"fixes,omitempty"`
-	// reopen
+	// reopen: From (optional when Message is set) names the earlier agent
+	// step whose findings are sent; Message is placed before them, or sent
+	// alone when there are none, and may hold {{steps.<id>.output}}.
 	From      string `json:"from,omitempty"`
 	Message   string `json:"message,omitempty"`
 	MaxRounds int    `json:"max_rounds,omitempty"`
@@ -306,12 +312,22 @@ func (s *Step) normalizeReopen(earlier map[string]string) error {
 		return invalid("step %s: a reopen step has from, message and max_rounds, not command, args, secrets, worker, brief or fixes", s.ID)
 	}
 	s.From = strings.TrimSpace(s.From)
-	if typ, ok := earlier[s.From]; !ok || typ != StepAgent {
-		return invalid("step %s: from must name an earlier agent step whose findings are sent", s.ID)
-	}
 	s.Message = strings.TrimSpace(s.Message)
+	if s.From == "" && s.Message == "" {
+		return invalid("step %s: a reopen step needs from (an earlier agent step whose findings are sent), a message, or both", s.ID)
+	}
+	if s.From != "" {
+		if typ, ok := earlier[s.From]; !ok || typ != StepAgent {
+			return invalid("step %s: from must name an earlier agent step whose findings are sent", s.ID)
+		}
+	}
 	if utf8.RuneCountInString(s.Message) > maxReopenMessageRunes {
 		return invalid("step %s: message is at most %d characters", s.ID, maxReopenMessageRunes)
+	}
+	for _, m := range stepOutputPlaceholder.FindAllStringSubmatch(s.Message, -1) {
+		if _, ok := earlier[m[1]]; !ok {
+			return invalid("step %s: message placeholder %s names %q, which is not an earlier step", s.ID, m[0], m[1])
+		}
 	}
 	if s.MaxRounds == 0 {
 		s.MaxRounds = DefaultMaxRounds

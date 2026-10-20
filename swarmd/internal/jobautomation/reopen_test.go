@@ -213,7 +213,8 @@ func TestRoundsExhaustedBlocksTheDeliveryAndSignalsIt(t *testing.T) {
 
 // Requirement: a reopen step never reopens a job that is cancelled or a job
 // whose Reopener refuses it; it fails with the reason and is not retried.
-// Without findings it sends nothing. (A job that is still running is not
+// Without findings and without a message it sends nothing. (A job that is
+// still running is not
 // refused: the step waits for it; see reopen_wait_test.go.)
 // Threat: reviving a job the person cancelled.
 // Owner: Runner.runReopen (and the Reopener's refusal).
@@ -227,6 +228,9 @@ func TestReopenRefusesCancelledOrRunningJobs(t *testing.T) {
 	h.process()
 	a := reviewLoop(folder, 2)
 	a.When, a.Retries = WhenAlways, 2
+	// No message: with a message, a review without findings still sends it
+	// (reopen_message_test.go).
+	a.Steps[1].Message = ""
 	h.automation(a)
 	h.results.results["run-1"] = workerResult(folder, "run-1")
 	h.jobEnd("run-1", "", "succeeded", "direct")

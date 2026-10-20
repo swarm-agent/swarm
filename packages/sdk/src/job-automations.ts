@@ -78,9 +78,17 @@ export interface JobAutomationStep {
    * it a reviewer is read-only.
    */
   fixes?: JobReviewerFixes;
-  /** reopen: the earlier agent step whose findings are sent into the triggering job's own session. */
+  /**
+   * reopen: the earlier agent step whose findings are sent into the triggering
+   * job's own session. Optional when `message` is set.
+   */
   from?: string;
-  /** reopen: text placed before the findings. */
+  /**
+   * reopen: text placed before the findings, or sent alone when `from`
+   * recorded none (an OK review) or is omitted. `{{steps.<id>.output}}` is
+   * replaced by that earlier step's recorded output line. A reopen needs
+   * `from`, `message` or both; with no findings and no message it fails.
+   */
   message?: string;
   /** reopen: reopens allowed before the delivery ends `blocked` (`rounds_exhausted`); 1 to 5, default 2. */
   max_rounds?: number;

@@ -263,6 +263,18 @@ With `fixes`:
   The text is `message`, then the findings of the `agent` step named by
   `from`, verbatim and in full (up to 16,000 bytes), then: "Fix these in this
   worktree, commit, and report what you changed."
+- A step needs `from`, `message` or both. When the `from` step recorded no
+  findings (an `ok` review has none) or `from` is omitted, the follow-up is
+  `message` alone, then the closing line, and it counts as a round like any
+  reopen. With no findings and no `message` the step sends nothing and fails
+  with `step <from> recorded no findings to send and the reopen step has no
+  message`.
+- `message` may hold `{{steps.<id>.output}}`, replaced by the recorded output
+  line of the earlier step `<id>` (a `run` step's last non-empty output
+  line, at most 500 bytes; an `agent` step's job id), or `(no output)` when
+  it recorded none. It must name an earlier step. Nothing else is
+  substituted: other text, including other `{{...}}`, is sent as written, and
+  substituted output is never expanded again.
 - The step succeeds once the follow-up is accepted; it does not wait for the
   follow-up to finish. The follow-up's end is a new job end, so it triggers
   the automation again as a new delivery whose `round` is the previous
@@ -296,7 +308,7 @@ With `fixes`:
   so the delegating AI can read the reviewer's session (`swarm_get_job`) and
   send findings by hand or re-run the delivery.
 - A cancelled job is never reopened: the step fails with the reason. A step
-  without findings to send fails too.
+  with neither findings nor a message to send fails too.
 
 ## Deliveries
 
@@ -514,8 +526,9 @@ The step's output is the branch URL; a failed push signals
 A coder's job is reviewed by a reviewer job in its own session, which may
 fix small security problems itself; a block sends the findings back into the
 coder's session until the reviewer says ok, at most twice; an ok pushes the
-head, including the reviewer's fixes. Swarm runs this only because the
-automation says so: there is no built-in review chain.
+head, including the reviewer's fixes, and when that push fails (the target
+branch moved) the job is sent back to rebase. Swarm runs this only because
+the automation says so: there is no built-in review chain.
 
 ```json
 {
@@ -531,7 +544,11 @@ automation says so: there is no built-in review chain.
         "message": "The reviewer blocked your work. Its findings:",
         "if": [{ "step": "review", "verdict": "block" }] },
       { "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
-        "if": [{ "step": "review", "verdict": "ok" }] }
+        "continue_on_failure": true,
+        "if": [{ "step": "review", "verdict": "ok" }] },
+      { "id": "rebase", "type": "reopen", "from": "review", "max_rounds": 2,
+        "message": "Your work passed review, but it could not be pushed: {{steps.push.output}}. Rebase onto dev, resolve any conflicts, run the checks again and commit.",
+        "if": [{ "step": "review", "verdict": "ok" }, { "step": "push", "status": "failed" }] }
     ]
   }
 }
@@ -556,6 +573,12 @@ automation says so: there is no built-in review chain.
    the reviewer's fix head when it committed fixes within the limit. Fixes
    over the limit fail `review` (`reviewer fixes too large`): nothing is
    pushed and the head stays the coder's.
+6. When `push` fails (`continue_on_failure` lets the delivery go on),
+   `rebase` sends its message alone (an `ok` review has no findings), with
+   the push script's last output line in place of `{{steps.push.output}}`,
+   into the coder's session. That follow-up's end is the next round: the
+   rebased head is reviewed and pushed again. `rebase` and `fix` share the
+   job's round count, so `max_rounds` bounds both.
 
 `swarm_get_job` on the coder's job shows each delivery's round, head, state,
 blocked reason and the reviewer's applied fix commits, and each step's

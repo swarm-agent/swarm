@@ -927,8 +927,11 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 	return stepFailure{}
 }
 
-// runReopen sends the findings of the step named by from into the triggering
-// job's own session as a follow-up and succeeds once it is accepted; it does
+// runReopen sends the step's message (its {{steps.<id>.output}} placeholders
+// replaced) and the findings of the step named by from into the triggering
+// job's own session as a follow-up and succeeds once it is accepted. With no
+// findings (an OK review, or no from) the message is sent alone; with
+// neither it sends nothing and fails. It does
 // not wait. The follow-up's end is a new job end, whose delivery continues
 // the round count. Past max_rounds it sends nothing and blocks the delivery.
 // When the from step's review was unreadable it sends nothing, uses no
@@ -948,7 +951,7 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	}
 	findings, reviewer, unreadable := "", "", false
 	for _, s := range d.Steps {
-		if s.ID == step.From {
+		if step.From != "" && s.ID == step.From {
 			findings, _ = s.Outcome["findings"].(string)
 			reviewer, _ = s.Outcome["job_id"].(string)
 			unreadable, _ = s.Outcome["review_unreadable"].(bool)
@@ -961,7 +964,10 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 		return stepFailure{reason: reason, next: "read the reviewer job's session (swarm_get_job), then swarm_message_job by hand or swarm_deliver_job automation=true", refused: true}
 	}
 	if strings.TrimSpace(findings) == "" {
-		return stepFailure{reason: "step " + step.From + " recorded no findings to send", next: "fix the automation", refused: true}
+		findings = ""
+	}
+	if findings == "" && step.Message == "" {
+		return stepFailure{reason: "step " + step.From + " recorded no findings to send and the reopen step has no message", next: "fix the automation", refused: true}
 	}
 	// Rounds count per automation and job: read how many reopens the job
 	// has had in total now, so a delivery created before another delivery's
@@ -977,10 +983,14 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 		record.Output = fmt.Sprintf("%d of %d reopens used without an ok verdict; nothing was sent", used, step.MaxRounds)
 		return stepFailure{reason: ReasonRoundsExhausted, next: "swarm_message_job by hand, or swarm_deliver_job automation=true after a fix", refused: true}
 	}
-	text := findings + "\n\n" + ReopenClosing
+	var parts []string
 	if step.Message != "" {
-		text = step.Message + "\n\n" + text
+		parts = append(parts, reopenMessage(*d, step.Message))
 	}
+	if findings != "" {
+		parts = append(parts, findings)
+	}
+	text := strings.Join(append(parts, ReopenClosing), "\n\n")
 	req := ReopenRequest{Account: d.Account, JobID: d.JobID, Message: text, RequestID: agentIdempotencyKey(*d, step.ID)}
 	// A job takes one follow-up at a time: while its run or follow-up is in
 	// flight the step waits (state waiting, with the reason), within its
@@ -1026,6 +1036,27 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 			return stepFailure{reason: "cancelled while waiting for job " + d.JobID + " to settle: the automation stop switch is on; nothing was sent", next: "rerun", refused: true}
 		}
 	}
+}
+
+// maxPlaceholderOutputBytes bounds one substituted step output line.
+const maxPlaceholderOutputBytes = 500
+
+// reopenMessage replaces each {{steps.<id>.output}} in a reopen step's
+// message with the recorded output line of that earlier step (validation
+// allows only earlier steps), in one pass: substituted text is never
+// expanded again. A step with no recorded output becomes "(no output)".
+func reopenMessage(d Delivery, message string) string {
+	return stepOutputPlaceholder.ReplaceAllStringFunc(message, func(m string) string {
+		id := stepOutputPlaceholder.FindStringSubmatch(m)[1]
+		for _, s := range d.Steps {
+			if s.ID == id {
+				if out := strings.TrimSpace(strings.ReplaceAll(s.Output, "\n", " ")); out != "" {
+					return truncate(out, maxPlaceholderOutputBytes)
+				}
+			}
+		}
+		return "(no output)"
+	})
 }
 
 // sendReopen asks the Reopener once. It reports sent with the follow-up
