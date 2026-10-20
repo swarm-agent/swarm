@@ -894,6 +894,7 @@ func (m *Manager) ensure(ctx context.Context, name, root, spec string, mounts []
 		return "", fmt.Errorf("create sandbox: %w", err)
 	}
 	m.initializeHome(ctx, name, root, image)
+	m.ensureUserEntry(ctx, name, root)
 	if err := m.trimProjectCache(ctx, name); err != nil {
 		return "", fmt.Errorf("trim project cache: %w", err)
 	}
