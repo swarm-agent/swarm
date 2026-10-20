@@ -286,7 +286,9 @@ With `fixes`:
 - `max_rounds` (default 2, at most 5) bounds the loop: once the job has had
   `max_rounds` reopens from the automation in total, the step sends nothing, fails with reason
   `rounds_exhausted`, and the delivery ends `blocked`
-  (`automation.delivery.blocked`).
+  (`automation.delivery.blocked`). The count is checked again right before
+  each follow-up is sent, so several deliveries of one job that wait for it
+  together never send more than `max_rounds` reopens between them.
 - An unreadable review is never sent: when the `from` step's outcome has
   `review_unreadable: true`, the step sends nothing into the coder's session,
   uses no round, fails with `review unreadable: <reviewer job id>`, and the

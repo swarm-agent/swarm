@@ -991,7 +991,7 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 		if r.feed != nil {
 			changed = r.feed.Changed() // before asking, so a job end in between wakes us
 		}
-		sent, failure, busy := r.sendReopen(ctx, d, record, req)
+		sent, failure, busy := r.sendReopen(ctx, d, record, req, step.MaxRounds)
 		if sent || failure.reason != "" {
 			return failure
 		}
@@ -1031,9 +1031,23 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 // sendReopen asks the Reopener once. It reports sent with the follow-up
 // recorded, a failure, or busy (the job's state) when the job is still
 // running and nothing was sent. Neither is set when ctx ended.
-func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord, req ReopenRequest) (bool, stepFailure, string) {
+//
+// The round limit is checked again under reopenMu, right before sending:
+// another delivery of the same job may have sent a reopen while this one
+// waited, and the count and the send must not interleave.
+func (r *Runner) sendReopen(ctx context.Context, d *Delivery, record *StepRecord, req ReopenRequest, maxRounds int) (bool, stepFailure, string) {
 	r.reopenMu.Lock()
 	defer r.reopenMu.Unlock()
+	count, err := r.store.ReopenCount(d.Account, d.JobID, d.AutomationID)
+	if err != nil {
+		return false, stepFailure{reason: truncate("read the round count: "+err.Error(), 300), next: "rerun"}, ""
+	}
+	d.Round = max(d.Round, count)
+	if used := d.Round - d.RoundBase; used >= maxRounds {
+		d.BlockedReason = ReasonRoundsExhausted
+		record.Output = fmt.Sprintf("%d of %d reopens used without an ok verdict; nothing was sent", used, maxRounds)
+		return false, stepFailure{reason: ReasonRoundsExhausted, next: "swarm_message_job by hand, or swarm_deliver_job automation=true after a fix", refused: true}, ""
+	}
 	followup, err := r.reopen.Reopen(ctx, req)
 	if err != nil {
 		var refused *RefusedError
