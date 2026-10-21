@@ -238,6 +238,14 @@ func controlMCPSessionSummary(session map[string]any) map[string]any {
 		if agent, ok := metadata["agent_name"]; ok {
 			summary["agent"] = agent
 		}
+		// A project's sessions (its orchestrator conversations and task
+		// sessions) name the project and their role in it, so frontends can
+		// list a project's conversations.
+		for _, key := range []string{"project_id", "role"} {
+			if value, ok := metadata[key].(string); ok && value != "" {
+				summary[key] = value
+			}
+		}
 	}
 	if lifecycle := controlMCPMap(session["lifecycle"]); lifecycle != nil {
 		if active, _ := lifecycle["active"].(bool); active {
