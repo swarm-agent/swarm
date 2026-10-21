@@ -11,7 +11,7 @@ import (
 // Its mutation callback is the narrowest layer owning this metadata transition;
 // a transactional test store checks rejection leaves the entire record unchanged.
 func TestIntegrationCodeDeliverables(t *testing.T) {
-	for _, state := range []string{"integrated", "already_integrated", "recovered", "equivalent", "failed", "conflict", "apply_error", "stale"} {
+	for _, state := range []string{"integrated", "already_integrated", "recovered", "equivalent", "failed", "conflict", "apply_error", "stale", "stale_revision"} {
 		t.Run(state, func(t *testing.T) {
 			task := ProjectTaskRecord{ID: "task", ProjectID: "project", SessionID: "session", ActiveAttemptID: "attempt", Revision: 2,
 				Integration: &ProjectTaskIntegration{OperationID: "operation", State: "in_progress"},
@@ -34,8 +34,13 @@ func TestIntegrationCodeDeliverables(t *testing.T) {
 				receipt.State = "integrated"
 				receipt.OperationID = "old"
 			}
-			_, err := FinishProjectTaskIntegrationGuarded(store, "account", &task, receipt, 2, apply)
-			if state == "apply_error" || state == "stale" {
+			revision := 2
+			if state == "stale_revision" {
+				receipt.State = "integrated"
+				revision++
+			}
+			_, err := FinishProjectTaskIntegrationGuarded(store, "account", &task, receipt, revision, apply)
+			if state == "apply_error" || state == "stale" || state == "stale_revision" {
 				if err == nil || !reflect.DeepEqual(store.task, before) {
 					t.Fatalf("rejected promotion mutated task: err=%v task=%+v", err, store.task)
 				}
