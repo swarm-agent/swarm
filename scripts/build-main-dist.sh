@@ -221,7 +221,19 @@ rm -f "${OUTPUT_DIR}/${node_archive}"
   tar -C "${ROOT_DIR}/examples/headless-app" --exclude=./node_modules -cf - . | tar -C "${app}" -xf -
   cd "${app}"
   npm ci --ignore-scripts --no-audit --no-fund
+  # npm links file: dependencies (the SDK); a public release archive holds
+  # only regular files and directories, so each link becomes a real copy of
+  # what it points to.
+  find . -type l -print0 | while IFS= read -r -d '' link; do
+    target="$(readlink -f "${link}")"
+    rm "${link}"
+    cp -R "${target}" "${link}"
+  done
 )
+if links="$(find "${HEADLESS_DIR}" -type l -print -quit)" && [[ -n "${links}" ]]; then
+  echo "the headless package must not contain symbolic links (the release archive check refuses them): ${links}" >&2
+  exit 1
+fi
 cp "${ROOT_DIR}/LICENSE" "${ROOT_DIR}/THIRD_PARTY_NOTICES.md" "${ROOT_DIR}/containers/headless/FFF-LICENSE" "${HEADLESS_DIR}/doc/"
 cp "${ROOT_DIR}/containers/headless/app/install.sh" "${HEADLESS_DIR}/share/install.sh"
 chmod 755 "${HEADLESS_DIR}/share/install.sh"
