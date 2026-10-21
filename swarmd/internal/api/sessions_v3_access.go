@@ -127,7 +127,7 @@ func sessionAccessInstructions(session pebblestore.SessionSnapshot) string {
 	case pebblestore.SessionTasksFree:
 		lines = append(lines, "- Tasks: the person lets you start tasks freely. When they ask for work, delegate it with manage_projects propose_task (coder, swarm or finder; a task_program for staged work) and it starts at once, with nothing for them to approve. Do not write a structured plan for them to review unless they ask for one, and pass auto_approve false only when they ask to review a task before it starts. They follow tasks in their app, stop one or message you to change course, and merge finished work themselves.")
 	case pebblestore.SessionTasksAsk:
-		lines = append(lines, "- Tasks: the person reviews each task first. Task cards wait for their Approve before work starts.")
+		lines = append(lines, "- Tasks: the person reviews each new task first. Every task card you create waits for their Approve before work starts (auto_approve is ignored); tell them it is waiting.")
 	}
 	switch access.Machine {
 	case pebblestore.SessionMachineNone:

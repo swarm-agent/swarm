@@ -976,8 +976,15 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		// When the person let this session start tasks freely, delegated code
 		// and audit work starts at once unless the call asks for a card that
 		// waits (auto_approve false). A plan_document always waits on its card.
-		if _, given := args["auto_approve"]; !given && ManageProjectsDelegation(args) && r.sessionTasksStartFreely(scope.SessionID) {
-			autoApprove = true
+		switch r.sessionTasks(scope.SessionID) {
+		case pebblestore.SessionTasksFree:
+			if _, given := args["auto_approve"]; !given && ManageProjectsDelegation(args) {
+				autoApprove = true
+			}
+		case pebblestore.SessionTasksAsk:
+			// The person reviews each new task first: its card waits for their
+			// Approve whatever the call or the machine's permission mode says.
+			autoApprove = false
 		}
 
 		lifecycle := r.getProjectTaskLifecycleService()
@@ -1492,12 +1499,15 @@ func parseTaskProgram(rawProg any) (*pebblestore.TaskProgramDefinition, error) {
 	return &tp, nil
 }
 
-// sessionTasksStartFreely reports whether the person let the session start
-// delegated tasks without approval (its stored access).
-func (r *Runtime) sessionTasksStartFreely(sessionID string) bool {
+// sessionTasks is the person's tasks choice for the session (free, ask, or
+// "" when never chosen).
+func (r *Runtime) sessionTasks(sessionID string) string {
 	if r == nil || r.sessions == nil || strings.TrimSpace(sessionID) == "" {
-		return false
+		return ""
 	}
 	session, found, err := r.sessions.GetSession(sessionID)
-	return err == nil && found && pebblestore.SessionTasksStartFreely(session)
+	if err != nil || !found {
+		return ""
+	}
+	return pebblestore.SessionAccessFromMetadata(session.Metadata).Tasks
 }
