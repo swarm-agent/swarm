@@ -96,6 +96,7 @@ var controlMCPRoutes = []string{
 	"PUT v3/sessions/*/model-profile",
 	"POST v3/sessions/*/run/stop",
 	"POST v3/sessions/*/permissions/*/resolve",
+	"POST v3/sessions/*/access",
 	"POST v3/sessions/*/plans",
 	"GET v3/sessions/*/plans/active",
 	"POST v3/sessions/*/plan-mode/plans/*/start-automatic",
@@ -245,6 +246,10 @@ func controlMCPSessionSummary(session map[string]any) map[string]any {
 	if metadata := controlMCPMap(session["metadata"]); metadata != nil {
 		if agent, ok := metadata["agent_name"]; ok {
 			summary["agent"] = agent
+		}
+		// What the person lets the session's agent do (its shield).
+		if access := pebblestore.SessionAccessFromMetadata(metadata); access != (pebblestore.SessionAccess{}) {
+			summary["access"] = access
 		}
 		// A project's sessions (its orchestrator conversations and task
 		// sessions) name the project and their role in it, so frontends can
@@ -607,6 +612,7 @@ func controlMCPTools() []controlMCPTool {
 				"model":          modelProp,
 				"thinking":       thinkingProp,
 				"wait_seconds":   controlMCPWaitProp(),
+				"access":         controlMCPAccessSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPStartSession,
 		},
@@ -632,6 +638,12 @@ func controlMCPTools() []controlMCPTool {
 			Description: "Stop the session's active run. Waits briefly for it to end and returns its final status, the plan's state and a short summary. A stopped plan is paused, not cancelled: it keeps its progress, never resumes on its own, and continues its checkpoint when you send_message.",
 			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{"session_id": sessionID, "reason": controlMCPStringProp("", 0, 500)}),
 			Annotations: controlMCPDestructive, call: controlMCPStopRun,
+		},
+		{
+			Name: "swarm_set_session_access", Title: "Choose what a session's agent may do",
+			Description: "The person's choice for one session, as their app's shield sets it: tasks free (delegated code and audit tasks start at once, nothing to approve; their work still reaches a branch only through merge) or ask (task cards wait for Approve), and machine none, ask or full (the agent's access to the person's own machine through their app). Fields left out keep their value. Needs the approve level. Returns the session's access.",
+			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{"session_id": sessionID, "tasks": controlMCPAccessSchema()["properties"].(map[string]any)["tasks"], "machine": controlMCPAccessSchema()["properties"].(map[string]any)["machine"]}),
+			Annotations: controlMCPDestructive, call: controlMCPSetSessionAccess,
 		},
 		{
 			Name: "swarm_resolve_permission", Title: "Approve, deny or answer one pending request",
@@ -1480,6 +1492,12 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 			return nil, controlMCPToolFailure("workspace_path is required (see list_workspaces)")
 		}
 		body["workspace_path"] = workspacePath
+	}
+	if access, ok := args["access"].(map[string]any); ok && len(access) > 0 {
+		if err := c.requireTokenScope(sessionAccessScope); err != nil {
+			return nil, err
+		}
+		body["access"] = controlMCPPick(access, "tasks", "machine")
 	}
 	created, err := c.dispatch(http.MethodPost, createPath, nil, body)
 	if err != nil {
@@ -2989,4 +3007,38 @@ func controlMCPPlanUsage(chatgpt map[string]any, chatgptErr error, claude map[st
 		out["claude_code"] = plan
 	}
 	return out
+}
+
+// controlMCPAccessSchema is a session's access as the person chooses it.
+func controlMCPAccessSchema() map[string]any {
+	return map[string]any{
+		"type":        "object",
+		"description": "What the person lets the session's agent do (needs the approve level): tasks free or ask, machine none, ask or full.",
+		"properties": map[string]any{
+			"tasks":   map[string]any{"type": "string", "enum": []string{pebblestore.SessionTasksFree, pebblestore.SessionTasksAsk}, "description": "free: delegated tasks start at once; ask: task cards wait for Approve."},
+			"machine": map[string]any{"type": "string", "enum": []string{pebblestore.SessionMachineNone, pebblestore.SessionMachineAsk, pebblestore.SessionMachineFull}, "description": "The agent's access to the person's own machine through their app."},
+		},
+		"additionalProperties": false,
+	}
+}
+
+// controlMCPSetSessionAccess applies the person's shield choice to a session.
+func controlMCPSetSessionAccess(c *controlMCPCall, args map[string]any) (any, error) {
+	if err := c.requireTokenScope(sessionAccessScope); err != nil {
+		return nil, err
+	}
+	sessionID, err := controlMCPID(args, "session_id")
+	if err != nil {
+		return nil, err
+	}
+	body := controlMCPPick(args, "tasks", "machine")
+	if len(body) == 0 {
+		return nil, controlMCPToolFailure("give tasks, machine or both")
+	}
+	body["client_request_id"] = controlMCPRequestID()
+	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "access"), nil, body)
+	if err != nil {
+		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
+	}
+	return map[string]any{"session_id": sessionID, "access": response["access"]}, nil
 }

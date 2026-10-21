@@ -973,6 +973,12 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		fullPlanMarkdown := strings.TrimSpace(asString(args["full_plan_markdown"]))
 		diffSummary := strings.TrimSpace(asString(args["diff_summary"]))
 		autoApprove, _ := args["auto_approve"].(bool)
+		// When the person let this session start tasks freely, delegated code
+		// and audit work starts at once unless the call asks for a card that
+		// waits (auto_approve false). A plan_document always waits on its card.
+		if _, given := args["auto_approve"]; !given && ManageProjectsDelegation(args) && r.sessionTasksStartFreely(scope.SessionID) {
+			autoApprove = true
+		}
 
 		lifecycle := r.getProjectTaskLifecycleService()
 		if lifecycle == nil {
@@ -1484,4 +1490,14 @@ func parseTaskProgram(rawProg any) (*pebblestore.TaskProgramDefinition, error) {
 		tp.ID = fmt.Sprintf("prog-%d", time.Now().UnixMilli())
 	}
 	return &tp, nil
+}
+
+// sessionTasksStartFreely reports whether the person let the session start
+// delegated tasks without approval (its stored access).
+func (r *Runtime) sessionTasksStartFreely(sessionID string) bool {
+	if r == nil || r.sessions == nil || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	session, found, err := r.sessions.GetSession(sessionID)
+	return err == nil && found && pebblestore.SessionTasksStartFreely(session)
 }
