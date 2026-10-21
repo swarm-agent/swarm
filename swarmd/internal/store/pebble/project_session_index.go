@@ -24,7 +24,7 @@ func projectConversationKey(s SessionSnapshot) string {
 func compactProjectConversation(s SessionSnapshot) SessionSnapshot {
 	out := SessionSnapshot{ID: s.ID, UserID: s.UserID, AccountScopeID: s.AccountScopeID, Title: taskSummaryBrief(s.Title), Mode: s.Mode, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt, MessageCount: s.MessageCount, LastMessageAt: s.LastMessageAt}
 	out.Metadata = map[string]any{}
-	for _, key := range []string{"project_id", "swarm_v3_project_id", "agent_name", "resolved_agent_name", "session_purpose", "system_sidechat"} {
+	for _, key := range []string{"project_id", "swarm_v3_project_id", "agent_name", "resolved_agent_name", "session_purpose", "system_sidechat", SessionAccessMetadataKey} {
 		if value, ok := s.Metadata[key]; ok {
 			out.Metadata[key] = value
 		}

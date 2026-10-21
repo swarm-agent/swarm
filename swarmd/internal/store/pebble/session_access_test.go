@@ -28,3 +28,10 @@ func TestSessionAccess(t *testing.T) {
 		t.Fatal("SessionTasksStartFreely")
 	}
 }
+
+func TestProjectConversationListKeepsAccess(t *testing.T) {
+	session := SessionSnapshot{ID: "s", Metadata: map[string]any{"project_id": "p", SessionAccessMetadataKey: map[string]any{"tasks": "free"}}}
+	if got := SessionAccessFromMetadata(compactProjectConversation(session).Metadata); got.Tasks != SessionTasksFree {
+		t.Fatalf("listed access = %+v", got)
+	}
+}
