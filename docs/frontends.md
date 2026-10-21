@@ -58,15 +58,16 @@ pkexec bash install.sh --for-user "$USER" --app my-console --app-access write --
   output. Read only lines that start with `{"swarm_progress"`:
 
   ```json
-  {"swarm_progress":{"step":"build","text":"Building Swarm main@1a2b3c4d5 (the first build takes several minutes)"}}
+  {"swarm_progress":{"step":"build","text":"Downloading Swarm v0.1.53"}}
   {"swarm_progress":{"step":"done","text":"Swarm is running"}}
   {"swarm_progress":{"error":"…"}}
   ```
 
   Steps, in order: `prerequisites`, `fetch`, `service-user`, `build`, `start`,
-  `isolation`, `connect-ai`, `connect-app`, `done`. Some are skipped (an
-  existing Docker, no person to connect). An `error` line comes before a
-  non-zero exit; show its text as is.
+  `isolation`, `connect-ai`, `connect-app`, `done`. `build` downloads the
+  release (it builds from source with `--ref BRANCH`). Some are skipped
+  (`isolation` without environments, no person to connect). An `error` line
+  comes before a non-zero exit; show its text as is.
 - Over SSH for a server, run the same command with `sudo` on that machine
   (`ssh -t HOST sudo bash install.sh …`); `--progress=json` lines arrive the
   same way.
@@ -76,7 +77,7 @@ Show the person where the installer comes from before asking for the password.
 ## 3. Connect: a key of your own
 
 ```sh
-pkexec bash /var/lib/swarm-headless/src/containers/headless/app/install.sh \
+pkexec bash /var/lib/swarm-headless/install.sh \
   connect-app my-console --access write --progress=json
 ```
 
@@ -128,7 +129,7 @@ The onboarding a frontend runs, in order:
      comes from its own loopback address and port). A frontend on another
      machine offers ChatGPT sign-in, or hands the person the command that
      reads the key from a file on that machine:
-     `sudo bash /var/lib/swarm-headless/src/containers/headless/app/install.sh key PROVIDER < key-file`.
+     `sudo bash /var/lib/swarm-headless/install.sh key PROVIDER < key-file`.
 2. **Models.** `swarm_list_models` shows each role's model. Swarm applies its
    recommended models when a provider connects; change one only when the
    person asks (`swarm_set_agent_model`).

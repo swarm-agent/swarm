@@ -680,6 +680,7 @@ build_release() {
   local commit=$1 release=$OPT/releases/$1
   if release_install; then
     [[ $(awk '{print $2}' "$RELEASE_TARGET" 2>/dev/null) == "$commit" ]] || die "${commit:0:9} is not the release this install is pointed at"
+    step build "Downloading Swarm $(awk '{print $1}' "$RELEASE_TARGET")"
     fetch_release "$(awk '{print $1}' "$RELEASE_TARGET")" "$commit"
     return
   fi
