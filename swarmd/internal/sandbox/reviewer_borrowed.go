@@ -63,3 +63,11 @@ func (m *Manager) forgetBorrowedReview(checkout string) {
 	delete(m.reviewClosing, checkout)
 	m.mu.Unlock()
 }
+
+// OwnerTurnedOff reports whether this machine's owner turned the agent
+// sandbox off (mode off, or no sandbox configured): agents then run on the
+// machine, and a reviewer runs like them, without a review sandbox. A
+// sandbox that is on but unavailable is not off: reviewers still refuse.
+func OwnerTurnedOff() bool {
+	return Default().Status().Mode == ModeOff
+}

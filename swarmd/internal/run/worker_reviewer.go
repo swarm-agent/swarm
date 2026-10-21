@@ -357,8 +357,13 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 	if sessionReviewFixes(snapshot.Metadata) {
 		return nil
 	}
+	// The owner turned the sandbox off: every agent runs on the machine, and
+	// so does the reviewer (read-only by its tools and the review checks).
+	if sandbox.OwnerTurnedOff() {
+		return nil
+	}
 	m := sandbox.Default()
-	if m == nil {
+	if m == nil || !m.Active() {
 		return sandbox.ErrSandboxRequired
 	}
 	db := s.host.runs.sessions.Store()
@@ -431,6 +436,14 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 		// sandbox is closed.
 		validate = func() error { return nil }
 		remove = func() error { return nil }
+	}
+	if sandbox.OwnerTurnedOff() {
+		// No review sandbox was registered (registerReview): remove the
+		// disposable checkout directly; a borrowed one is left as it is.
+		if err := validate(); err != nil {
+			return err
+		}
+		return remove()
 	}
 	if m := sandbox.Default(); m != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

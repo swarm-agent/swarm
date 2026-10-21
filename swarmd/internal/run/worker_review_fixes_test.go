@@ -97,8 +97,15 @@ func TestFixingReviewerSessionIsAWritableBranchCheckout(t *testing.T) {
 	// review checkout; the fixing reviewer is never registered as one.
 	execution := &WorkerExecutionService{}
 	if sandbox.Default() == nil {
+		// The owner turned the sandbox off: the reviewer runs like every
+		// other agent, with nothing to register.
+		if err := execution.registerReview(session(false)); err != nil {
+			t.Fatalf("read-only reviewer registration with the sandbox off = %v", err)
+		}
+		// Required but unavailable: refused.
+		withUnavailableSandbox(t)
 		if err := execution.registerReview(session(false)); !errors.Is(err, sandbox.ErrSandboxRequired) {
-			t.Fatalf("read-only reviewer registration without a sandbox = %v", err)
+			t.Fatalf("read-only reviewer registration with an unavailable sandbox = %v", err)
 		}
 	}
 	if err := execution.registerReview(session(true)); err != nil {

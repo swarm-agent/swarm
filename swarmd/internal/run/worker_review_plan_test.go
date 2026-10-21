@@ -9,6 +9,7 @@ import (
 
 	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/identity"
+	"swarm/packages/swarmd/internal/sandbox"
 	store "swarm/packages/swarmd/internal/store/pebble"
 	workspaceruntime "swarm/packages/swarmd/internal/workspace"
 	"swarm/packages/swarmd/internal/worktree"
@@ -128,7 +129,11 @@ func TestReviewerRunWiringChoosesAgentCheckoutAndPin(t *testing.T) {
 		t.Fatal("a read-only reviewer was pinned with worker_review_fixes")
 	}
 	roSession := store.SessionSnapshot{ID: roRun.SessionID, Metadata: roMeta, WorktreeEnabled: true, WorktreeRootPath: ro.WorkspacePath, WorktreeBranch: ro.BranchName, WorktreeBaseBranch: head}
-	// Without the sandbox's read-only registration no tool call runs.
+	// With a sandbox that should run but has not registered the read-only
+	// review checkout, no tool call runs.
+	if sandbox.Default() == nil {
+		withUnavailableSandbox(t)
+	}
 	if err := validateSessionExecutionRepositoryIdentity(roSession); err == nil || !strings.Contains(err.Error(), "not registered") {
 		t.Fatalf("unregistered read-only reviewer tool call = %v", err)
 	}

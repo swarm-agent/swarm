@@ -162,7 +162,9 @@ func (s *Service) RemoveValidatedReviewWorkspace(source, path string) error {
 // detached review checkout at its immutable reviewed commit. It grants no branch
 // publication or mutation authority and never substitutes for writable validation.
 func ValidateReviewExecutionIdentity(source, lane, owner, head string) error {
-	if sandbox.ReviewSessionCheckout(owner) != lane {
+	// With the sandbox off by the owner's choice nothing is registered: the
+	// checks below still bind the session to its checkout and head.
+	if !sandbox.OwnerTurnedOff() && sandbox.ReviewSessionCheckout(owner) != lane {
 		return errors.New("review session checkout is not registered")
 	}
 	if err := (&Service{}).ValidateSessionRepositoryLaneForRead(source, lane, owner, "HEAD"); err != nil {
@@ -191,7 +193,7 @@ func ValidateBorrowedReviewExecutionIdentity(source, lane, owner, session, branc
 	if owner == "" || owner == session {
 		return errors.New("borrowed review worktree owner required")
 	}
-	if sandbox.ReviewSessionCheckout(session) != lane {
+	if !sandbox.OwnerTurnedOff() && sandbox.ReviewSessionCheckout(session) != lane {
 		return errors.New("review session checkout is not registered")
 	}
 	if err := (&Service{}).ValidateSessionRepositoryLaneForRead(source, lane, owner, branch); err != nil {
