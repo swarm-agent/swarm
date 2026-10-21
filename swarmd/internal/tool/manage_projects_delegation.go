@@ -45,3 +45,21 @@ func ManageProjectsDelegation(args map[string]any) bool {
 	}
 	return operation == ""
 }
+
+// ManageProjectsMediaTask reports whether a manage_projects
+// propose_task/create_task call asks a media task (agent image, video or
+// sound) to make something.
+func ManageProjectsMediaTask(args map[string]any) bool {
+	action, _ := args["action"].(string)
+	agent, _ := args["agent"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "propose_task", "create_task":
+	default:
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(agent)) {
+	case "image", "video", "sound":
+		return true
+	}
+	return false
+}

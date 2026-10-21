@@ -653,6 +653,18 @@ func controlMCPTools() []controlMCPTool {
 			Annotations: controlMCPDestructive, call: controlMCPStopRun,
 		},
 		{
+			Name: "swarm_read_media", Title: "Read a generated file",
+			Description: "Part of one file a media job made (image, video or sound), base64, at most 2 MiB a call: read from offset 0 until done. The job is its project_id and task_id (a session's children list its media tasks). Returns the file's media_type, size_bytes, sha256, filename and the bytes.",
+			InputSchema: controlMCPObject([]string{"project_id", "task_id"}, map[string]any{
+				"project_id": controlMCPStringProp("", 1, 200),
+				"task_id":    controlMCPStringProp("", 1, 200),
+				"file":       map[string]any{"type": "integer", "minimum": 1, "description": "Which file of the job, from 1. Default 1."},
+				"offset":     map[string]any{"type": "integer", "minimum": 0, "description": "Byte to start at. Default 0."},
+				"length":     map[string]any{"type": "integer", "minimum": 1, "maximum": controlMCPReadMediaChunk, "description": "Bytes to read, at most 2 MiB (the default)."},
+			}),
+			Annotations: controlMCPReadOnly, call: controlMCPReadMedia,
+		},
+		{
 			Name: "swarm_set_session_access", Title: "Choose what a session's agent may do",
 			Description: "The person's choice for one session, as their app's shield sets it: tasks free (delegated code and audit tasks start at once, nothing to approve; their work still reaches a branch only through merge) or ask (task cards wait for Approve), and machine none, ask or full (the agent's access to the person's own machine through their app). Fields left out keep their value. Needs the approve level. Returns the session's access.",
 			InputSchema: controlMCPObject([]string{"session_id"}, map[string]any{"session_id": sessionID, "tasks": controlMCPAccessSchema()["properties"].(map[string]any)["tasks"], "machine": controlMCPAccessSchema()["properties"].(map[string]any)["machine"]}),

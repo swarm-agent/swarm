@@ -603,7 +603,7 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 	// work reaches the person's branch only through their merge.
 	if explain.Decision != PolicyDecisionDeny && normalizePolicyToolName(input.ToolName) == "manage_projects" && s.sessionTasksStartFreely(sessionID) {
 		var args map[string]any
-		if json.Unmarshal([]byte(strings.TrimSpace(input.ToolArguments)), &args) == nil && tool.ManageProjectsDelegation(args) {
+		if json.Unmarshal([]byte(strings.TrimSpace(input.ToolArguments)), &args) == nil && (tool.ManageProjectsDelegation(args) || tool.ManageProjectsMediaTask(args)) {
 			return AuthorizationResult{Decision: AuthorizationApprove, Requirement: requirement, Reason: "the person lets this session start tasks freely", Source: "session_access"}, nil
 		}
 	}

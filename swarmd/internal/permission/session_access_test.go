@@ -13,7 +13,7 @@ func (l sessionAccessLookup) GetSession(sessionID string) (pebblestore.SessionSn
 	return session, found, nil
 }
 
-func TestSessionTasksFreeApprovesOnlyDelegationInThatSession(t *testing.T) {
+func TestSessionTasksFreeApprovesOnlyTasksInThatSession(t *testing.T) {
 	service, _ := openSubagentReservationTestServices(t)
 	service.SetSessionResolver(sessionAccessLookup{
 		"free": {ID: "free", Metadata: map[string]any{pebblestore.SessionAccessMetadataKey: map[string]any{"tasks": "free"}}},
@@ -37,10 +37,15 @@ func TestSessionTasksFreeApprovesOnlyDelegationInThatSession(t *testing.T) {
 			t.Fatalf("%s session started a task without approval: %+v", sessionID, got)
 		}
 	}
-	// Media and other launches keep their own approval even in a free session.
+	// A media task is delegation too in a free session, and nowhere else.
 	media := `{"action":"propose_task","project_id":"p","agent":"image","title":"Logo","auto_approve":true}`
-	if got := authorize("free", media); got.Source == "session_access" {
-		t.Fatalf("free session approved media generation: %+v", got)
+	if got := authorize("free", media); got.Source != "session_access" {
+		t.Fatalf("free session did not start the media task: %+v", got)
+	}
+	for _, sessionID := range []string{"ask", "none"} {
+		if got := authorize(sessionID, media); got.Decision == AuthorizationApprove {
+			t.Fatalf("%s session started a media task without approval: %+v", sessionID, got)
+		}
 	}
 	remove := `{"action":"delete_task","project_id":"p","task_id":"t"}`
 	if got := authorize("free", remove); got.Source == "session_access" {

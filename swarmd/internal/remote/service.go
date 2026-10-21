@@ -55,6 +55,7 @@ var toolScopes = map[string]string{
 	"swarm_get_theme":              ScopeRead,
 	"swarm_get_plan_usage":         ScopeRead,
 	"swarm_set_session_access":     ScopeApprove,
+	"swarm_read_media":             ScopeRead,
 	"swarm_list_workers":           ScopeRead,
 	"swarm_get_worker":             ScopeRead,
 	"swarm_get_limits":             ScopeRead,

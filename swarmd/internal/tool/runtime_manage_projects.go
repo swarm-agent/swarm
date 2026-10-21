@@ -432,7 +432,7 @@ func manageProjectsDefinition() Definition {
 				},
 				"attached_media": map[string]any{
 					"type":        "array",
-					"description": "Optional array of media items to attach / reference for the task [{id, kind, title, media_url, thumbnail, filename}]",
+					"description": "Optional array of media items to attach / reference for the task [{id, kind, title, media_url, thumbnail, filename}]; a file the person attached to this conversation is {asset_id} (from its Attached line).",
 					"items":       map[string]any{"type": "object"},
 				},
 				"soundtrack": map[string]any{
@@ -854,6 +854,10 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 					if mediaURL == "" {
 						mediaURL = asString(m["media_url"])
 					}
+					// A file the person attached to this conversation, by its asset_id.
+					if assetID := strings.TrimSpace(asString(m["asset_id"])); mediaURL == "" && assetID != "" && scope.SessionID != "" {
+						mediaURL = "/v3/sessions/" + scope.SessionID + "/media/" + assetID
+					}
 					ref := pebblestore.ProjectTaskMediaRef{
 						ID:        asString(m["id"]),
 						Kind:      asString(m["kind"]),
@@ -978,7 +982,7 @@ func (r *Runtime) executeManageProjects(ctx context.Context, scope WorkspaceScop
 		// waits (auto_approve false). A plan_document always waits on its card.
 		switch r.sessionTasks(scope.SessionID) {
 		case pebblestore.SessionTasksFree:
-			if _, given := args["auto_approve"]; !given && ManageProjectsDelegation(args) {
+			if _, given := args["auto_approve"]; !given && (ManageProjectsDelegation(args) || ManageProjectsMediaTask(args)) {
 				autoApprove = true
 			}
 		case pebblestore.SessionTasksAsk:

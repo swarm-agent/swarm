@@ -331,6 +331,11 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_task_cards"}
 		}
+		// Media goes through media tasks and designs through swarm_design; a
+		// stored profile from before cannot bring the old artifact tools back.
+		for _, name := range []string{"manage_artifact", "manage_video"} {
+			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_media_tasks"}
+		}
 		// Its tools for the person's machine are code-owned too: a stored profile
 		// from before them cannot hide them. Each session's access gates every
 		// call in the permission service.

@@ -23,3 +23,9 @@ func TestManageProjectsDelegation(t *testing.T) {
 		}
 	}
 }
+
+func TestManageProjectsMediaTask(t *testing.T) {
+	if !ManageProjectsMediaTask(map[string]any{"action": "propose_task", "agent": "video"}) || ManageProjectsMediaTask(map[string]any{"action": "propose_task", "agent": "coder"}) || ManageProjectsMediaTask(map[string]any{"action": "delete_task", "agent": "image"}) {
+		t.Fatal("ManageProjectsMediaTask")
+	}
+}
