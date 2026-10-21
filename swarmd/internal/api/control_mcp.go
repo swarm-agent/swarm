@@ -26,8 +26,9 @@ import (
 // the caller's verified actor and scoped token. Route handlers keep canonical
 // scope checks, account authorization, mutation idempotency and permissions.
 const (
-	controlMCPPath            = "/mcp"
-	controlMCPMaxRequestBytes = 1 << 20
+	controlMCPPath = "/mcp"
+	// Room for message attachments: Swarm's 20 MiB file limit in base64.
+	controlMCPMaxRequestBytes = 32 << 20
 	controlMCPMaxToolBytes    = 4 << 20
 	controlMCPTextLimit       = 1500
 	controlMCPArgumentLimit   = 800
@@ -607,6 +608,12 @@ func (c *controlMCPCall) dispatchTo(handler http.Handler, method, path string, q
 	if body != nil {
 		sub.Header.Set("Content-Type", "application/json")
 	}
+	return c.serve(handler, sub)
+}
+
+// serve runs one allowlisted sub-request against handler and decodes its JSON
+// answer.
+func (c *controlMCPCall) serve(handler http.Handler, sub *http.Request) (map[string]any, error) {
 	if !controlMCPRouteAllowed(sub.Method, sub.URL.Path) {
 		return nil, controlMCPToolFailure("route unavailable to Swarm Control")
 	}

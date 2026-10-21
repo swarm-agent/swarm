@@ -98,6 +98,7 @@ var controlMCPRoutes = []string{
 	"POST v3/sessions/*/run/stop",
 	"POST v3/sessions/*/permissions/*/resolve",
 	"POST v3/sessions/*/access",
+	"POST v3/sessions/*/media",
 	"POST v3/sessions/*/plans",
 	"GET v3/sessions/*/plans/active",
 	"POST v3/sessions/*/plan-mode/plans/*/start-automatic",
@@ -623,6 +624,7 @@ func controlMCPTools() []controlMCPTool {
 				"thinking":       thinkingProp,
 				"wait_seconds":   controlMCPWaitProp(),
 				"access":         controlMCPAccessSchema(),
+				"attachments":    controlMCPAttachmentsSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPStartSession,
 		},
@@ -634,6 +636,7 @@ func controlMCPTools() []controlMCPTool {
 				"content":           controlMCPStringProp("", 1, 100000),
 				"client_request_id": controlMCPStringProp("Idempotency key; reuse when retrying.", 0, 200),
 				"wait_seconds":      controlMCPWaitProp(),
+				"attachments":       controlMCPAttachmentsSchema(),
 			}),
 			Annotations: controlMCPWrites, call: controlMCPSendMessage,
 		},
@@ -1526,7 +1529,11 @@ func controlMCPStartSession(c *controlMCPCall, args map[string]any) (any, error)
 		}
 		return c.currentState(map[string]any{"started": started}, sessionID, args)
 	}
-	run, err := c.sendMessage(sessionID, prompt, controlMCPRequestID())
+	media, err := c.uploadAttachments(sessionID, args["attachments"])
+	if err != nil {
+		return nil, controlMCPToolFailure("session %s created but its attachments did not upload: %s", sessionID, err.Error())
+	}
+	run, err := c.sendMessageWithMedia(sessionID, prompt, controlMCPRequestID(), media)
 	if err != nil {
 		return nil, controlMCPToolFailure("session %s created but the prompt was not accepted: %s", sessionID, err.Error())
 	}
@@ -1572,11 +1579,21 @@ func (c *controlMCPCall) currentState(out map[string]any, sessionID string, args
 }
 
 func (c *controlMCPCall) sendMessage(sessionID, content, requestID string) (map[string]any, error) {
-	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "messages"), nil, map[string]any{
+	return c.sendMessageWithMedia(sessionID, content, requestID, nil)
+}
+
+// sendMessageWithMedia sends a user message carrying uploaded session media
+// (uploadAttachments).
+func (c *controlMCPCall) sendMessageWithMedia(sessionID, content, requestID string, media []map[string]any) (map[string]any, error) {
+	body := map[string]any{
 		"client_request_id": requestID,
 		"role":              "user",
 		"content":           content,
-	})
+	}
+	if len(media) > 0 {
+		body["media"] = media
+	}
+	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "messages"), nil, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1596,7 +1613,11 @@ func controlMCPSendMessage(c *controlMCPCall, args map[string]any) (any, error) 
 	if requestID == "" {
 		requestID = controlMCPRequestID()
 	}
-	run, err := c.sendMessage(sessionID, controlMCPString(args, "content"), requestID)
+	media, err := c.uploadAttachments(sessionID, args["attachments"])
+	if err != nil {
+		return nil, err
+	}
+	run, err := c.sendMessageWithMedia(sessionID, controlMCPString(args, "content"), requestID, media)
 	if err != nil {
 		return nil, controlMCPNotFound(err, "session", sessionID, "swarm_list_sessions")
 	}
