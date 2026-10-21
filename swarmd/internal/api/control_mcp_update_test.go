@@ -59,7 +59,7 @@ func TestControlMCPStatusUpdateCommand(t *testing.T) {
 				}
 			} else {
 				if update["command"] != "sudo bash "+installer+" update" {
-					t.Fatalf("command: %v", update)
+					t.Fatalf("machine.update.command = %v; want %q", update["command"], "sudo bash "+installer+" update")
 				}
 				how, _ := update["how"].(string)
 				for _, word := range []string{"person", "sudo", "machine", "no job", "restarts"} {
