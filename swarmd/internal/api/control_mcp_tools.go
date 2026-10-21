@@ -1226,6 +1226,17 @@ func (c *controlMCPCall) sessionState(sessionID string, limit, detail int) (map[
 		} else {
 			summary["content"] = controlMCPTruncate(content, textLimit)
 		}
+		// Files the message carries (its session media), so a client shows them
+		// and an agent can name them by asset_id.
+		media := []map[string]any{}
+		for _, item := range controlMCPList(message["media"]) {
+			if reference := controlMCPMap(item); reference != nil {
+				media = append(media, controlMCPPick(reference, "asset_id", "modality", "mime_type", "file_name", "size"))
+			}
+		}
+		if len(media) > 0 {
+			summary["media"] = media
+		}
 		messages = append(messages, summary)
 	}
 	out["messages"] = messages
