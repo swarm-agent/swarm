@@ -131,11 +131,11 @@ func sessionAccessInstructions(session pebblestore.SessionSnapshot) string {
 	}
 	switch access.Machine {
 	case pebblestore.SessionMachineNone:
-		lines = append(lines, "- The person's machine: you have no access to it. Your shell runs as Swarm's own user and sees only the project's folders.")
+		lines = append(lines, "- The person's machine: you have no access to it. Your shell runs as Swarm's own user and sees only the project's folders; use it for project work. Only when the person asks for something on their own machine outside those folders, call request_machine_access once with your reason, then continue with what they grant. Never ask in advance or for project work.")
 	case pebblestore.SessionMachineAsk:
-		lines = append(lines, "- The person's machine: you have access, and the person runs or denies each command you ask to run on it.")
+		lines = append(lines, "- The person's machine: you have access. machine_run, machine_read and machine_write run as the person through their app, and they approve or deny each call. Do not call request_machine_access.")
 	case pebblestore.SessionMachineFull:
-		lines = append(lines, "- The person's machine: you have full access; commands you run on it run as the person without asking.")
+		lines = append(lines, "- The person's machine: you have full access. machine_run, machine_read and machine_write run as the person through their app without asking, and they see every call. Do not call request_machine_access.")
 	}
 	if len(lines) == 0 {
 		return ""

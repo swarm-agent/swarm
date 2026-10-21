@@ -402,8 +402,14 @@ func SwarmAgentToolContract() *pebblestore.AgentToolContract {
 			"plan_manage":       {Enabled: pebblestore.BoolPtr(false)},
 			"ask_user":          {Enabled: pebblestore.BoolPtr(true)},
 			"exit_plan_mode":    {Enabled: pebblestore.BoolPtr(false)},
-			"manage_memory":     {Enabled: pebblestore.BoolPtr(false)},
-			"manage_projects":   {Enabled: pebblestore.BoolPtr(false)},
+			// The person's own machine, through their app; each session's access
+			// gates these in the permission service.
+			pebblestore.MachineToolRequestAccess: {Enabled: pebblestore.BoolPtr(true)},
+			pebblestore.MachineToolRun:           {Enabled: pebblestore.BoolPtr(true)},
+			pebblestore.MachineToolRead:          {Enabled: pebblestore.BoolPtr(true)},
+			pebblestore.MachineToolWrite:         {Enabled: pebblestore.BoolPtr(true)},
+			"manage_memory":                      {Enabled: pebblestore.BoolPtr(false)},
+			"manage_projects":                    {Enabled: pebblestore.BoolPtr(false)},
 		},
 	}
 }

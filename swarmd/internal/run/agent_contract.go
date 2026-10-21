@@ -153,11 +153,14 @@ func (s *Service) listCustomAgentToolsForRun(accountScopeID string) ([]pebblesto
 	}
 	filtered := tools[:0]
 	for _, customTool := range tools {
-		if pebblestore.IsRemovedAgentToolName(customTool.Name) || IsReservedToolName(customTool.Name) {
+		if pebblestore.IsRemovedAgentToolName(customTool.Name) || IsReservedToolName(customTool.Name) || pebblestore.IsMachineToolName(canonicalToolName(customTool.Name)) {
 			continue
 		}
 		filtered = append(filtered, customTool)
 	}
+	// Swarm's own client tools for the person's machine (gated by each
+	// session's access in the permission service).
+	filtered = append(filtered, pebblestore.MachineClientTools()...)
 	return filtered, nil
 }
 

@@ -22,6 +22,9 @@ import (
 const clientToolTimeoutReason = "client tool timed out"
 
 func (s *Service) clientToolForAccount(accountScopeID, name string) (pebblestore.AgentCustomToolDefinition, bool) {
+	if definition, ok := pebblestore.MachineClientTool(canonicalToolName(name)); ok {
+		return definition, true
+	}
 	if s == nil || s.agents == nil || strings.TrimSpace(accountScopeID) == "" || IsReservedToolName(name) {
 		return pebblestore.AgentCustomToolDefinition{}, false
 	}

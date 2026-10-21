@@ -47,3 +47,36 @@ func TestSessionTasksFreeApprovesOnlyDelegationInThatSession(t *testing.T) {
 		t.Fatalf("free session approved a removal: %+v", got)
 	}
 }
+
+func TestMachineToolsFollowTheSessionAccess(t *testing.T) {
+	service, _ := openSubagentReservationTestServices(t)
+	access := func(machine string) pebblestore.SessionSnapshot {
+		return pebblestore.SessionSnapshot{Metadata: map[string]any{pebblestore.SessionAccessMetadataKey: map[string]any{"machine": machine}}}
+	}
+	service.SetSessionResolver(sessionAccessLookup{"never": {}, "none": access("none"), "ask": access("ask"), "full": access("full")})
+	cases := []struct {
+		session, tool string
+		refused       bool
+	}{
+		{"never", pebblestore.MachineToolRun, true},
+		{"none", pebblestore.MachineToolRun, true},
+		{"none", pebblestore.MachineToolWrite, true},
+		{"none", pebblestore.MachineToolRequestAccess, false},
+		{"ask", pebblestore.MachineToolRequestAccess, true},
+		{"ask", pebblestore.MachineToolRun, false},
+		{"full", pebblestore.MachineToolRead, false},
+		{"full", pebblestore.MachineToolRequestAccess, true},
+	}
+	for _, c := range cases {
+		result, err := service.AuthorizeToolCall(AuthorizationInput{SessionID: c.session, AccountScopeID: "acct", RunID: "run", CallID: c.session + c.tool, ToolName: c.tool, ToolArguments: `{}`, Mode: "auto+bypass_permissions", InputBoundary: true})
+		if err != nil {
+			t.Fatalf("%s %s: %v", c.session, c.tool, err)
+		}
+		if refused := result.Decision == AuthorizationDeny; refused != c.refused {
+			t.Fatalf("%s %s: decision %+v, refused want %v", c.session, c.tool, result, c.refused)
+		}
+		if !c.refused && result.Decision != AuthorizationPending {
+			t.Fatalf("%s %s: allowed call must wait for the app, got %+v", c.session, c.tool, result)
+		}
+	}
+}

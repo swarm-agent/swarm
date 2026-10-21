@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	agentruntime "swarm/packages/swarmd/internal/agent"
 	"swarm/packages/swarmd/internal/permission"
 	sessionruntime "swarm/packages/swarmd/internal/session"
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
@@ -334,12 +335,21 @@ func controlMCPPermissionSummary(record map[string]any) map[string]any {
 	if name, ok := summary["tool_name"].(string); ok {
 		summary["tool_name"] = controlMCPToolName(name)
 	}
-	if summary["tool_name"] == "ask_user" || summary["requirement"] == "ask_user" {
+	switch {
+	case summary["tool_name"] == "ask_user" || summary["requirement"] == "ask_user":
 		summary["kind"] = "question"
-	} else {
+	case summary["requirement"] == permission.RequirementClientTool:
+		// A call the client runs (answered with result): it needs every
+		// argument exactly, within the client tool argument limit.
+		summary["kind"] = "client"
+	default:
 		summary["kind"] = "approval"
 	}
 	if args, ok := record["tool_arguments"].(string); ok && strings.TrimSpace(args) != "" {
+		if summary["kind"] == "client" {
+			summary["tool_arguments"] = controlMCPArguments(args, agentruntime.ClientToolArgumentsMaxBytes)
+			return summary
+		}
 		summary["tool_arguments"] = controlMCPArguments(args, controlMCPArgumentLimit)
 	}
 	return summary
@@ -654,6 +664,7 @@ func controlMCPTools() []controlMCPTool {
 				"action":        map[string]any{"type": "string", "enum": []string{"allow_once", "deny_once"}},
 				"reason":        controlMCPStringProp("Shown to the agent.", 0, 500),
 				"answer":        controlMCPStringProp("Reply to an ask_user question (allow_once only).", 0, permission.MaxReplyCharacters),
+				"result":        map[string]any{"description": "A client tool's result, from the client that ran it (allow_once only); Swarm passes it to the agent as untrusted data."},
 			}),
 			Annotations: controlMCPDestructive, call: controlMCPResolvePermission,
 		},
@@ -1834,6 +1845,13 @@ func controlMCPResolvePermission(c *controlMCPCall, args map[string]any) (any, e
 			return nil, controlMCPToolFailure("answer needs action allow_once")
 		}
 		body["reason"] = answer
+	}
+	// A client tool's call is answered with its result.
+	if result, given := args["result"]; given && result != nil {
+		if action != "allow_once" {
+			return nil, controlMCPToolFailure("result needs action allow_once")
+		}
+		body["approved_arguments"] = map[string]any{"result": result}
 	}
 	response, err := c.dispatch(http.MethodPost, controlMCPSessionPath(sessionID, "permissions", permissionID, "resolve"), nil, body)
 	if err != nil {

@@ -588,6 +588,13 @@ func (s *Service) AuthorizeToolCall(input AuthorizationInput) (AuthorizationResu
 		// response and silently loses the product decision.
 		return s.createPendingAuthorization(input, sessionID, requirement, "ask_user requires an explicit user response", "user_input_policy", "ask user input")
 	}
+	// The person's machine: the session's access decides before any call
+	// reaches their app (machineToolRefusal).
+	if name := normalizePolicyToolName(input.ToolName); pebblestore.IsMachineToolName(name) {
+		if reason := s.machineToolRefusal(sessionID, name); reason != "" {
+			return AuthorizationResult{Decision: AuthorizationDeny, Requirement: requirement, Reason: reason, Source: "session_access"}, nil
+		}
+	}
 	if input.InputBoundary && explain.Decision != PolicyDecisionDeny {
 		return s.createPendingAuthorization(input, sessionID, RequirementClientTool, "client tool result required", "client_tool", "client tool call")
 	}
@@ -2601,4 +2608,27 @@ func (s *Service) sessionTasksStartFreely(sessionID string) bool {
 	}
 	session, found, err := s.sessions.GetSession(sessionID)
 	return err == nil && found && pebblestore.SessionTasksStartFreely(session)
+}
+
+// machineToolRefusal says why a machine tool call may not reach the person's
+// app, or "" when it may. Without machine access only the request goes
+// through; with access the request is refused, so the person is never asked
+// twice. Whether each command runs at once or waits for the person (access
+// ask or full) is their app's to enforce, since it runs the command.
+func (s *Service) machineToolRefusal(sessionID, name string) string {
+	machine := pebblestore.SessionMachineNone
+	if s != nil && s.sessions != nil {
+		if session, found, err := s.sessions.GetSession(sessionID); err == nil && found {
+			if chosen := pebblestore.SessionAccessFromMetadata(session.Metadata).Machine; chosen != "" {
+				machine = chosen
+			}
+		}
+	}
+	switch {
+	case name == pebblestore.MachineToolRequestAccess && machine != pebblestore.SessionMachineNone:
+		return fmt.Sprintf("you already have %s access to the person's machine; use machine_run, machine_read and machine_write", machine)
+	case name != pebblestore.MachineToolRequestAccess && machine == pebblestore.SessionMachineNone:
+		return "you have no access to the person's machine; when they ask for something that needs it, call request_machine_access with your reason"
+	}
+	return ""
 }
