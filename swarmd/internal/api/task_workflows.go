@@ -121,6 +121,7 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 	}
 	head, base := controlMCPString(view, "head"), controlMCPString(view, "base_commit")
 	worktree := strings.TrimSpace(task.WorkspacePath)
+	out.NoCommits = taskResultNoCommits(view, worktree)
 	if !controlMCPCommitID.MatchString(head) || !controlMCPCommitID.MatchString(base) || worktree == "" || filepath.Clean(worktree) == filepath.Clean(out.Folder) {
 		return out, nil // no commits in a worktree of its own
 	}
@@ -133,6 +134,15 @@ func (s *Server) taskJobResult(ctx context.Context, account, projectID, taskID, 
 		out.Git = g
 	}
 	return out, nil
+}
+
+// taskResultNoCommits trusts only the positively assessed empty lane. Missing
+// or unavailable evidence is unknown, even when there is no Git result.
+func taskResultNoCommits(view map[string]any, worktree string) bool {
+	head, base := controlMCPString(view, "head"), controlMCPString(view, "base_commit")
+	return controlMCPString(view, "delivery_state") == "empty" &&
+		strings.TrimSpace(worktree) != "" && controlMCPCommitID.MatchString(base) && head == base &&
+		controlMCPString(view, "changes_error") == "" && len(controlMCPList(view["commits"])) == 0
 }
 
 // taskResultGit lists a task's commits (full ids) and changed files from base
