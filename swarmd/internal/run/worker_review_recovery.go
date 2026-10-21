@@ -67,7 +67,7 @@ func (s *WorkerExecutionService) cleanupReviewAdmissionMode(r store.WorkerRunRec
 		}
 		if admitted {
 			// A reviewer that ran with fixes keeps its branch checkout like a
-			// coder job's clone; only an interrupted admission is discarded.
+			// coder job's worktree; only an interrupted admission is discarded.
 			if reviewFixesAllowed(r.Input) {
 				return nil
 			}
@@ -76,6 +76,10 @@ func (s *WorkerExecutionService) cleanupReviewAdmissionMode(r store.WorkerRunRec
 			}
 		}
 		remove := func() error { return cleanup(snapshot.WorkspacePath, r.SessionID) }
+		if sessionReviewLaneOwner(snapshot.Metadata) != "" {
+			// It read the job's own worktree in place: nothing was allocated.
+			remove = func() error { return nil }
+		}
 		state, registered, err := s.host.runs.sessions.Store().GetReviewCleanup(snapshot.AccountScopeID, snapshot.ID)
 		if err != nil {
 			return err

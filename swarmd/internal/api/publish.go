@@ -85,7 +85,7 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 	if strings.TrimSpace(title) == "" {
 		title = "Swarm job " + jobID
 	}
-	if err := importJobHead(c.request.Context(), rule.Folder, controlMCPString(result, "workspace_path"), head); err != nil {
+	if err := jobHeadInFolder(c.request.Context(), rule.Folder, head); err != nil {
 		c.signalPublish(kind, a, b, refs, "job.publish_failed", pebblestore.SignalSeverityWarning, "Opening the job's pull request failed: "+controlMCPTruncate(err.Error(), 200), map[string]string{"head": head})
 		return nil, controlMCPToolFailure("%s", controlMCPTruncate(err.Error(), 400))
 	}
@@ -113,23 +113,14 @@ func (c *controlMCPCall) publishJob(kind, a, b string, refs controlMCPJobRefs, r
 	}, nil
 }
 
-// importJobHead brings a job's exact head commit into the folder, which the
-// publish command pushes from: a worker job commits in its own clone of the
-// folder, not in the folder. Git runs routed like all daemon Git on a folder.
-func importJobHead(ctx context.Context, folder, clone, head string) error {
-	git := func(args ...string) error {
-		ctx := sandbox.WithGitCommandTimeout(ctx, 2*time.Minute)
-		_, err := sandbox.TimedGitOutput(ctx, folder, nil, append([]string{"-c", "safe.directory=" + folder}, args...)...)
-		return err
-	}
-	if git("cat-file", "-e", head+"^{commit}") == nil {
-		return nil
-	}
-	if strings.TrimSpace(clone) == "" {
-		return fmt.Errorf("publish: commit %s is not in %s and the job's worktree is unknown", head, folder)
-	}
-	if err := git("fetch", "--quiet", "--no-tags", "--", clone, head); err != nil {
-		return fmt.Errorf("publish: cannot bring commit %s from the job's worktree into %s: %w", head, folder, err)
+// jobHeadInFolder checks that a job's head commit is in the folder's
+// repository, which the publish command pushes from. A job commits in its
+// worktree of the folder, so its commits are there as they are made; nothing
+// is fetched. Git runs routed like all daemon Git on a folder.
+func jobHeadInFolder(ctx context.Context, folder, head string) error {
+	ctx = sandbox.WithGitCommandTimeout(ctx, 2*time.Minute)
+	if _, err := sandbox.TimedGitOutput(ctx, folder, nil, "-c", "safe.directory="+folder, "cat-file", "-e", head+"^{commit}"); err != nil {
+		return fmt.Errorf("publish: commit %s is not in %s: %w", head, folder, err)
 	}
 	return nil
 }

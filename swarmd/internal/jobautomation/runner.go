@@ -70,16 +70,23 @@ func (e *RefusedError) Error() string { return e.Reason }
 
 // AgentRequest is an agent step's job.
 type AgentRequest struct {
-	Account        string
-	Folder         string
-	Worker         string
-	Brief          string
-	Result         Result
+	Account string
+	Folder  string
+	Worker  string
+	Brief   string
+	Result  Result
+	// Head is the delivery head: the triggering job's head, moved forward by
+	// an earlier agent step that committed on top of it. A coder step starts
+	// its worktree there.
+	Head           string
 	IdempotencyKey string
 	// Fixes is the step's fixes option (FixesSecurity or ""): a reviewer
 	// started with it may commit small security fixes on a writable branch at
 	// the reviewed head.
 	Fixes string
+	// Checkout is where the agent works: the step's checkout or "" for the
+	// agent's default (CheckoutFor once its role is known).
+	Checkout string
 }
 
 // AgentOutcome is how the job an agent step started ended. Verdict and
@@ -280,8 +287,11 @@ func (r *Runner) ProcessOnce(ctx context.Context) error {
 
 // ---- consumer --------------------------------------------------------------
 
-// jobEndKinds are the signals that end a job.
+// jobEndKinds are the signals that end a job. task.run.* is a run of a task
+// one of Swarm's own agents worked (its first run, or a follow-up in its
+// session).
 var jobEndKinds = map[string]string{
+	"task.run.succeeded": KindTask, "task.run.failed": KindTask, "task.run.cancelled": KindTask,
 	"worker.run.succeeded": KindWorker, "worker.run.failed": KindWorker, "worker.run.cancelled": KindWorker,
 	"media.job.succeeded": KindMedia, "media.job.failed": KindMedia, "media.job.cancelled": KindMedia,
 	"design.job.completed": KindDesign, "design.job.failed": KindDesign, "design.job.cancelled": KindDesign,
@@ -301,7 +311,7 @@ func (r *Runner) Scan(ctx context.Context) error {
 	if account == "" {
 		return nil
 	}
-	filter := pebblestore.SignalFilter{Account: account, KindPrefixes: []string{"worker.run", "media.job", "design.job"}}
+	filter := pebblestore.SignalFilter{Account: account, KindPrefixes: []string{"task.run", "worker.run", "media.job", "design.job"}}
 	for ctx.Err() == nil {
 		cursor, found, err := r.store.Cursor()
 		if err != nil {
@@ -338,10 +348,11 @@ func (r *Runner) Scan(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// followupOf is the follow-up a worker.run signal reports (its dedup key is
-// worker.run:<run>:<follow-up run>); "" for the job's first run.
+// followupOf is the follow-up a worker.run or task.run signal reports (its
+// dedup key is worker.run:<run>:<follow-up run> or task.run:<task>:<follow-up
+// run>); "" for the job's first run.
 func followupOf(sig pebblestore.Signal) string {
-	if !strings.HasPrefix(sig.Kind, "worker.run.") {
+	if !strings.HasPrefix(sig.Kind, "worker.run.") && !strings.HasPrefix(sig.Kind, "task.run.") {
 		return ""
 	}
 	parts := strings.SplitN(sig.DedupKey, ":", 3)
@@ -863,8 +874,8 @@ func (r *Runner) runAgent(ctx context.Context, d *Delivery, record *StepRecord, 
 		}
 	}
 	if jobID == "" {
-		started, err := r.agent.Start(ctx, AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result,
-			IdempotencyKey: agentIdempotencyKey(*d, step.ID), Fixes: step.Fixes})
+		started, err := r.agent.Start(ctx, AgentRequest{Account: d.Account, Folder: d.Folder, Worker: step.Worker, Brief: step.Brief, Result: d.Result, Head: d.Head,
+			IdempotencyKey: agentIdempotencyKey(*d, step.ID), Fixes: step.Fixes, Checkout: step.Checkout})
 		if err != nil {
 			var refused *RefusedError
 			if errors.As(err, &refused) {
@@ -943,8 +954,8 @@ func (r *Runner) runReopen(ctx context.Context, d *Delivery, record *StepRecord,
 	if r.reopen == nil {
 		return stepFailure{reason: "reopen steps are not available on this daemon", next: "rerun", refused: true}
 	}
-	if d.Result.Kind != KindWorker {
-		return stepFailure{reason: "only a worker job's session can be reopened; " + d.JobID + " is a " + d.Result.Kind + " job", next: "fix the automation", refused: true}
+	if d.Result.Kind != KindWorker && d.Result.Kind != KindTask {
+		return stepFailure{reason: "only a task's or a worker job's session can be reopened; " + d.JobID + " is a " + d.Result.Kind + " job", next: "fix the automation", refused: true}
 	}
 	if d.Result.Status == StatusCancelled {
 		return stepFailure{reason: "the job " + d.JobID + " was cancelled: it is not reopened", next: "swarm_message_job by hand", refused: true}

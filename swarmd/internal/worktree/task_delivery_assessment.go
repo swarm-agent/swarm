@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"swarm/packages/swarmd/internal/sandbox"
 	"sync"
@@ -114,20 +113,6 @@ func (d *deliveryInspector) lane(path, branch string) (head, common string, err 
 	return lines[2], gitstatus.NormalizePath(lines[1]), nil
 }
 
-// cloneIdentity mirrors managed-clone provenance checks using the inspector's
-// bounded, sandbox-routed Git. Durable ownership is authenticated by the caller.
-func (d *deliveryInspector) cloneIdentity(in TaskDeliveryInput) bool {
-	root, err := worktreeCacheRoot(in.TargetPath)
-	if err != nil || filepath.Dir(filepath.Clean(in.SourcePath)) != root {
-		return false
-	}
-	if err := noSymlinkDirectory(filepath.Join(in.SourcePath, ".git")); err != nil {
-		return false
-	}
-	origin, err := d.run(in.SourcePath, "config", "--get", "remote.origin.url")
-	return err == nil && sameCleanPath(origin, in.TargetPath)
-}
-
 // inspectionFailure reports a failed Git read as what it was: the time budget
 // running out, the caller cancelling, or Git failing. None of these is evidence
 // that the task's heads moved.
@@ -206,7 +191,7 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 		return a
 	}
 	if _, err := os.Stat(in.SourcePath); errors.Is(err, os.ErrNotExist) {
-		return d.inspectionFailure(a, "clone_missing", "Captured job checkout is missing")
+		return d.inspectionFailure(a, "checkout_missing", "Captured job checkout is missing")
 	}
 	source, repo, err := d.lane(in.SourcePath, a.SourceBranch)
 	if err != nil {
@@ -216,7 +201,7 @@ func assessDeliveryWithHook(parent context.Context, in TaskDeliveryInput, before
 	if err != nil {
 		return d.initialLaneFailure(a, err)
 	}
-	if repo != targetRepo && !d.cloneIdentity(in) {
+	if repo != targetRepo {
 		return d.inspectionFailure(a, a.ReasonCode, a.Reason)
 	}
 	d.targetRepo = targetRepo

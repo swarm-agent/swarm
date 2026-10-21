@@ -17,6 +17,9 @@ const (
 	KindWorker = "worker"
 	KindMedia  = "media"
 	KindDesign = "design"
+	// KindTask is a task one of Swarm's own agents (swarm, coder, finder,
+	// designer) finished: swarm_run_task's work, or a follow-up in its session.
+	KindTask = "task"
 )
 
 // Normalized result statuses.

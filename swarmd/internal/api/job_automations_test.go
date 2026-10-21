@@ -238,7 +238,7 @@ func TestDeliverJobWithoutAutomationsIsUnchanged(t *testing.T) {
 		}
 	})
 
-	if _, err := controlMCPDeliverJob(c, map[string]any{"job_id": "worker/wkr-1/run-1", "automation": true}); err == nil || !strings.Contains(err.Error(), "no automation deliveries") {
+	if _, err := controlMCPDeliverJob(c, map[string]any{"job_id": "worker/wkr-1/run-1", "automation": true}); err == nil || !strings.Contains(err.Error(), "no workflow deliveries") {
 		t.Fatalf("automation re-run without deliveries = %v", err)
 	}
 	if len(routes) != 0 {
@@ -258,7 +258,7 @@ func TestDeliverJobWithoutAutomationsIsUnchanged(t *testing.T) {
 		if strings.HasPrefix(route, "POST /v3/projects/proj-1/tasks/task-1/") {
 			merged = true
 		}
-		if strings.Contains(route, "job-automations") || strings.Contains(route, "job-deliveries") {
+		if strings.Contains(route, JobAutomationsPath) || strings.Contains(route, "job-deliveries") {
 			t.Fatalf("a hand delivery touched automations: %v", routes)
 		}
 	}
@@ -335,14 +335,15 @@ func TestAgentStepAdmitsAnAutomationJobThroughDispatch(t *testing.T) {
 
 	triggering := jobautomation.Result{V: 1, JobID: "worker/coder-1/run-1", Kind: jobautomation.KindWorker, ProjectID: project.ID, Folder: added.WorkspacePath,
 		Status: jobautomation.StatusSucceeded, Report: "Added the logo."}
-	agents := server.JobAutomationAgents()
-	jobID, startErr := agents.Start(context.Background(), jobautomation.AgentRequest{Account: principal.AccountScopeID, Folder: added.WorkspacePath, Worker: "finder",
-		Brief: "Check the new logo is used everywhere.", Result: triggering, IdempotencyKey: "jdel_test.check.0"})
-
 	workers, err := sessions.Store().WorkerStore().ListWorkers(principal.AccountScopeID, pebblestore.ListWorkersQuery{Limit: 10})
 	if err != nil || len(workers.Workers) != 1 {
 		t.Fatalf("workers = %v %v", workers, err)
 	}
+	// "finder" names Swarm's own finder (a task); the deployed finder worker
+	// is named by its id.
+	agents := server.JobAutomationAgents()
+	jobID, startErr := agents.Start(context.Background(), jobautomation.AgentRequest{Account: principal.AccountScopeID, Folder: added.WorkspacePath, Worker: workers.Workers[0].ID,
+		Brief: "Check the new logo is used everywhere.", Result: triggering, IdempotencyKey: "jdel_test.check.0"})
 	runs, _, err := sessions.Store().WorkerStore().ListWorkerRuns(principal.AccountScopeID, workers.Workers[0].ID, 10, "")
 	if err != nil || len(runs) != 1 {
 		t.Fatalf("admitted runs = %d %v (start: %q %v)", len(runs), err, jobID, startErr)
@@ -367,6 +368,15 @@ func TestAgentStepAdmitsAnAutomationJobThroughDispatch(t *testing.T) {
 	if again, _, _ := sessions.Store().WorkerStore().ListWorkerRuns(principal.AccountScopeID, workers.Workers[0].ID, 10, ""); len(again) != 1 {
 		t.Fatalf("a replayed agent step admitted %d jobs", len(again))
 	}
+	// Only a reviewer reads another job's worktree in place: a finder worker
+	// with checkout same is refused before anything is admitted.
+	if _, err := agents.Start(context.Background(), jobautomation.AgentRequest{Account: principal.AccountScopeID, Folder: added.WorkspacePath, Worker: workers.Workers[0].ID,
+		Brief: "Check it.", Result: triggering, IdempotencyKey: "jdel_test.same.0", Checkout: jobautomation.CheckoutSame}); err == nil || !strings.Contains(err.Error(), "only for a reviewer") {
+		t.Fatalf("checkout same on a finder worker = %v", err)
+	}
+	if again, _, _ := sessions.Store().WorkerStore().ListWorkerRuns(principal.AccountScopeID, workers.Workers[0].ID, 10, ""); len(again) != 1 {
+		t.Fatalf("a refused checkout admitted a job (%d)", len(again))
+	}
 	// Another account's automation cannot start a job as the owner.
 	if _, err := agents.Start(context.Background(), jobautomation.AgentRequest{Account: "other-account", Folder: added.WorkspacePath, Worker: "finder", Brief: "x",
 		Result: triggering, IdempotencyKey: "jdel_other.check.0"}); err == nil {
@@ -374,7 +384,7 @@ func TestAgentStepAdmitsAnAutomationJobThroughDispatch(t *testing.T) {
 	}
 }
 
-// Requirement: /v3/job-automations needs automations:write to change and
+// Requirement: /v3/workflows needs automations:write to change and
 // automations:read to read, and a run step also needs the owner's admin
 // scope; definitions are the caller's account's only; an invalid definition
 // is refused with 400 and nothing stored.

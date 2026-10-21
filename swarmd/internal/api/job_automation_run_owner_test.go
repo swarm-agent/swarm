@@ -18,7 +18,7 @@ import (
 // token) or a key with the admin scope (a full AI key). A write-level AI key
 // and a remote device token with write access hold automations:write but not
 // admin; they are refused on every path that stores steps (the HTTP route,
-// swarm_set_automation, and a then on swarm_give_job or swarm_schedule_job),
+// swarm_set_workflow, and a then on swarm_give_job or swarm_schedule_job),
 // with the reason, and nothing is stored or started. They may still save
 // agent steps.
 // Threat: a weaker-than-full key (designed not to approve tool calls) or a
@@ -26,7 +26,7 @@ import (
 // any command as the daemon's user, which can read daemon storage and
 // provider credentials.
 // Owners: runStepOwnerError, called by handleJobAutomations and
-// controlMCPCall.automationSteps (swarm_set_automation, controlMCPValidateThen
+// controlMCPCall.automationSteps (swarm_set_workflow, controlMCPValidateThen
 // and controlMCPThen); jobautomation.HasRunStep.
 // Layer: the handlers and MCP tool functions over a real Pebble-backed
 // jobautomation.Store are the narrowest layer that shows both the refusal and
@@ -132,7 +132,7 @@ func TestRunStepNeedsTheOwnerOverMCP(t *testing.T) {
 	args := map[string]any{"name": "shell", "scope": map[string]any{"folder": "/srv/site"}, "steps": []any{step}}
 	for name, scopes := range map[string][]string{"write AI key": scopesForLevel(t, "write"), "remote write device": remoteWriteDeviceScopes} {
 		if _, err := controlMCPSetAutomation(call(scopes), args); err == nil || !strings.Contains(err.Error(), "only the machine's owner may save one") {
-			t.Fatalf("%s: swarm_set_automation with a run step = %v", name, err)
+			t.Fatalf("%s: swarm_set_workflow with a run step = %v", name, err)
 		}
 		if err := controlMCPValidateThen(call(scopes), map[string]any{"steps": []any{step}}); err == nil || !strings.Contains(err.Error(), "only the machine's owner may save one") {
 			t.Fatalf("%s: then validation = %v", name, err)
@@ -149,7 +149,7 @@ func TestRunStepNeedsTheOwnerOverMCP(t *testing.T) {
 		t.Fatalf("admin then validation = %v", err)
 	}
 	if _, err := controlMCPSetAutomation(full, args); err != nil {
-		t.Fatalf("admin swarm_set_automation = %v", err)
+		t.Fatalf("admin swarm_set_workflow = %v", err)
 	}
 	if list := storedAutomations(t, store); len(list) != 1 || list[0].Steps[0].Command != "/bin/sh" {
 		t.Fatalf("admin run step not stored: %+v", list)

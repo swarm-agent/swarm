@@ -49,6 +49,28 @@ func withReviewFixHead(review store.JobReview, snapshot store.SessionSnapshot, r
 	return review
 }
 
+// withBorrowedReviewHead binds a verdict given in the reviewed job's own
+// worktree to that worktree as it is when the review ends: if it moved past
+// the reviewed head or holds uncommitted changes, what the reviewer read is
+// not what the verdict names, so the verdict is a block (never an OK of code
+// nobody reviewed).
+func withBorrowedReviewHead(review store.JobReview, snapshot store.SessionSnapshot, trees *worktree.Service) store.JobReview {
+	reason := ""
+	if trees == nil || strings.TrimSpace(snapshot.WorktreeRootPath) == "" {
+		reason = "the reviewed worktree is not recorded on the review session"
+	} else if state, err := trees.InspectTaskWorkspace(snapshot.WorktreeRootPath); err != nil {
+		reason = "the reviewed worktree is unreadable: " + err.Error()
+	} else if state.HeadCommit != review.Head {
+		reason = "the work changed during the review: its worktree moved from " + review.Head + " to " + state.HeadCommit
+	} else if !state.TrackedClean {
+		reason = "the work changed during the review: its worktree has uncommitted changes"
+	}
+	if reason != "" && review.Verdict != "block" {
+		review.Verdict, review.Reason = "block", reason
+	}
+	return review
+}
+
 func (s *WorkerExecutionService) recordReviewResult(r store.WorkerRunRecord) error {
 	if r.Role != store.WorkerRoleReviewer {
 		return nil
@@ -65,7 +87,7 @@ func (s *WorkerExecutionService) recordReviewResult(r store.WorkerRunRecord) err
 	}
 	env := reviewEnvironment(snapshot.Metadata)
 	parts := strings.Split(env["SWARM_REVIEW_JOB"], "/")
-	if len(parts) != 3 || parts[0] != "worker" || env["SWARM_REVIEW_HEAD"] == "" {
+	if len(parts) != 3 || (parts[0] != "worker" && parts[0] != "task") || env["SWARM_REVIEW_HEAD"] == "" {
 		return errors.New("review result missing captured target")
 	}
 	report := ""
@@ -98,9 +120,15 @@ func (s *WorkerExecutionService) recordReviewResult(r store.WorkerRunRecord) err
 	if sessionReviewFixes(snapshot.Metadata) {
 		review = withReviewFixHead(review, snapshot, r.ID)
 	}
+	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
+		review = withBorrowedReviewHead(review, snapshot, s.host.trees)
+	}
 	ws, err := s.workerStore()
 	if err != nil {
 		return err
+	}
+	if parts[0] == "task" {
+		return ws.RecordTaskReview(r.AccountScopeID, parts[1], parts[2], review)
 	}
 	return ws.RecordJobReview(r.AccountScopeID, parts[1], parts[2], review)
 }

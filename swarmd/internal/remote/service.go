@@ -124,10 +124,10 @@ var toolScopes = map[string]string{
 	// Job automations: the steps a person sets for when a job ends. Setting
 	// and deleting them is write like scheduling a job; the machine-wide stop
 	// switch is manage.
-	"swarm_set_automation":    ScopeWrite,
-	"swarm_list_automations":  ScopeRead,
-	"swarm_delete_automation": ScopeWrite,
-	"swarm_stop_automations":  ScopeManage,
+	"swarm_set_workflow":    ScopeWrite,
+	"swarm_list_workflows":  ScopeRead,
+	"swarm_delete_workflow": ScopeWrite,
+	"swarm_stop_workflows":  ScopeManage,
 }
 
 // localOnlyTools are box setup that only a key on the machine itself may do

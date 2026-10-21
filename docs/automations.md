@@ -1,12 +1,21 @@
-# Job automations
+# Workflows
 
-When a job ends, Swarm records one **result** for it and runs the **steps the
-person (or their AI) configured** for that end. Swarm only provides
+When work ends, Swarm records one **result** for it and runs the **steps the
+person (or their AI) configured** for that end. Work is a task of Swarm's own
+agents (`swarm_run_task`: swarm, coder, finder, designer; its first run and each
+follow-up sent into its session) or a worker job (a worker run or follow-up, a
+media job, a design job). Swarm only provides
 primitives and reports what happened; it has no built-in merge, rebase,
 check, review chain or push.
 
-With no automation nothing changes: a job ends with its branch and worktree,
-and the person integrates it by hand (`swarm_deliver_job`, or their own git).
+With no workflow nothing changes: a task or job ends with its branch and
+worktree, and the person integrates it by hand (`swarm_integrate_task`,
+`swarm_deliver_job`, or their own git).
+
+Workflows were called job automations. The MCP tools and the API path are
+named for workflows (`swarm_set_workflow`, `/v3/workflows`); the internal
+names are unchanged: the `automation.*` signals, the `automations:read` and
+`automations:write` scopes, `then` and `automation: true` on the job tools.
 
 ## What an automation is
 
@@ -15,9 +24,10 @@ An automation belongs to an account and has:
 | Field | Meaning |
 | --- | --- |
 | `name` | Unique per account; setting an existing name updates it. |
-| `scope.folder` | The project folder whose job ends it watches (absolute path). |
+| `scope.folder` | The project folder whose task and job ends it watches (absolute path). |
+| `scope.role` | Optional: only the tasks this one of Swarm's own agents (`swarm`, `coder`, `finder`, `designer`) finished. Not with `scope.worker` or `scope.schedule`. |
 | `scope.worker` | Optional: only this worker's jobs (worker id). |
-| `scope.job` | Optional: only this job (`worker/<worker>/<run>`, `media/<project>/<task>`, `design/<project>/<task>`). |
+| `scope.job` | Optional: only this task or job (`task/<project>/<task>`, `worker/<worker>/<run>`, `media/<project>/<task>`, `design/<project>/<task>`). |
 | `scope.schedule` | Optional: only the jobs of this worker schedule. |
 | `when` | `succeeded` (default), `failed` (failed or cancelled) or `always`. |
 | `enabled` | Default true. |
@@ -25,9 +35,10 @@ An automation belongs to an account and has:
 | `steps` | Ordered steps, at most 20. |
 
 Every update raises the automation's `revision`. An automation applies only to
-job ends after it was created. Jobs started by an automation (an `agent`
-step) never trigger automations; a follow-up of the original job
-(`swarm_message_job`) ends again and does.
+task and job ends after it was created. Tasks and jobs started by a workflow
+(an `agent` step) never trigger workflows; a follow-up of the original work
+(`swarm_send_message` into a task's session, `swarm_message_job` for a job)
+ends again and does.
 
 Each step has an `id`, a `type` (`run`, `agent` or `reopen`),
 `timeout_seconds` (default 600, at most 3600), `continue_on_failure` (default
@@ -146,13 +157,19 @@ owner configured, and nothing when there are none.
 { "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this change for security problems." }
 ```
 
-- `worker` is `coder`, `designer`, `finder`, `reviewer` or a worker id. Swarm
-  starts the job through the normal job admission (workspace and worker
+- `worker` is one of Swarm's own agents (`swarm`, `coder`, `finder`,
+  `designer`), `reviewer`, or a worker id. One of Swarm's own agents runs as
+  a task in the folder, in the triggering work's project, exactly as
+  `swarm_run_task` would, with the brief and the triggering work's result; a
+  coder's worktree starts at the delivery head, so its commits descend from
+  the work it follows. Its task records the workflow that started it and its
+  end never triggers workflows. `fixes` is refused for it.
+- For a worker, Swarm starts the job through the normal job admission (workspace and worker
   checks) with request source `automation`, the brief with the triggering
   job's result attached, and the delivery id and step id as its idempotency
   key (a restart never starts it twice; an explicit re-run starts a new job).
-- A reviewer reviews the triggering job's exact head (`review_job`), in its
-  own session, with the whole picture in its brief (see
+- A reviewer reviews the triggering task's or job's exact head (`review_job`:
+  `task/<project>/<task>` or `worker/<worker>/<run>`), in its own session, with the whole picture in its brief (see
   [What the reviewer receives](#what-the-reviewer-receives)).
 - The step waits, within its timeout, for that job to end; the job's status
   is the step's status. The step's `outcome` records the job id, its head,
@@ -174,8 +191,47 @@ owner configured, and nothing when there are none.
   job's head descends from the current delivery head and moves the delivery
   head forward (`outcome.moved_head`); later `run` steps get the moved head.
   A head that does not descend fails the step and the delivery head stays.
-  A reviewer is read-only (a detached, disposable checkout) and so never
-  moves the head, unless its step sets `fixes` (below).
+  A reviewer is read-only (by default it reads the job's own worktree in
+  place, below) and so never moves the head, unless its step sets `fixes`
+  (below).
+
+#### Where the agent works (`checkout`)
+
+```json
+{ "id": "review", "type": "agent", "worker": "reviewer", "brief": "Review this change.", "checkout": "same" }
+```
+
+An `agent` step's `checkout` says where its agent works. Leave it out and
+each agent works where it should:
+
+| Agent | Default | Allowed |
+|---|---|---|
+| reviewer | `same` | `same`, `new` |
+| reviewer with `fixes` | `new` | `new` (it commits) |
+| `coder`, any other worker | `new` | `new` |
+| `swarm`, `finder`, `designer` | `none` | `none` |
+
+- `same`: a new reviewer session in the worktree of the job the step
+  follows, where that job did its work. Nothing is copied or allocated, and
+  the worktree stays the job's: it is mounted read-only for the reviewer
+  (its sandbox, not only its Git metadata), only that reviewer session runs
+  in it, and when the reviewer ends nothing in it is removed or cleaned.
+  The reviewer starts only when the worktree is exactly at the head being
+  reviewed with nothing uncommitted; otherwise the step fails with that
+  reason. If the worktree moves or gets uncommitted changes while the
+  review runs (someone sent the job a message), the verdict is recorded as
+  `block` ("the work changed during the review"), so an `ok` never pushes
+  code nobody reviewed.
+- `new`: the agent's own worktree at the job's head (a reviewer's is a
+  detached, disposable checkout removed when it ends).
+- `none`: the folder itself. Swarm, finder and designer tasks always work
+  there; the job's commits are the folder's branches (its branch and head
+  are in the brief).
+
+To have the job's own agent continue in its own worktree, use a `reopen`
+step: it sends a follow-up into the job's own session. The daemon refuses
+any other combination when the workflow is saved (for a worker named by id,
+`same` only when it is a reviewer).
 
 #### Reviewer fixes (`fixes: "security"`)
 
@@ -189,7 +245,7 @@ fixes (a missing escape, a path check, a secret in a log line) instead of
 blocking for them. It is opt-in per step and never the default: a reviewer
 started any other way (`swarm_give_job` with `review_job`, or an `agent` step
 without `fixes`) stays read-only, detached and report-only. Swarm never
-decides on its own to let a reviewer write. `swarm_set_automation`, `then`
+decides on its own to let a reviewer write. `swarm_set_workflow`, `then`
 and the API refuse `fixes` on a step whose worker is not a reviewer (a role
 name, a worker id or name that resolves to another role, or one that does
 not resolve); the daemon refuses it again when the job starts and at job
@@ -198,9 +254,8 @@ admission, where only a job automation's request may carry it.
 With `fixes`:
 
 - The reviewer job gets a writable branch `agent/review-<run>` started at
-  the reviewed head, in its own checkout: a clone of the folder seeded from
-  the reviewed job's own clone, whose `.git` is writable for this job only
-  (like a coder's job checkout). Every tool call checks that the checkout is
+  the reviewed head, in its own worktree of the folder (like a coder's job
+  checkout); its commits are in the folder's repository as they are made. Every tool call checks that the checkout is
   on that branch and that its `HEAD` descends from the reviewed head.
 - It may edit files and commit (`git_add`, `git_commit`), and run the
   narrowest test that proves a fix; it cannot start other agents.
@@ -330,8 +385,8 @@ tail and outcome. A daemon restart
 resumes unfinished deliveries at the first step that is not finished; a
 finished step is never run again.
 
-The **stop switch** (`swarm_stop_automations`, `POST
-/v3/job-automations/stop`) is machine-wide: while it is on no new step
+The **stop switch** (`swarm_stop_workflows`, `POST
+/v3/workflows/stop`) is machine-wide: while it is on no new step
 starts; running steps finish, and the next step is recorded as `stopped`.
 `swarm_deliver_job` with `automation: true` re-runs, for each automation,
 only the job's **newest** delivery, and only while that delivery's head is
@@ -339,7 +394,7 @@ still the job's current head; older deliveries are never re-run (they are
 listed under `unchanged` with reason `superseded`, a newest delivery for an
 older head with `stale_head`). To re-run one named delivery explicitly,
 whatever its head, use `POST /v3/job-deliveries/{id}/rerun` (SDK
-`client.jobAutomations.rerun`). Either way only failed or stopped steps (and
+`client.workflows.rerun`). Either way only failed or stopped steps (and
 the steps after them that did not run) run again; a succeeded step is never
 re-run. A `blocked` delivery re-runs from its first step with a new round
 budget of `max_rounds` reopens past those the job already had (a `run` step
@@ -397,12 +452,10 @@ in `swarm_get_job`'s result and in `swarm_get_changes`) is the job's
 **effective base**:
 
 - Swarm takes the merge-base of the job's head and the target's current tip.
-  The tip comes only from the folder's own `<base_branch>` (when its commit is
-  in the job's clone). The clone belongs to the coder, whose commands can move
-  its refs, so the clone's `refs/remotes/origin/<base_branch>` (which a rebase
-  fetched) counts only when the folder's branch contains it, and the
-  merge-base itself must be on the folder's branch. Replace refs and grafts in
-  the clone are ignored. A commit that is not on the target therefore never
+  The tip comes only from the folder's own `<base_branch>`; a
+  `refs/remotes/origin/<base_branch>` (which a rebase fetched) counts only
+  when the folder's branch contains it, and the merge-base itself must be on
+  the folder's branch. Replace refs and grafts are ignored. A commit that is not on the target therefore never
   becomes the base, and none of the job's own commits can drop out of its
   range.
 - That merge-base is the base when it descends from the recorded base (the
@@ -449,17 +502,17 @@ Design jobs now end with `design.job.completed`, `design.job.failed` or
 
 ## Who controls them
 
-- MCP: `swarm_set_automation`, `swarm_list_automations`,
-  `swarm_delete_automation`, `swarm_stop_automations`; `then` on
+- MCP: `swarm_set_workflow`, `swarm_list_workflows` (every workflow exactly as
+  Swarm runs it), `swarm_delete_workflow`, `swarm_stop_workflows`; `then` on
   `swarm_give_job` and `swarm_schedule_job`; deliveries in `swarm_get_job`;
   `automation: true` on `swarm_deliver_job`.
 - API (`automations:read` to read, `automations:write` to change, and
   `admin` or the local owner to save a `run` step):
-  `GET/POST /v3/job-automations`, `GET/DELETE /v3/job-automations/{id}`,
-  `GET/POST /v3/job-automations/stop`, `GET /v3/job-deliveries`
+  `GET/POST /v3/workflows`, `GET/DELETE /v3/workflows/{id}`,
+  `GET/POST /v3/workflows/stop`, `GET /v3/job-deliveries`
   (`job_id`, `automation_id`, `state`, `limit`), `GET
   /v3/job-deliveries/{id}`, `POST /v3/job-deliveries/{id}/rerun`.
-- SDK: `client.jobAutomations` (`list`, `get`, `set`, `delete`, `stopState`,
+- SDK: `client.workflows` (`list`, `get`, `set`, `delete`, `stopState`,
   `setStopped`, `deliveries`, `delivery`, `rerun`).
 
 ## Example: merge the job into a local branch
@@ -521,6 +574,45 @@ echo "https://forge.example.com/acme/site/tree/$branch"
 The step's output is the branch URL; a failed push signals
 `automation.step.failed` and is retried once.
 
+## Example: Swarm's coder, a reviewer, then push
+
+Work given to the coder that comes with Swarm (`swarm_run_task` with role
+`coder`) is reviewed by the person's reviewer worker; a block goes back into
+the coder's own session, where it fixes its own work in its own worktree, at
+most twice; an ok pushes the head.
+
+```json
+{
+  "tool": "swarm_set_workflow",
+  "arguments": {
+    "name": "coder review push",
+    "scope": { "folder": "/srv/site", "role": "coder" },
+    "steps": [
+      { "id": "review", "type": "agent", "worker": "reviewer",
+        "brief": "Review this task's exact head against its brief." },
+      { "id": "fix", "type": "reopen", "from": "review", "max_rounds": 2,
+        "message": "The reviewer blocked your work. Its findings:",
+        "if": [{ "step": "review", "verdict": "block" }] },
+      { "id": "push", "type": "run", "command": "/usr/local/libexec/swarm-deliver/push.sh",
+        "if": [{ "step": "review", "verdict": "ok" }] }
+    ]
+  }
+}
+```
+
+1. The coder's task ends (`task.run.succeeded`): delivery round 0 of job
+   `task/<project>/<task>` starts.
+2. `review` starts a reviewer job on the task's exact head, as a new session
+   in the coder's own worktree (read-only; `checkout` defaults to `same`).
+3. On `block`, `fix` sends the findings into the task's own session (as
+   `swarm_send_message` does). The coder fixes them in the same worktree; that
+   follow-up's end starts the workflow again (round 1).
+4. On `ok`, `push` runs with `SWARM_HEAD` at the reviewed head. The task's
+   commits are in the folder's repository from the moment they are made.
+
+Any step can be another of Swarm's own agents instead, for example
+`{ "type": "agent", "worker": "finder", "brief": "Write release notes for this change." }`.
+
 ## Example: a review loop
 
 A coder's job is reviewed by a reviewer job in its own session, which may
@@ -532,7 +624,7 @@ the automation says so: there is no built-in review chain.
 
 ```json
 {
-  "tool": "swarm_set_automation",
+  "tool": "swarm_set_workflow",
   "arguments": {
     "name": "review loop",
     "scope": { "folder": "/srv/site", "worker": "<coder worker id>" },
@@ -598,9 +690,10 @@ step's own brief:
   [The base after a rebase](#the-base-after-a-rebase)), so a job rebased onto
   a newer target is reviewed from that target;
 - the folder's target branch at its current tip (`dev is at <sha>`), so the
-  reviewer can tell from evidence whether a commit is already on it. Its own
-  checkout's `refs/remotes/origin/<branch>` are refreshed from the folder
-  when the review starts, not left at the reviewed job's creation.
+  reviewer can tell from evidence whether a commit is already on it. Its
+  checkout is a worktree of the folder (by default the reviewed job's own,
+  see [Where the agent works](#where-the-agent-works-checkout)), so the
+  folder's branches are its own refs.
 
 It reviews the exact head in its own session and judges four things: is every
 requirement of the brief fully done; do the report's claims match the

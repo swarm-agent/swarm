@@ -87,7 +87,7 @@ func validateOwnedIdentity(source, lane, branch, base string, allowRebase bool) 
 	if err != nil {
 		return err
 	}
-	if (sourceID != laneID && !managedCloneIdentity(sourcePath, lanePath)) || filepath.Clean(sourcePath) == filepath.Clean(lanePath) {
+	if sourceID != laneID || filepath.Clean(sourcePath) == filepath.Clean(lanePath) {
 		return errors.New("session repository identity mismatch: source and isolated lane must share Git authority without aliasing")
 	}
 	actual, err := currentBranch(lane)

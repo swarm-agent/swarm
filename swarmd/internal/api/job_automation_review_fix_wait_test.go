@@ -48,8 +48,7 @@ func TestWaitReadsTheFixingReviewersCheckout(t *testing.T) {
 	checkout := func(runID string, fix bool) string {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), runID)
-		outboxPinGit(t, filepath.Dir(dir), "clone", "-q", folder, dir)
-		outboxPinGit(t, dir, "checkout", "-q", "-b", "agent/review-"+runID, reviewed)
+		outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/review-"+runID, dir, reviewed)
 		if fix {
 			if err := os.WriteFile(filepath.Join(dir, "upload.go"), []byte("package upload\n\n// escaped\n"), 0o644); err != nil {
 				t.Fatal(err)
@@ -170,18 +169,18 @@ func (f fixedJobResults) Result(_ context.Context, sig pebblestore.Signal, _ boo
 // Requirement (brief item 5 and 6, review finding: production path): an agent
 // step with fixes "security" gets the fixing reviewer's head and fix commits
 // from the daemon's own Wait, which reads them with Git from the reviewer's
-// recorded agent/review-<run> clone. Its OK verdict comes from the recorded
+// recorded agent/review-<run> worktree. Its OK verdict comes from the recorded
 // job review. The daemon's VerifyJobHead and JobHeadChangedLines then decide,
 // in the folder. A 4-line fix moves the delivery head, and the later run step
 // gets the reviewer's head as SWARM_HEAD. An 81-line fix fails the step with
 // "reviewer fixes too large", keeps the head and does not run the push.
-// Threat: the daemon path never carrying the reviewer clone's head and
+// Threat: the daemon path never carrying the reviewer checkout's head and
 // commits (fixes silently never applied), or the line limit counted somewhere
 // other than the daemon's own counter.
 // Owners: jobautomation.Runner (runAgent, applyReviewerFixes) over
 // jobAutomationAgents.Wait, Server.reviewFixCheckout,
 // Server.automationAgentReview, VerifyJobHead, JobHeadChangedLines and
-// ImportJobRef, with real Git clones, the real worker store and signal feed.
+// ImportJobRef, with real Git worktrees, the real worker store and signal feed.
 // Stubbed: the reviewer job's start (stubStartAgents: the model provider),
 // the coder job's result (fixedJobResults). The run step runs through the
 // real host executor (automationHost).
@@ -205,9 +204,9 @@ func TestFixingReviewerStepAppliesFixesThroughTheDaemonPath(t *testing.T) {
 	outboxPinGit(t, folder, "add", "upload.go")
 	outboxPinGit(t, folder, "commit", "-q", "-m", "base")
 	base := outboxPinGit(t, folder, "rev-parse", "HEAD")
-	// The coder commits in its own clone, so the reviewed head is not in the folder.
+	// The coder commits in its worktree of the folder.
 	coderClone := filepath.Join(t.TempDir(), "coder")
-	outboxPinGit(t, filepath.Dir(coderClone), "clone", "-q", folder, coderClone)
+	outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/coder", coderClone, "main")
 	if err := os.WriteFile(filepath.Join(coderClone, "upload.go"), []byte("package upload\n\nfunc Name(s string) string { return s + \"\" }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -222,12 +221,11 @@ func TestFixingReviewerStepAppliesFixesThroughTheDaemonPath(t *testing.T) {
 
 	// A fixing reviewer job, recorded as the worker execution service
 	// records one: its run (input review_fixes, captured target), its
-	// session on agent/review-<run> in its own clone, and its OK review.
+	// session on agent/review-<run> in its worktree, and its OK review.
 	reviewerJob := func(coderRun, runID string, edit func(dir string)) (string, string) {
 		t.Helper()
 		dir := filepath.Join(t.TempDir(), runID)
-		outboxPinGit(t, filepath.Dir(dir), "clone", "-q", coderClone, dir)
-		outboxPinGit(t, dir, "checkout", "-q", "-b", "agent/review-"+runID, reviewed)
+		outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/review-"+runID, dir, reviewed)
 		edit(dir)
 		outboxPinGit(t, dir, "add", ".")
 		outboxPinGit(t, dir, "commit", "-q", "-m", "reviewer fix "+runID)

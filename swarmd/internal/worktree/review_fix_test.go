@@ -10,14 +10,14 @@ import (
 
 // Purpose: a reviewer an automation step allowed to commit security fixes
 // gets a writable branch checkout (agent/review-<run>) started at the
-// reviewed head, branched from the reviewed job's own clone, in which it can
+// reviewed head, a worktree of the folder, in which it can
 // commit; its identity check is "HEAD descends from the reviewed head". A
 // reviewer without the option keeps the detached disposable checkout: a
 // commit there is detected (its removal validation reports the head changed)
 // and the fix-branch identity never admits it. Blocking the commit itself is
 // the sandbox's read-only .git mount, which needs a real sandbox runtime and
-// is not proven here. The folder and the reviewed
-// job's clone are never written.
+// is not proven here. The folder's HEAD and the
+// reviewed job's branch never move.
 // Threat: a writable reviewer checkout for a reviewer that did not opt in, a
 // fix branch outside the job's repository (unverifiable ancestry), or a fix
 // branch that rewrote the reviewed history.
@@ -69,19 +69,16 @@ func TestReviewFixCheckoutIsABranchAtTheReviewedHead(t *testing.T) {
 		t.Fatalf("a commit in a read-only review checkout = %v, want review head changed", err)
 	}
 
-	// With the option: a branch at the head, from the coder's clone.
-	fix, err := s.allocateReviewFixWorkspace(repo, "worker-execution-review-fx", coder.WorkspacePath, head, "agent/review-run1")
+	// With the option: a branch at the head, a worktree of the folder.
+	fix, err := s.allocateReviewFixWorkspace(repo, "worker-execution-review-fx", head, "agent/review-run1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fix.BranchName != "agent/review-run1" || fix.BaseCommit != head || git(fix.WorkspacePath, "branch", "--show-current") != "agent/review-run1" || git(fix.WorkspacePath, "rev-parse", "HEAD") != head {
 		t.Fatalf("fix checkout = %+v", fix)
 	}
-	if info, err := os.Lstat(filepath.Join(fix.WorkspacePath, ".git")); err != nil || !info.IsDir() {
-		t.Fatal("fix checkout has no own .git", err)
-	}
-	if !managedCloneIdentity(repo, fix.WorkspacePath) || git(fix.WorkspacePath, "config", "--get", "remote.origin.url") != repo {
-		t.Fatal("fix checkout is not a managed clone of the folder")
+	if !strings.Contains(git(repo, "worktree", "list", "--porcelain"), fix.WorkspacePath) {
+		t.Fatal("fix checkout is not a worktree of the folder")
 	}
 	if err := ValidateReviewFixExecutionIdentity(repo, fix.WorkspacePath, fix.BranchName, head); err != nil {
 		t.Fatal(err)
@@ -103,37 +100,31 @@ func TestReviewFixCheckoutIsABranchAtTheReviewedHead(t *testing.T) {
 	if err := ValidateReviewFixExecutionIdentity(repo, fix.WorkspacePath, "agent/job", head); err == nil {
 		t.Fatal("the fix checkout passed with another branch name")
 	}
+	// The fix commit is in the folder's repository on the review branch; the
+	// coder's branch and the folder's HEAD do not move.
+	if git(repo, "rev-parse", "refs/heads/agent/review-run1") != fixHead {
+		t.Fatal("the fix commit is not on the review branch in the folder's repository")
+	}
+	if git(coder.WorkspacePath, "rev-parse", "HEAD") != head || git(repo, "rev-parse", "HEAD") != base {
+		t.Fatal("source changed")
+	}
 	// Rewriting the branch below the reviewed head breaks its identity.
 	git(fix.WorkspacePath, "reset", "-q", "--hard", base)
 	if err := ValidateReviewFixExecutionIdentity(repo, fix.WorkspacePath, fix.BranchName, head); err == nil {
 		t.Fatal("a fix branch that no longer descends from the reviewed head passed")
 	}
-	// The folder and the reviewed job's clone are unchanged.
-	if git(coder.WorkspacePath, "rev-parse", "HEAD") != head || git(repo, "rev-parse", "HEAD") != base {
-		t.Fatal("source changed")
-	}
-	for _, path := range []string{repo, coder.WorkspacePath} {
-		if out, err := exec.Command("git", "-C", path, "cat-file", "-e", fixHead).CombinedOutput(); err == nil {
-			t.Fatalf("the fix commit was written into %s: %s", path, out)
-		}
-	}
 
-	// Refused: a source that is not the job's managed clone, a head it
-	// lacks, a branch outside agent/review-, an existing checkout.
-	stranger := filepath.Join(t.TempDir(), "stranger")
-	git(filepath.Dir(stranger), "clone", "-q", coder.WorkspacePath, stranger)
+	// Refused: a head the folder lacks, a branch outside agent/review-, an
+	// existing checkout.
 	for name, call := range map[string]func() (Allocation, error){
-		"unmanaged clone": func() (Allocation, error) {
-			return s.allocateReviewFixWorkspace(repo, "worker-execution-review-x1", stranger, head, "agent/review-x1")
-		},
 		"missing head": func() (Allocation, error) {
-			return s.allocateReviewFixWorkspace(repo, "worker-execution-review-x2", coder.WorkspacePath, strings.Repeat("f", 40), "agent/review-x2")
+			return s.allocateReviewFixWorkspace(repo, "worker-execution-review-x2", strings.Repeat("f", 40), "agent/review-x2")
 		},
 		"wrong branch": func() (Allocation, error) {
-			return s.allocateReviewFixWorkspace(repo, "worker-execution-review-x3", coder.WorkspacePath, head, "agent/worker-x3")
+			return s.allocateReviewFixWorkspace(repo, "worker-execution-review-x3", head, "agent/worker-x3")
 		},
 		"existing checkout": func() (Allocation, error) {
-			return s.allocateReviewFixWorkspace(repo, "worker-execution-review-fx", coder.WorkspacePath, head, "agent/review-run1")
+			return s.allocateReviewFixWorkspace(repo, "worker-execution-review-fx", head, "agent/review-run1")
 		},
 	} {
 		got, err := call()
@@ -141,7 +132,7 @@ func TestReviewFixCheckoutIsABranchAtTheReviewedHead(t *testing.T) {
 			t.Fatalf("%s admitted: %+v %v", name, got, err)
 		}
 	}
-	for _, owner := range []string{"worker-execution-review-x1", "worker-execution-review-x2", "worker-execution-review-x3"} {
+	for _, owner := range []string{"worker-execution-review-x2", "worker-execution-review-x3"} {
 		path, err := deterministicSessionWorktreePath(repo, sessionWorkspaceID(owner))
 		if err != nil {
 			t.Fatal(err)

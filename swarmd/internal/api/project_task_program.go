@@ -515,6 +515,13 @@ func (s *Server) CreateProjectTask(ctx context.Context, p identity.Principal, pr
 		CreatedAt:          time.Now().UnixMilli(),
 		UpdatedAt:          time.Now().UnixMilli(),
 	}
+	// Only a workflow's agent step, inside the daemon, marks the task it
+	// starts (never an API client): its end does not trigger workflows, and a
+	// coder starts at the delivery head.
+	if start, ok := workflowTaskStartFrom(ctx); ok {
+		task.AutomationID = start.AutomationID
+		task.StartCommit = start.StartCommit
+	}
 	if len(task.CoderAssignments) > 0 {
 		// The assignment list, not router boilerplate, is the executable small-task
 		// contract; keep the visible card from presenting a generic plan.

@@ -37,6 +37,44 @@ func sessionReviewFixes(meta map[string]any) bool {
 	return mapString(meta, "worker_role") == store.WorkerRoleReviewer && mapString(meta, "worker_review_fixes") == ReviewFixesSecurity
 }
 
+// Where a reviewer works (input review_checkout): "same" is a new session in
+// the reviewed job's own worktree, read-only (the default); "new" is its own
+// disposable checkout at the reviewed head. A reviewer allowed to commit
+// security fixes always gets its own branch checkout.
+const (
+	ReviewCheckoutSame = "same"
+	ReviewCheckoutNew  = "new"
+)
+
+// reviewSharesCheckout reports whether a reviewer run reads the reviewed
+// job's own worktree (admission validated the input).
+func reviewSharesCheckout(input map[string]any) bool {
+	if reviewFixesAllowed(input) {
+		return false
+	}
+	value, _ := input["review_checkout"].(string)
+	return value == "" || value == ReviewCheckoutSame
+}
+
+// sessionReviewLaneOwner is the session that owns the worktree a reviewer
+// session reads in place ("" for a reviewer in its own checkout): pinned at
+// admission from the captured review target.
+func sessionReviewLaneOwner(meta map[string]any) string {
+	if mapString(meta, "worker_role") != store.WorkerRoleReviewer {
+		return ""
+	}
+	return mapString(meta, "worker_review_lane_owner")
+}
+
+// sessionLaneOwner is the session whose worktree a session works in: the
+// reviewed job's session for a reviewer reading it in place, else itself.
+func sessionLaneOwner(session store.SessionSnapshot) string {
+	if owner := sessionReviewLaneOwner(session.Metadata); owner != "" {
+		return owner
+	}
+	return session.ID
+}
+
 // reviewFixBranch is the writable branch of a reviewer allowed to commit
 // security fixes: agent/review-<run>.
 func reviewFixBranch(runID string) string {
@@ -57,8 +95,8 @@ func workerExecutionAgentID(role string, input map[string]any) (string, bool) {
 
 // allocateReviewerCheckout allocates a reviewer run's checkout from its
 // captured review target: a writable agent/review-<run> branch at the
-// reviewed head, from the reviewed job's own clone, when fixes are allowed;
-// otherwise the detached, disposable review checkout.
+// reviewed head, a worktree of the folder, when fixes are allowed; otherwise
+// the detached, disposable review checkout.
 func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, source string, r store.WorkerRunRecord, fixes bool) (worktree.Allocation, error) {
 	target, ok := r.Input["captured_review_target"].(map[string]any)
 	if !ok {
@@ -78,8 +116,27 @@ func allocateReviewerCheckout(trees *worktree.Service, p identity.Principal, sou
 		}
 	}
 	if fixes {
-		checkout, _ := target["checkout"].(string)
-		return trees.AllocateReviewFixWorkspace(p, source, r.SessionID, checkout, head, reviewFixBranch(r.ID))
+		return trees.AllocateReviewFixWorkspace(p, source, r.SessionID, head, reviewFixBranch(r.ID))
+	}
+	if lane, _ := target["lane"].(string); lane != "" {
+		// Read in place: the reviewed job's own worktree, still owned by its
+		// session; nothing is allocated, so nothing is removed afterwards.
+		owner, _ := target["lane_owner"].(string)
+		branch, _ := target["lane_branch"].(string)
+		if owner == "" || branch == "" || owner == r.SessionID {
+			return worktree.Allocation{}, errors.New("captured review worktree is incomplete")
+		}
+		if err := trees.ValidateSessionRepositoryLaneForRead(source, lane, owner, branch); err != nil {
+			return worktree.Allocation{}, err
+		}
+		state, err := trees.InspectTaskWorkspace(lane)
+		if err != nil {
+			return worktree.Allocation{}, err
+		}
+		if state.HeadCommit != head || !state.TrackedClean {
+			return worktree.Allocation{}, errors.New("the reviewed job's worktree moved past the head being reviewed or has uncommitted changes")
+		}
+		return worktree.Allocation{WorkspacePath: lane, BranchName: branch, BaseBranch: head, BaseCommit: head, RepoRoot: source}, nil
 	}
 	return trees.AllocateReviewWorkspace(p, source, r.SessionID, head, commits...)
 }
@@ -91,6 +148,11 @@ func pinReviewerMetadata(meta map[string]any, input map[string]any, fixes bool) 
 	meta["worker_review_target"] = input["captured_review_target"]
 	if fixes {
 		meta["worker_review_fixes"] = ReviewFixesSecurity
+	}
+	if target, _ := input["captured_review_target"].(map[string]any); target != nil && !fixes {
+		if owner, _ := target["lane_owner"].(string); owner != "" {
+			meta["worker_review_lane_owner"] = owner
+		}
 	}
 }
 
@@ -116,6 +178,18 @@ func validateReviewRequest(role, source string, input map[string]any) error {
 	if _, exists := input["review_ref"]; exists {
 		return errors.New("review_ref is unsupported; use review_job")
 	}
+	if raw, exists := input["review_checkout"]; exists {
+		value, ok := raw.(string)
+		if !ok || (value != ReviewCheckoutSame && value != ReviewCheckoutNew) {
+			return errors.New("review_checkout must be \"same\" (the reviewed job's own worktree, read-only) or \"new\" (the reviewer's own checkout)")
+		}
+		if role != store.WorkerRoleReviewer {
+			return errors.New("review_checkout is only accepted for reviewer workers")
+		}
+		if value == ReviewCheckoutSame && reviewFixesAllowed(input) {
+			return errors.New("a reviewer with review_fixes commits, so it works in its own checkout: review_checkout must be \"new\"")
+		}
+	}
 	if role != store.WorkerRoleReviewer {
 		if _, exists := input["review_job"]; exists {
 			return errors.New("review_job is only accepted for reviewer workers")
@@ -123,8 +197,8 @@ func validateReviewRequest(role, source string, input map[string]any) error {
 		return nil
 	}
 	parts := strings.Split(job, "/")
-	if len(parts) != 3 || parts[0] != "worker" || parts[1] == "" || parts[2] == "" {
-		return errors.New("reviewer requires review_job: worker/<worker id>/<run id>")
+	if len(parts) != 3 || (parts[0] != "worker" && parts[0] != "task") || parts[1] == "" || parts[2] == "" {
+		return errors.New("reviewer requires review_job: task/<project id>/<task id> (a task of Swarm's own agents) or worker/<worker id>/<run id>")
 	}
 	return nil
 }
@@ -140,25 +214,44 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 		return nil, err
 	}
 	parts := strings.Split(r.Input["review_job"].(string), "/")
-	ws, err := s.workerStore()
-	if err != nil {
-		return nil, err
+	var task *store.ProjectTaskRecord
+	laneOwner := ""
+	if parts[0] == "task" {
+		// A task of Swarm's own agents (swarm_run_task): it is in the
+		// reviewer's project and folder, worked in its own session's worktree.
+		if parts[1] != project.ID {
+			return nil, errors.New("review job must exist in the same project and workspace")
+		}
+		target, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, project.ID, parts[2])
+		if err != nil {
+			return nil, err
+		}
+		if !found || target == nil || target.WorkerRunID != "" || target.SourceWorkspace.WorkspaceID != r.WorkspaceID || target.SessionID == "" {
+			return nil, errors.New("review job must exist in the same project and workspace")
+		}
+		task, laneOwner = target, target.SessionID
+	} else {
+		ws, err := s.workerStore()
+		if err != nil {
+			return nil, err
+		}
+		target, found, err := ws.GetWorkerRun(r.AccountScopeID, parts[1], parts[2])
+		if err != nil {
+			return nil, err
+		}
+		if !found || target.UserID != r.UserID {
+			return nil, errors.New("review job not found")
+		}
+		jobTask, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, project.ID, "task_"+target.ID)
+		if err != nil {
+			return nil, err
+		}
+		if !found || jobTask.WorkerID != target.WorkerID || jobTask.WorkerRunID != target.ID || jobTask.SourceWorkspace.WorkspaceID != r.WorkspaceID {
+			return nil, errors.New("review job must exist in the same project and workspace")
+		}
+		task, laneOwner = jobTask, target.SessionID
 	}
-	target, found, err := ws.GetWorkerRun(r.AccountScopeID, parts[1], parts[2])
-	if err != nil {
-		return nil, err
-	}
-	if !found || target.UserID != r.UserID {
-		return nil, errors.New("review job not found")
-	}
-	task, found, err := s.host.runs.sessions.Store().GetProjectTask(r.AccountScopeID, project.ID, "task_"+target.ID)
-	if err != nil {
-		return nil, err
-	}
-	if !found || task.WorkerID != target.WorkerID || task.WorkerRunID != target.ID || task.SourceWorkspace.WorkspaceID != r.WorkspaceID {
-		return nil, errors.New("review job must exist in the same project and workspace")
-	}
-	if err := s.host.trees.ValidateSessionRepositoryLaneForRead(task.SourceWorkspace.Path, task.WorkspacePath, target.SessionID, task.WorktreeBranch); err != nil {
+	if err := s.host.trees.ValidateSessionRepositoryLaneForRead(task.SourceWorkspace.Path, task.WorkspacePath, laneOwner, task.WorktreeBranch); err != nil {
 		return nil, err
 	}
 	state, err := s.host.trees.InspectTaskWorkspace(task.WorkspacePath)
@@ -175,7 +268,7 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	if state.HeadCommit == jobBase {
 		return nil, errors.New("review job must have commits")
 	}
-	// Unlanded commits exist only in the job clone validated above.
+	// The job's commits are in its worktree of the folder, validated above.
 	descends, err := s.host.trees.TaskCommitDescendsFrom(task.WorkspacePath, jobBase, state.HeadCommit)
 	if err != nil {
 		return nil, err
@@ -217,16 +310,28 @@ func (s *WorkerExecutionService) resolveReviewTarget(ctx context.Context, r stor
 	}
 	captured := map[string]any{"head": state.HeadCommit, "base": base, "commits": commits, "job": r.Input["review_job"], "brief": brief, "report": report}
 	// The folder's target branch as the review starts, so the reviewer can
-	// tell what is already on it (its checkout's origin branches are
-	// refreshed from the folder too).
+	// tell what is already on it (its checkout is a worktree of the folder,
+	// so the folder's branches are its own refs).
 	if tip := worktree.TargetBranchTip(ctx, task.SourceWorkspace.Path, task.BaseBranch); tip != "" {
 		captured["target"] = task.BaseBranch + " at " + tip
 	}
 	if reviewFixesAllowed(r.Input) {
-		// The fix branch starts from the reviewed job's own clone (validated
-		// above as that job's session lane).
+		// The fix branch starts at the reviewed head, in a worktree of the
+		// folder.
 		captured["fixes"] = ReviewFixesSecurity
-		captured["checkout"] = task.WorkspacePath
+	}
+	if reviewSharesCheckout(r.Input) {
+		// The reviewer reads the job's own worktree as it is: only when that
+		// is exactly the reviewed head, with nothing uncommitted.
+		if !state.TrackedClean {
+			return nil, errors.New("the job's worktree has uncommitted changes, so it is not the head being reviewed: commit or discard them, or review with checkout new")
+		}
+		if task.WorktreeBranch == "" || laneOwner == "" || laneOwner == r.SessionID {
+			return nil, errors.New("the job's worktree has no owning session to review it in place; review with checkout new")
+		}
+		captured["lane"] = task.WorkspacePath
+		captured["lane_owner"] = laneOwner
+		captured["lane_branch"] = task.WorktreeBranch
 	}
 	return captured, nil
 }
@@ -262,7 +367,7 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 		return err
 	}
 	if found {
-		if state.Checkout != snapshot.WorktreeRootPath || state.Session != snapshot.ID {
+		if state.Checkout != snapshot.WorktreeRootPath || state.Session != snapshot.ID || state.Borrowed != (sessionReviewLaneOwner(snapshot.Metadata) != "") {
 			return fmt.Errorf("review identity mismatch")
 		}
 		if err := m.RestoreReviewIdentity(state); err != nil {
@@ -270,8 +375,15 @@ func (s *WorkerExecutionService) registerReview(snapshot store.SessionSnapshot) 
 		}
 		return m.SetReviewEnvironment(state.Checkout, reviewEnvironment(snapshot.Metadata))
 	}
-	if err := m.RegisterReviewCheckout(snapshot.WorktreeRootPath); err != nil {
-		return err
+	var registerErr error
+	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
+		// The reviewed job's own worktree, read in place by this session only.
+		registerErr = m.RegisterBorrowedReviewCheckout(snapshot.WorktreeRootPath, snapshot.ID)
+	} else {
+		registerErr = m.RegisterReviewCheckout(snapshot.WorktreeRootPath)
+	}
+	if registerErr != nil {
+		return registerErr
 	}
 	if err := m.BindReviewSession(snapshot.ID, snapshot.WorktreeRootPath); err != nil {
 		return err
@@ -291,7 +403,7 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 		return nil
 	}
 	// A reviewer allowed to commit security fixes keeps its branch checkout
-	// like a coder job's clone: the automation delivery reads its head from
+	// like a coder job's worktree: the automation delivery reads its head from
 	// it after the job ends.
 	if reviewFixesAllowed(r.Input) {
 		return nil
@@ -312,6 +424,13 @@ func (s *WorkerExecutionService) cleanupReview(r store.WorkerRunRecord) error {
 	}
 	remove := func() error {
 		return s.host.trees.RemoveValidatedReviewWorkspace(snapshot.WorkspacePath, snapshot.WorktreeRootPath)
+	}
+	if sessionReviewLaneOwner(snapshot.Metadata) != "" {
+		// A reviewer that read the job's own worktree in place leaves it as
+		// it was: it stays the job's session's worktree. Only its read-only
+		// sandbox is closed.
+		validate = func() error { return nil }
+		remove = func() error { return nil }
 	}
 	if m := sandbox.Default(); m != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

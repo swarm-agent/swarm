@@ -681,11 +681,16 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			return err
 		}
 		reviewAllocated = role == store.WorkerRoleReviewer
-		if forgeBranch != "" {
-			allocation.BaseBranch = forgeBranch
-			if err := h.trees.AlignWorkerCloneBase(allocation.WorkspacePath, forgeBranch, allocation.BaseCommit); err != nil {
-				return err
+		reviewLaneOwner := ""
+		if role == store.WorkerRoleReviewer && !fixes {
+			if target, _ := r.Input["captured_review_target"].(map[string]any); target != nil {
+				reviewLaneOwner, _ = target["lane_owner"].(string)
 			}
+		}
+		if forgeBranch != "" {
+			// The job's worktree started at the synced forge commit; the
+			// folder's own branches are its refs.
+			allocation.BaseBranch = forgeBranch
 		}
 		available := true
 		grants := []store.WorkspaceGrant{{Kind: store.WorkspaceGrantPrimary, WorkspaceID: canonical.SourceWorkspaceID, WorkspaceGeneration: canonical.SourceWorkspaceGeneration, Path: canonical.SourceWorkspacePath, Name: canonical.SourceWorkspaceName, Available: &available}, {Kind: store.WorkspaceGrantWorktree, Path: allocation.WorkspacePath, Available: &available}}
@@ -707,6 +712,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta[store.SessionPurposeWorkspaceMetadataKey] = canonical.SourceWorkspaceID
 		meta["swarm_v3_mandatory_worktree"] = true
 		meta["swarm_v3_worktree_owner_session_id"] = r.SessionID
+		if reviewLaneOwner != "" {
+			// A reviewer reading the job's own worktree in place borrows it:
+			// the worktree stays owned by the job's session.
+			meta["swarm_v3_worktree_owner_session_id"] = reviewLaneOwner
+		}
 		meta["swarm_v3_worktree_base_commit"] = allocation.BaseCommit
 		// The same captured lineage project tasks record, so a reviewed run can
 		// be integrated through the project task integrate route.
@@ -721,7 +731,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 		meta["worker_run_id"] = r.ID
 		meta["automation_id"] = r.AutomationID
 		snapshot = store.SessionSnapshot{ID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, WorkspacePath: canonical.SourceWorkspacePath, WorkspaceName: canonical.SourceWorkspaceName, Title: w.Name, Mode: sessionMode, Preference: pref, ModelProfile: model, Metadata: meta, WorkspaceGrants: grants, WorkspaceUsage: store.WorkspaceUsageFromGrants(grants), WorktreeEnabled: true, WorktreeRootPath: allocation.WorkspacePath, WorktreeBaseBranch: allocation.BaseBranch, WorktreeBranch: allocation.BranchName, CreatedAt: r.CreatedAt, UpdatedAt: r.CreatedAt}
-		if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, snapshot.WorktreeBranch); err != nil {
+		if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, sessionLaneOwner(snapshot), snapshot.WorktreeBranch); err != nil {
 			return err
 		}
 		provenance := store.WorkerRunWorkspaceSourceBinding
@@ -741,7 +751,11 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 			return err
 		}
 		request := "worker-create:" + r.ID
-		_, err = h.apply(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, Kind: sessions.SessionMutationCreateSession, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, Session: &snapshot, WorktreeAdmission: &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: snapshot.WorktreeRootPath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: r.SessionID, Branch: snapshot.WorktreeBranch}, NowUnixMs: r.CreatedAt})
+		admission := &store.WorktreeAdmissionEvidence{Kind: "allocated", Path: snapshot.WorktreeRootPath, SourcePath: snapshot.WorkspacePath, OwnerSessionID: r.SessionID, Branch: snapshot.WorktreeBranch}
+		if reviewLaneOwner != "" {
+			admission = nil // a borrowed worktree is never claimed (store: borrowed review lane)
+		}
+		_, err = h.apply(sessions.SessionMutationInput{SessionID: r.SessionID, UserID: r.UserID, AccountScopeID: r.AccountScopeID, Kind: sessions.SessionMutationCreateSession, ClientRequestID: request, IdempotencyKey: request, PayloadHash: request, RequestHash: request, Session: &snapshot, WorktreeAdmission: admission, NowUnixMs: r.CreatedAt})
 		if err != nil {
 			return err
 		}
@@ -818,7 +832,7 @@ func (s *WorkerExecutionService) startPlan(ctx context.Context, r store.WorkerRu
 	if err := h.runs.validateWorkerExecution(snapshot); err != nil {
 		return err
 	}
-	if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, r.SessionID, snapshot.WorktreeBranch); err != nil {
+	if err = h.trees.ValidateSessionRepositoryLaneForRead(snapshot.WorkspacePath, snapshot.WorktreeRootPath, sessionLaneOwner(snapshot), snapshot.WorktreeBranch); err != nil {
 		return err
 	}
 	current, found, err := h.runs.sessions.Store().WorkerStore().GetWorker(r.AccountScopeID, r.WorkerID)
@@ -1794,7 +1808,7 @@ func (s *Service) validateWorkerExecution(current store.SessionSnapshot) error {
 	if !reflect.DeepEqual(current.WorkspaceGrants, pinned.WorkspaceGrants) {
 		return store.ErrWorkerConflict
 	}
-	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_review_target", "worker_review_fixes", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
+	for _, key := range []string{"swarm_v3_runtime_kind", "swarm_v3_runtime_swarm_id", "swarm_v3_authority_host_swarm_id", "swarm_v3_runtime_workspace_path", "worker_revision", "worker_role", "worker_review_target", "worker_review_fixes", "worker_review_lane_owner", "worker_workspace_id", "swarm_v3_worktree_owner_session_id", "swarm_v3_worktree_base_commit"} {
 		if !reflect.DeepEqual(current.Metadata[key], pinned.Metadata[key]) {
 			return store.ErrWorkerConflict
 		}

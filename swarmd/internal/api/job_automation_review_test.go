@@ -106,24 +106,24 @@ func TestReviewerBriefHasTheBriefReportCommandsWithExitCodesAndDiff(t *testing.T
 }
 
 // Requirement: VerifyJobHead says whether a job's head descends from the
-// delivery head, with Git in the folder after bringing both commits in from
-// their own checkouts; anything else is refused.
+// delivery head, with Git in the folder, where both commits are (each job
+// commits in its worktree of the folder); anything else is refused.
 // Threat: moving the delivery head to a reviewer's unrelated history.
-// Owner: VerifyJobHead (importJobHead, git merge-base --is-ancestor).
+// Owner: VerifyJobHead (jobHeadInFolder, git merge-base --is-ancestor).
 func TestVerifyJobHeadAcceptsOnlyDescendants(t *testing.T) {
 	folder := t.TempDir()
 	outboxPinGit(t, folder, "init", "-q", "-b", "main")
 	outboxPinGit(t, folder, "commit", "-q", "--allow-empty", "-m", "base")
 	coder := filepath.Join(t.TempDir(), "coder")
-	outboxPinGit(t, filepath.Dir(coder), "clone", "-q", folder, coder)
+	outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/coder", coder, "main")
 	outboxPinGit(t, coder, "commit", "-q", "--allow-empty", "-m", "coder work")
 	jobHead := outboxPinGit(t, coder, "rev-parse", "HEAD")
 	reviewer := filepath.Join(t.TempDir(), "reviewer")
-	outboxPinGit(t, filepath.Dir(reviewer), "clone", "-q", coder, reviewer)
+	outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/review", reviewer, jobHead)
 	outboxPinGit(t, reviewer, "commit", "-q", "--allow-empty", "-m", "reviewer security fix")
 	fixHead := outboxPinGit(t, reviewer, "rev-parse", "HEAD")
 	other := filepath.Join(t.TempDir(), "other")
-	outboxPinGit(t, filepath.Dir(other), "clone", "-q", folder, other)
+	outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/other", other, "main")
 	outboxPinGit(t, other, "commit", "-q", "--allow-empty", "-m", "unrelated")
 	otherHead := outboxPinGit(t, other, "rev-parse", "HEAD")
 
@@ -145,9 +145,9 @@ func TestVerifyJobHeadAcceptsOnlyDescendants(t *testing.T) {
 	}
 }
 
-// Requirement: swarm_set_automation (and then) accept if, reopen, from,
+// Requirement: swarm_set_workflow (and then) accept if, reopen, from,
 // message and max_rounds in the same shape as the API, validated by the
-// shared NormalizeSteps; swarm_get_job and swarm_list_automations show each
+// shared NormalizeSteps; swarm_get_job and swarm_list_workflows show each
 // delivery's round, head and blocked reason.
 // Threat: a review loop the MCP tools silently drop fields of, or a blocked
 // delivery an AI cannot see.

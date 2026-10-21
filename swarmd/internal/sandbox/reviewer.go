@@ -70,6 +70,12 @@ func (m *Manager) reviewScope(scope Scope, path string) Scope {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for checkout, root := range m.reviews {
+		// A borrowed checkout is its owner's worktree: only its reviewer
+		// session's commands (enforceReviewIdentity) run in the review scope,
+		// never the owner's own commands by path.
+		if borrowedReviewSession(checkout) != "" {
+			continue
+		}
 		if within(checkout, resolveExisting(path)) {
 			scope.Root = root
 			scope.ReviewCheckout = checkout
@@ -136,7 +142,12 @@ func (m *Manager) scopeRunArgs(name, root, spec string, mounts []string, secret 
 		}
 	}
 	guards, _ := reviewGitMounts(checkout, root) // validated by acquire
-	extra := []string{"--env", "GIT_OPTIONAL_LOCKS=0", "--mount", "type=bind,src=" + checkout + ",dst=" + checkout}
+	checkoutMount := "type=bind,src=" + checkout + ",dst=" + checkout
+	if borrowedReviewSession(checkout) != "" {
+		// Another session's worktree, read in place: no build outputs either.
+		checkoutMount += ",readonly"
+	}
+	extra := []string{"--env", "GIT_OPTIONAL_LOCKS=0", "--mount", checkoutMount}
 	if values, ok := reviewEnvironments.Load(checkout); ok {
 		for _, name := range []string{"SWARM_REVIEW_HEAD", "SWARM_REVIEW_BASE", "SWARM_REVIEW_JOB"} {
 			extra = append(extra, "--env", name+"="+values.(map[string]string)[name])
@@ -221,4 +232,5 @@ func (m *Manager) ForgetReview(checkout string) {
 	delete(m.reviews, checkout)
 	m.mu.Unlock()
 	reviewEnvironments.Delete(checkout)
+	m.forgetBorrowedReview(checkout)
 }

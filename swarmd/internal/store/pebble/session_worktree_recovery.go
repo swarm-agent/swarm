@@ -177,6 +177,11 @@ func (s *SessionStore) prepareWorktreeOwnership(input V3SessionMutationInput, ne
 	if mutation == nil && v3LibraryMetadataString(next.Metadata, "lineage_kind") == "system_sidechat" {
 		return nil, s.validateSidechatWorktreeBinding(input, next)
 	}
+	// A reviewer reading the reviewed job's own worktree borrows it the same
+	// way: no second ownership claim.
+	if mutation == nil && isBorrowedReviewWorktree(next) {
+		return nil, s.validateBorrowedReviewWorktreeBinding(input, next)
+	}
 	claimOwner := input.SessionID
 	if mutation != nil && (mutation.Action == "reserve_copy" || mutation.Action == "publish_copy" || mutation.Action == "journal_copy" || mutation.Action == "release") {
 		claimOwner = mutation.OwnerSessionID

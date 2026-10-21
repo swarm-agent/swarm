@@ -26,7 +26,7 @@ import (
 // reviewComparisonCommits, worktree.TargetBranchTip) and
 // workerDirectRunMessage, over a real Pebble store (workers, runs, project,
 // project task, sessions), the real workspace and worktree services and a
-// real managed job clone rebased with real Git. No model provider is used.
+// real job worktree of the folder rebased with real Git. No model provider is used.
 // The narrowest layer that exercises the reviewer job's own target capture.
 func TestReviewerJobOfARebasedJobReviewsOnlyItsOwnCommits(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -79,8 +79,7 @@ func TestReviewerJobOfARebasedJobReviewsOnlyItsOwnCommits(t *testing.T) {
 	git(repo, "add", "landed.txt")
 	git(repo, "commit", "-q", "-m", "landed elsewhere")
 	landed := git(repo, "rev-parse", "HEAD")
-	git(coder.WorkspacePath, "fetch", "-q", "origin")
-	git(coder.WorkspacePath, "rebase", "-q", "origin/dev")
+	git(coder.WorkspacePath, "rebase", "-q", "dev")
 	head := git(coder.WorkspacePath, "rev-parse", "HEAD")
 
 	sessions := sessionruntime.NewService(pebblestore.NewSessionStore(db), events)

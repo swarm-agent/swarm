@@ -130,3 +130,71 @@ func (ws *WorkerStore) GetJobReviewByReviewer(account, worker, run, reviewerJobI
 func (s *Store) SetJobReviewObserver(fn func(account, worker, run string, review JobReview)) {
 	s.jobReviewObserver = fn
 }
+
+// TaskReviewWorker is the worker part of the review key of a task (one of
+// Swarm's own agents' tasks, job id task/<project>/<task>): reviews of a task
+// are kept under task:<project>/<task>, read with GetJobReviewByReviewer like
+// a worker job's.
+func TaskReviewWorker(projectID string) string { return "task:" + projectID }
+
+// RecordTaskReview records a reviewer job's verdict on a task, serialized
+// with worker writes like RecordJobReview. The reviewer must be a reviewer
+// job whose review_job is exactly that task, in the task's folder; replays
+// cannot replace newer evidence.
+func (ws *WorkerStore) RecordTaskReview(account, projectID, taskID string, review JobReview) error {
+	if ws == nil || ws.store == nil {
+		return errors.New("store unavailable")
+	}
+	parts := strings.Split(review.ReviewerJobID, "/")
+	if review.Head == "" || review.RecordedAt <= 0 || len(parts) != 3 || parts[0] != "worker" || (review.Verdict != "ok" && review.Verdict != "block") {
+		return errors.New("invalid job review")
+	}
+	ws.store.workersMu.Lock()
+	changed := false
+	defer func() {
+		ws.store.workersMu.Unlock()
+		if changed && ws.store.jobReviewObserver != nil {
+			ws.store.jobReviewObserver(account, TaskReviewWorker(projectID), taskID, review)
+		}
+	}()
+	task, found, err := NewSessionStore(ws.store).GetProjectTask(account, projectID, taskID)
+	if err != nil {
+		return err
+	}
+	if !found || task == nil {
+		return errors.New("review target task not found")
+	}
+	reviewer, found, err := ws.GetWorkerRun(account, parts[1], parts[2])
+	if err != nil {
+		return err
+	}
+	if !found || reviewer.Role != WorkerRoleReviewer || reviewer.WorkspaceID != task.SourceWorkspace.WorkspaceID || reviewer.Input["review_job"] != "task/"+projectID+"/"+taskID {
+		return errors.New("reviewer does not own this review target")
+	}
+	key := jobReviewKey(account, TaskReviewWorker(projectID), taskID)
+	var record JobReviewRecord
+	if _, err := ws.store.GetJSON(key, &record); err != nil {
+		return err
+	}
+	if record.RecordedJobs[review.ReviewerJobID] {
+		return nil
+	}
+	if record.ByHead == nil {
+		record.ByHead = map[string]JobReview{}
+	}
+	if record.RecordedJobs == nil {
+		record.RecordedJobs = map[string]bool{}
+	}
+	record.RecordedJobs[review.ReviewerJobID] = true
+	if previous := record.ByHead[review.Head]; review.RecordedAt >= previous.RecordedAt {
+		record.ByHead[review.Head] = review
+	}
+	if review.RecordedAt >= record.Latest.RecordedAt {
+		record.Latest = review
+	}
+	if err := ws.store.PutJSON(key, record); err != nil {
+		return err
+	}
+	changed = true
+	return nil
+}

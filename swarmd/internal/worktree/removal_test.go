@@ -317,8 +317,9 @@ func TestTrashRecoveryTickerRetriesFailure(t *testing.T) {
 	}
 }
 
-// Requirement: durable trash recovery must delete full worker clones without
-// consulting the source repository. Real Git/files exercise resumeTrashRoot and
+// Requirement: durable trash recovery must delete a full job clone (made before
+// worker jobs moved to worktrees of the folder) without consulting the source
+// repository. Real Git/files exercise resumeTrashRoot and
 // finishRemovalWithWait with an unavailable source, preventing restoration of a
 // shared-registration dependency while asserting both checkout and receipt removal.
 func TestTrashRecoveryCloneWithOfflineSource(t *testing.T) {
@@ -336,10 +337,16 @@ func TestTrashRecoveryCloneWithOfflineSource(t *testing.T) {
 	}
 	git("init", "-b", "dev")
 	git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "base")
-	a, err := (&Service{}).allocateReviewWorkspace(repo, "offline-clone", git("rev-parse", "HEAD"))
+	// A job clone left in the managed directory by an earlier Swarm.
+	path, err := deterministicSessionWorktreePath(repo, sessionWorkspaceID("offline-clone"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := ensureWorktreeParent(repo); err != nil {
+		t.Fatal(err)
+	}
+	git("clone", "-q", "--no-local", repo, path)
+	a := Allocation{WorkspacePath: path}
 	info, err := os.Stat(filepath.Join(a.WorkspacePath, ".git"))
 	if err != nil || !info.IsDir() {
 		t.Fatal("expected independent clone", err)

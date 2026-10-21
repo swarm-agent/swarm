@@ -67,10 +67,11 @@ export class SwarmClient {
   /** Machine signal feed: blocked agents, failures, refused keys, reported events. */
   readonly signals: SwarmSignalsNamespace;
   /**
-   * Job automations: steps Swarm runs when a job ends (/v3/job-automations,
-   * /v3/job-deliveries). Not the legacy `automations` namespace.
+   * Workflows: steps Swarm runs when a task of its own agents or a worker job
+   * ends (/v3/workflows, /v3/job-deliveries). Not the legacy `automations`
+   * namespace.
    */
-  readonly jobAutomations: SwarmJobAutomationsNamespace;
+  readonly workflows: SwarmJobAutomationsNamespace;
   readonly activity: SwarmActivityNamespace;
   /** Machine state for monitors: sandbox, blocked sessions, failing workers, usage. */
   readonly box: SwarmBoxNamespace;
@@ -123,7 +124,7 @@ export class SwarmClient {
     this.notifications = new SwarmNotificationsNamespace(this.transport);
     this.inbox = this.notifications;
     this.signals = new SwarmSignalsNamespace(this.transport);
-    this.jobAutomations = new SwarmJobAutomationsNamespace(this.transport);
+    this.workflows = new SwarmJobAutomationsNamespace(this.transport);
     this.activity = new SwarmActivityNamespace(this.transport);
     this.box = new SwarmBoxNamespace(this.transport);
     this.agents = new SwarmAgentsNamespace(this.transport);

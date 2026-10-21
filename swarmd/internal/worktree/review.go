@@ -42,35 +42,12 @@ func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, ow
 	if err != nil {
 		return Allocation{}, err
 	}
-	cloneSource := root
+	// A job commits in its worktree of the folder, so the reviewed head and
+	// the evidence commits are in the folder's repository.
 	resolved, err := runGitContext(ctx, root, "rev-parse", "--verify", head+"^{commit}")
-	if err != nil && validCommitID(head) {
-		// Reviewed commits now live only in the coder clone, not the folder.
-		cache, cacheErr := worktreeCacheRoot(root)
-		if cacheErr != nil {
-			return Allocation{}, cacheErr
-		}
-		entries, readErr := os.ReadDir(cache)
-		if readErr != nil {
-			return Allocation{}, readErr
-		}
-		for _, entry := range entries {
-			candidate := filepath.Join(cache, entry.Name())
-			if !entry.IsDir() || !managedCloneIdentityContext(ctx, root, candidate) {
-				continue
-			}
-			if value, readErr := runGitContext(ctx, candidate, "rev-parse", "--verify", head+"^{commit}"); readErr == nil && value == head {
-				cloneSource, resolved, err = candidate, value, nil
-				break
-			}
-		}
-	}
 	if err != nil || resolved != head {
 		return Allocation{}, errors.New("review requires an exact commit")
 	}
-	// Resolve immutable evidence only in the authorized folder or managed job
-	// clone. Fetching occurs before sandbox admission; no source is writable.
-	evidence := map[string]string{}
 	if len(commits) > 4 {
 		return Allocation{}, errors.New("too many review evidence commits")
 	}
@@ -78,13 +55,7 @@ func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, ow
 		if !validCommitID(commit) {
 			return Allocation{}, errors.New("review requires exact base evidence")
 		}
-		for _, source := range []string{cloneSource, root} {
-			if value, err := runGitContext(ctx, source, "rev-parse", "--verify", commit+"^{commit}"); err == nil && value == commit {
-				evidence[commit] = source
-				break
-			}
-		}
-		if evidence[commit] == "" {
+		if value, err := runGitContext(ctx, root, "rev-parse", "--verify", commit+"^{commit}"); err != nil || value != commit {
 			return Allocation{}, fmt.Errorf("review evidence commit %s unavailable", commit)
 		}
 	}
@@ -116,9 +87,9 @@ func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, ow
 	if err := guardFile.Close(); err != nil {
 		return Allocation{}, err
 	}
-	// Keep --no-local isolation while bounding the pack build: gVisor counts
-	// the whole upload-pack/pack-objects process tree against sandbox memory.
-	_, allocationErr := runGitAllocationGuardedContext(ctx, root, nil, timeout, guard, boundedCloneArgs(cloneSource, path)...)
+	// A detached worktree of the folder at the reviewed head: no branch, and
+	// the folder's branches are the reviewer's own refs, as of now.
+	_, allocationErr := runGitAllocationGuardedContext(ctx, root, nil, timeout, guard, "worktree", "add", "--detach", path, head)
 	if errors.Is(allocationErr, ErrAllocationWriterUnconfirmed) {
 		return Allocation{}, allocationErr
 	}
@@ -128,67 +99,7 @@ func (s *Service) allocateReviewWorkspaceContext(ctx context.Context, source, ow
 	if err := allocationErr; err != nil {
 		return Allocation{}, errors.Join(fmt.Errorf("review checkout admission: %w", err), s.CleanupReviewAdmission(root, owner))
 	}
-	commands := [][]string{{"fetch", "--no-tags", "--", cloneSource, head}}
-	for _, commit := range commits {
-		commands = append(commands, []string{"fetch", "--no-tags", "--", evidence[commit], commit})
-	}
-	commands = append(commands, []string{"remote", "set-url", "origin", root})
-	for _, args := range commands {
-		if _, err := runGitAllocationGuardedContext(ctx, path, nil, timeout, "", args...); err != nil {
-			if errors.Is(err, ErrAllocationWriterUnconfirmed) {
-				return Allocation{}, err
-			}
-			return Allocation{}, errors.Join(err, s.CleanupReviewAdmission(root, owner))
-		}
-	}
-	refresh, err := reviewRemoteRefresh(ctx, path, root, timeout)
-	if err != nil {
-		if errors.Is(err, ErrAllocationWriterUnconfirmed) {
-			return Allocation{}, err
-		}
-		return Allocation{}, errors.Join(err, s.CleanupReviewAdmission(root, owner))
-	}
-	for _, args := range append(refresh, []string{"checkout", "--detach", head}) {
-		if _, err := runGitAllocationGuardedContext(ctx, path, nil, timeout, "", args...); err != nil {
-			if errors.Is(err, ErrAllocationWriterUnconfirmed) {
-				return Allocation{}, err
-			}
-			return Allocation{}, errors.Join(err, s.CleanupReviewAdmission(root, owner))
-		}
-	}
 	return Allocation{WorkspacePath: path, RepoRoot: root, BaseCommit: head, BaseBranch: head, BranchName: "HEAD", WorkspaceID: sessionWorkspaceID(owner)}, nil
-}
-
-// reviewRemoteRefresh is the Git a review checkout runs so its origin
-// branches are the folder's, as of now. The checkout is cloned from the
-// reviewed job's clone, so its refs/remotes/origin/<branch> start as that
-// clone's branches when the job was created (dev at the job's base); origin
-// is the folder. Each such branch the folder still has is fetched from the
-// folder, and one it no longer has is dropped, so a reviewer can tell from
-// refs/remotes/origin/<target> what the target branch holds. Only the review
-// checkout is written; the folder and the job clone are read.
-func reviewRemoteRefresh(ctx context.Context, path, root string, timeout time.Duration) ([][]string, error) {
-	refs, err := runGitAllocationGuardedContext(ctx, path, nil, timeout, "", "for-each-ref", "--format=%(refname)", "refs/remotes/origin/")
-	if err != nil {
-		return nil, err
-	}
-	fetch := []string{"fetch", "--no-tags", "--no-write-fetch-head", "--", root}
-	var commands [][]string
-	for _, ref := range strings.Fields(refs) {
-		branch := strings.TrimPrefix(ref, "refs/remotes/origin/")
-		if branch == ref || branch == "HEAD" || !targetBranchName.MatchString(branch) || strings.Contains(branch, "..") {
-			continue
-		}
-		if TargetBranchTip(ctx, root, branch) == "" {
-			commands = append(commands, []string{"update-ref", "-d", ref})
-			continue
-		}
-		fetch = append(fetch, "+refs/heads/"+branch+":"+ref)
-	}
-	if len(fetch) > 5 {
-		commands = append([][]string{fetch}, commands...)
-	}
-	return commands, nil
 }
 
 // RemoveReviewWorkspace discards build outputs only in the verified managed
@@ -267,6 +178,31 @@ func ValidateReviewExecutionIdentity(source, lane, owner, head string) error {
 	}
 	if actual != head {
 		return errors.New("review head changed")
+	}
+	return nil
+}
+
+// ValidateBorrowedReviewExecutionIdentity admits a reviewer session that reads
+// the reviewed job's own worktree in place: the daemon registered that
+// worktree as this session's read-only review checkout, it is still the
+// owner session's lane on its branch, and its HEAD is exactly the reviewed
+// head. It grants nothing: the worktree stays the owner's.
+func ValidateBorrowedReviewExecutionIdentity(source, lane, owner, session, branch, head string) error {
+	if owner == "" || owner == session {
+		return errors.New("borrowed review worktree owner required")
+	}
+	if sandbox.ReviewSessionCheckout(session) != lane {
+		return errors.New("review session checkout is not registered")
+	}
+	if err := (&Service{}).ValidateSessionRepositoryLaneForRead(source, lane, owner, branch); err != nil {
+		return err
+	}
+	actual, err := resolveRepositoryHeadCommit(lane)
+	if err != nil {
+		return err
+	}
+	if head == "" || actual != head {
+		return errors.New("review head changed: the reviewed job's worktree moved")
 	}
 	return nil
 }

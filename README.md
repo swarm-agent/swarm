@@ -103,7 +103,7 @@ creates a project with them, and gives the first piece of work.
 | `swarm_request_media` | an image, video or sound |
 | `swarm_deploy_worker` | your own worker: a name, a role, standing instructions |
 | `swarm_schedule_job` | a worker that runs a job on a schedule |
-| `swarm_set_automation` | steps that run when a job ends: your script, another agent, or sending the job back |
+| `swarm_set_workflow`, `swarm_list_workflows` | a workflow: steps that run when a task of Swarm's own agents (coder, finder, designer, swarm) or a worker job ends: another agent such as a reviewer, sending the work back to the agent that did it, or your script to push, deploy or alert |
 | `swarm_set_environment`, `swarm_get_environment` | a folder's environment: a base image plus setup commands, built by Swarm, with `max_leases` |
 | `swarm_status`, `swarm_activity` | is Swarm all right; what happened since last time |
 | `swarm_list_secrets` | which secrets exist and which folders may use them (never values) |

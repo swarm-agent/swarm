@@ -1,16 +1,13 @@
 package worktree
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"swarm/packages/swarmd/internal/appstorage"
 	"swarm/packages/swarmd/internal/identity"
-	"swarm/packages/swarmd/internal/sandbox"
 )
 
 // ReviewFixBranchPrefix names the writable branch of a reviewer an
@@ -18,14 +15,12 @@ import (
 const ReviewFixBranchPrefix = "agent/review-"
 
 // AllocateReviewFixWorkspace gives a reviewer that may commit security fixes
-// a writable branch checkout started at the reviewed head: a managed clone of
-// the folder (origin is the folder, like a coder's job clone), seeded from
-// the reviewed job's own clone, with branch agent/review-<run> at head. The
-// reviewed job's clone and the folder are never written. Its head descends
-// from the reviewed head, so the delivery's ancestry check and importJobHead
-// read it like a coder job's head. Every other reviewer keeps
+// a writable branch checkout started at the reviewed head: a worktree of the
+// folder on branch agent/review-<run> at head, like a coder job's. Its head
+// descends from the reviewed head and its commits are in the folder's
+// repository as they are made. Every other reviewer keeps
 // AllocateReviewWorkspace (detached, disposable).
-func (s *Service) AllocateReviewFixWorkspace(p identity.Principal, source, owner, reviewedClone, head, branch string) (Allocation, error) {
+func (s *Service) AllocateReviewFixWorkspace(p identity.Principal, source, owner, head, branch string) (Allocation, error) {
 	if err := requirePrincipal(p); err != nil {
 		return Allocation{}, err
 	}
@@ -33,10 +28,10 @@ func (s *Service) AllocateReviewFixWorkspace(p identity.Principal, source, owner
 	if err != nil {
 		return Allocation{}, err
 	}
-	return s.allocateReviewFixWorkspace(source, owner, reviewedClone, head, branch)
+	return s.allocateReviewFixWorkspace(source, owner, head, branch)
 }
 
-func (s *Service) allocateReviewFixWorkspace(source, owner, reviewedClone, head, branch string) (Allocation, error) {
+func (s *Service) allocateReviewFixWorkspace(source, owner, head, branch string) (Allocation, error) {
 	if strings.TrimSpace(owner) == "" {
 		return Allocation{}, errors.New("review fix checkout owner required")
 	}
@@ -53,17 +48,8 @@ func (s *Service) allocateReviewFixWorkspace(source, owner, reviewedClone, head,
 	if _, err := runGit(root, "check-ref-format", "--branch", branch); err != nil {
 		return Allocation{}, fmt.Errorf("review fix branch: %w", err)
 	}
-	// Branch from the reviewed job's own repository: its managed clone of
-	// this folder (or the folder itself when the head has landed there).
-	cloneSource := root
-	if strings.TrimSpace(reviewedClone) != "" && !sameCleanPath(reviewedClone, root) {
-		if !managedCloneIdentity(root, reviewedClone) {
-			return Allocation{}, errors.New("the reviewed job's checkout is not a managed clone of the folder")
-		}
-		cloneSource = reviewedClone
-	}
-	if resolved, err := runGit(cloneSource, "rev-parse", "--verify", "--end-of-options", head+"^{commit}"); err != nil || resolved != head {
-		return Allocation{}, errors.New("the reviewed head is not in the reviewed job's checkout")
+	if resolved, err := runGit(root, "rev-parse", "--verify", "--end-of-options", head+"^{commit}"); err != nil || resolved != head {
+		return Allocation{}, errors.New("the reviewed head is not in the folder's repository")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,55 +64,19 @@ func (s *Service) allocateReviewFixWorkspace(source, owner, reviewedClone, head,
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		return Allocation{}, errors.New("review fix checkout already exists")
 	}
-	cleanup := func(cause error) (Allocation, error) {
-		if errors.Is(cause, ErrAllocationWriterUnconfirmed) {
-			return Allocation{}, cause
-		}
-		return Allocation{}, errors.Join(cause, os.RemoveAll(path))
-	}
-	// --no-local copies objects through upload-pack: the clone shares no
-	// object store, alternates or config with the reviewed job's clone.
-	if _, err := runGitAllocation(root, nil, boundedCloneArgs(cloneSource, path)...); err != nil {
-		return cleanup(err)
-	}
-	for _, key := range []string{"user.name", "user.email"} {
-		ctx := sandbox.WithGitCommandTimeout(context.Background(), gitCommandTimeout)
-		value, err := sandbox.TimedGitOutput(ctx, root, nil, "config", "--local", "--get", key)
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			continue
-		}
-		if err != nil {
-			return cleanup(fmt.Errorf("read folder Git %s: %w", key, err))
-		}
-		if _, err := runGitAllocation(path, nil, "config", "--local", key, strings.TrimSuffix(string(value), "\n")); err != nil {
-			return cleanup(err)
-		}
-	}
-	for _, args := range [][]string{
-		{"fetch", "--no-tags", "--", cloneSource, head},
-		// origin is the folder, as for a coder's job clone: the checkout is a
-		// managed clone of the folder, not of the reviewed job's clone.
-		{"remote", "set-url", "origin", root},
-		{"checkout", "-B", branch, head},
-	} {
-		if _, err := runGitAllocation(path, nil, args...); err != nil {
-			return cleanup(err)
-		}
-	}
-	// Its origin branches are the folder's as of now, not the reviewed
-	// job's clone's at that job's creation.
-	refresh, err := reviewRemoteRefresh(context.Background(), path, root, worktreeAllocationTimeout)
+	existed, err := localBranchExists(root, branch)
 	if err != nil {
-		return cleanup(err)
+		return Allocation{}, err
 	}
-	for _, args := range refresh {
-		if _, err := runGitAllocation(path, nil, args...); err != nil {
-			return cleanup(err)
-		}
+	if existed {
+		return Allocation{}, fmt.Errorf("review fix branch %s already exists", branch)
+	}
+	if _, err := runGitWorktreeAdd(root, path, branch, head, false); err != nil {
+		cleanupErr := errors.Join(cleanupFailedWorktreeAllocation(root, path), cleanupPartialBranch(root, branch, head))
+		return Allocation{}, allocationFailureWithCleanup(err, cleanupErr)
 	}
 	if err := appstorage.SetPrivateDirPerm(path); err != nil {
-		return cleanup(err)
+		return Allocation{}, allocationFailureWithCleanup(err, errors.Join(cleanupFailedWorktreeAllocation(root, path), cleanupPartialBranch(root, branch, head)))
 	}
 	return Allocation{WorkspacePath: path, RepoRoot: root, BaseBranch: head, BaseCommit: head, BranchName: branch, WorkspaceID: id}, nil
 }
@@ -154,7 +104,7 @@ func ReviewFixHead(lane, branch, reviewed string) (string, error) {
 }
 
 // ValidateReviewFixExecutionIdentity admits the writable branch checkout of a
-// reviewer allowed to commit security fixes: a managed clone of the folder on
+// reviewer allowed to commit security fixes: a worktree of the folder on
 // its agent/review-<run> branch whose HEAD descends from the reviewed head.
 // It replaces the read-only reviewer's "detached HEAD equal to the reviewed
 // head" check for that reviewer only.

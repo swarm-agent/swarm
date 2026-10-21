@@ -52,6 +52,9 @@ func (m *Manager) enforceReviewIdentity(ctx context.Context, scope Scope, path s
 	if !registered {
 		return Scope{}, fmt.Errorf("review checkout is no longer registered")
 	}
+	if borrower := borrowedReviewSession(id.Checkout); borrower != "" && borrower != id.Session {
+		return Scope{}, fmt.Errorf("the worktree is being reviewed by another session")
+	}
 	scope.Root = root
 	scope.ReviewCheckout = id.Checkout
 	return scope, nil

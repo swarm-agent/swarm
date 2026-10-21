@@ -46,9 +46,51 @@ const (
 	ReasonFixesUnreadable = "reviewer fixes unreadable"
 )
 
-// nonReviewerRoles are the worker role names an agent step may name that
-// are not a reviewer.
-var nonReviewerRoles = map[string]bool{"coder": true, "designer": true, "finder": true, "swarm": true}
+// BuiltinAgents are the agents that come with Swarm. An agent step that names
+// one runs it as a task (swarm_run_task): the coder in its own worktree of the
+// folder started at the delivery head, the others in the folder itself; any
+// other name is a worker (reviewer, or a worker id).
+var BuiltinAgents = map[string]bool{"coder": true, "designer": true, "finder": true, "swarm": true}
+
+// IsBuiltinAgent reports whether an agent step's worker names a built-in agent.
+func IsBuiltinAgent(name string) bool { return BuiltinAgents[strings.ToLower(strings.TrimSpace(name))] }
+
+// Where an agent step's agent works (Step.Checkout).
+const (
+	// CheckoutSame is a new session in the worktree of the job the step
+	// follows, read-only: a reviewer reading the work where it was done.
+	CheckoutSame = "same"
+	// CheckoutNew is the agent's own new worktree, started at the job's head.
+	CheckoutNew = "new"
+	// CheckoutNone is no worktree: the agent works in the folder itself.
+	CheckoutNone = "none"
+)
+
+// CheckoutFor is where an agent step's agent works: the step's checkout, or
+// the agent's default. role is the step worker's role when known (a
+// reviewer worker named by id), "" otherwise.
+//
+//	reviewer:                   same (also new)
+//	reviewer with fixes:         new  (it commits)
+//	swarm, finder, designer:     none (they work in the folder, as their
+//	                             tasks always do; the job's commits are
+//	                             the folder's branches)
+//	coder, any other worker:     new
+func CheckoutFor(step Step, role string) string {
+	if step.Checkout != "" {
+		return step.Checkout
+	}
+	worker := strings.ToLower(strings.TrimSpace(step.Worker))
+	switch {
+	case step.Fixes != "":
+		return CheckoutNew
+	case worker == "finder" || worker == "swarm" || worker == "designer":
+		return CheckoutNone
+	case worker == "reviewer" || role == "reviewer":
+		return CheckoutSame
+	}
+	return CheckoutNew
+}
 
 // Bounds.
 const (
@@ -73,18 +115,22 @@ var (
 	// supports: {{steps.<id>.output}}, the recorded output line of an
 	// earlier step.
 	stepOutputPlaceholder = regexp.MustCompile(`\{\{steps\.([a-z0-9][a-z0-9_-]{0,63})\.output\}\}`)
-	jobIDPattern          = regexp.MustCompile(`^(worker|media|design)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
+	jobIDPattern          = regexp.MustCompile(`^(worker|media|design|task)/[A-Za-z0-9._:-]{1,200}/[A-Za-z0-9._:-]{1,200}$`)
 	refIDPattern          = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 )
 
-// Scope is which job ends an automation applies to: every job in a folder,
-// or only one worker's jobs there, or only one job, or only the jobs of one
-// schedule.
+// Scope is which job ends an automation applies to: every job and task in a
+// folder, or only one agent's tasks there (role), or only one worker's jobs,
+// or only one job, or only the jobs of one schedule.
 type Scope struct {
 	Folder string `json:"folder"`
+	// Role is a built-in agent (swarm, coder, finder, designer): only the
+	// tasks that agent finished in the folder.
+	Role string `json:"role,omitempty"`
 	// Worker is a worker id: only that worker's jobs.
 	Worker string `json:"worker,omitempty"`
-	// Job is a job id (worker/<worker>/<run>, media/..., design/...).
+	// Job is a job id (task/<project>/<task>, worker/<worker>/<run>,
+	// media/..., design/...).
 	Job string `json:"job,omitempty"`
 	// Schedule is a worker schedule id: only the jobs it started.
 	Schedule string `json:"schedule,omitempty"`
@@ -125,6 +171,9 @@ type Step struct {
 	// Fixes ("security", a reviewer worker only) lets the reviewer commit
 	// small security fixes on top of the reviewed head. Never the default.
 	Fixes string `json:"fixes,omitempty"`
+	// Checkout is where the step's agent works (CheckoutSame, CheckoutNew or
+	// CheckoutNone); "" is the agent's default (CheckoutFor).
+	Checkout string `json:"checkout,omitempty"`
 	// reopen: From (optional when Message is set) names the earlier agent
 	// step whose findings are sent; Message is placed before them, or sent
 	// alone when there are none, and may hold {{steps.<id>.output}}.
@@ -203,7 +252,16 @@ func (s *Scope) normalize() error {
 		return invalid("scope.schedule must be a schedule id")
 	}
 	if s.Job != "" && !jobIDPattern.MatchString(s.Job) {
-		return invalid("scope.job must be a job id (worker/<worker>/<run>, media/<project>/<task> or design/<project>/<task>)")
+		return invalid("scope.job must be a job id (task/<project>/<task>, worker/<worker>/<run>, media/<project>/<task> or design/<project>/<task>)")
+	}
+	s.Role = strings.ToLower(strings.TrimSpace(s.Role))
+	if s.Role != "" {
+		if !BuiltinAgents[s.Role] {
+			return invalid("scope.role must be swarm, coder, finder or designer")
+		}
+		if s.Worker != "" || s.Schedule != "" {
+			return invalid("scope.role is for a built-in agent's tasks; it cannot be combined with scope.worker or scope.schedule")
+		}
 	}
 	return nil
 }
@@ -308,8 +366,8 @@ func (s *Step) normalizeConditions(earlier map[string]string) error {
 }
 
 func (s *Step) normalizeReopen(earlier map[string]string) error {
-	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 || s.Worker != "" || s.Brief != "" || s.Fixes != "" {
-		return invalid("step %s: a reopen step has from, message and max_rounds, not command, args, secrets, worker, brief or fixes", s.ID)
+	if s.Command != "" || len(s.Args) > 0 || len(s.Secrets) > 0 || s.Worker != "" || s.Brief != "" || s.Fixes != "" || s.Checkout != "" {
+		return invalid("step %s: a reopen step has from, message and max_rounds, not command, args, secrets, worker, brief, fixes or checkout", s.ID)
 	}
 	s.From = strings.TrimSpace(s.From)
 	s.Message = strings.TrimSpace(s.Message)
@@ -339,8 +397,8 @@ func (s *Step) normalizeReopen(earlier map[string]string) error {
 }
 
 func (s *Step) normalizeRun() error {
-	if s.Worker != "" || s.Brief != "" || s.Fixes != "" || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
-		return invalid("step %s: a run step has command and args, not worker, brief, fixes, from, message or max_rounds", s.ID)
+	if s.Worker != "" || s.Brief != "" || s.Fixes != "" || s.Checkout != "" || s.From != "" || s.Message != "" || s.MaxRounds != 0 {
+		return invalid("step %s: a run step has command and args, not worker, brief, fixes, checkout, from, message or max_rounds", s.ID)
 	}
 	s.Command = strings.TrimSpace(s.Command)
 	if err := ValidCommandPath(s.Command); err != nil {
@@ -363,7 +421,7 @@ func (s *Step) normalizeAgent() error {
 	}
 	s.Worker, s.Brief = strings.TrimSpace(s.Worker), strings.TrimSpace(s.Brief)
 	if s.Worker == "" || len(s.Worker) > 200 {
-		return invalid("step %s: worker is required (coder, designer, finder, reviewer or a worker id)", s.ID)
+		return invalid("step %s: worker is required (swarm, coder, finder or designer: the agents that come with Swarm; reviewer, or a worker id)", s.ID)
 	}
 	if s.Brief == "" || utf8.RuneCountInString(s.Brief) > maxBriefRunes {
 		return invalid("step %s: brief is required (at most %d characters)", s.ID, maxBriefRunes)
@@ -373,11 +431,36 @@ func (s *Step) normalizeAgent() error {
 		if s.Fixes != FixesSecurity {
 			return invalid("step %s: fixes must be %q (the only value)", s.ID, FixesSecurity)
 		}
-		if nonReviewerRoles[strings.ToLower(s.Worker)] {
+		if IsBuiltinAgent(s.Worker) {
 			return invalid("step %s: fixes is only for a reviewer worker; %s is not a reviewer", s.ID, s.Worker)
 		}
 	}
+	s.Checkout = strings.ToLower(strings.TrimSpace(s.Checkout))
+	if s.Checkout == "" {
+		return nil
+	}
+	if s.Checkout != CheckoutSame && s.Checkout != CheckoutNew && s.Checkout != CheckoutNone {
+		return invalid("step %s: checkout must be same (a new session in the worktree of the job it follows, read-only), new (its own worktree at the job's head) or none (the folder itself)", s.ID)
+	}
+	worker := strings.ToLower(s.Worker)
+	switch {
+	case s.Fixes != "" && s.Checkout != CheckoutNew:
+		return invalid("step %s: a reviewer with fixes commits, so it works in its own worktree: checkout must be new", s.ID)
+	case worker == "coder" && s.Checkout != CheckoutNew:
+		return invalid("step %s: coder changes files, so it works in its own worktree: checkout must be new (to have the job's own agent continue in its worktree, use a reopen step)", s.ID)
+	case (worker == "finder" || worker == "swarm" || worker == "designer") && s.Checkout != CheckoutNone:
+		return invalid("step %s: %s works in the folder (checkout none), as its tasks always do; the job's commits are the folder's branches, named in its brief", s.ID, worker)
+	case !IsBuiltinAgent(worker) && s.Checkout == CheckoutNone:
+		return invalid("step %s: a worker always works in a worktree: checkout must be same (a reviewer) or new", s.ID)
+	}
 	return nil
+}
+
+// NonReviewerCheckoutError refuses checkout same on an agent step whose
+// worker resolved to a role other than reviewer: only a reviewer, which
+// cannot change files, works in another job's worktree.
+func NonReviewerCheckoutError(stepID, worker, role string) error {
+	return invalid("step %s: checkout same is only for a reviewer (it reads the job's worktree and cannot change it); %s is a %s worker", stepID, worker, role)
 }
 
 // NonReviewerFixesError refuses fixes on an agent step whose worker
@@ -425,6 +508,9 @@ func (a Automation) Matches(r *Result) bool {
 		return false
 	}
 	if a.Scope.Schedule != "" && a.Scope.Schedule != r.ScheduleID {
+		return false
+	}
+	if a.Scope.Role != "" && (r.Kind != KindTask || r.Role != a.Scope.Role) {
 		return false
 	}
 	switch a.When {

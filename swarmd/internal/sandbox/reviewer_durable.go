@@ -15,6 +15,9 @@ type ReviewCleanupState struct {
 	Container string `json:"container"`
 	Volume    string `json:"volume"`
 	Phase     string `json:"phase"`
+	// Borrowed: the checkout is another session's worktree read in place
+	// (RegisterBorrowedReviewCheckout); cleanup never removes it.
+	Borrowed bool `json:"borrowed,omitempty"`
 }
 
 func (m *Manager) CaptureReviewIdentity(session, checkout string) (ReviewCleanupState, error) {
@@ -25,7 +28,7 @@ func (m *Manager) CaptureReviewIdentity(session, checkout string) (ReviewCleanup
 		return ReviewCleanupState{}, fmt.Errorf("review identity missing")
 	}
 	name := scopeContainerName(Scope{Root: root, ReviewCheckout: checkout})
-	return ReviewCleanupState{"reviewer", session, checkout, root, name, name + "-home", "active"}, nil
+	return ReviewCleanupState{"reviewer", session, checkout, root, name, name + "-home", "active", borrowedReviewSession(checkout) == session}, nil
 }
 
 // RestoreReviewIdentity does not inspect the checkout: it can already be gone.
@@ -44,6 +47,13 @@ func (m *Manager) RestoreReviewIdentity(s ReviewCleanupState) error {
 	}
 	if m.reviewClosing == nil {
 		m.reviewClosing = map[string]bool{}
+	}
+	if s.Borrowed {
+		if current := borrowedReviewSession(s.Checkout); current != "" && current != s.Session {
+			m.mu.Unlock()
+			return fmt.Errorf("the worktree is being reviewed by another session")
+		}
+		borrowedReviews.Store(s.Checkout, s.Session)
 	}
 	m.reviews[s.Checkout] = s.Root
 	if s.Phase != "active" {

@@ -96,7 +96,14 @@ func (t *ProjectTaskRecord) ExecutionRunID() string {
 	if a := t.ActiveAttempt(); a != nil && a.RunID != "" {
 		return a.RunID
 	}
-	return fmt.Sprintf("desktop-v3-run:task-%s", t.ID)
+	return InitialTaskRunID(t.ID)
+}
+
+// InitialTaskRunID is the run id a task's first run is launched with. The
+// active attempt's RunID follows the session's latest run, so this, not
+// ExecutionRunID, tells a task's first run from a follow-up in its session.
+func InitialTaskRunID(taskID string) string {
+	return fmt.Sprintf("desktop-v3-run:task-%s", taskID)
 }
 
 // ReserveTaskFollowup runs inside UpdateProjectTask's account/project lock. Identity

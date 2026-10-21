@@ -404,6 +404,9 @@ func controlMCPGiveJob(c *controlMCPCall, args map[string]any) (any, error) {
 	if commits, ok := args["review_commits"].([]string); ok {
 		input["review_commits"] = commits
 	}
+	if checkout := controlMCPString(args, "review_checkout"); checkout != "" {
+		input["review_checkout"] = checkout
+	}
 	response, err := c.dispatch(http.MethodPost, "/v3/workers/"+workerID+"/direct", nil, map[string]any{
 		"prompt":          brief,
 		"review_job":      controlMCPString(args, "review_job"),
@@ -1525,11 +1528,12 @@ func controlMCPJobTools() []controlMCPTool {
 		},
 		{
 			Name: "swarm_give_job", Title: "Give a worker a job",
-			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders on this machine (in the folder's environment when it has one), with only that folder's secrets, and normally runs without tool-approval prompts (questions come back to the calling AI through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge. Reviewer workers require review_job, review an exact head in a detached disposable checkout, and return reports only; never deliver them.",
+			Description: "Start a job in a project (create one first with swarm_create_project): the worker works in one of the project's folders on this machine (in the folder's environment when it has one), with only that folder's secrets, and normally runs without tool-approval prompts (questions come back to the calling AI through swarm_get_job). The brief is the whole instruction: what to do and how to know it is done. Returns job_id at once, or waits with wait_seconds. Then swarm_get_job for the result and swarm_deliver_job to merge. Reviewer workers require review_job, review an exact head (by default as a new session in the reviewed job's own worktree, read-only), and return reports only; never deliver them.",
 			InputSchema: controlMCPObject([]string{"worker", "brief"}, map[string]any{
 				"worker":          workerRef,
 				"brief":           controlMCPStringProp("What to do and the acceptance criteria.", 1, 100000),
-				"review_job":      controlMCPStringProp("Required only for reviewer workers: worker/<worker>/<run> of a job in the same project with commits. Reviews its exact head in a disposable detached checkout; report-only, never delivered.", 1, 700),
+				"review_job":      controlMCPStringProp("Required only for reviewer workers: task/<project>/<task> (a task of Swarm's own agents) or worker/<worker>/<run> of a job, in the same project, with commits. Reviews its exact head, by default in the job's own worktree (review_checkout); report-only, never delivered.", 1, 700),
+				"review_checkout": controlMCPStringProp("Reviewer workers only: same (default: a new session in the reviewed job's own worktree, read-only; it starts only at exactly that head with nothing uncommitted) or new (the reviewer's own disposable checkout at that head).", 1, 8),
 				"model":           controlMCPWorkerModelSchema(false),
 				"project":         project,
 				"workspace":       workspace,

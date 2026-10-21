@@ -16,7 +16,7 @@ import (
 )
 
 // Requirement: an agent step's fixes ("security") is accepted only when its
-// worker is a reviewer. swarm_set_automation (and then) and the API refuse it
+// worker is a reviewer. swarm_set_workflow (and then) and the API refuse it
 // for a role name, a worker id or a worker name that is not a reviewer, and
 // for a worker that does not resolve; an agent step's job start refuses it
 // for a non-reviewer worker too, before anything is admitted.
@@ -51,6 +51,20 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 			t.Fatalf("fixes on %q = %v, want a refusal", worker, err)
 		}
 	}
+	// checkout same (reading another job's worktree in place) is a reviewer's too.
+	same := func(worker string) []jobautomation.Step {
+		steps := []jobautomation.Step{{ID: "review", Type: jobautomation.StepAgent, Worker: worker, Brief: "Review.", Checkout: "same"}}
+		if err := jobautomation.NormalizeSteps(steps); err != nil {
+			t.Fatalf("normalize %s: %v", worker, err)
+		}
+		return steps
+	}
+	if err := f.server.jobAutomationFixesError(p.AccountScopeID, same(reviewer.ID)); err != nil {
+		t.Fatalf("checkout same on a reviewer refused: %v", err)
+	}
+	if err := f.server.jobAutomationFixesError(p.AccountScopeID, same(f.workerID)); err == nil || !strings.Contains(err.Error(), "checkout same is only for a reviewer") {
+		t.Fatalf("checkout same on a coder worker = %v", err)
+	}
 	// A role name that is not a reviewer is refused by the shared validator.
 	for _, raw := range []string{
 		`[{"id":"review","type":"agent","worker":"coder","brief":"Review.","fixes":"security"}]`,
@@ -66,7 +80,7 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 		}
 	}
 
-	// swarm_set_automation refuses a coder worker id and stores nothing.
+	// swarm_set_workflow refuses a coder worker id and stores nothing.
 	store, err := pebblestore.Open(filepath.Join(t.TempDir(), "fixes.pebble"))
 	if err != nil {
 		t.Fatal(err)
@@ -83,10 +97,10 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 		return err
 	}
 	if err := set(f.workerID); err == nil || !strings.Contains(err.Error(), "only for a reviewer worker") {
-		t.Fatalf("swarm_set_automation with fixes on a coder = %v", err)
+		t.Fatalf("swarm_set_workflow with fixes on a coder = %v", err)
 	}
 	if err := set(reviewer.ID); err != nil {
-		t.Fatalf("swarm_set_automation with fixes on a reviewer = %v", err)
+		t.Fatalf("swarm_set_workflow with fixes on a reviewer = %v", err)
 	}
 	list, err := jobautomation.NewStore(store).List(p.AccountScopeID)
 	if err != nil || len(list) != 1 || list[0].Steps[0].Fixes != jobautomation.FixesSecurity || list[0].Steps[0].Worker != reviewer.ID {
@@ -123,13 +137,13 @@ func TestAgentStepFixesIsRefusedForNonReviewerWorkers(t *testing.T) {
 	}
 }
 
-// Requirement: a reviewer's fixes are measured with Git in the folder after
-// both commits are brought in from their checkouts: added plus removed lines
+// Requirement: a reviewer's fixes are measured with Git in the folder, where
+// both commits are (worktrees of the folder): added plus removed lines
 // from the delivery head to the reviewer's head, a binary file counting as
 // more than the limit.
 // Threat: a large rewrite or a binary blob slipping under the 80-line limit
 // because it was counted as nothing.
-// Owners: JobHeadChangedLines (importJobHead, git diff --numstat) and
+// Owners: JobHeadChangedLines (jobHeadInFolder, git diff --numstat) and
 // countNumstatLines, over real Git checkouts.
 func TestJobHeadChangedLinesCountsAddedAndRemovedLines(t *testing.T) {
 	folder := t.TempDir()
@@ -140,11 +154,11 @@ func TestJobHeadChangedLinesCountsAddedAndRemovedLines(t *testing.T) {
 	outboxPinGit(t, folder, "add", ".")
 	outboxPinGit(t, folder, "commit", "-q", "-m", "base")
 	coder := filepath.Join(t.TempDir(), "coder")
-	outboxPinGit(t, filepath.Dir(coder), "clone", "-q", folder, coder)
+	outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/coder", coder, "main")
 	outboxPinGit(t, coder, "commit", "-q", "--allow-empty", "-m", "coder work")
 	jobHead := outboxPinGit(t, coder, "rev-parse", "HEAD")
 	reviewer := filepath.Join(t.TempDir(), "reviewer")
-	outboxPinGit(t, filepath.Dir(reviewer), "clone", "-q", coder, reviewer)
+	outboxPinGit(t, folder, "worktree", "add", "-q", "-b", "agent/review", reviewer, jobHead)
 	// One line replaced (1 removed, 1 added) and two added: 4 lines.
 	if err := os.WriteFile(filepath.Join(reviewer, "upload.go"), []byte("package upload\n\nimport \"html\"\n\nfunc Name(s string) string { return html.EscapeString(s) }\n"), 0o644); err != nil {
 		t.Fatal(err)

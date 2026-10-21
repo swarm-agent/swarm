@@ -17,6 +17,12 @@ export type JobReviewVerdict = 'ok' | 'block';
  * The daemon refuses it for any other worker.
  */
 export type JobReviewerFixes = 'security';
+/**
+ * Where an agent step's agent works. `same`: a new session in the worktree of
+ * the job the step follows, read-only (a reviewer only). `new`: its own
+ * worktree at the job's head. `none`: the folder itself.
+ */
+export type JobAgentCheckout = 'same' | 'new' | 'none';
 /** The most lines (added plus removed) a reviewer's fix commits may change. */
 export const JOB_REVIEWER_FIX_MAX_LINES = 80;
 
@@ -29,13 +35,15 @@ export type JobAutomationCondition =
   | { step: string; status: 'succeeded' | 'failed'; verdict?: never }
   | { step: string; verdict: JobReviewVerdict; status?: never };
 
-/** Which job ends an automation applies to. */
+/** Which task and job ends a workflow applies to. */
 export interface JobAutomationScope {
   /** Absolute path of the project folder. */
   folder: string;
+  /** Only the tasks this one of Swarm's own agents finished in the folder. */
+  role?: 'swarm' | 'coder' | 'finder' | 'designer';
   /** Only this worker's jobs (worker id). */
   worker?: string;
-  /** Only this job (job id, e.g. `worker/<worker>/<run>`). */
+  /** Only this task or job (`task/<project>/<task>`, `worker/<worker>/<run>`, ...). */
   job?: string;
   /** Only the jobs of this schedule (schedule id). */
   schedule?: string;
@@ -64,7 +72,11 @@ export interface JobAutomationStep {
    */
   command?: string;
   args?: string[];
-  /** agent: `coder`, `designer`, `finder`, `reviewer` or a worker id. */
+  /**
+   * agent: one of Swarm's own agents (`swarm`, `coder`, `finder`, `designer`),
+   * run as a task in the folder (a coder starts at the work's head); `reviewer`;
+   * or a worker id.
+   */
   worker?: string;
   /** agent: the job's brief; the triggering job's result is attached (a reviewer also gets its brief, report, commands run and diff). */
   brief?: string;
@@ -78,6 +90,16 @@ export interface JobAutomationStep {
    * it a reviewer is read-only.
    */
   fixes?: JobReviewerFixes;
+  /**
+   * agent: where the agent works; omit it for the agent's default. A reviewer
+   * reads the reviewed job's own worktree in place (`same`, read-only; it
+   * starts only at exactly the reviewed head with nothing uncommitted, and its
+   * verdict is a block if the worktree changes during the review) or gets its
+   * own checkout (`new`). A reviewer with `fixes`, the coder and any other
+   * worker use `new`; swarm, finder and designer work in the folder (`none`).
+   * The daemon refuses any other combination.
+   */
+  checkout?: JobAgentCheckout;
   /**
    * reopen: the earlier agent step whose findings are sent into the triggering
    * job's own session. Optional when `message` is set.
@@ -177,7 +199,7 @@ export interface JobDelivery {
 export interface JobResult {
   v: number;
   job_id: string;
-  kind: 'worker' | 'media' | 'design';
+  kind: 'task' | 'worker' | 'media' | 'design';
   role?: string;
   worker?: { id: string; name?: string };
   run_id: string;
@@ -220,24 +242,24 @@ export interface ListJobDeliveriesParams {
   limit?: number;
 }
 
-/** Job automations and their deliveries (`/v3/job-automations`, `/v3/job-deliveries`). */
+/** Workflows and their deliveries (`/v3/workflows`, `/v3/job-deliveries`). */
 export class SwarmJobAutomationsNamespace {
   constructor(private readonly transport: SwarmTransport) {}
 
   /** This account's automations, each with its latest deliveries. */
   async list(): Promise<{ automations: JobAutomation[]; stopped: boolean }> {
-    const res = await this.transport.request<{ ok: boolean; automations: JobAutomation[]; stopped: boolean }>('/v3/job-automations', { method: 'GET' });
+    const res = await this.transport.request<{ ok: boolean; automations: JobAutomation[]; stopped: boolean }>('/v3/workflows', { method: 'GET' });
     return { automations: res.data.automations ?? [], stopped: Boolean(res.data.stopped) };
   }
 
   async get(id: string): Promise<JobAutomation> {
-    const res = await this.transport.request<{ ok: boolean; automation: JobAutomation }>(`/v3/job-automations/${encodeURIComponent(id)}`, { method: 'GET' });
+    const res = await this.transport.request<{ ok: boolean; automation: JobAutomation }>(`/v3/workflows/${encodeURIComponent(id)}`, { method: 'GET' });
     return res.data.automation;
   }
 
   /** Creates the automation, or updates the one with this name (its revision rises). */
   async set(params: SetJobAutomationParams): Promise<{ automation: JobAutomation; created: boolean }> {
-    const res = await this.transport.request<{ ok: boolean; automation: JobAutomation; created: boolean }>('/v3/job-automations', {
+    const res = await this.transport.request<{ ok: boolean; automation: JobAutomation; created: boolean }>('/v3/workflows', {
       method: 'POST',
       body: params,
     });
@@ -245,18 +267,18 @@ export class SwarmJobAutomationsNamespace {
   }
 
   async delete(id: string): Promise<void> {
-    await this.transport.request(`/v3/job-automations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await this.transport.request(`/v3/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
   /** The machine-wide stop switch. */
   async stopState(): Promise<JobAutomationStop> {
-    const res = await this.transport.request<{ ok: boolean; stop: JobAutomationStop }>('/v3/job-automations/stop', { method: 'GET' });
+    const res = await this.transport.request<{ ok: boolean; stop: JobAutomationStop }>('/v3/workflows/stop', { method: 'GET' });
     return res.data.stop;
   }
 
   /** While stopped, no new step starts on the machine; running steps finish. */
   async setStopped(stopped: boolean): Promise<JobAutomationStop> {
-    const res = await this.transport.request<{ ok: boolean; stop: JobAutomationStop }>('/v3/job-automations/stop', {
+    const res = await this.transport.request<{ ok: boolean; stop: JobAutomationStop }>('/v3/workflows/stop', {
       method: 'POST',
       body: { stopped },
     });

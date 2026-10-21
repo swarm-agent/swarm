@@ -9,15 +9,16 @@ import (
 	pebblestore "swarm/packages/swarmd/internal/store/pebble"
 )
 
-// Purpose: AssessTaskDelivery must observe commits in independent worker clones,
-// not require shared Git metadata. Real local Git at the inspection boundary is
-// the narrowest layer proving candidate counts, empty lanes and missing lanes
-// without changing the source repository or weakening linked-worktree support.
-func TestAssessDeliveryClone(t *testing.T) {
+// Purpose: AssessTaskDelivery reads a worker job's worktree of the folder
+// (commits are in the folder's repository as they are made) and refuses a lane
+// from another repository. Real local Git at the inspection boundary is the
+// narrowest layer proving candidate counts, empty, missing and foreign lanes
+// without changing the source repository.
+func TestAssessDeliveryWorktree(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	for _, mode := range []string{"candidate", "empty", "missing", "linked", "advanced", "wrong_origin", "wrong_branch"} {
+	for _, mode := range []string{"candidate", "empty", "missing", "linked", "advanced", "foreign", "wrong_branch"} {
 		t.Run(mode, func(t *testing.T) {
 			git := func(path string, args ...string) string {
 				t.Helper()
@@ -58,8 +59,11 @@ func TestAssessDeliveryClone(t *testing.T) {
 				commit(repo, "target advanced")
 			}
 			target := git(repo, "rev-parse", "HEAD")
-			if mode == "wrong_origin" {
-				git(lane, "remote", "set-url", "origin", t.TempDir())
+			if mode == "foreign" {
+				// The same branch and commits, in another repository.
+				foreign := filepath.Join(t.TempDir(), "foreign")
+				git(repo, "clone", "-q", "--no-local", "--branch", a.BranchName, repo, foreign)
+				lane = foreign
 			}
 			if mode == "wrong_branch" {
 				git(lane, "checkout", "-b", "other")
@@ -71,12 +75,12 @@ func TestAssessDeliveryClone(t *testing.T) {
 			}
 			got := AssessTaskDelivery(context.Background(), TaskDeliveryInput{SourcePath: lane, TargetPath: repo, Identity: pebblestore.TaskDeliveryAssessment{BaseOID: base, SourceBranch: a.BranchName, TargetBranch: "dev"}})
 			switch mode {
-			case "wrong_origin", "wrong_branch":
+			case "foreign", "wrong_branch":
 				if got.State != "unavailable" || len(got.AllowedActions) != 0 {
 					t.Fatalf("invalid lane: %+v", got)
 				}
 			case "missing":
-				if got.State != "unavailable" || got.ReasonCode != "clone_missing" || len(got.AllowedActions) != 0 {
+				if got.State != "unavailable" || got.ReasonCode != "checkout_missing" || len(got.AllowedActions) != 0 {
 					t.Fatalf("missing: %+v", got)
 				}
 			case "empty":

@@ -1344,7 +1344,9 @@ func (s *Server) deployProjectTaskExecution(p identity.Principal, proj *pebblest
 				}
 			}
 		} else {
-			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, "", worktreeBranch)
+			// A workflow step's coder starts at the delivery head; any other
+			// task at the folder's branch.
+			alloc, err = s.worktrees.AllocateDetachedWorkspaceRequestedForPrincipal(p, wsPath, sessionID, task.StartCommit, worktreeBranch)
 		}
 		if err != nil {
 			return fmt.Errorf("worktree allocation failed for coder task: %w", err)

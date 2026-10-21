@@ -3,12 +3,12 @@ import { test } from 'node:test';
 import { JOB_REVIEWER_FIX_MAX_LINES, SwarmJobAutomationsNamespace, type JobAutomationStep } from '../job-automations.js';
 import type { SwarmTransport } from '../transport.js';
 
-// Purpose: the SDK reaches job automations only under /v3/job-automations and
+// Purpose: the SDK reaches workflows only under /v3/workflows and
 // /v3/job-deliveries (never the older /v3/automations routes), sends the
 // definition as given, and encodes ids and filters. Boundary:
 // SwarmJobAutomationsNamespace over a transport fixture; the daemon's
 // validation, delivery and re-run rules are covered by the Go tests.
-test('job automations use only the job-automation routes', async () => {
+test('workflows use only the workflow routes', async () => {
   const calls: Array<[string, string, unknown]> = [];
   const transport = {
     request: async (path: string, options: { method?: string; body?: unknown } = {}) => {
@@ -29,10 +29,10 @@ test('job automations use only the job-automation routes', async () => {
   assert.equal(rerun.rerun, true);
 
   assert.deepEqual(calls, [
-    ['POST', '/v3/job-automations', { name: 'push', scope: { folder: '/srv/site' }, steps: [{ type: 'run', command: 'deliver/push.sh' }] }],
-    ['GET', '/v3/job-automations', undefined],
-    ['DELETE', '/v3/job-automations/jauto%2F1', undefined],
-    ['POST', '/v3/job-automations/stop', { stopped: true }],
+    ['POST', '/v3/workflows', { name: 'push', scope: { folder: '/srv/site' }, steps: [{ type: 'run', command: 'deliver/push.sh' }] }],
+    ['GET', '/v3/workflows', undefined],
+    ['DELETE', '/v3/workflows/jauto%2F1', undefined],
+    ['POST', '/v3/workflows/stop', { stopped: true }],
     ['GET', '/v3/job-deliveries?job_id=worker%2Fw1%2Fr1&limit=5', undefined],
     ['GET', '/v3/job-deliveries/jdel_1', undefined],
     ['POST', '/v3/job-deliveries/jdel_1/rerun', {}],
@@ -87,4 +87,24 @@ test('a reviewer step with fixes is typed and sent as given', async () => {
   await new SwarmJobAutomationsNamespace(transport).set({ name: 'review fixes', scope: { folder: '/srv/site' }, steps: [review] });
   assert.deepEqual(bodies, [{ name: 'review fixes', scope: { folder: '/srv/site' }, steps: [review] }]);
   assert.equal(JOB_REVIEWER_FIX_MAX_LINES, 80);
+});
+
+// Purpose: an agent step's `checkout` is typed as same, new or none and sent
+// as written; the daemon owns which agent may use which.
+// Boundary: the JobAutomationStep type (checked by the SDK typecheck) and
+// SwarmJobAutomationsNamespace.set over a transport fixture.
+test('an agent step checkout is typed and sent as given', async () => {
+  const bodies: unknown[] = [];
+  const transport = {
+    request: async (_path: string, options: { body?: unknown } = {}) => {
+      bodies.push(options.body);
+      return { data: { ok: true, automation: { id: 'jauto_4' }, created: true } };
+    },
+  } as unknown as SwarmTransport;
+  const review: JobAutomationStep = { id: 'review', type: 'agent', worker: 'reviewer', brief: 'Review the coder\'s work.', checkout: 'same' };
+  // @ts-expect-error checkout is same, new or none
+  const typo: JobAutomationStep = { id: 'review', type: 'agent', worker: 'reviewer', brief: 'Review it.', checkout: 'shared' };
+  assert.equal(typo.checkout, 'shared');
+  await new SwarmJobAutomationsNamespace(transport).set({ name: 'review in place', scope: { folder: '/srv/site', role: 'coder' }, steps: [review] });
+  assert.deepEqual(bodies, [{ name: 'review in place', scope: { folder: '/srv/site', role: 'coder' }, steps: [review] }]);
 });

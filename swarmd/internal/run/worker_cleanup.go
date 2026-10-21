@@ -14,7 +14,7 @@ func markReviewCleanupPending(r *store.WorkerRunRecord) {
 }
 
 func (s *WorkerExecutionService) retryReviewCleanup(r store.WorkerRunRecord) error {
-	// A reviewer that ran with fixes keeps its checkout (a coder-style clone).
+	// A reviewer that ran with fixes keeps its checkout (a coder-style worktree).
 	if r.Role != store.WorkerRoleReviewer || reviewFixesAllowed(r.Input) || !store.AutomationV2Terminal(r.Status) || strings.HasPrefix(r.Error, "run stalled:") {
 		return nil
 	}
