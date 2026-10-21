@@ -331,6 +331,14 @@ func resolveAgentToolStates(profile pebblestore.AgentProfile, knownTools map[str
 		for _, name := range []string{"plan_manage", "exit_plan_mode"} {
 			resolved.Tools[name] = ResolvedAgentTool{Enabled: false, Source: "runtime.orchestrator_task_cards"}
 		}
+		// Its tools for the person's machine are code-owned too: a stored profile
+		// from before them cannot hide them. Each session's access gates every
+		// call in the permission service.
+		for _, definition := range pebblestore.MachineClientTools() {
+			if _, implemented := knownTools[definition.Name]; implemented {
+				resolved.Tools[definition.Name] = ResolvedAgentTool{Enabled: true, Source: "runtime.orchestrator_machine"}
+			}
+		}
 	}
 	workspaceOnboarding := strings.EqualFold(strings.TrimSpace(profile.Name), "system-workspace-onboarding")
 	if workspaceOnboarding {
