@@ -40,9 +40,30 @@ func TestProjectContextCredentialRetry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !s.WaitForInFlightRuns(5 * time.Second) {
-				t.Fatal("initial generation did not finish")
+			// WaitForInFlightRuns is a shutdown operation, not a test barrier:
+			// it closes admission and also waits for unrelated server workers.
+			waitStatus := func(id, status string) {
+				t.Helper()
+				deadline := time.NewTimer(5 * time.Second)
+				defer deadline.Stop()
+				tick := time.NewTicker(time.Millisecond)
+				defer tick.Stop()
+				for {
+					rec, _, err := db.GetProject(p.AccountScopeID, id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if rec.ContextGeneration.Status == status {
+						return
+					}
+					select {
+					case <-deadline.C:
+						t.Fatalf("project status = %s, want %s", rec.ContextGeneration.Status, status)
+					case <-tick.C:
+					}
+				}
 			}
+			waitStatus(failed.ID, "failed")
 			failed, _, err = db.GetProject(p.AccountScopeID, failed.ID)
 			if err != nil || failed.ContextGeneration.Status != "failed" {
 				t.Fatalf("initial failure: %+v %v", failed, err)
@@ -80,18 +101,13 @@ func TestProjectContextCredentialRetry(t *testing.T) {
 			s.providers = registry.New()
 			s.providers.RegisterRunner(runner)
 			s.publishAuthCredentialV3Realtime(p.AccountScopeID, pebblestore.EventEnvelope{EventType: "auth.credential.deleted", GlobalSeq: 1, TsUnixMs: 1})
-			if !s.WaitForInFlightRuns(5 * time.Second) {
-				t.Fatal("deletion handler did not finish")
-			}
 			if runner.calls.Load() != 0 {
 				t.Fatal("deletion triggered retry")
 			}
 			for seq := uint64(2); seq <= 3; seq++ {
 				s.publishAuthCredentialV3Realtime(p.AccountScopeID, pebblestore.EventEnvelope{EventType: eventType, GlobalSeq: seq, TsUnixMs: int64(seq)})
 			}
-			if !s.WaitForInFlightRuns(5 * time.Second) {
-				t.Fatal("retry did not finish")
-			}
+			waitStatus(failed.ID, "ready")
 			got, _, err := db.GetProject(p.AccountScopeID, failed.ID)
 			if err != nil || got.ContextGeneration.Status != "ready" || got.ContextGeneration.Attempt != failed.ContextGeneration.Attempt+1 || got.ProjectContext != "# Recovered project" {
 				t.Fatalf("retry result: %+v %v", got, err)
